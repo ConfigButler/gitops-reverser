@@ -23,7 +23,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -44,7 +44,7 @@ const alreadyPresentMessage = "the change already matches the remote, so no comm
 // applyFinalizeResultToStatus maps a FinalizeResult (or a finalize error) onto
 // a CommitRequest's status.
 func applyFinalizeResultToStatus(
-	commitRequest *configv1alpha1.CommitRequest,
+	commitRequest *configv1alpha2.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
 	now metav1.Time,
@@ -55,50 +55,50 @@ func applyFinalizeResultToStatus(
 	commitRequest.Status.Reason = ""
 
 	if finalizeErr != nil {
-		commitRequest.Status.Phase = configv1alpha1.CommitRequestPhaseFailed
+		commitRequest.Status.Phase = configv1alpha2.CommitRequestPhaseFailed
 		commitRequest.Status.Message = finalizeErr.Error()
 		return
 	}
 
 	switch result.Outcome {
 	case git.FinalizeCommitted:
-		commitRequest.Status.Phase = configv1alpha1.CommitRequestPhaseCommitted
+		commitRequest.Status.Phase = configv1alpha2.CommitRequestPhaseCommitted
 		commitRequest.Status.SHA = result.SHA
 	case git.FinalizeNoOpenWindow:
 		// Benign: the grace elapsed with nothing pending to save.
-		rejectCommitRequest(commitRequest, configv1alpha1.RejectNoWindowInGrace, noWindowInGraceMessage)
+		rejectCommitRequest(commitRequest, configv1alpha2.RejectNoWindowInGrace, noWindowInGraceMessage)
 	case git.FinalizeWindowMismatch:
 		// The author-bound refusal: deliberately not a failure — the foreign
 		// window stays open for its own author — but the reason is surfaced.
-		rejectCommitRequest(commitRequest, configv1alpha1.RejectWindowMismatch, windowMismatchMessage)
+		rejectCommitRequest(commitRequest, configv1alpha2.RejectWindowMismatch, windowMismatchMessage)
 	case git.FinalizeAlreadyPresent:
 		// The change already matches the remote, so the commit was dropped.
-		rejectCommitRequest(commitRequest, configv1alpha1.RejectAlreadyPresent, alreadyPresentMessage)
+		rejectCommitRequest(commitRequest, configv1alpha2.RejectAlreadyPresent, alreadyPresentMessage)
 	default:
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// rejection; record it as Failed so it is not silently hidden.
-		commitRequest.Status.Phase = configv1alpha1.CommitRequestPhaseFailed
+		commitRequest.Status.Phase = configv1alpha2.CommitRequestPhaseFailed
 		commitRequest.Status.Message = "unexpected finalize outcome: " + string(result.Outcome)
 	}
 }
 
 // rejectCommitRequest stamps the Rejected phase with its structured reason and prose.
 func rejectCommitRequest(
-	commitRequest *configv1alpha1.CommitRequest,
-	reason configv1alpha1.CommitRequestRejectReason,
+	commitRequest *configv1alpha2.CommitRequest,
+	reason configv1alpha2.CommitRequestRejectReason,
 	message string,
 ) {
-	commitRequest.Status.Phase = configv1alpha1.CommitRequestPhaseRejected
+	commitRequest.Status.Phase = configv1alpha2.CommitRequestPhaseRejected
 	commitRequest.Status.Reason = reason
 	commitRequest.Status.Message = message
 }
 
 // isTerminalCommitRequestPhase reports whether the phase is one of the
 // terminal states (anything other than the initial WaitingForAuditEvent).
-func isTerminalCommitRequestPhase(phase configv1alpha1.CommitRequestPhase) bool {
-	return phase == configv1alpha1.CommitRequestPhaseCommitted ||
-		phase == configv1alpha1.CommitRequestPhaseRejected ||
-		phase == configv1alpha1.CommitRequestPhaseFailed
+func isTerminalCommitRequestPhase(phase configv1alpha2.CommitRequestPhase) bool {
+	return phase == configv1alpha2.CommitRequestPhaseCommitted ||
+		phase == configv1alpha2.CommitRequestPhaseRejected ||
+		phase == configv1alpha2.CommitRequestPhaseFailed
 }
 
 // capCommitRequestMessage caps a user-supplied commit message at a defensive

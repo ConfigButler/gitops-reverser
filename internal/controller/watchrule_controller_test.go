@@ -28,7 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
@@ -36,17 +36,17 @@ var _ = Describe("WatchRule Controller", func() {
 	Context("When CRD validation runs", func() {
 		It("should reject subresource entries in resources", func() {
 			ctx := context.Background()
-			watchRule := &configbutleraiv1alpha1.WatchRule{
+			watchRule := &configbutleraiv1alpha2.WatchRule{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "invalid-subresource-rule",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.WatchRuleSpec{
-					TargetRef: configbutleraiv1alpha1.LocalTargetReference{
+				Spec: configbutleraiv1alpha2.WatchRuleSpec{
+					TargetRef: configbutleraiv1alpha2.LocalTargetReference{
 						Kind: "GitTarget",
 						Name: "target",
 					},
-					Rules: []configbutleraiv1alpha1.ResourceRule{{
+					Rules: []configbutleraiv1alpha2.ResourceRule{{
 						Resources: []string{"pods/log"},
 					}},
 				},
@@ -67,19 +67,19 @@ var _ = Describe("WatchRule Controller", func() {
 			Name:      resourceName,
 			Namespace: "default",
 		}
-		watchrule := &configbutleraiv1alpha1.WatchRule{}
+		watchrule := &configbutleraiv1alpha2.WatchRule{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind GitProvider")
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test/repo.git",
 					AllowedBranches: []string{"*"},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "git-credentials",
 					},
 				},
@@ -87,13 +87,13 @@ var _ = Describe("WatchRule Controller", func() {
 			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
 
 			By("creating a GitTarget referencing the GitProvider")
-			target := &configbutleraiv1alpha1.GitTarget{
+			target := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider",
 					},
 					Branch: "main",
@@ -105,17 +105,17 @@ var _ = Describe("WatchRule Controller", func() {
 			By("creating the custom resource for the Kind WatchRule")
 			err := k8sClient.Get(ctx, typeNamespacedName, watchrule)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &configbutleraiv1alpha1.WatchRule{
+				resource := &configbutleraiv1alpha2.WatchRule{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					Spec: configbutleraiv1alpha1.WatchRuleSpec{
-						TargetRef: configbutleraiv1alpha1.LocalTargetReference{
+					Spec: configbutleraiv1alpha2.WatchRuleSpec{
+						TargetRef: configbutleraiv1alpha2.LocalTargetReference{
 							Kind: "GitTarget",
 							Name: "test-target",
 						},
-						Rules: []configbutleraiv1alpha1.ResourceRule{
+						Rules: []configbutleraiv1alpha2.ResourceRule{
 							{
 								Resources: []string{"Pod"},
 							},
@@ -127,14 +127,14 @@ var _ = Describe("WatchRule Controller", func() {
 		})
 
 		AfterEach(func() {
-			resource := &configbutleraiv1alpha1.WatchRule{}
+			resource := &configbutleraiv1alpha2.WatchRule{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Cleanup the specific resource instance WatchRule")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 
-			target := &configbutleraiv1alpha1.GitTarget{}
+			target := &configbutleraiv1alpha2.GitTarget{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: "test-target", Namespace: "default"},
@@ -145,7 +145,7 @@ var _ = Describe("WatchRule Controller", func() {
 			By("Cleanup the specific resource instance GitTarget")
 			Expect(k8sClient.Delete(ctx, target)).To(Succeed())
 
-			gitProvider := &configbutleraiv1alpha1.GitProvider{}
+			gitProvider := &configbutleraiv1alpha2.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: "test-provider", Namespace: "default"},
@@ -188,12 +188,12 @@ var _ = Describe("WatchRule Controller", func() {
 
 		It("should work with same namespace (default behavior)", func() {
 			By("Creating GitProvider")
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "local-provider",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/octocat/Hello-World",
 					AllowedBranches: []string{"main"},
 				},
@@ -203,13 +203,13 @@ var _ = Describe("WatchRule Controller", func() {
 			// TODO: Wait for GitProvider to be ready (if we implement status update for it)
 
 			By("Creating GitTarget in same namespace referencing the GitProvider")
-			target := &configbutleraiv1alpha1.GitTarget{
+			target := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "local-target",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "local-provider",
 					},
 					Branch: "main",
@@ -219,17 +219,17 @@ var _ = Describe("WatchRule Controller", func() {
 			Expect(k8sClient.Create(ctx, target)).Should(Succeed())
 
 			By("Creating WatchRule in same namespace referencing Target")
-			watchRule := &configbutleraiv1alpha1.WatchRule{
+			watchRule := &configbutleraiv1alpha2.WatchRule{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "local-rule",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.WatchRuleSpec{
-					TargetRef: configbutleraiv1alpha1.LocalTargetReference{
+				Spec: configbutleraiv1alpha2.WatchRuleSpec{
+					TargetRef: configbutleraiv1alpha2.LocalTargetReference{
 						Kind: "GitTarget",
 						Name: "local-target",
 					},
-					Rules: []configbutleraiv1alpha1.ResourceRule{
+					Rules: []configbutleraiv1alpha2.ResourceRule{
 						{
 							Resources: []string{"pods"},
 						},
@@ -250,7 +250,7 @@ var _ = Describe("WatchRule Controller", func() {
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
 			By("Verifying WatchRule is Ready")
-			updatedRule := &configbutleraiv1alpha1.WatchRule{}
+			updatedRule := &configbutleraiv1alpha2.WatchRule{}
 			err = k8sClient.Get(ctx, types.NamespacedName{
 				Name:      "local-rule",
 				Namespace: "default",

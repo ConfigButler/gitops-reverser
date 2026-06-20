@@ -1,6 +1,6 @@
 # Design: `CommitRequest` CRD
 
-> Status: **implemented**. Namespaced CRD in API group `configbutler.ai/v1alpha1`.
+> Status: **implemented**. Namespaced CRD in API group `configbutler.ai/v1alpha2`.
 > Deferred work is tracked in [design-commit-request-phase-2.md](../future/design-commit-request-phase-2.md).
 > Date: 2026-05-18
 
@@ -24,7 +24,7 @@ is what makes the timing correct (see [The flow](#the-flow)).
 ## Resource shape
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: CommitRequest
 metadata:
   namespace: team-a
@@ -220,7 +220,7 @@ object-lifecycle question front and center — in
   [idea-end-user-commit-messages.md](../future/idea-end-user-commit-messages.md)
 - Audit ingestion pipeline this design rides on:
   [design-audit-ingestion-hardening.md](design-audit-ingestion-hardening.md)
-- Implementation: `api/v1alpha1/commitrequest_types.go`,
+- Implementation: `api/v1alpha2/commitrequest_types.go`,
   `internal/controller/commitrequest_controller.go`, `internal/queue/commit_request.go`,
   `internal/git/finalize_signal.go` plus the `FinalizeSignal` path in
   `internal/git/branch_worker.go`, and `EventRouter.FinalizeGitTargetWindow`.

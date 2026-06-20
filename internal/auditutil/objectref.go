@@ -25,18 +25,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // VerbToOperation maps mutating Kubernetes audit verbs to watch operations.
-func VerbToOperation(verb string) (configv1alpha1.OperationType, bool) {
+func VerbToOperation(verb string) (configv1alpha2.OperationType, bool) {
 	switch strings.ToLower(verb) {
 	case "create":
-		return configv1alpha1.OperationCreate, true
+		return configv1alpha2.OperationCreate, true
 	case "update", "patch":
-		return configv1alpha1.OperationUpdate, true
+		return configv1alpha2.OperationUpdate, true
 	case "delete", "deletecollection":
-		return configv1alpha1.OperationDelete, true
+		return configv1alpha2.OperationDelete, true
 	default:
 		return "", false
 	}

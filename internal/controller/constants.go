@@ -23,15 +23,15 @@ import (
 	"context"
 	"time"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // WatchManagerInterface defines the interface for watch manager reconciliation.
 // This allows for easier testing by enabling mock implementations.
 type WatchManagerInterface interface {
 	ReconcileForRuleChange(ctx context.Context) error
-	ResolveWatchRuleResources(ctx context.Context, rule configv1alpha1.WatchRule) (bool, string)
-	ResolveClusterWatchRuleResources(ctx context.Context, rule configv1alpha1.ClusterWatchRule) (bool, string)
+	ResolveWatchRuleResources(ctx context.Context, rule configv1alpha2.WatchRule) (bool, string)
+	ResolveClusterWatchRuleResources(ctx context.Context, rule configv1alpha2.ClusterWatchRule) (bool, string)
 }
 
 const (

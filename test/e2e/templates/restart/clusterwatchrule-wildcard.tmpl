@@ -1,4 +1,4 @@
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: ClusterWatchRule
 metadata:
   name: {{ .Name }}
@@ -8,7 +8,7 @@ spec:
     namespace: {{ .Namespace }}
   rules:
   # apiVersions: ["*"] is the documented "match all versions" form
-  # (see api/v1alpha1/clusterwatchrule_types.go). The live audit path honours
+  # (see api/v1alpha2/clusterwatchrule_types.go). The live audit path honours
   # it; the startup snapshot path must honour it too, otherwise a controller
   # restart snapshots an empty cluster and deletes the whole tracked tree.
   - scope: Namespaced

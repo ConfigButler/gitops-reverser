@@ -33,7 +33,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clienttesting "k8s.io/client-go/testing"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -112,16 +112,16 @@ func TestDeclareForGitTarget_FailsClosedDeclaresNothing(t *testing.T) {
 // fullySpecifiedClusterRule builds a ClusterWatchRule naming a single type by its full
 // group+version+resource — the shape of the e2e WatchRule that flaked
 // (apiGroups:[crd-lifecycle…], apiVersions:[v1], resources:[icecreamorders]).
-func fullySpecifiedClusterRule(name, group, version, resource string) configv1alpha1.ClusterWatchRule {
-	return configv1alpha1.ClusterWatchRule{
+func fullySpecifiedClusterRule(name, group, version, resource string) configv1alpha2.ClusterWatchRule {
+	return configv1alpha2.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: configv1alpha1.ClusterWatchRuleSpec{
-			TargetRef: configv1alpha1.NamespacedTargetReference{Name: "test-target", Namespace: "test-ns"},
-			Rules: []configv1alpha1.ClusterResourceRule{{
+		Spec: configv1alpha2.ClusterWatchRuleSpec{
+			TargetRef: configv1alpha2.NamespacedTargetReference{Name: "test-target", Namespace: "test-ns"},
+			Rules: []configv1alpha2.ClusterResourceRule{{
 				APIGroups:   []string{group},
 				APIVersions: []string{version},
 				Resources:   []string{resource},
-				Scope:       configv1alpha1.ResourceScopeNamespaced,
+				Scope:       configv1alpha2.ResourceScopeNamespaced,
 			}},
 		},
 	}

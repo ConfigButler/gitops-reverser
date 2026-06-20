@@ -36,7 +36,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -67,7 +67,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha1.GitProvider{},
+					&configbutleraiv1alpha2.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -91,7 +91,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha1.GitProvider{},
+					&configbutleraiv1alpha2.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -107,7 +107,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				_, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha1.GitProvider{},
+					&configbutleraiv1alpha2.GitProvider{},
 					secret,
 				)
 				Expect(err).To(HaveOccurred())
@@ -127,7 +127,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha1.GitProvider{},
+					&configbutleraiv1alpha2.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -146,7 +146,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha1.GitProvider{},
+					&configbutleraiv1alpha2.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -166,7 +166,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				_, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha1.GitProvider{},
+					&configbutleraiv1alpha2.GitProvider{},
 					secret,
 				)
 				Expect(err).To(HaveOccurred())
@@ -182,7 +182,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				_, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha1.GitProvider{},
+					&configbutleraiv1alpha2.GitProvider{},
 					secret,
 				)
 				Expect(err).To(HaveOccurred())
@@ -200,7 +200,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				_, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha1.GitProvider{},
+					&configbutleraiv1alpha2.GitProvider{},
 					secret,
 				)
 				Expect(err).To(HaveOccurred())
@@ -213,19 +213,19 @@ var _ = Describe("GitProvider Controller", func() {
 
 	Context("Status Condition Management", func() {
 		var reconciler *GitProviderReconciler
-		var gitProvider *configbutleraiv1alpha1.GitProvider
+		var gitProvider *configbutleraiv1alpha2.GitProvider
 
 		BeforeEach(func() {
 			reconciler = &GitProviderReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			gitProvider = &configbutleraiv1alpha1.GitProvider{
+			gitProvider = &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider",
 					Namespace: "default",
 				},
-				Status: configbutleraiv1alpha1.GitProviderStatus{
+				Status: configbutleraiv1alpha2.GitProviderStatus{
 					Conditions: []metav1.Condition{},
 				},
 			}
@@ -282,7 +282,7 @@ var _ = Describe("GitProvider Controller", func() {
 		var (
 			ctx         context.Context
 			reconciler  *GitProviderReconciler
-			gitProvider *configbutleraiv1alpha1.GitProvider
+			gitProvider *configbutleraiv1alpha2.GitProvider
 			testSecret  *corev1.Secret
 		)
 
@@ -320,15 +320,15 @@ var _ = Describe("GitProvider Controller", func() {
 		})
 
 		It("should fail when secret is not found", func() {
-			gitProvider = &configbutleraiv1alpha1.GitProvider{
+			gitProvider = &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-missing-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "nonexistent-secret",
 					},
 				},
@@ -346,7 +346,7 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(time.Minute * 5))
 
 			// Verify the resource was updated with failure condition
-			updatedProvider := &configbutleraiv1alpha1.GitProvider{}
+			updatedProvider := &configbutleraiv1alpha2.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
@@ -376,15 +376,15 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(k8sClient.Create(ctx, malformedSecret)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, malformedSecret) }()
 
-			gitProvider = &configbutleraiv1alpha1.GitProvider{
+			gitProvider = &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-malformed",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "malformed-secret",
 					},
 				},
@@ -402,7 +402,7 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(time.Minute * 2))
 
 			// Verify the resource was updated with failure condition
-			updatedProvider := &configbutleraiv1alpha1.GitProvider{}
+			updatedProvider := &configbutleraiv1alpha2.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
@@ -431,16 +431,16 @@ var _ = Describe("GitProvider Controller", func() {
 		})
 
 		It("should fail when commit templates are invalid", func() {
-			gitProvider = &configbutleraiv1alpha1.GitProvider{
+			gitProvider = &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-invalid-commit-template",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					Commit: &configbutleraiv1alpha1.CommitSpec{
-						Message: &configbutleraiv1alpha1.CommitMessageSpec{
+					Commit: &configbutleraiv1alpha2.CommitSpec{
+						Message: &configbutleraiv1alpha2.CommitMessageSpec{
 							EventTemplate: "{{.Operation",
 						},
 					},
@@ -458,7 +458,7 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(time.Minute * 10))
 
-			updatedProvider := &configbutleraiv1alpha1.GitProvider{}
+			updatedProvider := &configbutleraiv1alpha2.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
@@ -475,17 +475,17 @@ var _ = Describe("GitProvider Controller", func() {
 		})
 
 		It("should fail when commit signing is configured but the signing secret is missing", func() {
-			gitProvider = &configbutleraiv1alpha1.GitProvider{
+			gitProvider = &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-signing-secret-missing",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					Commit: &configbutleraiv1alpha1.CommitSpec{
-						Signing: &configbutleraiv1alpha1.CommitSigningSpec{
-							SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+					Commit: &configbutleraiv1alpha2.CommitSpec{
+						Signing: &configbutleraiv1alpha2.CommitSigningSpec{
+							SecretRef: configbutleraiv1alpha2.LocalSecretReference{
 								Name: "signing-secret",
 							},
 						},
@@ -504,7 +504,7 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(time.Minute * 5))
 
-			updatedProvider := &configbutleraiv1alpha1.GitProvider{}
+			updatedProvider := &configbutleraiv1alpha2.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},

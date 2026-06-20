@@ -84,7 +84,7 @@ tasks:
       - exclude: api/**/*_test.go
       - exclude: api/**/zz_generated.deepcopy.go
     generates:
-      - api/v1alpha1/zz_generated.deepcopy.go
+      - api/v1alpha2/zz_generated.deepcopy.go
     cmds:
       - '{{.CONTROLLER_GEN}} object:headerFile="hack/boilerplate.go.txt" paths=./api/...'
 

@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -66,7 +66,7 @@ func eventRouterScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha1.AddToScheme(scheme))
+	require.NoError(t, configv1alpha2.AddToScheme(scheme))
 	return scheme
 }
 
@@ -96,10 +96,10 @@ func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 
 func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 	scheme := eventRouterScheme(t)
-	gitTarget := &configv1alpha1.GitTarget{
+	gitTarget := &configv1alpha2.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
-		Spec: configv1alpha1.GitTargetSpec{
-			ProviderRef: configv1alpha1.GitProviderReference{Name: "team-a-provider"},
+		Spec: configv1alpha2.GitTargetSpec{
+			ProviderRef: configv1alpha2.GitProviderReference{Name: "team-a-provider"},
 			Branch:      "main",
 		},
 	}
@@ -117,14 +117,14 @@ func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 
 func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T) {
 	scheme := eventRouterScheme(t)
-	provider := &configv1alpha1.GitProvider{
+	provider := &configv1alpha2.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-provider", Namespace: "team-a"},
-		Spec:       configv1alpha1.GitProviderSpec{URL: "file:///tmp/does-not-need-to-exist"},
+		Spec:       configv1alpha2.GitProviderSpec{URL: "file:///tmp/does-not-need-to-exist"},
 	}
-	gitTarget := &configv1alpha1.GitTarget{
+	gitTarget := &configv1alpha2.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
-		Spec: configv1alpha1.GitTargetSpec{
-			ProviderRef: configv1alpha1.GitProviderReference{Name: "team-a-provider"},
+		Spec: configv1alpha2.GitTargetSpec{
+			ProviderRef: configv1alpha2.GitProviderReference{Name: "team-a-provider"},
 			Branch:      "main",
 		},
 	}

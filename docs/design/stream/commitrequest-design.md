@@ -109,7 +109,7 @@ The design's job is to **bound and report** them, not to pretend they don't exis
 
 ### 5.1 The CRD
 
-`CommitRequestSpec` ([api/v1alpha1/commitrequest_types.go](../../../api/v1alpha1/commitrequest_types.go)):
+`CommitRequestSpec` ([api/v1alpha2/commitrequest_types.go](../../../api/v1alpha2/commitrequest_types.go)):
 
 - `gitTargetRef.name` — the GitTarget whose window to finalize (same namespace).
 - `message` — optional verbatim commit message (1–1024 chars, no control chars).

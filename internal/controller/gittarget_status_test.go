@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
@@ -113,7 +113,7 @@ func TestDeriveSyncedCondition(t *testing.T) {
 // summary.
 func TestApplySyncedConditionAndPhase_SetsConditionAndPhase(t *testing.T) {
 	r := &GitTargetReconciler{}
-	target := &configbutleraiv1alpha1.GitTarget{}
+	target := &configbutleraiv1alpha2.GitTarget{}
 
 	r.applySyncedConditionAndPhase(target, watch.GitTargetMaterializationSummary{Claimed: 1, Synced: 1})
 
@@ -126,7 +126,7 @@ func TestApplySyncedConditionAndPhase_SetsConditionAndPhase(t *testing.T) {
 // True/False.
 func TestSetBlockedDataPlane_MarksUnknownAndPending(t *testing.T) {
 	r := &GitTargetReconciler{}
-	target := &configbutleraiv1alpha1.GitTarget{}
+	target := &configbutleraiv1alpha2.GitTarget{}
 
 	r.setBlockedDataPlane(target)
 

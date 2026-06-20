@@ -28,7 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/ssh"
 )
 
@@ -57,7 +57,7 @@ type SSHHostKeyConfig struct {
 func getAuthFromSecret(
 	ctx context.Context,
 	k8sClient client.Client,
-	provider *v1alpha1.GitProvider,
+	provider *v1alpha2.GitProvider,
 	hostKeys SSHHostKeyConfig,
 ) (transport.AuthMethod, error) {
 	if provider.Spec.SecretRef == nil || provider.Spec.SecretRef.Name == "" {
@@ -85,7 +85,7 @@ func getAuthFromSecret(
 func AuthFromSecretData(
 	ctx context.Context,
 	k8sClient client.Client,
-	provider *v1alpha1.GitProvider,
+	provider *v1alpha2.GitProvider,
 	secret *corev1.Secret,
 	hostKeys SSHHostKeyConfig,
 ) (transport.AuthMethod, error) {
@@ -142,7 +142,7 @@ func sshPassphrase(secret *corev1.Secret) string {
 func resolveKnownHosts(
 	ctx context.Context,
 	k8sClient client.Client,
-	provider *v1alpha1.GitProvider,
+	provider *v1alpha2.GitProvider,
 	secret *corev1.Secret,
 	hostKeys SSHHostKeyConfig,
 ) (string, error) {
@@ -186,7 +186,7 @@ func readKnownHostsFromRef(
 	ctx context.Context,
 	k8sClient client.Client,
 	namespace string,
-	ref *v1alpha1.KnownHostsReference,
+	ref *v1alpha2.KnownHostsReference,
 ) (string, bool, error) {
 	switch ref.Kind {
 	case "", "ConfigMap":

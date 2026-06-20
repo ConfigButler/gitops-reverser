@@ -37,7 +37,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -310,20 +310,20 @@ func (m *Manager) apiResourceDiscovery() (apiResourceDiscovery, error) {
 // followable set.
 type ruleResourceSelector struct {
 	groups, versions, resources []string
-	scope                       configv1alpha1.ResourceScope
+	scope                       configv1alpha2.ResourceScope
 }
 
 // ResolveWatchRuleResources reports one WatchRule's resource-resolution status for
 // controller feedback. See resolveRuleResourceStatus.
 func (m *Manager) ResolveWatchRuleResources(
 	_ context.Context,
-	rule configv1alpha1.WatchRule,
+	rule configv1alpha2.WatchRule,
 ) (bool, string) {
 	selectors := make([]ruleResourceSelector, 0, len(rule.Spec.Rules))
 	for _, rr := range rule.Spec.Rules {
 		selectors = append(selectors, ruleResourceSelector{
 			groups: rr.APIGroups, versions: rr.APIVersions, resources: rr.Resources,
-			scope: configv1alpha1.ResourceScopeNamespaced,
+			scope: configv1alpha2.ResourceScopeNamespaced,
 		})
 	}
 	return m.resolveRuleResourceStatus(selectors)
@@ -333,7 +333,7 @@ func (m *Manager) ResolveWatchRuleResources(
 // status for controller feedback. See resolveRuleResourceStatus.
 func (m *Manager) ResolveClusterWatchRuleResources(
 	_ context.Context,
-	rule configv1alpha1.ClusterWatchRule,
+	rule configv1alpha2.ClusterWatchRule,
 ) (bool, string) {
 	selectors := make([]ruleResourceSelector, 0, len(rule.Spec.Rules))
 	for _, rr := range rule.Spec.Rules {

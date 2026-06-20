@@ -26,7 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -174,15 +174,15 @@ func TestRefreshWatchedTypeTables_ExcludesAmbiguousGVK(t *testing.T) {
 	store := rulestore.NewStore()
 	manager := &Manager{Log: logr.Discard(), RuleStore: store, resourceCatalog: newWidgetConflictCatalog(t)}
 	store.AddOrUpdateClusterWatchRule(
-		configv1alpha1.ClusterWatchRule{
+		configv1alpha2.ClusterWatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "rule-widgets"},
-			Spec: configv1alpha1.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha1.NamespacedTargetReference{Name: "test-target", Namespace: "test-ns"},
-				Rules: []configv1alpha1.ClusterResourceRule{{
+			Spec: configv1alpha2.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha2.NamespacedTargetReference{Name: "test-target", Namespace: "test-ns"},
+				Rules: []configv1alpha2.ClusterResourceRule{{
 					APIGroups:   []string{"example.com"},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"*"},
-					Scope:       configv1alpha1.ResourceScopeNamespaced,
+					Scope:       configv1alpha2.ResourceScopeNamespaced,
 				}},
 			},
 		},

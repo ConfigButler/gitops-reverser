@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -69,7 +69,7 @@ const (
 func setupScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha1.AddToScheme(scheme)
+	_ = configv1alpha2.AddToScheme(scheme)
 	return scheme
 }
 
@@ -84,8 +84,8 @@ func createProviderWithLocalRepo(
 	remotePath := filepath.Join(t.TempDir(), name+".git")
 	createBareRepo(t, remotePath)
 
-	provider := &configv1alpha1.GitProvider{
-		Spec: configv1alpha1.GitProviderSpec{
+	provider := &configv1alpha2.GitProvider{
+		Spec: configv1alpha2.GitProviderSpec{
 			URL: "file://" + remotePath,
 		},
 	}
@@ -101,10 +101,10 @@ func createTargetForRegister(
 	name, providerName, branch, path string,
 ) {
 	t.Helper()
-	target := &configv1alpha1.GitTarget{}
+	target := &configv1alpha2.GitTarget{}
 	target.Name = name
 	target.Namespace = testTargetNamespace
-	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
+	target.Spec.ProviderRef = configv1alpha2.GitProviderReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch

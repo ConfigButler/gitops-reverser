@@ -29,7 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -65,11 +65,11 @@ func (r *recordingEnqueuer) names() []string {
 // fixture's twin).
 func addConfigmapsWatchRule(store *rulestore.RuleStore) {
 	store.AddOrUpdateWatchRule(
-		configv1alpha1.WatchRule{
+		configv1alpha2.WatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "wr-configmaps", Namespace: "ns-a"},
-			Spec: configv1alpha1.WatchRuleSpec{
-				TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
-				Rules: []configv1alpha1.ResourceRule{{
+			Spec: configv1alpha2.WatchRuleSpec{
+				TargetRef: configv1alpha2.LocalTargetReference{Name: "my-target"},
+				Rules: []configv1alpha2.ResourceRule{{
 					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"},
 				}},
 			},

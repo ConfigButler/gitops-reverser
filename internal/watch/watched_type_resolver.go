@@ -30,7 +30,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -240,7 +240,7 @@ func (m *Manager) collectWatchRuleSelections(
 		)
 		for _, rr := range rule.ResourceRules {
 			matched := matchFollowableRecords(
-				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha1.ResourceScopeNamespaced)
+				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha2.ResourceScopeNamespaced)
 			for _, rec := range matched {
 				ts.selections = append(ts.selections, watchSelection{
 					record: rec, namespace: rule.Source.Namespace, ops: rr.Operations,
@@ -286,7 +286,7 @@ func (m *Manager) collectClusterWatchRuleSelections(
 func matchFollowableRecords(
 	records []typeset.TypeRecord,
 	groups, versions, resources []string,
-	scope configv1alpha1.ResourceScope,
+	scope configv1alpha2.ResourceScope,
 ) []typeset.TypeRecord {
 	var out []typeset.TypeRecord
 	seen := map[schema.GroupVersionResource]struct{}{}
@@ -311,7 +311,7 @@ func recordsForResourceEntry(
 	records []typeset.TypeRecord,
 	groups, versions []string,
 	resource string,
-	scope configv1alpha1.ResourceScope,
+	scope configv1alpha2.ResourceScope,
 ) []typeset.TypeRecord {
 	var matched []typeset.TypeRecord
 	for _, rec := range records {
@@ -338,11 +338,11 @@ func recordsForResourceEntry(
 
 // matchesScope reports whether a discovery namespaced flag aligns with a declared
 // resource scope.
-func matchesScope(namespaced bool, scope configv1alpha1.ResourceScope) bool {
+func matchesScope(namespaced bool, scope configv1alpha2.ResourceScope) bool {
 	switch scope {
-	case configv1alpha1.ResourceScopeNamespaced:
+	case configv1alpha2.ResourceScopeNamespaced:
 		return namespaced
-	case configv1alpha1.ResourceScopeCluster:
+	case configv1alpha2.ResourceScopeCluster:
 		return !namespaced
 	default:
 		return false
@@ -451,7 +451,7 @@ func clusterWatchRuleFingerprint(rule rulestore.CompiledClusterRule) string {
 	return b.String()
 }
 
-func operationsString(ops []configv1alpha1.OperationType) string {
+func operationsString(ops []configv1alpha2.OperationType) string {
 	if len(ops) == 0 {
 		return ""
 	}

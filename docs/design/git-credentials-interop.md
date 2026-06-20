@@ -82,7 +82,7 @@ what the plan leans on.
 ## The trap in our schema today
 
 `GitTarget.spec.providerRef` / the shared `GitProviderReference`
-([gittarget_types.go](../../api/v1alpha1/gittarget_types.go)) advertise a Flux `GitRepository`:
+([gittarget_types.go](../../api/v1alpha2/gittarget_types.go)) advertise a Flux `GitRepository`:
 the `Group` enum includes `source.toolkit.fluxcd.io`, the `Kind` enum includes `GitRepository`, and
 the field comment admits "Support for reading from Flux GitRepository is not yet implemented!"
 (The reference is "shared" only in that many `GitTarget`s may point at the same `GitProvider`; it is
@@ -169,7 +169,7 @@ set, not per step.
 
 ### Step 1 — Drop the `GitRepository` trap from the schema
 
-In [gittarget_types.go](../../api/v1alpha1/gittarget_types.go), remove every trace of Flux from
+In [gittarget_types.go](../../api/v1alpha2/gittarget_types.go), remove every trace of Flux from
 `GitProviderReference`:
 
 - Remove `source.toolkit.fluxcd.io` from the `Group` enum and `GitRepository` from the `Kind` enum.

@@ -27,7 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // A GitTarget's destination — providerRef, branch, path — is immutable: changing where
@@ -46,10 +46,10 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		ctx := context.Background()
 		key := types.NamespacedName{Name: "immutable-target", Namespace: "default"}
 
-		gitTarget := &configbutleraiv1alpha1.GitTarget{
+		gitTarget := &configbutleraiv1alpha2.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
-			Spec: configbutleraiv1alpha1.GitTargetSpec{
-				ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "prov-a"},
+			Spec: configbutleraiv1alpha2.GitTargetSpec{
+				ProviderRef: configbutleraiv1alpha2.GitProviderReference{Name: "prov-a"},
 				Branch:      "main",
 				Path:        "apps",
 			},
@@ -60,7 +60,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		// A no-op update (the controller keeps writing status; re-applying an unchanged
 		// spec must still be allowed) succeeds.
 		Eventually(func(g Gomega) {
-			current := &configbutleraiv1alpha1.GitTarget{}
+			current := &configbutleraiv1alpha2.GitTarget{}
 			g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
 			g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
 		}, timeout, interval).Should(Succeed())
@@ -68,9 +68,9 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		// Each destination field is immutable. Eventually loops past any optimistic-lock
 		// conflict from a concurrent status write so the assertion lands on the real
 		// immutability rejection, not a transient 409.
-		expectImmutable := func(mutate func(*configbutleraiv1alpha1.GitTarget), wantMsg string) {
+		expectImmutable := func(mutate func(*configbutleraiv1alpha2.GitTarget), wantMsg string) {
 			Eventually(func(g Gomega) {
-				current := &configbutleraiv1alpha1.GitTarget{}
+				current := &configbutleraiv1alpha2.GitTarget{}
 				g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
 				mutate(current)
 				err := k8sClient.Update(ctx, current)
@@ -79,13 +79,13 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 			}, timeout, interval).Should(Succeed())
 		}
 
-		expectImmutable(func(gt *configbutleraiv1alpha1.GitTarget) {
+		expectImmutable(func(gt *configbutleraiv1alpha2.GitTarget) {
 			gt.Spec.Path = "moved"
 		}, "spec.path is immutable")
-		expectImmutable(func(gt *configbutleraiv1alpha1.GitTarget) {
+		expectImmutable(func(gt *configbutleraiv1alpha2.GitTarget) {
 			gt.Spec.Branch = "develop"
 		}, "spec.branch is immutable")
-		expectImmutable(func(gt *configbutleraiv1alpha1.GitTarget) {
+		expectImmutable(func(gt *configbutleraiv1alpha2.GitTarget) {
 			gt.Spec.ProviderRef.Name = "prov-b"
 		}, "spec.providerRef is immutable")
 	})
@@ -94,10 +94,10 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		ctx := context.Background()
 		key := types.NamespacedName{Name: "root-policy-target", Namespace: "default"}
 
-		base := &configbutleraiv1alpha1.GitTarget{
+		base := &configbutleraiv1alpha2.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
-			Spec: configbutleraiv1alpha1.GitTargetSpec{
-				ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "prov-a"},
+			Spec: configbutleraiv1alpha2.GitTargetSpec{
+				ProviderRef: configbutleraiv1alpha2.GitProviderReference{Name: "prov-a"},
 				Branch:      "main",
 			},
 		}
@@ -119,7 +119,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		Expect(k8sClient.Create(ctx, root)).Should(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, root) })
 
-		stored := &configbutleraiv1alpha1.GitTarget{}
+		stored := &configbutleraiv1alpha2.GitTarget{}
 		Expect(k8sClient.Get(ctx, key, stored)).To(Succeed())
 		Expect(stored.Spec.Path).To(Equal("."), "an explicit \".\" must be stored as the root path")
 	})

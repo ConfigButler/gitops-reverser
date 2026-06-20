@@ -41,7 +41,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -80,7 +80,7 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	log.V(1).Info("Starting reconciliation", "namespacedName", req.NamespacedName)
 
 	// Fetch the GitProvider instance
-	var gitProvider configbutleraiv1alpha1.GitProvider
+	var gitProvider configbutleraiv1alpha2.GitProvider
 	if err := r.Get(ctx, req.NamespacedName, &gitProvider); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("GitProvider not found, was likely deleted", "namespacedName", req.NamespacedName)
@@ -97,7 +97,7 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *GitProviderReconciler) reconcileGitProvider(
 	ctx context.Context,
 	log logr.Logger,
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 ) (ctrl.Result, error) {
 	log.V(1).Info("Starting GitProvider validation",
 		"name", gitProvider.Name,
@@ -151,7 +151,7 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 func (r *GitProviderReconciler) fetchAndValidateSecret(
 	ctx context.Context,
 	log logr.Logger,
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 ) (*corev1.Secret, bool) {
 	if gitProvider.Spec.SecretRef == nil {
 		log.V(1).Info("No secret specified, using anonymous access")
@@ -197,7 +197,7 @@ func (r *GitProviderReconciler) fetchAndValidateSecret(
 func (r *GitProviderReconciler) getAuthFromSecret(
 	ctx context.Context,
 	log logr.Logger,
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 	secret *corev1.Secret,
 ) (transport.AuthMethod, ctrl.Result, bool) {
 	log.V(1).Info("Extracting credentials from secret")
@@ -224,7 +224,7 @@ func (r *GitProviderReconciler) getAuthFromSecret(
 func (r *GitProviderReconciler) validateAndUpdateStatus(
 	ctx context.Context,
 	log logr.Logger,
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 	auth transport.AuthMethod,
 ) (ctrl.Result, error) {
 	log.V(1).Info("Validating repository connectivity",
@@ -285,7 +285,7 @@ func (r *GitProviderReconciler) fetchSecret(
 // default ConfigMap.
 func (r *GitProviderReconciler) extractCredentials(
 	ctx context.Context,
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 	secret *corev1.Secret,
 ) (transport.AuthMethod, error) {
 	return gitpkg.AuthFromSecretData(ctx, r.Client, gitProvider, secret, r.SSHHostKeys)
@@ -311,7 +311,7 @@ func (r *GitProviderReconciler) checkRemoteConnectivity(
 }
 
 func (r *GitProviderReconciler) validateCommitConfiguration(
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 ) error {
 	gitProvider.Status.SigningPublicKey = ""
 
@@ -333,7 +333,7 @@ func (r *GitProviderReconciler) validateCommitConfiguration(
 
 // setCondition sets or updates the Ready condition.
 func (r *GitProviderReconciler) setCondition(
-	gitProvider *configbutleraiv1alpha1.GitProvider, status metav1.ConditionStatus, reason, message string) {
+	gitProvider *configbutleraiv1alpha2.GitProvider, status metav1.ConditionStatus, reason, message string) {
 	condition := metav1.Condition{
 		Type:               ConditionTypeReady,
 		Status:             status,
@@ -356,7 +356,7 @@ func (r *GitProviderReconciler) setCondition(
 // updateStatusAndRequeue updates the status and returns requeue result.
 func (r *GitProviderReconciler) updateStatusAndRequeue(
 	ctx context.Context,
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 	requeueAfter time.Duration,
 ) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, gitProvider); err != nil {
@@ -370,7 +370,7 @@ func (r *GitProviderReconciler) updateStatusAndRequeue(
 
 func (r *GitProviderReconciler) updateStatusWithRetry(
 	ctx context.Context,
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 ) error {
 	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
 
@@ -388,7 +388,7 @@ func (r *GitProviderReconciler) updateStatusWithRetry(
 		log.V(1).Info("Attempting status update")
 
 		// Get the latest version of the resource
-		latest := &configbutleraiv1alpha1.GitProvider{}
+		latest := &configbutleraiv1alpha2.GitProvider{}
 		key := client.ObjectKeyFromObject(gitProvider)
 		if err := r.Get(ctx, key, latest); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -428,7 +428,7 @@ func (r *GitProviderReconciler) updateStatusWithRetry(
 func (r *GitProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(
-			&configbutleraiv1alpha1.GitProvider{},
+			&configbutleraiv1alpha2.GitProvider{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Named("gitprovider").

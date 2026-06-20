@@ -29,13 +29,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 func (r *GitProviderReconciler) ensureSigningKey(
 	ctx context.Context,
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 ) error {
 	if gitProvider == nil || gitProvider.Spec.Commit == nil || gitProvider.Spec.Commit.Signing == nil {
 		return nil
@@ -78,7 +78,7 @@ func (r *GitProviderReconciler) ensureSigningKey(
 }
 
 func signingSecretKey(
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 ) (k8stypes.NamespacedName, error) {
 	if gitProvider == nil || gitProvider.Spec.Commit == nil || gitProvider.Spec.Commit.Signing == nil {
 		return k8stypes.NamespacedName{}, errors.New("commit signing is not configured")
@@ -97,7 +97,7 @@ func signingSecretKey(
 func (r *GitProviderReconciler) createGeneratedSigningSecret(
 	ctx context.Context,
 	secretKey k8stypes.NamespacedName,
-	gitProvider *configbutleraiv1alpha1.GitProvider,
+	gitProvider *configbutleraiv1alpha2.GitProvider,
 ) error {
 	privateKey, publicKey, err := gitpkg.GenerateSSHSigningKeyPair(nil)
 	if err != nil {

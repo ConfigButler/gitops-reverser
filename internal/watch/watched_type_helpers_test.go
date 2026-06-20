@@ -26,36 +26,36 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // clusterRuleForResource builds a "test-target" ClusterWatchRule for one core/v1 namespaced
 // resource. Shared by the watched-type-table and materialization tests.
-func clusterRuleForResource(name, resource string) configv1alpha1.ClusterWatchRule {
-	return configv1alpha1.ClusterWatchRule{
+func clusterRuleForResource(name, resource string) configv1alpha2.ClusterWatchRule {
+	return configv1alpha2.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: configv1alpha1.ClusterWatchRuleSpec{
-			TargetRef: configv1alpha1.NamespacedTargetReference{
+		Spec: configv1alpha2.ClusterWatchRuleSpec{
+			TargetRef: configv1alpha2.NamespacedTargetReference{
 				Name:      "test-target",
 				Namespace: "test-ns",
 			},
-			Rules: []configv1alpha1.ClusterResourceRule{{
+			Rules: []configv1alpha2.ClusterResourceRule{{
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
 				Resources:   []string{resource},
-				Scope:       configv1alpha1.ResourceScopeNamespaced,
+				Scope:       configv1alpha2.ResourceScopeNamespaced,
 			}},
 		},
 	}
 }
 
 // watchRuleForTarget builds a namespaced configmaps WatchRule for one target in one namespace.
-func watchRuleForTarget(name, gitTargetName, namespace string) configv1alpha1.WatchRule {
-	return configv1alpha1.WatchRule{
+func watchRuleForTarget(name, gitTargetName, namespace string) configv1alpha2.WatchRule {
+	return configv1alpha2.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: configv1alpha1.WatchRuleSpec{
-			TargetRef: configv1alpha1.LocalTargetReference{Name: gitTargetName},
-			Rules: []configv1alpha1.ResourceRule{{
+		Spec: configv1alpha2.WatchRuleSpec{
+			TargetRef: configv1alpha2.LocalTargetReference{Name: gitTargetName},
+			Rules: []configv1alpha2.ResourceRule{{
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
 				Resources:   []string{"configmaps"},

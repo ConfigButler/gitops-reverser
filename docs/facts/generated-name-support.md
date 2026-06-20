@@ -29,11 +29,11 @@ A client that wants the server to allocate the name sends a collection `POST`
 with `metadata.generateName` and without `metadata.name`:
 
 ```text
-POST /apis/configbutler.ai/v1alpha1/namespaces/voter-production/commitrequests
+POST /apis/configbutler.ai/v1alpha2/namespaces/voter-production/commitrequests
 ```
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: CommitRequest
 metadata:
   namespace: voter-production
@@ -47,7 +47,7 @@ spec:
 The successful API response contains the final server-allocated identity:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: CommitRequest
 metadata:
   namespace: voter-production
@@ -92,7 +92,7 @@ Example audit event shape:
   "level": "RequestResponse",
   "stage": "ResponseComplete",
   "verb": "create",
-  "requestURI": "/apis/configbutler.ai/v1alpha1/namespaces/voter-production/commitrequests",
+  "requestURI": "/apis/configbutler.ai/v1alpha2/namespaces/voter-production/commitrequests",
   "objectRef": {
     "apiGroup": "configbutler.ai",
     "apiVersion": "v1alpha1",
@@ -100,7 +100,7 @@ Example audit event shape:
     "namespace": "voter-production"
   },
   "requestObject": {
-    "apiVersion": "configbutler.ai/v1alpha1",
+    "apiVersion": "configbutler.ai/v1alpha2",
     "kind": "CommitRequest",
     "metadata": {
       "namespace": "voter-production",
@@ -108,7 +108,7 @@ Example audit event shape:
     }
   },
   "responseObject": {
-    "apiVersion": "configbutler.ai/v1alpha1",
+    "apiVersion": "configbutler.ai/v1alpha2",
     "kind": "CommitRequest",
     "metadata": {
       "namespace": "voter-production",
@@ -143,7 +143,7 @@ response body.
 each object is a one-shot save signal:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: CommitRequest
 metadata:
   namespace: voter-production

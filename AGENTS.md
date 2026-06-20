@@ -56,7 +56,7 @@ ship in the devcontainer image.
 - Add proper validation/mutation logic
 - Update webhook configuration in `config/webhook/`
 
-### API Changes (`api/v1alpha1/`)
+### API Changes (`api/v1alpha2/`)
 - Add kubebuilder validation tags
 - Include JSON tags and field descriptions
 - Run `task manifests` to update CRDs

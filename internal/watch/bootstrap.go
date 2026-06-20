@@ -25,7 +25,7 @@ import (
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // bootstrapRuleStore loads existing WatchRule and ClusterWatchRule objects into the in-memory RuleStore
@@ -35,7 +35,7 @@ func (m *Manager) bootstrapRuleStore(ctx context.Context, log logr.Logger) error
 		return nil
 	}
 
-	var watchRules configv1alpha1.WatchRuleList
+	var watchRules configv1alpha2.WatchRuleList
 	if err := m.Client.List(ctx, &watchRules); err != nil {
 		return fmt.Errorf("listing WatchRules: %w", err)
 	}
@@ -47,7 +47,7 @@ func (m *Manager) bootstrapRuleStore(ctx context.Context, log logr.Logger) error
 		}
 	}
 
-	var clusterWatchRules configv1alpha1.ClusterWatchRuleList
+	var clusterWatchRules configv1alpha2.ClusterWatchRuleList
 	if err := m.Client.List(ctx, &clusterWatchRules); err != nil {
 		return fmt.Errorf("listing ClusterWatchRules: %w", err)
 	}
@@ -62,7 +62,7 @@ func (m *Manager) bootstrapRuleStore(ctx context.Context, log logr.Logger) error
 	return nil
 }
 
-func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha1.WatchRule) error {
+func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha2.WatchRule) error {
 	targetNS := rule.Namespace
 
 	target, provider, err := m.resolveTargetAndProvider(ctx, client.ObjectKey{
@@ -84,7 +84,7 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha1.Wa
 	return nil
 }
 
-func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1alpha1.ClusterWatchRule) error {
+func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1alpha2.ClusterWatchRule) error {
 	targetNS := rule.Spec.TargetRef.Namespace
 
 	target, provider, err := m.resolveTargetAndProvider(ctx, client.ObjectKey{
@@ -109,10 +109,10 @@ func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1al
 func (m *Manager) resolveTargetAndProvider(
 	ctx context.Context,
 	targetKey client.ObjectKey,
-) (configv1alpha1.GitTarget, configv1alpha1.GitProvider, error) {
-	var target configv1alpha1.GitTarget
+) (configv1alpha2.GitTarget, configv1alpha2.GitProvider, error) {
+	var target configv1alpha2.GitTarget
 	if err := m.Client.Get(ctx, targetKey, &target); err != nil {
-		return configv1alpha1.GitTarget{}, configv1alpha1.GitProvider{},
+		return configv1alpha2.GitTarget{}, configv1alpha2.GitProvider{},
 			fmt.Errorf("resolving GitTarget %s/%s: %w", targetKey.Namespace, targetKey.Name, err)
 	}
 
@@ -120,9 +120,9 @@ func (m *Manager) resolveTargetAndProvider(
 		Name:      target.Spec.ProviderRef.Name,
 		Namespace: target.Namespace,
 	}
-	var provider configv1alpha1.GitProvider
+	var provider configv1alpha2.GitProvider
 	if err := m.Client.Get(ctx, providerKey, &provider); err != nil {
-		return configv1alpha1.GitTarget{}, configv1alpha1.GitProvider{},
+		return configv1alpha2.GitTarget{}, configv1alpha2.GitProvider{},
 			fmt.Errorf("resolving GitProvider %s/%s: %w", providerKey.Namespace, providerKey.Name, err)
 	}
 

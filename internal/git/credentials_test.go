@@ -39,7 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 func credTestSSHKey(t *testing.T) ([]byte, string) {
@@ -59,7 +59,7 @@ func credTestClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha1.AddToScheme(scheme))
+	require.NoError(t, configv1alpha2.AddToScheme(scheme))
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 }
 
@@ -75,7 +75,7 @@ func TestAuthFromSecretData_SSHKeyDialects(t *testing.T) {
 				"known_hosts": []byte(knownHosts),
 			}}
 			auth, err := AuthFromSecretData(
-				context.Background(), c, &configv1alpha1.GitProvider{}, secret, SSHHostKeyConfig{})
+				context.Background(), c, &configv1alpha2.GitProvider{}, secret, SSHHostKeyConfig{})
 			require.NoError(t, err)
 			assert.IsType(t, &gogitssh.PublicKeys{}, auth)
 		})
@@ -92,7 +92,7 @@ func TestAuthFromSecretData_PasswordIsSSHPassphraseWhenKeyPresent(t *testing.T) 
 		"password":       []byte(""), // unencrypted key: ignored, but must not divert to basic auth
 		"known_hosts":    []byte(knownHosts),
 	}}
-	auth, err := AuthFromSecretData(context.Background(), c, &configv1alpha1.GitProvider{}, secret, SSHHostKeyConfig{})
+	auth, err := AuthFromSecretData(context.Background(), c, &configv1alpha2.GitProvider{}, secret, SSHHostKeyConfig{})
 	require.NoError(t, err)
 	assert.IsType(t, &gogitssh.PublicKeys{}, auth)
 }
@@ -106,7 +106,7 @@ func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
 			"password": []byte("p"),
 		}}
 		auth, err := AuthFromSecretData(
-			context.Background(), c, &configv1alpha1.GitProvider{}, secret, SSHHostKeyConfig{})
+			context.Background(), c, &configv1alpha2.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
 		basic, ok := auth.(*gogithttp.BasicAuth)
 		require.True(t, ok)
@@ -117,7 +117,7 @@ func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
 	t.Run("bearer token", func(t *testing.T) {
 		secret := &corev1.Secret{Data: map[string][]byte{"bearerToken": []byte("gho_token")}}
 		auth, err := AuthFromSecretData(
-			context.Background(), c, &configv1alpha1.GitProvider{}, secret, SSHHostKeyConfig{})
+			context.Background(), c, &configv1alpha2.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
 		token, ok := auth.(*gogithttp.TokenAuth)
 		require.True(t, ok)
@@ -127,7 +127,7 @@ func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
 	t.Run("username without password", func(t *testing.T) {
 		secret := &corev1.Secret{Data: map[string][]byte{"username": []byte("u")}}
 		_, err := AuthFromSecretData(
-			context.Background(), c, &configv1alpha1.GitProvider{}, secret, SSHHostKeyConfig{})
+			context.Background(), c, &configv1alpha2.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no password")
 	})
@@ -135,14 +135,14 @@ func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
 	t.Run("no recognizable credentials", func(t *testing.T) {
 		secret := &corev1.Secret{Data: map[string][]byte{"random": []byte("x")}}
 		_, err := AuthFromSecretData(
-			context.Background(), c, &configv1alpha1.GitProvider{}, secret, SSHHostKeyConfig{})
+			context.Background(), c, &configv1alpha2.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "does not contain valid authentication data")
 	})
 
 	t.Run("nil secret is anonymous", func(t *testing.T) {
 		auth, err := AuthFromSecretData(
-			context.Background(), c, &configv1alpha1.GitProvider{}, nil, SSHHostKeyConfig{})
+			context.Background(), c, &configv1alpha2.GitProvider{}, nil, SSHHostKeyConfig{})
 		require.NoError(t, err)
 		assert.Nil(t, auth)
 	})
@@ -162,10 +162,10 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 
 	t.Run("knownHostsRef ConfigMap (known_hosts key)", func(t *testing.T) {
 		c := credTestClient(t, khConfigMap("hosts", "known_hosts"))
-		provider := &configv1alpha1.GitProvider{
+		provider := &configv1alpha2.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-			Spec: configv1alpha1.GitProviderSpec{
-				KnownHostsRef: &configv1alpha1.KnownHostsReference{Name: "hosts"},
+			Spec: configv1alpha2.GitProviderSpec{
+				KnownHostsRef: &configv1alpha2.KnownHostsReference{Name: "hosts"},
 			},
 		}
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
@@ -176,10 +176,10 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 
 	t.Run("knownHostsRef ConfigMap (Argo ssh_known_hosts key)", func(t *testing.T) {
 		c := credTestClient(t, khConfigMap("hosts", "ssh_known_hosts"))
-		provider := &configv1alpha1.GitProvider{
+		provider := &configv1alpha2.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-			Spec: configv1alpha1.GitProviderSpec{
-				KnownHostsRef: &configv1alpha1.KnownHostsReference{Name: "hosts"},
+			Spec: configv1alpha2.GitProviderSpec{
+				KnownHostsRef: &configv1alpha2.KnownHostsReference{Name: "hosts"},
 			},
 		}
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
@@ -194,10 +194,10 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 			Data:       map[string][]byte{"known_hosts": []byte(knownHosts)},
 		}
 		c := credTestClient(t, refSecret)
-		provider := &configv1alpha1.GitProvider{
+		provider := &configv1alpha2.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-			Spec: configv1alpha1.GitProviderSpec{
-				KnownHostsRef: &configv1alpha1.KnownHostsReference{Kind: "Secret", Name: "host-secret"},
+			Spec: configv1alpha2.GitProviderSpec{
+				KnownHostsRef: &configv1alpha2.KnownHostsReference{Kind: "Secret", Name: "host-secret"},
 			},
 		}
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
@@ -208,10 +208,10 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 
 	t.Run("knownHostsRef missing object is an error", func(t *testing.T) {
 		c := credTestClient(t)
-		provider := &configv1alpha1.GitProvider{
+		provider := &configv1alpha2.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-			Spec: configv1alpha1.GitProviderSpec{
-				KnownHostsRef: &configv1alpha1.KnownHostsReference{Name: "absent"},
+			Spec: configv1alpha2.GitProviderSpec{
+				KnownHostsRef: &configv1alpha2.KnownHostsReference{Name: "absent"},
 			},
 		}
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
@@ -224,7 +224,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 		c := credTestClient(t, khConfigMap("cluster-hosts", "known_hosts"))
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
 		hostKeys := SSHHostKeyConfig{ControllerNamespace: "ns", DefaultKnownHostsConfigMap: "cluster-hosts"}
-		auth, err := AuthFromSecretData(context.Background(), c, &configv1alpha1.GitProvider{}, secret, hostKeys)
+		auth, err := AuthFromSecretData(context.Background(), c, &configv1alpha2.GitProvider{}, secret, hostKeys)
 		require.NoError(t, err)
 		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
 	})
@@ -233,7 +233,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 		c := credTestClient(t)
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
 		hostKeys := SSHHostKeyConfig{ControllerNamespace: "ns", DefaultKnownHostsConfigMap: "missing"}
-		_, err := AuthFromSecretData(context.Background(), c, &configv1alpha1.GitProvider{}, secret, hostKeys)
+		_, err := AuthFromSecretData(context.Background(), c, &configv1alpha2.GitProvider{}, secret, hostKeys)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "known_hosts is required")
 	})
@@ -241,7 +241,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 	t.Run("no source and no opt-out fails closed", func(t *testing.T) {
 		c := credTestClient(t)
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
-		_, err := AuthFromSecretData(context.Background(), c, &configv1alpha1.GitProvider{}, secret, SSHHostKeyConfig{})
+		_, err := AuthFromSecretData(context.Background(), c, &configv1alpha2.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "known_hosts is required")
 	})
@@ -250,7 +250,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 		c := credTestClient(t)
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
 		auth, err := AuthFromSecretData(
-			context.Background(), c, &configv1alpha1.GitProvider{}, secret,
+			context.Background(), c, &configv1alpha2.GitProvider{}, secret,
 			SSHHostKeyConfig{AllowMissingKnownHosts: true})
 		require.NoError(t, err)
 		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
@@ -262,7 +262,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 func TestGetAuthFromSecret_FetchPaths(t *testing.T) {
 	t.Run("no secretRef is anonymous", func(t *testing.T) {
 		c := credTestClient(t)
-		provider := &configv1alpha1.GitProvider{ObjectMeta: metav1.ObjectMeta{Namespace: "ns"}}
+		provider := &configv1alpha2.GitProvider{ObjectMeta: metav1.ObjectMeta{Namespace: "ns"}}
 		auth, err := getAuthFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
 		require.NoError(t, err)
 		assert.Nil(t, auth)
@@ -274,9 +274,9 @@ func TestGetAuthFromSecret_FetchPaths(t *testing.T) {
 			Data:       map[string][]byte{"username": []byte("u"), "password": []byte("p")},
 		}
 		c := credTestClient(t, secret)
-		provider := &configv1alpha1.GitProvider{
+		provider := &configv1alpha2.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-			Spec:       configv1alpha1.GitProviderSpec{SecretRef: &configv1alpha1.LocalSecretReference{Name: "creds"}},
+			Spec:       configv1alpha2.GitProviderSpec{SecretRef: &configv1alpha2.LocalSecretReference{Name: "creds"}},
 		}
 		auth, err := getAuthFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
 		require.NoError(t, err)
@@ -285,9 +285,9 @@ func TestGetAuthFromSecret_FetchPaths(t *testing.T) {
 
 	t.Run("missing referenced secret errors", func(t *testing.T) {
 		c := credTestClient(t)
-		provider := &configv1alpha1.GitProvider{
+		provider := &configv1alpha2.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
-			Spec:       configv1alpha1.GitProviderSpec{SecretRef: &configv1alpha1.LocalSecretReference{Name: "absent"}},
+			Spec:       configv1alpha2.GitProviderSpec{SecretRef: &configv1alpha2.LocalSecretReference{Name: "absent"}},
 		}
 		_, err := getAuthFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
 		require.Error(t, err)

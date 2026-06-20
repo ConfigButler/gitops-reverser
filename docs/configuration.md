@@ -59,7 +59,7 @@ The important fields are:
 Example:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: GitProvider
 metadata:
   name: example-provider
@@ -273,7 +273,7 @@ The operator publishes the effective public key in `.status.signingPublicKey`.
 Let the operator generate the signing key:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: GitProvider
 metadata:
   name: example-provider
@@ -337,7 +337,7 @@ The important fields are:
 Example:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: GitTarget
 metadata:
   name: example-target
@@ -378,7 +378,7 @@ Each entry in `spec.rules` is a logical OR. A resource matching any rule is watc
 Example:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: WatchRule
 metadata:
   name: example-watchrule
@@ -408,7 +408,7 @@ Because it is cluster-scoped, its `targetRef` must include the namespace of the 
 Example:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: ClusterWatchRule
 metadata:
   name: cluster-audit

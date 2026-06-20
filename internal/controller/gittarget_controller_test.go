@@ -30,7 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 var _ = Describe("GitTarget Controller Security", func() {
@@ -43,13 +43,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 		It("Should report missing provider through status instead of admission rejection", func() {
 			ctx := context.Background()
 
-			gitTarget := &configbutleraiv1alpha1.GitTarget{
+			gitTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target-missing-provider",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "missing-provider",
 					},
 					Branch: "main",
@@ -63,7 +63,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Namespace: "default",
 			}
 
-			createdGitTarget := &configbutleraiv1alpha1.GitTarget{}
+			createdGitTarget := &configbutleraiv1alpha2.GitTarget{}
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, gitTargetLookupKey, createdGitTarget)
 				if err != nil {
@@ -107,15 +107,15 @@ var _ = Describe("GitTarget Controller Security", func() {
 			ctx := context.Background()
 
 			// Create a GitProvider that only allows 'main' and 'develop' branches
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-security",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main", "develop"},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "test-secret", // Dummy secret
 					},
 				},
@@ -124,13 +124,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			// Create a GitTarget referencing an unauthorized branch
 			unauthorizedBranch := "feature/unauthorized"
-			gitTarget := &configbutleraiv1alpha1.GitTarget{
+			gitTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target-security",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-security",
 					},
 					Branch: unauthorizedBranch,
@@ -145,7 +145,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Namespace: "default",
 			}
 
-			createdGitTarget := &configbutleraiv1alpha1.GitTarget{}
+			createdGitTarget := &configbutleraiv1alpha2.GitTarget{}
 
 			// Wait for the controller to reach the final BranchNotAllowed state.
 			// The reconciler may pass through transient reasons (e.g. ProviderNotFound) before the
@@ -202,15 +202,15 @@ var _ = Describe("GitTarget Controller Security", func() {
 			ctx := context.Background()
 
 			// Create a GitProvider with wildcard pattern
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-allowed",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main", "feature/*"},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},
@@ -218,13 +218,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
 			// Create a GitTarget with an ALLOWED branch
-			gitTarget := &configbutleraiv1alpha1.GitTarget{
+			gitTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target-allowed",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-allowed",
 					},
 					Branch: "feature/allowed",
@@ -239,7 +239,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Namespace: "default",
 			}
 
-			createdGitTarget := &configbutleraiv1alpha1.GitTarget{}
+			createdGitTarget := &configbutleraiv1alpha2.GitTarget{}
 
 			// Wait for the controller to reconcile
 			Eventually(func() bool {
@@ -287,28 +287,28 @@ var _ = Describe("GitTarget Controller Security", func() {
 		It("Should surface the two-axis status (Ready + Synced/phase) and no EventStreamLive", func() {
 			ctx := context.Background()
 
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-two-axis",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
-			gitTarget := &configbutleraiv1alpha1.GitTarget{
+			gitTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target-two-axis",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-two-axis",
 					},
 					Branch: "main",
@@ -323,7 +323,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			// that BOTH axes are present and the retired EventStreamLive condition / snapshot are
 			// not.
 			Eventually(func(g Gomega) {
-				var got configbutleraiv1alpha1.GitTarget
+				var got configbutleraiv1alpha2.GitTarget
 				g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
 				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionReady)).To(BeTrue())
 				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionSynced)).To(BeTrue())
@@ -341,12 +341,12 @@ var _ = Describe("GitTarget Controller Security", func() {
 			ctx := context.Background()
 
 			// Create a GitProvider with various glob patterns
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-glob",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL: "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{
 						"main",
@@ -354,7 +354,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 						"feature/*",
 						"release/v*",
 					},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},
@@ -380,13 +380,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 				// Generate a valid K8s name (no slashes or special chars)
 				targetName := "test-target-glob-" + string(rune('a'+i))
 
-				gitTarget := &configbutleraiv1alpha1.GitTarget{
+				gitTarget := &configbutleraiv1alpha2.GitTarget{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      targetName,
 						Namespace: "default",
 					},
-					Spec: configbutleraiv1alpha1.GitTargetSpec{
-						ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+					Spec: configbutleraiv1alpha2.GitTargetSpec{
+						ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 							Name: "test-provider-glob",
 						},
 						Branch: tc.branch,
@@ -402,7 +402,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				}
 
-				createdGitTarget := &configbutleraiv1alpha1.GitTarget{}
+				createdGitTarget := &configbutleraiv1alpha2.GitTarget{}
 
 				Eventually(func() bool {
 					err := k8sClient.Get(ctx, gitTargetLookupKey, createdGitTarget)
@@ -459,15 +459,15 @@ var _ = Describe("GitTarget Controller Security", func() {
 			ctx := context.Background()
 
 			// Create a GitProvider
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-conflict",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main", "develop"},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},
@@ -475,13 +475,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
 			// Create first GitTarget (winner - created first)
-			firstTarget := &configbutleraiv1alpha1.GitTarget{
+			firstTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "first-target-conflict",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-conflict",
 					},
 					Branch: "main",
@@ -493,7 +493,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			// Wait for first target to reconcile
 			firstTargetKey := types.NamespacedName{Name: "first-target-conflict", Namespace: "default"}
 			Eventually(func() bool {
-				var target configbutleraiv1alpha1.GitTarget
+				var target configbutleraiv1alpha2.GitTarget
 				if err := k8sClient.Get(ctx, firstTargetKey, &target); err != nil {
 					return false
 				}
@@ -510,13 +510,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 			time.Sleep(1100 * time.Millisecond)
 
 			// Create second GitTarget with same provider+branch+path (loser - created later)
-			secondTarget := &configbutleraiv1alpha1.GitTarget{
+			secondTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "second-target-conflict",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-conflict",
 					},
 					Branch: "main",
@@ -528,7 +528,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			// Wait for second target to reconcile
 			secondTargetKey := types.NamespacedName{Name: "second-target-conflict", Namespace: "default"}
 			Eventually(func() bool {
-				var target configbutleraiv1alpha1.GitTarget
+				var target configbutleraiv1alpha2.GitTarget
 				if err := k8sClient.Get(ctx, secondTargetKey, &target); err != nil {
 					return false
 				}
@@ -542,7 +542,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify second target has Conflict status
-			var secondReconciledTarget configbutleraiv1alpha1.GitTarget
+			var secondReconciledTarget configbutleraiv1alpha2.GitTarget
 			Expect(k8sClient.Get(ctx, secondTargetKey, &secondReconciledTarget)).Should(Succeed())
 
 			var readyCondition *metav1.Condition
@@ -578,15 +578,15 @@ var _ = Describe("GitTarget Controller Security", func() {
 			ctx := context.Background()
 
 			// Create a GitProvider
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-no-conflict",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},
@@ -594,13 +594,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
 			// Create first GitTarget
-			firstTarget := &configbutleraiv1alpha1.GitTarget{
+			firstTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "first-target-no-conflict",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-no-conflict",
 					},
 					Branch: "main",
@@ -610,13 +610,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Create(ctx, firstTarget)).Should(Succeed())
 
 			// Create second GitTarget with DIFFERENT path (no conflict)
-			secondTarget := &configbutleraiv1alpha1.GitTarget{
+			secondTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "second-target-no-conflict",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-no-conflict",
 					},
 					Branch: "main",
@@ -628,7 +628,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			// Wait for both to reconcile
 			secondTargetKey := types.NamespacedName{Name: "second-target-no-conflict", Namespace: "default"}
 			Eventually(func() bool {
-				var target configbutleraiv1alpha1.GitTarget
+				var target configbutleraiv1alpha2.GitTarget
 				if err := k8sClient.Get(ctx, secondTargetKey, &target); err != nil {
 					return false
 				}
@@ -641,7 +641,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify no conflict (reason should NOT be Conflict)
-			var secondReconciledTarget configbutleraiv1alpha1.GitTarget
+			var secondReconciledTarget configbutleraiv1alpha2.GitTarget
 			Expect(k8sClient.Get(ctx, secondTargetKey, &secondReconciledTarget)).Should(Succeed())
 
 			var readyCondition *metav1.Condition
@@ -666,15 +666,15 @@ var _ = Describe("GitTarget Controller Security", func() {
 			ctx := context.Background()
 
 			// Create a GitProvider
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-nested",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},
@@ -682,13 +682,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
 			// First GitTarget owns the parent folder "team" (winner - created first)
-			firstTarget := &configbutleraiv1alpha1.GitTarget{
+			firstTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "first-target-nested",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-nested",
 					},
 					Branch: "main",
@@ -699,7 +699,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			firstTargetKey := types.NamespacedName{Name: "first-target-nested", Namespace: "default"}
 			Eventually(func() bool {
-				var target configbutleraiv1alpha1.GitTarget
+				var target configbutleraiv1alpha2.GitTarget
 				if err := k8sClient.Get(ctx, firstTargetKey, &target); err != nil {
 					return false
 				}
@@ -716,13 +716,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 			time.Sleep(1100 * time.Millisecond)
 
 			// Second GitTarget nests under the first ("team/app") - must conflict.
-			secondTarget := &configbutleraiv1alpha1.GitTarget{
+			secondTarget := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "second-target-nested",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-nested",
 					},
 					Branch: "main",
@@ -733,7 +733,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			secondTargetKey := types.NamespacedName{Name: "second-target-nested", Namespace: "default"}
 			Eventually(func() bool {
-				var target configbutleraiv1alpha1.GitTarget
+				var target configbutleraiv1alpha2.GitTarget
 				if err := k8sClient.Get(ctx, secondTargetKey, &target); err != nil {
 					return false
 				}
@@ -746,7 +746,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				return false
 			}, timeout, interval).Should(BeTrue())
 
-			var secondReconciledTarget configbutleraiv1alpha1.GitTarget
+			var secondReconciledTarget configbutleraiv1alpha2.GitTarget
 			Expect(k8sClient.Get(ctx, secondTargetKey, &secondReconciledTarget)).Should(Succeed())
 
 			var readyCondition *metav1.Condition
@@ -784,37 +784,37 @@ var _ = Describe("GitTarget Controller Security", func() {
 		It("Should create missing encryption secret with recipient annotation and warning annotation", func() {
 			ctx := context.Background()
 
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-generate-enc-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
-			target := &configbutleraiv1alpha1.GitTarget{
+			target := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target-generate-enc-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-generate-enc-secret",
 					},
 					Branch: "main",
 					Path:   "test-path",
-					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Encryption: &configbutleraiv1alpha2.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+						SecretRef: configbutleraiv1alpha2.LocalSecretReference{
 							Name: "generated-sops-age-key",
 						},
-						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+						Age: &configbutleraiv1alpha2.AgeEncryptionSpec{
 							Enabled: true,
-							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+							Recipients: configbutleraiv1alpha2.AgeRecipientsSpec{
 								ExtractFromSecret:   true,
 								GenerateWhenMissing: true,
 							},
@@ -849,37 +849,37 @@ var _ = Describe("GitTarget Controller Security", func() {
 		It("Should report invalid encryption config when secret is missing and generation is disabled", func() {
 			ctx := context.Background()
 
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-no-generate-enc-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
-			target := &configbutleraiv1alpha1.GitTarget{
+			target := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target-no-generate-enc-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-no-generate-enc-secret",
 					},
 					Branch: "main",
 					Path:   "test-path",
-					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Encryption: &configbutleraiv1alpha2.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+						SecretRef: configbutleraiv1alpha2.LocalSecretReference{
 							Name: "missing-sops-age-key",
 						},
-						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+						Age: &configbutleraiv1alpha2.AgeEncryptionSpec{
 							Enabled: true,
-							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+							Recipients: configbutleraiv1alpha2.AgeRecipientsSpec{
 								ExtractFromSecret:   true,
 								GenerateWhenMissing: false,
 							},
@@ -891,7 +891,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			targetKey := types.NamespacedName{Name: "test-target-no-generate-enc-secret", Namespace: "default"}
 			Eventually(func(g Gomega) {
-				var got configbutleraiv1alpha1.GitTarget
+				var got configbutleraiv1alpha2.GitTarget
 				err := k8sClient.Get(ctx, targetKey, &got)
 				g.Expect(err).NotTo(HaveOccurred())
 
@@ -926,37 +926,37 @@ var _ = Describe("GitTarget Controller Security", func() {
 			func() {
 				ctx := context.Background()
 
-				gitProvider := &configbutleraiv1alpha1.GitProvider{
+				gitProvider := &configbutleraiv1alpha2.GitProvider{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-provider-no-enc-recipients",
 						Namespace: "default",
 					},
-					Spec: configbutleraiv1alpha1.GitProviderSpec{
+					Spec: configbutleraiv1alpha2.GitProviderSpec{
 						URL:             "https://github.com/test-org/test-repo.git",
 						AllowedBranches: []string{"main"},
 					},
 				}
 				Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
-				target := &configbutleraiv1alpha1.GitTarget{
+				target := &configbutleraiv1alpha2.GitTarget{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-target-no-enc-recipients",
 						Namespace: "default",
 					},
-					Spec: configbutleraiv1alpha1.GitTargetSpec{
-						ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+					Spec: configbutleraiv1alpha2.GitTargetSpec{
+						ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 							Name: "test-provider-no-enc-recipients",
 						},
 						Branch: "main",
 						Path:   "test-path",
-						Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+						Encryption: &configbutleraiv1alpha2.EncryptionSpec{
 							Provider: "sops",
-							SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+							SecretRef: configbutleraiv1alpha2.LocalSecretReference{
 								Name: "unused-encryption-secret",
 							},
-							Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+							Age: &configbutleraiv1alpha2.AgeEncryptionSpec{
 								Enabled: true,
-								Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+								Recipients: configbutleraiv1alpha2.AgeRecipientsSpec{
 									ExtractFromSecret:   false,
 									GenerateWhenMissing: true,
 								},
@@ -968,7 +968,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 				targetKey := types.NamespacedName{Name: "test-target-no-enc-recipients", Namespace: "default"}
 				Eventually(func(g Gomega) {
-					var got configbutleraiv1alpha1.GitTarget
+					var got configbutleraiv1alpha2.GitTarget
 					err := k8sClient.Get(ctx, targetKey, &got)
 					g.Expect(err).NotTo(HaveOccurred())
 
@@ -1007,12 +1007,12 @@ var _ = Describe("GitTarget Controller Security", func() {
 		It("Should add one .agekey entry when secret exists without any .agekey entries", func() {
 			ctx := context.Background()
 
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-update-enc-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
 				},
@@ -1031,25 +1031,25 @@ var _ = Describe("GitTarget Controller Security", func() {
 			}
 			Expect(k8sClient.Create(ctx, seedSecret)).Should(Succeed())
 
-			target := &configbutleraiv1alpha1.GitTarget{
+			target := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target-update-enc-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-update-enc-secret",
 					},
 					Branch: "main",
 					Path:   "test-path",
-					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Encryption: &configbutleraiv1alpha2.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+						SecretRef: configbutleraiv1alpha2.LocalSecretReference{
 							Name: "existing-sops-secret",
 						},
-						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+						Age: &configbutleraiv1alpha2.AgeEncryptionSpec{
 							Enabled: true,
-							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+							Recipients: configbutleraiv1alpha2.AgeRecipientsSpec{
 								ExtractFromSecret:   true,
 								GenerateWhenMissing: true,
 							},
@@ -1079,37 +1079,37 @@ var _ = Describe("GitTarget Controller Security", func() {
 		It("Should recreate encryption secret when it is deleted while GitTarget still exists", func() {
 			ctx := context.Background()
 
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-recreate-enc-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
-			target := &configbutleraiv1alpha1.GitTarget{
+			target := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target-recreate-enc-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-recreate-enc-secret",
 					},
 					Branch: "main",
 					Path:   "test-path",
-					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Encryption: &configbutleraiv1alpha2.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+						SecretRef: configbutleraiv1alpha2.LocalSecretReference{
 							Name: "recreated-sops-age-key",
 						},
-						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+						Age: &configbutleraiv1alpha2.AgeEncryptionSpec{
 							Enabled: true,
-							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+							Recipients: configbutleraiv1alpha2.AgeRecipientsSpec{
 								ExtractFromSecret:   true,
 								GenerateWhenMissing: true,
 							},
@@ -1151,12 +1151,12 @@ var _ = Describe("GitTarget Controller Security", func() {
 		It("Should not overwrite existing .agekey values when one already exists", func() {
 			ctx := context.Background()
 
-			gitProvider := &configbutleraiv1alpha1.GitProvider{
+			gitProvider := &configbutleraiv1alpha2.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-existing-agekey",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitProviderSpec{
+				Spec: configbutleraiv1alpha2.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
 				},
@@ -1179,25 +1179,25 @@ var _ = Describe("GitTarget Controller Security", func() {
 			}
 			Expect(k8sClient.Create(ctx, seedSecret)).Should(Succeed())
 
-			target := &configbutleraiv1alpha1.GitTarget{
+			target := &configbutleraiv1alpha2.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-target-existing-agekey",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Spec: configbutleraiv1alpha2.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha2.GitProviderReference{
 						Name: "test-provider-existing-agekey",
 					},
 					Branch: "main",
 					Path:   "test-path",
-					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Encryption: &configbutleraiv1alpha2.EncryptionSpec{
 						Provider: "sops",
-						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+						SecretRef: configbutleraiv1alpha2.LocalSecretReference{
 							Name: "existing-agekey-secret",
 						},
-						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+						Age: &configbutleraiv1alpha2.AgeEncryptionSpec{
 							Enabled: true,
-							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+							Recipients: configbutleraiv1alpha2.AgeRecipientsSpec{
 								ExtractFromSecret:   true,
 								GenerateWhenMissing: true,
 							},

@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -213,8 +213,8 @@ func (r *CommitRequestReconciler) loadActionableCommitRequest(
 	ctx context.Context,
 	log logr.Logger,
 	req ctrl.Request,
-) (*configbutleraiv1alpha1.CommitRequest, bool, error) {
-	var commitRequest configbutleraiv1alpha1.CommitRequest
+) (*configbutleraiv1alpha2.CommitRequest, bool, error) {
+	var commitRequest configbutleraiv1alpha2.CommitRequest
 	if err := r.Get(ctx, req.NamespacedName, &commitRequest); err != nil {
 		return nil, true, client.IgnoreNotFound(err)
 	}
@@ -232,7 +232,7 @@ func (r *CommitRequestReconciler) loadActionableCommitRequest(
 	}
 
 	if commitRequest.Status.Phase == "" {
-		commitRequest.Status.Phase = configbutleraiv1alpha1.CommitRequestPhaseWaitingForAuditEvent
+		commitRequest.Status.Phase = configbutleraiv1alpha2.CommitRequestPhaseWaitingForAuditEvent
 		if err := r.Status().Update(ctx, &commitRequest); err != nil {
 			return nil, true, err
 		}
@@ -253,7 +253,7 @@ const commitRequestStatusUpdateAttempts = 3
 func (r *CommitRequestReconciler) writeTerminalStatus(
 	ctx context.Context,
 	log logr.Logger,
-	commitRequest *configbutleraiv1alpha1.CommitRequest,
+	commitRequest *configbutleraiv1alpha2.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
 ) {
@@ -293,7 +293,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 		}
 
 		log.V(1).Info("Conflict writing CommitRequest status; retrying", "attempt", attempt)
-		var fresh configbutleraiv1alpha1.CommitRequest
+		var fresh configbutleraiv1alpha2.CommitRequest
 		if getErr := reader.Get(ctx, client.ObjectKeyFromObject(commitRequest), &fresh); getErr != nil {
 			if apierrors.IsNotFound(getErr) {
 				log.Info("CommitRequest deleted before status could be written; skipping")
@@ -335,7 +335,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 // close that.
 func (r *CommitRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha1.CommitRequest{}).
+		For(&configbutleraiv1alpha2.CommitRequest{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Named("commitrequest").
 		Complete(r)

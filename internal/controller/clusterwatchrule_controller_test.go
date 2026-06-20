@@ -27,25 +27,25 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 var _ = Describe("ClusterWatchRule Controller", func() {
 	Context("When CRD validation runs", func() {
 		It("should reject subresource entries in resources", func() {
 			ctx := context.Background()
-			clusterRule := &configbutleraiv1alpha1.ClusterWatchRule{
+			clusterRule := &configbutleraiv1alpha2.ClusterWatchRule{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "invalid-subresource-cluster-rule",
 				},
-				Spec: configbutleraiv1alpha1.ClusterWatchRuleSpec{
-					TargetRef: configbutleraiv1alpha1.NamespacedTargetReference{
+				Spec: configbutleraiv1alpha2.ClusterWatchRuleSpec{
+					TargetRef: configbutleraiv1alpha2.NamespacedTargetReference{
 						Kind:      "GitTarget",
 						Name:      "target",
 						Namespace: "default",
 					},
-					Rules: []configbutleraiv1alpha1.ClusterResourceRule{{
-						Scope:     configbutleraiv1alpha1.ResourceScopeNamespaced,
+					Rules: []configbutleraiv1alpha2.ClusterResourceRule{{
+						Scope:     configbutleraiv1alpha2.ResourceScopeNamespaced,
 						Resources: []string{"pods/*"},
 					}},
 				},
@@ -83,19 +83,19 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 
 		It("should fail when GitTarget not found", func() {
 			By("Creating a ClusterWatchRule referencing non-existent GitTarget")
-			clusterRule := &configbutleraiv1alpha1.ClusterWatchRule{
+			clusterRule := &configbutleraiv1alpha2.ClusterWatchRule{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "missing-target-rule",
 				},
-				Spec: configbutleraiv1alpha1.ClusterWatchRuleSpec{
-					TargetRef: configbutleraiv1alpha1.NamespacedTargetReference{
+				Spec: configbutleraiv1alpha2.ClusterWatchRuleSpec{
+					TargetRef: configbutleraiv1alpha2.NamespacedTargetReference{
 						Kind:      "GitTarget",
 						Name:      "nonexistent-target",
 						Namespace: "default",
 					},
-					Rules: []configbutleraiv1alpha1.ClusterResourceRule{
+					Rules: []configbutleraiv1alpha2.ClusterResourceRule{
 						{
-							Scope:     configbutleraiv1alpha1.ResourceScopeCluster,
+							Scope:     configbutleraiv1alpha2.ResourceScopeCluster,
 							Resources: []string{"nodes"},
 						},
 					},
@@ -112,7 +112,7 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
 			By("Verifying the ClusterWatchRule has GitTargetNotFound condition")
-			updatedRule := &configbutleraiv1alpha1.ClusterWatchRule{}
+			updatedRule := &configbutleraiv1alpha2.ClusterWatchRule{}
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "missing-target-rule"}, updatedRule)
 			Expect(err).NotTo(HaveOccurred())
 

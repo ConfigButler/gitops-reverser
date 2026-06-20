@@ -35,7 +35,7 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -79,7 +79,7 @@ type ResolvedEncryptionConfig struct {
 func ResolveTargetEncryption(
 	ctx context.Context,
 	k8sClient client.Client,
-	target *v1alpha1.GitTarget,
+	target *v1alpha2.GitTarget,
 ) (*ResolvedEncryptionConfig, error) {
 	if target.Spec.Encryption == nil {
 		return nil, nil //nolint:nilnil // nil means encryption disabled
@@ -125,7 +125,7 @@ func ResolveTargetEncryption(
 	}, nil
 }
 
-func resolveEncryptionProvider(encryptionSpec *v1alpha1.EncryptionSpec) (string, error) {
+func resolveEncryptionProvider(encryptionSpec *v1alpha2.EncryptionSpec) (string, error) {
 	providerName := strings.TrimSpace(encryptionSpec.Provider)
 	if providerName == "" {
 		providerName = EncryptionProviderSOPS
@@ -139,8 +139,8 @@ func resolveEncryptionProvider(encryptionSpec *v1alpha1.EncryptionSpec) (string,
 func resolveSecretRecipientsAndEnvironment(
 	ctx context.Context,
 	k8sClient client.Client,
-	target *v1alpha1.GitTarget,
-	encryptionSpec *v1alpha1.EncryptionSpec,
+	target *v1alpha2.GitTarget,
+	encryptionSpec *v1alpha2.EncryptionSpec,
 ) ([]string, []string, map[string]string, error) {
 	if encryptionSpec.Age == nil || !encryptionSpec.Age.Recipients.ExtractFromSecret {
 		return nil, nil, nil, nil

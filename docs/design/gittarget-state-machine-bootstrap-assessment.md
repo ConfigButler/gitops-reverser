@@ -41,7 +41,7 @@ Bootstrap and startup synchronization exist, but they are implicit side effects 
 
 ## Naming Alignment With Current CRDs
 
-Use current schema names from `api/v1alpha1`:
+Use current schema names from `api/v1alpha2`:
 
 - `spec.providerRef` (not `destinationRef`, not `gitRepoConfigRef`)
 - `spec.encryption.provider`

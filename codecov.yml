@@ -38,7 +38,7 @@ comment:
 # Generated, boilerplate, and non-shipping code is excluded from the denominator
 # so the percentage reflects hand-written logic.
 ignore:
-  - "api/v1alpha1/zz_generated.deepcopy.go"
+  - "api/v1alpha2/zz_generated.deepcopy.go"
   - "cmd/gitea-signing-debug/**"
   - "cmd/manifest-analyzer/**"
   - "test/**"

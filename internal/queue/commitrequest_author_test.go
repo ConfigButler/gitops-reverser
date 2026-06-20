@@ -32,14 +32,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // commitRequestCreateEvent builds the audit event mirrorByType lands in the
 // commitrequests per-type stream when a CommitRequest is created in the
 // "team-a" namespace.
 func commitRequestCreateEvent(name, uid, rv, username string) auditv1.Event {
-	body := fmt.Sprintf(`{"apiVersion":"configbutler.ai/v1alpha1","kind":"CommitRequest",`+
+	body := fmt.Sprintf(`{"apiVersion":"configbutler.ai/v1alpha2","kind":"CommitRequest",`+
 		`"metadata":{"name":%q,"namespace":"team-a","uid":%q,"resourceVersion":%q}}`, name, uid, rv)
 	e := auditv1.Event{
 		AuditID:        "cr-create",
@@ -47,8 +47,8 @@ func commitRequestCreateEvent(name, uid, rv, username string) auditv1.Event {
 		Stage:          auditv1.StageResponseComplete,
 		StageTimestamp: metav1.MicroTime{Time: time.Now()},
 		ObjectRef: &auditv1.ObjectReference{
-			APIGroup:   configv1alpha1.GroupVersion.Group,
-			APIVersion: configv1alpha1.GroupVersion.Version,
+			APIGroup:   configv1alpha2.GroupVersion.Group,
+			APIVersion: configv1alpha2.GroupVersion.Version,
 			Resource:   commitRequestResource,
 			Namespace:  "team-a",
 			Name:       name,

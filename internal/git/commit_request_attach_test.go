@@ -34,7 +34,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // crName is the single CommitRequest name these tests register; each test uses one.
@@ -292,11 +292,11 @@ func TestAttach_FinalizeFailureResolvesFailed(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha1.AddToScheme(scheme))
+	require.NoError(t, configv1alpha2.AddToScheme(scheme))
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha1.GitProvider{
-		Spec: configv1alpha1.GitProviderSpec{URL: "file:///nonexistent/gitops-reverser-repo.git"},
+	provider := &configv1alpha2.GitProvider{
+		Spec: configv1alpha2.GitProviderSpec{URL: "file:///nonexistent/gitops-reverser-repo.git"},
 	}
 	provider.Name = "test-repo"
 	provider.Namespace = "default"

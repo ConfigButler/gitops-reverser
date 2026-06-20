@@ -24,7 +24,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 func TestNormalizeGitTargetPath(t *testing.T) {
@@ -115,8 +115,8 @@ func TestGitTargetPathsOverlap(t *testing.T) {
 
 func TestGitTargetLosesConflict(t *testing.T) {
 	base := time.Date(2026, time.June, 4, 12, 0, 0, 0, time.UTC)
-	mk := func(name string, created time.Time) *configbutleraiv1alpha1.GitTarget {
-		return &configbutleraiv1alpha1.GitTarget{
+	mk := func(name string, created time.Time) *configbutleraiv1alpha2.GitTarget {
+		return &configbutleraiv1alpha2.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace:         "default",
 				Name:              name,
@@ -127,8 +127,8 @@ func TestGitTargetLosesConflict(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		target   *configbutleraiv1alpha1.GitTarget
-		existing *configbutleraiv1alpha1.GitTarget
+		target   *configbutleraiv1alpha2.GitTarget
+		existing *configbutleraiv1alpha2.GitTarget
 		want     bool
 	}{
 		{

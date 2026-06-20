@@ -57,7 +57,7 @@ graph LR
 ### GitProvider
 
 - **Scope**: namespaced
-- **Source**: [api/v1alpha1/gitprovider_types.go](../api/v1alpha1/gitprovider_types.go)
+- **Source**: [api/v1alpha2/gitprovider_types.go](../api/v1alpha2/gitprovider_types.go)
 - **Controller**: [internal/controller/gitprovider_controller.go](../internal/controller/gitprovider_controller.go)
 
 `GitProvider` represents a Git repository and the credentials/configuration used to write it.
@@ -80,7 +80,7 @@ keys.
 ### GitTarget
 
 - **Scope**: namespaced
-- **Source**: [api/v1alpha1/gittarget_types.go](../api/v1alpha1/gittarget_types.go)
+- **Source**: [api/v1alpha2/gittarget_types.go](../api/v1alpha2/gittarget_types.go)
 - **Controller**: [internal/controller/gittarget_controller.go](../internal/controller/gittarget_controller.go)
 
 `GitTarget` is one materialization destination: `(provider, branch, path)`.
@@ -116,7 +116,7 @@ accepts the Kubernetes-native, Flux, and Argo CD Secret key dialects (see
 ### WatchRule
 
 - **Scope**: namespaced
-- **Source**: [api/v1alpha1/watchrule_types.go](../api/v1alpha1/watchrule_types.go)
+- **Source**: [api/v1alpha2/watchrule_types.go](../api/v1alpha2/watchrule_types.go)
 - **Controller**: [internal/controller/watchrule_controller.go](../internal/controller/watchrule_controller.go)
 
 `WatchRule` selects resources in its own namespace and routes matching events to a namespace-local
@@ -138,7 +138,7 @@ be safely mapped back to parent desired state.
 ### ClusterWatchRule
 
 - **Scope**: cluster
-- **Source**: [api/v1alpha1/clusterwatchrule_types.go](../api/v1alpha1/clusterwatchrule_types.go)
+- **Source**: [api/v1alpha2/clusterwatchrule_types.go](../api/v1alpha2/clusterwatchrule_types.go)
 - **Controller**: [internal/controller/clusterwatchrule_controller.go](../internal/controller/clusterwatchrule_controller.go)
 
 `ClusterWatchRule` selects cluster-scoped resources or namespaced resources across the cluster.
@@ -153,7 +153,7 @@ Key fields:
 ### CommitRequest
 
 - **Scope**: namespaced
-- **Source**: [api/v1alpha1/commitrequest_types.go](../api/v1alpha1/commitrequest_types.go)
+- **Source**: [api/v1alpha2/commitrequest_types.go](../api/v1alpha2/commitrequest_types.go)
 - **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
 - **Audit handling**: [internal/queue/commit_request.go](../internal/queue/commit_request.go)
 
@@ -674,7 +674,7 @@ Current limitations:
 
 | Package | Role |
 |---|---|
-| [api/v1alpha1/](../api/v1alpha1/) | CRD types |
+| [api/v1alpha2/](../api/v1alpha2/) | CRD types |
 | [cmd/](../cmd/) | operator entry point and server setup |
 | [internal/auditutil/](../internal/auditutil/) | audit identity, objectRef, and subresource helpers |
 | [internal/controller/](../internal/controller/) | Kubernetes reconcilers |

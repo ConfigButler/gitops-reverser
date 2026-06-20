@@ -29,43 +29,43 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 func TestGetCommitWindow_DefaultsAndParsing(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha1.AddToScheme(scheme))
+	require.NoError(t, configv1alpha2.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, 0)
 
-	defaultWindow := w.getCommitWindow(&configv1alpha1.GitProvider{})
+	defaultWindow := w.getCommitWindow(&configv1alpha2.GitProvider{})
 	assert.Equal(t, DefaultCommitWindow, defaultWindow)
 
-	parsed := w.getCommitWindow(&configv1alpha1.GitProvider{
-		Spec: configv1alpha1.GitProviderSpec{
-			Push: &configv1alpha1.PushStrategy{CommitWindow: ptrString("250ms")},
+	parsed := w.getCommitWindow(&configv1alpha2.GitProvider{
+		Spec: configv1alpha2.GitProviderSpec{
+			Push: &configv1alpha2.PushStrategy{CommitWindow: ptrString("250ms")},
 		},
 	})
 	assert.Equal(t, 250*time.Millisecond, parsed)
 
-	zero := w.getCommitWindow(&configv1alpha1.GitProvider{
-		Spec: configv1alpha1.GitProviderSpec{
-			Push: &configv1alpha1.PushStrategy{CommitWindow: ptrString("0s")},
+	zero := w.getCommitWindow(&configv1alpha2.GitProvider{
+		Spec: configv1alpha2.GitProviderSpec{
+			Push: &configv1alpha2.PushStrategy{CommitWindow: ptrString("0s")},
 		},
 	})
 	assert.Equal(t, time.Duration(0), zero)
 
-	negative := w.getCommitWindow(&configv1alpha1.GitProvider{
-		Spec: configv1alpha1.GitProviderSpec{
-			Push: &configv1alpha1.PushStrategy{CommitWindow: ptrString("-2s")},
+	negative := w.getCommitWindow(&configv1alpha2.GitProvider{
+		Spec: configv1alpha2.GitProviderSpec{
+			Push: &configv1alpha2.PushStrategy{CommitWindow: ptrString("-2s")},
 		},
 	})
 	assert.Equal(t, time.Duration(0), negative, "negative commitWindow falls back to 0")
 
-	garbage := w.getCommitWindow(&configv1alpha1.GitProvider{
-		Spec: configv1alpha1.GitProviderSpec{
-			Push: &configv1alpha1.PushStrategy{CommitWindow: ptrString("not-a-duration")},
+	garbage := w.getCommitWindow(&configv1alpha2.GitProvider{
+		Spec: configv1alpha2.GitProviderSpec{
+			Push: &configv1alpha2.PushStrategy{CommitWindow: ptrString("not-a-duration")},
 		},
 	})
 	assert.Equal(t, DefaultCommitWindow, garbage, "parse error falls back to default")
@@ -153,7 +153,7 @@ func TestEventLoop_StopTimers(t *testing.T) {
 func TestNewBranchWorker_DefaultsBufferCap(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha1.AddToScheme(scheme))
+	require.NoError(t, configv1alpha2.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	w := NewBranchWorker(c, logr.Discard(), "p", "ns", "main", nil, 0)

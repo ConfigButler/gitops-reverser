@@ -31,7 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 )
 
@@ -201,7 +201,7 @@ func foldAuditEntry(desired map[string]*unstructured.Unstructured, values map[st
 	if identity == "" {
 		return
 	}
-	if op == configv1alpha1.OperationDelete {
+	if op == configv1alpha2.OperationDelete {
 		delete(desired, identity)
 		return
 	}

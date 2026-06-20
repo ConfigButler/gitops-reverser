@@ -32,7 +32,7 @@ This same round should add two GitTarget placement controls:
 ## Desired API shape
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: GitTarget
 spec:
   providerRef:

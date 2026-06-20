@@ -49,7 +49,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/gate"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -92,7 +92,7 @@ const (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(configbutleraiv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(configbutleraiv1alpha2.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -278,7 +278,7 @@ func main() {
 		// it must be allowed regardless of demand or attribution fails closed. See the demand-gating
 		// design doc and internal/queue/commitrequest_author.go.
 		AlwaysAllow: []schema.GroupVersionResource{
-			{Group: configbutleraiv1alpha1.GroupVersion.Group, Resource: "commitrequests"},
+			{Group: configbutleraiv1alpha2.GroupVersion.Group, Resource: "commitrequests"},
 		},
 	})
 	fatalIfErr(err, "unable to initialize demand gate")

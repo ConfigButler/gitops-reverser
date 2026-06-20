@@ -51,7 +51,7 @@ first. Source: status-design doc §1–§6 + review-doc Gap 3/Gap 6/Rec 4.
    `Pending` and only `PhaseSynced` as `Synced`, so a periodic re-anchor flaps the signal.
    `typeset.TypeMaterialization` already exposes `CheckpointRV` and `Phase` — use it (consider a
    small `Serviceable()` helper on the leaf so the rule lives in one place).
-2. **API** (`api/v1alpha1/gittarget_types.go`): add `status.phase string`; remove
+2. **API** (`api/v1alpha2/gittarget_types.go`): add `status.phase string`; remove
    `status.snapshot` (`GitTargetSnapshotStatus` + `GitTargetSnapshotStats`) — it is vestigial,
    nothing writes it. Then `task generate` + `task manifests`.
 3. **Controller** (`internal/controller/gittarget_controller.go`):

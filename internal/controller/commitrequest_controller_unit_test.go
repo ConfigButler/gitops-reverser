@@ -37,7 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -75,15 +75,15 @@ func (f *fakeAuthorLookup) LookupCommitRequestAuthor(
 
 func attributedAlice() *fakeAuthorLookup { return &fakeAuthorLookup{author: "alice", found: true} }
 
-func newCommitRequest(name string, phase configv1alpha1.CommitRequestPhase) *configv1alpha1.CommitRequest {
-	cr := &configv1alpha1.CommitRequest{
+func newCommitRequest(name string, phase configv1alpha2.CommitRequestPhase) *configv1alpha2.CommitRequest {
+	cr := &configv1alpha2.CommitRequest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
 			UID:       types.UID("uid-" + name),
 		},
-		Spec: configv1alpha1.CommitRequestSpec{
-			GitTargetRef: configv1alpha1.CommitRequestGitTargetReference{Name: "team-a-config"},
+		Spec: configv1alpha2.CommitRequestSpec{
+			GitTargetRef: configv1alpha2.CommitRequestGitTargetReference{Name: "team-a-config"},
 			Message:      "save: " + name,
 		},
 	}
@@ -94,11 +94,11 @@ func newCommitRequest(name string, phase configv1alpha1.CommitRequestPhase) *con
 func newCommitRequestClient(t *testing.T, fns *interceptor.Funcs, objects ...client.Object) client.WithWatch {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	require.NoError(t, configv1alpha1.AddToScheme(scheme))
+	require.NoError(t, configv1alpha2.AddToScheme(scheme))
 	builder := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objects...).
-		WithStatusSubresource(&configv1alpha1.CommitRequest{})
+		WithStatusSubresource(&configv1alpha2.CommitRequest{})
 	if fns != nil {
 		builder = builder.WithInterceptorFuncs(*fns)
 	}
@@ -114,9 +114,9 @@ func reconcileCommitRequest(t *testing.T, r *CommitRequestReconciler, name strin
 	return res
 }
 
-func fetchCommitRequest(t *testing.T, c client.Client, name string) configv1alpha1.CommitRequest {
+func fetchCommitRequest(t *testing.T, c client.Client, name string) configv1alpha2.CommitRequest {
 	t.Helper()
-	var cr configv1alpha1.CommitRequest
+	var cr configv1alpha2.CommitRequest
 	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: name}, &cr))
 	return cr
 }
@@ -133,7 +133,7 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-1")
 
 	got := fetchCommitRequest(t, c, "save-1")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseCommitted, got.Status.Phase)
 	assert.Equal(t, "abc123", got.Status.SHA)
 	assert.Equal(t, "main", got.Status.Branch)
 	assert.Empty(t, got.Status.Message)
@@ -162,8 +162,8 @@ func TestCommitRequestReconcile_NoOpenWindow(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-now")
 
 	got := fetchCommitRequest(t, c, "save-now")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, got.Status.Phase)
-	assert.Equal(t, configv1alpha1.RejectNoWindowInGrace, got.Status.Reason)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseRejected, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.RejectNoWindowInGrace, got.Status.Reason)
 	assert.Empty(t, got.Status.SHA)
 }
 
@@ -181,8 +181,8 @@ func TestCommitRequestReconcile_WindowMismatchIsExplained(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-foreign")
 
 	got := fetchCommitRequest(t, c, "save-foreign")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, got.Status.Phase)
-	assert.Equal(t, configv1alpha1.RejectWindowMismatch, got.Status.Reason)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseRejected, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.RejectWindowMismatch, got.Status.Reason)
 	assert.Equal(t, windowMismatchMessage, got.Status.Message)
 	assert.Empty(t, got.Status.SHA)
 }
@@ -201,8 +201,8 @@ func TestCommitRequestReconcile_AlreadyPresentRejected(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-noop")
 
 	got := fetchCommitRequest(t, c, "save-noop")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, got.Status.Phase)
-	assert.Equal(t, configv1alpha1.RejectAlreadyPresent, got.Status.Reason)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseRejected, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.RejectAlreadyPresent, got.Status.Reason)
 	assert.Empty(t, got.Status.SHA)
 }
 
@@ -219,7 +219,7 @@ func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-fail")
 
 	got := fetchCommitRequest(t, c, "save-fail")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseFailed, got.Status.Phase)
 	assert.Contains(t, got.Status.Message, "unreachable remote")
 }
 
@@ -241,7 +241,7 @@ func TestCommitRequestReconcile_AttributionPendingRetries(t *testing.T) {
 		"an unattributed young CommitRequest must poll for its audit event")
 	assert.Empty(t, f.calls, "no attach may run before attribution")
 	got := fetchCommitRequest(t, c, "save-fresh")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
 	assert.Equal(t, 1, lookup.calls)
 }
 
@@ -257,7 +257,7 @@ func TestCommitRequestReconcile_AttributionTimeoutFailsClosed(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-unattributed")
 
 	got := fetchCommitRequest(t, c, "save-unattributed")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseFailed, got.Status.Phase)
 	assert.Equal(t, attributionFailedMessage, got.Status.Message)
 	assert.Empty(t, f.calls)
 }
@@ -280,7 +280,7 @@ func TestCommitRequestReconcile_NotResolvedPollsAndPassesDelay(t *testing.T) {
 	require.Len(t, f.calls, 1, "the attach is sent the instant the author is known")
 	assert.Equal(t, int32(30), f.calls[0].DelaySeconds, "delaySeconds is passed to the worker, not consumed here")
 	got := fetchCommitRequest(t, c, "save-linger")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
 }
 
 // A transient service error (e.g. the GitTarget momentarily unreadable) keeps the
@@ -296,7 +296,7 @@ func TestCommitRequestReconcile_ServiceErrorPolls(t *testing.T) {
 
 	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter)
 	got := fetchCommitRequest(t, c, "save-transient")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
 }
 
 // Past the resolve safety window an attach the worker never resolved fails closed.
@@ -310,12 +310,12 @@ func TestCommitRequestReconcile_ResolveTimeoutFailsClosed(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-stuck")
 
 	got := fetchCommitRequest(t, c, "save-stuck")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseFailed, got.Status.Phase)
 	assert.Equal(t, resolveTimeoutMessage, got.Status.Message)
 }
 
 func TestCommitRequestReconcile_TerminalPhaseShortCircuits(t *testing.T) {
-	cr := newCommitRequest("save-done", configv1alpha1.CommitRequestPhaseCommitted)
+	cr := newCommitRequest("save-done", configv1alpha2.CommitRequestPhaseCommitted)
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{}
 	lookup := attributedAlice()
@@ -331,9 +331,9 @@ func TestCommitRequestReconcile_TerminalPhaseShortCircuits(t *testing.T) {
 // WaitingForAuditEvent while the live object is already terminal) must not
 // re-run the finalize: the uncached APIReader read is the guard.
 func TestCommitRequestReconcile_StaleCacheEchoDoesNotRefinalize(t *testing.T) {
-	stale := newCommitRequest("save-echo", configv1alpha1.CommitRequestPhaseWaitingForAuditEvent)
+	stale := newCommitRequest("save-echo", configv1alpha2.CommitRequestPhaseWaitingForAuditEvent)
 	cached := newCommitRequestClient(t, nil, stale)
-	terminal := newCommitRequest("save-echo", configv1alpha1.CommitRequestPhaseCommitted)
+	terminal := newCommitRequest("save-echo", configv1alpha2.CommitRequestPhaseCommitted)
 	live := newCommitRequestClient(t, nil, terminal)
 
 	f := &fakeFinalizer{}
@@ -352,7 +352,7 @@ func TestCommitRequestReconcile_NilSeamsLeaveWaiting(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-wait")
 
 	got := fetchCommitRequest(t, c, "save-wait")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
 }
 
 func TestCommitRequestReconcile_ObjectDeletedIsBenign(t *testing.T) {
@@ -368,7 +368,7 @@ func TestCommitRequestReconcile_ObjectDeletedIsBenign(t *testing.T) {
 func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 	// Phase already stamped: this models a post-restart redelivery, so the
 	// only status write is the terminal one — the write the conflict hits.
-	cr := newCommitRequest("save-retry", configv1alpha1.CommitRequestPhaseWaitingForAuditEvent)
+	cr := newCommitRequest("save-retry", configv1alpha2.CommitRequestPhaseWaitingForAuditEvent)
 
 	conflicts := 1
 	fns := interceptor.Funcs{
@@ -398,7 +398,7 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-retry")
 
 	got := fetchCommitRequest(t, c, "save-retry")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, got.Status.Phase)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseCommitted, got.Status.Phase)
 	assert.Equal(t, "ddd111", got.Status.SHA)
 	require.Len(t, f.calls, 1, "the conflict retry must re-write status, not re-attach")
 }
@@ -409,65 +409,65 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	now := metav1.Now()
 
 	t.Run("committed", func(t *testing.T) {
-		var cr configv1alpha1.CommitRequest
+		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc", Branch: "main"}, nil, now)
-		assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, cr.Status.Phase)
+		assert.Equal(t, configv1alpha2.CommitRequestPhaseCommitted, cr.Status.Phase)
 		assert.Equal(t, "abc", cr.Status.SHA)
 		assert.Equal(t, "main", cr.Status.Branch)
 		assert.Empty(t, cr.Status.Message)
 	})
 
 	t.Run("no window in grace is rejected", func(t *testing.T) {
-		var cr configv1alpha1.CommitRequest
+		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}, nil, now)
-		assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, cr.Status.Phase)
-		assert.Equal(t, configv1alpha1.RejectNoWindowInGrace, cr.Status.Reason)
+		assert.Equal(t, configv1alpha2.CommitRequestPhaseRejected, cr.Status.Phase)
+		assert.Equal(t, configv1alpha2.RejectNoWindowInGrace, cr.Status.Reason)
 		assert.Empty(t, cr.Status.SHA)
 	})
 
 	t.Run("window mismatch surfaces the reason", func(t *testing.T) {
-		var cr configv1alpha1.CommitRequest
+		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"}, nil, now)
-		assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, cr.Status.Phase)
-		assert.Equal(t, configv1alpha1.RejectWindowMismatch, cr.Status.Reason)
+		assert.Equal(t, configv1alpha2.CommitRequestPhaseRejected, cr.Status.Phase)
+		assert.Equal(t, configv1alpha2.RejectWindowMismatch, cr.Status.Reason)
 		assert.Equal(t, windowMismatchMessage, cr.Status.Message)
 	})
 
 	t.Run("already present is rejected", func(t *testing.T) {
-		var cr configv1alpha1.CommitRequest
+		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"}, nil, now)
-		assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, cr.Status.Phase)
-		assert.Equal(t, configv1alpha1.RejectAlreadyPresent, cr.Status.Reason)
+		assert.Equal(t, configv1alpha2.CommitRequestPhaseRejected, cr.Status.Phase)
+		assert.Equal(t, configv1alpha2.RejectAlreadyPresent, cr.Status.Reason)
 		assert.Empty(t, cr.Status.SHA)
 	})
 
 	t.Run("finalize error wins", func(t *testing.T) {
-		var cr configv1alpha1.CommitRequest
+		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc"},
 			errors.New("boom"), now)
-		assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, cr.Status.Phase)
+		assert.Equal(t, configv1alpha2.CommitRequestPhaseFailed, cr.Status.Phase)
 		assert.Equal(t, "boom", cr.Status.Message)
 	})
 
 	t.Run("unknown outcome is failed", func(t *testing.T) {
-		var cr configv1alpha1.CommitRequest
+		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr, git.FinalizeResult{}, nil, now)
-		assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, cr.Status.Phase)
+		assert.Equal(t, configv1alpha2.CommitRequestPhaseFailed, cr.Status.Phase)
 		assert.Contains(t, cr.Status.Message, "unexpected finalize outcome")
 	})
 }
 
 func TestIsTerminalCommitRequestPhase(t *testing.T) {
 	assert.False(t, isTerminalCommitRequestPhase(""))
-	assert.False(t, isTerminalCommitRequestPhase(configv1alpha1.CommitRequestPhaseWaitingForAuditEvent))
-	assert.True(t, isTerminalCommitRequestPhase(configv1alpha1.CommitRequestPhaseCommitted))
-	assert.True(t, isTerminalCommitRequestPhase(configv1alpha1.CommitRequestPhaseRejected))
-	assert.True(t, isTerminalCommitRequestPhase(configv1alpha1.CommitRequestPhaseFailed))
+	assert.False(t, isTerminalCommitRequestPhase(configv1alpha2.CommitRequestPhaseWaitingForAuditEvent))
+	assert.True(t, isTerminalCommitRequestPhase(configv1alpha2.CommitRequestPhaseCommitted))
+	assert.True(t, isTerminalCommitRequestPhase(configv1alpha2.CommitRequestPhaseRejected))
+	assert.True(t, isTerminalCommitRequestPhase(configv1alpha2.CommitRequestPhaseFailed))
 }
 
 func TestCapCommitRequestMessage(t *testing.T) {

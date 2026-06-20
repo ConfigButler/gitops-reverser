@@ -26,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 var _ = Describe("CommitRequest controller", func() {
@@ -36,13 +36,13 @@ var _ = Describe("CommitRequest controller", func() {
 	// cover the stamp-only path; the full barrier+finalize flow is covered by
 	// the unit tests in commitrequest_controller_unit_test.go.
 	It("stamps a freshly created CommitRequest as WaitingForAuditEvent", func() {
-		commitRequest := &configbutleraiv1alpha1.CommitRequest{
+		commitRequest := &configbutleraiv1alpha2.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "save-",
 				Namespace:    namespace,
 			},
-			Spec: configbutleraiv1alpha1.CommitRequestSpec{
-				GitTargetRef: configbutleraiv1alpha1.CommitRequestGitTargetReference{
+			Spec: configbutleraiv1alpha2.CommitRequestSpec{
+				GitTargetRef: configbutleraiv1alpha2.CommitRequestGitTargetReference{
 					Name: "team-a-config",
 				},
 				Message: "increase checkout API memory",
@@ -52,21 +52,21 @@ var _ = Describe("CommitRequest controller", func() {
 		key := client.ObjectKeyFromObject(commitRequest)
 
 		Eventually(func(g Gomega) {
-			var fetched configbutleraiv1alpha1.CommitRequest
+			var fetched configbutleraiv1alpha2.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 			g.Expect(fetched.Status.Phase).To(Equal(
-				configbutleraiv1alpha1.CommitRequestPhaseWaitingForAuditEvent))
+				configbutleraiv1alpha2.CommitRequestPhaseWaitingForAuditEvent))
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 	})
 
 	It("does not overwrite a terminal phase that is already recorded", func() {
-		commitRequest := &configbutleraiv1alpha1.CommitRequest{
+		commitRequest := &configbutleraiv1alpha2.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "save-",
 				Namespace:    namespace,
 			},
-			Spec: configbutleraiv1alpha1.CommitRequestSpec{
-				GitTargetRef: configbutleraiv1alpha1.CommitRequestGitTargetReference{
+			Spec: configbutleraiv1alpha2.CommitRequestSpec{
+				GitTargetRef: configbutleraiv1alpha2.CommitRequestGitTargetReference{
 					Name: "team-a-config",
 				},
 			},
@@ -76,26 +76,26 @@ var _ = Describe("CommitRequest controller", func() {
 
 		// Wait for the initial stamp.
 		Eventually(func(g Gomega) {
-			var fetched configbutleraiv1alpha1.CommitRequest
+			var fetched configbutleraiv1alpha2.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 			g.Expect(fetched.Status.Phase).To(Equal(
-				configbutleraiv1alpha1.CommitRequestPhaseWaitingForAuditEvent))
+				configbutleraiv1alpha2.CommitRequestPhaseWaitingForAuditEvent))
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 
 		// Simulate a finalize having recorded the terminal phase.
-		var fetched configbutleraiv1alpha1.CommitRequest
+		var fetched configbutleraiv1alpha2.CommitRequest
 		Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
-		fetched.Status.Phase = configbutleraiv1alpha1.CommitRequestPhaseCommitted
+		fetched.Status.Phase = configbutleraiv1alpha2.CommitRequestPhaseCommitted
 		fetched.Status.Branch = "main"
 		fetched.Status.SHA = "abc123"
 		Expect(k8sClient.Status().Update(ctx, &fetched)).To(Succeed())
 
 		// The controller must leave the terminal phase intact.
 		Consistently(func(g Gomega) {
-			var checked configbutleraiv1alpha1.CommitRequest
+			var checked configbutleraiv1alpha2.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &checked)).To(Succeed())
 			g.Expect(checked.Status.Phase).To(Equal(
-				configbutleraiv1alpha1.CommitRequestPhaseCommitted))
+				configbutleraiv1alpha2.CommitRequestPhaseCommitted))
 			g.Expect(checked.Status.SHA).To(Equal("abc123"))
 		}, 2*time.Second, 200*time.Millisecond).Should(Succeed())
 	})

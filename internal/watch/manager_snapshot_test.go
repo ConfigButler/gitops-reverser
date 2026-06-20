@@ -34,7 +34,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -50,7 +50,7 @@ func makeScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(s))
-	require.NoError(t, configv1alpha1.AddToScheme(s))
+	require.NoError(t, configv1alpha2.AddToScheme(s))
 	return s
 }
 
@@ -74,7 +74,7 @@ func uns(kind, namespace, name string) *unstructured.Unstructured {
 // reactor; the name is kept for the many call sites that build their Manager through it.
 func streamingManager(
 	t *testing.T,
-	gitTarget *configv1alpha1.GitTarget,
+	gitTarget *configv1alpha2.GitTarget,
 	store *rulestore.RuleStore,
 ) *Manager {
 	t.Helper()
@@ -91,10 +91,10 @@ func streamingManager(
 }
 
 // gitTargetFixture is the GitTarget the snapshot tests resolve rules against.
-func gitTargetFixture() *configv1alpha1.GitTarget {
-	return &configv1alpha1.GitTarget{
+func gitTargetFixture() *configv1alpha2.GitTarget {
+	return &configv1alpha2.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+		Spec:       configv1alpha2.GitTargetSpec{Path: "live"},
 	}
 }
 
@@ -102,11 +102,11 @@ func gitTargetFixture() *configv1alpha1.GitTarget {
 // the standard single-namespaced-type fixture the splice/scope/audit-tail tests resolve against.
 func addSecretsWatchRule(store *rulestore.RuleStore) {
 	store.AddOrUpdateWatchRule(
-		configv1alpha1.WatchRule{
+		configv1alpha2.WatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "wr-secrets", Namespace: "ns-a"},
-			Spec: configv1alpha1.WatchRuleSpec{
-				TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
-				Rules: []configv1alpha1.ResourceRule{{
+			Spec: configv1alpha2.WatchRuleSpec{
+				TargetRef: configv1alpha2.LocalTargetReference{Name: "my-target"},
+				Rules: []configv1alpha2.ResourceRule{{
 					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
 				}},
 			},
@@ -118,13 +118,13 @@ func addSecretsWatchRule(store *rulestore.RuleStore) {
 // addClusterWatchRule registers a cluster-scoped ClusterWatchRule for my-target.
 func addClusterWatchRule(store *rulestore.RuleStore, name, resource string) {
 	store.AddOrUpdateClusterWatchRule(
-		configv1alpha1.ClusterWatchRule{
+		configv1alpha2.ClusterWatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec: configv1alpha1.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha1.NamespacedTargetReference{Name: "my-target", Namespace: "gitops-reverser"},
-				Rules: []configv1alpha1.ClusterResourceRule{{
+			Spec: configv1alpha2.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha2.NamespacedTargetReference{Name: "my-target", Namespace: "gitops-reverser"},
+				Rules: []configv1alpha2.ClusterResourceRule{{
 					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{resource},
-					Scope: configv1alpha1.ResourceScopeCluster,
+					Scope: configv1alpha2.ResourceScopeCluster,
 				}},
 			},
 		},
@@ -215,11 +215,11 @@ func TestResolveSnapshotGVRs_ScopesNamespacedAndClusterWide(t *testing.T) {
 func TestResolveSnapshotGVRs_WildcardResourceExpands(t *testing.T) {
 	store := rulestore.NewStore()
 	store.AddOrUpdateWatchRule(
-		configv1alpha1.WatchRule{
+		configv1alpha2.WatchRule{
 			ObjectMeta: metav1.ObjectMeta{Name: "wr-all", Namespace: "ns-a"},
-			Spec: configv1alpha1.WatchRuleSpec{
-				TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
-				Rules: []configv1alpha1.ResourceRule{{
+			Spec: configv1alpha2.WatchRuleSpec{
+				TargetRef: configv1alpha2.LocalTargetReference{Name: "my-target"},
+				Rules: []configv1alpha2.ResourceRule{{
 					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"*"},
 				}},
 			},

@@ -36,7 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
@@ -76,7 +76,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log.Info("Starting reconciliation", "namespacedName", req.NamespacedName)
 
 	// Fetch the WatchRule instance
-	var watchRule configbutleraiv1alpha1.WatchRule
+	var watchRule configbutleraiv1alpha2.WatchRule
 	//nolint:nestif // Deletion handling requires nested error checks
 	if err := r.Get(ctx, req.NamespacedName, &watchRule); err != nil {
 		if client.IgnoreNotFound(err) == nil {
@@ -127,7 +127,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // reconcileWatchRuleViaTarget validates and stores a WatchRule that references a GitTarget.
 func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	ctx context.Context,
-	watchRule *configbutleraiv1alpha1.WatchRule,
+	watchRule *configbutleraiv1alpha2.WatchRule,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("reconcileWatchRuleViaTarget")
 
@@ -135,7 +135,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	targetNS := watchRule.Namespace
 
 	// Fetch GitTarget
-	var target configbutleraiv1alpha1.GitTarget
+	var target configbutleraiv1alpha2.GitTarget
 	targetKey := types.NamespacedName{Name: watchRule.Spec.TargetRef.Name, Namespace: targetNS}
 	if err := r.Get(ctx, targetKey, &target); err != nil {
 		log.Error(err, "Failed to get referenced GitTarget",
@@ -160,7 +160,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	providerName := target.Spec.ProviderRef.Name
 	providerNS := target.Namespace // GitProvider is namespace-local to the GitTarget
 
-	var provider configbutleraiv1alpha1.GitProvider
+	var provider configbutleraiv1alpha2.GitProvider
 	providerKey := types.NamespacedName{Name: providerName, Namespace: providerNS}
 	if err := r.Get(ctx, providerKey, &provider); err != nil {
 		log.Error(err, "Failed to resolve GitProvider from GitTarget",
@@ -208,7 +208,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 // setReadyAndUpdateStatusWithTarget sets Ready with target message and updates status with retry.
 func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	ctx context.Context,
-	watchRule *configbutleraiv1alpha1.WatchRule,
+	watchRule *configbutleraiv1alpha2.WatchRule,
 	targetNS string,
 ) (ctrl.Result, error) {
 	msg := fmt.Sprintf(
@@ -233,7 +233,7 @@ func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 
 // setCondition sets or updates the Ready condition.
 func (r *WatchRuleReconciler) setCondition( //nolint:lll // Function signature
-	watchRule *configbutleraiv1alpha1.WatchRule, status metav1.ConditionStatus, reason, message string) {
+	watchRule *configbutleraiv1alpha2.WatchRule, status metav1.ConditionStatus, reason, message string) {
 	condition := metav1.Condition{
 		Type:               ConditionTypeReady,
 		Status:             status,
@@ -255,7 +255,7 @@ func (r *WatchRuleReconciler) setCondition( //nolint:lll // Function signature
 
 func (r *WatchRuleReconciler) setResourceResolutionCondition(
 	ctx context.Context,
-	watchRule *configbutleraiv1alpha1.WatchRule,
+	watchRule *configbutleraiv1alpha2.WatchRule,
 ) {
 	resolved, message := r.WatchManager.ResolveWatchRuleResources(ctx, *watchRule)
 	status := metav1.ConditionFalse
@@ -268,7 +268,7 @@ func (r *WatchRuleReconciler) setResourceResolutionCondition(
 }
 
 func (r *WatchRuleReconciler) setTypedCondition(
-	watchRule *configbutleraiv1alpha1.WatchRule,
+	watchRule *configbutleraiv1alpha2.WatchRule,
 	conditionType string,
 	status metav1.ConditionStatus,
 	reason string,
@@ -301,7 +301,7 @@ func conditionIsFalse(conditions []metav1.Condition, conditionType string) bool 
 
 // updateStatusAndRequeue updates the status and returns requeue result.
 func (r *WatchRuleReconciler) updateStatusAndRequeue( //nolint:lll // Function signature
-	ctx context.Context, watchRule *configbutleraiv1alpha1.WatchRule, requeueAfter time.Duration) (ctrl.Result, error) {
+	ctx context.Context, watchRule *configbutleraiv1alpha2.WatchRule, requeueAfter time.Duration) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, watchRule); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -313,7 +313,7 @@ func (r *WatchRuleReconciler) updateStatusAndRequeue( //nolint:lll // Function s
 //nolint:dupl // Similar retry logic pattern used across controllers
 func (r *WatchRuleReconciler) updateStatusWithRetry(
 	ctx context.Context,
-	watchRule *configbutleraiv1alpha1.WatchRule,
+	watchRule *configbutleraiv1alpha2.WatchRule,
 ) error {
 	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
 
@@ -331,7 +331,7 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 		log.Info("Attempting status update")
 
 		// Get the latest version of the resource
-		latest := &configbutleraiv1alpha1.WatchRule{}
+		latest := &configbutleraiv1alpha2.WatchRule{}
 		key := client.ObjectKeyFromObject(watchRule)
 		if err := r.Get(ctx, key, latest); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -370,18 +370,18 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 // SetupWithManager sets up the controller with the Manager.
 func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha1.WatchRule{}).
+		For(&configbutleraiv1alpha2.WatchRule{}).
 		// GenerationChangedPredicate keeps these watches reacting to a freshly
 		// applied or spec-changed dependency while ignoring the status-only
 		// updates the controllers write themselves — without it every GitTarget
 		// or GitProvider heartbeat would re-list and re-enqueue all WatchRules.
 		Watches(
-			&configbutleraiv1alpha1.GitTarget{},
+			&configbutleraiv1alpha2.GitTarget{},
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Watches(
-			&configbutleraiv1alpha1.GitProvider{},
+			&configbutleraiv1alpha2.GitProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
@@ -397,7 +397,7 @@ func (r *WatchRuleReconciler) gitTargetToWatchRules(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
-	var rules configbutleraiv1alpha1.WatchRuleList
+	var rules configbutleraiv1alpha2.WatchRuleList
 	if err := r.List(ctx, &rules, client.InNamespace(obj.GetNamespace())); err != nil {
 		logDependencyListError(ctx, err, "WatchRules", obj)
 		return nil
@@ -425,7 +425,7 @@ func (r *WatchRuleReconciler) gitProviderToWatchRules(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
-	var targets configbutleraiv1alpha1.GitTargetList
+	var targets configbutleraiv1alpha2.GitTargetList
 	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
@@ -442,7 +442,7 @@ func (r *WatchRuleReconciler) gitProviderToWatchRules(
 		return nil
 	}
 
-	var rules configbutleraiv1alpha1.WatchRuleList
+	var rules configbutleraiv1alpha2.WatchRuleList
 	if err := r.List(ctx, &rules, client.InNamespace(obj.GetNamespace())); err != nil {
 		logDependencyListError(ctx, err, "WatchRules", obj)
 		return nil

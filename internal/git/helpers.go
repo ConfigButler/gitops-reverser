@@ -29,14 +29,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // GetCommitSigner fetches commit signing material from the specified secret.
 func GetCommitSigner(
 	ctx context.Context,
 	k8sClient client.Client,
-	provider *v1alpha1.GitProvider,
+	provider *v1alpha2.GitProvider,
 ) (gogit.Signer, error) {
 	return getCommitSigner(ctx, k8sClient, provider)
 }
@@ -44,7 +44,7 @@ func GetCommitSigner(
 func getCommitSigner(
 	ctx context.Context,
 	k8sClient client.Client,
-	provider *v1alpha1.GitProvider,
+	provider *v1alpha2.GitProvider,
 ) (gogit.Signer, error) {
 	if provider == nil || provider.Spec.Commit == nil || provider.Spec.Commit.Signing == nil {
 		return nil, nil //nolint:nilnil // absence of signing configuration is not an error

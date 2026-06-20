@@ -49,7 +49,7 @@ roadmap for the remaining phases; they describe the pre-implementation state.
 The `WatchRule`/`ClusterWatchRule` CRD field docs promise Kubernetes
 admission-webhook / RBAC wildcard semantics, but the GVR resolver refuses them.
 
-The field comments in [watchrule_types.go:71-118](../../api/v1alpha1/watchrule_types.go#L71-L118)
+The field comments in [watchrule_types.go:71-118](../../api/v1alpha2/watchrule_types.go#L71-L118)
 (shipped as the CRD OpenAPI schema → `kubectl explain`) state:
 
 - "All fields except Resources are optional and default to matching all when not

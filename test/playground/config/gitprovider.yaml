@@ -1,4 +1,4 @@
-apiVersion: configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha2
 kind: GitProvider
 metadata:
   name: playground-provider

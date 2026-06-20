@@ -30,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // --- parseAuditEvent ---
@@ -170,7 +170,7 @@ func TestExtractObject_ResponseObject(t *testing.T) {
 		ResponseObject: &runtime.Unknown{Raw: raw},
 	}
 
-	got, err := extractObject(ev, configv1alpha1.OperationCreate, "v1", "ConfigMap", "default", "cm")
+	got, err := extractObject(ev, configv1alpha2.OperationCreate, "v1", "ConfigMap", "default", "cm")
 	require.NoError(t, err)
 	assert.Equal(t, "cm", got.GetName())
 }
@@ -188,7 +188,7 @@ func TestExtractObject_DeleteUsesRequestObject(t *testing.T) {
 		ResponseObject: nil,
 	}
 
-	got, err := extractObject(ev, configv1alpha1.OperationDelete, "v1", "ConfigMap", "default", "cm-deleted")
+	got, err := extractObject(ev, configv1alpha2.OperationDelete, "v1", "ConfigMap", "default", "cm-deleted")
 	require.NoError(t, err)
 	assert.Equal(t, "cm-deleted", got.GetName())
 }
@@ -196,14 +196,14 @@ func TestExtractObject_DeleteUsesRequestObject(t *testing.T) {
 func TestExtractObject_DropsNonDeleteWhenNoRaw(t *testing.T) {
 	ev := auditv1.Event{} // no RequestObject / ResponseObject
 
-	_, err := extractObject(ev, configv1alpha1.OperationCreate, "v1", "ConfigMap", "default", "cm")
+	_, err := extractObject(ev, configv1alpha2.OperationCreate, "v1", "ConfigMap", "default", "cm")
 	require.ErrorIs(t, err, errAuditEventObjectMissing)
 }
 
 func TestExtractObject_AllowsBodylessSingleDelete(t *testing.T) {
 	ev := auditv1.Event{Verb: "delete"}
 
-	got, err := extractObject(ev, configv1alpha1.OperationDelete, "v1", "configmaps", "default", "cm")
+	got, err := extractObject(ev, configv1alpha2.OperationDelete, "v1", "configmaps", "default", "cm")
 	require.NoError(t, err)
 	assert.Equal(t, "cm", got.GetName())
 	assert.Equal(t, "default", got.GetNamespace())
@@ -225,7 +225,7 @@ func TestExtractObject_CreateFallsBackToRequestObjectWhenResponseMissing(t *test
 
 	got, err := extractObject(
 		ev,
-		configv1alpha1.OperationCreate,
+		configv1alpha2.OperationCreate,
 		"wardle.example.com/v1alpha1",
 		"flunders",
 		"default",
@@ -258,7 +258,7 @@ func TestExtractObject_RejectsStatusErrorBody(t *testing.T) {
 
 	_, err := extractObject(
 		ev,
-		configv1alpha1.OperationUpdate,
+		configv1alpha2.OperationUpdate,
 		"helm.toolkit.fluxcd.io/v2",
 		"helmreleases",
 		"cozy-system",
@@ -283,7 +283,7 @@ func TestExtractObject_AllowsRealResourceNamedStatus(t *testing.T) {
 		ResponseObject: &runtime.Unknown{Raw: raw},
 	}
 
-	got, err := extractObject(ev, configv1alpha1.OperationCreate, "example.com/v1", "Status", "default", "custom")
+	got, err := extractObject(ev, configv1alpha2.OperationCreate, "example.com/v1", "Status", "default", "custom")
 	require.NoError(t, err)
 	assert.Equal(t, "custom", got.GetName())
 }
@@ -292,7 +292,7 @@ func TestExtractObject_InvalidJSON(t *testing.T) {
 	ev := auditv1.Event{
 		ResponseObject: &runtime.Unknown{Raw: []byte("not-json")},
 	}
-	_, err := extractObject(ev, configv1alpha1.OperationUpdate, "v1", "ConfigMap", "default", "cm")
+	_, err := extractObject(ev, configv1alpha2.OperationUpdate, "v1", "ConfigMap", "default", "cm")
 	require.Error(t, err)
 }
 
@@ -309,7 +309,7 @@ func TestExtractObject_ClassifiesPartialFinalizerPatch(t *testing.T) {
 	}
 
 	_, err := extractObject(
-		ev, configv1alpha1.OperationUpdate,
+		ev, configv1alpha2.OperationUpdate,
 		"helm.toolkit.fluxcd.io/v2", "helmreleases", "tenant-root", "mongodb-simon2",
 	)
 	require.ErrorIs(t, err, errAuditEventObjectPartial)
@@ -323,7 +323,7 @@ func TestExtractObject_MalformedBodyStillErrors(t *testing.T) {
 		ResponseObject: &runtime.Unknown{Raw: []byte(`{"metadata":`)}, // truncated
 	}
 
-	_, err := extractObject(ev, configv1alpha1.OperationCreate, "v1", "ConfigMap", "default", "cm")
+	_, err := extractObject(ev, configv1alpha2.OperationCreate, "v1", "ConfigMap", "default", "cm")
 	require.Error(t, err)
 	require.NotErrorIs(t, err, errAuditEventObjectPartial)
 	require.NotErrorIs(t, err, errAuditEventObjectMissing)
@@ -344,8 +344,8 @@ func TestEffectiveAuditOperation_TerminatingUpdateBecomesDelete(t *testing.T) {
 		ResponseObject: &runtime.Unknown{Raw: raw},
 	}
 
-	got := effectiveAuditOperation(ev, configv1alpha1.OperationUpdate)
-	assert.Equal(t, configv1alpha1.OperationDelete, got)
+	got := effectiveAuditOperation(ev, configv1alpha2.OperationUpdate)
+	assert.Equal(t, configv1alpha2.OperationDelete, got)
 }
 
 func TestEffectiveAuditOperation_TerminatingRequestObjectBecomesDelete(t *testing.T) {
@@ -421,8 +421,8 @@ func TestEffectiveAuditOperation_TerminatingRequestObjectBecomesDelete(t *testin
 		ResponseObject: &runtime.Unknown{Raw: responseObject},
 	}
 
-	got := effectiveAuditOperation(ev, configv1alpha1.OperationUpdate)
-	assert.Equal(t, configv1alpha1.OperationDelete, got)
+	got := effectiveAuditOperation(ev, configv1alpha2.OperationUpdate)
+	assert.Equal(t, configv1alpha2.OperationDelete, got)
 }
 
 func TestExtractObject_TerminatingRequestObjectUsedAfterDeleteCoercion(t *testing.T) {
@@ -472,8 +472,8 @@ func TestExtractObject_TerminatingRequestObjectUsedAfterDeleteCoercion(t *testin
 		ResponseObject: &runtime.Unknown{Raw: responseObject},
 	}
 
-	op := effectiveAuditOperation(ev, configv1alpha1.OperationUpdate)
-	require.Equal(t, configv1alpha1.OperationDelete, op)
+	op := effectiveAuditOperation(ev, configv1alpha2.OperationUpdate)
+	require.Equal(t, configv1alpha2.OperationDelete, op)
 
 	got, err := extractObject(
 		ev,
@@ -502,8 +502,8 @@ func TestEffectiveAuditOperation_NonTerminatingUpdateStaysUpdate(t *testing.T) {
 		ResponseObject: &runtime.Unknown{Raw: raw},
 	}
 
-	got := effectiveAuditOperation(ev, configv1alpha1.OperationUpdate)
-	assert.Equal(t, configv1alpha1.OperationUpdate, got)
+	got := effectiveAuditOperation(ev, configv1alpha2.OperationUpdate)
+	assert.Equal(t, configv1alpha2.OperationUpdate, got)
 }
 
 // --- stringField ---

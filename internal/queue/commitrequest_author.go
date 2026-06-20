@@ -24,7 +24,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 )
 
@@ -56,7 +56,7 @@ const (
 func (q *RedisByTypeStreamQueue) LookupCommitRequestAuthor(
 	ctx context.Context, namespace, name string, uid types.UID,
 ) (string, bool) {
-	base := typeBaseKey(q.prefix, configv1alpha1.GroupVersion.Group, commitRequestResource, "")
+	base := typeBaseKey(q.prefix, configv1alpha2.GroupVersion.Group, commitRequestResource, "")
 	return q.scanForCommitRequestCreate(ctx, base+byTypeAuditStreamSuffix, namespace, name, uid)
 }
 
@@ -74,7 +74,7 @@ func (q *RedisByTypeStreamQueue) scanForCommitRequestCreate(
 		if err != nil || !strings.EqualFold(event.Verb, "create") {
 			continue
 		}
-		identity := auditutil.IdentityFromAuditEvent(event, configv1alpha1.OperationCreate)
+		identity := auditutil.IdentityFromAuditEvent(event, configv1alpha2.OperationCreate)
 		if identity.Namespace != namespace || identity.Name != name {
 			continue
 		}

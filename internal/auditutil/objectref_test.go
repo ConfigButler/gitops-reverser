@@ -23,7 +23,7 @@ import (
 
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 func TestSplitAPIVersion(t *testing.T) {
@@ -52,15 +52,15 @@ func TestSplitAPIVersion(t *testing.T) {
 func TestVerbToOperation(t *testing.T) {
 	tests := []struct {
 		verb string
-		op   configv1alpha1.OperationType
+		op   configv1alpha2.OperationType
 		ok   bool
 	}{
-		{verb: "create", op: configv1alpha1.OperationCreate, ok: true},
-		{verb: "CREATE", op: configv1alpha1.OperationCreate, ok: true},
-		{verb: "update", op: configv1alpha1.OperationUpdate, ok: true},
-		{verb: "patch", op: configv1alpha1.OperationUpdate, ok: true},
-		{verb: "delete", op: configv1alpha1.OperationDelete, ok: true},
-		{verb: "deletecollection", op: configv1alpha1.OperationDelete, ok: true},
+		{verb: "create", op: configv1alpha2.OperationCreate, ok: true},
+		{verb: "CREATE", op: configv1alpha2.OperationCreate, ok: true},
+		{verb: "update", op: configv1alpha2.OperationUpdate, ok: true},
+		{verb: "patch", op: configv1alpha2.OperationUpdate, ok: true},
+		{verb: "delete", op: configv1alpha2.OperationDelete, ok: true},
+		{verb: "deletecollection", op: configv1alpha2.OperationDelete, ok: true},
 		{verb: "get", ok: false},
 	}
 

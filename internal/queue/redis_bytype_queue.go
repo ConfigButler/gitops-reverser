@@ -34,7 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/audit/outcome"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -475,7 +475,7 @@ func auditChangeFromEntry(values map[string]interface{}) (git.Event, bool) {
 		}, true
 	}
 
-	if op == configv1alpha1.OperationDelete {
+	if op == configv1alpha2.OperationDelete {
 		return git.Event{Identifier: identifier, Operation: string(op), UserInfo: userInfo}, true
 	}
 

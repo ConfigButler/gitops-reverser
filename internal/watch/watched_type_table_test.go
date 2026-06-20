@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -69,7 +69,7 @@ func TestBuildWatchedTypeTable_NamespacedTypeCarriesRecordMetadata(t *testing.T)
 	assert.Equal(t, schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, wt.GVK)
 	assert.Equal(t, schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, wt.GVR)
 	assert.True(t, wt.Namespaced)
-	assert.Equal(t, configv1alpha1.ResourceScopeNamespaced, wt.Scope)
+	assert.Equal(t, configv1alpha2.ResourceScopeNamespaced, wt.Scope)
 	assert.Equal(t, "v1", wt.ServedVersion)
 	assert.True(t, wt.Preferred)
 	assert.Equal(t, []string{"team-a"}, wt.SnapshotNamespaces())
@@ -100,9 +100,9 @@ func TestBuildWatchedTypeTable_ClusterWideOverridesNamedNamespaces(t *testing.T)
 func TestBuildWatchedTypeTable_OperationsUnionPerNamespace(t *testing.T) {
 	cm := nsRecord("", "configmaps", "ConfigMap")
 	selections := []watchSelection{
-		{record: cm, namespace: "team-a", ops: []configv1alpha1.OperationType{configv1alpha1.OperationCreate}},
-		{record: cm, namespace: "team-a", ops: []configv1alpha1.OperationType{configv1alpha1.OperationUpdate}},
-		{record: cm, namespace: "team-b", ops: []configv1alpha1.OperationType{configv1alpha1.OperationAll}},
+		{record: cm, namespace: "team-a", ops: []configv1alpha2.OperationType{configv1alpha2.OperationCreate}},
+		{record: cm, namespace: "team-a", ops: []configv1alpha2.OperationType{configv1alpha2.OperationUpdate}},
+		{record: cm, namespace: "team-b", ops: []configv1alpha2.OperationType{configv1alpha2.OperationAll}},
 	}
 
 	table := buildWatchedTypeTable(testGitDest(), 1, selections)
@@ -135,7 +135,7 @@ func TestBuildWatchedTypeTable_ClusterScopedType(t *testing.T) {
 	wt := table.Types[0]
 	assert.Equal(t, schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Namespace"}, wt.GVK)
 	assert.False(t, wt.Namespaced)
-	assert.Equal(t, configv1alpha1.ResourceScopeCluster, wt.Scope)
+	assert.Equal(t, configv1alpha2.ResourceScopeCluster, wt.Scope)
 	assert.True(t, wt.ClusterWide())
 	assert.Empty(t, wt.SnapshotNamespaces())
 }
@@ -165,7 +165,7 @@ func TestMatchFollowableRecords_MatchesResourceGroupVersionScope(t *testing.T) {
 
 	matched := matchFollowableRecords(
 		records, []string{"apps"}, []string{"v1"}, []string{"deployments"},
-		configv1alpha1.ResourceScopeNamespaced)
+		configv1alpha2.ResourceScopeNamespaced)
 
 	require.Len(t, matched, 1)
 	assert.Equal(t, "Deployment", matched[0].Identity.GVK.Kind)
@@ -176,9 +176,9 @@ func TestMatchFollowableRecords_ScopeFiltersClusterFromNamespaced(t *testing.T) 
 
 	// A namespaced selector never matches a cluster-scoped record, and vice versa.
 	assert.Empty(t, matchFollowableRecords(
-		records, nil, nil, []string{"namespaces"}, configv1alpha1.ResourceScopeNamespaced))
+		records, nil, nil, []string{"namespaces"}, configv1alpha2.ResourceScopeNamespaced))
 	assert.Len(t, matchFollowableRecords(
-		records, nil, nil, []string{"namespaces"}, configv1alpha1.ResourceScopeCluster), 1)
+		records, nil, nil, []string{"namespaces"}, configv1alpha2.ResourceScopeCluster), 1)
 }
 
 func TestMatchFollowableRecords_WildcardResourceExpandsWithinScope(t *testing.T) {
@@ -189,7 +189,7 @@ func TestMatchFollowableRecords_WildcardResourceExpandsWithinScope(t *testing.T)
 	}
 
 	matched := matchFollowableRecords(
-		records, []string{""}, []string{"v1"}, []string{"*"}, configv1alpha1.ResourceScopeNamespaced)
+		records, []string{""}, []string{"v1"}, []string{"*"}, configv1alpha2.ResourceScopeNamespaced)
 
 	kinds := map[string]bool{}
 	for _, rec := range matched {
@@ -206,7 +206,7 @@ func TestMatchFollowableRecords_VersionlessSelectorCollapsesToPreferred(t *testi
 	}
 
 	matched := matchFollowableRecords(
-		records, []string{"example.com"}, nil, []string{"widgets"}, configv1alpha1.ResourceScopeNamespaced)
+		records, []string{"example.com"}, nil, []string{"widgets"}, configv1alpha2.ResourceScopeNamespaced)
 
 	require.Len(t, matched, 1, "a version-less selector must not watch the same object under two versions")
 	assert.Equal(t, "v1", matched[0].Identity.GVR.Version, "the preferred version wins")
@@ -221,12 +221,12 @@ func TestMatchFollowableRecords_OmittedGroupMultiGroupResourceIsAmbiguous(t *tes
 	}
 
 	assert.Empty(t, matchFollowableRecords(
-		records, nil, nil, []string{"widgets"}, configv1alpha1.ResourceScopeNamespaced),
+		records, nil, nil, []string{"widgets"}, configv1alpha2.ResourceScopeNamespaced),
 		"an omitted apiGroups selector over a multi-group resource is ambiguous")
 
 	// Naming the group disambiguates it.
 	matched := matchFollowableRecords(
-		records, []string{"a.example.com"}, nil, []string{"widgets"}, configv1alpha1.ResourceScopeNamespaced)
+		records, []string{"a.example.com"}, nil, []string{"widgets"}, configv1alpha2.ResourceScopeNamespaced)
 	require.Len(t, matched, 1)
 	assert.Equal(t, "a.example.com", matched[0].Identity.GVR.Group)
 }
@@ -239,7 +239,7 @@ func TestMatchFollowableRecords_WildcardVersionKeepsEveryVersion(t *testing.T) {
 
 	matched := matchFollowableRecords(
 		records, []string{"example.com"}, []string{"*"}, []string{"widgets"},
-		configv1alpha1.ResourceScopeNamespaced)
+		configv1alpha2.ResourceScopeNamespaced)
 
 	assert.Len(t, matched, 2, "an explicit version wildcard keeps every served version")
 }

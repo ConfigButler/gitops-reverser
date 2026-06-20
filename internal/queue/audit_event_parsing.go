@@ -29,7 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
@@ -137,7 +137,7 @@ func parseAuditEvent(values map[string]interface{}) (auditv1.Event, error) {
 // logged audit entry into the Git-writable object the reconcile commits (DEC-5/§6).
 func extractObject(
 	event auditv1.Event,
-	op configv1alpha1.OperationType,
+	op configv1alpha2.OperationType,
 	apiVersion, resource, namespace, name string,
 ) (*unstructured.Unstructured, error) {
 	raw := selectAuditObjectRaw(event, op)
@@ -192,8 +192,8 @@ func allowsBodylessSingleDelete(event auditv1.Event, resource, name string) bool
 		name != ""
 }
 
-func selectAuditObjectRaw(event auditv1.Event, op configv1alpha1.OperationType) []byte {
-	if op == configv1alpha1.OperationDelete {
+func selectAuditObjectRaw(event auditv1.Event, op configv1alpha2.OperationType) []byte {
+	if op == configv1alpha2.OperationDelete {
 		return firstAuditObjectRaw(event.RequestObject, event.ResponseObject)
 	}
 
@@ -230,12 +230,12 @@ func backfillSanitizedIdentity(
 	return sanitized
 }
 
-func effectiveAuditOperation(event auditv1.Event, op configv1alpha1.OperationType) configv1alpha1.OperationType {
-	if op == configv1alpha1.OperationDelete {
+func effectiveAuditOperation(event auditv1.Event, op configv1alpha2.OperationType) configv1alpha2.OperationType {
+	if op == configv1alpha2.OperationDelete {
 		return op
 	}
 	if auditEventObjectMarkedForDeletion(event) {
-		return configv1alpha1.OperationDelete
+		return configv1alpha2.OperationDelete
 	}
 	return op
 }

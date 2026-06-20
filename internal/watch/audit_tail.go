@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -268,7 +268,7 @@ func (m *Manager) gitTargetPath(ctx context.Context, gitDest types.ResourceRefer
 	if m.Client == nil {
 		return "", false
 	}
-	var gt configv1alpha1.GitTarget
+	var gt configv1alpha2.GitTarget
 	if err := m.Client.Get(
 		ctx, k8stypes.NamespacedName{Name: gitDest.Name, Namespace: gitDest.Namespace}, &gt,
 	); err != nil {

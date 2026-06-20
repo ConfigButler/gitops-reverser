@@ -32,16 +32,16 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 func TestValidateCommitConfiguration_InvalidTemplate(t *testing.T) {
 	reconciler := &GitProviderReconciler{}
-	provider := &configbutleraiv1alpha1.GitProvider{
-		Spec: configbutleraiv1alpha1.GitProviderSpec{
-			Commit: &configbutleraiv1alpha1.CommitSpec{
-				Message: &configbutleraiv1alpha1.CommitMessageSpec{
+	provider := &configbutleraiv1alpha2.GitProvider{
+		Spec: configbutleraiv1alpha2.GitProviderSpec{
+			Commit: &configbutleraiv1alpha2.CommitSpec{
+				Message: &configbutleraiv1alpha2.CommitMessageSpec{
 					EventTemplate: "{{.Operation",
 				},
 			},
@@ -56,14 +56,14 @@ func TestValidateCommitConfiguration_InvalidTemplate(t *testing.T) {
 
 func TestValidateCommitConfiguration_SigningEnabled(t *testing.T) {
 	reconciler := &GitProviderReconciler{}
-	provider := &configbutleraiv1alpha1.GitProvider{
-		Status: configbutleraiv1alpha1.GitProviderStatus{
+	provider := &configbutleraiv1alpha2.GitProvider{
+		Status: configbutleraiv1alpha2.GitProviderStatus{
 			SigningPublicKey: "ssh-ed25519 AAAA old",
 		},
-		Spec: configbutleraiv1alpha1.GitProviderSpec{
-			Commit: &configbutleraiv1alpha1.CommitSpec{
-				Signing: &configbutleraiv1alpha1.CommitSigningSpec{
-					SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+		Spec: configbutleraiv1alpha2.GitProviderSpec{
+			Commit: &configbutleraiv1alpha2.CommitSpec{
+				Signing: &configbutleraiv1alpha2.CommitSigningSpec{
+					SecretRef: configbutleraiv1alpha2.LocalSecretReference{
 						Name: "signing-secret",
 					},
 				},
@@ -79,15 +79,15 @@ func TestValidateCommitConfiguration_SigningEnabled(t *testing.T) {
 func TestEnsureSigningKey_GeneratesMissingSecret(t *testing.T) {
 	ctx := context.Background()
 	reconciler := &GitProviderReconciler{Client: newGitProviderTestClient(t)}
-	provider := &configbutleraiv1alpha1.GitProvider{
+	provider := &configbutleraiv1alpha2.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "provider",
 			Namespace: "default",
 		},
-		Spec: configbutleraiv1alpha1.GitProviderSpec{
-			Commit: &configbutleraiv1alpha1.CommitSpec{
-				Signing: &configbutleraiv1alpha1.CommitSigningSpec{
-					SecretRef:           configbutleraiv1alpha1.LocalSecretReference{Name: "signing-secret"},
+		Spec: configbutleraiv1alpha2.GitProviderSpec{
+			Commit: &configbutleraiv1alpha2.CommitSpec{
+				Signing: &configbutleraiv1alpha2.CommitSigningSpec{
+					SecretRef:           configbutleraiv1alpha2.LocalSecretReference{Name: "signing-secret"},
 					GenerateWhenMissing: true,
 				},
 			},
@@ -121,15 +121,15 @@ func TestEnsureSigningKey_UsesExistingKey(t *testing.T) {
 	}
 
 	reconciler := &GitProviderReconciler{Client: newGitProviderTestClient(t, secret)}
-	provider := &configbutleraiv1alpha1.GitProvider{
+	provider := &configbutleraiv1alpha2.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "provider",
 			Namespace: "default",
 		},
-		Spec: configbutleraiv1alpha1.GitProviderSpec{
-			Commit: &configbutleraiv1alpha1.CommitSpec{
-				Signing: &configbutleraiv1alpha1.CommitSigningSpec{
-					SecretRef: configbutleraiv1alpha1.LocalSecretReference{Name: "signing-secret"},
+		Spec: configbutleraiv1alpha2.GitProviderSpec{
+			Commit: &configbutleraiv1alpha2.CommitSpec{
+				Signing: &configbutleraiv1alpha2.CommitSigningSpec{
+					SecretRef: configbutleraiv1alpha2.LocalSecretReference{Name: "signing-secret"},
 				},
 			},
 		},
@@ -151,15 +151,15 @@ func TestEnsureSigningKey_UsesExistingKey(t *testing.T) {
 func TestEnsureSigningKey_MissingSecretWithoutGeneration(t *testing.T) {
 	ctx := context.Background()
 	reconciler := &GitProviderReconciler{Client: newGitProviderTestClient(t)}
-	provider := &configbutleraiv1alpha1.GitProvider{
+	provider := &configbutleraiv1alpha2.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "provider",
 			Namespace: "default",
 		},
-		Spec: configbutleraiv1alpha1.GitProviderSpec{
-			Commit: &configbutleraiv1alpha1.CommitSpec{
-				Signing: &configbutleraiv1alpha1.CommitSigningSpec{
-					SecretRef: configbutleraiv1alpha1.LocalSecretReference{Name: "signing-secret"},
+		Spec: configbutleraiv1alpha2.GitProviderSpec{
+			Commit: &configbutleraiv1alpha2.CommitSpec{
+				Signing: &configbutleraiv1alpha2.CommitSigningSpec{
+					SecretRef: configbutleraiv1alpha2.LocalSecretReference{Name: "signing-secret"},
 				},
 			},
 		},
@@ -176,7 +176,7 @@ func newGitProviderTestClient(t *testing.T, objects ...runtime.Object) ctrlclien
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configbutleraiv1alpha1.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha2.AddToScheme(scheme))
 
 	return fake.NewClientBuilder().
 		WithScheme(scheme).

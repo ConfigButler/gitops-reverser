@@ -29,7 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
 // CompiledRule represents a fully processed WatchRule, ready for quick lookups.
@@ -57,7 +57,7 @@ type CompiledRule struct {
 // CompiledResourceRule represents a single resource matching rule with all its filters.
 type CompiledResourceRule struct {
 	// Operations specifies which operations trigger this rule.
-	Operations []configv1alpha1.OperationType
+	Operations []configv1alpha2.OperationType
 	// APIGroups specifies which API groups this rule matches.
 	APIGroups []string
 	// APIVersions specifies which API versions this rule matches.
@@ -88,7 +88,7 @@ type CompiledClusterRule struct {
 // CompiledClusterResourceRule represents a single cluster resource rule with scope.
 type CompiledClusterResourceRule struct {
 	// Operations specifies which operations trigger this rule.
-	Operations []configv1alpha1.OperationType
+	Operations []configv1alpha2.OperationType
 	// APIGroups specifies which API groups this rule matches.
 	APIGroups []string
 	// APIVersions specifies which API versions this rule matches.
@@ -96,7 +96,7 @@ type CompiledClusterResourceRule struct {
 	// Resources specifies which resource types this rule matches.
 	Resources []string
 	// Scope indicates whether this rule watches Cluster or Namespaced resources.
-	Scope configv1alpha1.ResourceScope
+	Scope configv1alpha2.ResourceScope
 }
 
 // RuleStore holds the in-memory representation of all active watch rules.
@@ -127,7 +127,7 @@ func NewStore() *RuleStore {
 //   - branch: the Git branch to write to (from GitTarget.Spec.Branch)
 //   - path: POSIX-like relative path prefix for writes (from GitTarget.Spec.Path, sanitized upstream)
 func (s *RuleStore) AddOrUpdateWatchRule(
-	rule configv1alpha1.WatchRule,
+	rule configv1alpha2.WatchRule,
 	gitTargetName string,
 	gitTargetNamespace string,
 	gitProviderName string,
@@ -178,7 +178,7 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 //   - branch: the Git branch to write to (from GitTarget.Spec.Branch)
 //   - path: POSIX-like relative path prefix for writes (from GitTarget.Spec.Path, sanitized upstream)
 func (s *RuleStore) AddOrUpdateClusterWatchRule(
-	rule configv1alpha1.ClusterWatchRule,
+	rule configv1alpha2.ClusterWatchRule,
 	gitTargetName string,
 	gitTargetNamespace string,
 	gitProviderName string,
@@ -259,7 +259,7 @@ func (s *RuleStore) IsReady() bool {
 func (s *RuleStore) GetMatchingRules(
 	obj client.Object,
 	resourcePlural string,
-	operation configv1alpha1.OperationType,
+	operation configv1alpha2.OperationType,
 	apiGroup string,
 	apiVersion string,
 	isClusterScoped bool,
@@ -296,7 +296,7 @@ func (s *RuleStore) GetMatchingRules(
 //   - namespaceLabels: Labels of the namespace (ignored in simplified MVP)
 func (s *RuleStore) GetMatchingClusterRules(
 	resourcePlural string,
-	operation configv1alpha1.OperationType,
+	operation configv1alpha2.OperationType,
 	apiGroup string,
 	apiVersion string,
 	isClusterScoped bool,
@@ -325,7 +325,7 @@ func (s *RuleStore) GetMatchingClusterRules(
 func (s *RuleStore) clusterRuleMatches(
 	clusterRule CompiledClusterRule,
 	resourcePlural string,
-	operation configv1alpha1.OperationType,
+	operation configv1alpha2.OperationType,
 	apiGroup string,
 	apiVersion string,
 	isClusterScoped bool,
@@ -347,17 +347,17 @@ func (s *RuleStore) ruleMatchesScope(
 ) bool {
 	// For cluster-scoped resources, only match Cluster scope rules
 	if isClusterScoped {
-		return rule.Scope == configv1alpha1.ResourceScopeCluster
+		return rule.Scope == configv1alpha2.ResourceScopeCluster
 	}
 
 	// For namespaced resources, match Namespaced scope (all namespaces)
-	return rule.Scope == configv1alpha1.ResourceScopeNamespaced
+	return rule.Scope == configv1alpha2.ResourceScopeNamespaced
 }
 
 // matches checks if a single rule matches the given filters.
 func (r *CompiledRule) matches(
 	resourcePlural string,
-	operation configv1alpha1.OperationType,
+	operation configv1alpha2.OperationType,
 	apiGroup string,
 	apiVersion string,
 ) bool {
@@ -374,7 +374,7 @@ func (r *CompiledRule) matches(
 // matches checks if a resource rule matches the given filters.
 func (r *CompiledResourceRule) matches(
 	resourcePlural string,
-	operation configv1alpha1.OperationType,
+	operation configv1alpha2.OperationType,
 	apiGroup string,
 	apiVersion string,
 ) bool {
@@ -398,13 +398,13 @@ func (r *CompiledResourceRule) matches(
 }
 
 // matchesOperations checks if the operation matches any in the rule.
-func (r *CompiledResourceRule) matchesOperations(operation configv1alpha1.OperationType) bool {
+func (r *CompiledResourceRule) matchesOperations(operation configv1alpha2.OperationType) bool {
 	if len(r.Operations) == 0 {
 		return true // Empty = match all
 	}
 
 	for _, op := range r.Operations {
-		if op == configv1alpha1.OperationAll || op == operation {
+		if op == configv1alpha2.OperationAll || op == operation {
 			return true
 		}
 	}
@@ -486,7 +486,7 @@ func (r *CompiledResourceRule) singleResourceMatches(ruleResource, resourcePlura
 // matchesCluster checks if a cluster resource rule matches the given filters.
 func (r *CompiledClusterResourceRule) matchesCluster(
 	resourcePlural string,
-	operation configv1alpha1.OperationType,
+	operation configv1alpha2.OperationType,
 	apiGroup string,
 	apiVersion string,
 ) bool {
@@ -510,13 +510,13 @@ func (r *CompiledClusterResourceRule) matchesCluster(
 }
 
 // matchesOperations checks if the operation matches any in the rule.
-func (r *CompiledClusterResourceRule) matchesOperations(operation configv1alpha1.OperationType) bool {
+func (r *CompiledClusterResourceRule) matchesOperations(operation configv1alpha2.OperationType) bool {
 	if len(r.Operations) == 0 {
 		return true // Empty = match all
 	}
 
 	for _, op := range r.Operations {
-		if op == configv1alpha1.OperationAll || op == operation {
+		if op == configv1alpha2.OperationAll || op == operation {
 			return true
 		}
 	}

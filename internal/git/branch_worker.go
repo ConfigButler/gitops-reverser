@@ -39,7 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -470,7 +470,7 @@ func (w *BranchWorker) resolveBootstrapOptions(
 	targetNamespace string,
 ) (pathBootstrapOptions, error) {
 	targetKey := types.NamespacedName{Name: targetName, Namespace: targetNamespace}
-	var target configv1alpha1.GitTarget
+	var target configv1alpha2.GitTarget
 	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
 		return pathBootstrapOptions{}, fmt.Errorf("failed to get GitTarget %s: %w", targetKey.String(), err)
 	}
@@ -1209,9 +1209,9 @@ func (w *BranchWorker) getGitTarget(
 	ctx context.Context,
 	targetName string,
 	targetNamespace string,
-) (*configv1alpha1.GitTarget, error) {
+) (*configv1alpha2.GitTarget, error) {
 	targetKey := types.NamespacedName{Name: targetName, Namespace: targetNamespace}
-	var target configv1alpha1.GitTarget
+	var target configv1alpha2.GitTarget
 	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
 		return nil, fmt.Errorf("failed to get GitTarget %s: %w", targetKey, err)
 	}
@@ -1285,8 +1285,8 @@ func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, 
 }
 
 // getGitProvider fetches the GitProvider for this worker.
-func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha1.GitProvider, error) {
-	var provider configv1alpha1.GitProvider
+func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha2.GitProvider, error) {
+	var provider configv1alpha2.GitProvider
 	namespacedName := types.NamespacedName{
 		Name:      w.GitProviderRef,
 		Namespace: w.GitProviderNamespace,
@@ -1304,7 +1304,7 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha1.GitP
 // a negative duration falls back to a defensible default. Per design: parse
 // errors → DefaultCommitWindow (loud signal); negative → 0 (caller asked for
 // near-zero coalescing and we honor that).
-func (w *BranchWorker) getCommitWindow(provider *configv1alpha1.GitProvider) time.Duration {
+func (w *BranchWorker) getCommitWindow(provider *configv1alpha2.GitProvider) time.Duration {
 	if provider.Spec.Push == nil || provider.Spec.Push.CommitWindow == nil {
 		return DefaultCommitWindow
 	}
