@@ -40,7 +40,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -273,13 +272,6 @@ func main() {
 		DB:         cfg.auditRedisDB,
 		Prefix:     cfg.auditByTypeStreamPrefix,
 		TLSEnabled: cfg.auditRedisTLS,
-		// commitrequests has an INTERNAL consumer — the CommitRequest author attribution scans its
-		// per-type audit stream for the request's own create event — but no GitTarget claims it, so
-		// it must be allowed regardless of demand or attribution fails closed. See the demand-gating
-		// design doc and internal/queue/commitrequest_author.go.
-		AlwaysAllow: []schema.GroupVersionResource{
-			{Group: configbutleraiv1alpha2.GroupVersion.Group, Resource: "commitrequests"},
-		},
 	})
 	fatalIfErr(err, "unable to initialize demand gate")
 	watchMgr.MirrorGate = mirrorGate
@@ -375,11 +367,12 @@ func main() {
 	}
 
 	auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
-		MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
-		DebugQueue:          auditDebugQueue,
-		Joiner:              auditJoiner,
-		ByTypeQueue:         auditByTypeQueue,
-		MirrorGate:          mirrorGate,
+		MaxRequestBodyBytes:  cfg.auditMaxRequestBodyBytes,
+		DebugQueue:           auditDebugQueue,
+		Joiner:               auditJoiner,
+		ByTypeQueue:          auditByTypeQueue,
+		MirrorGate:           mirrorGate,
+		CommitRequestAuthors: auditByTypeQueue,
 	})
 	fatalIfErr(err, "unable to create audit handler")
 

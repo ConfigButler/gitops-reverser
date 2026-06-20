@@ -52,8 +52,8 @@ type CommitRequestFinalizer interface {
 	ServiceCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
 }
 
-// CommitRequestAuthorLookup resolves the author of a CommitRequest from its
-// own create audit event in the commitrequests per-type audit stream.
+// CommitRequestAuthorLookup resolves the author of a CommitRequest from the
+// create-audit attribution fact captured by audit ingestion.
 // queue.RedisByTypeStreamQueue satisfies it without adaptation.
 type CommitRequestAuthorLookup interface {
 	LookupCommitRequestAuthor(ctx context.Context, namespace, name string, uid types.UID) (string, bool)
@@ -102,11 +102,11 @@ const (
 // (docs/design/stream/commitrequest-design.md §6.4):
 //
 //  1. ATTRIBUTE — wait until the CommitRequest's own create audit event appears
-//     in the commitrequests per-type stream and take the author from it. Every
-//     request enters through the audit ingestion path, so this also ORDERS the
-//     finalize after the author's earlier changes: those entered the path first
-//     and are already mirrored once attribution succeeds. An event that never
-//     arrives fails the request (fail closed).
+//     in the audit-ingestion attribution store and take the author from it. This
+//     is independent of the demand-gated, RV-ordered per-type stream, so a
+//     CommitRequest remains attributable even when its full audit event is not
+//     currently mirrored. An event that never arrives fails the request (fail
+//     closed).
 //  2. ATTACH + POLL — the instant the author is known, send the attach to the
 //     GitTarget's worker (bind the message to the author's open window, finalize
 //     after the grace) and poll the outcome. The grace is anchored at attribution

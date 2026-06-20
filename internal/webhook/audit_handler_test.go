@@ -114,6 +114,32 @@ func (q *recordingByTypeQueue) auditIDs() []string {
 	return ids
 }
 
+type recordingCommitRequestAuthorRecorder struct {
+	mu     sync.Mutex
+	err    error
+	events []auditv1.Event
+}
+
+func (r *recordingCommitRequestAuthorRecorder) CaptureCommitRequestAuthor(
+	_ context.Context,
+	event auditv1.Event,
+) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+	return true, r.err
+}
+
+func (r *recordingCommitRequestAuthorRecorder) auditIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ids := make([]string, 0, len(r.events))
+	for _, event := range r.events {
+		ids = append(ids, string(event.AuditID))
+	}
+	return ids
+}
+
 type fakeAuditJoiner struct {
 	decision AuditJoinDecision
 	err      error
@@ -1248,6 +1274,79 @@ func TestAuditHandler_ByTypeQueueMirrorsAcceptedEvent(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, []string{"bytype-1"}, byType.auditIDs(),
 		"the accepted event must be mirrored to the per-resource-type sink")
+}
+
+func TestAuditHandler_CommitRequestAuthorCaptureBypassesDemandGate(t *testing.T) {
+	byType := &recordingByTypeQueue{}
+	authors := &recordingCommitRequestAuthorRecorder{}
+	gate := fakeMirrorGate{allowed: map[string]bool{}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		ByTypeQueue:          byType,
+		MirrorGate:           gate,
+		CommitRequestAuthors: authors,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"cr-author-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"commitrequests",` +
+		`"apiGroup":"configbutler.ai","apiVersion":"v1alpha2","namespace":"prod","name":"save"},` +
+		`"responseObject":{"metadata":{"name":"save","namespace":"prod","uid":"uid-1","resourceVersion":"42"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, []string{"cr-author-1"}, authors.auditIDs(),
+		"CommitRequest author capture must run outside the demand-gated mirror")
+	assert.Empty(t, byType.events, "an unclaimed CommitRequest type is not force-mirrored")
+}
+
+func TestAuditHandler_CommitRequestMirrorStillRunsWhenDemanded(t *testing.T) {
+	byType := &recordingByTypeQueue{}
+	authors := &recordingCommitRequestAuthorRecorder{}
+	gate := fakeMirrorGate{allowed: map[string]bool{"configbutler.ai/commitrequests": true}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		ByTypeQueue:          byType,
+		MirrorGate:           gate,
+		CommitRequestAuthors: authors,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"cr-demanded-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"commitrequests",` +
+		`"apiGroup":"configbutler.ai","apiVersion":"v1alpha2","namespace":"prod","name":"save"},` +
+		`"responseObject":{"metadata":{"name":"save","namespace":"prod","uid":"uid-1","resourceVersion":"42"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, []string{"cr-demanded-1"}, authors.auditIDs())
+	assert.Equal(t, []string{"cr-demanded-1"}, byType.auditIDs(),
+		"a demanded CommitRequest type still flows through the normal mirror path")
+}
+
+func TestAuditHandler_CommitRequestAuthorCaptureFailureFailsRequest(t *testing.T) {
+	authors := &recordingCommitRequestAuthorRecorder{err: errors.New("author store down")}
+	handler, err := NewAuditHandler(AuditHandlerConfig{CommitRequestAuthors: authors})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"cr-author-fail","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"commitrequests",` +
+		`"apiGroup":"configbutler.ai","apiVersion":"v1alpha2","namespace":"prod","name":"save"},` +
+		`"responseObject":{"metadata":{"name":"save","namespace":"prod","uid":"uid-1","resourceVersion":"42"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, []string{"cr-author-fail"}, authors.auditIDs())
 }
 
 // TestAuditHandler_ByTypeQueueSkipsNonResponseCompleteStages confirms the mirror is

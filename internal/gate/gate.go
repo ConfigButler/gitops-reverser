@@ -85,11 +85,9 @@ type Config struct {
 	SlowPoll   time.Duration
 	Block      time.Duration
 	// AlwaysAllow lists types whose audit events must be mirrored regardless of GitTarget demand,
-	// because an INTERNAL consumer reads their per-type stream. The CommitRequest author attribution
-	// scans the commitrequests stream for the request's own create event, but no GitTarget claims
-	// commitrequests for git — so without this it would be gated out and attribution would fail
-	// closed. These types are allowed on every pod from startup (config-driven, identical
-	// everywhere) and never released. See docs/finished/demand-gated-audit-ingestion.md.
+	// because an INTERNAL consumer reads their per-type stream. These types are allowed on every pod
+	// from startup (config-driven, identical everywhere) and never released. See
+	// docs/finished/demand-gated-audit-ingestion.md.
 	AlwaysAllow []schema.GroupVersionResource
 }
 

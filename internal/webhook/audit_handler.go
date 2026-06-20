@@ -83,11 +83,20 @@ type AuditHandlerConfig struct {
 	// type (docs/finished/demand-gated-audit-ingestion.md). Nil disables gating —
 	// mirror everything (the pre-gate behaviour). Allow is an in-memory lookup on the hot path.
 	MirrorGate MirrorGate
+	// CommitRequestAuthors captures the author fact for CommitRequest create events before
+	// demand-gating or ordered-stream insertion. Unlike ByTypeQueue this is functional:
+	// a write failure returns an audit request error so the API server can retry delivery.
+	CommitRequestAuthors CommitRequestAuthorRecorder
 }
 
 // AuditEventQueue persists accepted audit events for downstream processing.
 type AuditEventQueue interface {
 	Enqueue(ctx context.Context, event auditv1.Event) error
+}
+
+// CommitRequestAuthorRecorder persists the author attribution fact for CommitRequest creates.
+type CommitRequestAuthorRecorder interface {
+	CaptureCommitRequestAuthor(ctx context.Context, event auditv1.Event) (bool, error)
 }
 
 // MirrorGate is the read side of the demand gate: it decides whether a type's audit events should
@@ -363,6 +372,9 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 	}
 	// The accepted event's census outcome (queued / a divert / write_error) is recorded by the
 	// queue inside Enqueue; a demand-gate drop (not_needed) is recorded by mirrorByType.
+	if err := h.captureCommitRequestAuthor(ctx, eventToWrite); err != nil {
+		return err
+	}
 	h.mirrorByType(ctx, eventToWrite)
 
 	h.logFirstAuditEmit(log, source, auditEvent)
@@ -520,6 +532,16 @@ func (h *AuditHandler) eventToMirror(
 			auditEvent.AuditID,
 		)
 	}
+}
+
+func (h *AuditHandler) captureCommitRequestAuthor(ctx context.Context, event *auditv1.Event) error {
+	if h.config.CommitRequestAuthors == nil {
+		return nil
+	}
+	if _, err := h.config.CommitRequestAuthors.CaptureCommitRequestAuthor(ctx, *event); err != nil {
+		return err
+	}
+	return nil
 }
 
 // mirrorByType best-effort mirrors the accepted, body-merged event into its

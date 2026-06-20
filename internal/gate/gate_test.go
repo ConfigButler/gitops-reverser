@@ -69,9 +69,9 @@ func TestGate_RequireMakesAllowTrue(t *testing.T) {
 	assert.False(t, g.Allow("apps", "statefulsets"), "a different type stays unwanted")
 }
 
-// TestGate_AlwaysAllowBypassesDemand covers the internal-consumer case: a type in AlwaysAllow
-// (e.g. commitrequests, read by CommitRequest author attribution) is allowed from startup without
-// any Require and without seeding, while other types still require demand.
+// TestGate_AlwaysAllowBypassesDemand covers the generic internal-consumer case: a type in
+// AlwaysAllow is allowed from startup without any Require and without seeding, while other types
+// still require demand.
 func TestGate_AlwaysAllowBypassesDemand(t *testing.T) {
 	mr := miniredis.RunT(t)
 	g, err := New(Config{

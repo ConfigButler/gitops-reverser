@@ -20,6 +20,7 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -35,9 +36,8 @@ import (
 	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
-// commitRequestCreateEvent builds the audit event mirrorByType lands in the
-// commitrequests per-type stream when a CommitRequest is created in the
-// "team-a" namespace.
+// commitRequestCreateEvent builds the audit event observed by the webhook when
+// a CommitRequest is created in the "team-a" namespace.
 func commitRequestCreateEvent(name, uid, rv, username string) auditv1.Event {
 	body := fmt.Sprintf(`{"apiVersion":"configbutler.ai/v1alpha2","kind":"CommitRequest",`+
 		`"metadata":{"name":%q,"namespace":"team-a","uid":%q,"resourceVersion":%q}}`, name, uid, rv)
@@ -59,15 +59,21 @@ func commitRequestCreateEvent(name, uid, rv, username string) auditv1.Event {
 	return e
 }
 
+func captureCommitRequestAuthor(t *testing.T, q *RedisByTypeStreamQueue, event auditv1.Event) {
+	t.Helper()
+	captured, err := q.CaptureCommitRequestAuthor(context.Background(), event)
+	require.NoError(t, err)
+	require.True(t, captured, "the CommitRequest create event must be captured")
+}
+
 func TestLookupCommitRequestAuthor_FindsCreateEvent(t *testing.T) {
 	mr := miniredis.RunT(t)
 	q := newTestByTypeQueue(t, mr, 0)
 
-	require.NoError(t, q.Enqueue(context.Background(),
-		commitRequestCreateEvent("save-1", "uid-1", "101", "alice")))
+	captureCommitRequestAuthor(t, q, commitRequestCreateEvent("save-1", "uid-1", "101", "alice"))
 
 	author, ok := q.LookupCommitRequestAuthor(context.Background(), "team-a", "save-1", "uid-1")
-	require.True(t, ok, "the mirrored create event must attribute the CommitRequest")
+	require.True(t, ok, "the captured create event must attribute the CommitRequest")
 	assert.Equal(t, "alice", author)
 }
 
@@ -79,7 +85,7 @@ func TestLookupCommitRequestAuthor_GenerateNameCreate(t *testing.T) {
 
 	ev := commitRequestCreateEvent("save-gen-x7k2p", "uid-gen", "102", "bob")
 	ev.ObjectRef.Name = "" // a collection POST records no name on the objectRef
-	require.NoError(t, q.Enqueue(context.Background(), ev))
+	captureCommitRequestAuthor(t, q, ev)
 
 	author, ok := q.LookupCommitRequestAuthor(context.Background(), "team-a", "save-gen-x7k2p", "uid-gen")
 	require.True(t, ok)
@@ -92,11 +98,37 @@ func TestLookupCommitRequestAuthor_ImpersonatedUserWins(t *testing.T) {
 
 	ev := commitRequestCreateEvent("save-imp", "uid-imp", "103", "service-account")
 	ev.ImpersonatedUser = &authv1.UserInfo{Username: "carol"}
-	require.NoError(t, q.Enqueue(context.Background(), ev))
+	captureCommitRequestAuthor(t, q, ev)
 
 	author, ok := q.LookupCommitRequestAuthor(context.Background(), "team-a", "save-imp", "uid-imp")
 	require.True(t, ok)
 	assert.Equal(t, "carol", author)
+}
+
+func TestLookupCommitRequestAuthor_DuplicateDeliveryIsIdempotent(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+	ctx := context.Background()
+
+	first := commitRequestCreateEvent("save-ha", "uid-ha", "120", "alice")
+	first.AuditID = "cr-create-first"
+	captureCommitRequestAuthor(t, q, first)
+
+	duplicate := commitRequestCreateEvent("save-ha", "uid-ha", "120", "alice")
+	duplicate.AuditID = "cr-create-retry"
+	captured, err := q.CaptureCommitRequestAuthor(ctx, duplicate)
+	require.NoError(t, err)
+	require.True(t, captured)
+
+	author, ok := q.LookupCommitRequestAuthor(ctx, "team-a", "save-ha", "uid-ha")
+	require.True(t, ok, "at-least-once audit delivery must converge on one attribution fact")
+	assert.Equal(t, "alice", author)
+
+	raw, err := q.client.Get(ctx, q.commitRequestAuthorKey("team-a", "save-ha", "uid-ha")).Bytes()
+	require.NoError(t, err)
+	var record commitRequestAuthorRecord
+	require.NoError(t, json.Unmarshal(raw, &record))
+	assert.Equal(t, "cr-create-retry", record.AuditID, "duplicate delivery refreshes the keyed fact")
 }
 
 func TestLookupCommitRequestAuthor_NotObservedYet(t *testing.T) {
@@ -113,8 +145,7 @@ func TestLookupCommitRequestAuthor_StaleUIDIsSkipped(t *testing.T) {
 	mr := miniredis.RunT(t)
 	q := newTestByTypeQueue(t, mr, 0)
 
-	require.NoError(t, q.Enqueue(context.Background(),
-		commitRequestCreateEvent("save-re", "uid-old", "104", "mallory")))
+	captureCommitRequestAuthor(t, q, commitRequestCreateEvent("save-re", "uid-old", "104", "mallory"))
 
 	_, ok := q.LookupCommitRequestAuthor(context.Background(), "team-a", "save-re", "uid-new")
 	assert.False(t, ok, "an event for the previous incarnation must not attribute the recreated object")
@@ -128,7 +159,9 @@ func TestLookupCommitRequestAuthor_NonCreateVerbIsIgnored(t *testing.T) {
 
 	ev := commitRequestCreateEvent("save-upd", "uid-upd", "105", "eve")
 	ev.Verb = "update"
-	require.NoError(t, q.Enqueue(context.Background(), ev))
+	captured, err := q.CaptureCommitRequestAuthor(context.Background(), ev)
+	require.NoError(t, err)
+	assert.False(t, captured)
 
 	_, ok := q.LookupCommitRequestAuthor(context.Background(), "team-a", "save-upd", "uid-upd")
 	assert.False(t, ok)
@@ -140,12 +173,37 @@ func TestLookupCommitRequestAuthor_NewestMatchWins(t *testing.T) {
 	mr := miniredis.RunT(t)
 	q := newTestByTypeQueue(t, mr, 0)
 
-	require.NoError(t, q.Enqueue(context.Background(),
-		commitRequestCreateEvent("save-other", "uid-a", "110", "alice")))
-	require.NoError(t, q.Enqueue(context.Background(),
-		commitRequestCreateEvent("save-mine", "uid-b", "111", "bob")))
+	captureCommitRequestAuthor(t, q, commitRequestCreateEvent("save-other", "uid-a", "110", "alice"))
+	captureCommitRequestAuthor(t, q, commitRequestCreateEvent("save-mine", "uid-b", "111", "bob"))
 
 	author, ok := q.LookupCommitRequestAuthor(context.Background(), "team-a", "save-mine", "uid-b")
 	require.True(t, ok)
 	assert.Equal(t, "bob", author)
+}
+
+func TestLookupCommitRequestAuthor_FallbackMatchesMetadataLevelEventWithoutUID(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+
+	ev := commitRequestCreateEvent("save-meta", "", "112", "dana")
+	captureCommitRequestAuthor(t, q, ev)
+
+	author, ok := q.LookupCommitRequestAuthor(context.Background(), "team-a", "save-meta", "uid-from-object")
+	require.True(t, ok, "metadata-level audit can omit uid; namespace/name still attributes")
+	assert.Equal(t, "dana", author)
+}
+
+func TestLookupCommitRequestAuthor_SurvivesDivertedCreate(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+	ctx := context.Background()
+
+	require.NoError(t, q.Enqueue(ctx, commitRequestCreateEvent("save-high", "uid-high", "200", "alice")))
+	diverted := commitRequestCreateEvent("save-divert", "uid-divert", "100", "erin")
+	captureCommitRequestAuthor(t, q, diverted)
+	require.NoError(t, q.Enqueue(ctx, diverted))
+
+	author, ok := q.LookupCommitRequestAuthor(ctx, "team-a", "save-divert", "uid-divert")
+	require.True(t, ok, "author attribution is written before the ordered stream can divert")
+	assert.Equal(t, "erin", author)
 }
