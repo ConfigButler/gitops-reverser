@@ -55,6 +55,14 @@ shape at all.
      [e2e-flakes-2026-06-18-investigation.md §2](e2e-flakes-2026-06-18-investigation.md).
   The upshot: **scanning the shared, ordered audit stream for attribution is fragile in ways we
   cannot even fully diagnose** — which is the strongest possible argument for not doing it.
+  - **Update (2026-06-19): this bit CI.** Run `27830248680` on `5d85e7d` failed `E2E (full)` on
+    *"Commit Request — finalizes the open commit window on demand and reports the resulting SHA"*
+    (`commit_request_e2e_test.go:133`): the CommitRequest never reached `Committed` within 120 s while a
+    *sibling* CR committed fine. It is intermittent (the re-run passed). This is **Flake A** in
+    [`residual-e2e-flakes-2026-06-19.md`](residual-e2e-flakes-2026-06-19.md) — the leading hypothesis is
+    this very scan miss (~55%), with a wrong/older/later-commit *ordering* mismatch a tracked secondary
+    (~30%); a "last 5 commits" diagnostic (`153a0f2`) now prints on failure to tell them apart. It is a
+    live, CI-visible argument for Option B/§5.1.
 
 ## 3. What an internal consumer actually needs
 

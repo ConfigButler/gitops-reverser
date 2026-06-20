@@ -358,19 +358,29 @@ the first object of a freshly re-claimed type.
 ### 10.4 The second run-3 failure is a *different* race (not this bug)
 
 *"Commit Signing … late-joining target"* failed because `overlap-b-cm-15` was missing under path B
-within **30 s** of the late-joining GitTarget B being created (`signing_e2e_test.go:609`). Configmaps
-is a common core type (never `removed`), so this is **not** the `removed`-phase stall; it is a
-late-join **snapshot/coverage-completeness** race against a tight 30 s deadline — same broad family
-(a freshly-joined consumer's materialization racing an assertion deadline), distinct mechanism.
+(`signing_e2e_test.go:609`). Configmaps is a common core type (never `removed`), so this is **not** the
+`removed`-phase stall; it is a distinct late-join coverage gap.
 
-### 10.5 Recommendation
+> **Reframed since (2026-06-19/20) — do not trust the "snapshot/coverage-completeness latency" wording
+> above.** A dedicated deep-dive,
+> [`signing-overlap-band-coverage-drop-investigation.md`](signing-overlap-band-coverage-drop-investigation.md),
+> proved the missing object was **not a normally-ordered main-stream entry within B's reconcile cut** and
+> was **permanently absent** (not merely late) — so it is a real coverage *gap*, and the assertion's
+> timeout (90 s by the suite default, not 30 s) is not the cause. Which path off the stream is
+> **unconfirmed**; the intuitive "divert" explanation is **contradicted** by `lateCount=0` for the type.
+> It is tracked as **Flake B** in
+> [`residual-e2e-flakes-2026-06-19.md`](residual-e2e-flakes-2026-06-19.md); instrumentation to capture
+> it on the next reproduction has landed (`2bd5303`).
 
-- **Fix the demand handshake so a claimed type's first events are never dropped** — designed in
-  [first-event-loss-on-reclaim-plan.md](first-event-loss-on-reclaim-plan.md): claim the rule's
-  fully-specified GVR unconditionally (exercising the Materializer's already-built converge-on-activation
-  contract) + open the gate on the claim (not only after sync) + a bounded first-sync backstop. **Prove
-  the exact trigger first** (plan slice S0: log the declared claim set + a red test, then re-run the warm
-  experiment) so the fix lands on a proven cause.
-- **Separately**, give the late-join snapshot path (§10.4) either more headroom or a convergence
-  signal so a 30 s assert isn't racing snapshot completeness.
-- The late-lane removal and the scoped-firehose change are untouched by both failures.
+### 10.5 Recommendation — UPDATED (fix landed; residual flakes split out)
+
+- **The demand-handshake fix LANDED and is validated** — designed and implemented in
+  [first-event-loss-on-reclaim-plan.md](first-event-loss-on-reclaim-plan.md) (S0–S3, committed `5d85e7d`):
+  claim the rule's fully-specified GVR unconditionally + open the gate on the claim (capture before
+  baseline). The formerly-flaky IceCreamOrder/backfill specs now pass 7/7 across two validation rounds.
+- **The two remaining `E2E (full)` flakes are unrelated and pre-existing**, tracked in
+  [`residual-e2e-flakes-2026-06-19.md`](residual-e2e-flakes-2026-06-19.md): **Flake A** = the
+  CommitRequest finalize/attribution-scan miss (this §2's anomaly, still root-OPEN); **Flake B** = the
+  late-join overlap drop (§10.4, deep-dive above). Neither is caused by the fix; both are instrumented,
+  awaiting a reproduction to confirm the mechanism before any fix.
+- The late-lane removal and the scoped-firehose change are untouched by all of this.

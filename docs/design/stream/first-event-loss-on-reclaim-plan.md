@@ -407,10 +407,16 @@ gate-out window.
 
 ## 8. Slices (land incrementally, each green before the next)
 
-**Status (2026-06-19): S0–S3 LANDED + the signing test hardened (all uncommitted).** Unit gate green
-(lint 0, `task test` 74.9%); e2e green on a clean cluster **and** on the warm cluster that previously
-failed (48/0). S0's proof run confirmed **W1** live (a `retained` watched type aborting a whole Declare).
-**S4 (bounded backstop) and S5 (the warm 3× re-confirmation + scoped-firehose-off) remain.**
+**Status (2026-06-20): S0–S3 LANDED, COMMITTED (`5d85e7d`), PUSHED, and VALIDATED.** Unit gate green
+(lint 0, `task test` 74.9%); S0's proof run confirmed **W1** live (a `retained` watched type aborting a
+whole Declare). **The fix holds:** across two validation rounds (clean + 3 warm, then clean + 2 warm)
+the formerly-flaky Manager CRD / IceCreamOrder + backfill specs passed **7/7**, and CI on `5d85e7d`
+passed `E2E (full)` on re-run. **S4 (bounded backstop) is REJECTED** (§5/§6.3 — the diff-based splice is
+the backstop, not a polling engine). **S5 done.** The two *unrelated, pre-existing* flakes that remain on
+`E2E (full)` are tracked in [`residual-e2e-flakes-2026-06-19.md`](residual-e2e-flakes-2026-06-19.md)
+(commit_request finalize; signing late-join overlap drop — the latter's deep-dive is
+[`signing-overlap-band-coverage-drop-investigation.md`](signing-overlap-band-coverage-drop-investigation.md)).
+Neither is caused by this fix.
 
 0. **S0 — prove the *why* (reviewer's ask).** Add a single structured log in `DeclareForGitTarget` that
    records the resolved/claimed GVR set for each GitTarget (count + names) at V(0)/info, and the §7.2

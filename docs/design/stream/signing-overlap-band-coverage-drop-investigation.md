@@ -290,3 +290,46 @@ normally-ordered main-stream entry within B's reconcile cut, but the **specific*
 stream is **unconfirmed**, and the most intuitive explanation (late lane) is contradicted by
 `lateCount=0` for this type. The next concrete step is not a fix but a **capture**: instrument the
 spec to dump the stream, late lane, idstate, and ingest log at failure time, so H1–H4 collapse to one.
+
+---
+
+## 9. Update (2026-06-19/20): §6.1 instrumentation partly landed; not reproduced since
+
+Tracking against this doc's "capture first" plan (§6.1). Cross-references: this is **Flake B** in
+[`residual-e2e-flakes-2026-06-19.md`](residual-e2e-flakes-2026-06-19.md); it surfaced alongside the
+first-event-loss fix ([`first-event-loss-on-reclaim-plan.md`](first-event-loss-on-reclaim-plan.md),
+landed `5d85e7d`), which is a *separate* bug (a freshly-claimed type's first event, not a late-join
+gap) and does not affect the conclusions here.
+
+**Instrumentation landed (`2bd5303`)** — turns the silent paths observable so the next reproduction
+collapses H1–H4:
+- the divert nudge `late audit event nudged a type resync` raised **V(1)→info** — fires iff a divert
+  happened for the type (H2 signal at default log level, no debug needed);
+- `target-type watermark published / held` in `publishTargetTypeWatermark` — shows B's actual `Hc` and
+  whether a **stale-high prior `Hc` was held** ahead of this reconcile's `coverageHead` (the H4 seam);
+- a per-batch `audit-tail routed batch to target` summary in `routeAuditChangesToTarget`
+  (`routed / suppressedAtOrBelowHc / firstID / lastID`) — distinguishes **"cm-16 reached the tail and
+  was suppressed at/below `Hc`"** (H4) from **"cm-16 never appeared in the tail batch"** (H1/H2).
+- The scoped `diag_all` firehose already captures `configmaps` ingestion, and the validation
+  orchestrator dumps it (with a count of `older_than_high_water` diverts) on any failure — the
+  ingestion-side half of §6.1.
+
+**Still missing for a one-shot capture:** the agent's §6.1 idstate-hash snapshot and main-stream
+`XRANGE` for the run namespace **inside the spec's failure path (before `DeferCleanup` deletes B)** —
+the route summary + diag_all give the controller-side view, but a test-side dump at the moment of
+failure is still the cleanest way to answer Q1.
+
+**A code fact that sharpens H4 vs H1/H2 (DERIVED, checked this session):** the watermark is published
+as **exactly** `snapshot.CoverageHead`
+([`event_router.go:241`](../../../internal/watch/event_router.go#L241)), and `SpliceType` sets
+`coverageHead` to the **last entry it folded** — so for any object that *is* a normally-ordered
+main-stream entry, `Hc` is contiguous with the fold by construction (§4.1's invariant, now traced to
+the publish site). That makes **H4 unlikely unless `publishTargetTypeWatermark` holds a higher *prior*
+`Hc`** (the new "watermark held" log is exactly that check), and pushes weight back onto **H1 (never a
+normally-ordered stream entry)** — consistent with §4.5's ranking. It does **not** resolve Q2 (whether
+the nudge re-drives an already-Synced B) or §5 (test-budget vs heal cadence).
+
+**Not reproduced since (weak evidence only):** `clean-cluster` + 3 runs and `clean-cluster` + 2 runs
+after the instrumentation landed were all green (48/0); the overlap spec did not fail, so the new logs
+have **no capture yet**. The flake remains low-frequency; the instrumentation is armed for the next
+CI/warm reproduction. No fix applied — the trust gate (a confirmed mechanism) is not met.

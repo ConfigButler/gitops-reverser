@@ -160,28 +160,36 @@ and is healed only when the **divert nudge** re-anchors the type — which races
   half passes); the fix touched neither the splice/coverage code nor the divert path. *Residual 10%: the
   fix mirrors a claimed type slightly earlier — could marginally shift join timing; not demonstrated.*
 
-- **Leading mechanism: a diverted overlap object (out-of-order ingestion), healed late by the nudge.**
-  **Certainty: 55%** *(this REPLACES the earlier "boundary gap, 65%", which the code fact above largely
-  rules out).* The split fits divert; batch applies produce out-of-order arrivals; the divert→nudge→
-  re-anchor path exists. *Why only 55%: not yet confirmed on a repro — I have not seen cm-16 recorded as
-  diverted (`older_than_high_water`) in the firehose with the nudge firing and the object absent from the
-  tail batch. The instrumentation added this session (below) is meant to show exactly that.*
+> **Defer to the authoritative deep-dive:**
+> [`signing-overlap-band-coverage-drop-investigation.md`](signing-overlap-band-coverage-drop-investigation.md)
+> is the rigorous (FACT/DERIVED/HYPOTHESIS-tagged) investigation of this exact flake, and it **measured
+> the divert counter**. The bullets below are reconciled to it — and it walks back the "divert" lead I
+> had given (the diagram above is now just *one — contradicted — candidate*).
 
-- **Secondary mechanism: a watermark-publish anomaly (e.g. a stale-high `Hc` held from an earlier
-  reconcile, or a same-rv `seq` compare edge).** **Certainty: 20%** *(down from 65%).* Possible despite
-  the contiguous-by-construction argument if `publishTargetTypeWatermark` holds a higher prior `Hc` than
-  this reconcile's `coverageHead`; the new "watermark held (not advanced)" log will surface that.
+- **What is forced (DERIVED): cm-16 was not a normally-ordered main-stream entry within B's reconcile
+  cut.** **Certainty: 85%.** The splice's `Desired` (≤ `coverageHead`) and the tail (> `coverageHead`)
+  are one consistent cut, so a normally-ordered stream entry cannot be dropped — therefore the object
+  was off the main stream (never ingested, diverted, or an attach anomaly). This is §4.1 of the deep-dive.
 
-- **On "just widen the timeout":** **partly legitimate now** *(I was too absolute before).* If the
-  mechanism is divert + nudge-heal racing 90 s, the heal *does* complete — just sometimes after the
-  deadline — so a wider deadline is a **defensible CI stabiliser**, not necessarily hiding a defect.
-  Whether it is the *right* durable answer depends on which mechanism the repro shows. **Certainty that
-  widening is at least a safe stabiliser: 70%.**
+- **The specific path off the stream is UNCONFIRMED — and divert is *contradicted*, not confirmed.**
+  *(This corrects my earlier "divert leading, 55%".)* The deep-dive measured **`lateCount=0` for
+  ConfigMaps** at the failure (§4.4), so **H2 (divert) is argued *against*, not for** — the evidence is
+  the opposite of what I assumed. Current ranking (its §4.5): **H1 "never a normally-ordered stream
+  entry" is least-contradicted (~40%)**; H3 rv-missing-attach anomaly (`rvMissingCount=66`) open (~20%);
+  H4 `Hc`-seam **unlikely** because `Hc` is published as the fold's `coverageHead` (contiguous by
+  construction) *unless* a stale-high prior `Hc` is held (~15%); **H2 divert contradicted (~15%)**. No
+  mechanism is confirmed — a capture is required.
 
-- **Correctness: a bounded, self-healing completeness gap, not permanent corruption.** **Certainty:
-  70%.** A divert is checkpoint/re-anchor-healed by design (the nudge accelerates it); the object lands
-  under B at the next re-anchor. So within the live window B can be transiently **incomplete**, but it
-  converges; the no-replay invariant held (no over-replay).
+- **On "just widen the timeout":** it depends on §5 of the deep-dive — *is "every object present under a
+  target within one reconcile" a guarantee, or only "by the next checkpoint/heal"?* If the latter, the
+  90 s assertion is a **test over-assertion** and widening (or budgeting the heal cadence) is legitimate;
+  if the former, the join-time path has a real gap to fix. **Unresolved — certainty either way: ~50%.**
+
+- **Correctness: likely a bounded gap, but "self-healing" is NOT established.** *(Down from my earlier
+  confident "converges, 70%".)* The deep-dive's §8 says the object was **permanently absent** in that
+  run's repo (the heal did not visibly recover it within the window, and `DeferCleanup` removed B). So
+  whether it heals at the next re-anchor is **Q2/Q5 — open**, not a settled fact. The no-replay invariant
+  did hold.
 
 ### What would raise certainty — and the instrumentation added this session
 On the next reproduction, these now-added logs disambiguate divert vs boundary in one read:
@@ -204,18 +212,19 @@ fold. **No fix is applied yet — the mechanism is not confirmed (trust gate not
 | Symptom | `phase==Committed` not reached in 120 s | one `overlap-b-cm-NN` missing under B (at **90 s**) |
 | Observed in | CI `27830248680`; era run-2 | local f3 + run-3 + a fresh split repro (00–15/✗16/17–19) |
 | Pre-existing, not the fix | **90%** | **90%** |
-| Likely mechanism | attribution-scan miss (§2, root OPEN) — **55%**; ordering a secondary — **30%** | **divert** of an out-of-order overlap object, healed late by the nudge — **55%**; watermark-publish anomaly — **20%** |
-| Correctness | fail-closed, not mis-attributed — **95%** | bounded gap, checkpoint/re-anchor-healed — **70%** |
+| Likely mechanism | attribution-scan miss (§2, root OPEN) — **55%**; ordering a secondary — **30%** | object was **off the main stream** (DERIVED, 85%); *which* path **unconfirmed** — divert **contradicted** by `lateCount=0`; H1 never-ingested least-contradicted (see deep-dive) |
+| Correctness | fail-closed, not mis-attributed — **95%** | bounded gap *likely* but self-heal **NOT established** (object was permanently absent in the repro) |
 
 **Bottom line (certainty 80%):** the first-event-loss fix is sound and landed; `E2E (full)` stays
 intermittently red on these two *independent, pre-existing* flakes (the same commit `5d85e7d` failed
 E2E(full) on attempt 1 and **passed on re-run** — direct proof they are flaky, not deterministic).
-**Neither is evidence against the fix.** Reading the code this session corrected my own earlier draft on
-Flake B: the watermark is published *as* the splice's `coverageHead`, so the boundary is contiguous by
-construction and the "fix at the boundary (`Hc := S`)" I had proposed is largely moot — the split is more
-likely a **diverted overlap object** healed late by the nudge. That also re-legitimises "widen the 90 s
-deadline" as a *safe CI stabiliser* if the repro shows heal-latency. I deliberately **did not apply a
-fix** (the mechanism is unconfirmed — the trust gate is not met); instead I added targeted instrumentation
-(nudge→info, watermark publish/held, per-batch tail-route summary) so the next reproduction names the
-mechanism in one read. Flake A's leading hypothesis stays the attribution-scan miss (55%), ordering a
-tracked secondary (30%).
+**Neither is evidence against the fix.** Two self-corrections this session: (1) the watermark is
+published *as* the splice's `coverageHead`, so the boundary is contiguous by construction (the
+`Hc := S` boundary-fix I first proposed is largely moot); (2) the divert lead I then gave is itself
+**contradicted** by the deep-dive's `lateCount=0` measurement — so the honest state for Flake B is
+"the object was off the main stream, **but by which path is unconfirmed**," tracked rigorously in
+[`signing-overlap-band-coverage-drop-investigation.md`](signing-overlap-band-coverage-drop-investigation.md).
+I deliberately **did not apply a fix** (trust gate not met); instead I landed the instrumentation
+(nudge→info, watermark publish/held, per-batch tail-route summary) that, with that doc's §6.1
+ingestion-side capture, collapses H1–H4 on the next reproduction. Flake A's leading hypothesis stays
+the attribution-scan miss (55%), ordering a tracked secondary (30%).
