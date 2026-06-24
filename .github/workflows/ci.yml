@@ -33,7 +33,7 @@ jobs:
       image: ${{ steps.image.outputs.name }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -89,7 +89,7 @@ jobs:
     needs: build-ci-container
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -145,7 +145,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Configure Git safe directory
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
@@ -191,7 +191,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Configure Git safe directory (for now needed as workarround https://github.com/actions/checkout/issues/2031)
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
@@ -216,7 +216,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Configure Git safe directory
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
@@ -225,7 +225,7 @@ jobs:
         run: task test
 
       - name: Upload unit coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: cover.out
           flags: unit
@@ -239,7 +239,7 @@ jobs:
       image: ${{ steps.image.outputs.name }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set full image name and build metadata
         id: image
@@ -305,7 +305,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Download release bundle artifact
         if: matrix.needs_artifact
@@ -400,7 +400,7 @@ jobs:
 
       - name: Upload E2E coverage to Codecov
         if: matrix.coverage == '1'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: e2e-cover.out
           flags: e2e
@@ -490,7 +490,7 @@ jobs:
             runs_on: ubuntu-24.04-arm
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Extract metadata
         id: meta
@@ -622,7 +622,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Configure Git safe directory
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
