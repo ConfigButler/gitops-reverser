@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * require value for GitTarget.Path, since hooking up GitTarget to repo root must be deliberate ([39e02a6](https://github.com/ConfigButler/gitops-reverser/commit/39e02a68e8b7857f0d87677810db327a12a12233))
 * **status:** two-axis GitTarget status (Ready + Synced/phase), serviceability roll-up ([cea0b35](https://github.com/ConfigButler/gitops-reverser/commit/cea0b353c90a028d61d13e939687809b97869c83))
 * **stream:** /scale rides the parent type's stream (DEC-A, stages C-A1+C-A2) ([4741e66](https://github.com/ConfigButler/gitops-reverser/commit/4741e66e066f0a474dccf131834baec158e2ec48))
-* support flexible manifest placement / editting ([d43d268](https://github.com/ConfigButler/gitops-reverser/commit/d43d268bee4ca41229fc480237ff6c56620fc0cb))
+* support flexible manifest placement / editing ([d43d268](https://github.com/ConfigButler/gitops-reverser/commit/d43d268bee4ca41229fc480237ff6c56620fc0cb))
 * support for subresources (working kubectl scale deployment) ([0f34d50](https://github.com/ConfigButler/gitops-reverser/commit/0f34d50f06a2f098f7b05c93488c98436bc7efd4))
 * **typeset,watch:** M12 first slices — type lifecycle events + per-type reconcile/sweep ([e3f0bd8](https://github.com/ConfigButler/gitops-reverser/commit/e3f0bd85a3d361707736e66e809e886e3a691e09))
 * **typeset:** registry owns discovery grace; catalog shrunk to a per-scan normalizer ([6d0dba4](https://github.com/ConfigButler/gitops-reverser/commit/6d0dba48e7962b3556d794a1a301c87eb4520f58))
