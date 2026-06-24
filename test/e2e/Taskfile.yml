@@ -31,6 +31,14 @@ vars:
   CONTAINER_TOOL: '{{.CONTAINER_TOOL | default "docker"}}'
   TASK_BIN: '{{.TASK_BIN | default "task"}}'
   E2E_LOCAL_IMAGE: '{{.E2E_LOCAL_IMAGE | default "gitops-reverser:e2e-local"}}'
+  # Mutation-capture lab (opt-in, serial; see the lab-* tasks at the end of file).
+  # The image tag is a content hash of the lab sources, so each change produces a
+  # unique tag. The swap patch then changes the deployment's image ref and rolls
+  # out naturally; an unchanged source reuses the same tag (no needless rollout).
+  LAB_IMAGE_HASH:
+    sh: cat $(find cmd/mutation-capture-lab internal/mutationlab -type f -name '*.go' | sort) go.mod go.sum test/mutationlab/Dockerfile 2>/dev/null | sha256sum | cut -c1-12
+  LAB_IMAGE: '{{.LAB_IMAGE | default (printf "mutation-capture-lab:e2e-%s" .LAB_IMAGE_HASH)}}'
+  LAB_API_PORT: '{{.LAB_API_PORT | default "18081"}}'
   PROJECT_IMAGE:
     sh: |
       if [ -n "${PROJECT_IMAGE:-}" ]; then
@@ -1205,3 +1213,67 @@ tasks:
           resourcegraphdefinition/podinfo-app --timeout=120s
         kubectl --context "{{.CTX}}" apply -k "{{.DEMO_MANIFESTS_DIR}}"
         touch "{{.CS}}/demo.ready"
+
+  # ----------------------------------------------------------------------------
+  # Mutation-capture lab (docs/design/mutation-capture-lab-design.md).
+  #
+  # Opt-in and SERIAL. These targets are NOT invoked by `task test-e2e` and are
+  # NOT part of the default CI lane. The lab deliberately reuses the product's
+  # audit + admission webhook wiring (same URLs, same TLS cert mounts), so it just
+  # swaps the controller image for the lab image on the already-prepared cluster —
+  # no new audit policy, webhook config, or certificates. After running the lab,
+  # restore the product with `task clean-cluster` then `task test-e2e`.
+  # ----------------------------------------------------------------------------
+  lab-build-image:
+    desc: Build the mutation-capture lab image (separate from the product image).
+    cmds:
+      - '{{.CONTAINER_TOOL}} build -f test/mutationlab/Dockerfile -t {{.LAB_IMAGE}} .'
+
+  _lab-deployed:
+    # Reuse the product bring-up + install (same cluster, same audit + admission
+    # wiring), then swap in the lab image. Depends on _controller-deployed so the
+    # cluster, CRDs, certs, audit policy, and webhook configs are all in place.
+    deps:
+      - _controller-deployed
+      - lab-build-image
+    cmds:
+      - |
+        CTX="{{.CTX}}" CLUSTER_NAME="{{.CLUSTER_NAME}}" NAMESPACE="{{.NAMESPACE}}" \
+          LAB_IMAGE="{{.LAB_IMAGE}}" K3D="{{.K3D}}" KUBECTL="{{.KUBECTL}}" \
+          CONTROLLER_DEPLOY_SELECTOR="{{.CONTROLLER_DEPLOY_SELECTOR}}" \
+          CONTROLLER_CONTAINER="{{.CONTROLLER_CONTAINER}}" \
+          bash test/mutationlab/swap-image.sh
+
+  lab-e2e:
+    desc: Run the mutation-capture lab end-to-end (serial). Swaps the lab image onto the cluster.
+    deps:
+      - _lab-deployed
+    cmds:
+      - task: _lab-run-driver
+
+  lab-corpus-update:
+    desc: Regenerate the lab corpus from a live capture (serial, MUTATIONLAB_UPDATE=1).
+    deps:
+      - _lab-deployed
+    cmds:
+      - task: _lab-run-driver
+        vars:
+          MUTATIONLAB_UPDATE: '1'
+
+  _lab-run-driver:
+    vars:
+      MUTATIONLAB_UPDATE: '{{.MUTATIONLAB_UPDATE | default ""}}'
+    cmds:
+      - |
+        set -euo pipefail
+        # Robust, detached port-forward to the lab API, reusing the established
+        # e2e port-forward pattern (setsid + ready-pod wait + health verify). The
+        # driver additionally retries transient connection errors.
+        CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" LAB_API_PORT="{{.LAB_API_PORT}}" \
+          CONTROLLER_DEPLOY_SELECTOR="{{.CONTROLLER_DEPLOY_SELECTOR}}" \
+          bash hack/e2e/lab-port-forward.sh
+        # Serial by construction: a single `go test` package run, no Ginkgo --procs.
+        LAB_API_URL="http://127.0.0.1:{{.LAB_API_PORT}}" \
+          LAB_KUBECONTEXT="{{.CTX}}" \
+          MUTATIONLAB_UPDATE="{{.MUTATIONLAB_UPDATE}}" \
+          go test -tags mutationlab_e2e -count=1 -timeout 10m -v ./test/mutationlab/e2e/

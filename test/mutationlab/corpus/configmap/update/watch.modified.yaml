@@ -1,0 +1,28 @@
+object:
+  apiVersion: v1
+  data:
+    key: updated
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts-1>
+    labels:
+      mutationlab.configbutler.ai/scenario: update
+    managedFields:
+    - apiVersion: v1
+      fieldsType: FieldsV1
+      fieldsV1:
+        f:data:
+          .: {}
+          f:key: {}
+        f:metadata:
+          f:labels:
+            .: {}
+            f:mutationlab.configbutler.ai/scenario: {}
+      manager: e2e.test
+      operation: Update
+      time: <ts-2>
+    name: cm-a
+    namespace: <ns-1>
+    resourceVersion: <rv-2>
+    uid: <uid-1>
+type: MODIFIED

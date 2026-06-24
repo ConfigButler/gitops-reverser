@@ -1,8 +1,39 @@
 # Mutation Capture Lab Design
 
-Status: proposed (the always-allow validating admission webhook described in
-[Relationship To The Product](#relationship-to-the-product) has landed in `config/`;
-the lab itself is not yet built)
+Status: M0 done + a first M1 slice captured (uncommitted). The harness — the lab
+binary (`cmd/mutation-capture-lab/`), record model, normalizer, store, golden-corpus
+plumbing, and the watch/audit/admission recorders under `internal/mutationlab/` — is
+built with unit coverage. Per a steering decision, the lab **reuses the product's
+webhook URLs** rather than serving its own: it listens on `/validate-admission-webhook`,
+`/audit-webhook`, and the proxy-enrichment `/audit-webhook-additional`, so `task lab-e2e`
+integrates by **swapping the controller image** for the lab image on the already-prepared
+e2e cluster — no new audit policy, webhook config, or certificates (see
+[Isolated Test Setup](#isolated-test-setup)). The live-cluster driver
+(`test/mutationlab/e2e/`, build tag `mutationlab_e2e`) captures five ConfigMap scenarios —
+create-succeeds (M0) plus update, dry-run-create, record-and-reject, and deletecollection
+(M1) — into a committed corpus under `test/mutationlab/corpus/` (captured against
+**k8s v1.35.2+k3s1**, see `CLUSTER.md`). The capture round-trips: `task lab-corpus-update`
+writes it, and `task lab-e2e` re-captures and **compares clean**, so the normalizer is
+proven deterministic.
+
+**First corpus-driven findings (v1.35.2)** — exactly the kind the lab exists to surface:
+
+- a `deletecollection` fans out into **N per-object watch `DELETED`** events as expected
+  (Row 9), and the apiserver runs validating admission **once per object** (three named
+  `DELETE` calls), not once for the collection;
+- but the single name-less audit `deletecollection` event's **`responseObject` carries the
+  full removed objects** (a `List`) on this version — its `requestObject` is `DeleteOptions`,
+  yet the response is *not* shallow. This refines the Row 9 hypothesis: the shallow-body
+  concern is real for the *request* body, narrower for the *response* than first assumed;
+- the admission→audit **breadcrumb join is confirmed**: the recorder's
+  `AdmissionResponse.auditAnnotations` surface in the audit event prefixed by the webhook
+  name (`all-events-test-only.configbutler.ai/scenario`);
+- `dry-run` and `record-and-reject` both produce admission + audit records but **no watch
+  event and no etcd object** (Rows 11–12), and the reject's denial message rides through to
+  the audit `responseStatus` (`code: 403`, the lab's own policy message).
+
+Remaining M1 (Rows 3, 8, 10, 13, 16–17 — server-side apply, finalizer delete, owner-ref
+cascade, optimistic-concurrency conflict, watch resync, bookmark) and M2–M4 are ahead.
 
 Related:
 
@@ -10,6 +41,9 @@ Related:
 - [Audit Ingestion Decision Record](audit-ingestion-decision-record.md)
 - [Watch & Catalog Architecture](watch-and-catalog-architecture.md)
 - [Architecture](../architecture.md)
+- Kubernetes references for admission ordering/behavior used below:
+  [Dynamic Admission Control](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/)
+  and [Admission Webhook Good Practices](https://kubernetes.io/docs/concepts/cluster-administration/admission-webhooks-good-practices/)
 
 ## Purpose
 
@@ -76,6 +110,108 @@ recorders against a real apiserver. **Hand-writing a golden file defeats the ent
 its only value is that it is what Kubernetes actually emitted. The illustrative YAML embedded in
 this document is explicitly marked as illustrative; the authoritative files come from the lab.
 
+## Expected Observations To Verify
+
+The lab starts with expectations, not conclusions. Some expectations are backed by Kubernetes API
+contracts; others are product-shaped hypotheses we need the corpus to confirm, falsify, or narrow.
+
+- **ResourceVersions should progress within a single resource stream.** Kubernetes documents
+  `resourceVersion` as an *opaque* string that clients must not interpret or compare across resources
+  (that contract is cited, not re-proven — see [Verify vs Cite](#verify-vs-cite-what-the-lab-proves-and-what-it-only-documents)).
+  The narrower, testable claim we *do* want the corpus to confirm is: for built-in resources and
+  CRDs on the pinned lab apiserver, object `metadata.resourceVersion` values are
+  orderable and monotonically increasing within one watched resource type/namespace stream. The
+  normalizer should preserve this relation (`<rv-1>`, `<rv-2>`, ...), because matching an audit
+  `responseObject.metadata.resourceVersion` to a later watch object is one of the most useful
+  correlation tools. This is not a license to compare RVs across unrelated resource types or
+  arbitrary aggregated APIs without first proving they are orderable. Kubernetes API concepts:
+  https://kubernetes.io/docs/reference/using-api/api-concepts/
+
+- **Watch should report object-level consequences, including deletecollection fan-out.** A watch is
+  over a resource collection and streams add/update/delete notifications for objects affected by API
+  operations. For `deletecollection`, the working expectation is therefore: one user request, one
+  audit `deletecollection` event, and **N per-object watch `DELETED` events** — no special
+  collection-level watch event. This is central enough that the lab must assert it directly, because
+  watch mode depends on seeing the deleted object identities while the watch is live. Kubernetes API
+  concepts:
+  https://kubernetes.io/docs/reference/using-api/api-concepts/
+
+- **Audit-to-admission/watch correlation probably has no single shared ID.** Audit events carry an
+  `auditID`, unique per API request. AdmissionReview carries `request.uid`, but Kubernetes documents
+  that UID as the individual apiserver-to-webhook round trip, not the user request identity. We
+  should not expect `auditID == admission.request.uid`. The lab should capture both and prove what,
+  if anything, joins them. Kubernetes audit API:
+  https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/ Admission API:
+  https://kubernetes.io/docs/reference/config-api/apiserver-admission.v1/
+
+- **Admission can deliberately leave breadcrumbs in audit.** The admission recorder should return a
+  scenario/run audit annotation in its `AdmissionResponse.auditAnnotations`. Kubernetes says these
+  annotations are added to the audit log with the webhook name as a prefix, which gives the lab a
+  controlled way to join "this admission call" to "this audit request" without pretending Kubernetes
+  provides a shared native ID. The corpus should still record whether natural correlation also works
+  via namespace/name/UID, `responseObject.metadata.resourceVersion`, verb, requestURI, and
+  timestamps. Admission API:
+  https://kubernetes.io/docs/reference/config-api/apiserver-admission.v1/
+
+- **Watch should carry the full object precisely where audit goes shallow.** The cases where audit is
+  least useful are the *shallow* ones — a name-less `deletecollection` whose audit body is only
+  `DeleteOptions` and never the removed objects (Row 9), and an aggregated-API write whose audit
+  request/response body is empty (Row 15). The working hypothesis is that the **live watch event still
+  carries the full object** in exactly these cases, because watch reports object-level consequences:
+  each `DELETED`/`MODIFIED` should contain the object even when the matching audit event does not. If
+  the corpus confirms this is robust, it is a **product finding, not just a curiosity** (Purpose goal
+  #3): a watch-based capture would supply natively the object content that today's audit body-join
+  path reconstructs — the `apiservice-audit-proxy` / body-enrichment proxy — so watch mode could drop
+  the need for that proxy entirely. The lab must also surface the *limit* of the claim and not oversell
+  it: a watch that is down or lagging loses the event (and its body) outright, so the honest
+  conclusion is "watch fills shallow audit bodies *while live*, with a list + mark-and-sweep backstop
+  for the gap," never "watch replaces the proxy unconditionally." The corpus should make both the fill
+  and the gap visible. Kubernetes API concepts:
+  https://kubernetes.io/docs/reference/using-api/api-concepts/
+
+## Verify vs Cite: What The Lab Proves And What It Only Documents
+
+The lab is expensive attention, so it should spend it only where Kubernetes behavior is **subtle,
+surprising, or fragile across versions**. Several things a reader might expect the lab to demonstrate
+are instead unambiguously documented by Kubernetes; re-proving them would add apparatus (a mutating
+recorder, a second webhook, version-comparison code) without adding knowledge. The canonical example
+is *"mutating admission runs before validating admission"* — true, load-bearing for why a validating
+recorder cannot see user intent, and already documented — so the lab **cites** it rather than building
+a mutating recorder to watch it happen.
+
+This table draws the line. The **Verify** rows are the lab's reason to exist; their authoritative
+detail lives in the [Difficult Cases Catalog](#difficult-cases-catalog) and
+[Expected Observations To Verify](#expected-observations-to-verify), and this table only indexes them
+(it is not a second source of truth). The **Cite** rows are documented Kubernetes contracts we depend
+on but deliberately do **not** capture, each with the upstream reference that makes a lab proof
+unnecessary.
+
+| Claim | Verify or cite | Evidence |
+|---|---|---|
+| RVs progress (orderable, monotonic) *within one* resource stream | **Verify** (hypothesis) | corpus + invariant; [Expected Observations](#expected-observations-to-verify) |
+| `deletecollection` → **N** per-object watch `DELETED` + **one** name-less audit event | **Verify** | Row 9 |
+| finalizer delete's terminal `DELETED` has **no** audit `delete` verb | **Verify** | Row 8 |
+| no-op apply produces **no** watch event | **Verify** | Row 4 |
+| dry-run reaches admission + audit but **no** watch object / **no** etcd object | **Verify** | Row 11 |
+| record-and-reject → admission record, no watch object, no etcd object | **Verify** | Row 12 |
+| owner-ref cascade children are deleted by the GC system user, not the human | **Verify** | Row 10 |
+| optimistic-concurrency conflict returns `409` with a `Status` body, not the object | **Verify** | Row 13 |
+| multi-version CRD: persisted / admission / served shapes diverge | **Verify** | Row 14 |
+| aggregated-API body-quality cliff (often **empty** request/response bodies) | **Verify** | Row 15 |
+| watch carries the **full object** where the audit body is shallow (name-less `deletecollection`, empty aggregated body) — could let watch mode drop the `apiservice-audit-proxy` body-enrichment | **Verify** (product-relevant) | Rows 9, 15; [Expected Observations](#expected-observations-to-verify) |
+| watch `410 Gone` → `ERROR` then relist; `BOOKMARK` is the only safe resume anchor | **Verify** | Rows 16–17 |
+| what (if anything) actually *joins* an audit event to an admission call | **Verify** (investigation) | [Expected Observations](#expected-observations-to-verify); the field *definitions* are cited below |
+| `resourceVersion` is an **opaque** string, not orderable across resources/streams | **Cite** | <https://kubernetes.io/docs/reference/using-api/api-concepts/> |
+| `auditID` is unique per API request; admission `request.uid` identifies the apiserver↔webhook round trip (so they are **not** equal) | **Cite** | <https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/> · <https://kubernetes.io/docs/reference/config-api/apiserver-admission.v1/> |
+| mutating admission runs **before** validating admission (so a validating recorder only ever sees the already-mutated object — no mutating recorder is built) | **Cite** | <https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/> |
+| validating webhooks run **in parallel**; any single rejection fails the whole write | **Cite** | <https://kubernetes.io/docs/concepts/cluster-administration/admission-webhooks-good-practices/> |
+| `matchPolicy: Equivalent` may deliver a **converted** object; `requestKind`/`requestResource` carry the original (lab pins `matchPolicy: Exact` to keep Row 14 deterministic) | **Cite** | <https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/> |
+| `AdmissionResponse.auditAnnotations` surface in the audit log, prefixed by the webhook name | **Cite** the mechanism; **verify** it actually joins our records | <https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/> |
+
+The rule of thumb: if a naive reader would get the behavior *wrong*, or it could *change* in a
+Kubernetes upgrade, it earns a corpus row (**Verify**). If Kubernetes documents it plainly and it is
+stable contract, the lab links the docs and moves on (**Cite**).
+
 ## Non-Goals
 
 - Do not write Git commits.
@@ -83,6 +219,13 @@ this document is explicitly marked as illustrative; the authoritative files come
 - Do not implement the full `WatchRule` / `GitTarget` model.
 - Do not solve production HA, retention, or multi-cluster ingestion.
 - Do not prove every Kubernetes resource behaves identically.
+- Do not build a **mutating** admission recorder. That mutating admission precedes validation — and
+  therefore that a validating recorder cannot see the user's original submission — is a documented
+  Kubernetes contract the lab cites, not a behavior it re-proves (see
+  [Verify vs Cite](#verify-vs-cite-what-the-lab-proves-and-what-it-only-documents)).
+- Do not re-prove well-documented, stable Kubernetes contracts at all. Anything in the **Cite** half
+  of the [Verify vs Cite](#verify-vs-cite-what-the-lab-proves-and-what-it-only-documents) table is
+  referenced by its upstream docs, not captured as a corpus row.
 - Do not hand-author corpus files — they are only meaningful when machine-captured.
 - Do not wire the lab into the main `task test-e2e` suite or the default CI lane (see
   [Isolated Test Setup](#isolated-test-setup)).
@@ -156,26 +299,49 @@ body shape.
 ### 3. Validating Admission Webhook
 
 The admission recorder implements a validating admission webhook and stores each incoming
-`AdmissionReview`: request UID, userInfo, operation, kind/resource/subresource, namespace/name,
-object and oldObject, dryRun, options, the admission decision made by the recorder, and observed
-timestamp.
+`AdmissionReview`: request UID, userInfo, operation, the *matched* kind/resource/subresource **and**
+the request's `requestKind`/`requestResource`/`requestSubResource` (which differ from the matched ones
+when `matchPolicy` converts the object), namespace/name, object and oldObject, dryRun, options, the
+admission decision made by the recorder, and observed timestamp. It **allows by default** but can be
+configured per scenario (keyed by namespace or label)
+to **record-and-reject** — which is how Row 12 deterministically produces "admission saw it, etcd
+never did" without depending on a second webhook's ordering.
 
 The lab includes this mechanism precisely because it is *tempting* — it sees the user and the
 object before the write — and the lab's job is to show why the temptation is a trap. Admission
-observes *attempted* writes, not persisted writes. Specific failure modes the corpus must make
-visible:
+observes *attempted* writes, not persisted writes. The admission chain order matters here: the
+apiserver runs **all mutating webhooks first, then all validating webhooks in parallel**, then
+persists (see
+[Dynamic Admission Control](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/)).
+Specific failure modes the corpus must make visible:
 
-- a later validating webhook can reject the request after this recorder has observed it;
-- a mutating webhook can change the object after this recorder has observed the request;
-- optimistic concurrency can fail the request;
+- validating webhooks run **in parallel**, so another validating webhook can reject the request even
+  though this recorder observed (and, if configured, allowed) it — there is no dependable "later"
+  ordering between them; both are simply called, and any single rejection fails the whole write;
+- because mutating admission runs *before* validation, this recorder only ever sees the
+  **already-mutated** object — it cannot recover the user's original submission, so capturing
+  pre-mutation intent would require a *mutating* recorder, which the lab deliberately is not;
+- optimistic concurrency can fail the request after admission has already allowed it;
 - dry-run requests reach admission but do not persist;
-- defaulting and storage conversion can make the persisted object differ from the admission object.
+- defaulting and storage conversion can still make the persisted object differ from the object this
+  recorder validated;
+- the **version** the recorder sees is not guaranteed to be the submitted one: with
+  `matchPolicy: Equivalent` the apiserver may convert the object to a version the webhook registered
+  for before calling it, with the original request preserved in `request.requestKind`/`requestResource`.
+  To keep Row 14 (multi-version CRD conversion) deterministic, the lab pins **`matchPolicy: Exact`** with
+  an explicit rule per served `apiVersion`, so the recorder observes exactly the submitted version, and
+  it records `requestKind`/`requestResource`/`requestSubResource` so any conversion is visible in the
+  corpus rather than silent (see
+  [Dynamic Admission Control](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/)).
 
 ## Difficult Cases Catalog
 
 This is the heart of the lab. Start with one built-in resource (`ConfigMap`) and one CRD-backed
 resource with two served versions (to exercise conversion). Add an aggregated API last, and only
-once the built-in cases read cleanly.
+once the built-in cases read cleanly. A few rows cannot be expressed with `ConfigMap` and are
+captured against a workload type instead: Rows 5 and 6 need an object with `/status` and `/scale`
+subresources (a `Deployment`), and Row 7's two-event graceful delete needs a grace period (a `Pod`).
+`ConfigMap` has none of these, so those rows move to a later milestone — see [Milestones](#milestones).
 
 The matrix below is the contract for what the corpus must contain. Each row maps to a scenario
 directory under `test/mutationlab/corpus/<resource>/<scenario>/` holding one file per emitted
@@ -195,18 +361,24 @@ moment. "Moment" is deliberate: a single user action can produce several ordered
 | 9 | Deletecollection | **N** `DELETED`, no collection event | **one** name-less `deletecollection` | one DELETE (collection), empty name | fan-out asymmetry — the watch-mode pressure test |
 | 10 | Owner-ref cascade delete | child `DELETED` events | child deletes attributed to the GC system user, not the human | DELETE by `system:serviceaccount:kube-system:generic-garbage-collector` | provenance is the system, not a user |
 | 11 | Dry-run create | **no** watch event, no etcd object | event with `dryRun`, no persistence | CREATE, `dryRun: true` | seen but never persisted |
-| 12 | Rejected by a later webhook | **no** watch event | failed response (`code` 4xx) | this recorder *may* still see it (order-dependent) | admission saw a write that never happened |
+| 12 | Rejected during validation | **no** watch event | failed response (`code` 4xx) | recorder is **always called** (parallel validation) and, in this scenario, record-and-rejects | admission saw a write that never persisted |
 | 13 | Optimistic-concurrency conflict | no final change | failed response, `code: 409`, `Status` body | admission may have seen the attempted object | failure carries a Status, not the object |
-| 14 | Mutated before persist | `MODIFIED` (mutated final) | responseObject shows the mutated final | requestObject may be pre- or post-mutation depending on order | admission object ≠ persisted object |
-| 15 | Multi-version CRD conversion | `MODIFIED` in the *served* version | bodies in the request/stored version | object in the submitted version | three potentially different shapes for one write |
-| 16 | Aggregated API write | depends on backing store | often **empty** request/response body | depends on the aggregated server | the body-quality cliff |
-| 17 | Watch resync (`410 Gone`) | `ERROR`, then must relist | n/a | n/a | proves watch needs a list backstop |
-| 18 | Bookmark | `BOOKMARK` with resourceVersion | n/a | n/a | the only safe resume anchor |
+| 14 | Multi-version CRD conversion | `MODIFIED` in the *served* version | bodies in the request/stored version | object in the **submitted** version (lab pins `matchPolicy: Exact`) | three potentially different shapes for one write |
+| 15 | Aggregated API write | depends on backing store | often **empty** request/response body | depends on the aggregated server | the body-quality cliff |
+| 16 | Watch resync (`410 Gone`) | `ERROR`, then must relist | n/a | n/a | proves watch needs a list backstop |
+| 17 | Bookmark | `BOOKMARK` with resourceVersion | n/a | n/a | the only safe resume anchor |
+
+(The "mutating webhook precedes validation" behavior is **not** a corpus row — it is a documented
+Kubernetes contract the lab cites rather than re-proves; see
+[Verify vs Cite](#verify-vs-cite-what-the-lab-proves-and-what-it-only-documents). Capturing it would
+require a mutating recorder the lab deliberately does not build.)
 
 ### Illustrative shapes for the hardest rows
 
-These snippets show the *expected* shape and the normalization placeholders (`<uid>`, `<rv>`,
-`<timestamp>`, `<auditID>`). They are illustrative — the lab generates the authoritative files.
+These snippets show the *expected* shape and the normalization placeholders (`<uid-1>`, `<rv-1>`,
+`<ts-1>`, `<auditID-1>`). The placeholders are *relational*: distinct values get distinct indices and
+equal values repeat the same index, so identity and ordering survive normalization (see
+[Normalization](#normalization)). They are illustrative — the lab generates the authoritative files.
 
 **Row 9 — deletecollection (the fan-out asymmetry).** Three ConfigMaps removed by one request.
 
@@ -217,6 +389,8 @@ Watch emits one `DELETED` per object; it never sees the collection verb:
 # One of N. A live watch reports object-level consequences, not the collection verb.
 # If the watcher is down or lagging, these events can be lost entirely; only a fresh
 # list plus mark-and-sweep recovers the final state.
+# The sibling files carry <uid-2>/<uid-3> and <rv-2>/<rv-3>, so the fan-out's distinct
+# identities stay visible in the corpus instead of collapsing to one placeholder.
 type: DELETED
 object:
   apiVersion: v1
@@ -224,8 +398,8 @@ object:
   metadata:
     name: cm-a
     namespace: lab
-    uid: <uid>
-    resourceVersion: <rv>
+    uid: <uid-1>
+    resourceVersion: <rv-1>
   data:
     key: value
 ```
@@ -239,7 +413,7 @@ Audit sees a single request, name-less, whose body is `DeleteOptions` — not th
 kind: Event
 apiVersion: audit.k8s.io/v1
 level: RequestResponse
-auditID: <auditID>
+auditID: <auditID-1>
 stage: ResponseComplete
 verb: deletecollection
 requestURI: /api/v1/namespaces/lab/configmaps?labelSelector=lab%3Dsweep
@@ -257,7 +431,7 @@ requestObject:
   kind: DeleteOptions
   apiVersion: v1
   propagationPolicy: Background
-stageTimestamp: <timestamp>
+stageTimestamp: <ts-1>
 ```
 
 **Row 8 — finalizer delete (the missing audit delete).** The delete sets a tombstone; the object
@@ -269,6 +443,8 @@ event has no audit `delete` verb behind it.
 # DELETE on a finalized object does not remove it. The apiserver sets deletionTimestamp;
 # the object persists and watch reports MODIFIED. The actual removal happens later, when
 # the finalizer is patched off — and that moment is a patch in audit, never a delete.
+# The terminal watch.deleted.yaml file keeps the same <uid-1> but a higher <rv-2>, so the
+# corpus shows it is the same object at a later resourceVersion, not a different one.
 type: MODIFIED
 object:
   apiVersion: v1
@@ -276,9 +452,9 @@ object:
   metadata:
     name: cm-final
     namespace: lab
-    uid: <uid>
-    resourceVersion: <rv>
-    deletionTimestamp: <timestamp>
+    uid: <uid-1>
+    resourceVersion: <rv-1>
+    deletionTimestamp: <ts-1>
     finalizers:
     - lab.example/hold
 ```
@@ -290,7 +466,7 @@ object:
 # Reaches admission with dryRun=true. There is no watch event and no etcd object;
 # the only trace is this admission record and a dry-run-flagged audit event.
 request:
-  uid: <uid>
+  uid: <uid-1>
   operation: CREATE
   dryRun: true
   userInfo:
@@ -347,17 +523,28 @@ diff *is* the changelog of "what changed in Kubernetes between these versions."
 
 Raw payloads carry volatile fields that would make every run produce a spurious diff. A single
 deterministic normalizer rewrites them to stable placeholders before anything is written or
-compared, so the corpus changes only when *behavior* changes:
+compared, so the corpus changes only when *behavior* changes.
 
-| Field | Becomes |
-|---|---|
-| `metadata.uid`, admission `request.uid` | `<uid>` |
-| `metadata.resourceVersion` | `<rv>` |
-| `creationTimestamp`, `deletionTimestamp`, `stageTimestamp`, `requestReceivedTimestamp`, `managedFields[].time` | `<timestamp>` |
-| audit `auditID` | `<auditID>` |
-| `generateName` random suffixes | `<rand>` |
-| source IPs / ports | `<ip>` |
+The placeholders are **relational, not flattened**. Collapsing every UID to one `<uid>` and every
+resourceVersion to one `<rv>` would erase exactly the evidence the hard rows exist to capture —
+which objects in a deletecollection fan-out are distinct, which child in an owner-ref cascade is
+which, that a finalizer's terminal `DELETED` is the *same* object at a *higher* resourceVersion, and
+that resourceVersion actually progressed. Instead, each volatile field is replaced by an **indexed**
+placeholder, scoped per scenario and assigned deterministically, so that **equal inputs map to the
+same placeholder, distinct inputs to distinct placeholders, and the index order reflects real
+order**:
 
+| Field | Becomes | Indexing |
+|---|---|---|
+| `metadata.uid`, admission `request.uid` | `<uid-N>` | one per distinct UID, by first appearance |
+| `metadata.resourceVersion` | `<rv-N>` | observed order within one resource stream; numeric order only after the lab proves the stream's RVs are orderable |
+| `creationTimestamp`, `deletionTimestamp`, `stageTimestamp`, `requestReceivedTimestamp`, `managedFields[].time` | `<ts-N>` | chronological order, so sequencing survives |
+| audit `auditID` | `<auditID-N>` | one per distinct request |
+| `generateName` random suffixes | `<rand-N>` | one per distinct suffix |
+| source IPs / ports | `<ip-N>` / `<port-N>` | one per distinct value |
+
+The indexing is scenario-scoped and stable across runs: the same captured behavior always yields the
+same placeholders, so the corpus stays diff-free unless identity or ordering genuinely changed.
 Everything else is preserved verbatim — including `managedFields` themselves, because their growth
 under server-side apply is sometimes exactly the behavior under test. The normalizer lives in one
 place (`internal/mutationlab/normalize`) and is the *only* thing allowed to mutate a payload on its
@@ -449,27 +636,52 @@ runtime, manifests, or test suite.
 
 - **Separate binary:** `cmd/mutation-capture-lab/main.go`, built as its own image
   (`mutation-capture-lab`), with recorders + store + normalizer under `internal/mutationlab/`.
-- **Separate manifests:** `test/mutationlab/manifests/` (its own kustomize), mirroring the
-  integration points the real controller owns — the audit webhook path, the cert-manager TLS
-  shape — but installing none of the `configbutler.ai` CRDs.
-- **Separate cluster lifecycle:** its own k3d/kind profile, created and torn down by the lab
-  harness, so it never collides with the main suite's cluster.
-- **Separate Task targets:** `task lab-e2e` and `task lab-corpus-update`, opt-in only. They are
-  **not** invoked by `task test-e2e` and **not** part of the default CI lane. If the corpus is
-  worth guarding in CI, give it its own manual/nightly job, not a hook into the existing one.
+- **Swap the image, reuse the wiring (steering decision):** rather than authoring its own audit
+  policy, webhook configs, and certificates, the lab serves the **same** webhook URLs as the
+  product on the same ports and TLS cert mounts, so `task lab-e2e` integrates by **swapping the
+  controller image** for the lab image on the already-prepared e2e cluster
+  (`test/mutationlab/swap-image.sh` patches the Deployment's image + entrypoint + args). This
+  reuses the product's audit + admission wiring verbatim; there is no `test/mutationlab/manifests/`
+  and no separate cluster bring-up. The trade-off — the cluster is left running the lab image — is
+  restored with `task clean-cluster && task test-e2e`.
+- **Separate Task targets:** `task lab-e2e` and `task lab-corpus-update`, opt-in and **serial**
+  (a single `go test` package run, no Ginkgo `--procs`). They are **not** invoked by
+  `task test-e2e` and **not** part of the default CI lane, and the live-cluster driver is behind
+  the `mutationlab_e2e` build tag so the unit lane never needs a cluster. If the corpus is worth
+  guarding in CI, give it its own manual/nightly job, not a hook into the existing one.
 
-The app runs in-cluster and exposes the integration-relevant endpoints:
+The app runs in-cluster and exposes the integration-relevant endpoints (the same URLs the product
+serves, so the image swap needs no cluster reconfiguration):
 
-- `POST /audit-webhook`
-- `POST /validate-resources` (the lab's recording admission endpoint, distinct from the product's
-  always-allow `/validate-admission-webhook`)
-- `GET /records` / `DELETE /records`
-- `GET /healthz`
+- `POST /audit-webhook` (official kube-apiserver audit)
+- `POST /audit-webhook-additional` (the `apiservice-audit-proxy` body-enrichment endpoint, recorded
+  as its own source so the corpus shows what the proxy adds — and whether a live watch already
+  carries it, which would make the proxy unnecessary for object content)
+- `POST /validate-admission-webhook` (the recording admission endpoint — the same path as the
+  product's always-allow webhook, since the lab deployment replaces the product)
+- `GET /records[?scenario=<id>]` / `DELETE /records`
+- `GET /healthz`, `GET /readyz`
 
-Storage is in memory for the first version. Every scenario clears records, runs, then reads them
-back to drive both the assertions and the corpus write. The audit-enabled lane may require k3d/kind
-(managed clusters generally cannot configure kube-apiserver audit webhooks); the watch/admission
-lane should work on any cluster where the test can install webhooks and RBAC.
+Storage is in memory for the first version, but **clearing records between scenarios is not enough**:
+audit webhook delivery is asynchronous and batched, so a late event from scenario A can land after
+scenario B has already started and silently corrupt B's corpus. The lab *isolates* scenarios instead
+of trusting a clean slate:
+
+- each scenario runs in its **own ephemeral namespace** (e.g. `lab-<scenario>-<runid>`) and stamps
+  every object with a `mutationlab.configbutler.ai/scenario` label, so watch/audit/admission records
+  can be attributed to a scenario from the namespace or label — even for name-less requests like
+  deletecollection, whose `requestURI` carries the namespace and label selector;
+- the recorder sets `Record.Scenario` from that namespace/label, and reads are **filtered by
+  scenario** (`GET /records?scenario=<id>`) rather than assuming the store holds only the current
+  scenario's events;
+- before comparing, the test performs a **bounded drain**: it waits until the expected records have
+  arrived *and* the count has been quiet for a short settle window (or a timeout fails the scenario),
+  so a slow audit batch is awaited rather than missed, and a stray cross-scenario event is rejected
+  rather than averaged into the corpus.
+
+The audit-enabled lane may require k3d/kind (managed clusters generally cannot configure
+kube-apiserver audit webhooks); the watch/admission lane should work on any cluster where the test
+can install webhooks and RBAC.
 
 ## Assertions To Capture
 
@@ -477,7 +689,13 @@ The structured layer asserts laws, not examples:
 
 - A successful create produces exactly one persisted object and a watch identity for it.
 - A dry-run create reaches admission and audit but produces no watch object and no etcd object.
-- A request rejected after this validating webhook produces an admission record but no watch object.
+- A request the recorder **record-and-rejects** produces an admission record but no watch object and
+  no etcd object. (Validating webhooks are called in parallel
+  ([Admission Webhook Good Practices](https://kubernetes.io/docs/concepts/cluster-administration/admission-webhooks-good-practices/)),
+  so "rejected by a *later* webhook" is not a dependable ordering; the deterministic, self-contained
+  version is for the lab recorder itself to reject. A rejection by a separate parallel webhook is an
+  *observed* scenario asserted tolerantly: the recorder is still called, but whether it ran before or
+  after the rejecter is not guaranteed.)
 - A deletecollection produces per-object watch deletes equal in count to the objects removed, while
   audit and admission see a single name-less collection request.
 - A finalizer delete's terminal `DELETED` watch event has no corresponding audit `delete` verb.
@@ -495,18 +713,29 @@ sees the final stored object shape, handles collection deletes as per-object del
 and needs a periodic/full reconcile as the correctness backstop. Its product contract should say
 that commits are authored by the operator unless audit enrichment is also enabled.
 
+If the corpus confirms the shallow-fill hypothesis (above), there is a sharper consequence worth
+stating: because the live watch event carries the full object exactly where audit goes shallow
+(name-less `deletecollection`, empty aggregated bodies), a watch-based capture would not need the
+`apiservice-audit-proxy` / body-enrichment path at all for object *content* — watch supplies natively
+what that proxy reconstructs. The caveat is unchanged: this holds only while the watch is live, with
+the periodic reconcile as the gap backstop. Body-enrichment would then be an audit-mode concern, not
+a universal requirement.
+
 ### Audit Is Viable For Provenance
 
 Audit remains the high-fidelity mode: real user identity, request context, stronger commit
 attribution. But it is operationally harder and has body-quality edge cases, especially aggregated
-APIs without a body-enrichment path (Row 16).
+APIs without a body-enrichment path (Row 15).
 
 ### Admission Is Not Viable For Persistence
 
 Validating admission is not a trustworthy source for Git history: it can observe writes that never
-persist (Rows 11, 12), observe an object before later mutation/defaulting/conversion (Rows 14, 15),
-is order-sensitive between webhooks, and cannot prove etcd accepted the final object. Useful as a
-teaching comparison; not a product capture mechanism.
+persist (Rows 11, 12); it runs *after* mutating admission (a documented ordering the lab cites — see
+[Verify vs Cite](#verify-vs-cite-what-the-lab-proves-and-what-it-only-documents)) but *before* storage
+defaulting/conversion, so the object it sees matches neither the user's original submission nor the
+persisted result (Row 14); validating webhooks run in parallel, so it can never count on having
+the final say; and it cannot prove etcd accepted the object. Useful as a teaching comparison; not a
+product capture mechanism.
 
 ## Product Framing And Decision Gate
 
@@ -538,10 +767,16 @@ obvious.
 - **M0 — Harness skeleton.** Lab binary, in-memory store, normalizer, golden-file compare/update
   plumbing, `task lab-e2e` standing up its own k3d profile. No scenarios yet; prove the loop
   (capture → normalize → write → diff) works on a single create.
-- **M1 — ConfigMap across every built-in moment.** Rows 1–14 and 17–18 for `ConfigMap`, with both
-  the watch/admission lane and the audit lane. Commit the corpus and `CLUSTER.md`.
-- **M2 — CRD + conversion.** A two-version lab CRD with a conversion webhook to capture Row 15:
+- **M1 — ConfigMap core moments.** The rows `ConfigMap` can actually exercise — Rows 1–4, 8–13, and
+  16–17 — across both the watch/admission lane and the audit lane. Rows 5, 6, and 7 are deliberately
+  excluded: `ConfigMap` has no `/status` or `/scale` subresource and no grace period, so it cannot
+  produce those moments (they move to M2). Commit the corpus and `CLUSTER.md`. **Stop here and read
+  the corpus before expanding.**
+- **M2 — Workload subresources and grace-period delete.** The moments `ConfigMap` structurally
+  cannot reach: a `Deployment` for Row 5 (`/status`) and Row 6 (`/scale`), and a `Pod` for Row 7
+  (the two-event graceful delete a grace period produces).
+- **M3 — CRD + conversion.** A two-version lab CRD with a conversion webhook to capture Row 14:
   the persisted-vs-admission-vs-served divergence.
-- **M3 — Aggregated API (Row 16).** Only if M1–M2 read cleanly. Document the body-quality cliff.
+- **M4 — Aggregated API (Row 15).** Only if M1–M3 read cleanly. Document the body-quality cliff.
 
 After M1, take the decision-gate conversation back to Issue #168 with the corpus as the evidence.

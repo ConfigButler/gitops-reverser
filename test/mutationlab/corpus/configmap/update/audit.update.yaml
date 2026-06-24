@@ -1,0 +1,58 @@
+annotations:
+  all-events-test-only.configbutler.ai/scenario: update
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: ""
+auditID: <auditID-1>
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  name: cm-a
+  namespace: <ns-1>
+  resource: configmaps
+  resourceVersion: <rv-1>
+  uid: <uid-1>
+requestObject:
+  apiVersion: v1
+  data:
+    key: updated
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts-1>
+    labels:
+      mutationlab.configbutler.ai/scenario: update
+    name: cm-a
+    namespace: <ns-1>
+    resourceVersion: <rv-1>
+    uid: <uid-1>
+requestReceivedTimestamp: <ts-3>
+requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-a
+responseObject:
+  apiVersion: v1
+  data:
+    key: updated
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts-1>
+    labels:
+      mutationlab.configbutler.ai/scenario: update
+    name: cm-a
+    namespace: <ns-1>
+    resourceVersion: <rv-2>
+    uid: <uid-1>
+responseStatus:
+  code: 200
+  metadata: {}
+sourceIPs:
+- <ip-1>
+stage: ResponseComplete
+stageTimestamp: <ts-4>
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - X509SHA256=e37c9344230682a123961d5a842c3d0ce77cf160fc86fcb816b3f2df7d1931b1
+  groups:
+  - system:masters
+  - system:authenticated
+  username: system:admin
+userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
+verb: update
