@@ -83,8 +83,8 @@ func newCommitRequest(name string, phase configv1alpha2.CommitRequestPhase) *con
 			UID:       types.UID("uid-" + name),
 		},
 		Spec: configv1alpha2.CommitRequestSpec{
-			GitTargetRef: configv1alpha2.CommitRequestGitTargetReference{Name: "team-a-config"},
-			Message:      "save: " + name,
+			TargetRef: configv1alpha2.LocalTargetReference{Name: "team-a-config"},
+			Message:   "save: " + name,
 		},
 	}
 	cr.Status.Phase = phase

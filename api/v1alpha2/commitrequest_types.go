@@ -64,16 +64,6 @@ const (
 	RejectAlreadyPresent CommitRequestRejectReason = "AlreadyPresent"
 )
 
-// CommitRequestGitTargetReference references the GitTarget whose open commit
-// window should be finalized. The GitTarget must live in the same namespace as
-// the CommitRequest.
-type CommitRequestGitTargetReference struct {
-	// Name of the referenced GitTarget.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-}
-
 // CommitRequestSpec defines the desired state of CommitRequest. The spec is
 // immutable after creation: a CEL validation rule rejects any update that
 // changes it, so a delayed audit event always acts on the spec the object was
@@ -81,10 +71,10 @@ type CommitRequestGitTargetReference struct {
 //
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="CommitRequest spec is immutable after creation"
 type CommitRequestSpec struct {
-	// GitTargetRef names the GitTarget whose open commit window to finalize.
+	// TargetRef names the GitTarget whose open commit window to finalize.
 	// The GitTarget must be in the same namespace as this CommitRequest.
 	// +required
-	GitTargetRef CommitRequestGitTargetReference `json:"gitTargetRef"`
+	TargetRef LocalTargetReference `json:"targetRef"`
 
 	// Message is an optional commit message for the finalized commit. When
 	// omitted, the generated grouped-commit message is used.
@@ -145,7 +135,7 @@ type CommitRequestStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
+// +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.targetRef.name`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.reason`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`

@@ -42,7 +42,7 @@ var _ = Describe("CommitRequest controller", func() {
 				Namespace:    namespace,
 			},
 			Spec: configbutleraiv1alpha2.CommitRequestSpec{
-				GitTargetRef: configbutleraiv1alpha2.CommitRequestGitTargetReference{
+				TargetRef: configbutleraiv1alpha2.LocalTargetReference{
 					Name: "team-a-config",
 				},
 				Message: "increase checkout API memory",
@@ -66,7 +66,7 @@ var _ = Describe("CommitRequest controller", func() {
 				Namespace:    namespace,
 			},
 			Spec: configbutleraiv1alpha2.CommitRequestSpec{
-				GitTargetRef: configbutleraiv1alpha2.CommitRequestGitTargetReference{
+				TargetRef: configbutleraiv1alpha2.LocalTargetReference{
 					Name: "team-a-config",
 				},
 			},

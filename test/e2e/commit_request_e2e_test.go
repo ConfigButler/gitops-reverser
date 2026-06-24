@@ -431,7 +431,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  gitTargetRef:
+  targetRef:
     name: %s
   message: %q
   delaySeconds: %d
@@ -473,7 +473,7 @@ metadata:
   generateName: %s
   namespace: %s
 spec:
-  gitTargetRef:
+  targetRef:
     name: %s
   message: %q
 `, prefix, namespace, gitTargetName, message)
@@ -497,7 +497,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  gitTargetRef:
+  targetRef:
     name: %s
   message: %q
 `, name, namespace, gitTargetName, message)

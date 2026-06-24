@@ -9,6 +9,7 @@ The short version:
 - `GitTarget` defines which branch and repository path to write into
 - `WatchRule` defines which namespaced resources should produce Git writes
 - `ClusterWatchRule` does the same for cluster-scoped or cross-namespace watching
+- `CommitRequest` optionally asks the operator to close the current commit window now
 
 The chart's optional `quickstart` values are just a convenience layer that creates starter
 instances of those same resources.
@@ -38,6 +39,7 @@ The usual flow is:
 1. Create a `GitProvider` for repository access and commit behavior.
 2. Create a `GitTarget` that points at that provider plus a branch and repository path.
 3. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
+4. Create a `CommitRequest` only when you want to flush an open window before the normal timer.
 
 That means one repository connection can back multiple targets, and one target can be fed by
 multiple watch rules.
@@ -363,6 +365,18 @@ and age details, see [sops-age-guide.md](sops-age-guide.md).
 `spec.providerRef` references a `GitProvider` in the same namespace as the `GitTarget`. Its `group`
 and `kind` default to `configbutler.ai` / `GitProvider`, so in practice you only set `name`.
 
+The most useful status fields are:
+
+- `Ready`: the control-plane condition, true when the target is valid, encryption is configured, and
+  a branch worker is wired.
+- `Synced`: the data-plane condition, true when the claimed resource types are serviceable from their
+  checkpoints.
+- `status.phase`: a human-facing summary (`Pending`, `Initializing`, `Synced`, or `Degraded`).
+- `status.materialization`: bounded counts for claimed, synced, pending, failing, and not-followable
+  resource types.
+
+Use conditions for automation. `status.phase` is intended for humans and `kubectl get` output.
+
 ## `WatchRule`
 
 `WatchRule` is the normal namespaced watcher. It only watches resources in its own namespace and
@@ -373,7 +387,17 @@ The important fields are:
 - `spec.targetRef.name`: target to write to
 - `spec.rules`: one or more resource-match rules
 
-Each entry in `spec.rules` is a logical OR. A resource matching any rule is watched.
+Each entry in `spec.rules` is a logical OR. A resource matching any rule is watched. The rule fields
+are:
+
+- `operations`: `CREATE`, `UPDATE`, `DELETE`, or `*`; omitted means all operations.
+- `apiGroups`: `""` for the core group, `*` for all groups, or omitted to resolve the named resource
+  across the served API surface.
+- `apiVersions`: a served version such as `v1`; omitted means the preferred served version.
+- `resources`: plural resource names such as `configmaps`, `secrets`, or `*`.
+
+Subresources such as `deployments/scale` are not valid rule resources. GitOps Reverser mirrors
+top-level resources; selected subresource effects are handled separately by the controller.
 
 Example:
 
@@ -427,6 +451,90 @@ spec:
 Use this sparingly. It is the more powerful option and usually belongs to cluster-admin-managed
 setups.
 
+## `CommitRequest`
+
+`CommitRequest` is a one-shot "save now" signal for a same-namespace `GitTarget`. It does not create
+or change watch rules. Instead, it asks the branch worker to finalize a matching open commit window
+for the request's author instead of waiting for `GitProvider.spec.push.commitWindow`.
+
+The important fields are:
+
+- `spec.targetRef.name`: target whose open window should be finalized
+- `spec.message`: optional verbatim commit message
+- `spec.delaySeconds`: optional 0-300 second collect grace after the request is attributed
+
+Example:
+
+```yaml
+apiVersion: configbutler.ai/v1alpha2
+kind: CommitRequest
+metadata:
+  name: save-now
+  namespace: default
+spec:
+  targetRef:
+    name: example-target
+  message: "save default/example-target"
+  delaySeconds: 2
+```
+
+The entire spec is immutable. Create a new `CommitRequest` for each save attempt.
+
+Status moves from `WaitingForAuditEvent` to one terminal phase:
+
+- `Committed`: a commit was pushed; `status.branch` and `status.sha` are set.
+- `Rejected`: the request was handled correctly but produced no commit. `status.reason` is
+  `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`.
+- `Failed`: the finalize could not complete, for example because the request's own audit event was
+  never observed and the operator could not attribute it to an author.
+
+## Audit ingestion settings
+
+GitOps Reverser receives Kubernetes audit events at two HTTP paths:
+
+- `/audit-webhook`: the canonical kube-apiserver audit source
+- `/audit-webhook-additional`: supplementary body events for aggregated API paths
+
+The joiner holds a bodyless canonical event for up to `auditEventJoin.bodyWait` while waiting for a
+matching additional body. Parked additional bodies expire after `auditEventJoin.bodyTTL`.
+
+```yaml
+auditEventJoin:
+  bodyTTL: "5m"
+  bodyWait: "500ms"
+```
+
+Audit events are mirrored into Valkey/Redis per resource type. `queue.redis.maxLen` is an approximate
+per-stream trim limit; `0` disables trimming and can grow without bound.
+
+```yaml
+queue:
+  redis:
+    addr: "valkey:6379"
+    auth:
+      existingSecret: "valkey-auth"
+      existingSecretKey: "password"
+    maxLen: 10000
+```
+
+For investigations, enable diagnostic streams only while you need them:
+
+```yaml
+webhook:
+  audit:
+    debugStream:
+      enabled: false
+      maxLen: 10000
+    diagStreams:
+      enabled: false
+      maxLen: 100000
+      resources: []
+```
+
+`debugStream` captures decoded events before normal filtering and joining. `diagStreams` writes the
+per-type `diag_all` firehose with ingestion outcomes; set `resources` to a short list such as
+`["commitrequests", "configmaps"]` when chasing one type.
+
 ## Quickstart vs hand-managed resources
 
 Keep using the [root README quickstart](../README.md#quick-start) when you want the fastest install
@@ -441,6 +549,7 @@ Move to hand-managed resources when you want:
 - more than one `GitTarget`
 - more than one watch rule
 - cluster-scoped auditing with `ClusterWatchRule`
+- ad hoc save requests with `CommitRequest`
 - direct control over `GitProvider.spec.commit`
 - direct control over encryption settings
 

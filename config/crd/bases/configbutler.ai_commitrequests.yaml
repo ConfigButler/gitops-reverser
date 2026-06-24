@@ -15,7 +15,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.gitTargetRef.name
+    - jsonPath: .spec.targetRef.name
       name: GitTarget
       type: string
     - jsonPath: .status.phase
@@ -77,18 +77,6 @@ spec:
                 maximum: 300
                 minimum: 0
                 type: integer
-              gitTargetRef:
-                description: |-
-                  GitTargetRef names the GitTarget whose open commit window to finalize.
-                  The GitTarget must be in the same namespace as this CommitRequest.
-                properties:
-                  name:
-                    description: Name of the referenced GitTarget.
-                    minLength: 1
-                    type: string
-                required:
-                - name
-                type: object
               message:
                 description: |-
                   Message is an optional commit message for the finalized commit. When
@@ -102,8 +90,31 @@ spec:
                 minLength: 1
                 pattern: ^[^\x00-\x09\x0B-\x1F\x7F]*$
                 type: string
+              targetRef:
+                description: |-
+                  TargetRef names the GitTarget whose open commit window to finalize.
+                  The GitTarget must be in the same namespace as this CommitRequest.
+                properties:
+                  group:
+                    default: configbutler.ai
+                    description: API Group of the referent.
+                    type: string
+                  kind:
+                    default: GitTarget
+                    description: |-
+                      Kind of the referent.
+                      Optional because this reference currently only supports a single kind (GitTarget).
+                      Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
+                    enum:
+                    - GitTarget
+                    type: string
+                  name:
+                    type: string
+                required:
+                - name
+                type: object
             required:
-            - gitTargetRef
+            - targetRef
             type: object
             x-kubernetes-validations:
             - message: CommitRequest spec is immutable after creation
