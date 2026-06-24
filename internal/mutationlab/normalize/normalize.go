@@ -39,14 +39,30 @@ import (
 	"math/big"
 	"sort"
 	"strings"
-	"time"
 )
 
+// tsPlaceholder is the single, non-relational token every timestamp collapses to.
+//
+// Timestamps are deliberately NOT relational (<ts-1>, <ts-2>, ...). An earlier
+// chronological scheme proved unstable for objects with many near-simultaneous
+// timestamps: Kubernetes emits them at one-second granularity, so whether two
+// events (a Pod's creationTimestamp and its first status condition, say) fall in
+// the same second or adjacent seconds varies run to run, which changes how many
+// distinct values exist and shuffles every index. Object-version sequencing is
+// carried by resourceVersion (relational and numeric) and by the moment file
+// ordering instead, so collapsing every timestamp to one token keeps the corpus
+// stable without losing the ordering that matters.
+const tsPlaceholder = "<ts>"
+
 // isTimestampKey reports whether a JSON key's string value is an RFC3339
-// timestamp the normalizer rewrites to <ts-N>. "time" covers managedFields[].time.
+// timestamp the normalizer collapses to tsPlaceholder. "time" covers
+// managedFields[].time; lastTransitionTime/lastUpdateTime cover status.conditions[]
+// (Deployments, Pods, and most status-bearing types); startTime/startedAt/
+// finishedAt cover Pod and container lifecycle (Row 7's graceful delete).
 func isTimestampKey(key string) bool {
 	switch key {
-	case "creationTimestamp", "deletionTimestamp", "stageTimestamp", "requestReceivedTimestamp", "time":
+	case "creationTimestamp", "deletionTimestamp", "stageTimestamp", "requestReceivedTimestamp", "time",
+		"lastTransitionTime", "lastUpdateTime", "startTime", "startedAt", "finishedAt":
 		return true
 	default:
 		return false
@@ -60,10 +76,11 @@ func isTimestampKey(key string) bool {
 // deterministic YAML marshaling.
 //
 // Indexing rules, per the design:
-//   - uid / auditID / ip / generateName-suffix: by first appearance;
+//   - uid / auditID / ip / containerID / nodeName / generateName-suffix: by first
+//     appearance;
 //   - resourceVersion: numeric order when every observed RV in the scenario is an
 //     integer (the stream is then provably orderable), otherwise first appearance;
-//   - timestamps: chronological order, so sequencing survives normalization.
+//   - timestamps: collapsed to a single non-relational token (see tsPlaceholder).
 func Normalize(payloads []json.RawMessage) ([]any, error) {
 	decoded := make([]any, len(payloads))
 	for i, raw := range payloads {
@@ -130,8 +147,9 @@ type collector struct {
 	rv      *ordered
 	auditID *ordered
 	ip      *ordered
+	cid     *ordered
+	node    *ordered
 	rnd     *ordered
-	ts      *ordered
 	ns      *ordered
 }
 
@@ -141,8 +159,9 @@ func newCollector() *collector {
 		rv:      newOrdered(),
 		auditID: newOrdered(),
 		ip:      newOrdered(),
+		cid:     newOrdered(),
+		node:    newOrdered(),
 		rnd:     newOrdered(),
-		ts:      newOrdered(),
 		ns:      newOrdered(),
 	}
 }
@@ -194,17 +213,44 @@ func (c *collector) collectScalar(key string, v any) {
 	if !ok || s == "" {
 		return
 	}
+	// Timestamps collapse to a constant token, so they are not collected.
+	if o := c.orderedFor(key); o != nil {
+		o.add(s)
+	}
+}
+
+// orderedFor returns the relational category a scalar key belongs to, or nil if
+// the key is not normalized (or is collapsed, like timestamps).
+func (c *collector) orderedFor(key string) *ordered {
 	switch {
-	case isTimestampKey(key):
-		c.ts.add(s)
 	case key == "uid":
-		c.uid.add(s)
+		return c.uid
 	case key == "resourceVersion":
-		c.rv.add(s)
+		return c.rv
 	case key == "auditID":
-		c.auditID.add(s)
+		return c.auditID
 	case key == "namespace":
-		c.ns.add(s)
+		return c.ns
+	case isIPKey(key):
+		return c.ip
+	case key == "containerID":
+		return c.cid
+	case key == "nodeName":
+		return c.node
+	default:
+		return nil
+	}
+}
+
+// isIPKey reports whether a JSON key carries a single IP-valued string the
+// normalizer rewrites to <ip-N>: pod/host IPs and the "ip" entries inside the
+// podIPs/hostIPs arrays. (sourceIPs is an array and is handled separately.)
+func isIPKey(key string) bool {
+	switch key {
+	case "podIP", "hostIP", "ip":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -214,12 +260,15 @@ type indices struct {
 	rv      map[string]string
 	auditID map[string]string
 	ip      map[string]string
+	cid     map[string]string
+	node    map[string]string
 	rnd     map[string]string
-	ts      map[string]string
 	ns      map[string]string
-	// nsByLen is the namespace values sorted longest-first, so substring
-	// replacement in requestURIs never leaves a prefix of a longer namespace.
+	// nsByLen / ipByLen are the namespace / IP values sorted longest-first, so
+	// substring replacement (in requestURIs and in managedFields association keys
+	// like k:{"ip":"10.42.3.14"}) never leaves a prefix of a longer value.
 	nsByLen []string
+	ipByLen []string
 }
 
 func (c *collector) buildIndices() *indices {
@@ -227,14 +276,19 @@ func (c *collector) buildIndices() *indices {
 		uid:     byFirstAppearance(c.uid, "uid"),
 		auditID: byFirstAppearance(c.auditID, "auditID"),
 		ip:      byFirstAppearance(c.ip, "ip"),
+		cid:     byFirstAppearance(c.cid, "containerID"),
+		node:    byFirstAppearance(c.node, "node"),
 		rnd:     byFirstAppearance(c.rnd, "rand"),
 		rv:      assignResourceVersions(c.rv),
-		ts:      assignTimestamps(c.ts),
 		ns:      byFirstAppearance(c.ns, "ns"),
 	}
 	idx.nsByLen = append(idx.nsByLen, c.ns.items...)
 	sort.SliceStable(idx.nsByLen, func(i, j int) bool {
 		return len(idx.nsByLen[i]) > len(idx.nsByLen[j])
+	})
+	idx.ipByLen = append(idx.ipByLen, c.ip.items...)
+	sort.SliceStable(idx.ipByLen, func(i, j int) bool {
+		return len(idx.ipByLen[i]) > len(idx.ipByLen[j])
 	})
 	return idx
 }
@@ -263,44 +317,15 @@ func assignResourceVersions(o *ordered) map[string]string {
 	return m
 }
 
-// assignTimestamps assigns chronological order, ties broken by first appearance.
-// If any value is not RFC3339, the whole category falls back to first-appearance
-// order rather than guessing.
-func assignTimestamps(o *ordered) map[string]string {
-	order := append([]string(nil), o.items...)
-	parsed := make(map[string]time.Time, len(order))
-	allParsed := true
-	for _, v := range order {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			allParsed = false
-			break
-		}
-		parsed[v] = t
-	}
-	if allParsed {
-		first := o.seen
-		sort.SliceStable(order, func(i, j int) bool {
-			ti, tj := parsed[order[i]], parsed[order[j]]
-			if ti.Equal(tj) {
-				return first[order[i]] < first[order[j]]
-			}
-			return ti.Before(tj)
-		})
-	}
-	m := make(map[string]string, len(order))
-	for i, v := range order {
-		m[v] = placeholder("ts", i+1)
-	}
-	return m
-}
-
 func (idx *indices) transform(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, val := range t {
-			out[k] = idx.transformScalar(k, val, t)
+			// Values key off the original k (for type detection); the output key
+			// is rewritten so a volatile value embedded in a managedFields
+			// association key (k:{"ip":"10.42.3.14"}) does not churn the corpus.
+			out[idx.rewriteKey(k)] = idx.transformScalar(k, val, t)
 		}
 		return out
 	case []any:
@@ -332,24 +357,42 @@ func (idx *indices) transformScalar(key string, v any, parent map[string]any) an
 		}
 	}
 	if s, ok := stringVal(v); ok {
-		switch {
-		case isTimestampKey(key):
-			return lookup(idx.ts, s)
-		case key == "uid":
-			return lookup(idx.uid, s)
-		case key == "resourceVersion":
-			return lookup(idx.rv, s)
-		case key == "auditID":
-			return lookup(idx.auditID, s)
-		case key == "namespace":
-			return lookup(idx.ns, s)
-		case key == "requestURI", key == "selfLink":
+		if isTimestampKey(key) {
+			return tsPlaceholder
+		}
+		if m := idx.mapForKey(key); m != nil {
+			return lookup(m, s)
+		}
+		if key == "requestURI" || key == "selfLink" {
 			// The namespace appears embedded in the path; replace it as a
 			// substring so a unique per-run namespace does not churn the corpus.
 			return idx.replaceNamespaces(s)
 		}
 	}
 	return idx.transform(v)
+}
+
+// mapForKey returns the placeholder map a scalar key is rewritten through, or nil
+// if the key is not a relational normalized leaf. It mirrors collector.orderedFor.
+func (idx *indices) mapForKey(key string) map[string]string {
+	switch {
+	case key == "uid":
+		return idx.uid
+	case key == "resourceVersion":
+		return idx.rv
+	case key == "auditID":
+		return idx.auditID
+	case key == "namespace":
+		return idx.ns
+	case isIPKey(key):
+		return idx.ip
+	case key == "containerID":
+		return idx.cid
+	case key == "nodeName":
+		return idx.node
+	default:
+		return nil
+	}
 }
 
 // replaceNamespaces rewrites each collected namespace value, wherever it appears
@@ -360,6 +403,21 @@ func (idx *indices) replaceNamespaces(s string) string {
 		s = strings.ReplaceAll(s, ns, idx.ns[ns])
 	}
 	return s
+}
+
+// rewriteKey rewrites a map key, replacing any embedded namespace or IP value
+// with its placeholder. Most keys contain neither and pass through unchanged;
+// the case that matters is a managedFields fieldsV1 association key such as
+// k:{"ip":"10.42.3.14"}, where a volatile value is part of the key itself.
+func (idx *indices) rewriteKey(k string) string {
+	if !strings.HasPrefix(k, "k:{") {
+		return k
+	}
+	k = idx.replaceNamespaces(k)
+	for _, ip := range idx.ipByLen {
+		k = strings.ReplaceAll(k, ip, idx.ip[ip])
+	}
+	return k
 }
 
 func (idx *indices) rewriteGeneratedName(v any, parent map[string]any) (string, bool) {

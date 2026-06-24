@@ -53,7 +53,9 @@ spec:
         - --audit-addr=:9444
         - --audit-cert-dir=/tmp/k8s-audit-server/audit-server-certs
         - --api-addr=:8081
-        - --watch-resources=v1/configmaps
+        # M1 configmaps + M2 workload types: Deployments for the status/scale
+        # subresource rows (5, 6) and Pods for the graceful-delete row (7).
+        - --watch-resources=v1/configmaps,apps/v1/deployments,v1/pods
         readinessProbe:
           httpGet:
             path: /readyz

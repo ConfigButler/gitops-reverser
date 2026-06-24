@@ -1,22 +1,21 @@
 # Mutation Capture Lab Design
 
-Status: M0 done + a first M1 slice captured (uncommitted). The harness — the lab
-binary (`cmd/mutation-capture-lab/`), record model, normalizer, store, golden-corpus
-plumbing, and the watch/audit/admission recorders under `internal/mutationlab/` — is
-built with unit coverage. Per a steering decision, the lab **reuses the product's
-webhook URLs** rather than serving its own: it listens on `/validate-admission-webhook`,
-`/audit-webhook`, and the proxy-enrichment `/audit-webhook-additional`, so `task lab-e2e`
-integrates by **swapping the controller image** for the lab image on the already-prepared
-e2e cluster — no new audit policy, webhook config, or certificates (see
-[Isolated Test Setup](#isolated-test-setup)). The live-cluster driver
-(`test/mutationlab/e2e/`, build tag `mutationlab_e2e`) captures five ConfigMap scenarios —
-create-succeeds (M0) plus update, dry-run-create, record-and-reject, and deletecollection
-(M1) — into a committed corpus under `test/mutationlab/corpus/` (captured against
-**k8s v1.35.2+k3s1**, see `CLUSTER.md`). The capture round-trips: `task lab-corpus-update`
-writes it, and `task lab-e2e` re-captures and **compares clean**, so the normalizer is
-proven deterministic.
+Status: M0, M1 (the ConfigMap slice), and **M2 (workload subresources + grace-period
+delete)** are captured and committed under `test/mutationlab/corpus/` (against **k8s
+v1.35.2+k3s1**, see `CLUSTER.md`). The harness — the lab binary
+(`cmd/mutation-capture-lab/`), record model, normalizer, store, golden-corpus plumbing, and
+the watch/audit/admission recorders under `internal/mutationlab/` — is built with unit
+coverage. Per a steering decision, the lab **reuses the product's webhook URLs** rather than
+serving its own: it listens on `/validate-admission-webhook`, `/audit-webhook`, and the
+proxy-enrichment `/audit-webhook-additional`, so `task lab-e2e` integrates by **swapping the
+controller image** for the lab image on the already-prepared e2e cluster — no new audit
+policy, webhook config, or certificates (see [Isolated Test Setup](#isolated-test-setup)).
+The live-cluster driver (`test/mutationlab/e2e/`, build tag `mutationlab_e2e`) captures the
+committed scenarios; `task lab-corpus-update` writes the corpus and `task lab-e2e` re-captures
+and **compares clean** (proven deterministic across repeated runs), so a corpus diff in a PR
+is a real signal.
 
-**First corpus-driven findings (v1.35.2)** — exactly the kind the lab exists to surface:
+**M1 corpus-driven findings (v1.35.2)** — exactly the kind the lab exists to surface:
 
 - a `deletecollection` fans out into **N per-object watch `DELETED`** events as expected
   (Row 9), and the apiserver runs validating admission **once per object** (three named
@@ -32,8 +31,49 @@ proven deterministic.
   event and no etcd object** (Rows 11–12), and the reject's denial message rides through to
   the audit `responseStatus` (`code: 403`, the lab's own policy message).
 
-Remaining M1 (Rows 3, 8, 10, 13, 16–17 — server-side apply, finalizer delete, owner-ref
-cascade, optimistic-concurrency conflict, watch resync, bookmark) and M2–M4 are ahead.
+**M2 corpus-driven findings (v1.35.2)** — the headline is mechanism *silence*, and the silence
+is **aligned with what GitOps Reverser is for**. The product captures *intent* — the declared
+`spec` a human authored — not operational/runtime state. That is exactly why the reused audit
+policy ignores `*/status` (controller-owned runtime), `*/scale` from the HPA (an autoscaler, not a
+person), and `pods` outright (a Pod is rarely *direct* intent — you declare a Deployment or
+StatefulSet and a controller creates the Pods). So the M2 silences below are the capture policy
+correctly dropping operational noise, not a lab gap (see [Capturing intent, not
+state](#capturing-intent-not-state)):
+
+- **Row 5 (`/status`) — only watch sees it.** The audit policy drops both `apps/*/status`
+  and core `*/status`, and the validating webhook matches **top-level resources only**, so a
+  Deployment `/status` write reaches **neither audit nor admission**; the watch is the lone
+  witness. And the watch witnesses two events, because **status is controller-owned**: the
+  user write (`observedGeneration: 99`) is immediately **clobbered** by the deployment
+  controller back to the real value (`observedGeneration: 1`) — a user `/status` write does
+  not persist. The corpus is the two `MODIFIED` events, side by side.
+- **Row 6 (`/scale`) — audit yes, admission no.** A `/scale` patch *is* audited (the policy
+  drops scale only for the HPA service account, not for a user), recorded as `verb: patch`
+  with `objectRef.subresource: scale`; but it still never reaches admission (subresource).
+  The audit body is an `autoscaling/v1` `Scale` object that **carries none of the parent's
+  labels** — a real attribution wrinkle the harness had to handle.
+- **Row 7 (Pod graceful delete) — admission yes, audit no.** Core `pods` are dropped from
+  the audit policy entirely, so a Pod delete is **invisible to audit**; pods are top-level,
+  so the `DELETE` *does* reach the validating webhook. The watch shows the two-step removal:
+  `MODIFIED` with `deletionTimestamp` set while the pod is still `Running`, then `DELETED`
+  once the kubelet has terminated the container (`phase: Failed`, `exitCode: 137` from the
+  post-grace `SIGKILL`). The intermediate kubelet status writes during termination are
+  timing-dependent, so the corpus keeps the two load-bearing moments (deletion-pending +
+  terminal) and the structured layer asserts the law over the full event stream.
+- **Normalization refinement (forced by M2).** Capturing rich objects exposed that
+  **relational, chronological `<ts-N>` timestamps are not stable**: Kubernetes emits
+  timestamps at one-second granularity, so whether two near-simultaneous events (a Pod's
+  `creationTimestamp` and its first condition, say) share a second varies run to run, which
+  shuffles the indices. Timestamps now collapse to a single non-relational `<ts>`;
+  object-version sequencing is carried by `resourceVersion` (relational, numeric) and the
+  moment file ordering instead. M2 also added placeholders for `containerID`, `nodeName`,
+  pod/host IPs, and — the subtle one — IPs **embedded in `managedFields` association keys**
+  (`k:{"ip":"10.42.3.14"}`).
+
+Remaining M1 (Rows 3, 4, 8, 10, 13, 16–17 — server-side apply, no-op apply, finalizer delete,
+owner-ref cascade, optimistic-concurrency conflict, watch resync, bookmark) are still ahead, as is
+**M3** (multi-version CRD conversion — designed below in [Milestones](#milestones) but not
+yet built, pending the decision to grow the lab's cluster footprint by one CRD) and M4.
 
 Related:
 
@@ -73,6 +113,38 @@ The lab has three jobs, and the first two are the durable ones:
 The application is **not** another implementation of GitOps Reverser. It is a lab: a minimal set
 of recorders and scenarios whose output is (a) machine-checked behavioral invariants and (b) a
 human-readable library of captured payloads.
+
+## Capturing Intent, Not State
+
+GitOps Reverser exists to mirror **intent** into Git — the declared `spec` a human (or a
+higher-level controller acting on a human's declaration) authored — not the operational, runtime
+*state* the cluster derives from it. This single distinction explains most of how the capture
+surface is tuned, and it is the lens through which the lab's findings should be read:
+
+- **`status` is not intent.** It is controller-owned runtime truth that churns continuously and is
+  reconstructed on demand, so committing it to Git would be noise, not history. The audit policy
+  therefore drops `*/status`, and M2 confirms the consequence directly: a user `/status` write is
+  even *clobbered* by the owning controller (Row 5). Intent lives in `spec`; `status` is downstream.
+- **Autoscaler/operational writes are not (human) intent.** The policy drops `*/scale` from the HPA
+  service account specifically — an autoscaler adjusting replicas is the system reacting, not a
+  person declaring. A *human* scaling a Deployment via `/scale` is still captured (Row 6), because
+  that is an intent edit.
+- **Some whole resource types are not intent.** A `Pod` is rarely *direct* intent — you declare a
+  `Deployment`/`StatefulSet`/`Job` and a controller materializes Pods — so the audit policy drops
+  `pods` outright (also `events`, `endpoints`, `nodes`, leases: all operational). The intent-bearing
+  object is the workload controller's `spec`, not the Pods it spawns.
+
+So the M2 "silences" are not gaps in the lab or the wiring — they are the capture policy **correctly
+declining to record operational state**. The lab's job there is to *confirm* the boundary holds (and
+to show that where a mechanism does fire on an operational surface, e.g. the validating webhook still
+seeing a Pod `DELETE`, it is the always-allow recorder being harmlessly broad, not a capture
+decision). The flip side is the load-bearing positive result: in every place the provenance
+mechanisms fall silent on operational state, the **watch still carries the full object** — which is
+why watch is a credible state-mirroring source for the *intent-bearing* types a `WatchRule` selects.
+
+This is a product framing, not a lab mechanism, but it is the reason the corpus looks the way it does
+and is referenced from the [Difficult Cases Catalog](#difficult-cases-catalog) and the M2 findings
+above. Capturing operational state would be a different (and probably unwanted) product.
 
 ## What "Capture The Difficult Situations" Means
 
@@ -205,7 +277,7 @@ unnecessary.
 | `auditID` is unique per API request; admission `request.uid` identifies the apiserver↔webhook round trip (so they are **not** equal) | **Cite** | <https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/> · <https://kubernetes.io/docs/reference/config-api/apiserver-admission.v1/> |
 | mutating admission runs **before** validating admission (so a validating recorder only ever sees the already-mutated object — no mutating recorder is built) | **Cite** | <https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/> |
 | validating webhooks run **in parallel**; any single rejection fails the whole write | **Cite** | <https://kubernetes.io/docs/concepts/cluster-administration/admission-webhooks-good-practices/> |
-| `matchPolicy: Equivalent` may deliver a **converted** object; `requestKind`/`requestResource` carry the original (lab pins `matchPolicy: Exact` to keep Row 14 deterministic) | **Cite** | <https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/> |
+| `matchPolicy: Equivalent` may deliver a **converted** object; `requestKind`/`requestResource` carry the original (the reused `Equivalent`+`*` webhook matches every version, so it observes the submitted one — see M3 design) | **Cite** | <https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/> |
 | `AdmissionResponse.auditAnnotations` surface in the audit log, prefixed by the webhook name | **Cite** the mechanism; **verify** it actually joins our records | <https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/> |
 
 The rule of thumb: if a naive reader would get the behavior *wrong*, or it could *change* in a
@@ -328,10 +400,11 @@ Specific failure modes the corpus must make visible:
 - the **version** the recorder sees is not guaranteed to be the submitted one: with
   `matchPolicy: Equivalent` the apiserver may convert the object to a version the webhook registered
   for before calling it, with the original request preserved in `request.requestKind`/`requestResource`.
-  To keep Row 14 (multi-version CRD conversion) deterministic, the lab pins **`matchPolicy: Exact`** with
-  an explicit rule per served `apiVersion`, so the recorder observes exactly the submitted version, and
-  it records `requestKind`/`requestResource`/`requestSubResource` so any conversion is visible in the
-  corpus rather than silent (see
+  The lab reuses the product webhook, which is `matchPolicy: Equivalent` over `apiVersions: ['*']`;
+  because that rule matches every version, no conversion happens before the call and the recorder
+  observes the **submitted** version anyway. It records `requestKind`/`requestResource`/
+  `requestSubResource` so any conversion is visible in the corpus rather than silent. (Row 14 needs no
+  dedicated `Exact` webhook — see the [M3 design](#m3-design--crd--conversion); see also
   [Dynamic Admission Control](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/)).
 
 ## Difficult Cases Catalog
@@ -341,7 +414,12 @@ resource with two served versions (to exercise conversion). Add an aggregated AP
 once the built-in cases read cleanly. A few rows cannot be expressed with `ConfigMap` and are
 captured against a workload type instead: Rows 5 and 6 need an object with `/status` and `/scale`
 subresources (a `Deployment`), and Row 7's two-event graceful delete needs a grace period (a `Pod`).
-`ConfigMap` has none of these, so those rows move to a later milestone — see [Milestones](#milestones).
+`ConfigMap` has none of these, so those rows were captured in **M2** against those types — see
+[Milestones](#milestones). To keep the workload rows deterministic despite their active controllers,
+the Deployment is created **paused with zero replicas** (so the only post-setup events are the
+subresource write under test plus the controller's single status follow-up, never rollout/pod churn),
+and the Pod sets `automountServiceAccountToken: false` (so no random `kube-api-access-XXXXX` volume
+name churns the corpus).
 
 The matrix below is the contract for what the corpus must contain. Each row maps to a scenario
 directory under `test/mutationlab/corpus/<resource>/<scenario>/` holding one file per emitted
@@ -354,19 +432,29 @@ moment. "Moment" is deliberate: a single user action can produce several ordered
 | 2 | Update / strategic-merge patch | `MODIFIED` (final) | `update` / `patch` | UPDATE, object + oldObject | verb differs by request shape |
 | 3 | Server-side apply | one or more `MODIFIED` | `apply` (or `patch`) | UPDATE with apply options | managedFields churn |
 | 4 | No-op apply | often **no** event (rv unchanged) | request still recorded | request still recorded | watch silence is the finding |
-| 5 | Status subresource update | `MODIFIED` on the object | `update`, objectRef `subresource: status` | UPDATE, `subresource: status` | one object, two write surfaces |
-| 6 | Scale subresource patch | `MODIFIED` | `patch`, `subresource: scale` | UPDATE, `subresource: scale` | subresource routing |
-| 7 | Graceful delete | `MODIFIED` (deletionTimestamp) then `DELETED` | `delete` | DELETE | two watch events for one delete |
+| 5 | Status subresource update | two `MODIFIED`: user write, then controller **clobber** | **none** — policy drops `*/status` | **none** — webhook ignores subresources | status is controller-owned; only watch sees it (verified M2) |
+| 6 | Scale subresource patch | `MODIFIED` (scale) + controller `observedGeneration` follow-up | `patch`, `subresource: scale` | **none** — webhook ignores subresources | audited but never admitted; `Scale` body carries no labels (verified M2) |
+| 7 | Graceful delete | `MODIFIED` (deletionTimestamp) then `DELETED` | **none** — policy drops `pods` | DELETE (pods are top-level) | two watch events for one delete; audit is blind (verified M2) |
 | 8 | Finalizer delete | `MODIFIED` (deletionTimestamp+finalizers), later `DELETED` | `delete`, then `patch`/`update` removing the finalizer — **no second `delete`** | DELETE, then later UPDATEs | final `DELETED` has no matching audit delete verb |
 | 9 | Deletecollection | **N** `DELETED`, no collection event | **one** name-less `deletecollection` | one DELETE (collection), empty name | fan-out asymmetry — the watch-mode pressure test |
 | 10 | Owner-ref cascade delete | child `DELETED` events | child deletes attributed to the GC system user, not the human | DELETE by `system:serviceaccount:kube-system:generic-garbage-collector` | provenance is the system, not a user |
 | 11 | Dry-run create | **no** watch event, no etcd object | event with `dryRun`, no persistence | CREATE, `dryRun: true` | seen but never persisted |
 | 12 | Rejected during validation | **no** watch event | failed response (`code` 4xx) | recorder is **always called** (parallel validation) and, in this scenario, record-and-rejects | admission saw a write that never persisted |
 | 13 | Optimistic-concurrency conflict | no final change | failed response, `code: 409`, `Status` body | admission may have seen the attempted object | failure carries a Status, not the object |
-| 14 | Multi-version CRD conversion | `MODIFIED` in the *served* version | bodies in the request/stored version | object in the **submitted** version (lab pins `matchPolicy: Exact`) | three potentially different shapes for one write |
+| 14 | Multi-version CRD conversion | `MODIFIED` in the *served* version | bodies in the request/stored version | object in the **submitted** version (reused `Equivalent`+`*` webhook delivers it — see M3 design) | three potentially different shapes for one write |
 | 15 | Aggregated API write | depends on backing store | often **empty** request/response body | depends on the aggregated server | the body-quality cliff |
 | 16 | Watch resync (`410 Gone`) | `ERROR`, then must relist | n/a | n/a | proves watch needs a list backstop |
 | 17 | Bookmark | `BOOKMARK` with resourceVersion | n/a | n/a | the only safe resume anchor |
+
+The **none** cells in Rows 5–7 are not omissions — they are the reused product wiring working as
+designed, because the product captures intent, not state (see [Capturing Intent, Not
+State](#capturing-intent-not-state)). The audit policy (`test/e2e/cluster/audit/policy.yaml`) drops
+`apps/*/status`, core `*/status`, and core `pods`, and the validating webhook
+(`config/webhook/validating-webhook.yaml`) matches **top-level resources only**. So the corpus for
+these rows is honestly smaller than a first reading of the matrix suggests: `/status` and `/scale`
+never reach admission; `/status` and `pods` never reach audit. That the *watch* still carries the
+full object in every one of these silences is precisely the "watch is viable for state" evidence the
+lab exists to produce.
 
 (The "mutating webhook precedes validation" behavior is **not** a corpus row — it is a documented
 Kubernetes contract the lab cites rather than re-proves; see
@@ -376,9 +464,10 @@ require a mutating recorder the lab deliberately does not build.)
 ### Illustrative shapes for the hardest rows
 
 These snippets show the *expected* shape and the normalization placeholders (`<uid-1>`, `<rv-1>`,
-`<ts-1>`, `<auditID-1>`). The placeholders are *relational*: distinct values get distinct indices and
-equal values repeat the same index, so identity and ordering survive normalization (see
-[Normalization](#normalization)). They are illustrative — the lab generates the authoritative files.
+`<ts>`, `<auditID-1>`). The identity placeholders are *relational*: distinct values get distinct
+indices and equal values repeat the same index, so identity and ordering survive normalization;
+timestamps are the exception and collapse to a single `<ts>` (see [Normalization](#normalization)).
+They are illustrative — the lab generates the authoritative files.
 
 **Row 9 — deletecollection (the fan-out asymmetry).** Three ConfigMaps removed by one request.
 
@@ -431,7 +520,7 @@ requestObject:
   kind: DeleteOptions
   apiVersion: v1
   propagationPolicy: Background
-stageTimestamp: <ts-1>
+stageTimestamp: <ts>
 ```
 
 **Row 8 — finalizer delete (the missing audit delete).** The delete sets a tombstone; the object
@@ -454,7 +543,7 @@ object:
     namespace: lab
     uid: <uid-1>
     resourceVersion: <rv-1>
-    deletionTimestamp: <ts-1>
+    deletionTimestamp: <ts>
     finalizers:
     - lab.example/hold
 ```
@@ -538,17 +627,39 @@ order**:
 |---|---|---|
 | `metadata.uid`, admission `request.uid` | `<uid-N>` | one per distinct UID, by first appearance |
 | `metadata.resourceVersion` | `<rv-N>` | observed order within one resource stream; numeric order only after the lab proves the stream's RVs are orderable |
-| `creationTimestamp`, `deletionTimestamp`, `stageTimestamp`, `requestReceivedTimestamp`, `managedFields[].time` | `<ts-N>` | chronological order, so sequencing survives |
+| `creationTimestamp`, `deletionTimestamp`, `stageTimestamp`, `requestReceivedTimestamp`, `managedFields[].time`, `lastTransitionTime`, `lastUpdateTime`, `startTime`, `startedAt`, `finishedAt` | `<ts>` | **collapsed to one non-relational token** — see note below |
 | audit `auditID` | `<auditID-N>` | one per distinct request |
 | `generateName` random suffixes | `<rand-N>` | one per distinct suffix |
-| source IPs / ports | `<ip-N>` / `<port-N>` | one per distinct value |
+| source IPs, pod/host IPs (incl. inside `managedFields` association keys) | `<ip-N>` | one per distinct value, by first appearance |
+| container runtime IDs (`containerID`) | `<containerID-N>` | one per distinct value, by first appearance |
+| `spec.nodeName` | `<node-N>` | one per distinct node, by first appearance |
+
+The non-timestamp categories are **relational, not flattened**: collapsing every UID to one `<uid>`
+and every resourceVersion to one `<rv>` would erase exactly the evidence the hard rows exist to
+capture — which objects in a deletecollection fan-out are distinct, which child in an owner-ref
+cascade is which, that a finalizer's terminal `DELETED` is the *same* object at a *higher*
+resourceVersion. So each is replaced by an **indexed** placeholder, assigned deterministically, so
+that **equal inputs map to the same placeholder, distinct inputs to distinct placeholders, and the
+index order reflects real order**.
+
+**Timestamps are the exception: they collapse to a single non-relational `<ts>`.** An earlier
+chronological `<ts-N>` scheme proved unstable once M2 captured rich objects — Kubernetes emits
+timestamps at one-second granularity, so whether two near-simultaneous events (a Pod's
+`creationTimestamp` and its first status condition, say) fall in the same second or adjacent seconds
+varies run to run, changing how many distinct values exist and shuffling every index. Object-version
+sequencing is carried by `resourceVersion` (relational, numeric) and by the moment file ordering
+instead, so the timestamp value adds little and the relational form costs determinism. (If a future
+row genuinely needs *timestamp* sequencing that `resourceVersion` cannot express, revisit this — but
+no row to date does.)
 
 The indexing is scenario-scoped and stable across runs: the same captured behavior always yields the
 same placeholders, so the corpus stays diff-free unless identity or ordering genuinely changed.
 Everything else is preserved verbatim — including `managedFields` themselves, because their growth
-under server-side apply is sometimes exactly the behavior under test. The normalizer lives in one
-place (`internal/mutationlab/normalize`) and is the *only* thing allowed to mutate a payload on its
-way to disk.
+under server-side apply is sometimes exactly the behavior under test (M2 added one wrinkle here: a
+`managedFields` *association key* can embed a volatile value, e.g. `k:{"ip":"10.42.3.14"}` for a
+pod IP, so the normalizer rewrites those embedded IPs in keys as well as in values). The normalizer
+lives in one place (`internal/mutationlab/normalize`) and is the *only* thing allowed to mutate a
+payload on its way to disk.
 
 ### Golden workflow
 
@@ -760,23 +871,91 @@ obvious — including the possibility that the right answer is to not add the mo
 
 ## Milestones
 
-Each milestone ends with committed corpus files and green invariants. Stop after M1 and read the
-corpus before expanding — the lab is valuable only while it stays small enough that the behavior is
-obvious.
+Each milestone ends with committed corpus files and green invariants. The lab is valuable only while
+it stays small enough that the behavior is obvious, so each milestone is a deliberate stop-and-read
+point, not a runway to the next.
 
-- **M0 — Harness skeleton.** Lab binary, in-memory store, normalizer, golden-file compare/update
-  plumbing, `task lab-e2e` standing up its own k3d profile. No scenarios yet; prove the loop
-  (capture → normalize → write → diff) works on a single create.
-- **M1 — ConfigMap core moments.** The rows `ConfigMap` can actually exercise — Rows 1–4, 8–13, and
-  16–17 — across both the watch/admission lane and the audit lane. Rows 5, 6, and 7 are deliberately
-  excluded: `ConfigMap` has no `/status` or `/scale` subresource and no grace period, so it cannot
-  produce those moments (they move to M2). Commit the corpus and `CLUSTER.md`. **Stop here and read
-  the corpus before expanding.**
-- **M2 — Workload subresources and grace-period delete.** The moments `ConfigMap` structurally
-  cannot reach: a `Deployment` for Row 5 (`/status`) and Row 6 (`/scale`), and a `Pod` for Row 7
-  (the two-event graceful delete a grace period produces).
-- **M3 — CRD + conversion.** A two-version lab CRD with a conversion webhook to capture Row 14:
-  the persisted-vs-admission-vs-served divergence.
+- **M0 — Harness skeleton. ✅ done.** Lab binary, in-memory store, normalizer, golden-file
+  compare/update plumbing, `task lab-e2e` (swap-image model). The loop (capture → normalize → write →
+  diff) proven on a single create.
+- **M1 — ConfigMap core moments. ✅ done.** The rows captured so far — Rows 1–2, 9, 11–12 — across the
+  watch/admission and audit lanes. (Rows 3, 4, 8, 10, 13, 16–17 remain to fill in.) Corpus and
+  `CLUSTER.md` committed.
+- **M2 — Workload subresources and grace-period delete. ✅ done.** A `Deployment` for Row 5
+  (`/status`) and Row 6 (`/scale`), and a `Pod` for Row 7 (the two-event graceful delete). The
+  headline finding is mechanism silence under the reused product wiring (audit drops `*/status` and
+  `pods`; the webhook ignores subresources) — see the Status section. Corpus committed and verified
+  deterministic.
+- **M3 — CRD + conversion. ⏳ designed, not yet built** (see [M3 design](#m3-design--crd--conversion)
+  below). A two-version lab CRD with a conversion webhook to capture Row 14: the
+  persisted-vs-admission-vs-served divergence. M3 is the first milestone that adds a **new cluster
+  object** (one CRD) beyond the image swap, so it is gated on an explicit go-ahead.
 - **M4 — Aggregated API (Row 15).** Only if M1–M3 read cleanly. Document the body-quality cliff.
 
-After M1, take the decision-gate conversation back to Issue #168 with the corpus as the evidence.
+Take the watch-vs-audit-vs-hybrid decision-gate conversation back to Issue #168 with the corpus as
+the evidence; M1+M2 already make the "watch is the lone witness for `/status` and pod deletes" point
+concretely.
+
+### M3 design — CRD + conversion
+
+> Status: **proposed**. M3 is the point where the lab's cluster footprint grows past "swap the image
+> and touch nothing else," so it is written up here and **paused for a go-ahead** before any CRD is
+> installed. M1+M2 deliberately added zero cluster objects; M3 adds exactly one (a CRD).
+
+**What Row 14 needs.** One write to a multi-version CRD can produce three *different* shapes: the
+object the user **submitted**, the object **admission** validated, and the object **persisted** (in
+the storage version) and re-served in another version. To make that divergence visible and
+deterministic, the lab needs a CRD with two served versions (say `v1` and `v2`) whose schemas differ
+by a real, webhook-converted field (e.g. `v1.spec.sizeBytes: integer` ⇄ `v2.spec.size: string`), one
+of them the storage version. A `strategy: None` conversion only swaps `apiVersion`; a genuine field
+rename requires a **conversion webhook**.
+
+**Why a CRD is the right vehicle (and why it is also easier than M2).** Unlike a Deployment or Pod, a
+lab CRD has **no controller**, so there is no status churn or clobber — the watch stream is exactly
+the writes the test makes. The determinism work M2 needed (paused deployments, record selection) is
+unnecessary here. The cost is purely the install footprint.
+
+**Footprint: one CRD, reusing the existing cert and port.** The conversion webhook does **not** need
+a new certificate or a new server:
+
+- the CRD's `spec.conversion.webhook.clientConfig` points at the existing `gitops-reverser` service
+  on the existing admission port (`:9443`) at a **new path, `/convert`**, served by the lab binary
+  alongside `/validate-admission-webhook` on the same TLS listener;
+- the CA bundle is injected by cert-manager via a `cert-manager.io/inject-ca-from` annotation on the
+  CRD, reusing the admission server's existing `Certificate` — no new cert;
+- RBAC needs nothing new: the controller already has `*` get/list/watch (so the lab can watch the
+  CR), and the live-cluster driver authenticates as the kubeconfig admin (so it can create CRs).
+
+So the only genuinely new cluster object is the **CRD manifest** itself, applied by the lab task
+before the driver runs (and removed after, or left for `task clean-cluster`). This is the footprint
+growth that needs sign-off.
+
+**matchPolicy — the reused webhook already observes the submitted version.** An earlier draft said
+the lab would *pin* `matchPolicy: Exact` to guarantee the recorder sees the submitted version. With
+the swap-image model the lab instead reuses the product's webhook, which is `matchPolicy: Equivalent`
+matching `apiVersions: ['*']`. Because the rule matches *every* version, the request's version is
+always directly matched and the apiserver performs **no conversion before calling** — so the recorder
+already observes the **submitted** version, and recording `request.requestKind`/`requestResource`
+makes any conversion visible rather than silent. A dedicated `Exact` webhook for the CRD is therefore
+**not required** for Row 14; it stays an optional extra only if a future need for strict per-version
+rules appears (and would itself be new webhook-config footprint). This supersedes the "lab pins
+`matchPolicy: Exact`" note in [Mechanisms Under Test](#3-validating-admission-webhook) and the Row 14
+matrix entry.
+
+**New code for M3.**
+
+1. A CRD manifest under `test/mutationlab/` (two served versions + the cert-manager CA-injection
+   annotation + the conversion-webhook clientConfig).
+2. A `/convert` handler in the lab binary that implements the `v1`⇄`v2` field rename and **records
+   each `ConversionReview`** as a new record source (so the corpus shows what the apiserver asked the
+   webhook to convert, and to which version) — the conversion path is itself a behavior worth a
+   corpus row.
+3. A `Watch` over the CR (added to `--watch-resources`), plus a scenario that creates in `v1`, reads
+   back in `v2`, and captures the watch (served version), audit (request + storage version), and
+   admission (submitted version) shapes side by side.
+4. Lab-task wiring to apply/remove the CRD around the run.
+
+**Open decision (the reason this is paused).** Approve adding one CRD to the lab's cluster footprint
+(self-contained, cert/port reused, removed on teardown)? If yes, M3 proceeds as above. If the
+preference is to keep the lab strictly image-swap-only, M3 stays deferred and the CRD-conversion
+question is documented as out of scope for the lab.

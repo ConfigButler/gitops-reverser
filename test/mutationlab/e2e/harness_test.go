@@ -166,12 +166,23 @@ type drainSpec struct {
 	minCount int
 	settle   time.Duration
 	timeout  time.Duration
+	// until, when set, is an extra gate: the drain will not return until it holds
+	// (e.g. "a watch DELETED has arrived"), so a settle window shorter than the
+	// event spacing cannot return mid-sequence. Row 7's terminal DELETED arrives
+	// only after the grace period, well after the deletion-pending MODIFIED.
+	until func([]mutationlab.Record) bool
+	// alsoNamespace, when set, unions in records attributed to that namespace key,
+	// not just the scenario id. A named subresource audit event (e.g. a /scale
+	// patch, whose Scale body carries no labels) attributes to the namespace
+	// rather than the scenario id, so the scenario must read both keys.
+	alsoNamespace string
 }
 
 // drain polls the lab records API for one scenario until at least minCount records
-// have arrived and the count has been quiet for the settle window, or it fails on
-// timeout. This rejects a stray cross-scenario event rather than averaging it into
-// the corpus, and awaits a slow audit batch rather than missing it.
+// have arrived, the optional until gate holds, and the count has been quiet for
+// the settle window, or it fails on timeout. This rejects a stray cross-scenario
+// event rather than averaging it into the corpus, and awaits a slow audit batch
+// rather than missing it.
 func (h *harness) drain(t *testing.T, id string, spec drainSpec) []mutationlab.Record {
 	t.Helper()
 	deadline := time.Now().Add(spec.timeout)
@@ -179,19 +190,40 @@ func (h *harness) drain(t *testing.T, id string, spec drainSpec) []mutationlab.R
 	stableSince := time.Now()
 	prevCount := -1
 	for time.Now().Before(deadline) {
-		records := h.mustFetch(t, id)
+		records := h.fetchScenario(t, id, spec.alsoNamespace)
 		if len(records) != prevCount {
 			prevCount = len(records)
 			stableSince = time.Now()
 		}
 		last = records
-		if len(records) >= spec.minCount && time.Since(stableSince) >= spec.settle {
+		gated := spec.until == nil || spec.until(records)
+		if len(records) >= spec.minCount && gated && time.Since(stableSince) >= spec.settle {
 			return records
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatalf("drain timed out for scenario %s: got %d records, want >= %d", id, len(last), spec.minCount)
 	return nil
+}
+
+// fetchScenario returns the records attributed to the scenario id, optionally
+// unioned (deduped by record ID) with those attributed to a namespace key.
+func (h *harness) fetchScenario(t *testing.T, id, namespace string) []mutationlab.Record {
+	t.Helper()
+	records := h.mustFetch(t, id)
+	if namespace == "" {
+		return records
+	}
+	seen := map[string]bool{}
+	for _, r := range records {
+		seen[r.ID] = true
+	}
+	for _, r := range h.mustFetch(t, namespace) {
+		if !seen[r.ID] {
+			records = append(records, r)
+		}
+	}
+	return records
 }
 
 func (h *harness) mustFetch(t *testing.T, id string) []mutationlab.Record {

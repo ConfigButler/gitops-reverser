@@ -12,7 +12,7 @@ request:
       key: updated
     kind: ConfigMap
     metadata:
-      creationTimestamp: <ts-1>
+      creationTimestamp: <ts>
       labels:
         mutationlab.configbutler.ai/scenario: update
       managedFields:
@@ -28,7 +28,7 @@ request:
               f:mutationlab.configbutler.ai/scenario: {}
         manager: e2e.test
         operation: Update
-        time: <ts-2>
+        time: <ts>
       name: cm-a
       namespace: <ns-1>
       resourceVersion: <rv-1>
@@ -39,7 +39,7 @@ request:
       key: value
     kind: ConfigMap
     metadata:
-      creationTimestamp: <ts-1>
+      creationTimestamp: <ts>
       labels:
         mutationlab.configbutler.ai/scenario: update
       managedFields:
@@ -55,7 +55,7 @@ request:
               f:mutationlab.configbutler.ai/scenario: {}
         manager: e2e.test
         operation: Update
-        time: <ts-1>
+        time: <ts>
       name: cm-a
       namespace: <ns-1>
       resourceVersion: <rv-1>

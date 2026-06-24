@@ -20,7 +20,7 @@ requestObject:
       mutationlab.configbutler.ai/scenario: record-and-reject
     name: cm-reject
     namespace: <ns-1>
-requestReceivedTimestamp: <ts-2>
+requestReceivedTimestamp: <ts>
 requestURI: /api/v1/namespaces/<ns-1>/configmaps
 responseObject:
   apiVersion: v1
@@ -39,7 +39,7 @@ responseStatus:
 sourceIPs:
 - <ip-1>
 stage: ResponseComplete
-stageTimestamp: <ts-3>
+stageTimestamp: <ts>
 user:
   extra:
     authentication.kubernetes.io/credential-id:

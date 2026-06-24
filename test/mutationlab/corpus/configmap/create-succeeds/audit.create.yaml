@@ -19,7 +19,7 @@ requestObject:
       mutationlab.configbutler.ai/scenario: create-succeeds
     name: cm-a
     namespace: <ns-1>
-requestReceivedTimestamp: <ts-2>
+requestReceivedTimestamp: <ts>
 requestURI: /api/v1/namespaces/<ns-1>/configmaps
 responseObject:
   apiVersion: v1
@@ -27,7 +27,7 @@ responseObject:
     key: value
   kind: ConfigMap
   metadata:
-    creationTimestamp: <ts-1>
+    creationTimestamp: <ts>
     labels:
       mutationlab.configbutler.ai/scenario: create-succeeds
     name: cm-a
@@ -40,7 +40,7 @@ responseStatus:
 sourceIPs:
 - <ip-1>
 stage: ResponseComplete
-stageTimestamp: <ts-3>
+stageTimestamp: <ts>
 user:
   extra:
     authentication.kubernetes.io/credential-id:

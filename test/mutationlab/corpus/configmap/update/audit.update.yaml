@@ -17,14 +17,14 @@ requestObject:
     key: updated
   kind: ConfigMap
   metadata:
-    creationTimestamp: <ts-1>
+    creationTimestamp: <ts>
     labels:
       mutationlab.configbutler.ai/scenario: update
     name: cm-a
     namespace: <ns-1>
     resourceVersion: <rv-1>
     uid: <uid-1>
-requestReceivedTimestamp: <ts-3>
+requestReceivedTimestamp: <ts>
 requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-a
 responseObject:
   apiVersion: v1
@@ -32,7 +32,7 @@ responseObject:
     key: updated
   kind: ConfigMap
   metadata:
-    creationTimestamp: <ts-1>
+    creationTimestamp: <ts>
     labels:
       mutationlab.configbutler.ai/scenario: update
     name: cm-a
@@ -45,7 +45,7 @@ responseStatus:
 sourceIPs:
 - <ip-1>
 stage: ResponseComplete
-stageTimestamp: <ts-4>
+stageTimestamp: <ts>
 user:
   extra:
     authentication.kubernetes.io/credential-id:

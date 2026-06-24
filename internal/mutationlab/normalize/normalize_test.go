@@ -103,15 +103,35 @@ func TestNormalize_ResourceVersionNonNumericFirstAppearance(t *testing.T) {
 	}
 }
 
-func TestNormalize_TimestampsChronological(t *testing.T) {
-	// Captured out of chronological order; <ts-1> is the earliest instant.
+func TestNormalize_TimestampsCollapseToSingleToken(t *testing.T) {
+	// Every timestamp collapses to the same non-relational <ts>, regardless of
+	// value or field: relational chronological ordering proved unstable for
+	// objects with many one-second-granularity timestamps (see tsPlaceholder).
 	got := normJSON(t,
 		`{"metadata":{"creationTimestamp":"2026-01-02T00:00:00Z"}}`,
 		`{"stageTimestamp":"2026-01-01T00:00:00Z"}`,
 	)
 	want := []string{
-		`{"metadata":{"creationTimestamp":"<ts-2>"}}`,
-		`{"stageTimestamp":"<ts-1>"}`,
+		`{"metadata":{"creationTimestamp":"<ts>"}}`,
+		`{"stageTimestamp":"<ts>"}`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestNormalize_NodeNameRelational(t *testing.T) {
+	// A scheduled object's spec.nodeName is volatile (which node it landed on) but
+	// relational, so distinct nodes stay distinguishable across a scenario.
+	got := normJSON(t,
+		`{"spec":{"nodeName":"k3d-agent-2"}}`,
+		`{"spec":{"nodeName":"k3d-agent-2"}}`,
+		`{"spec":{"nodeName":"k3d-agent-0"}}`,
+	)
+	want := []string{
+		`{"spec":{"nodeName":"<node-1>"}}`,
+		`{"spec":{"nodeName":"<node-1>"}}`,
+		`{"spec":{"nodeName":"<node-2>"}}`,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("\n got %v\nwant %v", got, want)
@@ -135,6 +155,53 @@ func TestNormalize_SourceIPs(t *testing.T) {
 	}
 }
 
+func TestNormalize_StatusConditionTimestamps(t *testing.T) {
+	// Deployment/Pod status conditions carry lastTransitionTime/lastUpdateTime;
+	// without normalization they would churn the corpus on every run (Rows 5–7).
+	got := normJSON(t, `{"status":{"conditions":[`+
+		`{"type":"Progressing","lastUpdateTime":"2026-01-01T00:00:01Z","lastTransitionTime":"2026-01-01T00:00:00Z"}]}}`)
+	want := `{"status":{"conditions":[` +
+		`{"lastTransitionTime":"<ts>","lastUpdateTime":"<ts>","type":"Progressing"}]}}`
+	if got[0] != want {
+		t.Errorf("\n got %s\nwant %s", got[0], want)
+	}
+}
+
+func TestNormalize_PodIPsAndContainerID(t *testing.T) {
+	// Row 7: a captured Pod object carries volatile podIP/hostIP (and the ip
+	// entries inside podIPs/hostIPs) plus a runtime containerID that repeats in
+	// state.terminated. Equal values collapse to the same placeholder; distinct
+	// values stay distinct, so identity survives normalization.
+	got := normJSON(t, `{"status":{`+
+		`"podIP":"10.42.2.30","podIPs":[{"ip":"10.42.2.30"}],`+
+		`"hostIP":"172.19.0.3","hostIPs":[{"ip":"172.19.0.3"}],`+
+		`"containerStatuses":[{"containerID":"containerd://abc",`+
+		`"state":{"terminated":{"containerID":"containerd://abc"}}}]}}`)
+	// Indices are assigned by first appearance in sorted-key walk order, so
+	// hostIP (alphabetically before podIP) is <ip-1>.
+	want := `{"status":{` +
+		`"containerStatuses":[{"containerID":"<containerID-1>",` +
+		`"state":{"terminated":{"containerID":"<containerID-1>"}}}],` +
+		`"hostIP":"<ip-1>","hostIPs":[{"ip":"<ip-1>"}],` +
+		`"podIP":"<ip-2>","podIPs":[{"ip":"<ip-2>"}]}}`
+	if got[0] != want {
+		t.Errorf("\n got %s\nwant %s", got[0], want)
+	}
+}
+
+func TestNormalize_ManagedFieldsAssociationKeyIP(t *testing.T) {
+	// A pod's managedFields embeds the volatile podIP inside a fieldsV1
+	// association key (k:{"ip":"..."}); it must collapse to the same <ip-N> the
+	// value form uses, or the corpus churns on every run (Row 7).
+	got := normJSON(t, `{"status":{"podIP":"10.42.3.14",`+
+		`"managedFields":[{"fieldsV1":{"f:status":{"f:podIPs":{"k:{\"ip\":\"10.42.3.14\"}":{"f:ip":{}}}}}}]}}`)
+	want := `{"status":{"managedFields":[{"fieldsV1":{"f:status":{"f:podIPs":` +
+		`{"k:{\"ip\":\"<ip-1>\"}":{"f:ip":{}}}}}}],"podIP":"<ip-1>"}}`
+	if got[0] != want {
+		t.Errorf("\n got %s\nwant %s", got[0], want)
+	}
+}
+
 func TestNormalize_AuditID(t *testing.T) {
 	got := normJSON(t, `{"auditID":"req-xyz","verb":"create"}`)
 	want := `{"auditID":"<auditID-1>","verb":"create"}`
@@ -149,7 +216,7 @@ func TestNormalize_PreservesStableIdentity(t *testing.T) {
 	got := normJSON(t, `{"metadata":{"name":"cm-a","namespace":"lab","uid":"u1",`+
 		`"resourceVersion":"42","managedFields":[{"manager":"kubectl","time":"2026-01-01T00:00:00Z"}]},`+
 		`"data":{"key":"value"}}`)
-	want := `{"data":{"key":"value"},"metadata":{"managedFields":[{"manager":"kubectl","time":"<ts-1>"}],` +
+	want := `{"data":{"key":"value"},"metadata":{"managedFields":[{"manager":"kubectl","time":"<ts>"}],` +
 		`"name":"cm-a","namespace":"<ns-1>","resourceVersion":"<rv-1>","uid":"<uid-1>"}}`
 	if got[0] != want {
 		t.Errorf("\n got %s\nwant %s", got[0], want)

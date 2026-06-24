@@ -11,7 +11,7 @@ objectRef:
 requestObject:
   apiVersion: meta.k8s.io/__internal
   kind: DeleteOptions
-requestReceivedTimestamp: <ts-2>
+requestReceivedTimestamp: <ts>
 requestURI: /api/v1/namespaces/<ns-1>/configmaps?labelSelector=mutationlab.configbutler.ai%2Fscenario%3Ddeletecollection
 responseObject:
   apiVersion: v1
@@ -19,7 +19,7 @@ responseObject:
   - data:
       key: value
     metadata:
-      creationTimestamp: <ts-1>
+      creationTimestamp: <ts>
       labels:
         mutationlab.configbutler.ai/scenario: deletecollection
       name: cm-a
@@ -29,7 +29,7 @@ responseObject:
   - data:
       key: value
     metadata:
-      creationTimestamp: <ts-1>
+      creationTimestamp: <ts>
       labels:
         mutationlab.configbutler.ai/scenario: deletecollection
       name: cm-b
@@ -39,7 +39,7 @@ responseObject:
   - data:
       key: value
     metadata:
-      creationTimestamp: <ts-1>
+      creationTimestamp: <ts>
       labels:
         mutationlab.configbutler.ai/scenario: deletecollection
       name: cm-c
@@ -55,7 +55,7 @@ responseStatus:
 sourceIPs:
 - <ip-1>
 stage: ResponseComplete
-stageTimestamp: <ts-3>
+stageTimestamp: <ts>
 user:
   extra:
     authentication.kubernetes.io/credential-id:
