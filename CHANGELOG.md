@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.27.1...gitops-reverser-v0.28.0) (2026-06-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** the configbutler.ai API group is now served only at v1alpha2; v1alpha1 manifests and clients must be updated to v1alpha2.
+* providerRef no longer accepts a Flux GitRepository (group/kind enum values removed), and the per-Secret insecure_ignore_host_key key is replaced by the --insecure-allow-missing-known-hosts controller flag. See docs/UPGRADING.md for migration steps.
+
+### Features
+
+* /readyz now waits for healthy audit ingress and valid pingable Reds connection ([c10a4da](https://github.com/ConfigButler/gitops-reverser/commit/c10a4da3c0ca3b3daf62466ee401c5fd6a95eb90))
+* **api:** rename API group version v1alpha1 -&gt; v1alpha2 ([a7c4dcd](https://github.com/ConfigButler/gitops-reverser/commit/a7c4dcd71329a87cfa4655b6892f8dcb20daf6ee))
+* **commitrequest:** controller-driven, audit-attributed finalize (C-B2) ([cc426d8](https://github.com/ConfigButler/gitops-reverser/commit/cc426d8f74c7ec28895f2d73612ed10659dfe5a8))
+* **commitrequest:** eager message attach (stage 4) ([d5113a1](https://github.com/ConfigButler/gitops-reverser/commit/d5113a119328b3014df6a71f13e40cbe003d4c1a))
+* **commitrequest:** resolve-on-push with the pushed SHA (stage 5) ([c9093d3](https://github.com/ConfigButler/gitops-reverser/commit/c9093d3d07dbd28d80410dfacb0cfd98a4499005))
+* **commitrequest:** the Rejected outcome with a structured reason (stage 6) ([d800fb4](https://github.com/ConfigButler/gitops-reverser/commit/d800fb41f24e7b4425d67ca299b3691c0144e6c5))
+* demand driven audit ingestion (only for types that we need) ([dbfce5e](https://github.com/ConfigButler/gitops-reverser/commit/dbfce5ef5d18706fa08110ecb1a6c7cf57f45d38))
+* immutable gittargets and gitdestinations ([167a800](https://github.com/ConfigButler/gitops-reverser/commit/167a800a1906fedc4d93fc3295d2a3ac834b3716))
+* prevent nested gittargets ([c407fa4](https://github.com/ConfigButler/gitops-reverser/commit/c407fa43339f954beba70a33aa10ccd8f3b43c39))
+* read Flux/Argo credential Secrets; drop Flux GitRepository providerRef ([fc7a765](https://github.com/ConfigButler/gitops-reverser/commit/fc7a76529c0fe49851314870e7b6fdb8c42af351))
+* rename snapshotTemplate to reconcileTemplate, and default now includes type and last resourceVersion ([e26676d](https://github.com/ConfigButler/gitops-reverser/commit/e26676d960b0fe7c8e42a779c1adb93695097b8b))
+* require value for GitTarget.Path, since hooking up GitTarget to repo root must be deliberate ([39e02a6](https://github.com/ConfigButler/gitops-reverser/commit/39e02a68e8b7857f0d87677810db327a12a12233))
+* **status:** two-axis GitTarget status (Ready + Synced/phase), serviceability roll-up ([cea0b35](https://github.com/ConfigButler/gitops-reverser/commit/cea0b353c90a028d61d13e939687809b97869c83))
+* **stream:** /scale rides the parent type's stream (DEC-A, stages C-A1+C-A2) ([4741e66](https://github.com/ConfigButler/gitops-reverser/commit/4741e66e066f0a474dccf131834baec158e2ec48))
+* support flexible manifest placement / editing ([d43d268](https://github.com/ConfigButler/gitops-reverser/commit/d43d268bee4ca41229fc480237ff6c56620fc0cb))
+* support for subresources (working kubectl scale deployment) ([0f34d50](https://github.com/ConfigButler/gitops-reverser/commit/0f34d50f06a2f098f7b05c93488c98436bc7efd4))
+* **typeset,watch:** M12 first slices — type lifecycle events + per-type reconcile/sweep ([e3f0bd8](https://github.com/ConfigButler/gitops-reverser/commit/e3f0bd85a3d361707736e66e809e886e3a691e09))
+* **typeset:** registry owns discovery grace; catalog shrunk to a per-scan normalizer ([6d0dba4](https://github.com/ConfigButler/gitops-reverser/commit/6d0dba48e7962b3556d794a1a301c87eb4520f58))
+* **watch:** CommitRequest watermark barrier primitive (C-B1) ([781bfd6](https://github.com/ConfigButler/gitops-reverser/commit/781bfd6dfee9d02de5d575c2551c570a7b287525))
+
+
+### Bug Fixes
+
+* **controller:** retry Declare on the settle cadence instead of stalling 10m ([b4cafce](https://github.com/ConfigButler/gitops-reverser/commit/b4cafce24951069b41778a726b14f63d0c5ebe55))
+* **git:** push a window closed by a no-op resync (stage 3) ([103ad36](https://github.com/ConfigButler/gitops-reverser/commit/103ad360d6a2b679f63ebbaf8b229a592fe860d8))
+* **heal:** drain a deferred heal when an atomic finalizes the window; fix drifted comments ([23c881b](https://github.com/ConfigButler/gitops-reverser/commit/23c881b5bcf10b887ad1fa364873349ff9564ad3))
+* **heal:** restore periodic checkpoint healing via a deferred-until-idle heal resync ([9a06fe8](https://github.com/ConfigButler/gitops-reverser/commit/9a06fe8a5e7d85e5e1eec3f82476bea3395c68b0))
+* **materialization:** retry a failed Declare-time initial backfill ([af6c5b8](https://github.com/ConfigButler/gitops-reverser/commit/af6c5b85e6a02923bfea123271d96124dd5908f6))
+* prevent PrepareBranch call for cold cases ([f760c36](https://github.com/ConfigButler/gitops-reverser/commit/f760c36f0410262326c2a015b64dee4938d9aceb))
+* **watch:** only backfill-reconcile a type on its first TypeSynced ([8f2ad84](https://github.com/ConfigButler/gitops-reverser/commit/8f2ad840179880723427546f3eff2c8e6f22c0ee))
+
+
+### Documentation
+
+* adding designs with use cases ([31b7857](https://github.com/ConfigButler/gitops-reverser/commit/31b78577d2c08ac8aecc72d86ffaa9cd17afa61b))
+* and simpler ([c27f7ab](https://github.com/ConfigButler/gitops-reverser/commit/c27f7ab94c5a91ff516eebade8454b82f8d452e4))
+* capture contextual-namespace + SOPS single-file decisions, add folder fixtures ([1bd8af7](https://github.com/ConfigButler/gitops-reverser/commit/1bd8af7fd7778006a953d74774b7bc30a45dc031))
+* cleaning and moving to finished ([bb79343](https://github.com/ConfigButler/gitops-reverser/commit/bb7934301be8fdc2c16c0abd59a5f7a95facef57))
+* continue designing for this approach ([27ba3db](https://github.com/ConfigButler/gitops-reverser/commit/27ba3dbf0192a9cbf421af7c86d089472bbecaa0))
+* desiging the next phase ([c2d3ce8](https://github.com/ConfigButler/gitops-reverser/commit/c2d3ce86e48cc6518e6c22edd96b5efb02edecfc))
+* fighting over abstractions, and what the exact value is of certain parts ([f9227fc](https://github.com/ConfigButler/gitops-reverser/commit/f9227fc4f2fd43f9f12fcd52107675013ae540c3))
+* getting all design docs together so that we can cleanup ([17339c0](https://github.com/ConfigButler/gitops-reverser/commit/17339c0c453690414a62dae6e08adf53fe4e48d5))
+* getting audit ingestion ([63de7d8](https://github.com/ConfigButler/gitops-reverser/commit/63de7d8f104a52d1a020ed0d7dcc136d6f9beac9))
+* getting better ([7bd1f32](https://github.com/ConfigButler/gitops-reverser/commit/7bd1f32d94e4806da73ed234c51185b0be3d4c24))
+* getting docs in line and reporting on current findings ([76929d8](https://github.com/ConfigButler/gitops-reverser/commit/76929d8f3d4bb6e85e96b224897fe78e727d54f4))
+* getting more details in the plan ([135820b](https://github.com/ConfigButler/gitops-reverser/commit/135820bb42114102227337600668ab74bf03f9d3))
+* getting the plan ready for execution ([6eb3787](https://github.com/ConfigButler/gitops-reverser/commit/6eb378744ad9fdd8177642f4514c9a9666f5d897))
+* let clean it up a little bit for now ([026443a](https://github.com/ConfigButler/gitops-reverser/commit/026443a57ffd58c3317beb9793ddddb95d06528e))
+* Let's just commit it then ([401d194](https://github.com/ConfigButler/gitops-reverser/commit/401d194e56b9424184f557ae1d5fd8376cec33d6))
+* **materialization:** correct the stale watch-first sync comment; scope Slice D ([c3e6122](https://github.com/ConfigButler/gitops-reverser/commit/c3e612282864d88717256496cdc2a034a7d7adad))
+* planning the implementation ([d6e174b](https://github.com/ConfigButler/gitops-reverser/commit/d6e174bd6e483f2f181d843aa728ea7d01b81a1b))
+* reconcile residual-flake findings across the stream design docs ([90a1e7e](https://github.com/ConfigButler/gitops-reverser/commit/90a1e7ea0a0b144e4236d4ab21bf1b0f068c440d))
+* the plan is ambitious now I would say ([24457fb](https://github.com/ConfigButler/gitops-reverser/commit/24457fb3c928d04267133960b7990a6bb0511c5d))
+* **typeset-grace:** pin the exact typeset surface, consumers, and per-stage interface delta ([8e45ff8](https://github.com/ConfigButler/gitops-reverser/commit/8e45ff84e75cee0b55e2102207a234ce60fe0776))
+* working on refining the design of this new pipeline ([7b15e2d](https://github.com/ConfigButler/gitops-reverser/commit/7b15e2dc70e6a1f2fe758364d5f5c30ef92ad029))
+* working on vision docs ([394d8bf](https://github.com/ConfigButler/gitops-reverser/commit/394d8bfc1c2bb24c0a48667e68f668ee989ccdd0))
+
 ## [0.27.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.27.0...gitops-reverser-v0.27.1) (2026-06-02)
 
 
