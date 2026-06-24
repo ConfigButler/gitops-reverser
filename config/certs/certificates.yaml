@@ -77,3 +77,28 @@ spec:
   usages:
   - digital signature
   - client auth
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: gitops-reverser
+  name: gitops-reverser-admission-server-cert
+  namespace: sut
+spec:
+  dnsNames:
+  - gitops-reverser-service.sut.svc
+  - gitops-reverser-service.sut.svc.cluster.local
+  duration: 2160h
+  issuerRef:
+    kind: Issuer
+    name: gitops-reverser-audit-ca-issuer
+  privateKey:
+    rotationPolicy: Always
+  renewBefore: 360h
+  secretName: admission-server-cert
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth

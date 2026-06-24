@@ -47,6 +47,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
+	ctrladmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
@@ -68,6 +70,7 @@ var (
 
 const (
 	flagParseFailureExitCode       = 2
+	defaultAdmissionWebhookPort    = 9443
 	defaultAuditPort               = 9444
 	defaultAuditMaxBodyBytes       = int64(10 * 1024 * 1024)
 	defaultAuditReadTimeout        = 15 * time.Second
@@ -119,7 +122,9 @@ func main() {
 		"metricsAddr", cfg.metricsAddr,
 		"metricsInsecure", cfg.metricsInsecure,
 		"auditAddress", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort),
-		"auditInsecure", cfg.auditInsecure)
+		"auditInsecure", cfg.auditInsecure,
+		"admissionWebhookEnabled", cfg.admissionWebhookEnabled,
+		"admissionWebhookPort", cfg.admissionWebhookPort)
 	setupLog.Info("Sensitive resource policy", "resources", cfg.sensitiveResources.Entries())
 
 	// Initialize metrics
@@ -138,7 +143,7 @@ func main() {
 	)
 
 	// Manager
-	mgr := newManager(metricsServerOptions, cfg.probeAddr)
+	mgr := newManager(metricsServerOptions, cfg.probeAddr, cfg, tlsOpts)
 
 	// Expose build metadata on the metrics server so an operator can confirm a
 	// running pod is the build they expect (also logged at startup above).
@@ -414,6 +419,9 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
 		os.Exit(1)
 	}
+	if cfg.admissionWebhookEnabled {
+		setupAdmissionWebhooks(mgr)
+	}
 	// +kubebuilder:scaffold:builder
 
 	// Cert watchers
@@ -445,6 +453,11 @@ type appConfig struct {
 	metricsCertKey           string
 	probeAddr                string
 	metricsInsecure          bool
+	admissionWebhookEnabled  bool
+	admissionWebhookPort     int
+	admissionWebhookCertPath string
+	admissionWebhookCertName string
+	admissionWebhookCertKey  string
 	enableHTTP2              bool
 	auditListenAddress       string
 	auditPort                int
@@ -496,6 +509,18 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.StringVar(&cfg.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	fs.BoolVar(&cfg.metricsInsecure, "metrics-insecure", false,
 		"If set, the metrics endpoint is served via HTTP instead of HTTPS.")
+	fs.BoolVar(&cfg.admissionWebhookEnabled, "admission-webhook-enabled", false,
+		"If set, serve the validating admission webhook endpoint.")
+	fs.IntVar(&cfg.admissionWebhookPort, "admission-webhook-port", defaultAdmissionWebhookPort,
+		"Port for the validating admission webhook HTTPS server.")
+	bindServerCertFlags(
+		fs,
+		"admission-webhook",
+		"validating admission webhook TLS",
+		&cfg.admissionWebhookCertPath,
+		&cfg.admissionWebhookCertName,
+		&cfg.admissionWebhookCertKey,
+	)
 	bindServerCertFlags(
 		fs,
 		"metrics",
@@ -594,6 +619,9 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	if err := validateAuditConfig(cfg); err != nil {
 		return appConfig{}, err
 	}
+	if err := validateAdmissionWebhookConfig(cfg); err != nil {
+		return appConfig{}, err
+	}
 
 	bufferQuantity, err := resource.ParseQuantity(branchBufferMaxBytesFlag)
 	if err != nil {
@@ -669,6 +697,19 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	if cfg.auditEventBodyWait < 0 {
 		return fmt.Errorf("audit-event-body-wait must be >= 0, got %s", cfg.auditEventBodyWait)
+	}
+	return nil
+}
+
+func validateAdmissionWebhookConfig(cfg appConfig) error {
+	if !cfg.admissionWebhookEnabled {
+		return nil
+	}
+	if cfg.admissionWebhookPort <= 0 {
+		return fmt.Errorf("admission-webhook-port must be > 0, got %d", cfg.admissionWebhookPort)
+	}
+	if strings.TrimSpace(cfg.admissionWebhookCertPath) == "" {
+		return errors.New("admission-webhook-cert-path is required when admission webhook is enabled")
 	}
 	return nil
 }
@@ -950,17 +991,37 @@ func loadCertPoolFromPEMFile(path string) (*x509.CertPool, error) {
 func newManager(
 	metricsOptions metricsserver.Options,
 	probeAddr string,
+	cfg appConfig,
+	baseTLS []func(*tls.Config),
 ) ctrl.Manager {
+	var webhookServer ctrlwebhook.Server
+	if cfg.admissionWebhookEnabled {
+		webhookServer = ctrlwebhook.NewServer(ctrlwebhook.Options{
+			Port:     cfg.admissionWebhookPort,
+			CertDir:  cfg.admissionWebhookCertPath,
+			CertName: cfg.admissionWebhookCertName,
+			KeyName:  cfg.admissionWebhookCertKey,
+			TLSOpts:  baseTLS,
+		})
+	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOptions,
 		HealthProbeBindAddress: probeAddr,
+		WebhookServer:          webhookServer,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 	return mgr
+}
+
+func setupAdmissionWebhooks(mgr ctrl.Manager) {
+	mgr.GetWebhookServer().Register(
+		webhookhandler.ValidateAdmissionWebhookPath,
+		&ctrladmission.Webhook{Handler: webhookhandler.AdmissionAllowHandler{}},
+	)
 }
 
 // addCertWatchersToManager attaches optional certificate watchers to the manager.

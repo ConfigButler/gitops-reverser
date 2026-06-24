@@ -13,6 +13,10 @@ spec:
     port: 8443
     protocol: TCP
     targetPort: 8443
+  - name: webhook
+    port: 9443
+    protocol: TCP
+    targetPort: 9443
   selector:
     app.kubernetes.io/name: gitops-reverser
     control-plane: gitops-reverser

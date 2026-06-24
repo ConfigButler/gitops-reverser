@@ -1,0 +1,52 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: sut/gitops-reverser-admission-server-cert
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: gitops-reverser
+  name: gitops-reverser-validating-webhook
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: gitops-reverser-service
+      namespace: sut
+      path: /validate-admission-webhook
+      port: 9443
+  # Ignore (not Fail) is mandatory while this matches '*': the webhook backend is
+  # the gitops-reverser pod itself, so a Fail policy on core resources would
+  # deadlock the cluster at bootstrap (the apiserver could not admit the pod that
+  # serves the webhook). When a real, rejecting policy lands, switch to Fail only
+  # together with a namespaceSelector that excludes kube-system and this pod's own
+  # namespace.
+  failurePolicy: Ignore
+  matchPolicy: Equivalent
+  name: all-events-test-only.configbutler.ai
+  # Broad match for TESTING and as the future-policy extension point: observe
+  # writes to all real (top-level) resources, mirroring the intent of the audit
+  # capture policy (test/e2e/cluster/audit/policy.yaml). Two honest gaps vs that
+  # policy:
+  #   * A ValidatingWebhookConfiguration matches by inclusion only — it cannot
+  #     express "everything EXCEPT events/pods/leases/...", so this set is a
+  #     superset of the audit set. The handler always allows, so the extra
+  #     matches are harmless (just more requests observed).
+  #   * resources: ['*'] is top-level only and deliberately excludes subresources,
+  #     mirroring the audit policy dropping */status and apps/*/scale noise.
+  rules:
+  - apiGroups:
+    - '*'
+    apiVersions:
+    - '*'
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - '*'
+    scope: '*'
+  sideEffects: None
+  timeoutSeconds: 10
+

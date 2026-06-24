@@ -8,6 +8,7 @@ resources:
 - audit-service.yaml
 - deployment.yaml
 - certs
+- webhook
 images:
 - name: gitops-reverser
   newName: gitops-reverser
@@ -37,4 +38,26 @@ replacements:
     select:
       kind: Certificate
       name: gitops-reverser-audit-server-cert
+  - fieldPaths:
+    - spec.dnsNames.0
+    - spec.dnsNames.1
+    options:
+      delimiter: .
+      index: 1
+    select:
+      kind: Certificate
+      name: gitops-reverser-admission-server-cert
+  - fieldPaths:
+    - metadata.annotations.[cert-manager.io/inject-ca-from]
+    options:
+      delimiter: /
+      index: 0
+    select:
+      kind: ValidatingWebhookConfiguration
+      name: gitops-reverser-validating-webhook
+  - fieldPaths:
+    - webhooks.0.clientConfig.service.namespace
+    select:
+      kind: ValidatingWebhookConfiguration
+      name: gitops-reverser-validating-webhook
 namespace: gitops-reverser

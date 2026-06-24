@@ -44,6 +44,8 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.False(t, cfg.metricsInsecure)
+	assert.False(t, cfg.admissionWebhookEnabled)
+	assert.Equal(t, 9443, cfg.admissionWebhookPort)
 	assert.False(t, cfg.auditInsecure)
 	assert.Equal(t, "0.0.0.0", cfg.auditListenAddress)
 	assert.Equal(t, 9444, cfg.auditPort)
@@ -62,6 +64,26 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 500*time.Millisecond, cfg.auditEventBodyWait)
 	assert.False(t, cfg.zapOpts.Development)
 	assert.Equal(t, []string{"secrets"}, cfg.sensitiveResources.Entries())
+}
+
+func TestParseFlagsWithArgs_AdmissionWebhookValues(t *testing.T) {
+	fs := flag.NewFlagSet("test-admission-webhook", flag.ContinueOnError)
+	args := []string{
+		"--admission-webhook-enabled",
+		"--admission-webhook-port=9445",
+		"--admission-webhook-cert-path=/tmp/admission-certs",
+		"--admission-webhook-cert-name=cert.pem",
+		"--admission-webhook-cert-key=key.pem",
+	}
+
+	cfg, err := parseFlagsWithArgs(fs, args)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.admissionWebhookEnabled)
+	assert.Equal(t, 9445, cfg.admissionWebhookPort)
+	assert.Equal(t, "/tmp/admission-certs", cfg.admissionWebhookCertPath)
+	assert.Equal(t, "cert.pem", cfg.admissionWebhookCertName)
+	assert.Equal(t, "key.pem", cfg.admissionWebhookCertKey)
 }
 
 func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
@@ -190,6 +212,14 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "invalid sensitive resource",
 			args: []string{"--additional-sensitive-resources=example.io/v1/credentials"},
+		},
+		{
+			name: "invalid admission webhook port",
+			args: []string{"--admission-webhook-enabled", "--admission-webhook-port=0"},
+		},
+		{
+			name: "missing admission webhook cert path",
+			args: []string{"--admission-webhook-enabled", "--admission-webhook-cert-path="},
 		},
 	}
 
