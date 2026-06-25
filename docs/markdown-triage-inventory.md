@@ -99,7 +99,7 @@ Markdown impact from those commits:
 | [ ] | `docs/design/stream/audit-diagnostic-streams-plan.md` |  |  |
 | [ ] | `docs/design/stream/audit-log-ingestion-and-ordering.md` |  |  |
 | [ ] | `docs/design/stream/commitrequest-design.md` |  |  |
-| [ ] | `docs/design/stream/deletecollection-resync-nudge-plan.md` |  |  |
+| [x] | `docs/finished/deletecollection-resync-nudge-plan.md` | superseded by watch-first-ingestion-architecture.md |  |
 | [ ] | `docs/design/stream/github-e2e-per-type-tail-failure-investigation.md` |  |  |
 | [ ] | `docs/design/stream/ha-improvements.md` |  |  |
 | [ ] | `docs/design/stream/implementation-prompt-materialization-and-status.md` |  |  |

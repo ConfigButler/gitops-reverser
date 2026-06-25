@@ -6,7 +6,7 @@ webhooks** — at every interesting moment — and commits those structures as a
 **corpus**. It is not a second implementation of GitOps Reverser; it is reference material and a
 regression harness.
 
-The corpus is captured against **k8s v1.35.2+k3s1** (recorded in
+The corpus is captured against **k8s v1.36.1+k3s1** (recorded in
 `test/mutationlab/corpus/CLUSTER.md`). **All seventeen** catalogued scenarios are captured today — see
 the [Difficult Cases Catalog](#difficult-cases-catalog).
 
@@ -100,7 +100,7 @@ visible rather than silent.
 
 ## Findings
 
-These are conclusions drawn from the captured corpus on v1.35.2. They are versioned facts: the regen-
+These are conclusions drawn from the captured corpus on v1.36.1. They are versioned facts: the regen-
 and-diff workflow re-checks them on a Kubernetes bump.
 
 ### 1. The watch carries the full object exactly where the audit body goes shallow
@@ -109,7 +109,7 @@ This is the headline product result. Two captured data points sit side by side i
 
 - **Deletecollection (Row 9).** One user request: the audit *request* body is only `DeleteOptions` and
   name-less, yet each of the N per-object watch `DELETED` events carries the full removed object. (On
-  v1.35.2 the audit *response* body additionally carries a `List` of the removed objects — so the
+  v1.36.1 the audit *response* body additionally carries a `List` of the removed objects — so the
   shallow-body concern is real for the request and narrower for the response — but a name-less request
   still cannot be relied on for per-object identity across versions or audit levels.)
 - **Aggregated API (Row 15).** The official kube-apiserver audit event carries **no `requestObject`
@@ -178,7 +178,7 @@ are not equal — there is no shared native join key. The admission recorder's
 This is the dominant GitOps write path (Flux/Argo write by apply), so its shape across the mechanisms
 is load-bearing for watch mode.
 
-- **Server-side apply (Row 3).** An apply that *changes* the object is, on v1.35.2, audited as
+- **Server-side apply (Row 3).** An apply that *changes* the object is, on v1.36.1, audited as
   `verb: patch` (the apply rides a `?fieldManager=…&force=true` PATCH, not an `apply` verb), reaches
   admission as `UPDATE` carrying the apply field manager in `options`, and surfaces on the watch as a
   single `MODIFIED` whose `managedFields` shows one `manager: …, operation: Apply` entry. So for the

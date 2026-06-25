@@ -1,5 +1,15 @@
 # `deletecollection`: nudge for correctness, parse the body for attribution
 
+> **Status: SUPERSEDED — not implemented.** This plan solved a problem of the *audit-stream* ingestion
+> model: a name-less `deletecollection` skipped the per-type audit tail, so only a periodic checkpoint
+> reconcile removed the deleted objects. The
+> [watch-first ingestion rewrite](../design/watch-first-ingestion-architecture.md) removes that model:
+> `deletecollection` becomes N per-object watch `DELETED` events while the watch is live, and the
+> mark-and-sweep on replay reconciles any deletes missed during a watch outage — so the resync nudge
+> (Tier 2) is moot. The body-parse attribution (Tier 1) is carried forward, but as the watch-first
+> resolver's `deletecollection` fact expander (join per-object `DELETED` by UID, not RV). Kept for
+> historical context only.
+
 ## 1. Scope and one paragraph
 
 A `deletecollection` audit event removes many objects at once but is **name-less**:
@@ -26,29 +36,29 @@ attribution) when it is not. We never make the body the *correctness* source —
 ## 2. Current state (verified)
 
 - A `deletecollection` is classified `AuditEventQualityCollection` and emitted by the
-  joiner — [audit_joiner.go:572](../../../internal/webhook/audit_joiner.go#L572). The
+  joiner — [audit_joiner.go:572](../../internal/webhook/audit_joiner.go#L572). The
   classification only means "emittable with or without a body" so an aggregated, hollow
   proxy body does not block emission
-  ([audit_joiner.go:573-582](../../../internal/webhook/audit_joiner.go#L573-L582)). It
+  ([audit_joiner.go:573-582](../../internal/webhook/audit_joiner.go#L573-L582)). It
   does **not** strip a real body: `ResponseObject` is carried through the envelope and
-  merge ([audit_joiner.go:476-504](../../../internal/webhook/audit_joiner.go#L476-L504)).
+  merge ([audit_joiner.go:476-504](../../internal/webhook/audit_joiner.go#L476-L504)).
 - **For events that are mirrored, the deleted-items list is already captured and
   stored.** The audit policy captures `delete`/`deletecollection` at `level: RequestResponse`
-  ([policy.yaml](../../../test/e2e/cluster/audit/policy.yaml)), so for a standard
+  ([policy.yaml](../../test/e2e/cluster/audit/policy.yaml)), so for a standard
   etcd-backed core type (and CRDs via apiextensions) the response — a `List` of the
   removed items, names included — rides in the event. The full event, including
   `user` and the complete `payload_json` (request + response bodies), is stored in the
   per-type stream entry
-  ([redis_bytype_queue.go:691](../../../internal/queue/redis_bytype_queue.go#L691))
+  ([redis_bytype_queue.go:691](../../internal/queue/redis_bytype_queue.go#L691))
   and round-trips via `parseAuditEvent`
-  ([audit_event_parsing.go:111](../../../internal/queue/audit_event_parsing.go#L111)).
+  ([audit_event_parsing.go:111](../../internal/queue/audit_event_parsing.go#L111)).
   **So Tier 1 needs no joiner/ingestion change — the body is already in the mirror;
   only the consumer must learn to read it.**
 - **Demand-gated ingestion only mirrors *claimed* types — but now from a claimed type's
   FIRST event.** See
-  [demand-gated-audit-ingestion.md](../../finished/demand-gated-audit-ingestion.md) (esp.
+  [demand-gated-audit-ingestion.md](demand-gated-audit-ingestion.md) (esp.
   its §0 capture-before-baseline correction) and
-  [first-event-loss-on-reclaim-plan.md](../../finished/first-event-loss-on-reclaim-plan.md): the gate now
+  [first-event-loss-on-reclaim-plan.md](first-event-loss-on-reclaim-plan.md): the gate now
   opens the moment a GitTarget **claims** a type — synchronously, **before** its checkpoint
   syncs — so a claimed type's `deletecollection` is mirrored from the start, not skipped
   while it materializes. (The earlier "skip pre-materialization types" behaviour was the
@@ -61,34 +71,34 @@ attribution) when it is not. We never make the body the *correctness* source —
   periodic checkpoint backstops that edge). Revisit under §10.
 - The live per-type tail **skips it**: `auditChangeFromEntry` returns `ok=false` for any
   name-less entry (`id.Name == ""`) —
-  [redis_bytype_queue.go:450](../../../internal/queue/redis_bytype_queue.go#L450).
+  [redis_bytype_queue.go:450](../../internal/queue/redis_bytype_queue.go#L450).
   Intentional (DEC-5) and correct.
 - A `deletecollection` carries no usable RV, so `Enqueue` routes it through
   `ingestRVLess` —
-  [redis_bytype_queue.go:579](../../../internal/queue/redis_bytype_queue.go#L579).
+  [redis_bytype_queue.go:579](../../internal/queue/redis_bytype_queue.go#L579).
 - The resync nudge already exists end-to-end and is already the backstop, invoked from
   **exactly one** call site today — the `isIDTooSmall` branch of `ingestOrdered`, where a
   numeric event whose RV is below the high-water is diverted (rejected from the main stream)
-  ([redis_bytype_queue.go:551-558](../../../internal/queue/redis_bytype_queue.go#L551-L558)).
+  ([redis_bytype_queue.go:551-558](../../internal/queue/redis_bytype_queue.go#L551-L558)).
   The chain it drives: `NudgeTypeResyncForLateEvent`
-  ([materialization.go:70](../../../internal/watch/materialization.go#L70)) →
-  `RequestResync` ([materializer.go:357](../../../internal/typeset/materializer.go#L357))
+  ([materialization.go:70](../../internal/watch/materialization.go#L70)) →
+  `RequestResync` ([materializer.go:357](../../internal/typeset/materializer.go#L357))
   → `TypeSynced` deferred heal + scoped sweep
-  ([materialization.go](../../../internal/watch/materialization.go)),
-  wired in cmd ([main.go:241](../../../cmd/main.go#L241)).
+  ([materialization.go](../../internal/watch/materialization.go)),
+  wired in cmd ([main.go:241](../../cmd/main.go#L241)).
 - Backstop today: `materializationSweepInterval = time.Hour`
-  ([materialization.go:54](../../../internal/watch/materialization.go#L54)).
+  ([materialization.go:54](../../internal/watch/materialization.go#L54)).
 - Commits already author from the actor: `Author` ← `AuthorUserInfo`, with
   `authorName`/`authorEmail` mapping
-  ([commit.go:198-240](../../../internal/git/commit.go#L198-L240)); the message is built
+  ([commit.go:198-240](../../internal/git/commit.go#L198-L240)); the message is built
   by `buildGroupedCommitMessageData`
-  ([commit.go:111](../../../internal/git/commit.go#L111)). `Co-authored-by` trailers
+  ([commit.go:111](../../internal/git/commit.go#L111)). `Co-authored-by` trailers
   (§7) extend this without touching the git `Author`/`Committer` identity.
 
 ## 3. What is already correct — do not "fix" these
 
 - **The tail skipping name-less entries** stays
-  ([redis_bytype_queue.go:450](../../../internal/queue/redis_bytype_queue.go#L450)).
+  ([redis_bytype_queue.go:450](../../internal/queue/redis_bytype_queue.go#L450)).
   Tier 1's per-object deletes come from the body expansion, not from un-skipping the
   name-less entry.
 - **The checkpoint/sweep as the correctness plane.** Tier 2 reuses it as-is; Tier 1
@@ -99,7 +109,7 @@ attribution) when it is not. We never make the body the *correctness* source —
   degrades to Tier 2 when it is hollow/absent — it does not re-introduce a body demand
   at ingress.
 - **The 15s per-type nudge floor** (`lateNudgeMinInterval`,
-  [materialization.go:60](../../../internal/watch/materialization.go#L60)) already
+  [materialization.go:60](../../internal/watch/materialization.go#L60)) already
   coalesces teardown bursts. We lean on it explicitly.
 - **The empty-stream RV-less drop stays for now** (the `rvless_empty_highwater` outcome — a
   no-op, checkpoint-backstopped). We do not nudge for events that `ingestRVLess` drops before
@@ -130,21 +140,21 @@ matter after demand-gated ingestion:
 The fix nudges only for the **successful warm-stream ingest**, scoped to
 **name-less / `verb == deletecollection`**, not all RV-less events — ordinary single
 deletes are RV-less too and the tail already applies them by name
-([redis_bytype_queue.go:455](../../../internal/queue/redis_bytype_queue.go#L455));
+([redis_bytype_queue.go:455](../../internal/queue/redis_bytype_queue.go#L455));
 nudging those would fire a checkpoint LIST per delete.
 
 ## 5. Tier 2 — the nudge (do first)
 
 1. **Thread the collection signal from `Enqueue` into `ingestRVLess`.** `byTypeAuditKeys`
    carries only `group`/`resource`, not verb/name
-   ([redis_bytype_queue.go:496](../../../internal/queue/redis_bytype_queue.go#L496)),
+   ([redis_bytype_queue.go:496](../../internal/queue/redis_bytype_queue.go#L496)),
    so `Enqueue` must detect `verb == deletecollection` and pass that down (a param or a
    `byTypeAuditKeys` field). Small but real plumbing — call it out in review.
 2. **Fire the existing nudge for that case only.** On a successful RV-less ingest of a
    `deletecollection`, call `q.lateNotify(keys.group, keys.resource)` (the same divert-notifier
    hook the `isIDTooSmall` branch uses). `Subresource == ""` for a collection delete, so
    `keys.group`/`resource` are already populated
-   ([redis_bytype_queue.go:262-267](../../../internal/queue/redis_bytype_queue.go#L262-L267)).
+   ([redis_bytype_queue.go:262-267](../../internal/queue/redis_bytype_queue.go#L262-L267)).
    Fire only after the event attaches to an existing high-water. If `ingestRVLess` drops
    on an empty stream, do not nudge for now. Best-effort, non-blocking (IR8).
 3. **Nothing downstream changes** — `RequestResync → TypeSynced → deferred heal → scoped
@@ -208,8 +218,8 @@ state-reconciling fold* and must not be stamped as one author's, because:
 
 So credit actors as **`Co-authored-by:` trailers**, which the user proposed and which fit
 the existing message builder
-([commit.go:111](../../../internal/git/commit.go#L111),
-[commit.go:226-240](../../../internal/git/commit.go#L226-L240)) exactly:
+([commit.go:111](../../internal/git/commit.go#L111),
+[commit.go:226-240](../../internal/git/commit.go#L226-L240)) exactly:
 
 - Carry an attributable **cause** — `{operation, username, email, auditID, namespace,
   resource}` read from the stored event (§2) — into the resync request (a `ResyncCause`,
@@ -245,7 +255,7 @@ Tier 2 (`internal/queue`; red against current code, green after §5):
 
 Guards (green throughout): a normal named delete does **not** nudge; `ReadTypeAuditChanges`
 still skips a name-less `deletecollection`
-([redis_bytype_queue.go:386](../../../internal/queue/redis_bytype_queue.go#L386)).
+([redis_bytype_queue.go:386](../../internal/queue/redis_bytype_queue.go#L386)).
 
 Materialization: claimed+Synced nudges `RequestResync`; unclaimed/not-Synced no-ops;
 repeats within the floor coalesce; a post-nudge `TypeSynced` sweeps only that ScopeGVR
@@ -272,7 +282,7 @@ Tier 2 attribution floor:
 ## 9. E2E — red-first (and flake-aware)
 
 The policy already captures `deletecollection` at RequestResponse
-([policy.yaml](../../../test/e2e/cluster/audit/policy.yaml)) — no policy change. Red/green
+([policy.yaml](../../test/e2e/cluster/audit/policy.yaml)) — no policy change. Red/green
 hinges on **promptness** (the only backstop today is the ~1h sweep), so "objects gone
 from git within a bounded window" fails today and passes after §5.
 

@@ -264,7 +264,7 @@ no correctness, only a quiet engine that could mask a regression in B. If a stal
 > demand-driven re-anchor (the same engine) fire **promptly** for the two cases the per-event log cannot
 > express — an out-of-order divert and a name-less `deletecollection`. That nudge accelerates the
 > self-correction; it does not duplicate it. See
-> [`deletecollection-resync-nudge-plan.md`](../design/stream/deletecollection-resync-nudge-plan.md).
+> [`deletecollection-resync-nudge-plan.md`](deletecollection-resync-nudge-plan.md) (superseded).
 
 ### Recommendation
 
