@@ -317,6 +317,16 @@ func main() {
 	fatalIfErr(err, "unable to initialize per-resource-type audit tail reader")
 	watchMgr.AuditTailReader = auditTailReaderQueue
 
+	// Parallel watch-state stream (Phase 1 of docs/design/watch-only-ingestion-architecture.md): when
+	// enabled, every Synced type also holds a long-lived WATCH whose events are recorded into a
+	// per-type ":watch:stream" ALONGSIDE the authoritative audit stream, so the watch-derived desired
+	// set can be diffed against the audit-derived one. It changes NO Git write and is off by default.
+	// It reuses the mirror's write-side client (a watch append is a write, not a blocking read).
+	if cfg.watchStateStream {
+		watchMgr.WatchStateWriter = auditByTypeQueue
+		setupLog.Info("parallel watch-state stream enabled (experimental; writes :watch:stream, no effect on Git)")
+	}
+
 	// Boot rebuild (DEC-L6): replay durable per-type checkpoints into the materializer so a
 	// restart resumes serving Synced types without re-listing them. Best-effort and decoupled —
 	// the queue owns the Redis read, the watch manager assembles the GVR and marks the phase, and
@@ -482,6 +492,7 @@ type appConfig struct {
 	auditByTypeDiag          bool
 	auditByTypeDiagMaxLen    int64
 	auditByTypeDiagResources string
+	watchStateStream         bool
 	auditRedisTLS            bool
 	auditEventBodyTTL        time.Duration
 	auditEventBodyWait       time.Duration
@@ -579,6 +590,11 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Comma-separated resource names to scope the <prefix>:diag_all firehose to (e.g. "+
 			"\"commitrequests,configmaps\"). Empty captures every queued event. Bounds the "+
 			"firehose (and its in-lock XADD load) to a few suspect types when investigating.")
+	fs.BoolVar(&cfg.watchStateStream, "watch-state-stream", false,
+		"Experimental (Phase 1 of watch-only-ingestion-architecture): for every Synced type also hold a "+
+			"long-lived WATCH and record its events into a per-type <prefix>:<group>:<resource>:watch:stream, "+
+			"ALONGSIDE the audit stream, so the watch-derived desired set can be diffed against the "+
+			"audit-derived one. Changes no Git write. Off by default.")
 	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false,
 		"If set, Redis connection for audit queueing uses TLS.")
 	fs.DurationVar(&cfg.auditEventBodyTTL, "audit-event-body-ttl", defaultAuditEventBodyTTL,

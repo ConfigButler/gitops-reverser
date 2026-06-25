@@ -236,6 +236,9 @@ func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.Resourc
 			// start until the next discovery resync (minutes). Idempotent: a no-op if already running.
 			rv, _ := m.materializerInstance().Checkpoint(gvr)
 			m.startTypeAuditTail(ctx, m.Log, gvr, rv)
+			// Twin the parallel watch-state stream (Phase 1, off unless --watch-state-stream): anchor it
+			// at the same checkpoint rv so it records live events strictly after the checkpoint.
+			m.startTypeWatchStream(ctx, m.Log, gvr, rv)
 		}
 	}
 	return nil
@@ -583,11 +586,14 @@ func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logge
 		m.unrequireTypeMirror(ctx, log, ev.GVR)
 	case typeset.Released:
 		m.stopTypeAuditTail(ev.GVR)
+		m.stopTypeWatchStream(ev.GVR)
 		m.clearTypeObjects(ctx, log, ev.GVR)
 		// Reclaim the released checkpoint's audit footprint (DG2) — the audit-side twin of
 		// clearTypeObjects. The gate flag is NOT touched here (it moves with the claim, via Unclaimed):
 		// a wobble force-release keeps the claim, so the type stays Required and keeps mirroring.
 		m.deleteTypeAuditKeys(ctx, log, ev.GVR)
+		// Drop the parallel watch stream too (Phase 1, off unless --watch-state-stream).
+		m.deleteTypeWatchStream(ctx, log, ev.GVR)
 	case typeset.TypeSynced:
 		// The checkpoint just became serviceable. The FIRST TypeSynced (tail not yet running) fans
 		// the initial backfill splice to every watching GitTarget. A LATER TypeSynced — a periodic
@@ -600,6 +606,8 @@ func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logge
 		log.V(1).Info("materialization event", "kind", ev.Kind, "gvr", ev.GVR.String(), "rv", ev.RV)
 		m.reconcileTypeFan()(ctx, log, ev.GVR, m.isAuditTailRunning(ev.GVR))
 		m.startTypeAuditTail(ctx, log, ev.GVR, ev.RV)
+		// Twin the parallel watch-state stream (Phase 1, off unless --watch-state-stream).
+		m.startTypeWatchStream(ctx, log, ev.GVR, ev.RV)
 	case typeset.SyncStarted, typeset.SyncFailed:
 		log.V(1).Info("materialization event",
 			"kind", ev.Kind, "gvr", ev.GVR.String(), "phase", ev.Phase, "rv", ev.RV)

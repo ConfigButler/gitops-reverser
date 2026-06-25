@@ -204,6 +204,24 @@ type Manager struct {
 	auditTailBlockOverride time.Duration
 	auditTailApplyOverride func(context.Context, logr.Logger, schema.GroupVersionResource, []git.Event)
 
+	// WatchStateWriter optionally records observed Kubernetes WATCH events for a Synced type into a
+	// parallel per-type ":watch:stream", written ALONGSIDE (never instead of) the authoritative audit
+	// stream — Phase 1 of docs/design/watch-only-ingestion-architecture.md. It lets the watch-derived
+	// desired set be diffed against the audit-derived one without changing any Git write. Satisfied by
+	// queue.RedisByTypeStreamQueue; nil (the default, unless --watch-state-stream is set) disables the
+	// parallel capture. watchStates holds each running per-type watcher's cancel, keyed by type,
+	// guarded by watchStatesMu — the watch-state twin of auditTails/auditTailsMu.
+	WatchStateWriter StateWriter
+	watchStates      map[schema.GroupVersionResource]context.CancelFunc
+	watchStatesMu    sync.Mutex
+	// watchStateOpen overrides how a parallel watch-state stream opens its Kubernetes watch (test
+	// seam, mirroring watchCheckpointObjects). nil → built from the dynamic client.
+	watchStateOpen func(
+		ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions,
+	) (watch.Interface, error)
+	// watchStateBackoffOverride shortens the post-restart backoff in tests. Zero uses watchStateBackoff.
+	watchStateBackoffOverride time.Duration
+
 	// reconcileTypeFanOverride substitutes the per-type reconcile fan so a test can observe the
 	// TypeSynced handler's decision (first-sync backfill vs. deferred re-anchor heal) without a
 	// full EventRouter/worker stack. Nil means use the real reconcileTypeForSyncedTargets.
