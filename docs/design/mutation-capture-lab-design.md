@@ -1,7 +1,8 @@
 # Mutation Capture Lab Design
 
-Status: M0, M1 (the ConfigMap slice), and **M2 (workload subresources + grace-period
-delete)** are captured and committed under `test/mutationlab/corpus/` (against **k8s
+Status: **M0 through M4** — M0/M1 (ConfigMap core moments), M2 (workload subresources +
+grace-period delete), M3 (a two-version CRD + conversion webhook), and M4 (an aggregated
+API) — are captured and committed under `test/mutationlab/corpus/` (against **k8s
 v1.35.2+k3s1**, see `CLUSTER.md`). The harness — the lab binary
 (`cmd/mutation-capture-lab/`), record model, normalizer, store, golden-corpus plumbing, and
 the watch/audit/admission recorders under `internal/mutationlab/` — is built with unit
@@ -259,9 +260,10 @@ contracts; others are product-shaped hypotheses we need the corpus to confirm, f
   https://kubernetes.io/docs/reference/config-api/apiserver-admission.v1/
 
 - **Watch should carry the full object precisely where audit goes shallow.** The cases where audit is
-  least useful are the *shallow* ones — a name-less `deletecollection` whose audit body is only
-  `DeleteOptions` and never the removed objects (Row 9), and an aggregated-API write whose audit
-  request/response body is empty (Row 15). The working hypothesis is that the **live watch event still
+  least useful are the *shallow* ones — a name-less `deletecollection` whose audit *request* body is
+  only `DeleteOptions` and never names the removed objects (Row 9 — its *response* body does carry
+  them on the pinned version, but a name-less request still cannot be relied on for per-object
+  identity), and an aggregated-API write whose audit request/response body is empty (Row 15). The working hypothesis is that the **live watch event still
   carries the full object** in exactly these cases, because watch reports object-level consequences:
   each `DELETED`/`MODIFIED` should contain the object even when the matching audit event does not. If
   the corpus confirms this is robust, it is a **product finding, not just a curiosity** (Purpose goal
@@ -459,25 +461,28 @@ directory under `test/mutationlab/corpus/<resource>/<scenario>/` holding one fil
 moment. "Moment" is deliberate: a single user action can produce several ordered events, and the
 *ordering and count* are part of the behavior we are documenting.
 
-| # | Scenario | Watch moments | Audit moments | Admission moments | Why it is hard |
-|---|---|---|---|---|---|
-| 1 | Create succeeds | `ADDED` (final object) | `create`, user, responseObject | CREATE, user/object | baseline anchor |
-| 2 | Update / strategic-merge patch | `MODIFIED` (final) | `update` / `patch` | UPDATE, object + oldObject | verb differs by request shape |
-| 3 | Server-side apply | one or more `MODIFIED` | `apply` (or `patch`) | UPDATE with apply options | managedFields churn |
-| 4 | No-op apply | often **no** event (rv unchanged) | request still recorded | request still recorded | watch silence is the finding |
-| 5 | Status subresource update | two `MODIFIED`: user write, then controller **clobber** | **none** — policy drops `*/status` | **none** — webhook ignores subresources | status is controller-owned; only watch sees it (verified M2) |
-| 6 | Scale subresource patch | `MODIFIED` (scale) + controller `observedGeneration` follow-up | `patch`, `subresource: scale` | **none** — webhook ignores subresources | audited but never admitted; `Scale` body carries no labels (verified M2) |
-| 7 | Graceful delete | `MODIFIED` (deletionTimestamp) then `DELETED` | **none** — policy drops `pods` | DELETE (pods are top-level) | two watch events for one delete; audit is blind (verified M2) |
-| 8 | Finalizer delete | `MODIFIED` (deletionTimestamp+finalizers), later `DELETED` | `delete`, then `patch`/`update` removing the finalizer — **no second `delete`** | DELETE, then later UPDATEs | final `DELETED` has no matching audit delete verb |
-| 9 | Deletecollection | **N** `DELETED`, no collection event | **one** name-less `deletecollection` | one DELETE (collection), empty name | fan-out asymmetry — the watch-mode pressure test |
-| 10 | Owner-ref cascade delete | child `DELETED` events | child deletes attributed to the GC system user, not the human | DELETE by `system:serviceaccount:kube-system:generic-garbage-collector` | provenance is the system, not a user |
-| 11 | Dry-run create | **no** watch event, no etcd object | event with `dryRun`, no persistence | CREATE, `dryRun: true` | seen but never persisted |
-| 12 | Rejected during validation | **no** watch event | failed response (`code` 4xx) | recorder is **always called** (parallel validation) and, in this scenario, record-and-rejects | admission saw a write that never persisted |
-| 13 | Optimistic-concurrency conflict | no final change | failed response, `code: 409`, `Status` body | admission may have seen the attempted object | failure carries a Status, not the object |
-| 14 | Multi-version CRD conversion | `ADDED`/`MODIFIED` in the served storage version (v2 `size` string) | bodies in the submitted version (v1 `sizeBytes`); +`conversion` source both ways | submitted version v1 (reused `Equivalent`+`*` webhook delivers it) | three different shapes for one write (verified M3) |
-| 15 | Aggregated API write | **full object** (`ADDED`, spec included) | official: **empty** request/response body; proxy-enriched (`/audit-webhook-additional`): full body | validating webhook **observed** firing on this version | the body-quality cliff — and watch fills it (verified M4) |
-| 16 | Watch resync (`410 Gone`) | `ERROR`, then must relist | n/a | n/a | proves watch needs a list backstop |
-| 17 | Bookmark | `BOOKMARK` with resourceVersion | n/a | n/a | the only safe resume anchor |
+The **Ready?** column flags which rows are captured today (with the milestone that filled them) and
+which remain to fill in.
+
+| # | Scenario | Ready? | Watch moments | Audit moments | Admission moments | Why it is hard |
+|---|---|---|---|---|---|---|
+| 1 | Create succeeds | ✅ M1 | `ADDED` (final object) | `create`, user, responseObject | CREATE, user/object | baseline anchor |
+| 2 | Update / strategic-merge patch | ✅ M1 | `MODIFIED` (final) | `update` / `patch` | UPDATE, object + oldObject | verb differs by request shape |
+| 3 | Server-side apply | ⬜ not yet | one or more `MODIFIED` | `apply` (or `patch`) | UPDATE with apply options | managedFields churn |
+| 4 | No-op apply | ⬜ not yet | often **no** event (rv unchanged) | request still recorded | request still recorded | watch silence is the finding |
+| 5 | Status subresource update | ✅ M2 | two `MODIFIED`: user write, then controller **clobber** | **none** — policy drops `*/status` | **none** — webhook ignores subresources | status is controller-owned; only watch sees it (verified M2) |
+| 6 | Scale subresource patch | ✅ M2 | `MODIFIED` (scale) + controller `observedGeneration` follow-up | `patch`, `subresource: scale` | **none** — webhook ignores subresources | audited but never admitted; `Scale` body carries no labels (verified M2) |
+| 7 | Graceful delete | ✅ M2 | `MODIFIED` (deletionTimestamp) then `DELETED` | **none** — policy drops `pods` | DELETE (pods are top-level) | two watch events for one delete; audit is blind (verified M2) |
+| 8 | Finalizer delete | ⬜ not yet | `MODIFIED` (deletionTimestamp+finalizers), later `DELETED` | `delete`, then `patch`/`update` removing the finalizer — **no second `delete`** | DELETE, then later UPDATEs | final `DELETED` has no matching audit delete verb |
+| 9 | Deletecollection | ✅ M1 | **N** `DELETED`, no collection event | **one** name-less `deletecollection` | **N** named `DELETE` (once per object, not once for the collection) | fan-out asymmetry — the watch-mode pressure test |
+| 10 | Owner-ref cascade delete | ⬜ not yet | child `DELETED` events | child deletes attributed to the GC system user, not the human | DELETE by `system:serviceaccount:kube-system:generic-garbage-collector` | provenance is the system, not a user |
+| 11 | Dry-run create | ✅ M1 | **no** watch event, no etcd object | event with `dryRun`, no persistence | CREATE, `dryRun: true` | seen but never persisted |
+| 12 | Rejected during validation | ✅ M1 | **no** watch event | failed response (`code` 4xx) | recorder is **always called** (parallel validation) and, in this scenario, record-and-rejects | admission saw a write that never persisted |
+| 13 | Optimistic-concurrency conflict | ⬜ not yet | no final change | failed response, `code: 409`, `Status` body | admission may have seen the attempted object | failure carries a Status, not the object |
+| 14 | Multi-version CRD conversion | ✅ M3 | `ADDED`/`MODIFIED` in the served storage version (v2 `size` string) | bodies in the submitted version (v1 `sizeBytes`); +`conversion` source both ways | submitted version v1 (reused `Equivalent`+`*` webhook delivers it) | three different shapes for one write (verified M3) |
+| 15 | Aggregated API write | ✅ M4 | **full object** (`ADDED`, spec included) | official: **empty** request/response body; proxy-enriched (`/audit-webhook-additional`): full body | validating webhook **observed** firing on this version | the body-quality cliff — and watch fills it (verified M4) |
+| 16 | Watch resync (`410 Gone`) | ⬜ not yet | `ERROR`, then must relist | n/a | n/a | proves watch needs a list backstop |
+| 17 | Bookmark | ⬜ not yet | `BOOKMARK` with resourceVersion | n/a | n/a | the only safe resume anchor |
 
 The **none** cells in Rows 5–7 are not omissions — they are the reused product wiring working as
 designed, because the product captures intent, not state (see [Capturing Intent, Not
@@ -526,12 +531,14 @@ object:
     key: value
 ```
 
-Audit sees a single request, name-less, whose body is `DeleteOptions` — not the deleted objects:
+Audit sees a single name-less request whose *request* body is `DeleteOptions`; on this version its
+*response* body is **not** shallow — it carries a `List` of the removed objects:
 
 ```yaml
 # corpus/configmap/deletecollection/audit.deletecollection.yaml
-# objectRef has a resource but NO name. requestObject is DeleteOptions; do not expect
-# the removed objects to appear in requestObject or responseObject.
+# objectRef has a resource but NO name. requestObject is DeleteOptions and never names the
+# removed objects; on v1.35.2 the responseObject *does* carry them as a List — so the
+# shallow-body concern is real for the request, narrower for the response (see the M1 findings).
 kind: Event
 apiVersion: audit.k8s.io/v1
 level: RequestResponse
@@ -553,6 +560,18 @@ requestObject:
   kind: DeleteOptions
   apiVersion: v1
   propagationPolicy: Background
+responseObject:                  # the removed objects DO appear here on this version
+  kind: ConfigMapList
+  apiVersion: v1
+  items:
+  - metadata:
+      name: cm-a
+      namespace: lab
+      uid: <uid-1>
+      resourceVersion: <rv-1>
+    data:
+      key: value
+  # … cm-b (<uid-2>/<rv-2>) and cm-c (<uid-3>/<rv-3>) follow
 stageTimestamp: <ts>
 ```
 
@@ -618,22 +637,26 @@ test/mutationlab/corpus/
       watch.added.yaml
       audit.create.yaml
       admission.create.yaml
-    deletecollection/
+    deletecollection/             # one request, per-object fan-out across all three mechanisms
       watch.deleted.cm-a.yaml
       watch.deleted.cm-b.yaml
       watch.deleted.cm-c.yaml
-      audit.deletecollection.yaml
-      admission.delete.collection.yaml
-    finalizer-delete/
-      watch.modified.deletion-pending.yaml
-      watch.deleted.yaml
-      audit.delete.yaml
-      audit.patch.finalizer-removed.yaml
-  labwidget/                      # the two-version CRD
-    conversion/
-      watch.modified.v1.yaml
-      audit.update.storage-version.yaml
-      admission.update.submitted-version.yaml
+      audit.deletecollection.yaml         # the single name-less collection request
+      admission.delete.cm-a.yaml          # admission fires once per object, not for the collection
+      admission.delete.cm-b.yaml
+      admission.delete.cm-c.yaml
+  widget/                         # the two-version CRD (Row 14)
+    crd-conversion/
+      watch.added.yaml                    # served/storage version (v2, spec.size)
+      audit.create.yaml                   # submitted version (v1, spec.sizeBytes)
+      admission.create.yaml               # submitted version (v1)
+      conversion.to-v1.yaml               # one representative call per direction
+      conversion.to-v2.yaml
+  flunder/                        # the aggregated API (Row 15)
+    aggregated-api-write/
+      watch.added.yaml                    # full object, spec included
+      audit.create.yaml                   # official audit — empty body
+      audit-additional.create.yaml        # proxy-enriched audit — full body
 ```
 
 `CLUSTER.md` is load-bearing: a captured shape is only meaningful against a known apiserver
@@ -735,7 +758,7 @@ payload (after normalization) becomes the golden YAML.
 ```go
 type Record struct {
     ID         string          `json:"id"`
-    Source     string          `json:"source"` // watch, audit, admission
+    Source     string          `json:"source"` // watch, audit, audit-additional, admission, conversion
     Scenario   string          `json:"scenario,omitempty"`
     ObservedAt time.Time       `json:"observedAt"`
     Key        ObjectKey       `json:"key,omitempty"`
@@ -841,8 +864,9 @@ The structured layer asserts laws, not examples:
   version is for the lab recorder itself to reject. A rejection by a separate parallel webhook is an
   *observed* scenario asserted tolerantly: the recorder is still called, but whether it ran before or
   after the rejecter is not guaranteed.)
-- A deletecollection produces per-object watch deletes equal in count to the objects removed, while
-  audit and admission see a single name-less collection request.
+- A deletecollection produces per-object watch deletes equal in count to the objects removed, and a
+  matching per-object validating-admission `DELETE` for each (admission fires once per object, not
+  once for the collection), while audit sees a single name-less collection request.
 - A finalizer delete's terminal `DELETED` watch event has no corresponding audit `delete` verb.
 - A watch restarted from an expired resourceVersion surfaces `ERROR` and must relist before any
   correctness claim.
@@ -966,20 +990,22 @@ lab CRD has **no controller**, so there is no status churn or clobber — the wa
 the writes the test makes. The determinism work M2 needed (paused deployments, record selection) is
 unnecessary here. The cost is purely the install footprint.
 
-**Footprint: one CRD, reusing the existing cert and port.** The conversion webhook does **not** need
-a new certificate or a new server:
+**Footprint: one CRD, reusing the existing cert and port.** The conversion webhook needs **no** new
+certificate and **no** new server:
 
 - the CRD's `spec.conversion.webhook.clientConfig` points at the existing `gitops-reverser` service
-  on the existing admission port (`:9443`) at a **new path, `/convert`**, served by the lab binary
-  alongside `/validate-admission-webhook` on the same TLS listener;
-- the CA bundle is injected by cert-manager via a `cert-manager.io/inject-ca-from` annotation on the
-  CRD, reusing the admission server's existing `Certificate` — no new cert;
+  on the existing admission port at a **new path, `/convert`**, served by the lab binary alongside
+  `/validate-admission-webhook` on the same TLS listener;
+- the CA bundle is **read from the product's validating-webhook config at runtime** and inlined into
+  the CRD's `clientConfig.caBundle`, so the conversion webhook trusts the same admission `Certificate`
+  with no new cert (`admissionServiceAndCA` in `m3_scenarios_test.go` reads the service + CA off that
+  webhook config — not a cert-manager `inject-ca-from` annotation);
 - RBAC needs nothing new: the controller already has `*` get/list/watch (so the lab can watch the
-  CR), and the live-cluster driver authenticates as the kubeconfig admin (so it can create CRs).
+  CR), and the live-cluster driver authenticates as the kubeconfig admin (so it can create both the
+  CRD and the CRs).
 
-So the only genuinely new cluster object is the **CRD manifest** itself, applied by the lab task
-before the driver runs (and removed after, or left for `task clean-cluster`). This is the footprint
-growth that needs sign-off.
+So the only genuinely new cluster object is the **CRD** itself, created by the driver before the
+scenario runs and removed on teardown (`t.Cleanup`, or left for `task clean-cluster`).
 
 **matchPolicy — the reused webhook already observes the submitted version.** An earlier draft said
 the lab would *pin* `matchPolicy: Exact` to guarantee the recorder sees the submitted version. With
@@ -993,20 +1019,20 @@ rules appears (and would itself be new webhook-config footprint). This supersede
 `matchPolicy: Exact`" note in [Mechanisms Under Test](#3-validating-admission-webhook) and the Row 14
 matrix entry.
 
-**New code for M3.**
+**As built.** M3 shipped exactly this, with the install done programmatically by the driver rather
+than from a checked-in manifest:
 
-1. A CRD manifest under `test/mutationlab/` (two served versions + the cert-manager CA-injection
-   annotation + the conversion-webhook clientConfig).
-2. A `/convert` handler in the lab binary that implements the `v1`⇄`v2` field rename and **records
-   each `ConversionReview`** as a new record source (so the corpus shows what the apiserver asked the
-   webhook to convert, and to which version) — the conversion path is itself a behavior worth a
+1. `widgetCRDObject` (`m3_scenarios_test.go`) builds the two-version `Widget` CRD in Go — `v1`
+   (`spec.sizeBytes: integer`), `v2` (storage, `spec.size: string`), and the conversion-webhook
+   `clientConfig` — and the driver creates it with the dynamic client, waits for `Established`, and
+   deletes it on teardown.
+2. A `/convert` handler in the lab binary implements the `v1`⇄`v2` field rename and **records each
+   `ConversionReview`** as the new `conversion` source (so the corpus shows what the apiserver asked
+   the webhook to convert, and in which direction) — the conversion path is itself a behavior worth a
    corpus row.
-3. A `Watch` over the CR (added to `--watch-resources`), plus a scenario that creates in `v1`, reads
-   back in `v2`, and captures the watch (served version), audit (request + storage version), and
-   admission (submitted version) shapes side by side.
-4. Lab-task wiring to apply/remove the CRD around the run.
+3. The lab watches the CR on its `v2` storage version; the scenario creates in `v1` and captures the
+   admission (submitted `v1`), audit (submitted `v1`), watch (stored/served `v2`), and both
+   conversion directions side by side.
 
-**Open decision (the reason this is paused).** Approve adding one CRD to the lab's cluster footprint
-(self-contained, cert/port reused, removed on teardown)? If yes, M3 proceeds as above. If the
-preference is to keep the lab strictly image-swap-only, M3 stays deferred and the CRD-conversion
-question is documented as out of scope for the lab.
+The earlier "open decision" — whether to add one CRD to the lab's cluster footprint — was approved;
+M1+M2 added zero cluster objects, M3 adds exactly one, self-contained and removed on teardown.

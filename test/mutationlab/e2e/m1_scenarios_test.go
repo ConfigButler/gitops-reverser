@@ -127,8 +127,10 @@ func TestRecordAndReject(t *testing.T) {
 const rejectLabel = "mutationlab.configbutler.ai/reject"
 
 // TestDeletecollection captures Row 9, the watch-mode pressure test: one request
-// fans out into N per-object watch DELETED events while audit sees a single
-// name-less deletecollection. The creates are set up and cleared first.
+// fans out into N per-object watch DELETED events and N per-object validating
+// admission DELETEs (admission fires once per object, not once for the
+// collection), while audit sees a single name-less deletecollection. The creates
+// are set up and cleared first.
 func TestDeletecollection(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -149,10 +151,15 @@ func TestDeletecollection(t *testing.T) {
 		t.Fatalf("deletecollection: %v", err)
 	}
 
-	// N watch DELETED + one name-less audit deletecollection.
-	records := h.drain(t, s.id, drainSpec{minCount: len(names) + 1, settle: 3 * time.Second, timeout: 60 * time.Second})
+	// N watch DELETED + one name-less audit deletecollection + N per-object
+	// admission DELETE (validating admission fires once per object).
+	records := h.drain(t, s.id, drainSpec{minCount: 2*len(names) + 1, settle: 3 * time.Second, timeout: 60 * time.Second})
 	if got := countSource(records, mutationlab.SourceWatch); got != len(names) {
 		t.Errorf("deletecollection produced %d watch deletes; want %d (per-object fan-out)", got, len(names))
+	}
+	if got := countSource(records, mutationlab.SourceAdmission); got != len(names) {
+		t.Errorf("deletecollection: %d admission DELETEs, want %d (once per object, not per collection)",
+			got, len(names))
 	}
 	h.syncCorpus(t, "configmap/deletecollection", records)
 }

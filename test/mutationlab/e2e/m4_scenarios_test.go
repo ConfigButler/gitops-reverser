@@ -42,18 +42,22 @@ import (
 //
 // The vehicle is the wardle sample aggregated API (flunders), which the e2e
 // cluster already runs behind the apiservice-audit-proxy. So one flunder create
-// yields up to three views the corpus puts side by side: the official audit
+// yields the three views the corpus puts side by side: the official audit
 // (/audit-webhook), the proxy-enriched audit (/audit-webhook-additional), and the
-// live watch.
+// live watch. All three are load-bearing for Row 15 — the official-vs-enriched
+// body contrast is the point — so the driver waits for and requires each.
 
 var flunderGVR = schema.GroupVersionResource{
 	Group: "wardle.example.com", Version: "v1alpha1", Resource: "flunders",
 }
 
 // TestAggregatedAPIWrite captures Row 15. It creates a flunder and proves the
-// watch carries the full object (spec included), then commits the official audit,
-// the proxy-enriched audit, and the watch side by side so the body-quality
-// difference is visible in the corpus.
+// watch carries the full object (spec included), then commits the official audit
+// (empty body), the proxy-enriched audit (full body), and the watch side by side
+// so the body-quality difference is visible in the corpus. All three are required
+// — the corpus row's whole point is the official-vs-enriched body contrast — so a
+// missing proxy-enriched event fails the scenario rather than silently dropping a
+// corpus file.
 func TestAggregatedAPIWrite(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -73,17 +77,20 @@ func TestAggregatedAPIWrite(t *testing.T) {
 		t.Fatalf("create flunder: %v", err)
 	}
 
-	// Wait for the flunder's watch ADDED and its official audit. Union the
-	// namespace key because a shallow-bodied aggregated-API audit event carries no
-	// object label to attribute by — but then select strictly by flunder identity,
-	// because that union also surfaces the namespace's unlabeled auto-objects
-	// (kube-root-ca.crt, the default ServiceAccount), which must NOT be mistaken
-	// for the flunder's records.
+	// Wait for the flunder's watch ADDED, its official audit, AND its proxy-enriched
+	// audit — all three are committed side by side, so the drain must not return
+	// before the proxy has posted the enriched body (it lands shortly after the
+	// official event). Union the namespace key because a shallow-bodied
+	// aggregated-API audit event carries no object label to attribute by — but then
+	// select strictly by flunder identity, because that union also surfaces the
+	// namespace's unlabeled auto-objects (kube-root-ca.crt, the default
+	// ServiceAccount), which must NOT be mistaken for the flunder's records.
 	records := h.drain(t, s.id, drainSpec{
-		minCount: 2, settle: 5 * time.Second, timeout: 90 * time.Second, alsoNamespace: s.ns,
+		minCount: 3, settle: 5 * time.Second, timeout: 90 * time.Second, alsoNamespace: s.ns,
 		until: func(rs []mutationlab.Record) bool {
 			return flunderRecord(rs, mutationlab.SourceWatch, "ADDED") != nil &&
-				flunderRecord(rs, mutationlab.SourceAudit, "") != nil
+				flunderRecord(rs, mutationlab.SourceAudit, "") != nil &&
+				flunderRecord(rs, mutationlab.SourceAuditAdditional, "") != nil
 		},
 	})
 
@@ -97,6 +104,10 @@ func TestAggregatedAPIWrite(t *testing.T) {
 	if official == nil {
 		t.Fatal("no official audit event for the flunder create")
 	}
+	if enriched == nil {
+		t.Fatal("no proxy-enriched audit event for the flunder create; Row 15 needs the " +
+			"official-vs-enriched body contrast (is the apiservice-audit-proxy posting to /audit-webhook-additional?)")
+	}
 
 	// THE RESULT: the watch event carries the full object (spec included). This is
 	// the point of Row 15 — whatever the official audit body quality, the live
@@ -106,15 +117,14 @@ func TestAggregatedAPIWrite(t *testing.T) {
 			flunderReference(added), added.Summary.HasObject)
 	}
 	t.Logf("Row 15 (flunder only): official audit hasRequestObject=%v hasResponseObject=%v; "+
-		"proxy-enriched present=%v; watch carries full object=%v; flunder admission records=%v",
+		"proxy-enriched audit hasRequestObject=%v hasResponseObject=%v; watch carries full object=%v; "+
+		"flunder admission records=%v",
 		official.Summary.HasRequestObject, official.Summary.HasResponseObject,
-		enriched != nil, added.Summary.HasObject, admission != nil)
+		enriched.Summary.HasRequestObject, enriched.Summary.HasResponseObject,
+		added.Summary.HasObject, admission != nil)
 
-	corpusRecords := []mutationlab.Record{*official, *added}
-	if enriched != nil {
-		corpusRecords = append(corpusRecords, *enriched)
-	}
-	h.syncCorpus(t, "flunder/aggregated-api-write", corpusRecords)
+	h.syncCorpus(t, "flunder/aggregated-api-write",
+		[]mutationlab.Record{*official, *enriched, *added})
 }
 
 // flunderRecord returns the first record from the given source that is about the
