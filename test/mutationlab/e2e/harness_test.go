@@ -336,6 +336,14 @@ func sortRecords(in []mutationlab.Record) []mutationlab.Record {
 		if a.Key.ResourceVersion != b.Key.ResourceVersion {
 			return rvLess(a.Key.ResourceVersion, b.Key.ResourceVersion)
 		}
+		// Operation orders two same-object records a shared RV cannot separate — a
+		// finalizer delete's audit `delete` vs `patch`, or its admission DELETE vs
+		// UPDATE, all reference the same deletion-pending resourceVersion (Row 8).
+		// Without this the order would fall through to the random auditID, flipping
+		// the <auditID-N> placeholder assignment run to run.
+		if a.Summary.Operation != b.Summary.Operation {
+			return a.Summary.Operation < b.Summary.Operation
+		}
 		return a.Summary.AuditID < b.Summary.AuditID
 	})
 	return out

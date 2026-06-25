@@ -7,8 +7,8 @@ webhooks** — at every interesting moment — and commits those structures as a
 regression harness.
 
 The corpus is captured against **k8s v1.35.2+k3s1** (recorded in
-`test/mutationlab/corpus/CLUSTER.md`). **Ten of the seventeen** catalogued scenarios are captured
-today; the remaining seven are planned — see the [Difficult Cases Catalog](#difficult-cases-catalog)
+`test/mutationlab/corpus/CLUSTER.md`). **Eleven of the seventeen** catalogued scenarios are captured
+today; the remaining six are planned — see the [Difficult Cases Catalog](#difficult-cases-catalog)
 and [What To Capture Next](#what-to-capture-next).
 
 The lab reuses the product's webhook URLs (`/validate-admission-webhook`, `/audit-webhook`, and the
@@ -138,6 +138,14 @@ universal requirement.
   invisible to audit; pods are top-level, so the `DELETE` does reach admission. The watch shows the
   two-step removal: `MODIFIED` with `deletionTimestamp` while still `Running`, then `DELETED` after the
   kubelet terminates the container (`exitCode: 137` from the post-grace `SIGKILL`).
+- **Finalizer delete (Row 8).** A finalizer splits one logical delete into two writes with *different
+  verbs*. The `delete` request only stamps `deletionTimestamp` while the finalizer holds the object
+  (audit `delete`, admission `DELETE`, watch `MODIFIED`); the object disappears only when the finalizer
+  is cleared — a `patch` (audit) / `UPDATE` (admission), **not** a delete. So the terminal watch
+  `DELETED` has **no** audit `delete` verb behind it: an audit-only deletion tracker keyed on the
+  `delete` verb would mistime the removal (attributing it to the still-present-finalizer state) or miss
+  it. The watch `DELETED` is the only event that marks when the object truly left etcd. This extends
+  Finding 1 from shallow *bodies* to missing *events*.
 
 ### 3. Deletecollection fans out asymmetrically across the three mechanisms
 
@@ -187,7 +195,7 @@ with `automountServiceAccountToken: false` so no random volume name churns the c
 | 5 | Status subresource update | ✅ | two `MODIFIED`: user write, then controller **clobber** | **none** — policy drops `*/status` | **none** — webhook ignores subresources | status is controller-owned; only watch sees it |
 | 6 | Scale subresource patch | ✅ | `MODIFIED` (scale) + controller `observedGeneration` follow-up | `patch`, `subresource: scale` | **none** — webhook ignores subresources | audited but never admitted; `Scale` body carries no labels |
 | 7 | Graceful delete | ✅ | `MODIFIED` (deletionTimestamp) then `DELETED` | **none** — policy drops `pods` | DELETE (pods are top-level) | two watch events for one delete; audit is blind to pods |
-| 8 | Finalizer delete | ⬜ | `MODIFIED` (deletionTimestamp+finalizers), later `DELETED` | `delete`, then `patch`/`update` removing the finalizer — **no second `delete`** | DELETE, then later UPDATEs | final `DELETED` has no matching audit delete verb |
+| 8 | Finalizer delete | ✅ | `MODIFIED` (deletionTimestamp+finalizers), later `DELETED` | `delete`, then `patch`/`update` removing the finalizer — **no second `delete`** | DELETE, then later UPDATEs | final `DELETED` has no matching audit delete verb |
 | 9 | Deletecollection | ✅ | **N** `DELETED`, no collection event | **one** name-less `deletecollection` | **N** named `DELETE` (once per object, not the collection) | fan-out asymmetry — the watch-mode pressure test |
 | 10 | Owner-ref cascade delete | ⬜ | child `DELETED` events | child deletes attributed to the GC system user, not the human | DELETE by `system:serviceaccount:kube-system:generic-garbage-collector` | provenance is the system, not a user |
 | 11 | Dry-run create | ✅ | **no** watch event, no etcd object | event with `dryRun`, no persistence | CREATE, `dryRun: true` | seen but never persisted |
@@ -273,6 +281,13 @@ test/mutationlab/corpus/
   configmap/
     create-succeeds/              # watch.added · audit.create · admission.create
     update/                       # watch.modified · audit.update · admission.update
+    finalizer-delete/             # two-phase removal; the terminal DELETED has no audit delete behind it
+      watch.modified.yaml         # deletionTimestamp stamped, finalizer still holding
+      watch.deleted.yaml          # object finally leaves etcd (after the finalizer is cleared)
+      audit.delete.yaml           # phase 1: stamps deletionTimestamp only
+      audit.patch.yaml            # phase 2: the finalizer-removal patch — the real removal verb
+      admission.delete.yaml       # phase 1 DELETE … and the phase 2 finalizer removal is an UPDATE
+      admission.update.yaml
     deletecollection/             # one request, per-object fan-out across all three mechanisms
       watch.deleted.cm-a.yaml     # … cm-b, cm-c
       audit.deletecollection.yaml         # the single name-less collection request
@@ -434,26 +449,23 @@ mode pretending to be both.
 
 ## What To Capture Next
 
-Seven rows remain (3, 4, 8, 10, 13, 16, 17). The goal is to *learn*, so the order is by how much each
-row tightens a conclusion we actually depend on — not by which resource is easiest.
+Six rows remain (3, 4, 10, 13, 16, 17). The goal is to *learn*, so the order is by how much each
+row tightens a conclusion we actually depend on — not by which resource is easiest. (Row 8 — finalizer
+delete, the highest-value single row — is now captured; see [Finding 2](#findings) and
+`corpus/configmap/finalizer-delete/`.)
 
-1. **Row 8 — Finalizer delete.** *Highest single-row value.* It extends Finding 1 from shallow
-   *bodies* to missing *events*: the terminal `DELETED` watch event has **no** audit `delete` verb
-   behind it (the real removal is a finalizer-removal patch). This is the sharpest remaining "watch is
-   the lone witness of state" case and directly stresses any audit-only deletion-tracking assumption.
-
-2. **Rows 16 + 17 — Watch resync (`410 Gone`) and Bookmark.** *Bound the core caveat.* Every
+1. **Rows 16 + 17 — Watch resync (`410 Gone`) and Bookmark.** *Bound the core caveat.* Every
    watch-viability conclusion is conditioned on "while live, with a list backstop." These two rows turn
    that caveat from asserted into demonstrated: `410 → ERROR → relist`, and `BOOKMARK` as the only safe
    resume anchor. Until they exist, the reliability boundary the product decision rests on is
    undocumented.
 
-3. **Rows 3 + 4 — Server-side apply and No-op apply.** *The dominant GitOps write path.* Flux/Argo
+2. **Rows 3 + 4 — Server-side apply and No-op apply.** *The dominant GitOps write path.* Flux/Argo
    write by apply, so this is the most product-representative shape to pin: managedFields churn under
    SSA, and — load-bearing for watch mode — Row 4's "an unchanged apply produces **no** watch event,"
    which a naive watcher must not read as "nothing happened."
 
-4. **Rows 10 + 13 — Owner-ref cascade and Optimistic-concurrency conflict.** *Reinforcing, so last.*
+3. **Rows 10 + 13 — Owner-ref cascade and Optimistic-concurrency conflict.** *Reinforcing, so last.*
    They round out attribution (cascade children carry a *system* actor, not the human) and persistence
    (a `409` carries a `Status`, not the object), but mostly confirm patterns Findings 2 and 4 already
    establish rather than opening new ground.

@@ -30,15 +30,15 @@ gap (see [Capturing Intent, Not State](../../docs/design/mutation-capture-lab-de
 | 5 | Status subresource | `workload_scenarios_test.go` · `TestStatusSubresource` | `deployment/status-update/` | watch ×2 — **no** audit, **no** admission |
 | 6 | Scale subresource | `workload_scenarios_test.go` · `TestScaleSubresource` | `deployment/scale-patch/` | watch, audit — **no** admission |
 | 7 | Graceful delete | `workload_scenarios_test.go` · `TestGracefulDelete` | `pod/graceful-delete/` | watch (MODIFIED + DELETED), admission — **no** audit |
+| 8 | Finalizer delete | `configmap_scenarios_test.go` · `TestFinalizerDelete` | `configmap/finalizer-delete/` | watch (MODIFIED + DELETED), audit (delete + patch — **no** second delete), admission (DELETE + UPDATE) |
 | 9 | Deletecollection | `configmap_scenarios_test.go` · `TestDeletecollection` | `configmap/deletecollection/` | watch ×N, audit ×1 (name-less), admission ×N (per object) |
 | 11 | Dry-run create | `configmap_scenarios_test.go` · `TestDryRunCreate` | `configmap/dry-run-create/` | audit, admission — **no** watch / **no** etcd object |
 | 12 | Record-and-reject | `configmap_scenarios_test.go` · `TestRecordAndReject` | `configmap/record-and-reject/` | audit, admission — **no** watch / **no** etcd object |
 | 14 | Multi-version CRD conversion | `crd_conversion_test.go` · `TestCRDConversion` | `widget/crd-conversion/` | watch (v2), audit (v1), admission (v1), conversion ×2 (both directions) |
 | 15 | Aggregated API write | `aggregated_api_test.go` · `TestAggregatedAPIWrite` | `flunder/aggregated-api-write/` | watch (full object), audit (empty body), audit-additional (proxy-enriched full body); admission is observed but not committed |
 
-Rows **3, 4, 8, 10, 13, 16, 17** (server-side apply, no-op apply, finalizer delete,
-owner-ref cascade, optimistic-concurrency conflict, watch resync, bookmark) are not yet
-captured.
+Rows **3, 4, 10, 13, 16, 17** (server-side apply, no-op apply, owner-ref cascade,
+optimistic-concurrency conflict, watch resync, bookmark) are not yet captured.
 
 ## How it integrates: swap the image, reuse the wiring
 

@@ -1,0 +1,48 @@
+annotations:
+  all-events-test-only.configbutler.ai/scenario: finalizer-delete
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: ""
+auditID: <auditID-2>
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  name: cm-hold
+  namespace: <ns-1>
+  resource: configmaps
+requestObject:
+  metadata:
+    finalizers: null
+requestReceivedTimestamp: <ts>
+requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-hold
+responseObject:
+  apiVersion: v1
+  data:
+    key: value
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts>
+    deletionGracePeriodSeconds: 0
+    deletionTimestamp: <ts>
+    labels:
+      mutationlab.configbutler.ai/scenario: finalizer-delete
+    name: cm-hold
+    namespace: <ns-1>
+    resourceVersion: <rv-2>
+    uid: <uid-1>
+responseStatus:
+  code: 200
+  metadata: {}
+sourceIPs:
+- <ip-1>
+stage: ResponseComplete
+stageTimestamp: <ts>
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - <credential-1>
+  groups:
+  - system:masters
+  - system:authenticated
+  username: system:admin
+userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
+verb: patch

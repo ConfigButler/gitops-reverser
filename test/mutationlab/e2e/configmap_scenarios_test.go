@@ -27,13 +27,15 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab"
 )
 
 // ConfigMap scenarios — the core capture moments expressible against a built-in
-// ConfigMap: create (Row 1), update (Row 2), deletecollection (Row 9), dry-run
-// create (Row 11), and record-and-reject (Row 12).
+// ConfigMap: create (Row 1), update (Row 2), finalizer delete (Row 8),
+// deletecollection (Row 9), dry-run create (Row 11), and record-and-reject
+// (Row 12).
 
 // quiesceAndClear drains the setup phase to a quiet state, then clears records, so
 // the scenario that follows captures only the verb under test (not its create
@@ -153,6 +155,128 @@ func TestRecordAndReject(t *testing.T) {
 // rejectLabel mirrors recorder.RejectLabel; the driver stamps it to trigger the
 // record-and-reject policy.
 const rejectLabel = "mutationlab.configbutler.ai/reject"
+
+// finalizerName is an inert custom finalizer no controller handles, so it blocks
+// real removal until the test itself clears it — turning one logical delete into
+// the two-phase removal Row 8 captures.
+const finalizerName = "mutationlab.configbutler.ai/hold"
+
+// TestFinalizerDelete captures Row 8, the sharpest "watch is the lone witness of
+// state" case. A finalizer turns one logical delete into a two-phase removal whose
+// terminal DELETED has NO audit `delete` behind it:
+//
+//   - Phase 1 (delete): the finalizer blocks real removal, so the apiserver only
+//     stamps deletionTimestamp and the object lingers — a watch MODIFIED, an audit
+//     `delete`, and an admission DELETE, but no DELETED yet.
+//   - Phase 2 (finalizer removal): clearing the finalizer is a `patch` (audit) /
+//     UPDATE (admission), NOT a delete — yet it is what actually makes the object
+//     disappear (watch DELETED).
+//
+// So the disappearance is driven by a `patch`, and an audit-only deletion tracker
+// watching for a `delete` verb would attribute it to the wrong request — or miss
+// it entirely. The two phases are kept ordered by waiting for the deletion-pending
+// MODIFIED before clearing the finalizer.
+func TestFinalizerDelete(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "finalizer-delete")
+
+	meta := s.meta("cm-hold")
+	meta.Finalizers = []string{finalizerName}
+	cm := &corev1.ConfigMap{ObjectMeta: meta, Data: map[string]string{"key": "value"}}
+	if _, err := h.kube.CoreV1().ConfigMaps(s.ns).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h.quiesceAndClear(t, s.id, 3)
+
+	// Phase 1: delete. The finalizer keeps the object alive, so this stamps
+	// deletionTimestamp rather than removing it. Wait until the deletion-pending
+	// MODIFIED has been observed so phase 2 cannot reorder ahead of it.
+	if err := h.kube.CoreV1().ConfigMaps(s.ns).Delete(ctx, "cm-hold", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	h.drain(t, s.id, drainSpec{
+		minCount: 1, settle: 0, timeout: 60 * time.Second,
+		until: func(rs []mutationlab.Record) bool { return firstDeletionPendingWatch(rs) != nil },
+	})
+
+	// Phase 2: remove the finalizer. A merge patch to null clears the slice; with
+	// the last finalizer gone the apiserver completes the pending delete.
+	patch := []byte(`{"metadata":{"finalizers":null}}`)
+	if _, err := h.kube.CoreV1().ConfigMaps(s.ns).Patch(
+		ctx, "cm-hold", types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		t.Fatalf("remove finalizer: %v", err)
+	}
+
+	// Drain until the terminal DELETED has arrived and the stream is quiet. The
+	// six load-bearing moments are: watch MODIFIED + DELETED, audit delete + patch,
+	// admission DELETE + UPDATE. An intermediate watch MODIFIED clearing the
+	// finalizer can also appear; it is timing-dependent, so it is asserted as a law
+	// over the drain rather than committed as a flaky moment.
+	records := h.drain(t, s.id, drainSpec{
+		minCount: 6, settle: 3 * time.Second, timeout: 90 * time.Second,
+		until: func(rs []mutationlab.Record) bool { return firstWatch(rs, "DELETED") != nil },
+	})
+
+	// The terminal DELETED has no audit `delete` behind it: there is exactly one
+	// audit delete (phase 1), and the removal verb is a patch.
+	if got := countAuditVerb(records, "delete"); got != 1 {
+		t.Errorf("finalizer delete produced %d audit `delete` events; want exactly 1 (only phase 1)", got)
+	}
+	if got := countAuditVerb(records, "patch"); got == 0 {
+		t.Error("finalizer removal produced no audit `patch` event; want one (the real removal verb)")
+	}
+
+	pending := firstDeletionPendingWatch(records)
+	deleted := firstWatch(records, "DELETED")
+	admDelete := firstOp(records, mutationlab.SourceAdmission, "DELETE")
+	admUpdate := firstOp(records, mutationlab.SourceAdmission, "UPDATE")
+	auditDelete := firstOp(records, mutationlab.SourceAudit, "delete")
+	auditPatch := firstOp(records, mutationlab.SourceAudit, "patch")
+	for name, r := range map[string]*mutationlab.Record{
+		"watch MODIFIED (deletion-pending)": pending,
+		"watch DELETED (terminal)":          deleted,
+		"admission DELETE":                  admDelete,
+		"admission UPDATE":                  admUpdate,
+		"audit delete":                      auditDelete,
+		"audit patch":                       auditPatch,
+	} {
+		if r == nil {
+			t.Fatalf("missing required moment: %s", name)
+		}
+	}
+	if pending.Key.ResourceVersion >= deleted.Key.ResourceVersion {
+		t.Errorf("deletion-pending rv %q should precede terminal DELETED rv %q",
+			pending.Key.ResourceVersion, deleted.Key.ResourceVersion)
+	}
+
+	h.syncCorpus(t, "configmap/finalizer-delete", []mutationlab.Record{
+		*admDelete, *admUpdate, *auditDelete, *auditPatch, *pending, *deleted,
+	})
+}
+
+// countAuditVerb counts audit records whose verb (Operation) matches.
+func countAuditVerb(records []mutationlab.Record, verb string) int {
+	n := 0
+	for i := range records {
+		if r := &records[i]; r.Source == mutationlab.SourceAudit && r.Summary.Operation == verb {
+			n++
+		}
+	}
+	return n
+}
+
+// firstOp returns the first record from the given source whose Operation matches
+// (admission operations are upper-case CREATE/UPDATE/DELETE; audit verbs are
+// lower-case create/patch/delete).
+func firstOp(records []mutationlab.Record, src mutationlab.Source, op string) *mutationlab.Record {
+	for i := range records {
+		if r := &records[i]; r.Source == src && r.Summary.Operation == op {
+			return r
+		}
+	}
+	return nil
+}
 
 // TestDeletecollection captures Row 9, the watch-mode pressure test: one request
 // fans out into N per-object watch DELETED events and N per-object validating
