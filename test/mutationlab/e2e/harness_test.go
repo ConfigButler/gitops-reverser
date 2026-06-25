@@ -334,11 +334,25 @@ func sortRecords(in []mutationlab.Record) []mutationlab.Record {
 			return a.Summary.WatchType < b.Summary.WatchType
 		}
 		if a.Key.ResourceVersion != b.Key.ResourceVersion {
-			return a.Key.ResourceVersion < b.Key.ResourceVersion
+			return rvLess(a.Key.ResourceVersion, b.Key.ResourceVersion)
 		}
 		return a.Summary.AuditID < b.Summary.AuditID
 	})
 	return out
+}
+
+// rvLess orders two resourceVersions numerically when both parse as integers (the
+// common case — apiserver RVs are monotonic integers), falling back to a string
+// compare for opaque/non-numeric values. A plain lexicographic compare would
+// mis-order across digit boundaries (e.g. "10000" < "9999"), reversing exactly the
+// progression the corpus normalization exists to preserve.
+func rvLess(a, b string) bool {
+	if ai, aerr := strconv.ParseUint(a, 10, 64); aerr == nil {
+		if bi, berr := strconv.ParseUint(b, 10, 64); berr == nil {
+			return ai < bi
+		}
+	}
+	return a < b
 }
 
 func sourceRank(s mutationlab.Source) int {

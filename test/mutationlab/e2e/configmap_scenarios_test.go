@@ -31,6 +31,10 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab"
 )
 
+// ConfigMap scenarios — the core capture moments expressible against a built-in
+// ConfigMap: create (Row 1), update (Row 2), deletecollection (Row 9), dry-run
+// create (Row 11), and record-and-reject (Row 12).
+
 // quiesceAndClear drains the setup phase to a quiet state, then clears records, so
 // the scenario that follows captures only the verb under test (not its create
 // prerequisite).
@@ -48,6 +52,24 @@ func countSource(records []mutationlab.Record, src mutationlab.Source) int {
 		}
 	}
 	return n
+}
+
+// TestCreateSucceeds is the baseline anchor (Row 1) and the proof of the capture
+// loop: capture -> normalize -> write -> diff on a single ConfigMap create. It
+// expects three moments — a watch ADDED, an audit create, and an admission
+// create — and commits them as corpus/configmap/create-succeeds/.
+func TestCreateSucceeds(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "create-succeeds")
+
+	cm := &corev1.ConfigMap{ObjectMeta: s.meta("cm-a"), Data: map[string]string{"key": "value"}}
+	if _, err := h.kube.CoreV1().ConfigMaps(s.ns).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create configmap: %v", err)
+	}
+
+	records := h.drain(t, s.id, drainSpec{minCount: 3, settle: 2 * time.Second, timeout: 60 * time.Second})
+	h.syncCorpus(t, "configmap/create-succeeds", records)
 }
 
 // TestUpdate captures Row 2: an Update (PUT) after a create. The create is set up
@@ -98,7 +120,8 @@ func TestDryRunCreate(t *testing.T) {
 
 // TestRecordAndReject captures Row 12: the recorder is always called (parallel
 // validation) and, with the reject label, record-and-rejects — so admission saw a
-// write that never persisted. No watch object, no etcd object.
+// write that never persisted. The failed create is still audited, so the corpus
+// commits both an admission and an audit record; no watch object, no etcd object.
 func TestRecordAndReject(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -112,12 +135,17 @@ func TestRecordAndReject(t *testing.T) {
 		t.Fatal("expected the create to be rejected by the lab admission recorder")
 	}
 
-	records := h.drain(t, s.id, drainSpec{minCount: 1, settle: 3 * time.Second, timeout: 60 * time.Second})
+	// minCount 2 = admission + the (failed) audit; this forces the drain to await
+	// the async audit rather than returning after admission alone.
+	records := h.drain(t, s.id, drainSpec{minCount: 2, settle: 3 * time.Second, timeout: 60 * time.Second})
 	if got := countSource(records, mutationlab.SourceWatch); got != 0 {
 		t.Errorf("rejected create produced %d watch events; want 0", got)
 	}
-	if got := countSource(records, mutationlab.SourceAdmission); got == 0 {
-		t.Error("expected an admission record for the rejected write")
+	if got := countSource(records, mutationlab.SourceAdmission); got != 1 {
+		t.Errorf("rejected create produced %d admission records; want exactly 1", got)
+	}
+	if got := countSource(records, mutationlab.SourceAudit); got != 1 {
+		t.Errorf("rejected create produced %d audit records; want exactly 1 (the failed create is still audited)", got)
 	}
 	h.syncCorpus(t, "configmap/record-and-reject", records)
 }

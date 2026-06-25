@@ -32,15 +32,15 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab"
 )
 
-// M3 captures Row 14: a multi-version CRD whose two served versions differ by a
-// webhook-converted field, so one write produces three shapes — the object the
-// user submitted, the object the apiserver stored/serves, and the conversion
+// CRD conversion (Row 14): a multi-version CRD whose two served versions differ
+// by a webhook-converted field, so one write produces three shapes — the object
+// the user submitted, the object the apiserver stored/serves, and the conversion
 // calls that translate between them.
 //
 // The lab Widget CRD has v1 (spec.sizeBytes: integer) and v2 (spec.size: string,
 // the storage version). The lab's /convert handler renames the field. A CRD has
-// no controller, so — unlike M2's Deployment/Pod — the capture is naturally
-// deterministic.
+// no controller, so — unlike the workload Deployment/Pod — the capture is
+// naturally deterministic.
 
 const (
 	widgetGroup = "mutationlab.configbutler.ai"
@@ -82,12 +82,15 @@ func TestCRDConversion(t *testing.T) {
 		t.Fatalf("create widget v1: %v", err)
 	}
 
-	// admission (v1) + audit create + watch ADDED (v2) + conversion both ways.
+	// All 5 committed records: admission (v1) + audit create + watch ADDED (v2) +
+	// conversion both ways. Require each in the gate — audit delivery is async, so
+	// a count/settle gate alone could return before audit.create lands.
 	records := h.drain(t, s.id, drainSpec{
-		minCount: 4, settle: 4 * time.Second, timeout: 90 * time.Second,
+		minCount: 5, settle: 4 * time.Second, timeout: 90 * time.Second,
 		until: func(rs []mutationlab.Record) bool {
 			return conversionToward(rs, "to-v2") != nil && conversionToward(rs, "to-v1") != nil &&
-				firstWatch(rs, "ADDED") != nil && firstSource(rs, mutationlab.SourceAdmission) != nil
+				firstWatch(rs, "ADDED") != nil && firstSource(rs, mutationlab.SourceAdmission) != nil &&
+				firstSource(rs, mutationlab.SourceAudit) != nil
 		},
 	})
 
@@ -117,8 +120,8 @@ func TestCRDConversion(t *testing.T) {
 
 // installWidgetCRD creates the two-version Widget CRD, pointing its conversion
 // webhook at the lab by reusing the service and CA bundle the product's
-// validating webhook already uses (so M3 needs no new certificate). It waits for
-// the CRD to be Established and registers teardown.
+// validating webhook already uses (so the lab needs no new certificate). It waits
+// for the CRD to be Established and registers teardown.
 func (h *harness) installWidgetCRD(ctx context.Context, t *testing.T) {
 	t.Helper()
 	svc, ca := h.admissionServiceAndCA(ctx, t)

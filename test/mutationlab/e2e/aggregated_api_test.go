@@ -33,8 +33,8 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab"
 )
 
-// M4 captures Row 15, the body-quality cliff — and answers the product question
-// the lab exists to settle: when the official kube-apiserver audit body for an
+// Aggregated API write (Row 15) — the body-quality cliff, and the product
+// question the lab exists to settle: when the official kube-apiserver audit body for an
 // aggregated-API write is shallow/empty (the apiserver proxies the request and
 // has no schema to render request/response objects), does the *watch* still carry
 // the full object? If it does, a watch-based capture would not need the

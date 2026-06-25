@@ -34,11 +34,11 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab"
 )
 
-// M2 captures the moments ConfigMap structurally cannot reach: a Deployment for
-// the /status (Row 5) and /scale (Row 6) subresources, and a Pod for the
-// two-event graceful delete (Row 7).
+// Workload scenarios — the moments ConfigMap structurally cannot reach: a
+// Deployment for the /status (Row 5) and /scale (Row 6) subresources, and a Pod
+// for the two-event graceful delete (Row 7).
 //
-// The headline M2 finding is mechanism *silence*. The lab reuses the product's
+// The headline finding here is mechanism *silence*. The lab reuses the product's
 // audit policy and validating-webhook config verbatim (swap-image model), and
 // those deliberately drop exactly these moments from the provenance mechanisms:
 //
