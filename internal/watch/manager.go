@@ -206,7 +206,7 @@ type Manager struct {
 
 	// WatchStateWriter optionally records observed Kubernetes WATCH events for a Synced type into a
 	// parallel per-type ":watch:stream", written ALONGSIDE (never instead of) the authoritative audit
-	// stream — Phase 1 of docs/design/watch-only-ingestion-architecture.md. It lets the watch-derived
+	// stream — Phase 1 of docs/design/watch-first-ingestion-architecture.md. It lets the watch-derived
 	// desired set be diffed against the audit-derived one without changing any Git write. Satisfied by
 	// queue.RedisByTypeStreamQueue; nil (the default, unless --watch-state-stream is set) disables the
 	// parallel capture. watchStates holds each running per-type watcher's cancel, keyed by type,
@@ -224,7 +224,7 @@ type Manager struct {
 
 	// WatchStateSplicer folds the parallel :watch:stream into a watch-derived desired set so the
 	// Manager can diff it against TypeSplicer's audit-derived set and meter the divergence — the
-	// payoff of Phase 1 (docs/design/watch-only-ingestion-architecture.md). Satisfied by
+	// payoff of Phase 1 (docs/design/watch-first-ingestion-architecture.md). Satisfied by
 	// queue.RedisTypeSplicer; nil (the default, unless --watch-state-stream is set) disables the
 	// periodic comparison. watchCompareIntervalOverride speeds the comparison ticker in tests.
 	WatchStateSplicer            StateSplicer

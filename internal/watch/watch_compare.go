@@ -34,7 +34,7 @@ import (
 )
 
 // The watch-audit comparison is the PAYOFF of Phase 1 (build watch state in parallel,
-// docs/design/watch-only-ingestion-architecture.md): once both the audit-derived and watch-derived
+// docs/design/watch-first-ingestion-architecture.md): once both the audit-derived and watch-derived
 // desired sets exist for a type, periodically diff them and meter the divergence. It answers the one
 // question the corpus cannot — "does a continuous watch reproduce the same desired manifests the
 // audit log does, in a live cluster?" — and it changes NO Git write. It runs only when the parallel

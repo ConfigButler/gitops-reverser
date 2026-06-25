@@ -27,7 +27,7 @@ import (
 // byTypeWatchStreamSuffix is the parallel watch-derived state log: one entry per observed
 // Kubernetes WATCH event for a claimed type, written ALONGSIDE the authoritative ":audit:stream"
 // at "<prefix>:<group-or-core>:<resource>:watch:stream". It is Phase 1 of
-// docs/design/watch-only-ingestion-architecture.md — a parallel capture that lets the
+// docs/design/watch-first-ingestion-architecture.md — a parallel capture that lets the
 // watch-derived desired object set be diffed against the audit-derived one WITHOUT changing any
 // Git write. It is off by default (the Manager's WatchStateWriter is nil unless --watch-state-stream
 // is set) and is never a correctness input.

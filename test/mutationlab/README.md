@@ -46,8 +46,8 @@ gap (see [Capturing Intent, Not State](../../docs/design/mutation-capture-lab-de
 All seventeen catalogued scenarios are now captured. Rows 16 and 17 test the watch
 transport itself; the driver uses the lab's targeted `/watch-probe` endpoint so
 transport-only events can be scenario-attributed — see the
-[watch-only ingestion architecture](../../docs/design/watch-only-ingestion-architecture.md#phase-0-finish-the-evidence)
-Phase 0 notes.
+[watch-first ingestion architecture](../../docs/design/watch-first-ingestion-architecture.md)
+design notes.
 
 ## How it integrates: swap the image, reuse the wiring
 

@@ -317,7 +317,7 @@ func main() {
 	fatalIfErr(err, "unable to initialize per-resource-type audit tail reader")
 	watchMgr.AuditTailReader = auditTailReaderQueue
 
-	// Parallel watch-state stream (Phase 1 of docs/design/watch-only-ingestion-architecture.md): when
+	// Parallel watch-state stream (Phase 1 of docs/design/watch-first-ingestion-architecture.md): when
 	// enabled, every Synced type also holds a long-lived WATCH whose events are recorded into a
 	// per-type ":watch:stream" ALONGSIDE the authoritative audit stream, so the watch-derived desired
 	// set can be diffed against the audit-derived one. It changes NO Git write and is off by default.
@@ -596,7 +596,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"\"commitrequests,configmaps\"). Empty captures every queued event. Bounds the "+
 			"firehose (and its in-lock XADD load) to a few suspect types when investigating.")
 	fs.BoolVar(&cfg.watchStateStream, "watch-state-stream", false,
-		"Experimental (Phase 1 of watch-only-ingestion-architecture): for every Synced type also hold a "+
+		"Experimental (Phase 1 of watch-first-ingestion-architecture): for every Synced type also hold a "+
 			"long-lived WATCH and record its events into a per-type <prefix>:<group>:<resource>:watch:stream, "+
 			"ALONGSIDE the audit stream, so the watch-derived desired set can be diffed against the "+
 			"audit-derived one. Changes no Git write. Off by default.")

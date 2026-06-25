@@ -132,7 +132,7 @@ var (
 
 	// WatchAuditComparisonsTotal counts watch-vs-audit desired-set comparisons, labelled by
 	// {gvr, result} where result is "agree" or "diverge" — Phase 1 of
-	// docs/design/watch-only-ingestion-architecture.md. A rising "diverge" rate is the signal that
+	// docs/design/watch-first-ingestion-architecture.md. A rising "diverge" rate is the signal that
 	// the parallel watch-state stream is NOT yet a faithful replacement for the audit-derived set.
 	// Only emitted when --watch-state-stream is enabled.
 	WatchAuditComparisonsTotal metric.Int64Counter
@@ -190,7 +190,7 @@ var (
 	// watch-derived and audit-derived desired sets at the last comparison — reason is "audit_only"
 	// (present in audit's set, missing from watch's), "watch_only" (the reverse), or "mismatch"
 	// (present in both, sanitized bodies differ). Zero on every reason means watch reproduced audit's
-	// set exactly. Phase 1 of docs/design/watch-only-ingestion-architecture.md; only emitted when
+	// set exactly. Phase 1 of docs/design/watch-first-ingestion-architecture.md; only emitted when
 	// --watch-state-stream is enabled.
 	WatchAuditDivergence metric.Int64Gauge
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.

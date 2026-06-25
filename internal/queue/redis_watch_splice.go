@@ -35,7 +35,7 @@ const watchDeletedEventType = "DELETED"
 
 // SpliceWatchType folds a type's checkpoint with the parallel :watch:stream into the WATCH-derived
 // desired object set — the watch-side twin of SpliceType, and the read side of the Phase 1
-// comparison (docs/design/watch-only-ingestion-architecture.md). It exists ONLY to be diffed against
+// comparison (docs/design/watch-first-ingestion-architecture.md). It exists ONLY to be diffed against
 // SpliceType's audit-derived set; it drives no Git write.
 //
 // It reads the checkpoint @R, then folds every :watch:stream entry whose recorded resourceVersion is

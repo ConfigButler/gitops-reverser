@@ -31,7 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 )
 
-// The parallel watch-state stream is Phase 1 of docs/design/watch-only-ingestion-architecture.md:
+// The parallel watch-state stream is Phase 1 of docs/design/watch-first-ingestion-architecture.md:
 // the "build watch state in parallel" step. For every Synced type it holds a long-lived Kubernetes
 // WATCH and records each ADDED/MODIFIED/DELETED into a per-type ":watch:stream", written ALONGSIDE
 // (never instead of) the authoritative audit stream. Nothing downstream consumes it yet — the point
@@ -65,7 +65,7 @@ var errWatchStateClosed = errors.New("watch-state result channel closed")
 // StateWriter records observed Kubernetes WATCH events into a type's parallel ":watch:stream"
 // and drops that stream when the type is released. It is satisfied by queue.RedisByTypeStreamQueue
 // and is optional on the Manager: nil (the default, unless --watch-state-stream is set) disables the
-// parallel watch-state capture entirely. See docs/design/watch-only-ingestion-architecture.md.
+// parallel watch-state capture entirely. See docs/design/watch-first-ingestion-architecture.md.
 type StateWriter interface {
 	// AppendWatchEvent stores one watch event. envelopeJSON is the sanitized object envelope (the
 	// same shape ":objects:items" stores) so the two are foldable; eventType is the watch.EventType
