@@ -31,14 +31,12 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -72,18 +70,14 @@ type Manager struct {
 	// dynamicClient overrides the config-built dynamic client when non-nil.
 	// Used in tests to inject a fake client without a real REST config.
 	dynamicClient dynamic.Interface
-
-	// watchCheckpointObjects overrides how the WATCH-first checkpoint fill opens its
-	// streaming-list watch (see streamTypeObjects). nil → built from the dynamic client.
-	// It is a test seam: the dynamic fake client does not implement streaming-list
-	// (sendInitialEvents / the initial-events-end bookmark), so tests inject a fake watcher.
-	watchCheckpointObjects func(
-		ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions,
+	// targetWatchOpen overrides how per-GitTarget state watches are opened. nil
+	// means build them from dynamicClient/rest config.
+	targetWatchOpen func(
+		ctx context.Context,
+		gvr schema.GroupVersionResource,
+		namespace string,
+		opts metav1.ListOptions,
 	) (watch.Interface, error)
-	// streamCheckpointTimeoutOverride shortens the WATCH-first initial-events deadline in tests
-	// so the timeout→LIST-fallback path is exercisable without waiting the production backstop.
-	// Zero uses streamCheckpointTimeout.
-	streamCheckpointTimeoutOverride time.Duration
 
 	// resourceCatalog is the shared discovery-backed API surface used by rule planning.
 	resourceCatalogMu sync.Mutex
@@ -109,6 +103,12 @@ type Manager struct {
 	watchedTypeInit sync.Once
 	watchedTypes    *watchedTypeStore
 
+	// targetWatches is the watch-first data plane: one raw watch per
+	// (GitTarget, GVR, namespace scope). It replaces the materialized Redis
+	// checkpoint/audit-tail pipeline as the source of object state.
+	targetWatchesMu sync.Mutex
+	targetWatches   map[string]*targetWatchSet
+
 	// typeRegistry is the followability decision surface (see
 	// docs/design/manifest/version2/type-followability.md): one typeset.TypeRecord
 	// per served type, refreshed from the catalog scan on every catalog refresh. It
@@ -129,18 +129,6 @@ type Manager struct {
 	// construction for zero-value Managers in tests, mirroring typeRegistryInit.
 	materializerInit sync.Once
 	materializer     *typeset.Materializer
-	// materializationSweepOnce guards the one-time start of the periodic Materializer
-	// sweep goroutine (lease GC + per-type re-anchor/release, DEC-L5).
-	// materializationSweepIntervalOverride lets tests run the sweep fast; zero means the
-	// production materializationSweepInterval (~1h).
-	materializationSweepOnce             sync.Once
-	materializationSweepIntervalOverride time.Duration
-	// materializationWork carries the Materializer's demand events (SyncRequested /
-	// Released / …) to the checkpoint driver goroutine — a second subscriber on the
-	// lifecycle-drain discipline (DEC-L4 / §5) so the LIST runs off the Materializer's
-	// dispatch. It is created and subscribed under lifecycleConsumerOnce.
-	materializationWork chan typeset.MaterializationEvent
-
 	// declaredGVRsMu guards declaredGVRs: the type-set each GitTarget last Declared, so the per-type
 	// splice reconcile fires ONCE per (GitTarget, type) — when the type is newly claimed and already
 	// Synced — for the initial backfill, after which the per-event audit tail owns live changes
@@ -154,161 +142,6 @@ type Manager struct {
 	// out-of-order arrivals from churning checkpoint LISTs.
 	lateNudgeMu sync.Mutex
 	lateNudgeAt map[schema.GroupVersionResource]time.Time
-
-	// lifecycleEvents carries per-type registry transitions (TypeActivated / TypeRemoved /
-	// …) from the registry's updater to the drain goroutine that drives the per-type
-	// reconcile/sweep. lifecycleConsumerOnce guards the one-time subscribe + goroutine start.
-	lifecycleEvents       chan typeset.LifecycleEvent
-	lifecycleConsumerOnce sync.Once
-
-	// ObjectMirror writes the per-type current-objects checkpoint (:objects:items) the
-	// materialization driver fills for claimed types and the splice folds into desired
-	// state. Nil disables the checkpoint fill. See
-	// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
-	ObjectMirror ObjectMirror
-
-	// AuditLogTrimmer optionally bounds a type's per-type audit log to the checkpoint cursor on
-	// each successful re-anchor (R1, §6 trim-cursor model). It is satisfied by
-	// queue.RedisByTypeStreamQueue; nil disables trimming (the log just keeps growing under its
-	// own MaxLen). Best-effort from the driver's view — a trim failure is logged, never fatal.
-	AuditLogTrimmer AuditLogTrimmer
-
-	// MirrorGate is the write side of the demand gate: the driver marks a type wanted when its
-	// first sync is requested (SyncRequested) and unwanted on release (Released), so the audit
-	// webhook mirrors only claimed ∩ followable types. Satisfied by *gate.Gate; nil disables
-	// demand-gating writes. See docs/finished/demand-gated-audit-ingestion.md §7.
-	MirrorGate TypeMirrorGate
-
-	// AuditKeyDeleter removes a type's audit footprint on release (DG2), the audit-side twin of
-	// ObjectMirror.DeleteTypeObjects. Satisfied by queue.RedisByTypeStreamQueue; nil disables
-	// release cleanup. Best-effort — a delete failure is logged, never fatal.
-	AuditKeyDeleter TypeKeyDeleter
-
-	// TypeSplicer serves the api-source-of-truth splice (R2): SpliceSnapshotForType reads the
-	// per-type checkpoint + log through it to compute desired state with zero per-reconcile API
-	// calls. Nil means the splice consumer is not wired (the per-type reconcile then holds).
-	TypeSplicer TypeSplicer
-
-	// AuditTailReader drives the audit-arrival wake (R2): a per-type tail blocks on it and fires
-	// a splice reconcile when an event lands, for sub-checkpoint-interval freshness. With the old
-	// live path gone (R3) this is the load-bearing freshness feed; the periodic checkpoint
-	// re-anchor is its correctness backstop. Nil disables the wake. auditTails holds each running
-	// tail's cancel, keyed by type, guarded by auditTailsMu.
-	AuditTailReader AuditTailReader
-	auditTails      map[schema.GroupVersionResource]context.CancelFunc
-	auditTailsMu    sync.Mutex
-
-	// Test seams for the audit tail: shrink the blocking-read window so unit tests run fast, and
-	// substitute the per-batch apply so the read/apply loop can be observed without a full worker
-	// stack. Zero/nil means use the production default / the real sweep-free apply.
-	auditTailBlockOverride time.Duration
-	auditTailApplyOverride func(context.Context, logr.Logger, schema.GroupVersionResource, []git.Event)
-
-	// WatchStateWriter optionally records observed Kubernetes WATCH events for a Synced type into a
-	// parallel per-type ":watch:stream", written ALONGSIDE (never instead of) the authoritative audit
-	// stream — Phase 1 of docs/design/watch-first-ingestion-architecture.md. It lets the watch-derived
-	// desired set be diffed against the audit-derived one without changing any Git write. Satisfied by
-	// queue.RedisByTypeStreamQueue; nil (the default, unless --watch-state-stream is set) disables the
-	// parallel capture. watchStates holds each running per-type watcher's cancel, keyed by type,
-	// guarded by watchStatesMu — the watch-state twin of auditTails/auditTailsMu.
-	WatchStateWriter StateWriter
-	watchStates      map[schema.GroupVersionResource]context.CancelFunc
-	watchStatesMu    sync.Mutex
-	// watchStateOpen overrides how a parallel watch-state stream opens its Kubernetes watch (test
-	// seam, mirroring watchCheckpointObjects). nil → built from the dynamic client.
-	watchStateOpen func(
-		ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions,
-	) (watch.Interface, error)
-	// watchStateBackoffOverride shortens the post-restart backoff in tests. Zero uses watchStateBackoff.
-	watchStateBackoffOverride time.Duration
-
-	// WatchStateSplicer folds the parallel :watch:stream into a watch-derived desired set so the
-	// Manager can diff it against TypeSplicer's audit-derived set and meter the divergence — the
-	// payoff of Phase 1 (docs/design/watch-first-ingestion-architecture.md). Satisfied by
-	// queue.RedisTypeSplicer; nil (the default, unless --watch-state-stream is set) disables the
-	// periodic comparison. watchCompareIntervalOverride speeds the comparison ticker in tests.
-	WatchStateSplicer            StateSplicer
-	watchCompareIntervalOverride time.Duration
-
-	// reconcileTypeFanOverride substitutes the per-type reconcile fan so a test can observe the
-	// TypeSynced handler's decision (first-sync backfill vs. deferred re-anchor heal) without a
-	// full EventRouter/worker stack. Nil means use the real reconcileTypeForSyncedTargets.
-	reconcileTypeFanOverride func(context.Context, logr.Logger, schema.GroupVersionResource, bool)
-
-	// targetTypeWatermark is the per-(GitTarget, GVR) coverage watermark Hc that gates the audit
-	// tail fan-out: an entry at rv <= Hc is historical for that target (already covered by its
-	// reconcile) and is suppressed; rv > Hc is live and routed. Presence of an entry is the
-	// "Reconciling/LiveFrom(Hc)" state; absence is "NotReconciled" (suppress every tail entry until
-	// the first reconcile establishes a boundary). It is published only AFTER the scoped reconcile
-	// is enqueued (publishTargetTypeWatermark), advances monotonically, and is cleared on GitTarget
-	// delete/recreate alongside ForgetGitTargetDeclaration — a stale-high watermark is silent data
-	// loss, so resetting to NotReconciled is the safe direction. In-memory only: a restart degrades
-	// to NotReconciled, and the boot reconcile re-establishes it. targetTypeWatermarkMu is shared
-	// between the publish and the fan-out gate so the worker queue gets a happens-before edge
-	// (the reconcile is enqueued before the tail can observe Hc). See
-	// docs/design/stream/signing-snapshot-tail-replay-failure-investigation.md §7.
-	targetTypeWatermarkMu sync.Mutex
-	targetTypeWatermark   map[string]map[schema.GroupVersionResource]string
-}
-
-// AuditLogTrimmer bounds a type's main audit stream to the oldest currently-serving checkpoint
-// revision, so a splice reconcile never scans more than one checkpoint interval of history (R1).
-// It is satisfied by queue.RedisByTypeStreamQueue and is optional on the Manager (nil disables
-// trimming). See docs/design/stream/api-source-of-truth-reconcile.md §6 and
-// docs/design/stream/audit-log-ingestion-and-ordering.md §10.
-type AuditLogTrimmer interface {
-	// TrimTypeAuditLog evicts every entry of the (group, resource) audit stream whose
-	// resourceVersion is strictly below minRV. A blank minRV is a no-op.
-	TrimTypeAuditLog(ctx context.Context, group, resource, minRV string) error
-}
-
-// TypeMirrorGate is the write side of the demand gate (docs/finished/demand-gated-audit-ingestion.md):
-// the driver marks a type wanted SYNCHRONOUSLY when it is claimed (DeclareForGitTarget, so a claimed
-// type is mirrored before its first event) and unwanted on the Unclaimed event (the sweep's GC of the
-// last claim). Satisfied by *gate.Gate; optional on the Manager (nil disables demand-gating writes).
-type TypeMirrorGate interface {
-	Require(ctx context.Context, gvr schema.GroupVersionResource) error
-	Unrequire(ctx context.Context, gvr schema.GroupVersionResource) error
-}
-
-// TypeKeyDeleter removes a type's audit keyspace (:audit:stream/idstate + __index__) on
-// release (DG2). Satisfied by queue.RedisByTypeStreamQueue; optional (nil disables release cleanup).
-type TypeKeyDeleter interface {
-	DeleteType(ctx context.Context, group, resource string) error
-}
-
-// TypeSplicer reads the per-type materialization (checkpoint + log) and folds it into the current
-// desired object set — the read side of the api-source-of-truth splice (R2). It is satisfied by
-// queue.RedisTypeSplicer and is optional on the Manager (nil means no splice consumer is wired).
-// See docs/design/stream/api-source-of-truth-reconcile.md §6.
-type TypeSplicer interface {
-	// SpliceType returns the folded desired objects for a type (sanitized, sorted by identity,
-	// NOT scope-filtered), the checkpoint revision they are anchored at, and the coverage head Hc
-	// the fold reached (max(checkpoint rv, highest folded audit-log entry rv)). The checkpoint rv
-	// keeps serving commit-message continuity; the coverage head is what the per-(GitTarget, GVR)
-	// freshness watermark gates the audit tail on. An absent checkpoint is an error, never an empty
-	// set, so the caller holds (fail-closed, R11).
-	SpliceType(ctx context.Context, group, resource string) ([]*unstructured.Unstructured, string, string, error)
-}
-
-// ObjectMirror mirrors the current set of objects for one resource type into the
-// per-resource-type checkpoint keyspace. It is satisfied by queue.RedisObjectsSnapshot and
-// is optional on the Manager (nil disables the checkpoint fill). Implementations must be
-// best-effort from the caller's view: the Manager logs and swallows errors so the mirror
-// never disturbs the reconcile path.
-type ObjectMirror interface {
-	// ReplaceTypeObjects replaces the stored object set for a type with items keyed by
-	// identity ("<namespace>/<name>", cluster-scoped: "<name>") -> object JSON, pinned to
-	// the list's resourceVersion. The version is recorded so the durable checkpoint is
-	// self-describing for the boot rebuild (DEC-L6); the keyspace itself is version-less.
-	ReplaceTypeObjects(
-		ctx context.Context,
-		group, version, resource string,
-		items map[string]string,
-		resourceVersion string,
-	) error
-	// DeleteTypeObjects drops the stored object set for a removed type.
-	DeleteTypeObjects(ctx context.Context, group, resource string) error
 }
 
 const (
@@ -320,24 +153,10 @@ const (
 // Performs initial reconciliation then runs periodic discovery refresh.
 func (m *Manager) Start(ctx context.Context) error {
 	log := m.Log.WithName("watch")
-	log.Info("watch ingestion manager starting (api-source-of-truth reconcile)")
+	log.Info("watch ingestion manager starting (watch-first ingestion)")
 	defer log.Info("watch ingestion manager stopping")
 
 	m.initializeManagerState()
-
-	// Subscribe to the registry's per-type transitions before the first reconcile drives a
-	// registry Update, so cold-start activations drive the per-type reconcile path.
-	m.startTypeLifecycleConsumer(ctx, log.WithName("type-lifecycle"))
-
-	// Tick the demand-axis sweep so withdrawn leases age out (DEC-L5). It is independent of
-	// the followability consumer above: a GitTarget renews its claims every reconcile, this
-	// pass releases whatever stopped being renewed since the previous tick.
-	m.startMaterializationSweep(ctx, log.WithName("materialization"))
-
-	// Parallel watch-state comparison (Phase 1): when --watch-state-stream is enabled, periodically
-	// diff each serviceable type's watch-derived desired set against its audit-derived one and meter
-	// the divergence. No-op (and zero cost) when the splicer is not wired.
-	m.startWatchComparator(ctx, log.WithName("watch-compare"))
 
 	if err := m.bootstrapRuleStore(ctx, log.WithName("bootstrap")); err != nil {
 		log.Error(err, "RuleStore bootstrap failed, continuing with current in-memory state")
@@ -428,9 +247,9 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 
 	// Re-resolve the resident watched-type tables now that the catalog is fresh. This is
 	// gated on a rule-set change or catalog generation bump, so a periodic reconcile with
-	// neither reuses the resolved tables. The splice scope resolution and the demand Declare
-	// read these tables.
+	// neither reuses the resolved tables. The target-watch runner reads these tables.
 	m.refreshWatchedTypeTables()
+	m.refreshRunningTargetWatches(ctx)
 	return nil
 }
 

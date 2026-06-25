@@ -199,6 +199,16 @@ func sortWatchedTypes(watched []WatchedType) {
 	})
 }
 
+// tableWatchesGVR reports whether a GitTarget's resident table includes the given type.
+func tableWatchesGVR(table WatchedTypeTable, gvr schema.GroupVersionResource) bool {
+	for _, wt := range table.Types {
+		if wt.GVR == gvr {
+			return true
+		}
+	}
+	return false
+}
+
 // gvkSortKey builds a stable group|version|kind ordering key.
 func gvkSortKey(gvk schema.GroupVersionKind) string {
 	return gvk.Group + "|" + gvk.Version + "|" + gvk.Kind

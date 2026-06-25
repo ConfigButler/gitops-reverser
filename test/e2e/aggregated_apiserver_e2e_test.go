@@ -172,6 +172,10 @@ spec:
 	})
 
 	It("should never drop aggregated audit events as shallow", func() {
+		if committerOnlyModeEnabled() {
+			Skip("watch-first committer-only mode has no audit shallow-drop path")
+		}
+
 		// A "shallow" audit event is one whose request/response body never
 		// arrived, so it cannot drive a high-quality Git write and is dropped,
 		// incrementing gitopsreverser_audit_events_total{outcome="shallow_dropped"}. In a correctly
@@ -236,6 +240,10 @@ spec:
 	})
 
 	It("should attribute Flunder commits to the impersonated user", func() {
+		if committerOnlyModeEnabled() {
+			Skip("watch-first committer-only mode has no audit facts for author attribution")
+		}
+
 		ensureFlunderWatchRuleReady()
 
 		flunderName := fmt.Sprintf("aggregated-impersonation-flunder-%d", GinkgoRandomSeed())

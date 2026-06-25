@@ -20,14 +20,12 @@ package watch
 
 import (
 	"context"
-	"sort"
 	"testing"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -35,7 +33,6 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
-	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -52,19 +49,6 @@ func makeScheme(t *testing.T) *runtime.Scheme {
 	require.NoError(t, clientgoscheme.AddToScheme(s))
 	require.NoError(t, configv1alpha2.AddToScheme(s))
 	return s
-}
-
-// uns builds a core/v1 unstructured object a materialization fold would carry.
-func uns(kind, namespace, name string) *unstructured.Unstructured {
-	u := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "v1",
-		"kind":       kind,
-		"metadata":   map[string]interface{}{"name": name},
-	}}
-	if namespace != "" {
-		u.SetNamespace(namespace)
-	}
-	return u
 }
 
 // streamingManager builds a Manager wired with a fake k8s client (carrying gitTarget), a fake
@@ -134,16 +118,6 @@ func addClusterWatchRule(store *rulestore.RuleStore, name, resource string) {
 
 func myTargetRef() itypes.ResourceReference {
 	return itypes.NewResourceReference("my-target", "gitops-reverser")
-}
-
-// desiredNames returns the sorted resource names in a snapshot, for stable assertions.
-func desiredNames(desired []manifestanalyzer.DesiredResource) []string {
-	names := make([]string, len(desired))
-	for i, d := range desired {
-		names[i] = d.Resource.Name
-	}
-	sort.Strings(names)
-	return names
 }
 
 // A reconcile fails closed while the cluster API surface has not been observed yet (an

@@ -64,11 +64,11 @@ type CommitRequestAuthorLookup interface {
 const windowMismatchMessage = "the open commit window belongs to a different author or GitTarget; " +
 	"nothing was committed for this request"
 
-// attributionFailedMessage explains the fail-closed attribution bound: a
-// CommitRequest whose own audit event never arrived cannot be bound to an
-// author, and an unattributable finalize is an error, not a guess.
-const attributionFailedMessage = "could not attribute the CommitRequest to an author: " +
-	"its create audit event was not observed within the attribution window"
+// attributionFallbackMessage explains the optional attribution bound: a
+// CommitRequest whose own audit event never arrived is finalized as the
+// configured committer, not failed.
+const attributionFallbackMessage = "could not attribute the CommitRequest to an author: " +
+	"finalizing as the configured committer"
 
 // resolveTimeoutMessage explains the fail-closed resolve bound: the worker never
 // reported an outcome for the attached request within the safety window (e.g. the
@@ -124,9 +124,8 @@ type CommitRequestReconciler struct {
 	APIReader client.Reader
 
 	// Finalizer attaches the request to the author-bound open window and reports
-	// its outcome; AuthorLookup attributes the author from the audit stream. When
-	// either is nil (partial test setups), freshly created objects are stamped
-	// WaitingForAuditEvent and left there.
+	// its outcome; AuthorLookup optionally attributes the author from audit facts.
+	// When AuthorLookup is nil, requests finalize as the configured committer.
 	Finalizer    CommitRequestFinalizer
 	AuthorLookup CommitRequestAuthorLookup
 }
@@ -146,25 +145,26 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	if r.Finalizer == nil || r.AuthorLookup == nil {
-		log.V(1).Info("CommitRequest finalize disabled: no Finalizer/AuthorLookup configured",
+	if r.Finalizer == nil {
+		log.V(1).Info("CommitRequest finalize disabled: no Finalizer configured",
 			"name", req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
-	// 1. ATTRIBUTE: bind the request to the author recorded in its own audit
-	// event. Not observed yet → poll within the bound; past the bound → fail
-	// closed rather than finalize someone's window on a guess.
-	author, attributed := r.AuthorLookup.LookupCommitRequestAuthor(
-		ctx, commitRequest.Namespace, commitRequest.Name, commitRequest.UID)
-	if !attributed {
-		if time.Since(commitRequest.CreationTimestamp.Time) < commitRequestAttributionTimeout {
+	// 1. ATTRIBUTE: bind the request to a strong audit author when one is
+	// available. Without audit/Redis, or after the bounded wait expires, use the
+	// configured committer identity (blank author).
+	var author string
+	if r.AuthorLookup != nil {
+		var attributed bool
+		author, attributed = r.AuthorLookup.LookupCommitRequestAuthor(
+			ctx, commitRequest.Namespace, commitRequest.Name, commitRequest.UID)
+		if !attributed && time.Since(commitRequest.CreationTimestamp.Time) < commitRequestAttributionTimeout {
 			return ctrl.Result{RequeueAfter: commitRequestAttributionRetryDelay}, nil
 		}
-		log.Info("CommitRequest attribution timed out; failing closed", "name", req.NamespacedName)
-		r.writeTerminalStatus(ctx, log, commitRequest,
-			git.FinalizeResult{}, errors.New(attributionFailedMessage))
-		return ctrl.Result{}, nil
+		if !attributed {
+			log.Info(attributionFallbackMessage, "name", req.NamespacedName)
+		}
 	}
 
 	// 2. ATTACH + POLL: register the attach idempotently the instant we attribute

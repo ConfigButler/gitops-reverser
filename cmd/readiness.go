@@ -81,6 +81,8 @@ func newRedisReadinessGate(pinger redisPinger) *redisReadinessGate {
 
 // Start runs as a manager Runnable: it PINGs until the first success (then returns, so it never
 // pings again), or until the manager context is cancelled.
+//
+//nolint:unparam // controller-runtime Runnable requires an error return.
 func (g *redisReadinessGate) Start(ctx context.Context) error {
 	for {
 		pingCtx, cancel := context.WithTimeout(ctx, g.timeout)
@@ -117,6 +119,9 @@ func (g *redisReadinessGate) Err() error {
 
 // auditServingReadyCheck fails until the audit ingress listener is bound and accepting.
 func auditServingReadyCheck(probe auditReadinessProbe) healthz.Checker {
+	if probe == nil {
+		return nil
+	}
 	return func(_ *http.Request) error {
 		if !probe.Serving() {
 			return errors.New("audit ingress not yet serving")

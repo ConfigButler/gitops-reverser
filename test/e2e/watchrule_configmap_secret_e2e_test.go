@@ -589,7 +589,11 @@ spec:
 			}
 
 			author := string(authorMsg)
-			g.Expect(author).To(ContainSubstring("jane@acme.com"))
+			if committerOnlyModeEnabled() {
+				g.Expect(author).To(ContainSubstring("GitOps Reverser"))
+			} else {
+				g.Expect(author).To(ContainSubstring("jane@acme.com"))
+			}
 		}
 		Eventually(verifyGitCommit).Should(Succeed())
 

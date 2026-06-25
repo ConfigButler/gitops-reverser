@@ -368,6 +368,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		}{watchRuleName, testNs, destName}
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, testNs)).To(Succeed())
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		waitForGitTargetSynced(destName, testNs)
 
 		_, err := kubectlRunInNamespace(testNs, "create", "configmap", cmName, "--from-literal=key=template-test")
 		Expect(err).NotTo(HaveOccurred())

@@ -135,6 +135,10 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 	})
 
 	It("should receive audit webhook events from kube-apiserver", func() {
+		if committerOnlyModeEnabled() {
+			Skip("watch-first committer-only mode does not require audit webhook ingestion")
+		}
+
 		By("recording baseline audit event count")
 		baselineAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_total) or vector(0)")
 		Expect(err).NotTo(HaveOccurred())

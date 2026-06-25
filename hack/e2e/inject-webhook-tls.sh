@@ -74,6 +74,12 @@ wait_for_manager_rollout() {
 # Logs are read from the deployment's current pod (not a label selector) so a stale
 # terminating pod from before the restart cannot produce a false-positive match.
 warmup_audit_path() {
+    if kubectl --context "${CTX}" -n "${NAMESPACE}" logs "${MANAGER_DEPLOY}" \
+        --since=10m 2>/dev/null | grep -q "watch-first committer-only mode enabled"; then
+        echo "✅ Watch-first committer-only mode detected — audit warmup not required"
+        return 0
+    fi
+
     echo "⏳ Warming up the audit pipeline (kube-apiserver -> manager)..."
     kubectl --context "${CTX}" create namespace "${WARMUP_NS}" >/dev/null 2>&1 || true
     kubectl --context "${CTX}" -n "${WARMUP_NS}" create configmap audit-warmup \
@@ -124,4 +130,4 @@ wait_for_audit_certificates
 wait_for_manager_rollout
 warmup_audit_path
 
-echo "✅ Webhook TLS injection complete — audit pipeline verified live"
+echo "✅ Webhook TLS injection complete"

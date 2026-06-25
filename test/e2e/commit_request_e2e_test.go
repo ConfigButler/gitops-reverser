@@ -226,6 +226,10 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	// from responseObject. Without the fix the CommitRequest stays stuck in
 	// WaitingForAuditEvent forever.
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
+		if committerOnlyModeEnabled() {
+			Skip("generateName attribution regression only applies to audit-backed CommitRequests")
+		}
+
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
 		deployName := fmt.Sprintf("commit-request-gen-deploy-%d", seed)

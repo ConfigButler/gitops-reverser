@@ -245,21 +245,24 @@ func TestCommitRequestReconcile_AttributionPendingRetries(t *testing.T) {
 	assert.Equal(t, 1, lookup.calls)
 }
 
-// Past the attribution bound the request fails closed: finalizing a window
-// without knowing the requester would risk committing someone else's work.
-func TestCommitRequestReconcile_AttributionTimeoutFailsClosed(t *testing.T) {
+// Past the attribution bound the request finalizes as the configured committer
+// instead of failing solely because audit/Redis is absent.
+func TestCommitRequestReconcile_AttributionTimeoutFallsBackToCommitter(t *testing.T) {
 	// The zero CreationTimestamp puts the object far past the bound.
 	cr := newCommitRequest("save-unattributed", "")
 	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{}
+	f := &fakeFinalizer{
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Branch: "main"},
+		resolved: true,
+	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: &fakeAuthorLookup{}}
 
 	reconcileCommitRequest(t, r, "save-unattributed")
 
 	got := fetchCommitRequest(t, c, "save-unattributed")
-	assert.Equal(t, configv1alpha2.CommitRequestPhaseFailed, got.Status.Phase)
-	assert.Equal(t, attributionFailedMessage, got.Status.Message)
-	assert.Empty(t, f.calls)
+	assert.Equal(t, configv1alpha2.CommitRequestPhaseCommitted, got.Status.Phase)
+	require.Len(t, f.calls, 1)
+	assert.Empty(t, f.calls[0].Author, "blank author means the worker commits as the configured committer")
 }
 
 // The collect-grace is the worker's job now: the controller does not hold the
