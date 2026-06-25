@@ -27,6 +27,8 @@ gap (see [Capturing Intent, Not State](../../docs/design/mutation-capture-lab-de
 |---|---|---|---|---|
 | 1 | Create succeeds | `configmap_scenarios_test.go` · `TestCreateSucceeds` | `configmap/create-succeeds/` | watch, audit, admission |
 | 2 | Update (PUT) | `configmap_scenarios_test.go` · `TestUpdate` | `configmap/update/` | watch, audit, admission |
+| 3 | Server-side apply | `configmap_scenarios_test.go` · `TestServerSideApply` | `configmap/server-side-apply/` | watch MODIFIED, audit (`patch`, apply field manager), admission UPDATE (apply options) |
+| 4 | No-op apply | `configmap_scenarios_test.go` · `TestNoOpApply` | `configmap/no-op-apply/` | audit, admission — **no** watch (resourceVersion unchanged) |
 | 5 | Status subresource | `workload_scenarios_test.go` · `TestStatusSubresource` | `deployment/status-update/` | watch ×2 — **no** audit, **no** admission |
 | 6 | Scale subresource | `workload_scenarios_test.go` · `TestScaleSubresource` | `deployment/scale-patch/` | watch, audit — **no** admission |
 | 7 | Graceful delete | `workload_scenarios_test.go` · `TestGracefulDelete` | `pod/graceful-delete/` | watch (MODIFIED + DELETED), admission — **no** audit |
@@ -41,9 +43,9 @@ gap (see [Capturing Intent, Not State](../../docs/design/mutation-capture-lab-de
 | 16 | Watch resync (`410 Gone`) | `watch_transport_test.go` · `TestWatchExpiredResourceVersion` | `configmap/watch-resync/` | watch ERROR (`Status` 410); driver verifies relist recovery |
 | 17 | Bookmark | `watch_transport_test.go` · `TestWatchBookmark` | `configmap/watch-bookmark/` | watch BOOKMARK with resourceVersion |
 
-Rows **3 and 4** (server-side apply, no-op apply) are not yet captured. Rows 16
-and 17 test the watch transport itself; the driver uses the lab's targeted
-`/watch-probe` endpoint so transport-only events can be scenario-attributed — see the
+All seventeen catalogued scenarios are now captured. Rows 16 and 17 test the watch
+transport itself; the driver uses the lab's targeted `/watch-probe` endpoint so
+transport-only events can be scenario-attributed — see the
 [watch-only ingestion architecture](../../docs/design/watch-only-ingestion-architecture.md#phase-0-finish-the-evidence)
 Phase 0 notes.
 

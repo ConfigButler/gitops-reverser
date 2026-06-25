@@ -1,0 +1,53 @@
+annotations:
+  all-events-test-only.configbutler.ai/scenario: server-side-apply
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: ""
+auditID: <auditID-1>
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  name: cm-a
+  namespace: <ns-1>
+  resource: configmaps
+requestObject:
+  apiVersion: v1
+  data:
+    key: updated
+  kind: ConfigMap
+  metadata:
+    labels:
+      mutationlab.configbutler.ai/scenario: server-side-apply
+    name: cm-a
+    namespace: <ns-1>
+requestReceivedTimestamp: <ts>
+requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-a?fieldManager=mutationlab-apply&force=true
+responseObject:
+  apiVersion: v1
+  data:
+    key: updated
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts>
+    labels:
+      mutationlab.configbutler.ai/scenario: server-side-apply
+    name: cm-a
+    namespace: <ns-1>
+    resourceVersion: <rv-2>
+    uid: <uid-1>
+responseStatus:
+  code: 200
+  metadata: {}
+sourceIPs:
+- <ip-1>
+stage: ResponseComplete
+stageTimestamp: <ts>
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - <credential-1>
+  groups:
+  - system:masters
+  - system:authenticated
+  username: system:admin
+userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
+verb: patch

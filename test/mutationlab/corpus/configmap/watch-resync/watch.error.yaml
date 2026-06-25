@@ -2,7 +2,7 @@ object:
   apiVersion: v1
   code: 410
   kind: Status
-  message: 'too old resource version: 1 (79344)'
+  message: 'too old resource version: <rv-1> (<rv-2>)'
   metadata: {}
   reason: Expired
   status: Failure

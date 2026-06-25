@@ -647,9 +647,10 @@ and now known to carry the hidden relevance-filter cost).
 
 ### Phase 0: finish the evidence
 
-The proposal is now supported by captured rows 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, and 15. Rows 10
-(owner-ref cascade, `configmap/owner-ref-cascade/`) and 13 (optimistic-concurrency conflict,
-`configmap/conflict-update/`) were added for this proposal:
+The proposal is now supported by captured rows 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, and
+17. Rows 10 (owner-ref cascade, `configmap/owner-ref-cascade/`), 13 (optimistic-concurrency conflict,
+`configmap/conflict-update/`), 16 (watch resync, `configmap/watch-resync/`), and 17 (bookmark,
+`configmap/watch-bookmark/`) were added for this proposal:
 
 - **Row 10** confirms the delete-attribution story: watch emits a `DELETED` for both the parent and the
   cascaded child from a single user delete, and the child's delete is audited under
@@ -659,33 +660,33 @@ The proposal is now supported by captured rows 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 
   storage layer *before* validating admission runs, so the conflict produces **no** admission record
   and **no** watch event — audit is the sole witness. A watch-only pipeline never sees the phantom
   write at all.
+- **Row 16** captures the watch transport's unresumable-cursor shape: an expired resourceVersion
+  produces a watch `ERROR` carrying a 410 `Status`, and recovery requires a fresh list.
+- **Row 17** captures the bookmark resume anchor: a `BOOKMARK` event carries a resourceVersion and,
+  for the streaming-list probe, the `k8s.io/initial-events-end` annotation.
 
-The remaining planned rows most relevant to watch operation:
+The remaining planned rows are the apply cases:
 
-- Row 16: watch resync / `410 Gone`;
-- Row 17: bookmark.
+- Row 3: server-side apply;
+- Row 4: no-op apply.
 
 Rows 16 and 17 are especially important because they test the watch transport itself, not only object
-shape — and they are the rows that quantify the history-granularity gap (how much collapses across a
-relist).
+shape — and they quantify the history-granularity gap (how much collapses across a relist).
 
-Recorder-readiness for these two (investigated against
-[recorder/watch.go](../../internal/mutationlab/recorder/watch.go)):
+Transport capture shape for these two (implemented with the lab's targeted `/watch-probe` endpoint):
 
-- **Row 17 (bookmark)** is partially ready: the recorder already sets `AllowWatchBookmarks: true` and
-  records `BOOKMARK` events. The gap is attribution — a bookmark carries no object, labels, or
-  namespace, so the per-scenario capture harness cannot key it to a scenario, and bookmarks fire only
-  opportunistically (~1/min). Capturing it needs a global (un-attributed) capture path plus
-  resourceVersion normalization.
-- **Row 16 (resync / `410 Gone`)** is the most expensive: a 410 surfaces as a `watch.Error` event
-  (recordable), after which the recorder reopens *from "now" with no relist* — so it does not model a
-  faithful resync (re-LIST + re-`ADDED` fan-out). Forcing a 410 also requires etcd compaction past the
-  watch resourceVersion, which is high-friction on k3s. It is better captured as a recorder unit test
-  (inject a fake watcher that emits a 410) than as a live corpus row.
+- **Row 17 (bookmark)** uses a short-lived streaming-list watch with `sendInitialEvents=true`,
+  `resourceVersionMatch=NotOlderThan`, and `allowWatchBookmarks=true`. The endpoint tags the
+  transport-only `BOOKMARK` with the scenario id because the bookmark itself carries no labels or
+  namespace.
+- **Row 16 (resync / `410 Gone`)** opens a short-lived watch from an expired resourceVersion and
+  records the resulting `watch.Error`/`Status` payload. The driver then performs a fresh list to prove
+  the required recovery path: after an unresumable watch cursor, correctness comes from relist +
+  reconcile, not from replaying the missing history.
 
-That "reopen-from-now, no relist" behavior is itself the history-gap-across-a-relist this proposal
-describes: a real watch-only ingestion must relist after a 410 and loses the intermediate versions,
-exactly the "collapses to current state across gaps" guarantee in
+That relist recovery is itself the history-gap-across-a-relist this proposal describes: a real
+watch-only ingestion must relist after a 410 and loses the intermediate versions, exactly the
+"collapses to current state across gaps" guarantee in
 [What the history guarantee actually becomes](#what-the-history-guarantee-actually-becomes).
 
 ### Phase 1: build watch state in parallel

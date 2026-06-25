@@ -22,6 +22,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -34,9 +35,9 @@ import (
 )
 
 // ConfigMap scenarios — the core capture moments expressible against a built-in
-// ConfigMap: create (Row 1), update (Row 2), finalizer delete (Row 8),
-// deletecollection (Row 9), dry-run create (Row 11), and record-and-reject
-// (Row 12).
+// ConfigMap: create (Row 1), update (Row 2), server-side apply (Row 3), no-op
+// apply (Row 4), finalizer delete (Row 8), deletecollection (Row 9), dry-run
+// create (Row 11), and record-and-reject (Row 12).
 
 // quiesceAndClear drains the setup phase to a quiet state, then clears records, so
 // the scenario that follows captures only the verb under test (not its create
@@ -96,6 +97,90 @@ func TestUpdate(t *testing.T) {
 	}
 	records := h.drain(t, s.id, drainSpec{minCount: 3, settle: 2 * time.Second, timeout: 60 * time.Second})
 	h.syncCorpus(t, "configmap/update", records)
+}
+
+// applyFieldManager owns the lab's server-side-apply writes. Using one stable
+// manager across both applies in Rows 3/4 is what makes the no-op apply a true
+// no-op (a different manager would add a managedFields entry and churn the rv).
+const applyFieldManager = "mutationlab-apply"
+
+// applyConfigMap server-side-applies a ConfigMap with the given data value under
+// applyFieldManager. The body carries apiVersion/kind/name (required for apply)
+// and the scenario label so the records attribute to the scenario.
+func (h *harness) applyConfigMap(ctx context.Context, t *testing.T, s scenario, name, value string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": s.ns,
+			"labels":    map[string]string{scenarioLabel: s.id},
+		},
+		"data": map[string]string{"key": value},
+	})
+	if err != nil {
+		t.Fatalf("marshal apply body: %v", err)
+	}
+	force := true
+	if _, err := h.kube.CoreV1().ConfigMaps(s.ns).Patch(
+		ctx, name, types.ApplyPatchType, body,
+		metav1.PatchOptions{FieldManager: applyFieldManager, Force: &force}); err != nil {
+		t.Fatalf("server-side apply %s=%s: %v", name, value, err)
+	}
+}
+
+// TestServerSideApply captures Row 3, the dominant GitOps write path: Flux/Argo
+// write by apply, so this pins what a server-side apply that *changes* an object
+// looks like across the three mechanisms. The setup is itself an apply (same field
+// manager), so the captured moment is a clean second apply: a watch MODIFIED, an
+// audit record for the apply request, and an admission UPDATE carrying the apply
+// options — with the apply field manager visible in managedFields.
+func TestServerSideApply(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "server-side-apply")
+
+	// First apply creates the object under applyFieldManager.
+	h.applyConfigMap(ctx, t, s, "cm-a", "value")
+	h.quiesceAndClear(t, s.id, 3)
+
+	// A second apply that changes the value: MODIFIED + apply audit + admission UPDATE.
+	h.applyConfigMap(ctx, t, s, "cm-a", "updated")
+	records := h.drain(t, s.id, drainSpec{minCount: 3, settle: 2 * time.Second, timeout: 60 * time.Second})
+	if got := countSource(records, mutationlab.SourceWatch); got == 0 {
+		t.Error("server-side apply that changed the object produced no watch event; want a MODIFIED")
+	}
+	h.syncCorpus(t, "configmap/server-side-apply", records)
+}
+
+// TestNoOpApply captures Row 4, the load-bearing watch-mode caveat: re-applying
+// identical content (same field manager, same values) leaves the resourceVersion
+// unchanged, so it produces **no** watch event — yet the apply request still
+// reaches audit (and admission). The watch silence is the finding: a naive watcher
+// must not read "no event" as "nothing happened"; the apply did occur, it was just
+// a no-op at storage. Only a periodic relist/reconcile would observe it.
+func TestNoOpApply(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "no-op-apply")
+
+	h.applyConfigMap(ctx, t, s, "cm-a", "value")
+	h.quiesceAndClear(t, s.id, 3)
+
+	// Re-apply the identical content. minCount 1 = at least the audit request; the
+	// settle window then admits any admission record (recorded synchronously during
+	// the request) without depending on whether a no-op apply reaches admission,
+	// while still rejecting a stray watch event.
+	h.applyConfigMap(ctx, t, s, "cm-a", "value")
+	records := h.drain(t, s.id, drainSpec{minCount: 1, settle: 4 * time.Second, timeout: 60 * time.Second})
+	if got := countSource(records, mutationlab.SourceWatch); got != 0 {
+		t.Errorf("no-op apply produced %d watch events; want 0 (resourceVersion unchanged)", got)
+	}
+	if got := countSource(records, mutationlab.SourceAudit); got == 0 {
+		t.Error("no-op apply produced no audit record; want one (the request is still logged)")
+	}
+	h.syncCorpus(t, "configmap/no-op-apply", records)
 }
 
 // TestDryRunCreate captures Row 11: a dry-run create reaches admission and audit

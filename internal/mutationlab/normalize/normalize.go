@@ -37,9 +37,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+// expiredRVPattern matches the two resourceVersions the apiserver embeds in a
+// 410/Expired watch error message — "too old resource version: <requested>
+// (<current>)" (Row 16). The current RV is the live etcd revision and changes
+// every run, so it must be folded into the relational <rv-N> space like any other
+// resourceVersion, or the watch-resync corpus would churn on every capture.
+var expiredRVPattern = regexp.MustCompile(`(too old resource version: )(\d+)( \()(\d+)(\))`)
+
+// expiredMessageRVs returns the resourceVersions embedded in an Expired watch
+// error message, or nil when the string is not such a message.
+func expiredMessageRVs(message string) []string {
+	m := expiredRVPattern.FindStringSubmatch(message)
+	if m == nil {
+		return nil
+	}
+	return []string{m[2], m[4]}
+}
 
 // tsPlaceholder is the single, non-relational token every timestamp collapses to.
 //
@@ -226,6 +244,15 @@ func (c *collector) collectScalar(key string, v any) {
 	if !ok || s == "" {
 		return
 	}
+	// A 410/Expired watch error carries its resourceVersions inside a free-text
+	// message rather than a resourceVersion field; collect them so they share the
+	// relational <rv-N> space.
+	if key == "message" {
+		for _, rv := range expiredMessageRVs(s) {
+			c.rv.add(rv)
+		}
+		return
+	}
 	// Timestamps collapse to a constant token, so they are not collected.
 	if o := c.orderedFor(key); o != nil {
 		o.add(s)
@@ -384,19 +411,49 @@ func (idx *indices) transformScalar(key string, v any, parent map[string]any) an
 		}
 	}
 	if s, ok := stringVal(v); ok {
-		if isTimestampKey(key) {
-			return tsPlaceholder
-		}
-		if m := idx.mapForKey(key); m != nil {
-			return lookup(m, s)
-		}
-		if key == "requestURI" || key == "selfLink" {
-			// The namespace appears embedded in the path; replace it as a
-			// substring so a unique per-run namespace does not churn the corpus.
-			return idx.replaceNamespaces(s)
-		}
+		return idx.transformStringScalar(key, s)
 	}
 	return idx.transform(v)
+}
+
+// transformStringScalar rewrites a string leaf by key: timestamps collapse, the
+// relational categories map through their index, an Expired watch message has its
+// embedded resourceVersions rewritten, and requestURI/selfLink have their embedded
+// namespace replaced. Any other string is preserved verbatim.
+func (idx *indices) transformStringScalar(key, s string) any {
+	switch {
+	case isTimestampKey(key):
+		return tsPlaceholder
+	case idx.mapForKey(key) != nil:
+		return lookup(idx.mapForKey(key), s)
+	case key == "message":
+		// Rewrite the resourceVersions embedded in a 410/Expired watch error into
+		// the relational <rv-N> space; other messages pass through.
+		return idx.rewriteExpiredMessage(s)
+	case key == "requestURI" || key == "selfLink":
+		// The namespace appears embedded in the path; replace it as a substring so
+		// a unique per-run namespace does not churn the corpus.
+		return idx.replaceNamespaces(s)
+	default:
+		return s
+	}
+}
+
+// rewriteExpiredMessage replaces the resourceVersions in a 410/Expired watch error
+// message with their <rv-N> placeholders, leaving every other message unchanged.
+func (idx *indices) rewriteExpiredMessage(s string) string {
+	return expiredRVPattern.ReplaceAllStringFunc(s, func(match string) string {
+		g := expiredRVPattern.FindStringSubmatch(match)
+		return g[1] + rvToken(idx.rv, g[2]) + g[3] + rvToken(idx.rv, g[4]) + g[5]
+	})
+}
+
+// rvToken returns rv's placeholder, or rv itself when it was not indexed.
+func rvToken(m map[string]string, rv string) string {
+	if ph, ok := m[rv]; ok {
+		return ph
+	}
+	return rv
 }
 
 // mapForKey returns the placeholder map a scalar key is rewritten through, or nil

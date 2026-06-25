@@ -103,6 +103,32 @@ func TestNormalize_ResourceVersionNonNumericFirstAppearance(t *testing.T) {
 	}
 }
 
+func TestNormalize_ExpiredWatchMessageResourceVersions(t *testing.T) {
+	// A 410/Expired watch error (Row 16) embeds its resourceVersions in a free-text
+	// message, not a resourceVersion field. Both fold into the relational <rv-N>
+	// space (numeric order: the requested "1" < the current revision), so the
+	// volatile live revision no longer churns the corpus.
+	want := []string{
+		`{"object":{"code":410,"kind":"Status",` +
+			`"message":"too old resource version: <rv-1> (<rv-2>)","reason":"Expired"},"type":"ERROR"}`,
+	}
+	got := normJSON(t,
+		`{"type":"ERROR","object":{"kind":"Status","code":410,"reason":"Expired",`+
+			`"message":"too old resource version: 1 (79344)"}}`,
+	)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("\n got %v\nwant %v", got, want)
+	}
+	// A different live revision must normalize to the identical corpus form.
+	other := normJSON(t,
+		`{"type":"ERROR","object":{"kind":"Status","code":410,"reason":"Expired",`+
+			`"message":"too old resource version: 1 (6283)"}}`,
+	)
+	if !reflect.DeepEqual(other, want) {
+		t.Errorf("non-deterministic across revisions:\n got %v\nwant %v", other, want)
+	}
+}
+
 func TestNormalize_TimestampsCollapseToSingleToken(t *testing.T) {
 	// Every timestamp collapses to the same non-relational <ts>, regardless of
 	// value or field: relational chronological ordering proved unstable for

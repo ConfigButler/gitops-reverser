@@ -7,9 +7,8 @@ webhooks** — at every interesting moment — and commits those structures as a
 regression harness.
 
 The corpus is captured against **k8s v1.35.2+k3s1** (recorded in
-`test/mutationlab/corpus/CLUSTER.md`). **Fifteen of the seventeen** catalogued scenarios are captured
-today; the remaining two are planned — see the [Difficult Cases Catalog](#difficult-cases-catalog)
-and [What To Capture Next](#what-to-capture-next).
+`test/mutationlab/corpus/CLUSTER.md`). **All seventeen** catalogued scenarios are captured today — see
+the [Difficult Cases Catalog](#difficult-cases-catalog).
 
 The lab reuses the product's webhook URLs (`/validate-admission-webhook`, `/audit-webhook`, and the
 proxy-enrichment `/audit-webhook-additional`) on the same ports and TLS mounts, so capturing is just
@@ -174,6 +173,27 @@ are not equal — there is no shared native join key. The admission recorder's
 `AdmissionResponse.auditAnnotations` *do* surface in the audit event, prefixed by the webhook name
 (`…configbutler.ai/scenario`), giving a controlled join when one is needed.
 
+### 6. Server-side apply is a normal `MODIFIED` — but a no-op apply is invisible to the watch
+
+This is the dominant GitOps write path (Flux/Argo write by apply), so its shape across the mechanisms
+is load-bearing for watch mode.
+
+- **Server-side apply (Row 3).** An apply that *changes* the object is, on v1.35.2, audited as
+  `verb: patch` (the apply rides a `?fieldManager=…&force=true` PATCH, not an `apply` verb), reaches
+  admission as `UPDATE` carrying the apply field manager in `options`, and surfaces on the watch as a
+  single `MODIFIED` whose `managedFields` shows one `manager: …, operation: Apply` entry. So for the
+  watch, a content-changing apply is an ordinary `MODIFIED` — nothing special needed.
+- **No-op apply (Row 4).** Re-applying *identical* content (same field manager, same values) changes
+  nothing: the `resourceVersion` is unchanged, so the watch emits **no event at all** — yet the request
+  still reaches audit and admission (the admission `object` equals its `oldObject`, and the audit
+  `responseObject` carries the *unchanged* `resourceVersion`).
+
+**Consequence:** a watch-based capture must not read watch silence as "nothing happened." An unchanged
+apply genuinely did occur — a controller reasserted desired state — but it is invisible to the watch;
+only the periodic relist/reconcile backstop observes it. This is the same live-watch caveat as
+Finding 1 and the watch-resync/bookmark rows (16–17), now demonstrated on the most common write a
+GitOps engine performs.
+
 ## Difficult Cases Catalog
 
 The catalog is the contract for what the corpus must contain. The easy cases ("create succeeds, watch
@@ -187,14 +207,15 @@ created paused with zero replicas so the only post-setup events are the write un
 controller's single follow-up), and Row 7's two-event graceful delete needs a grace period (a `Pod`
 with `automountServiceAccountToken: false` so no random volume name churns the corpus).
 
-**Ready?**: ✅ captured in the corpus · ⬜ planned (see [What To Capture Next](#what-to-capture-next)).
+**Ready?**: ✅ captured in the corpus. All seventeen rows are captured (see
+[The catalog is complete](#the-catalog-is-complete)).
 
 | # | Scenario | Ready? | Watch moments | Audit moments | Admission moments | Why it is hard |
 |---|---|---|---|---|---|---|
 | 1 | Create succeeds | ✅ | `ADDED` (final object) | `create`, user, responseObject | CREATE, user/object | baseline anchor |
 | 2 | Update / strategic-merge patch | ✅ | `MODIFIED` (final) | `update` / `patch` | UPDATE, object + oldObject | verb differs by request shape |
-| 3 | Server-side apply | ⬜ | one or more `MODIFIED` | `apply` (or `patch`) | UPDATE with apply options | managedFields churn |
-| 4 | No-op apply | ⬜ | often **no** event (rv unchanged) | request still recorded | request still recorded | watch silence is the finding |
+| 3 | Server-side apply | ✅ | `MODIFIED` (apply field manager) | `patch` (apply via `?fieldManager`) | UPDATE with apply options | managedFields churn |
+| 4 | No-op apply | ✅ | **no** event (rv unchanged) | request still recorded | request still recorded (object == oldObject) | watch silence is the finding |
 | 5 | Status subresource update | ✅ | two `MODIFIED`: user write, then controller **clobber** | **none** — policy drops `*/status` | **none** — webhook ignores subresources | status is controller-owned; only watch sees it |
 | 6 | Scale subresource patch | ✅ | `MODIFIED` (scale) + controller `observedGeneration` follow-up | `patch`, `subresource: scale` | **none** — webhook ignores subresources | audited but never admitted; `Scale` body carries no labels |
 | 7 | Graceful delete | ✅ | `MODIFIED` (deletionTimestamp) then `DELETED` | **none** — policy drops `pods` | DELETE (pods are top-level) | two watch events for one delete; audit is blind to pods |
@@ -284,6 +305,8 @@ test/mutationlab/corpus/
   configmap/
     create-succeeds/              # watch.added · audit.create · admission.create
     update/                       # watch.modified · audit.update · admission.update
+    server-side-apply/            # watch.modified · audit.patch (apply field manager) · admission.update
+    no-op-apply/                  # audit.patch · admission.update — NO watch (resourceVersion unchanged)
     finalizer-delete/             # two-phase removal; the terminal DELETED has no audit delete behind it
       watch.modified.yaml         # deletionTimestamp stamped, finalizer still holding
       watch.deleted.yaml          # object finally leaves etcd (after the finalizer is cleared)
@@ -459,23 +482,14 @@ watch-only `captureMode: watch` is credible for *state* (simpler, no kube-apiser
 real end-user attribution), with audit reserved for trustworthy provenance — an honest split, not one
 mode pretending to be both.
 
-## What To Capture Next
+## The catalog is complete
 
-Two rows remain (3, 4). The goal is to *learn*, so the order is by how much each row tightens a
-conclusion we actually depend on — not by which resource is easiest. Rows 8, 10, 13, 16, and 17 are
-now captured; see [Finding 2](#findings), [Finding 4](#findings),
-`corpus/configmap/finalizer-delete/`, `corpus/configmap/owner-ref-cascade/`,
-`corpus/configmap/conflict-update/`, `corpus/configmap/watch-resync/`, and
-`corpus/configmap/watch-bookmark/`.
-
-1. **Rows 3 + 4 — Server-side apply and No-op apply.** *The dominant GitOps write path.* Flux/Argo
-   write by apply, so this is the most product-representative shape to pin: managedFields churn under
-   SSA, and — load-bearing for watch mode — Row 4's "an unchanged apply produces **no** watch event,"
-   which a naive watcher must not read as "nothing happened."
-
-Each captured row ends with committed corpus files and green invariants. The lab is valuable only
-while it stays small enough that the behavior is obvious, so each row is a deliberate stop-and-read
-point.
+All seventeen catalogued scenarios are now captured, each with committed corpus files and green
+invariants. The lab's job shifts from *capturing* rows to *defending* them: the regen-and-diff workflow
+re-checks every captured behavior on a Kubernetes bump (an empty `corpus/` diff is a positive result),
+and a new behavior worth pinning is added as a new catalog row with the same capture → normalize →
+commit discipline. The lab is valuable only while it stays small enough that the behavior is obvious,
+so each row remains a deliberate stop-and-read point.
 
 ## Non-goals
 
