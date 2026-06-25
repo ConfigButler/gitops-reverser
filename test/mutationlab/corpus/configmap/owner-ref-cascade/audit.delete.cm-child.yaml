@@ -1,0 +1,55 @@
+annotations:
+  all-events-test-only.configbutler.ai/scenario: owner-ref-cascade
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: 'RBAC: allowed by ClusterRoleBinding "system:controller:generic-garbage-collector"
+    of ClusterRole "system:controller:generic-garbage-collector" to ServiceAccount
+    "generic-garbage-collector/kube-system"'
+auditID: <auditID-1>
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  name: cm-child
+  namespace: <ns-1>
+  resource: configmaps
+requestObject:
+  apiVersion: meta.k8s.io/__internal
+  kind: DeleteOptions
+  preconditions:
+    resourceVersion: <rv-1>
+    uid: <uid-1>
+  propagationPolicy: Background
+requestReceivedTimestamp: <ts>
+requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-child
+responseObject:
+  apiVersion: v1
+  details:
+    kind: configmaps
+    name: cm-child
+    uid: <uid-1>
+  kind: Status
+  metadata: {}
+  status: Success
+responseStatus:
+  code: 200
+  details:
+    kind: configmaps
+    name: cm-child
+    uid: <uid-1>
+  metadata: {}
+  status: Success
+sourceIPs:
+- <ip-1>
+stage: ResponseComplete
+stageTimestamp: <ts>
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - <credential-1>
+  groups:
+  - system:serviceaccounts
+  - system:serviceaccounts:kube-system
+  - system:authenticated
+  uid: <uid-2>
+  username: system:serviceaccount:kube-system:generic-garbage-collector
+userAgent: k3s/v1.35.2+k3s1 (linux/amd64) kubernetes/13563fe/system:serviceaccount:kube-system:generic-garbage-collector
+verb: delete

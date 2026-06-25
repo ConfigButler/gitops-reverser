@@ -1,0 +1,48 @@
+annotations:
+  all-events-test-only.configbutler.ai/scenario: owner-ref-cascade
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: ""
+auditID: <auditID-2>
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  name: cm-parent
+  namespace: <ns-1>
+  resource: configmaps
+requestObject:
+  apiVersion: meta.k8s.io/__internal
+  kind: DeleteOptions
+  propagationPolicy: Background
+requestReceivedTimestamp: <ts>
+requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-parent
+responseObject:
+  apiVersion: v1
+  details:
+    kind: configmaps
+    name: cm-parent
+    uid: <uid-3>
+  kind: Status
+  metadata: {}
+  status: Success
+responseStatus:
+  code: 200
+  details:
+    kind: configmaps
+    name: cm-parent
+    uid: <uid-3>
+  metadata: {}
+  status: Success
+sourceIPs:
+- <ip-2>
+stage: ResponseComplete
+stageTimestamp: <ts>
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - <credential-2>
+  groups:
+  - system:masters
+  - system:authenticated
+  username: system:admin
+userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
+verb: delete

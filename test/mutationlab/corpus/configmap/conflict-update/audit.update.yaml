@@ -1,0 +1,63 @@
+annotations:
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: ""
+auditID: <auditID-1>
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  name: cm-conflict
+  namespace: <ns-1>
+  resource: configmaps
+  resourceVersion: <rv-1>
+  uid: <uid-1>
+requestObject:
+  apiVersion: v1
+  data:
+    key: loser
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts>
+    labels:
+      mutationlab.configbutler.ai/scenario: conflict-update
+    name: cm-conflict
+    namespace: <ns-1>
+    resourceVersion: <rv-1>
+    uid: <uid-1>
+requestReceivedTimestamp: <ts>
+requestURI: /api/v1/namespaces/<ns-1>/configmaps/cm-conflict
+responseObject:
+  apiVersion: v1
+  code: 409
+  details:
+    kind: configmaps
+    name: cm-conflict
+  kind: Status
+  message: 'Operation cannot be fulfilled on configmaps "cm-conflict": the object
+    has been modified; please apply your changes to the latest version and try again'
+  metadata: {}
+  reason: Conflict
+  status: Failure
+responseStatus:
+  code: 409
+  details:
+    kind: configmaps
+    name: cm-conflict
+  message: 'Operation cannot be fulfilled on configmaps "cm-conflict": the object
+    has been modified; please apply your changes to the latest version and try again'
+  metadata: {}
+  reason: Conflict
+  status: Failure
+sourceIPs:
+- <ip-1>
+stage: ResponseComplete
+stageTimestamp: <ts>
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - <credential-1>
+  groups:
+  - system:masters
+  - system:authenticated
+  username: system:admin
+userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
+verb: update

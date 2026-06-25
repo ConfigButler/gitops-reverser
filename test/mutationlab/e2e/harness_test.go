@@ -344,6 +344,14 @@ func sortRecords(in []mutationlab.Record) []mutationlab.Record {
 		if a.Summary.Operation != b.Summary.Operation {
 			return a.Summary.Operation < b.Summary.Operation
 		}
+		// ResponseCode separates two same-object, same-verb audit records that differ
+		// only in outcome — the successful update (200) vs the optimistic-concurrency
+		// conflict (409) over the same object (Row 13). The conflict carries no new
+		// resourceVersion, so RV cannot order them; without this the order would fall
+		// through to the random auditID, flipping the placeholder assignment.
+		if a.Summary.ResponseCode != b.Summary.ResponseCode {
+			return a.Summary.ResponseCode < b.Summary.ResponseCode
+		}
 		return a.Summary.AuditID < b.Summary.AuditID
 	})
 	return out

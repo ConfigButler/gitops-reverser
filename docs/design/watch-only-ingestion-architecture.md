@@ -114,8 +114,8 @@ policy), but the work and the event-volume cost must be counted, not assumed awa
 ## What the corpus changes
 
 The committed mutation-lab corpus is captured against `k8s v1.35.2+k3s1`
-([CLUSTER.md](../../test/mutationlab/corpus/CLUSTER.md)). It currently contains ten captured catalog
-rows:
+([CLUSTER.md](../../test/mutationlab/corpus/CLUSTER.md)). It currently contains thirteen captured
+catalog rows:
 
 | Row | Scenario | Corpus result that matters for this proposal |
 |---|---|---|
@@ -124,9 +124,12 @@ rows:
 | 5 | Status subresource | Watch is the only witness **because the audit policy drops `*/status`**; admission ignores subresources. The controller then re-clobbers the human write (two watch events). |
 | 6 | Scale subresource | Watch carries the updated Deployment; audit carries the user and `/scale` fact **for non-HPA actors** (the policy drops HPA `/scale`). |
 | 7 | Graceful Pod delete | Watch carries deletion-pending and terminal delete; audit drops pods by policy. |
+| 8 | Finalizer delete | Watch carries the deletion-pending MODIFIED and terminal DELETED; audit carries the delete + finalizer-removal patch (no second delete). |
 | 9 | Deletecollection | Watch emits one `DELETED` per object; audit emits one name-less collection request. |
+| 10 | Owner-ref cascade | Watch emits `DELETED` for parent and cascaded child; audit attributes the child delete to `generic-garbage-collector`, not the human. |
 | 11 | Dry-run create | Audit and admission see a request; watch sees nothing because nothing persisted. |
 | 12 | Rejected create | Audit and admission see a failed request; watch sees nothing because nothing persisted. |
+| 13 | Optimistic-concurrency conflict | A stale-RV update is rejected at the storage layer (409). Audit is the *sole* witness — no admission, no watch. |
 | 14 | CRD conversion | Watch sees the stored/served version; audit/admission see the submitted version. |
 | 15 | Aggregated API write | Official audit has no body/name, while watch carries the full object. |
 
@@ -644,19 +647,46 @@ and now known to carry the hidden relevance-filter cost).
 
 ### Phase 0: finish the evidence
 
-The proposal is already supported by captured rows 1, 2, 5, 6, 7, 9, 11, 12, 14, and 15. Before a
-default switch, it would be prudent to capture the remaining planned rows most relevant to watch
-operation and delete attribution:
+The proposal is now supported by captured rows 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, and 15. Rows 10
+(owner-ref cascade, `configmap/owner-ref-cascade/`) and 13 (optimistic-concurrency conflict,
+`configmap/conflict-update/`) were added for this proposal:
 
-- Row 8: finalizer delete;
-- Row 10: owner-ref cascade;
-- Row 13: optimistic concurrency conflict;
+- **Row 10** confirms the delete-attribution story: watch emits a `DELETED` for both the parent and the
+  cascaded child from a single user delete, and the child's delete is audited under
+  `system:serviceaccount:kube-system:generic-garbage-collector`, not the human — so a cascaded delete's
+  author is the system, exactly the conservative-attribution case the resolver must handle.
+- **Row 13** is a stronger version of Rows 11/12: a stale-resourceVersion update is rejected at the
+  storage layer *before* validating admission runs, so the conflict produces **no** admission record
+  and **no** watch event — audit is the sole witness. A watch-only pipeline never sees the phantom
+  write at all.
+
+The remaining planned rows most relevant to watch operation:
+
 - Row 16: watch resync / `410 Gone`;
 - Row 17: bookmark.
 
 Rows 16 and 17 are especially important because they test the watch transport itself, not only object
 shape — and they are the rows that quantify the history-granularity gap (how much collapses across a
 relist).
+
+Recorder-readiness for these two (investigated against
+[recorder/watch.go](../../internal/mutationlab/recorder/watch.go)):
+
+- **Row 17 (bookmark)** is partially ready: the recorder already sets `AllowWatchBookmarks: true` and
+  records `BOOKMARK` events. The gap is attribution — a bookmark carries no object, labels, or
+  namespace, so the per-scenario capture harness cannot key it to a scenario, and bookmarks fire only
+  opportunistically (~1/min). Capturing it needs a global (un-attributed) capture path plus
+  resourceVersion normalization.
+- **Row 16 (resync / `410 Gone`)** is the most expensive: a 410 surfaces as a `watch.Error` event
+  (recordable), after which the recorder reopens *from "now" with no relist* — so it does not model a
+  faithful resync (re-LIST + re-`ADDED` fan-out). Forcing a 410 also requires etcd compaction past the
+  watch resourceVersion, which is high-friction on k3s. It is better captured as a recorder unit test
+  (inject a fake watcher that emits a 410) than as a live corpus row.
+
+That "reopen-from-now, no relist" behavior is itself the history-gap-across-a-relist this proposal
+describes: a real watch-only ingestion must relist after a 410 and loses the intermediate versions,
+exactly the "collapses to current state across gaps" guarantee in
+[What the history guarantee actually becomes](#what-the-history-guarantee-actually-becomes).
 
 ### Phase 1: build watch state in parallel
 

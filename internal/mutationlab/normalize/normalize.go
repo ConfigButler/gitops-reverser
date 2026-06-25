@@ -278,11 +278,15 @@ type indices struct {
 	cred    map[string]string
 	rnd     map[string]string
 	ns      map[string]string
-	// nsByLen / ipByLen are the namespace / IP values sorted longest-first, so
-	// substring replacement (in requestURIs and in managedFields association keys
-	// like k:{"ip":"10.42.3.14"}) never leaves a prefix of a longer value.
-	nsByLen []string
-	ipByLen []string
+	// nsByLen / ipByLen / uidByLen are the namespace / IP / UID values sorted
+	// longest-first, so substring replacement (in requestURIs and in managedFields
+	// association keys like k:{"ip":"10.42.3.14"} or k:{"uid":"<owner-uid>"}) never
+	// leaves a prefix of a longer value. An ownerReference is keyed by the owner's
+	// UID inside managedFields, so without uidByLen a cascaded child's owner UID
+	// churns the corpus every run (Row 10).
+	nsByLen  []string
+	ipByLen  []string
+	uidByLen []string
 }
 
 func (c *collector) buildIndices() *indices {
@@ -304,6 +308,10 @@ func (c *collector) buildIndices() *indices {
 	idx.ipByLen = append(idx.ipByLen, c.ip.items...)
 	sort.SliceStable(idx.ipByLen, func(i, j int) bool {
 		return len(idx.ipByLen[i]) > len(idx.ipByLen[j])
+	})
+	idx.uidByLen = append(idx.uidByLen, c.uid.items...)
+	sort.SliceStable(idx.uidByLen, func(i, j int) bool {
+		return len(idx.uidByLen[i]) > len(idx.uidByLen[j])
 	})
 	return idx
 }
@@ -424,10 +432,11 @@ func (idx *indices) replaceNamespaces(s string) string {
 	return s
 }
 
-// rewriteKey rewrites a map key, replacing any embedded namespace or IP value
-// with its placeholder. Most keys contain neither and pass through unchanged;
+// rewriteKey rewrites a map key, replacing any embedded namespace, IP, or UID
+// value with its placeholder. Most keys contain none and pass through unchanged;
 // the case that matters is a managedFields fieldsV1 association key such as
-// k:{"ip":"10.42.3.14"}, where a volatile value is part of the key itself.
+// k:{"ip":"10.42.3.14"} or k:{"uid":"<owner-uid>"} (an ownerReference is keyed by
+// the owner's UID), where a volatile value is part of the key itself.
 func (idx *indices) rewriteKey(k string) string {
 	if !strings.HasPrefix(k, "k:{") {
 		return k
@@ -435,6 +444,9 @@ func (idx *indices) rewriteKey(k string) string {
 	k = idx.replaceNamespaces(k)
 	for _, ip := range idx.ipByLen {
 		k = strings.ReplaceAll(k, ip, idx.ip[ip])
+	}
+	for _, uid := range idx.uidByLen {
+		k = strings.ReplaceAll(k, uid, idx.uid[uid])
 	}
 	return k
 }

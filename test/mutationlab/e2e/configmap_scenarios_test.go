@@ -26,6 +26,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -314,4 +315,255 @@ func TestDeletecollection(t *testing.T) {
 			got, len(names))
 	}
 	h.syncCorpus(t, "configmap/deletecollection", records)
+}
+
+// TestOptimisticConcurrencyConflict captures Row 13: an Update that loses the
+// optimistic-concurrency race. The same "a write that never persisted produces no
+// watch event" property as Rows 11/12, reached here through a `409 Conflict`
+// rather than a dry-run or a rejecting webhook.
+//
+// The setup (create + a successful update) is quiesced and cleared, so the corpus
+// is exactly the conflict moment. The successful update exists only to advance the
+// object's resourceVersion past the copy the test still holds; that stale copy is
+// then re-submitted:
+//
+//   - The apiserver rejects the stale update with `409 Conflict`. The
+//     resourceVersion precondition is checked in the storage layer, BEFORE the
+//     validating admission webhook runs — so (empirically, on k8s v1.35.2) the
+//     conflict produces NO admission record at all. The response body is a
+//     `Status`, but the requestObject still carries the submitted object, so the
+//     event is audited as an `update` with responseStatus.code 409, attributed to
+//     the user. Nothing persists, so there is NO watch event either.
+//
+// The finding for the watch-only proposal is stronger than Rows 11/12: for a
+// storage-level conflict, audit is the SOLE witness — not even admission sees it,
+// and watch never does. A watch-only state pipeline therefore cannot observe the
+// phantom write at all; only the optional audit path records that it was attempted.
+// The corpus commits the single 409 audit `update`, and asserts the absence of any
+// watch and any admission record over the drain.
+func TestOptimisticConcurrencyConflict(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "conflict-update")
+
+	cm := &corev1.ConfigMap{ObjectMeta: s.meta("cm-conflict"), Data: map[string]string{"key": "value"}}
+	created, err := h.kube.CoreV1().ConfigMaps(s.ns).Create(ctx, cm, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// stale keeps the create's resourceVersion. The successful update below bumps
+	// the object's resourceVersion in the cluster, so `stale` (captured first) is
+	// left behind and will lose the race.
+	stale := created.DeepCopy()
+
+	created.Data["key"] = "winner"
+	if _, err := h.kube.CoreV1().ConfigMaps(s.ns).Update(ctx, created, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("setup update (should succeed): %v", err)
+	}
+	// Drain past create (3) + successful update (3) = 6 setup records, then clear,
+	// so the corpus captures only the conflict that follows.
+	h.quiesceAndClear(t, s.id, 6)
+
+	// Re-submit the stale copy — its resourceVersion is now behind, so the apiserver
+	// returns 409 Conflict.
+	stale.Data["key"] = "loser"
+	_, err = h.kube.CoreV1().ConfigMaps(s.ns).Update(ctx, stale, metav1.UpdateOptions{})
+	if err == nil {
+		t.Fatal("update over a stale resourceVersion was accepted; want a 409 Conflict")
+	}
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("stale update failed with %v; want a 409 Conflict", err)
+	}
+
+	// The sole witness is the audit `update` carrying responseStatus.code 409,
+	// attributed to the user via the requestObject label. The audit event is async;
+	// gate on it, and settle so a late admission record (if the apiserver ordering
+	// ever changed) could not be missed and silently pass the admission==0 assertion.
+	records := h.drain(t, s.id, drainSpec{
+		minCount: 1, settle: 3 * time.Second, timeout: 90 * time.Second,
+		until: func(rs []mutationlab.Record) bool { return countAuditCode(rs, 409) >= 1 },
+	})
+
+	// The failed write never persisted, so watch never saw it.
+	if got := countSource(records, mutationlab.SourceWatch); got != 0 {
+		t.Errorf("conflict produced %d watch events; want 0 (the failed update never persists)", got)
+	}
+	// Exactly one audit update, carrying the 409.
+	if got := countSource(records, mutationlab.SourceAudit); got != 1 {
+		t.Errorf("got %d audit records; want exactly 1 (the failed update is still audited)", got)
+	}
+	if got := countAuditCode(records, 409); got != 1 {
+		t.Errorf("got %d audit records with code 409; want exactly 1 (the conflict)", got)
+	}
+	// The storage-layer conflict fires before validating admission, so the webhook
+	// never sees the attempt: audit is the sole witness.
+	if got := countSource(records, mutationlab.SourceAdmission); got != 0 {
+		t.Errorf("got %d admission records; want 0 (the conflict is rejected before admission runs)", got)
+	}
+
+	conflict := mustRecord(t, firstAuditNamed(records, "cm-conflict"), "audit update carrying the 409")
+	h.syncCorpus(t, "configmap/conflict-update", []mutationlab.Record{*conflict})
+}
+
+// countAuditCode counts audit records whose responseStatus.code equals want.
+func countAuditCode(records []mutationlab.Record, want int32) int {
+	n := 0
+	for i := range records {
+		if r := &records[i]; r.Source == mutationlab.SourceAudit && r.Summary.ResponseCode == want {
+			n++
+		}
+	}
+	return n
+}
+
+// TestOwnerRefCascade captures Row 10: deleting a parent object cascades through
+// the garbage collector to its owner-referenced children. The user issues ONE
+// delete (against the parent); the children disappear by a SECOND mechanism — the
+// GC controller — under a SYSTEM identity, not the human's.
+//
+// A child ConfigMap carries an ownerReference to a parent ConfigMap (no controller
+// is required — the GC acts on any ownerReference). Deleting the parent with
+// Background propagation removes the parent immediately and the GC then deletes the
+// child asynchronously.
+//
+// The two findings for the watch-only proposal:
+//
+//   - State: watch emits a DELETED for BOTH the parent and the cascaded child,
+//     even though only one delete request was issued. This is the same fan-out
+//     property as deletecollection (Row 9) but reached through GC — exactly what
+//     Git deletes need, with no collection verb to decompose.
+//   - Attribution: the parent delete is audited under the human user, but the
+//     child delete is audited under the GC system actor
+//     (system:serviceaccount:kube-system:generic-garbage-collector) — so a
+//     cascaded delete's provenance is the system, not the user who deleted the
+//     parent. The corpus commits that username verbatim.
+func TestOwnerRefCascade(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "owner-ref-cascade")
+
+	parent := &corev1.ConfigMap{ObjectMeta: s.meta("cm-parent"), Data: map[string]string{"key": "value"}}
+	createdParent, err := h.kube.CoreV1().ConfigMaps(s.ns).Create(ctx, parent, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	childMeta := s.meta("cm-child")
+	childMeta.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "v1",
+		Kind:       "ConfigMap",
+		Name:       createdParent.Name,
+		UID:        createdParent.UID,
+	}}
+	child := &corev1.ConfigMap{ObjectMeta: childMeta, Data: map[string]string{"key": "value"}}
+	if _, err := h.kube.CoreV1().ConfigMaps(s.ns).Create(ctx, child, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	// 2 creates × (admission + audit + watch) = 6 setup records.
+	h.quiesceAndClear(t, s.id, 6)
+
+	// Delete only the parent, with Background propagation: the parent is removed
+	// immediately and the GC then deletes the owner-referenced child.
+	bg := metav1.DeletePropagationBackground
+	if err := h.kube.CoreV1().ConfigMaps(s.ns).Delete(
+		ctx, "cm-parent", metav1.DeleteOptions{PropagationPolicy: &bg}); err != nil {
+		t.Fatalf("delete parent: %v", err)
+	}
+
+	// Drain until BOTH the parent and the cascaded child DELETED have arrived, both
+	// deletes are audited, and the stream is quiet — the child delete is
+	// asynchronous (GC), so a plain count+settle gate could return after the parent
+	// delete alone. A delete carries no object body, so both audit deletes attribute to
+	// the namespace key, not the scenario id (scenarioFromAuditEvent) — union both.
+	records := h.drain(t, s.id, drainSpec{
+		minCount: 4, settle: 3 * time.Second, timeout: 90 * time.Second, alsoNamespace: s.ns,
+		until: func(rs []mutationlab.Record) bool {
+			return firstWatchDeletedNamed(rs, "cm-parent") != nil &&
+				firstWatchDeletedNamed(rs, "cm-child") != nil &&
+				firstAuditNamed(rs, "cm-parent") != nil &&
+				firstAuditNamed(rs, "cm-child") != nil
+		},
+	})
+
+	// One user delete, two watch DELETED events (parent + cascaded child).
+	if got := countWatchType(records, "DELETED"); got != 2 {
+		t.Errorf("got %d watch DELETED events; want 2 (parent + cascaded child)", got)
+	}
+	parentDel := mustRecord(t, firstWatchDeletedNamed(records, "cm-parent"),
+		"watch DELETED for the parent (the user delete should be observed)")
+	childDel := mustRecord(t, firstWatchDeletedNamed(records, "cm-child"),
+		"watch DELETED for the child (the GC cascade should be observed by watch)")
+
+	// Attribution: the parent delete is the human's; the child delete is the GC
+	// system actor. Both deletes are audited (configmaps are kept by the policy).
+	parentAudit := mustRecord(t, firstAuditNamed(records, "cm-parent"),
+		"audit record for the parent delete")
+	childAudit := mustRecord(t, firstAuditNamed(records, "cm-child"),
+		"audit record for the child delete (the GC delete should still be audited)")
+	if childAudit.Summary.User != gcUser {
+		t.Errorf("child delete audited under %q; want the GC system actor %q",
+			childAudit.Summary.User, gcUser)
+	}
+	if parentAudit.Summary.User == gcUser {
+		t.Errorf("parent delete audited under the GC actor %q; want the human user", gcUser)
+	}
+
+	// Commit the four load-bearing moments explicitly: the two watch DELETED events
+	// (state fan-out from one delete) and the two audit deletes (the human vs the GC
+	// actor). Admission DELETEs may also fire per object, but the validating
+	// webhook's involvement in a GC delete is timing-dependent, so it is asserted as
+	// a law over the drain rather than committed as a flaky moment.
+	h.syncCorpus(t, "configmap/owner-ref-cascade", []mutationlab.Record{
+		*parentAudit, *childAudit, *parentDel, *childDel,
+	})
+}
+
+// gcUser is the system identity Kubernetes' garbage collector acts under when it
+// removes owner-referenced children. A cascaded delete is therefore attributable
+// to the system, never to the human who deleted the parent.
+const gcUser = "system:serviceaccount:kube-system:generic-garbage-collector"
+
+// mustRecord fails the test when r is nil, otherwise returns it — collapsing the
+// repeated nil-check + fatal so a multi-moment scenario stays under the
+// complexity budget.
+func mustRecord(t *testing.T, r *mutationlab.Record, what string) *mutationlab.Record {
+	t.Helper()
+	if r == nil {
+		t.Fatalf("missing required moment: %s", what)
+	}
+	return r
+}
+
+// countWatchType counts watch records of the given event type.
+func countWatchType(records []mutationlab.Record, watchType string) int {
+	n := 0
+	for i := range records {
+		if r := &records[i]; r.Source == mutationlab.SourceWatch && r.Summary.WatchType == watchType {
+			n++
+		}
+	}
+	return n
+}
+
+// firstWatchDeletedNamed returns the first watch DELETED record whose object has
+// the given name.
+func firstWatchDeletedNamed(records []mutationlab.Record, name string) *mutationlab.Record {
+	for i := range records {
+		r := &records[i]
+		if r.Source == mutationlab.SourceWatch && r.Summary.WatchType == "DELETED" && r.Key.Name == name {
+			return r
+		}
+	}
+	return nil
+}
+
+// firstAuditNamed returns the first audit record whose objectRef name matches.
+func firstAuditNamed(records []mutationlab.Record, name string) *mutationlab.Record {
+	for i := range records {
+		if r := &records[i]; r.Source == mutationlab.SourceAudit && r.Key.Name == name {
+			return r
+		}
+	}
+	return nil
 }
