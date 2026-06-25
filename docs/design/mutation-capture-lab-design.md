@@ -70,10 +70,43 @@ state](#capturing-intent-not-state)):
   pod/host IPs, and — the subtle one — IPs **embedded in `managedFields` association keys**
   (`k:{"ip":"10.42.3.14"}`).
 
-Remaining M1 (Rows 3, 4, 8, 10, 13, 16–17 — server-side apply, no-op apply, finalizer delete,
-owner-ref cascade, optimistic-concurrency conflict, watch resync, bookmark) are still ahead, as is
-**M3** (multi-version CRD conversion — designed below in [Milestones](#milestones) but not
-yet built, pending the decision to grow the lab's cluster footprint by one CRD) and M4.
+**M3 corpus-driven findings (v1.35.2)** — Row 14, a two-version lab CRD (`Widget`) whose schemas
+differ by a webhook-converted field (`v1.spec.sizeBytes: integer` ⇄ `v2.spec.size: string`, v2 the
+storage version). One create makes the three shapes literally diffable in the corpus:
+
+- **admission** sees the **submitted** version — `apiVersion: …/v1`, `spec.sizeBytes: 1024`.
+- the **watch** (opened on the v2 storage version) sees the **stored/served** version —
+  `apiVersion: …/v2`, `spec.size: "1024"`.
+- the **conversion webhook** is called in **both** directions for the single create
+  (`conversion.to-v2` for storage, `conversion.to-v1` for the create response in the submitted
+  version), captured as a new `conversion` source.
+- a CRD has **no controller**, so unlike M2 the capture is deterministic with no special handling.
+
+**M4 corpus-driven findings (v1.35.2) — the headline result for watch mode.** Row 15, an aggregated
+API (the wardle `flunders` resource, which the e2e cluster runs behind the `apiservice-audit-proxy`).
+One flunder create, captured three ways side by side:
+
+- the **official** kube-apiserver audit (`/audit-webhook`) records `objectRef` and `responseStatus:
+  {code: 201}` but **no `requestObject` and no `responseObject`** — the body-quality cliff is real;
+  the apiserver proxies the aggregated request and has no schema to render the object.
+- the **proxy-enriched** audit (`/audit-webhook-additional`) **does** carry the full request and
+  response bodies — which is exactly why the `apiservice-audit-proxy` body-enrichment exists.
+- the **watch** carries the **full object natively** — `spec.reference`, `spec.referenceType`,
+  labels, the lot.
+
+So the corpus **confirms the shallow-fill hypothesis**: where the official audit body goes empty, the
+live watch still carries the whole object. The product consequence (Purpose goal #3) is concrete — a
+watch-based capture would **not need the `apiservice-audit-proxy` body-enrichment for object
+content**; watch supplies natively what that proxy reconstructs. The honest caveat stands: this holds
+only while the watch is live, with a periodic reconcile as the gap backstop (see
+[Watch Is Viable For State](#watch-is-viable-for-state)). (A secondary observation: the lab also saw a
+validating-admission record for the flunder create, so admission is not always bypassed for
+aggregated APIs on this version — but admission remains non-authoritative regardless; the corpus row
+focuses on the body-quality comparison.)
+
+Remaining are the M1 rows not yet filled in (Rows 3, 4, 8, 10, 13, 16–17 — server-side apply, no-op
+apply, finalizer delete, owner-ref cascade, optimistic-concurrency conflict, watch resync, bookmark).
+M0–M4 are captured and committed.
 
 Related:
 
@@ -441,8 +474,8 @@ moment. "Moment" is deliberate: a single user action can produce several ordered
 | 11 | Dry-run create | **no** watch event, no etcd object | event with `dryRun`, no persistence | CREATE, `dryRun: true` | seen but never persisted |
 | 12 | Rejected during validation | **no** watch event | failed response (`code` 4xx) | recorder is **always called** (parallel validation) and, in this scenario, record-and-rejects | admission saw a write that never persisted |
 | 13 | Optimistic-concurrency conflict | no final change | failed response, `code: 409`, `Status` body | admission may have seen the attempted object | failure carries a Status, not the object |
-| 14 | Multi-version CRD conversion | `MODIFIED` in the *served* version | bodies in the request/stored version | object in the **submitted** version (reused `Equivalent`+`*` webhook delivers it — see M3 design) | three potentially different shapes for one write |
-| 15 | Aggregated API write | depends on backing store | often **empty** request/response body | depends on the aggregated server | the body-quality cliff |
+| 14 | Multi-version CRD conversion | `ADDED`/`MODIFIED` in the served storage version (v2 `size` string) | bodies in the submitted version (v1 `sizeBytes`); +`conversion` source both ways | submitted version v1 (reused `Equivalent`+`*` webhook delivers it) | three different shapes for one write (verified M3) |
+| 15 | Aggregated API write | **full object** (`ADDED`, spec included) | official: **empty** request/response body; proxy-enriched (`/audit-webhook-additional`): full body | validating webhook **observed** firing on this version | the body-quality cliff — and watch fills it (verified M4) |
 | 16 | Watch resync (`410 Gone`) | `ERROR`, then must relist | n/a | n/a | proves watch needs a list backstop |
 | 17 | Bookmark | `BOOKMARK` with resourceVersion | n/a | n/a | the only safe resume anchor |
 
@@ -633,6 +666,7 @@ order**:
 | source IPs, pod/host IPs (incl. inside `managedFields` association keys) | `<ip-N>` | one per distinct value, by first appearance |
 | container runtime IDs (`containerID`) | `<containerID-N>` | one per distinct value, by first appearance |
 | `spec.nodeName` | `<node-N>` | one per distinct node, by first appearance |
+| audit `user.extra` credential-id (`X509SHA256=…` client-cert fingerprint) | `<credential-N>` | one per distinct credential, by first appearance |
 
 The non-timestamp categories are **relational, not flattened**: collapsing every UID to one `<uid>`
 and every resourceVersion to one `<rv>` would erase exactly the evidence the hard rows exist to
@@ -824,13 +858,23 @@ sees the final stored object shape, handles collection deletes as per-object del
 and needs a periodic/full reconcile as the correctness backstop. Its product contract should say
 that commits are authored by the operator unless audit enrichment is also enabled.
 
-If the corpus confirms the shallow-fill hypothesis (above), there is a sharper consequence worth
-stating: because the live watch event carries the full object exactly where audit goes shallow
-(name-less `deletecollection`, empty aggregated bodies), a watch-based capture would not need the
-`apiservice-audit-proxy` / body-enrichment path at all for object *content* — watch supplies natively
-what that proxy reconstructs. The caveat is unchanged: this holds only while the watch is live, with
-the periodic reconcile as the gap backstop. Body-enrichment would then be an audit-mode concern, not
-a universal requirement.
+**The corpus now confirms the shallow-fill hypothesis** (M1 Row 9 and M4 Row 15), so the sharper
+consequence is no longer conditional: because the live watch event carries the full object exactly
+where audit goes shallow, a watch-based capture would not need the `apiservice-audit-proxy` /
+body-enrichment path at all for object *content* — watch supplies natively what that proxy
+reconstructs. Two captured data points, side by side in the corpus:
+
+- **`deletecollection` (Row 9):** the audit *request* body is only `DeleteOptions` (name-less), yet
+  each of the N watch `DELETED` events carries the full removed object.
+- **aggregated API (Row 15):** the official kube-apiserver audit event carries **no `requestObject`
+  and no `responseObject`** at all, yet the watch `ADDED` carries the full flunder (spec included).
+  The `apiservice-audit-proxy` posts the reconstructed body to `/audit-webhook-additional` — the very
+  enrichment a watch-based capture would not require.
+
+The caveat is unchanged and must be stated alongside the result: this holds only **while the watch is
+live**, with the periodic reconcile as the gap backstop (a watch that is down or lagging loses the
+event and its body outright). Body-enrichment is therefore an **audit-mode** concern, not a universal
+requirement — which is the honest, product-relevant answer to Issue #168.
 
 ### Audit Is Viable For Provenance
 
@@ -886,21 +930,28 @@ point, not a runway to the next.
   headline finding is mechanism silence under the reused product wiring (audit drops `*/status` and
   `pods`; the webhook ignores subresources) — see the Status section. Corpus committed and verified
   deterministic.
-- **M3 — CRD + conversion. ⏳ designed, not yet built** (see [M3 design](#m3-design--crd--conversion)
-  below). A two-version lab CRD with a conversion webhook to capture Row 14: the
-  persisted-vs-admission-vs-served divergence. M3 is the first milestone that adds a **new cluster
-  object** (one CRD) beyond the image swap, so it is gated on an explicit go-ahead.
-- **M4 — Aggregated API (Row 15).** Only if M1–M3 read cleanly. Document the body-quality cliff.
+- **M3 — CRD + conversion. ✅ done** (see [M3 design](#m3-design--crd--conversion) below). The
+  two-version `Widget` CRD with a conversion webhook captures Row 14: the
+  submitted-vs-stored/served-vs-conversion divergence. As designed, it added exactly one cluster
+  object (the CRD), installed by the scenario at runtime and removed on teardown; the conversion
+  webhook reuses the admission cert/port at `/convert`, so no new certificate. Corpus committed and
+  verified deterministic.
+- **M4 — Aggregated API (Row 15). ✅ done.** The wardle `flunders` aggregated API behind the
+  `apiservice-audit-proxy`. The headline result: the official audit body is **empty** while the watch
+  carries the **full object** — see the Status section and
+  [Watch Is Viable For State](#watch-is-viable-for-state). Corpus committed and verified deterministic.
 
 Take the watch-vs-audit-vs-hybrid decision-gate conversation back to Issue #168 with the corpus as
-the evidence; M1+M2 already make the "watch is the lone witness for `/status` and pod deletes" point
-concretely.
+the evidence: M1+M2 show "watch is the lone witness for `/status` and pod deletes," and M4 shows
+"watch carries the full object where the aggregated-API audit body is empty" — together the
+load-bearing evidence that watch is viable for state without the body-enrichment proxy.
 
 ### M3 design — CRD + conversion
 
-> Status: **proposed**. M3 is the point where the lab's cluster footprint grows past "swap the image
-> and touch nothing else," so it is written up here and **paused for a go-ahead** before any CRD is
-> installed. M1+M2 deliberately added zero cluster objects; M3 adds exactly one (a CRD).
+> Status: **built** (M3 ✅). This section is the design that shipped; the as-built scenario installs
+> the CRD programmatically at runtime (reading the conversion-webhook service + CA from the product's
+> validating webhook config) and removes it on teardown, so the only standing footprint is one CRD
+> while the lab runs. M1+M2 added zero cluster objects; M3 adds exactly one.
 
 **What Row 14 needs.** One write to a multi-version CRD can produce three *different* shapes: the
 object the user **submitted**, the object **admission** validated, and the object **persisted** (in

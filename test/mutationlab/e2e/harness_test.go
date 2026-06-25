@@ -36,6 +36,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -51,9 +52,11 @@ import (
 const scenarioLabel = "mutationlab.configbutler.ai/scenario"
 
 // harness holds the live-cluster handles a lab scenario needs: a Kubernetes
-// client to drive writes and the lab's records API to read what was captured.
+// client to drive writes, a dynamic client for CRDs/custom resources and
+// aggregated-API objects, and the lab's records API to read what was captured.
 type harness struct {
 	kube   kubernetes.Interface
+	dyn    dynamic.Interface
 	apiURL string
 }
 
@@ -73,7 +76,11 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatalf("kube client: %v", err)
 	}
-	h := &harness{kube: kube, apiURL: apiURL}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		t.Fatalf("dynamic client: %v", err)
+	}
+	h := &harness{kube: kube, dyn: dyn, apiURL: apiURL}
 	h.ensureCaptureLive(t)
 	return h
 }
@@ -338,13 +345,16 @@ func sourceRank(s mutationlab.Source) int {
 	switch s {
 	case mutationlab.SourceAdmission:
 		return 0
-	case mutationlab.SourceAudit:
+	case mutationlab.SourceConversion:
+		// Conversion happens during the write, between admission and persistence.
 		return 1
-	case mutationlab.SourceAuditAdditional:
+	case mutationlab.SourceAudit:
 		return 2
-	case mutationlab.SourceWatch:
+	case mutationlab.SourceAuditAdditional:
 		return 3
-	default:
+	case mutationlab.SourceWatch:
 		return 4
+	default:
+		return 5
 	}
 }

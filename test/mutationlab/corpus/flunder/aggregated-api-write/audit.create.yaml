@@ -4,33 +4,14 @@ annotations:
 auditID: <auditID-1>
 level: RequestResponse
 objectRef:
-  apiGroup: apps
-  apiVersion: v1
-  name: d1
+  apiGroup: wardle.example.com
+  apiVersion: v1alpha1
   namespace: <ns-1>
-  resource: deployments
-  subresource: scale
-requestObject:
-  spec:
-    replicas: 2
+  resource: flunders
 requestReceivedTimestamp: <ts>
-requestURI: /apis/apps/v1/namespaces/<ns-1>/deployments/d1/scale
-responseObject:
-  apiVersion: autoscaling/v1
-  kind: Scale
-  metadata:
-    creationTimestamp: <ts>
-    name: d1
-    namespace: <ns-1>
-    resourceVersion: <rv-1>
-    uid: <uid-1>
-  spec:
-    replicas: 2
-  status:
-    replicas: 0
-    selector: app=d1
+requestURI: /apis/wardle.example.com/v1alpha1/namespaces/<ns-1>/flunders
 responseStatus:
-  code: 200
+  code: 201
   metadata: {}
 sourceIPs:
 - <ip-1>
@@ -45,4 +26,4 @@ user:
   - system:authenticated
   username: system:admin
 userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
-verb: patch
+verb: create

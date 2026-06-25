@@ -104,6 +104,7 @@ func main() {
 
 	s := store.New()
 	admission := recorder.NewAdmission(s, recorder.RejectByLabel)
+	conversion := recorder.NewConversion(s)
 	auditOfficial := recorder.NewAudit(s, mutationlab.SourceAudit)
 	auditAdditional := recorder.NewAudit(s, mutationlab.SourceAuditAdditional)
 
@@ -112,7 +113,7 @@ func main() {
 
 	startWatchRecorder(ctx, logger, s, cfg)
 
-	servers := buildServers(cfg, admission, auditOfficial, auditAdditional, labserver.NewAPI(s))
+	servers := buildServers(cfg, admission, conversion, auditOfficial, auditAdditional, labserver.NewAPI(s))
 	run(ctx, logger, cfg, servers)
 }
 
@@ -125,9 +126,16 @@ type server struct {
 	clientCA string
 }
 
-func buildServers(cfg config, admission, auditOfficial, auditAdditional http.Handler, api *labserver.API) []server {
+func buildServers(
+	cfg config,
+	admission, conversion, auditOfficial, auditAdditional http.Handler,
+	api *labserver.API,
+) []server {
 	admissionMux := http.NewServeMux()
 	admissionMux.Handle("/validate-admission-webhook", admission)
+	// The CRD conversion webhook reuses the admission server's TLS cert and port,
+	// so M3 needs no new certificate — just this extra path (see the M3 design).
+	admissionMux.Handle("/convert", conversion)
 
 	auditMux := http.NewServeMux()
 	auditMux.Handle("/audit-webhook", auditOfficial)

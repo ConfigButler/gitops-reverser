@@ -1,39 +1,41 @@
 annotations:
-  all-events-test-only.configbutler.ai/scenario: create-succeeds
+  all-events-test-only.configbutler.ai/scenario: crd-conversion
   authorization.k8s.io/decision: allow
   authorization.k8s.io/reason: ""
 auditID: <auditID-1>
 level: RequestResponse
 objectRef:
+  apiGroup: mutationlab.configbutler.ai
   apiVersion: v1
-  name: cm-a
+  name: w1
   namespace: <ns-1>
-  resource: configmaps
+  resource: widgets
 requestObject:
-  apiVersion: v1
-  data:
-    key: value
-  kind: ConfigMap
+  apiVersion: mutationlab.configbutler.ai/v1
+  kind: Widget
   metadata:
     labels:
-      mutationlab.configbutler.ai/scenario: create-succeeds
-    name: cm-a
+      mutationlab.configbutler.ai/scenario: crd-conversion
+    name: w1
     namespace: <ns-1>
+  spec:
+    sizeBytes: 1024
 requestReceivedTimestamp: <ts>
-requestURI: /api/v1/namespaces/<ns-1>/configmaps
+requestURI: /apis/mutationlab.configbutler.ai/v1/namespaces/<ns-1>/widgets
 responseObject:
-  apiVersion: v1
-  data:
-    key: value
-  kind: ConfigMap
+  apiVersion: mutationlab.configbutler.ai/v1
+  kind: Widget
   metadata:
     creationTimestamp: <ts>
+    generation: 1
     labels:
-      mutationlab.configbutler.ai/scenario: create-succeeds
-    name: cm-a
+      mutationlab.configbutler.ai/scenario: crd-conversion
+    name: w1
     namespace: <ns-1>
     resourceVersion: <rv-1>
     uid: <uid-1>
+  spec:
+    sizeBytes: 1024
 responseStatus:
   code: 201
   metadata: {}

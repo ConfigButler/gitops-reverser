@@ -149,6 +149,7 @@ type collector struct {
 	ip      *ordered
 	cid     *ordered
 	node    *ordered
+	cred    *ordered
 	rnd     *ordered
 	ns      *ordered
 }
@@ -161,10 +162,18 @@ func newCollector() *collector {
 		ip:      newOrdered(),
 		cid:     newOrdered(),
 		node:    newOrdered(),
+		cred:    newOrdered(),
 		rnd:     newOrdered(),
 		ns:      newOrdered(),
 	}
 }
+
+// credentialIDKey is the audit user.extra key whose value (e.g.
+// "X509SHA256=<fingerprint>") identifies the client certificate. The fingerprint
+// is regenerated whenever the cluster's CA is recreated, so it must be normalized
+// or the corpus would drift on every cluster rebuild and every Kubernetes-version
+// bump (defeating the version-validation goal). Its value is a list of strings.
+const credentialIDKey = "authentication.kubernetes.io/credential-id"
 
 func (c *collector) walk(v any) {
 	switch t := v.(type) {
@@ -199,11 +208,15 @@ func (c *collector) collectGenerateNameSuffix(m map[string]any) {
 }
 
 func (c *collector) collectScalar(key string, v any) {
-	if key == "sourceIPs" {
+	if key == "sourceIPs" || key == credentialIDKey {
+		dest := c.ip
+		if key == credentialIDKey {
+			dest = c.cred
+		}
 		if arr, ok := v.([]any); ok {
 			for _, e := range arr {
 				if s, ok := stringVal(e); ok {
-					c.ip.add(s)
+					dest.add(s)
 				}
 			}
 		}
@@ -262,6 +275,7 @@ type indices struct {
 	ip      map[string]string
 	cid     map[string]string
 	node    map[string]string
+	cred    map[string]string
 	rnd     map[string]string
 	ns      map[string]string
 	// nsByLen / ipByLen are the namespace / IP values sorted longest-first, so
@@ -278,6 +292,7 @@ func (c *collector) buildIndices() *indices {
 		ip:      byFirstAppearance(c.ip, "ip"),
 		cid:     byFirstAppearance(c.cid, "containerID"),
 		node:    byFirstAppearance(c.node, "node"),
+		cred:    byFirstAppearance(c.cred, "credential"),
 		rnd:     byFirstAppearance(c.rnd, "rand"),
 		rv:      assignResourceVersions(c.rv),
 		ns:      byFirstAppearance(c.ns, "ns"),
@@ -347,11 +362,15 @@ func (idx *indices) transformScalar(key string, v any, parent map[string]any) an
 			return rewritten
 		}
 	}
-	if key == "sourceIPs" {
+	if key == "sourceIPs" || key == credentialIDKey {
+		m := idx.ip
+		if key == credentialIDKey {
+			m = idx.cred
+		}
 		if arr, ok := v.([]any); ok {
 			out := make([]any, len(arr))
 			for i, e := range arr {
-				out[i] = mapped(idx.ip, e)
+				out[i] = mapped(m, e)
 			}
 			return out
 		}

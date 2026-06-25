@@ -202,6 +202,21 @@ func TestNormalize_ManagedFieldsAssociationKeyIP(t *testing.T) {
 	}
 }
 
+func TestNormalize_CredentialIDAcrossClusterRebuilds(t *testing.T) {
+	// The audit user.extra credential-id is the client cert fingerprint, which a
+	// cluster rebuild regenerates; it must collapse to a stable placeholder so the
+	// corpus does not drift on every rebuild. The same credential in two records
+	// maps to the same <credential-N>.
+	got := normJSON(t,
+		`{"user":{"extra":{"authentication.kubernetes.io/credential-id":["X509SHA256=deadbeef"]}}}`,
+		`{"user":{"extra":{"authentication.kubernetes.io/credential-id":["X509SHA256=deadbeef"]}}}`,
+	)
+	want := `{"user":{"extra":{"authentication.kubernetes.io/credential-id":["<credential-1>"]}}}`
+	if got[0] != want || got[1] != want {
+		t.Errorf("\n got %v\nwant both = %s", got, want)
+	}
+}
+
 func TestNormalize_AuditID(t *testing.T) {
 	got := normJSON(t, `{"auditID":"req-xyz","verb":"create"}`)
 	want := `{"auditID":"<auditID-1>","verb":"create"}`

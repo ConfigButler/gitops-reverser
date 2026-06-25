@@ -44,6 +44,11 @@ const (
 	SourceAuditAdditional Source = "audit-additional"
 	// SourceAdmission is the validating admission webhook recorder.
 	SourceAdmission Source = "admission"
+	// SourceConversion is the CRD conversion webhook recorder. The apiserver calls
+	// it to convert a custom resource between served versions (Row 14); the lab
+	// records each ConversionReview so the corpus shows what the apiserver asked
+	// the webhook to convert, and to which version.
+	SourceConversion Source = "conversion"
 )
 
 // Record is the single envelope that drives both lab layers. Summary feeds the

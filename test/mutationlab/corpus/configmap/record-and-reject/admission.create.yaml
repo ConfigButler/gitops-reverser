@@ -55,7 +55,7 @@ request:
   userInfo:
     extra:
       authentication.kubernetes.io/credential-id:
-      - X509SHA256=e37c9344230682a123961d5a842c3d0ce77cf160fc86fcb816b3f2df7d1931b1
+      - <credential-1>
     groups:
     - system:masters
     - system:authenticated

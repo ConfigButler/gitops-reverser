@@ -53,9 +53,11 @@ spec:
         - --audit-addr=:9444
         - --audit-cert-dir=/tmp/k8s-audit-server/audit-server-certs
         - --api-addr=:8081
-        # M1 configmaps + M2 workload types: Deployments for the status/scale
-        # subresource rows (5, 6) and Pods for the graceful-delete row (7).
-        - --watch-resources=v1/configmaps,apps/v1/deployments,v1/pods
+        # M1 configmaps + M2 workload types (Deployments for /status,/scale Rows
+        # 5,6; Pods for graceful-delete Row 7) + M3 the two-version Widget CRD
+        # (Row 14, watched in its storage version v2) + M4 the wardle aggregated
+        # API (Row 15). Watches for not-yet-created types retry until they exist.
+        - --watch-resources=v1/configmaps,apps/v1/deployments,v1/pods,mutationlab.configbutler.ai/v2/widgets,wardle.example.com/v1alpha1/flunders
         readinessProbe:
           httpGet:
             path: /readyz
