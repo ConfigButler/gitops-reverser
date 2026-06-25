@@ -83,6 +83,7 @@ object:
             k:{"ip":"<ip-2>"}:
               .: {}
               f:ip: {}
+          f:resources: {}
           f:startTime: {}
       manager: k3s
       operation: Update
@@ -180,5 +181,6 @@ object:
     podIPs:
     - ip: <ip-2>
     qosClass: BestEffort
+    resources: {}
     startTime: <ts>
 type: MODIFIED

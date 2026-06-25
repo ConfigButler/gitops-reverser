@@ -90,6 +90,7 @@ request:
               k:{"ip":"<ip-2>"}:
                 .: {}
                 f:ip: {}
+            f:resources: {}
             f:startTime: {}
         manager: k3s
         operation: Update
@@ -187,6 +188,7 @@ request:
       podIPs:
       - ip: <ip-2>
       qosClass: BestEffort
+      resources: {}
       startTime: <ts>
   operation: DELETE
   options:

@@ -8,12 +8,10 @@ these versions" (see
 [the design](../../../docs/design/mutation-capture-lab-design.md#validating-new-kubernetes-versions)).
 
 The lab reuses the main e2e cluster (`task lab-e2e` swaps the controller image),
-so this provenance tracks the k3s image used for the last committed capture.
-After the e2e cluster image changes, run `task lab-corpus-update` before changing
-the values below.
+so this provenance tracks the k3s image used for the committed capture.
 
 | Field | Value |
 |---|---|
-| k3d image | `rancher/k3s:v1.35.2-k3s1` |
-| Server version | `v1.35.2+k3s1` (linux/amd64) |
-| Captured at | 2026-06-24 |
+| k3d image | `rancher/k3s:v1.36.1-k3s1` |
+| Server version | `v1.36.1+k3s1` (linux/amd64) |
+| Captured at | 2026-06-25 |
