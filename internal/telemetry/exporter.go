@@ -130,6 +130,13 @@ var (
 	// docs/design/stream/watch-list-checkpoint-plan.md.
 	MaterializationCheckpointFillsTotal metric.Int64Counter
 
+	// WatchAuditComparisonsTotal counts watch-vs-audit desired-set comparisons, labelled by
+	// {gvr, result} where result is "agree" or "diverge" — Phase 1 of
+	// docs/design/watch-only-ingestion-architecture.md. A rising "diverge" rate is the signal that
+	// the parallel watch-state stream is NOT yet a faithful replacement for the audit-derived set.
+	// Only emitted when --watch-state-stream is enabled.
+	WatchAuditComparisonsTotal metric.Int64Counter
+
 	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
 	WatchDuplicatesSkippedTotal metric.Int64Counter
 	// AuditEventsTotal is the single per-event census: every successfully decoded, converted, and
@@ -179,6 +186,13 @@ var (
 	// MaterializationClaimedUnfollowable gauges how many claimed types are not currently
 	// followable — the claim-vs-refused mismatch an operator should notice (L10).
 	MaterializationClaimedUnfollowable metric.Int64Gauge
+	// WatchAuditDivergence gauges, per {gvr, reason}, how many objects diverge between the
+	// watch-derived and audit-derived desired sets at the last comparison — reason is "audit_only"
+	// (present in audit's set, missing from watch's), "watch_only" (the reverse), or "mismatch"
+	// (present in both, sanitized bodies differ). Zero on every reason means watch reproduced audit's
+	// set exactly. Phase 1 of docs/design/watch-only-ingestion-architecture.md; only emitted when
+	// --watch-state-stream is enabled.
+	WatchAuditDivergence metric.Int64Gauge
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -300,6 +314,7 @@ func registerCounters() error {
 		{"gitopsreverser_type_lifecycle_sweep_total", &TypeLifecycleSweepTotal},
 		{"gitopsreverser_materialization_sync_events_total", &MaterializationSyncEventsTotal},
 		{"gitopsreverser_materialization_checkpoint_fills_total", &MaterializationCheckpointFillsTotal},
+		{"gitopsreverser_watch_audit_comparisons_total", &WatchAuditComparisonsTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
@@ -352,6 +367,7 @@ func registerGauges() error {
 		{"gitopsreverser_materialization_type_phase", &MaterializationTypePhase},
 		{"gitopsreverser_materialization_claimed_types", &MaterializationClaimedTypes},
 		{"gitopsreverser_materialization_claimed_unfollowable", &MaterializationClaimedUnfollowable},
+		{"gitopsreverser_watch_audit_divergence", &WatchAuditDivergence},
 		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
 	}
 	for _, s := range gauges {

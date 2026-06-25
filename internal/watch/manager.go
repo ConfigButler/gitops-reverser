@@ -222,6 +222,14 @@ type Manager struct {
 	// watchStateBackoffOverride shortens the post-restart backoff in tests. Zero uses watchStateBackoff.
 	watchStateBackoffOverride time.Duration
 
+	// WatchStateSplicer folds the parallel :watch:stream into a watch-derived desired set so the
+	// Manager can diff it against TypeSplicer's audit-derived set and meter the divergence — the
+	// payoff of Phase 1 (docs/design/watch-only-ingestion-architecture.md). Satisfied by
+	// queue.RedisTypeSplicer; nil (the default, unless --watch-state-stream is set) disables the
+	// periodic comparison. watchCompareIntervalOverride speeds the comparison ticker in tests.
+	WatchStateSplicer            StateSplicer
+	watchCompareIntervalOverride time.Duration
+
 	// reconcileTypeFanOverride substitutes the per-type reconcile fan so a test can observe the
 	// TypeSynced handler's decision (first-sync backfill vs. deferred re-anchor heal) without a
 	// full EventRouter/worker stack. Nil means use the real reconcileTypeForSyncedTargets.
@@ -325,6 +333,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	// the followability consumer above: a GitTarget renews its claims every reconcile, this
 	// pass releases whatever stopped being renewed since the previous tick.
 	m.startMaterializationSweep(ctx, log.WithName("materialization"))
+
+	// Parallel watch-state comparison (Phase 1): when --watch-state-stream is enabled, periodically
+	// diff each serviceable type's watch-derived desired set against its audit-derived one and meter
+	// the divergence. No-op (and zero cost) when the splicer is not wired.
+	m.startWatchComparator(ctx, log.WithName("watch-compare"))
 
 	if err := m.bootstrapRuleStore(ctx, log.WithName("bootstrap")); err != nil {
 		log.Error(err, "RuleStore bootstrap failed, continuing with current in-memory state")

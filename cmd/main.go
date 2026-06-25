@@ -324,7 +324,12 @@ func main() {
 	// It reuses the mirror's write-side client (a watch append is a write, not a blocking read).
 	if cfg.watchStateStream {
 		watchMgr.WatchStateWriter = auditByTypeQueue
-		setupLog.Info("parallel watch-state stream enabled (experimental; writes :watch:stream, no effect on Git)")
+		// Wire the watch-side splice too, so the manager can periodically diff the watch-derived
+		// desired set against the audit-derived one and meter the divergence (the Phase 1 payoff).
+		// auditTypeSplicer (the RedisTypeSplicer already wired as TypeSplicer) also serves SpliceWatchType.
+		watchMgr.WatchStateSplicer = auditTypeSplicer
+		setupLog.Info("parallel watch-state stream enabled (experimental; writes :watch:stream + " +
+			"diffs vs audit, no effect on Git)")
 	}
 
 	// Boot rebuild (DEC-L6): replay durable per-type checkpoints into the materializer so a
