@@ -111,9 +111,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	startWatchRecorder(ctx, logger, s, cfg)
+	watchClient := startWatchRecorder(ctx, logger, s, cfg)
 
-	servers := buildServers(cfg, admission, conversion, auditOfficial, auditAdditional, labserver.NewAPI(s))
+	api := labserver.NewAPI(s)
+	if watchClient != nil {
+		api = labserver.NewAPI(s, recorder.NewWatchProbe(watchClient))
+	}
+	servers := buildServers(cfg, admission, conversion, auditOfficial, auditAdditional, api)
 	run(ctx, logger, cfg, servers)
 }
 
@@ -210,24 +214,25 @@ func tlsConfig(certDir, clientCAFile string) (*tls.Config, error) {
 	return cfg, nil
 }
 
-func startWatchRecorder(ctx context.Context, logger *slog.Logger, s *store.Store, cfg config) {
+func startWatchRecorder(ctx context.Context, logger *slog.Logger, s *store.Store, cfg config) dynamic.Interface {
 	gvrs, err := labserver.ParseGVRs(cfg.watchSpec)
 	if err != nil {
 		logger.ErrorContext(ctx, "invalid --watch-resources; watch recorder disabled", "err", err)
-		return
+		return nil
 	}
 	restCfg, err := restConfig(cfg.kubeconfig)
 	if err != nil {
 		logger.WarnContext(ctx, "no Kubernetes client; watch recorder disabled", "err", err)
-		return
+		return nil
 	}
 	client, err := dynamic.NewForConfig(restCfg)
 	if err != nil {
 		logger.ErrorContext(ctx, "dynamic client; watch recorder disabled", "err", err)
-		return
+		return nil
 	}
 	recorder.NewWatch(s, client).Start(ctx, gvrs)
 	logger.InfoContext(ctx, "watch recorder started", "resources", cfg.watchSpec)
+	return client
 }
 
 func restConfig(kubeconfig string) (*rest.Config, error) {

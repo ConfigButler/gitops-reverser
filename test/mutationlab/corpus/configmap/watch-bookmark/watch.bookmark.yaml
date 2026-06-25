@@ -1,0 +1,8 @@
+object:
+  apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    annotations:
+      k8s.io/initial-events-end: "true"
+    resourceVersion: <rv-1>
+type: BOOKMARK

@@ -1,0 +1,9 @@
+object:
+  apiVersion: v1
+  code: 410
+  kind: Status
+  message: 'too old resource version: 1 (79344)'
+  metadata: {}
+  reason: Expired
+  status: Failure
+type: ERROR

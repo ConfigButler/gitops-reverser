@@ -38,10 +38,12 @@ gap (see [Capturing Intent, Not State](../../docs/design/mutation-capture-lab-de
 | 13 | Optimistic-concurrency conflict | `configmap_scenarios_test.go` · `TestOptimisticConcurrencyConflict` | `configmap/conflict-update/` | audit ×1 (`update`, code 409) — **no** watch / **no** admission (rejected at storage, before admission) |
 | 14 | Multi-version CRD conversion | `crd_conversion_test.go` · `TestCRDConversion` | `widget/crd-conversion/` | watch (v2), audit (v1), admission (v1), conversion ×2 (both directions) |
 | 15 | Aggregated API write | `aggregated_api_test.go` · `TestAggregatedAPIWrite` | `flunder/aggregated-api-write/` | watch (full object), audit (empty body), audit-additional (proxy-enriched full body); admission is observed but not committed |
+| 16 | Watch resync (`410 Gone`) | `watch_transport_test.go` · `TestWatchExpiredResourceVersion` | `configmap/watch-resync/` | watch ERROR (`Status` 410); driver verifies relist recovery |
+| 17 | Bookmark | `watch_transport_test.go` · `TestWatchBookmark` | `configmap/watch-bookmark/` | watch BOOKMARK with resourceVersion |
 
-Rows **3, 4, 16, 17** (server-side apply, no-op apply, watch resync, bookmark) are
-not yet captured. Rows 16 and 17 test the watch transport itself and need lab
-recorder support — see the
+Rows **3 and 4** (server-side apply, no-op apply) are not yet captured. Rows 16
+and 17 test the watch transport itself; the driver uses the lab's targeted
+`/watch-probe` endpoint so transport-only events can be scenario-attributed — see the
 [watch-only ingestion architecture](../../docs/design/watch-only-ingestion-architecture.md#phase-0-finish-the-evidence)
 Phase 0 notes.
 

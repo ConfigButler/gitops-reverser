@@ -7,8 +7,8 @@ webhooks** — at every interesting moment — and commits those structures as a
 regression harness.
 
 The corpus is captured against **k8s v1.35.2+k3s1** (recorded in
-`test/mutationlab/corpus/CLUSTER.md`). **Eleven of the seventeen** catalogued scenarios are captured
-today; the remaining six are planned — see the [Difficult Cases Catalog](#difficult-cases-catalog)
+`test/mutationlab/corpus/CLUSTER.md`). **Fifteen of the seventeen** catalogued scenarios are captured
+today; the remaining two are planned — see the [Difficult Cases Catalog](#difficult-cases-catalog)
 and [What To Capture Next](#what-to-capture-next).
 
 The lab reuses the product's webhook URLs (`/validate-admission-webhook`, `/audit-webhook`, and the
@@ -157,6 +157,9 @@ One request produces **N** per-object watch `DELETED`, **N** per-object validati
 
 - **Dry-run (Row 11)** and **record-and-reject (Row 12)** both reach admission and audit but produce
   no watch event and no etcd object — admission observed a write that never persisted.
+- **Optimistic-concurrency conflict (Row 13)** is rejected before persistence and before this
+  validating webhook: audit is the only witness, and the response body is a `Status`, not the attempted
+  object.
 - **Multi-version CRD conversion (Row 14).** One write to a two-version `Widget` CRD makes three
   shapes literally diffable: admission sees the **submitted** `v1` (`spec.sizeBytes: 1024`); the watch
   (on the v2 storage version) sees the **stored/served** `v2` (`spec.size: "1024"`); and the conversion
@@ -197,14 +200,14 @@ with `automountServiceAccountToken: false` so no random volume name churns the c
 | 7 | Graceful delete | ✅ | `MODIFIED` (deletionTimestamp) then `DELETED` | **none** — policy drops `pods` | DELETE (pods are top-level) | two watch events for one delete; audit is blind to pods |
 | 8 | Finalizer delete | ✅ | `MODIFIED` (deletionTimestamp+finalizers), later `DELETED` | `delete`, then `patch`/`update` removing the finalizer — **no second `delete`** | DELETE, then later UPDATEs | final `DELETED` has no matching audit delete verb |
 | 9 | Deletecollection | ✅ | **N** `DELETED`, no collection event | **one** name-less `deletecollection` | **N** named `DELETE` (once per object, not the collection) | fan-out asymmetry — the watch-mode pressure test |
-| 10 | Owner-ref cascade delete | ⬜ | child `DELETED` events | child deletes attributed to the GC system user, not the human | DELETE by `system:serviceaccount:kube-system:generic-garbage-collector` | provenance is the system, not a user |
+| 10 | Owner-ref cascade delete | ✅ | parent + child `DELETED` events | parent delete by the human; child delete by the GC system user | **none captured** | child provenance is the system, not the human |
 | 11 | Dry-run create | ✅ | **no** watch event, no etcd object | event with `dryRun`, no persistence | CREATE, `dryRun: true` | seen but never persisted |
 | 12 | Rejected during validation | ✅ | **no** watch event | failed response (`code` 4xx) | recorder is **always called** (parallel validation) and record-and-rejects | admission saw a write that never persisted |
-| 13 | Optimistic-concurrency conflict | ⬜ | no final change | failed response, `code: 409`, `Status` body | admission may have seen the attempted object | failure carries a Status, not the object |
+| 13 | Optimistic-concurrency conflict | ✅ | no watch event, no final change | failed response, `code: 409`, `Status` body | **none** — rejected at storage before admission | failure carries a Status, not the object |
 | 14 | Multi-version CRD conversion | ✅ | `ADDED`/`MODIFIED` in the v2 storage version (`size` string) | bodies in the submitted v1 (`sizeBytes`); +`conversion` source both ways | submitted v1 (the `Equivalent`+`*` webhook delivers it) | three different shapes for one write |
 | 15 | Aggregated API write | ✅ | **full object** (`ADDED`, spec included) | official: **empty** request/response body; proxy-enriched: full body | validating webhook **observed** firing on this version | the body-quality cliff — and watch fills it |
-| 16 | Watch resync (`410 Gone`) | ⬜ | `ERROR`, then must relist | n/a | n/a | proves watch needs a list backstop |
-| 17 | Bookmark | ⬜ | `BOOKMARK` with resourceVersion | n/a | n/a | the only safe resume anchor |
+| 16 | Watch resync (`410 Gone`) | ✅ | `ERROR` (`Status` 410); driver verifies relist recovery | n/a | n/a | proves watch needs a list backstop |
+| 17 | Bookmark | ✅ | `BOOKMARK` with resourceVersion | n/a | n/a | the safe resume anchor |
 
 ### Representative shape — deletecollection (Row 9)
 
@@ -251,7 +254,7 @@ them would add apparatus (a mutating recorder, a second webhook) without adding 
 
 | Claim | Verify or cite | Evidence |
 |---|---|---|
-| RVs progress (orderable, monotonic) *within one* resource stream | **Verify** | corpus + invariant |
+| RVs in one watched resource stream preserve the observed event sequence used by the corpus | **Verify** | corpus + invariant |
 | `deletecollection` → **N** watch `DELETED` + **N** admission `DELETE` + **one** name-less audit event | **Verify** | Row 9 |
 | finalizer delete's terminal `DELETED` has **no** audit `delete` verb | **Verify** | Row 8 |
 | no-op apply produces **no** watch event | **Verify** | Row 4 |
@@ -292,8 +295,16 @@ test/mutationlab/corpus/
       watch.deleted.cm-a.yaml     # … cm-b, cm-c
       audit.deletecollection.yaml         # the single name-less collection request
       admission.delete.cm-a.yaml          # admission fires once per object … cm-b, cm-c
+    owner-ref-cascade/            # parent delete by human; child delete by GC system user
+      watch.deleted.cm-parent.yaml
+      watch.deleted.cm-child.yaml
+      audit.delete.cm-parent.yaml
+      audit.delete.cm-child.yaml
     dry-run-create/               # audit.create · admission.create (no watch / no etcd object)
     record-and-reject/            # audit.create · admission.create (no watch / no etcd object)
+    conflict-update/              # audit.update only; 409 Status response, no watch/admission
+    watch-resync/                 # watch.error; 410 Expired, then the driver verifies relist recovery
+    watch-bookmark/               # watch.bookmark; initial-events-end resume anchor
   deployment/
     status-update/                # watch.modified.1 · watch.modified.2 (no audit, no admission)
     scale-patch/                  # watch.modified.1/2 · audit.patch (no admission)
@@ -326,7 +337,7 @@ placeholder, distinct inputs to distinct ones, and index order reflects real ord
 | Field | Becomes | Indexing |
 |---|---|---|
 | `metadata.uid`, admission `request.uid` | `<uid-N>` | one per distinct UID, by first appearance |
-| `metadata.resourceVersion` | `<rv-N>` | observed order within one resource stream; numeric order only once the stream's RVs are proven orderable |
+| `metadata.resourceVersion` | `<rv-N>` | observed order within one resource stream; treated as opaque outside the captured sequence |
 | ephemeral scenario namespace | `<ns-N>` | one per distinct namespace |
 | `creationTimestamp`, `deletionTimestamp`, `stageTimestamp`, `requestReceivedTimestamp`, `managedFields[].time`, `lastTransitionTime`, `lastUpdateTime`, `startTime`, `startedAt`, `finishedAt` | `<ts>` | **collapsed to one non-relational token** — see note below |
 | audit `auditID` | `<auditID-N>` | one per distinct request |
@@ -421,7 +432,8 @@ next has started. The lab **isolates** scenarios rather than trusting a clean sl
 
 Endpoints: `POST /audit-webhook`, `POST /audit-webhook-additional` (the proxy-enrichment endpoint,
 recorded as its own source), `POST /validate-admission-webhook`, `POST /convert` (CRD conversion),
-`GET /records[?scenario=…]`, `DELETE /records`, `GET /healthz`, `GET /readyz`.
+`POST /watch-probe` (targeted transport rows), `GET /records[?scenario=…]`, `DELETE /records`,
+`GET /healthz`, `GET /readyz`.
 
 ## Conclusions
 
@@ -449,26 +461,17 @@ mode pretending to be both.
 
 ## What To Capture Next
 
-Six rows remain (3, 4, 10, 13, 16, 17). The goal is to *learn*, so the order is by how much each
-row tightens a conclusion we actually depend on — not by which resource is easiest. (Row 8 — finalizer
-delete, the highest-value single row — is now captured; see [Finding 2](#findings) and
-`corpus/configmap/finalizer-delete/`.)
+Two rows remain (3, 4). The goal is to *learn*, so the order is by how much each row tightens a
+conclusion we actually depend on — not by which resource is easiest. Rows 8, 10, 13, 16, and 17 are
+now captured; see [Finding 2](#findings), [Finding 4](#findings),
+`corpus/configmap/finalizer-delete/`, `corpus/configmap/owner-ref-cascade/`,
+`corpus/configmap/conflict-update/`, `corpus/configmap/watch-resync/`, and
+`corpus/configmap/watch-bookmark/`.
 
-1. **Rows 16 + 17 — Watch resync (`410 Gone`) and Bookmark.** *Bound the core caveat.* Every
-   watch-viability conclusion is conditioned on "while live, with a list backstop." These two rows turn
-   that caveat from asserted into demonstrated: `410 → ERROR → relist`, and `BOOKMARK` as the only safe
-   resume anchor. Until they exist, the reliability boundary the product decision rests on is
-   undocumented.
-
-2. **Rows 3 + 4 — Server-side apply and No-op apply.** *The dominant GitOps write path.* Flux/Argo
+1. **Rows 3 + 4 — Server-side apply and No-op apply.** *The dominant GitOps write path.* Flux/Argo
    write by apply, so this is the most product-representative shape to pin: managedFields churn under
    SSA, and — load-bearing for watch mode — Row 4's "an unchanged apply produces **no** watch event,"
    which a naive watcher must not read as "nothing happened."
-
-3. **Rows 10 + 13 — Owner-ref cascade and Optimistic-concurrency conflict.** *Reinforcing, so last.*
-   They round out attribution (cascade children carry a *system* actor, not the human) and persistence
-   (a `409` carries a `Status`, not the object), but mostly confirm patterns Findings 2 and 4 already
-   establish rather than opening new ground.
 
 Each captured row ends with committed corpus files and green invariants. The lab is valuable only
 while it stays small enough that the behavior is obvious, so each row is a deliberate stop-and-read

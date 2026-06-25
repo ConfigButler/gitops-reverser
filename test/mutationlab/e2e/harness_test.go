@@ -21,6 +21,7 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -264,17 +265,52 @@ func (h *harness) clearRecords(t *testing.T) {
 	}
 }
 
+type watchProbeRequest struct {
+	Scenario      string `json:"scenario"`
+	Mode          string `json:"mode"`
+	Resource      string `json:"resource"`
+	Namespace     string `json:"namespace,omitempty"`
+	LabelSelector string `json:"labelSelector,omitempty"`
+}
+
+func (h *harness) probeWatch(t *testing.T, req watchProbeRequest) []mutationlab.Record {
+	t.Helper()
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal watch probe request: %v", err)
+	}
+	resp, status, err := h.doJSON(http.MethodPost, "/watch-probe", body)
+	if err != nil {
+		t.Fatalf("watch probe: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("watch probe status %d: %s", status, resp)
+	}
+	var records []mutationlab.Record
+	if err := json.Unmarshal(resp, &records); err != nil {
+		t.Fatalf("decode watch probe response: %v", err)
+	}
+	return records
+}
+
 // do issues an HTTP request to the lab API, retrying transient connection errors.
 // The API sits behind a kubectl port-forward that can drop and is restarted by a
 // watchdog in the lab-e2e task, so a brief connection failure is expected, not
 // fatal.
 func (h *harness) do(method, path string) ([]byte, int, error) {
+	return h.doJSON(method, path, nil)
+}
+
+func (h *harness) doJSON(method, path string, body []byte) ([]byte, int, error) {
 	var lastErr error
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		req, err := http.NewRequest(method, h.apiURL+path, nil)
+		req, err := http.NewRequest(method, h.apiURL+path, bytes.NewReader(body))
 		if err != nil {
 			return nil, 0, err
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

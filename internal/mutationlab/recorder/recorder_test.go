@@ -19,6 +19,7 @@ limitations under the License.
 package recorder
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,8 +27,14 @@ import (
 	"testing"
 
 	admissionv1 "k8s.io/api/admission/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+	ktesting "k8s.io/client-go/testing"
 
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab"
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab/store"
@@ -239,6 +246,84 @@ func TestBuildWatchRecord_BookmarkHasNoKey(t *testing.T) {
 	if r.Summary.WatchType != "BOOKMARK" || r.Key.ResourceVersion != "99" || r.Key.Name != "" {
 		t.Errorf("bookmark record wrong: %+v / %+v", r.Summary, r.Key)
 	}
+}
+
+func TestWatchProbe_BookmarkRecordsOnlyBookmark(t *testing.T) {
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	client.PrependWatchReactor("configmaps", func(_ ktesting.Action) (bool, watch.Interface, error) {
+		w := watch.NewFakeWithChanSize(2, false)
+		w.Action(watch.Added, watchObject("cm-a", "10"))
+		w.Action(watch.Bookmark, watchObject("", "11"))
+		return true, w, nil
+	})
+
+	records, err := NewWatchProbe(client).Probe(context.Background(), WatchProbeRequest{
+		Scenario:      "watch-bookmark",
+		Mode:          WatchProbeBookmark,
+		GVR:           gvr,
+		Namespace:     "lab-watch",
+		LabelSelector: ScenarioLabel + "=watch-bookmark",
+	})
+	if err != nil {
+		t.Fatalf("probe bookmark: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want exactly the bookmark", len(records))
+	}
+	got := records[0]
+	if got.Scenario != "watch-bookmark" || got.Summary.WatchType != "BOOKMARK" {
+		t.Fatalf("record = %+v, want scenario-tagged BOOKMARK", got)
+	}
+	if got.Key.ResourceVersion != "11" || got.Key.Resource != "configmaps" {
+		t.Fatalf("key = %+v, want bookmark rv and resource", got.Key)
+	}
+}
+
+func TestWatchProbe_ExpiredWatchErrorBecomesRecord(t *testing.T) {
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	client.PrependWatchReactor("configmaps", func(_ ktesting.Action) (bool, watch.Interface, error) {
+		return true, nil, &apierrors.StatusError{ErrStatus: metav1.Status{
+			Status:  metav1.StatusFailure,
+			Code:    http.StatusGone,
+			Reason:  metav1.StatusReasonExpired,
+			Message: "too old resource version",
+		}}
+	})
+
+	records, err := NewWatchProbe(client).Probe(context.Background(), WatchProbeRequest{
+		Scenario:  "watch-resync",
+		Mode:      WatchProbeExpired,
+		GVR:       gvr,
+		Namespace: "lab-watch",
+	})
+	if err != nil {
+		t.Fatalf("probe expired: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want one ERROR", len(records))
+	}
+	got := records[0]
+	if got.Scenario != "watch-resync" || got.Summary.WatchType != "ERROR" {
+		t.Fatalf("record = %+v, want scenario-tagged ERROR", got)
+	}
+	if !strings.Contains(string(got.Raw), `"code":410`) || !strings.Contains(string(got.Raw), `"reason":"Expired"`) {
+		t.Fatalf("raw = %s, want 410 Expired status", got.Raw)
+	}
+}
+
+func watchObject(name, rv string) *unstructured.Unstructured {
+	metadata := map[string]any{"resourceVersion": rv}
+	if name != "" {
+		metadata["name"] = name
+		metadata["namespace"] = "lab-watch"
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata":   metadata,
+	}}
 }
 
 func TestScenarioFromRequestURI(t *testing.T) {
