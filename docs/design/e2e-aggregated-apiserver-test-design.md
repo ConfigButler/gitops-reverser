@@ -264,17 +264,17 @@ simplest approach. Data does not need to survive pod restarts for e2e.
 
 ### Image tag: must match k3s version
 
-The e2e cluster uses `rancher/k3s:v1.35.2-k3s1`. The sample-apiserver image must match the
+The e2e cluster uses `rancher/k3s:v1.36.1-k3s1`. The sample-apiserver image must match the
 Kubernetes minor version. Use a kustomize variable for easy updates:
 
 ```yaml
 # kustomization.yaml
 images:
   - name: registry.k8s.io/e2e-test-images/sample-apiserver
-    newTag: "1.35.1"   # match k3s v1.35.x
+    newTag: "1.36.1"   # match k3s v1.36.x
 ```
 
-**Action required before implementation:** verify that `registry.k8s.io/e2e-test-images/sample-apiserver:1.35.1`
+**Action required before implementation:** verify that `registry.k8s.io/e2e-test-images/sample-apiserver:1.36.1`
 exists. If not, check the available tags and use the closest match. The sample-apiserver images
 are published per Kubernetes release; newer k3s versions may require building from source.
 
@@ -643,7 +643,7 @@ cluster. Acceptable for e2e, but worth noting for resource-constrained CI runner
 
 ### Version pinning
 
-The sample-apiserver image must match the k3s Kubernetes version. Currently k3s `v1.35.2-k3s1`.
+The sample-apiserver image must match the k3s Kubernetes version. Currently k3s `v1.36.1-k3s1`.
 The kustomize image tag makes this a one-line change when k3s is upgraded.
 
 ---

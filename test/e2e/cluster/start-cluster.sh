@@ -12,6 +12,7 @@ DISABLE_K3S_SERVICELB="${DISABLE_K3S_SERVICELB:-true}"
 KUBE_APISERVER_MAX_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_REQUESTS_INFLIGHT:-800}"
 KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT:-400}"
 K3D_AGENT_COUNT="${K3D_AGENT_COUNT:-3}"
+K3S_IMAGE="${K3S_IMAGE:-rancher/k3s:v1.36.1-k3s1}"
 AUDIT_DIR_REL="${AUDIT_DIR_REL:-test/e2e/cluster/audit}"
 K3D_CREATE_LOG_FILE="${TMPDIR:-/tmp}/k3d-create-${CLUSTER_NAME}.log"
 REPO_PWD="$(pwd -P)"
@@ -189,6 +190,7 @@ create_cluster() {
 
     echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with audit webhook support..."
     echo "🔧 Using HOST_PROJECT_PATH: ${host_project_path}"
+    echo "🔧 Using k3s image: ${K3S_IMAGE}"
     echo "🔧 Mounting audit dir: ${audit_host_dir} -> /etc/kubernetes/audit"
 
     if [ "${DISABLE_K3S_TRAEFIK}" = "true" ]; then
@@ -205,7 +207,7 @@ create_cluster() {
     # via k3s "--kube-apiserver-arg=..." options.
     local create_cmd=(
       k3d cluster create "${CLUSTER_NAME}"
-      --image rancher/k3s:v1.35.2-k3s1
+      --image "${K3S_IMAGE}"
       --servers 1
       --agents "${K3D_AGENT_COUNT}"
       --kubeconfig-update-default
