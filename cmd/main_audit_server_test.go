@@ -56,12 +56,10 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
 	assert.Equal(t, "valkey:6379", cfg.auditRedisAddr)
-	assert.Equal(t, int64(0), cfg.auditRedisMaxLen)
-	assert.Empty(t, cfg.auditDebugRedisStream)
-	assert.Equal(t, int64(0), cfg.auditDebugRedisMaxLen)
 	assert.False(t, cfg.auditRedisTLS)
-	assert.Equal(t, 5*time.Minute, cfg.auditEventBodyTTL)
-	assert.Equal(t, 500*time.Millisecond, cfg.auditEventBodyWait)
+	assert.Equal(t, "gitops-reverser", cfg.attributionPrefix)
+	assert.Equal(t, 3*time.Second, cfg.attributionGrace)
+	assert.Equal(t, "name", cfg.attributionSANaming)
 	assert.False(t, cfg.zapOpts.Development)
 	assert.Equal(t, []string{"secrets"}, cfg.sensitiveResources.Entries())
 }
@@ -115,12 +113,10 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-redis-username=user",
 		"--audit-redis-password=pass",
 		"--audit-redis-db=2",
-		"--audit-redis-max-len=1000",
-		"--audit-debug-redis-stream=gitopsreverser.audit.debug.custom",
-		"--audit-debug-redis-max-len=2000",
 		"--audit-redis-tls",
-		"--audit-event-body-ttl=2m",
-		"--audit-event-body-wait=250ms",
+		"--attribution-redis-prefix=custom-prefix",
+		"--attribution-grace=750ms",
+		"--attribution-sa-naming=bot",
 	}
 
 	cfg, err := parseFlagsWithArgs(fs, args)
@@ -141,12 +137,19 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, "user", cfg.auditRedisUsername)
 	assert.Equal(t, "pass", cfg.auditRedisPassword)
 	assert.Equal(t, 2, cfg.auditRedisDB)
-	assert.Equal(t, int64(1000), cfg.auditRedisMaxLen)
-	assert.Equal(t, "gitopsreverser.audit.debug.custom", cfg.auditDebugRedisStream)
-	assert.Equal(t, int64(2000), cfg.auditDebugRedisMaxLen)
 	assert.True(t, cfg.auditRedisTLS)
-	assert.Equal(t, 2*time.Minute, cfg.auditEventBodyTTL)
-	assert.Equal(t, 250*time.Millisecond, cfg.auditEventBodyWait)
+	assert.Equal(t, "custom-prefix", cfg.attributionPrefix)
+	assert.Equal(t, 750*time.Millisecond, cfg.attributionGrace)
+	assert.Equal(t, "bot", cfg.attributionSANaming)
+}
+
+func TestParseFlagsWithArgs_CommitterOnlyWhenRedisEmpty(t *testing.T) {
+	fs := flag.NewFlagSet("test-committer-only", flag.ContinueOnError)
+	// An empty audit-redis-addr is committer-only mode and must validate even without
+	// audit TLS / client-CA configured (the audit ingress server is not started).
+	cfg, err := parseFlagsWithArgs(fs, []string{"--audit-redis-addr="})
+	require.NoError(t, err)
+	assert.Empty(t, cfg.auditRedisAddr)
 }
 
 func TestParseFlagsWithArgs_AdditionalSensitiveResources(t *testing.T) {
@@ -186,28 +189,16 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 			args: []string{"--audit-read-timeout=0s"},
 		},
 		{
-			name: "empty redis address",
-			args: []string{"--audit-redis-addr="},
-		},
-		{
 			name: "invalid redis db",
 			args: []string{"--audit-redis-db=-1"},
 		},
 		{
-			name: "invalid redis max len",
-			args: []string{"--audit-redis-max-len=-1"},
+			name: "negative attribution grace",
+			args: []string{"--attribution-grace=-1s"},
 		},
 		{
-			name: "invalid audit debug redis max len",
-			args: []string{"--audit-debug-redis-max-len=-1"},
-		},
-		{
-			name: "invalid audit event body ttl",
-			args: []string{"--audit-event-body-ttl=0s"},
-		},
-		{
-			name: "invalid audit event body wait",
-			args: []string{"--audit-event-body-wait=-1s"},
+			name: "invalid attribution sa naming",
+			args: []string{"--attribution-sa-naming=invalid"},
 		},
 		{
 			name: "invalid sensitive resource",
@@ -233,10 +224,10 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 }
 
 // TestBuildAuditServeMux_DelegatesAuditPathsToHandler asserts mux-level wiring only.
-// The mux registers trailing-slash patterns so that any path under /audit-webhook/ or
-// /audit-webhook-additional/ is delegated to the AuditHandler — which is then responsible
-// for rejecting unknown subpaths (e.g. cluster-ID segments) with HTTP 400. See
-// TestAuditHandler_ServeHTTP and TestAuditSourceFromPath in internal/webhook for the
+// The mux registers /audit-webhook and its trailing-slash pattern so that any path under
+// /audit-webhook/ is delegated to the AuditHandler — which is then responsible for rejecting
+// unknown subpaths (e.g. cluster-ID segments) with HTTP 400. The removed /audit-webhook-additional
+// endpoint is no longer registered. See TestValidateAuditWebhookPath in internal/webhook for the
 // actual rejection assertions.
 func TestBuildAuditServeMux_DelegatesAuditPathsToHandler(t *testing.T) {
 	const delegated = http.StatusAccepted
@@ -252,7 +243,7 @@ func TestBuildAuditServeMux_DelegatesAuditPathsToHandler(t *testing.T) {
 		want int
 	}{
 		{"official endpoint is delegated", "/audit-webhook", delegated},
-		{"additional endpoint is delegated", "/audit-webhook-additional", delegated},
+		{"removed additional endpoint is not registered", "/audit-webhook-additional", http.StatusNotFound},
 		{
 			"subpath under /audit-webhook/ is delegated (handler then rejects)",
 			"/audit-webhook/cluster-a",

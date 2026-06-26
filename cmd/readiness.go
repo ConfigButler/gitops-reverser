@@ -81,8 +81,6 @@ func newRedisReadinessGate(pinger redisPinger) *redisReadinessGate {
 
 // Start runs as a manager Runnable: it PINGs until the first success (then returns, so it never
 // pings again), or until the manager context is cancelled.
-//
-//nolint:unparam // controller-runtime Runnable requires an error return.
 func (g *redisReadinessGate) Start(ctx context.Context) error {
 	for {
 		pingCtx, cancel := context.WithTimeout(ctx, g.timeout)

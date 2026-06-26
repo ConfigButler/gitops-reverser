@@ -94,62 +94,36 @@ servers:
       # Leave empty to use the chart-generated Secret name.
       secretNameOverride: ""
 
-# Webhook behavior
-webhook:
-  audit:
-    # Set to true to append every decoded audit event to a separate Redis stream
-    # before normal audit processing can filter, join, or drop it.
-    debugStream:
-      enabled: false
-      stream: "gitopsreverser.audit.debug.events.v1"
-      # Approximate max stream length; 0 disables trimming and allows unbounded growth.
-      # The bounded default keeps Valkey memory and restart/reload time predictable; raise it
-      # only if your audit rate or outage-catch-up window exceeds the default budget. The
-      # debug stream stores every decoded event before filtering/joining, so unbounded mode
-      # here is especially dangerous.
-      maxLen: 10000
-    # Opt-in <prefix>:diag_all firehose — one annotated record per ingested audit event
-    # (the entry payload plus its outcome/category), for investigating ingestion/ordering.
-    # Off by default; enable only while investigating. See
-    # docs/design/stream/audit-diagnostic-streams-plan.md.
-    diagStreams:
-      enabled: false
-      # Approximate max <prefix>:diag_all stream length; 0 disables trimming (unbounded — risky,
-      # this captures every ingested event).
-      maxLen: 100000
-      # Optional list of resource names to scope the firehose to (e.g. ["commitrequests",
-      # "configmaps"]). Empty captures every queued event; a non-empty list bounds the firehose
-      # (and its in-lock XADD load) to those suspect types when investigating a specific failure.
-      resources: []
-
-# Durable audit queue configuration.
+# Optional Redis-backed audit attribution index. Watch is the source of object state;
+# audit only names the commit author. Leave queue.redis.addr empty to run committer-only
+# (no audit, no Redis) — every commit is authored by the configured committer.
 queue:
   redis:
-    # Redis endpoint in host:port format. GitOps Reverser requires a reachable Valkey/Redis service.
+    # Redis endpoint in host:port format. Empty = committer-only mode (no attribution).
     addr: "valkey:6379"
     auth:
       # Name of a pre-existing Secret in the same namespace that holds the Redis password.
-      # The Secret must be created before installing this chart.
-      # Required for production deployments. You may leave it empty only for dev/local environments
-      # where Valkey runs without authentication.
+      # The Secret must be created before installing this chart. You may leave it empty only
+      # for dev/local environments where Valkey runs without authentication.
       existingSecret: "valkey-auth"
       # Key within the Secret that holds the password value.
       existingSecretKey: "password"
       # Optional Redis username for ACL-based auth (Redis 6+). Not sensitive; stays as a plain value.
       username: ""
     db: 0
-    # Approximate max stream length; 0 disables trimming and allows unbounded growth.
-    # 10000 is a production-safe starting point — large enough to absorb short consumer
-    # outages, small enough to keep Valkey memory and reload time predictable. Size based
-    # on your expected audit events per second and the outage/catch-up window the queue
-    # must tolerate. Too-low values can drop entries before slow consumers catch up.
-    maxLen: 10000
     tls:
       enabled: false
 
-auditEventJoin:
-  bodyTTL: "5m"
-  bodyWait: "500ms"
+# Commit-author attribution from audit facts. Only applies when queue.redis.addr is set.
+attribution:
+  # Root key prefix for attribution facts (<prefix>:attr:v1:<variant>:<id>). Empty uses the default.
+  redisPrefix: ""
+  # Bounded per-event wait for a matching audit fact before a watch event ships as the committer.
+  # Larger values raise attribution hit-rate at the cost of commit latency.
+  grace: "3s"
+  # How a matched service account is named as the author: "name" (the service account's own
+  # username) or "bot" (collapse every service account to the committer).
+  serviceAccountNaming: "name"
 
 # TLS certificate management (Kubernetes requires this for API server callbacks)
 certificates:

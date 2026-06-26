@@ -70,26 +70,17 @@ spec:
             - --audit-redis-username={{ . | quote }}
             {{- end }}
             - --audit-redis-db={{ .Values.queue.redis.db }}
-            - --audit-redis-max-len={{ .Values.queue.redis.maxLen }}
-            {{- if .Values.webhook.audit.debugStream.enabled }}
-            - --audit-debug-redis-stream={{ .Values.webhook.audit.debugStream.stream }}
-            - --audit-debug-redis-max-len={{ .Values.webhook.audit.debugStream.maxLen }}
-            {{- end }}
-            {{- if .Values.webhook.audit.diagStreams.enabled }}
-            - --audit-bytype-diag
-            - --audit-bytype-diag-max-len={{ .Values.webhook.audit.diagStreams.maxLen }}
-            {{- with .Values.webhook.audit.diagStreams.resources }}
-            - --audit-bytype-diag-resources={{ join "," . }}
-            {{- end }}
-            {{- end }}
             {{- if .Values.queue.redis.tls.enabled }}
             - --audit-redis-tls
             {{- end }}
+            {{- with .Values.attribution.redisPrefix }}
+            - --attribution-redis-prefix={{ . }}
+            {{- end }}
+            - --attribution-grace={{ .Values.attribution.grace }}
+            - --attribution-sa-naming={{ .Values.attribution.serviceAccountNaming }}
             {{- with .Values.controllerManager.additionalSensitiveResources }}
             - {{ printf "--additional-sensitive-resources=%s" (join "," .) | quote }}
             {{- end }}
-            - --audit-event-body-ttl={{ .Values.auditEventJoin.bodyTTL }}
-            - --audit-event-body-wait={{ .Values.auditEventJoin.bodyWait }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}

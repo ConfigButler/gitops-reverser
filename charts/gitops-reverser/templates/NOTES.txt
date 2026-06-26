@@ -70,8 +70,6 @@ Suggested audit webhook server URL from the control-plane node:
 - `ClusterIP` alone is usually NOT enough unless your control-plane host can route to the service CIDR.
 {{- end }}
 
-Supplementary audit sources, including `apiservice-audit-proxy`, should use the same host with `/audit-webhook-additional`.
-
 Copy-paste example to generate `audit-webhook.kubeconfig` after the Secrets exist:
 
 ```bash

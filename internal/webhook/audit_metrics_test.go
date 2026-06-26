@@ -19,9 +19,8 @@ limitations under the License.
 package webhook
 
 import (
-	"bytes"
+	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,65 +29,44 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
+// errAuditTest is the injected fact-store failure used to drive the
+// process_error EventList outcome.
+var errAuditTest = errors.New("fact store down")
+
 const (
 	eventListMetric         = "gitopsreverser_audit_eventlists_total"
 	eventListEventsMetric   = "gitopsreverser_audit_eventlist_events_total"
 	eventListDurationMetric = "gitopsreverser_audit_eventlist_duration_seconds"
+	auditEventsMetric       = "gitopsreverser_audit_events_total"
 )
 
-// validCreateEventList is a one-item official EventList that decodes and
-// processes cleanly.
-const validCreateEventList = `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
-	`{"kind":"Event","level":"RequestResponse","auditID":"metric-test-1","stage":"ResponseComplete",` +
-	`"verb":"create","user":{"username":"test-user"},` +
-	`"objectRef":{"resource":"configmaps","namespace":"default","name":"cm","apiVersion":"v1"},` +
-	`"responseStatus":{"code":200},` +
-	`"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"default"}}}]}`
+// processErrorEventList decodes but fails processing: the FactRecorder is told
+// to error, so an accepted event produces a process_error outcome.
+const processErrorEvent = acceptedCreateEvent
 
-// emptyEventList decodes to zero items.
-const emptyEventList = `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[]}`
-
-// subresourceExecEventList is a one-item official EventList for a pods/exec
-// streaming request — audited as verb=create with a non-empty objectRef
-// subresource and no resource body.
-const subresourceExecEventList = `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
-	`{"kind":"Event","level":"RequestResponse","auditID":"subres-exec-1","stage":"ResponseComplete",` +
-	`"verb":"create","user":{"username":"test-user"},` +
+// subresourceExecEventList is a one-item EventList for a pods/exec streaming
+// request — verb=create with a non-/scale subresource and no resource body.
+const subresourceExecEvent = `{"kind":"Event","level":"RequestResponse","auditID":"subres-exec-1",` +
+	`"stage":"ResponseComplete","verb":"create","user":{"username":"test-user"},` +
 	`"objectRef":{"resource":"pods","namespace":"default","name":"p","apiVersion":"v1","subresource":"exec"},` +
-	`"responseStatus":{"code":101}}]}`
+	`"responseStatus":{"code":101}}`
 
-// processErrorEventList decodes but fails processing: an event with an empty
-// auditID is rejected by checkEvent.
-const processErrorEventList = `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
-	`{"kind":"Event","auditID":"","verb":"create","user":{"username":"u"},` +
-	`"objectRef":{"resource":"configmaps","apiVersion":"v1"}}]}`
-
+// TestServeHTTP_EventListIngressMetrics asserts the three EventList-boundary
+// metrics across the four outcome labels. The event-item counter has no sample
+// for decode_error, since the item count is only known after a successful decode.
 func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 	tests := []struct {
 		name            string
-		path            string
 		body            string
-		source          string
+		recorderErr     bool
 		wantOutcome     string
 		wantStatus      int
 		wantEventSample bool
 		wantEventCount  int64
 	}{
 		{
-			name:            "official processed",
-			path:            "/audit-webhook",
-			body:            validCreateEventList,
-			source:          "official",
-			wantOutcome:     "processed",
-			wantStatus:      http.StatusOK,
-			wantEventSample: true,
-			wantEventCount:  1,
-		},
-		{
-			name:            "additional processed",
-			path:            "/audit-webhook-additional",
-			body:            validCreateEventList,
-			source:          "additional",
+			name:            "processed",
+			body:            eventListBody(acceptedCreateEvent),
 			wantOutcome:     "processed",
 			wantStatus:      http.StatusOK,
 			wantEventSample: true,
@@ -96,9 +74,7 @@ func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 		},
 		{
 			name:            "empty event list",
-			path:            "/audit-webhook",
-			body:            emptyEventList,
-			source:          "official",
+			body:            eventListBody(),
 			wantOutcome:     "empty",
 			wantStatus:      http.StatusOK,
 			wantEventSample: true,
@@ -106,18 +82,15 @@ func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 		},
 		{
 			name:            "decode error",
-			path:            "/audit-webhook",
 			body:            "not json",
-			source:          "official",
 			wantOutcome:     "decode_error",
 			wantStatus:      http.StatusBadRequest,
 			wantEventSample: false,
 		},
 		{
 			name:            "process error",
-			path:            "/audit-webhook",
-			body:            processErrorEventList,
-			source:          "official",
+			body:            eventListBody(processErrorEvent),
+			recorderErr:     true,
 			wantOutcome:     "process_error",
 			wantStatus:      http.StatusInternalServerError,
 			wantEventSample: true,
@@ -130,27 +103,29 @@ func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 			reader, err := telemetry.InitTestExporter()
 			require.NoError(t, err)
 
-			handler, err := NewAuditHandler(AuditHandlerConfig{})
+			recorder := &fakeFactRecorder{}
+			if tt.recorderErr {
+				recorder.err = errAuditTest
+			}
+			handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
 			require.NoError(t, err)
 
-			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader([]byte(tt.body)))
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, req)
+			w := serveBody(t, handler, http.MethodPost, "/audit-webhook", tt.body)
 			assert.Equal(t, tt.wantStatus, w.Code)
 
-			match := map[string]string{"source": tt.source, "outcome": tt.wantOutcome}
+			match := map[string]string{"outcome": tt.wantOutcome}
 
 			requests, ok := telemetry.CollectInt64Sum(reader, eventListMetric, match)
-			require.True(t, ok, "audit_eventlists_total should have a sample for %v", match)
+			require.True(t, ok, "%s should have a sample for %v", eventListMetric, match)
 			assert.Equal(t, int64(1), requests)
 
 			durCount, ok := telemetry.CollectHistogramCount(reader, eventListDurationMetric, match)
-			require.True(t, ok, "audit_eventlist_duration_seconds should have a sample for %v", match)
+			require.True(t, ok, "%s should have a sample for %v", eventListDurationMetric, match)
 			assert.Equal(t, uint64(1), durCount)
 
 			events, ok := telemetry.CollectInt64Sum(reader, eventListEventsMetric, match)
 			if tt.wantEventSample {
-				require.True(t, ok, "audit_eventlist_events_total should have a sample for %v", match)
+				require.True(t, ok, "%s should have a sample for %v", eventListEventsMetric, match)
 				assert.Equal(t, tt.wantEventCount, events)
 			} else {
 				assert.False(t, ok, "decode_error must not produce an event-item sample")
@@ -159,23 +134,44 @@ func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 	}
 }
 
+// TestServeHTTP_AcceptedEventQueuedOutcome confirms an accepted event records the
+// "queued" census outcome on audit_events_total (category="stored").
+func TestServeHTTP_AcceptedEventQueuedOutcome(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	recorder := &fakeFactRecorder{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	require.NoError(t, err)
+
+	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(acceptedCreateEvent))
+	require.Equal(t, http.StatusOK, w.Code)
+
+	queued, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
+		"outcome": "queued", "category": "stored",
+		"resource": "configmaps", "verb": "create",
+	})
+	require.True(t, ok, "expected a queued outcome sample for the accepted configmaps create")
+	assert.Equal(t, int64(1), queued)
+}
+
 // TestServeHTTP_NonScaleSubresourceDropped confirms a non-/scale subresource
-// (pods/exec) is dropped before Redis and recorded on audit_events_total as the
-// non_scale_subresource outcome (resource="pods"), so a pods/exec flood is
+// (pods/exec) is dropped before recording and recorded on audit_events_total as
+// the non_scale_subresource outcome (resource="pods"), so a pods/exec flood is
 // distinguishable rather than collapsing into a mirrored pod mutation.
 func TestServeHTTP_NonScaleSubresourceDropped(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	handler, err := NewAuditHandler(AuditHandlerConfig{})
+	recorder := &fakeFactRecorder{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(subresourceExecEventList)))
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(subresourceExecEvent))
 	require.Equal(t, http.StatusOK, w.Code)
+	assert.Zero(t, recorder.len(), "pods/exec must not be recorded")
 
-	exec, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_audit_events_total", map[string]string{
+	exec, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
 		"outcome": "non_scale_subresource", "category": "dropped",
 		"resource": "pods", "verb": "create",
 	})

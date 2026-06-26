@@ -236,6 +236,5 @@ instead of hanging the reflector.
    known-good aggregated API.
 3. **Phase C cleanup** PR — delete the legacy seed code now that nothing
    calls it.
-4. **Aggregated-API audit checklist** in `docs/` (or an extension of
-   [`docs/aggregated-api-guide.md`](../aggregated-api-guide.md)) so operators
+4. **Aggregated-API audit checklist** in `docs/` so operators
    know what to verify before turning Phase B loose in their cluster.

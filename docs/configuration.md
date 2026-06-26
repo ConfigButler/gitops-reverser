@@ -490,22 +490,15 @@ Status moves from `WaitingForAuditEvent` to one terminal phase:
 
 ## Audit ingestion settings
 
-GitOps Reverser receives Kubernetes audit events at two HTTP paths:
+Object state comes from Kubernetes **watch**, not from audit. Audit is an optional attribution lookup:
+kube-apiserver posts audit events to a single HTTP path, `/audit-webhook`, and the operator extracts a
+minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID,
+status, timestamps) into a Redis attribution index keyed for the join. A resolver attaches the commit
+author to each watch event by matching a fact (by resourceVersion/UID) within a bounded grace window.
 
-- `/audit-webhook`: the canonical kube-apiserver audit source
-- `/audit-webhook-additional`: supplementary body events for aggregated API paths
-
-The joiner holds a bodyless canonical event for up to `auditEventJoin.bodyWait` while waiting for a
-matching additional body. Parked additional bodies expire after `auditEventJoin.bodyTTL`.
-
-```yaml
-auditEventJoin:
-  bodyTTL: "5m"
-  bodyWait: "500ms"
-```
-
-Audit events are mirrored into Valkey/Redis per resource type. `queue.redis.maxLen` is an approximate
-per-stream trim limit; `0` disables trimming and can grow without bound.
+Attribution runs only when a Redis endpoint is configured. Leave `--audit-redis-addr` (chart
+`queue.redis.addr`) empty to run **committer-only**: the audit webhook is not used and every commit is
+authored by the configured committer.
 
 ```yaml
 queue:
@@ -514,26 +507,22 @@ queue:
     auth:
       existingSecret: "valkey-auth"
       existingSecretKey: "password"
-    maxLen: 10000
 ```
 
-For investigations, enable diagnostic streams only while you need them:
+The attribution flags tune the join:
+
+- `--attribution-redis-prefix`: root key prefix for attribution facts; empty uses the default.
+- `--attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
+  watch event ships authored by the committer.
+- `--attribution-sa-naming` (`name` | `bot`): how a matched service account is named — `name` uses the
+  service account's own username, `bot` collapses every service account to the committer.
 
 ```yaml
-webhook:
-  audit:
-    debugStream:
-      enabled: false
-      maxLen: 10000
-    diagStreams:
-      enabled: false
-      maxLen: 100000
-      resources: []
+attribution:
+  redisPrefix: ""
+  grace: "3s"
+  serviceAccountNaming: "name"
 ```
-
-`debugStream` captures decoded events before normal filtering and joining. `diagStreams` writes the
-per-type `diag_all` firehose with ingestion outcomes; set `resources` to a short list such as
-`["commitrequests", "configmaps"]` when chasing one type.
 
 ## Quickstart vs hand-managed resources
 

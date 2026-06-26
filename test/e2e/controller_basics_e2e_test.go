@@ -175,15 +175,17 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 		Expect(currentAuditEvents).To(BeNumerically(">", baselineAuditEvents),
 			"Should have received audit events from kube-apiserver")
 
-		By("verifying the EventList ingress metric appears for source=official")
+		By("verifying the EventList ingress metric counts processed requests")
 		waitForMetricWithTimeout(
-			"sum(gitopsreverser_audit_eventlists_total{source='official'}) or vector(0)",
+			"sum(gitopsreverser_audit_eventlists_total{outcome='processed'}) or vector(0)",
 			func(v float64) bool { return v > 0 },
-			"EventList ingress requests should be counted for source=official", 2*time.Minute,
+			"EventList ingress requests should be counted with outcome=processed", 2*time.Minute,
 		)
 
-		By("verifying no removed cluster/gvr/action label remains on any audit series")
-		for _, removed := range []string{"cluster", "gvr", "action"} {
+		By("verifying no removed cluster/gvr/action/source label remains on any audit series")
+		// source was the official/additional split; the additional endpoint (apiservice-audit-proxy)
+		// was removed with the watch-first rewrite, so audit series no longer carry a source label.
+		for _, removed := range []string{"cluster", "gvr", "action", "source"} {
 			stale, queryErr := queryPrometheus(fmt.Sprintf(
 				"sum({__name__=~'gitopsreverser_audit_.+', %s=~'.+'}) or vector(0)", removed))
 			Expect(queryErr).NotTo(HaveOccurred())

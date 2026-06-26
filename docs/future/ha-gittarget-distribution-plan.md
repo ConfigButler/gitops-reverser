@@ -43,7 +43,7 @@ failover, but the Git write ownership boundary is still process-local.
 All pods can safely serve the audit webhook and append to the same canonical
 audit stream, as long as webhook handling stays a **producer-only** path:
 
-- each pod receives `/audit-webhook` and `/audit-webhook-additional` traffic;
+- each pod receives `/audit-webhook` traffic;
 - each pod performs request decode, validation, audit body joining, and
   canonical event preparation;
 - each pod appends accepted events to the shared Redis/Valkey stream with

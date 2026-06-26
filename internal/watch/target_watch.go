@@ -288,7 +288,7 @@ func (m *Manager) handleTargetWatchSessionEvent(
 	replay *[]manifestanalyzer.DesiredResource,
 ) (bool, error) {
 	if !replaying {
-		return false, m.routeLiveTargetWatchEvent(log, gitDest, key, ops, ev)
+		return false, m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev)
 	}
 	done, rv, err := m.foldTargetReplayEvent(log, gitDest, key, ev, replay)
 	if err != nil || !done {
@@ -370,6 +370,7 @@ func watchListForbidden(err error) bool {
 }
 
 func (m *Manager) routeLiveTargetWatchEvent(
+	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	key targetWatchKey,
@@ -391,6 +392,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 			return nil
 		}
 		event := targetWatchGitEvent(key.GVR, u, op)
+		m.attachAuthor(ctx, &event, key.GVR, u)
 		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
 			log.V(1).Info("target watch route failed",
 				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "err", err.Error())
@@ -400,6 +402,27 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		return fmt.Errorf("target watch error for %s: %v", key.GVR.String(), ev.Object)
 	default:
 		return nil
+	}
+}
+
+// attachAuthor names the commit author for a live watch event from the optional
+// attribution index. The live object still carries its UID and resourceVersion
+// here (sanitize strips them inside targetWatchGitEvent), so the resolver joins on
+// the strongest available key. Committer-only mode (nil resolver) leaves UserInfo
+// zero, so the writer authors the commit as the configured committer.
+func (m *Manager) attachAuthor(
+	ctx context.Context,
+	event *git.Event,
+	gvr schema.GroupVersionResource,
+	u *unstructured.Unstructured,
+) {
+	if m.AuthorResolver == nil {
+		return
+	}
+	if userInfo, ok := m.AuthorResolver.ResolveAuthor(
+		ctx, gvr, u.GetNamespace(), u.GetName(), u.GetUID(), u.GetResourceVersion(),
+	); ok {
+		event.UserInfo = userInfo
 	}
 }
 

@@ -16,7 +16,6 @@ If you only want the supported product docs, start with the files below.
 - [`sops-age-guide.md`](sops-age-guide.md): Secret encryption with SOPS + age
 - [`security-model.md`](security-model.md): controller access, trust boundaries, and the Git
   credentials Secret shape
-- [`aggregated-api-guide.md`](aggregated-api-guide.md): capturing aggregated API server objects
 - [`bi-directional.md`](bi-directional.md): safe shared-path and handoff patterns
 - [`alternatives.md`](alternatives.md): nearby tools and when another approach fits better
 - [`UPGRADING.md`](UPGRADING.md): breaking changes and migration steps, newest first

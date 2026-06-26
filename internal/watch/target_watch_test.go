@@ -34,6 +34,7 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -133,6 +134,7 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 
 	obj := configMapObject("12")
 	err := manager.routeLiveTargetWatchEvent(
+		context.Background(),
 		logr.Discard(),
 		gitDest,
 		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
@@ -162,6 +164,7 @@ func TestRouteLiveTargetWatchEvent_RespectsOperationFilters(t *testing.T) {
 	manager := &Manager{EventRouter: router}
 
 	err := manager.routeLiveTargetWatchEvent(
+		context.Background(),
 		logr.Discard(),
 		gitDest,
 		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
@@ -171,6 +174,37 @@ func TestRouteLiveTargetWatchEvent_RespectsOperationFilters(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Empty(t, enqueuer.events)
+}
+
+func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	enqueuer := &recordingEnqueuer{}
+	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
+	}
+	manager := &Manager{
+		EventRouter: router,
+		AuthorResolver: NewAuthorResolver(
+			&fakeLookup{fact: queue.AuthorFact{Author: "alice", Email: "alice@example.com"}, ok: true, hitAfter: 1},
+			time.Second, SANamePolicyName, logr.Discard(),
+		),
+	}
+
+	err := manager.routeLiveTargetWatchEvent(
+		context.Background(),
+		logr.Discard(),
+		gitDest,
+		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
+		OperationSet{"CREATE": struct{}{}},
+		watch.Event{Type: watch.Added, Object: configMapObject("12")},
+	)
+
+	require.NoError(t, err)
+	require.Len(t, enqueuer.events, 1)
+	assert.Equal(t, "alice", enqueuer.events[0].UserInfo.Username, "a matched audit fact names the commit author")
+	assert.Equal(t, "alice@example.com", enqueuer.events[0].UserInfo.Email)
 }
 
 func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T) {

@@ -2,6 +2,16 @@
 
 > Last updated: June 2026
 
+> **Superseded by watch-first ingestion.** The audit-as-correctness pipeline described in several
+> sections below — the per-type Redis audit streams, the demand gate, the checkpoint + log splice, the
+> materialization phase machine, the audit body joiner, and the `/audit-webhook-additional` endpoint —
+> has been removed. Object state now comes from Kubernetes **watch** (`sendInitialEvents` replay plus a
+> mark-and-sweep on re-establishment); audit is an **optional attribution lookup** that only names the
+> commit author, and with no Redis the product runs committer-only. The authoritative model is
+> [design/watch-first-ingestion-architecture.md](design/watch-first-ingestion-architecture.md). Audit
+> sections here are being reconciled to that model; where this document still describes the retired
+> pipeline, the design record wins.
+
 GitOps Reverser is a Kubernetes operator that observes cluster mutations and writes the resulting
 desired object state to Git. It reverses the traditional GitOps direction: instead of Git driving the
 cluster, the Kubernetes API drives Git. The repository becomes a continuously updated mirror of live
@@ -21,22 +31,29 @@ under [docs/design/](design/) and [docs/finished/](finished/) carry the full rea
 These are the design decisions to keep in your head while reading or changing the code:
 
 **The Kubernetes API is the source of truth.** Git is a materialized mirror of desired state from the
-API. Snapshot and resync paths use live API checkpoints plus the audit log. They never treat Git as
-authority. When a push conflicts with a newer remote commit, the operator fetches the new remote
-state. It resets its local clone, then replays retained writes from the API.
+API. State is ingested by **watch** (`sendInitialEvents` replay plus a mark-and-sweep on watch
+re-establishment); these paths never treat Git as authority. When a push conflicts with a newer remote
+commit, the operator fetches the new remote state. It resets its local clone, then replays retained
+writes from the API.
 
 **Writes are serialized per Git branch.** One [BranchWorker](../internal/git/branch_worker.go) owns
 each `(GitProvider namespace, GitProvider name, branch)` tuple. Multiple `GitTarget`s may share one
 branch. Every write to that branch goes through the worker's single event loop and commit window.
 
-**Audit is the authoritative live event source.** Audit events carry user identity, request intent,
-object identity, and response bodies. Kubernetes watches, informers, and dynamic clients are still
-essential. They support API discovery, type followability, checkpoint fills, rule change resyncs,
-controller caches, duplicate safe queue state, and routing state. They are not the authoritative live
-object change stream.
+**Watch is the authoritative object-state source.** Each `GitTarget` opens one watch per claimed
+`(GVR, scope)`; every Git write derives from persisted state the watch observed. Audit never defines
+*what* changed — it only, optionally, explains *who* caused it.
 
-**Redis/Valkey is the mirror substrate.** It holds audit logs by type, checkpoints, the demand gate,
-and CommitRequest attribution facts. The Git write side consumes those API records.
+**Audit is an optional attribution lookup.** When Redis is configured, kube-apiserver posts audit
+events to `/audit-webhook`; the operator extracts a minimal attribution fact (auditID, user, verb,
+resourceVersion, GVR/namespace/name/UID, status, timestamps) into a Redis attribution index keyed for
+a join, and a resolver attaches the commit author to a watch event by matching a fact within a bounded
+grace window. A missing, late, or absent fact never blocks state capture; it only changes the author.
+
+**Redis/Valkey is optional.** When present it stores two small things: the `(GVR, scope) → RV` watch
+resume cursors and the attribution facts — neither is a correctness input. With no Redis the product
+runs **committer-only**: it mirrors cluster state to Git authored by the configured committer, and
+needs neither Redis nor the audit webhook.
 
 ***
 
@@ -52,19 +69,21 @@ The easy part is "write YAML to Git." The hard parts shape the whole architectur
 
 The solution, in the vocabulary used throughout this document:
 
-* **Audit is the live event source.** The Kubernetes API server posts an [audit
-  webhook](#demand-gated-audit-ingestion) for every mutation, carrying the user, verb, object
-  identity, and (usually) the object body. This is what makes Git writes attributable to a real user.
-* **Each followed type gets its own Redis stream ordered by resource version.** Stream entry IDs use
-  `metadata.resourceVersion`, so every type's log *replays in exact etcd commit order*. This one fact
-  is the backbone of ordering. See [Ordering and Not Losing Events](#ordering-and-not-losing-events).
-* **Ingestion is demand gated.** The webhook only mirrors a type while some `GitTarget` actually
-  claims it, so cost scales with demand, not with cluster type count.
-* **Desired state is a checkpoint + log splice.** For each type, a periodic consistent **LIST** writes
-  a full **checkpoint**, and the always on audit **log** records every mutation after it. A reconcile
-  *splices* the two: checkpoint pinned at revision `R`, plus every log entry after `R`. The checkpoint
-  is the **integrity backstop**. A live event that is missed, dropped, or diverted is recovered by the
-  next checkpoint. A miss costs *latency, not correctness*.
+* **Watch is the only object-state source.** Each `GitTarget` opens one Kubernetes **watch** per
+  claimed `(GVR, scope)` with `sendInitialEvents=true`. The apiserver delivers events already ordered
+  by `resourceVersion` per type, so there is nothing to re-order. Every Git write derives from
+  persisted state the watch observed.
+* **Watches are per `GitTarget` and scaled by claims.** A watch opens only for the
+  claimed ∩ followable `(GVR, scope)` set, so cost scales with what `GitTarget`s actually claim, not
+  with cluster type count.
+* **Resume and recovery have two modes.** A `(GVR, scope) → resourceVersion` resume cursor in Redis (when
+  present) lets a restart resume from the exact point and stream the deltas — including missed
+  `DELETED`s. When the exact RV is gone (compaction → `410 Gone`, cold start, or no Redis), the watch
+  re-opens with `sendInitialEvents=true` and a **mark-and-sweep** over the replay reconciles any object
+  deleted while no watch was running. The sweep fires on watch re-establishment, **never on a timer**.
+* **Audit, when configured, only names the author.** It is an optional attribution lookup; a missing or
+  late fact costs author fidelity, never correctness, and with no Redis the product commits as the
+  configured committer.
 * **One `BranchWorker` per Git branch serializes all writes.** Every write to a branch funnels through
   a single worker and a single commit window, which is what keeps concurrent GitTargets and authors
   from racing each other into a corrupt tree.
@@ -209,100 +228,74 @@ Say a `GitTarget` in namespace `team-a` watches ConfigMaps, and a user runs
 ```mermaid
 flowchart TD
     subgraph K8S["Kubernetes API server"]
-        KAS[Kubernetes API server]
-        AGG[aggregated API servers]
+        WATCH["WATCH + sendInitialEvents replay<br/>(per claimed GVR + scope)"]
         DISC["Discovery: CRDs / APIServices"]
+        AUDIT["/audit-webhook (optional)"]
     end
 
-    subgraph INGRESS["Audit ingress: internal/webhook"]
-        OFF["/audit-webhook"]
-        ADD["/audit-webhook-additional"]
-        JOIN["Joiner: classify, body join, canonical gate"]
-        OFF --> JOIN
-        ADD --> JOIN
+    subgraph PERGT["Per GitTarget: internal/watch + internal/reconcile"]
+        OWN["GitTarget watch set<br/>(claimed ∩ followable (GVR, scope))"]
+        RELEVANCE["Relevance filter<br/>(sanitize · followability · no-op diff)"]
+        RESOLVE["Resolver<br/>(bounded grace window)"]
+        GTES[GitTargetEventStream]
     end
 
-    GATE{"Demand gate:<br/>type claimed?"}
-    DROP["dropped<br/>(outcome metric)"]
-
-    subgraph REDIS["Redis / Valkey: per resource type"]
-        STREAM[("...:audit:stream<br/>RV ordered log")]
-        OBJ[("...:objects:items @ :objects:rv<br/>checkpoint")]
-    end
-
-    subgraph WATCH["Watch manager: internal/watch"]
-        MAT["Materializer<br/>(demand lifecycle)"]
-        CKPT["Checkpoint driver<br/>(periodic LIST)"]
-        TAIL["Audit tail by type<br/>(freshness)"]
-        SPLICE["Splice<br/>checkpoint + log -> desired"]
-        ROUTER["EventRouter"]
+    subgraph ATTR["Attribution (only when Redis present): internal/webhook"]
+        AFACTS["Audit fact extractor"]
+        AINDEX[("Redis attribution index<br/>(TTL, keyed for join)")]
     end
 
     subgraph GIT["Git writes: internal/git"]
-        GTES[GitTargetEventStream]
         BW[BranchWorker]
         PLAN["Manifest aware plan/flush"]
         PUSH["Atomic push"]
     end
 
-    KAS -->|audit EventList| OFF
-    AGG -->|shallow audit| OFF
-    AGG -.->|full bodies| ADD
-    JOIN --> GATE
-    GATE -->|allowed| STREAM
-    GATE -->|not needed| DROP
-
-    DISC --> MAT
-    MAT -->|opens gate per claimed type| GATE
-    MAT --> CKPT
-    CKPT --> OBJ
-    STREAM --> TAIL
-    OBJ --> SPLICE
-    STREAM --> SPLICE
-    TAIL --> ROUTER
-    SPLICE --> ROUTER
-    ROUTER --> GTES
+    DISC --> OWN
+    WATCH --> OWN
+    OWN --> RELEVANCE
+    RELEVANCE --> RESOLVE
+    RESOLVE --> GTES
     GTES --> BW
     BW --> PLAN
     PLAN --> PUSH
+
+    AUDIT -. configured .-> AFACTS
+    AFACTS --> AINDEX
+    AINDEX -. lookup .-> RESOLVE
 ```
 
-The diagram has two cooperating halves: **ingest** (top: webhook → gate → stream by type) and
-**materialize** (bottom: checkpoint + log → desired state → Git). Following the ConfigMap edit:
+Following the ConfigMap edit:
 
-1. **Audit.** The API server applies the change, bumps the object's `resourceVersion`, and POSTs an
-   audit `EventList` to `/audit-webhook`.
-2. **Filter.** [AuditHandler](../internal/webhook/audit_handler.go) decodes it and keeps it. It is a
-   `ResponseComplete`, mutating verb, with a changed RV and a body. (Events that can never become a
-   Git write are dropped here: stages other than `ResponseComplete`, read only verbs, failures, dry
-   runs, no op updates where request RV == response RV, and unsupported subresources.)
-3. **Join.** [AuditJoiner](../internal/webhook/audit_joiner.go) sees a body rich event and emits it
-   as is. (For aggregated APIs whose official event is *shallow*, it would instead wait briefly for a
-   matching body on `/audit-webhook-additional` and join them by `auditID`.)
-4. **Gate.** The [demand gate](../internal/gate/gate.go) is asked "does anyone claim
-   `core/configmaps`?" Our GitTarget does, so the event is allowed. (If nobody claimed it, it would be
-   dropped as `not_needed`.)
-5. **Mirror.** [RedisByTypeStreamQueue](../internal/queue/redis_bytype_queue.go) appends it to
-   `gitops-reverser:core:configmaps:audit:stream` with ID `<resourceVersion>-<subseq>`, keeping that
-   type's log in etcd commit order.
-6. **Freshness.** The [audit tail](../internal/watch/audit_tail.go) for the type wakes, applies the
-   change as an upsert, and fans it out to every GitTarget whose watched type table covers ConfigMaps
-   in `team-a`.
-7. **Route + window.** [EventRouter](../internal/watch/event_router.go) hands it to the
+1. **Watch delivers it.** The API server applies the change and bumps the object's `resourceVersion`.
+   The `GitTarget`'s watch on `core/configmaps` in `team-a` delivers a `MODIFIED` event carrying the
+   new object body. (On a cold start or after `410 Gone`, the same object instead arrives as an `ADDED`
+   during the `sendInitialEvents` replay.)
+2. **Relevance filter.** The event is sanitized (status, managedFields, and volatile metadata
+   stripped), checked for followability, and diffed against current Git content. A no-op (e.g. a
+   `*/status` bump whose desired-state projection is unchanged) is dropped here.
+3. **Resolve the author.** When Redis is present, the resolver waits a bounded grace window
+   (`--attribution-grace`, default `3s`) for a matching audit fact in the attribution index, joining by
+   resourceVersion/UID. On a strong match the real user or named service account becomes the author;
+   otherwise (no Redis, no match, or expiry) the commit is authored by the configured committer.
+4. **Route + window.** The event flows into the
    [GitTargetEventStream](../internal/reconcile/git_target_event_stream.go), and the
    [BranchWorker](../internal/git/branch_worker.go) appends it to the open commit window for
    `(author, GitTarget)`.
-8. **Commit + push.** When the window closes (5s of silence, a `CommitRequest`, or a buffer limit),
-   the manifest aware writer patches `team-a/.../app-config.yaml` in place, commits as the original
-   user, and pushes via [PushAtomic](../internal/git/git_atomic_push.go) (retrying with fetch/reset/
+5. **Commit + push.** When the window closes (5s of silence, a `CommitRequest`, or a buffer limit),
+   the manifest aware writer patches `team-a/.../app-config.yaml` in place, commits as the resolved
+   author, and pushes via [PushAtomic](../internal/git/git_atomic_push.go) (retrying with fetch/reset/
    replay if the remote moved).
 
-**And if step 5 or 6 had failed?** Suppose the event arrived out of order and was *diverted*, or
-demand opened a beat too late and it was dropped. The new ConfigMap state is still captured at the
-next periodic **checkpoint LIST**: the [splice](#splice-the-desired-set) reads checkpoint + log, a
-mark and sweep reconcile rewrites the subtree, and Git converges. The live
-path is for *latency*; the checkpoint is for *correctness*. This split is the spine of the next
-section.
+Separately, the audit path (only when Redis is configured): kube-apiserver POSTs audit events to
+`/audit-webhook`; [AuditHandler](../internal/webhook/audit_handler.go) extracts a minimal attribution
+fact and writes it to the Redis attribution index with a short TTL. That index is read only by the
+resolver in step 3; it never creates or repairs object state.
+
+**And if the watch had been lost?** A delete that happened while no watch was running is reconciled on
+the next watch (re)connect: a Mode-A resume from the exact RV cursor streams the missed `DELETED`s, and
+when the RV is gone a Mode-B `sendInitialEvents` replay plus **mark-and-sweep** reconciles them — see
+[Resume and Recovery](#resume-and-recovery). No path silently drops a delete.
 
 ***
 
@@ -329,162 +322,110 @@ in [Git Write Architecture](#git-write-architecture).
 
 ***
 
-## Ordering and Not Losing Events
+## State Ingestion and Not Losing Deletes
 
-This is the heart of the system. The guarantee is **layered: ordering is enforced structurally,
-integrity is guaranteed by the checkpoint, and freshness is best effort on top.** A lost live event
-costs freshness, never integrity.
+This is the heart of the system. Object state is ingested by **watch**, and the guarantee is: every
+persisted mutation observed while watching reaches Git, and no delete is ever silently dropped across a
+gap.
 
-### Per type streams ordered by resource version
+### Watch is already ordered by resource version
 
-Every followed type gets its own Redis stream at
-`<prefix>:<group-or-core>:<resource>:audit:stream` (default prefix `gitops-reverser`; the core group
-renders as `core`). Each accepted event is one entry whose ID is `<resourceVersion>-<subseq>`. Because
-Redis stream IDs are compared as two 64 bit integers, the stream **replays in exact etcd commit order**
-with no string/decimal RV gymnastics. The high water mark and counters by type live in a companion
-`…:audit:idstate` hash; a `<prefix>:__index__` set lists every active base key so the keyspace can be
-enumerated without `SCAN`. Ordering is a property of the RV keying in Redis, not of any in process
-lock. So it holds across pods.
+The apiserver delivers a watch's events already ordered by `resourceVersion` per type, so there is
+**nothing to re-order**: a `MODIFIED` always lands after the create it modifies. Each event carries
+GVR, scope, event type (`ADDED` / `MODIFIED` / `DELETED`, plus the transport `BOOKMARK` and `ERROR`),
+namespace/name/UID/resourceVersion/generation/deletionTimestamp, and the sanitized object body. The
+`initial-events-end` bookmark marks the end of a replay, bookmark RVs advance the resume cursor, and an
+`ERROR` such as `410 Gone` triggers a fresh `sendInitialEvents` reconnect.
 
-### Divert: a late event is rejected, never forced in
+### Resume and Recovery
 
-When an event's RV is **strictly below the stream's high water mark**, forcing it in would corrupt the
-replay order. Instead it is **diverted**:
+Losing a watch (pod eviction, rollout, crash, `410 Gone`) is normal; there are exactly two resume modes.
 
-* it is **rejected from the main stream** (Redis returns the "equal or smaller" error on `XADD`);
-* its outcome is recorded (`older_than_high_water`, or `non_numeric_rv` for aggregated API RVs that
-  are not monotonic integers);
-* a `lateNotify` nudge fires so the Materializer can pull the next checkpoint forward;
-* when the opt in `diag_all` firehose is enabled, the full payload is captured there for diagnosis.
+**Mode A — resume from the exact point (preferred).** A `(GVR, scope) → last resourceVersion` cursor is
+persisted to Redis as events arrive and kept fresh with bookmarks even when the type is quiet. On
+restart the watch re-opens *from that RV* — a plain delta watch, no replay. If the apiserver still holds
+that RV, it streams every event since, **including the `DELETED`s missed while away**, and the operator
+simply continues.
 
-Diverted events are represented by their outcome, the `lateNotify` nudge, and optional diagnostic
-firehose records. They are not replayed as authoritative object changes because the checkpoint heals
-the gap (below). A divert costs freshness until the next checkpoint, not integrity.
+**Mode B — replay with mark-and-sweep (the correctness fallback).** If the exact RV is gone (compacted →
+`410 Gone`, no cursor, no Redis, or a cold start), a delta is untrustworthy — objects may have been
+deleted while away. So the watch opens with `sendInitialEvents=true` and runs a **mark-and-sweep**:
+every replayed object is marked `ADDED` up to `initial-events-end`; at the bookmark, any Git file whose
+object was *not* marked no longer exists and a `DELETED` is emitted for it (committer-authored); then it
+streams live. **This mark-and-sweep is load-bearing and fires only on watch re-establishment, never on a
+timer** — there is no periodic LIST or hourly drift sweep.
 
-### Events without RV and the empty stream guard
+### Relevance filtering is product code
 
-Some events carry no usable RV (certain GC / aggregated API deletes). If the stream already has a
-high water mark, an event without RV **attaches to it** (`attached-to-last-rv`) so it applies after
-everything known. If the stream is **empty**, the event without RV is dropped as a no op
-(`rv_less_empty_high_water`): there is nothing in the mirror for it to act on and the checkpoint is the
-backstop. This guard is what keeps a freshly claimed type's divert metric quiet.
+Watch has no audit policy, so it delivers every persisted `MODIFIED`, including status churn the old
+cluster audit policy dropped at the source. The relevance filter reproduces that filter in product code,
+on the hot path:
 
-### The checkpoint is the integrity backstop
+* **Sanitization** ([internal/sanitize](../internal/sanitize/)) strips status, managedFields, and
+  volatile metadata before diffing, so runtime churn never masquerades as a desired-state change.
+* **Followability** ([internal/typeset](../internal/typeset/)) encodes "controller-owned → don't
+  mirror."
+* **No-op suppression.** A `*/status` write bumps `resourceVersion` but its sanitized projection equals
+  the prior commit; the writer diffs it to a no-op and discards it.
 
-This is the single most important invariant, referenced from everywhere else. Desired state for a
-reconcile is a **splice**. It reads the type's checkpoint pinned at revision `R`. Then it folds in
-every audit log entry strictly after `R`. A **missing checkpoint fails closed**. The splice errors and
-the reconcile *holds* rather than sweeping a target against an empty desired set. An empty desired set is
-authoritative **only because the checkpoint completed**. So even if the live log dropped, diverted, or
-never received an event, the next checkpoint LIST observes the true cluster state and the mark and sweep
-reconcile converges Git to it.
+### History granularity
 
-### Freshness is sweep free
-
-Between checkpoints, the audit tail for the type applies each new entry as an **upsert or delete only**.
-It never sweeps. Because of that, it can never delete an object whose `create` is still in flight.
-Partial bursts are made safe by construction rather than by a settle timer. Each `(GitTarget, type)`
-has a **coverage watermark** `Hc`. It is a full `<rv>-<seq>` stream position, not a bare RV. It gates which tail
-entries are "live" (strictly after the last reconcile) versus already covered by a splice. It advances
-monotonically and is published only after a resync is actually enqueued.
-
-### The demand gate is best effort by design
-
-The gate (a shared Redis SET, detailed [below](#demand-gated-audit-ingestion)) is intentionally *not* a
-synchronous lock, because it does not need to be: mirroring a type slightly **too early** is free (the
-extra entries trim away at the next checkpoint), and slightly **too late** can miss an event, but the
-next checkpoint LIST heals it. Demand is opened **synchronously when a GitTarget declares a type**, not
-deferred to an async hop. That is what stops the first event after a claim from being lost.
-
-### The canonical gate (per pod official ordering)
-
-A small in pod mutex serializes official source `ResponseComplete` events while an earlier shallow
-official event waits for its supplementary body, so within a pod official events keep their arrival
-order. It is **not** a cross pod ordering guarantee. Cross stream order is the RV keying above.
+Watch carries only the versions it observes. While connected it sees each `MODIFIED`; across a replay
+after `410`, a compaction, or downtime it **collapses every intermediate version into current state**.
+Watch-first is therefore a *state mirror with opportunistic per-mutation history*, not a guaranteed
+per-mutation change log.
 
 ### Observability
 
-Every decoded event is recorded exactly once on
-`gitopsreverser_audit_events_total{outcome, category, group, version, resource, verb}` by the layer
-that terminates it (see [internal/audit/outcome/](../internal/audit/outcome/outcome.go)). Outcomes are
-`Stored` (queued), `Held` (parked body), `Dropped` (with a precise reason such as `not_needed`,
-`older_than_high_water`, `dry_run`, `unchanged_resource_version`, `shallow_dropped`), or `Error`. An
-opt in `diag_all` firehose and the debug stream can capture full payloads when chasing a specific
-failure.
+Watch volume, drops, restarts, and replay cost are exported by GVR/scope (see the
+[watch-first design metrics](design/watch-first-ingestion-architecture.md#metrics)), so a mis-tuned
+relevance filter is visible rather than silently dropping intent.
 
 ***
 
-## Demand Gated Audit Ingestion
+## Optional Attribution
 
-* **Handler**: [internal/webhook/audit_handler.go](../internal/webhook/audit_handler.go)
-* **Joiner**: [internal/webhook/audit_joiner.go](../internal/webhook/audit_joiner.go)
-* **Queue by type**: [internal/queue/redis_bytype_queue.go](../internal/queue/redis_bytype_queue.go)
-* **Demand gate**: [internal/gate/gate.go](../internal/gate/gate.go)
+* **Handler / fact extractor**: [internal/webhook/audit_handler.go](../internal/webhook/audit_handler.go)
+* **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
+* **Resolver (grace window join)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
 
-The Kubernetes API server can POST audit `EventList` payloads to an external HTTP endpoint. The
-operator cannot configure that policy itself; it only receives what the cluster sends. Two endpoints
-encode the source role:
+Attribution runs **only when Redis is configured**. The Kubernetes API server POSTs audit `EventList`
+payloads to a **single** HTTP endpoint, `/audit-webhook`; there is no supplementary body endpoint and no
+body joiner, because watch — not audit — carries the object body. The handler extracts a minimal
+attribution fact and writes it to a Redis attribution index with a short TTL.
 
 | Endpoint | Role |
 |---|---|
-| `/audit-webhook` | Canonical source, normally the Kubernetes API server |
-| `/audit-webhook-additional` | Supplementary body source for matching `auditID`s |
+| `/audit-webhook` | Audit source (kube-apiserver) for the optional attribution index |
 
-The additional endpoint exists for aggregated API paths where the Kubernetes API server's own audit events
-are *shallow* (identity present, body absent), so the full body arrives on a second channel and is
-joined by `auditID`. Cluster ID path segments are rejected; multi cluster routing is not modeled yet.
+Cluster ID path segments are rejected; multi cluster routing is not modeled yet.
 
-### Joiner Behavior
+### Attribution fact shape
 
-The joiner classifies audit shape and joins bodies across the two sources:
+The fact is the smallest thing needed to name an author, not an object log:
 
-* body rich official events emit as is (a parked additional body can fill missing fields);
-* bodyless single object deletes with a complete `objectRef` emit as deletable deletes;
-* `deletecollection` events emit as collection facts. Identity is the `objectRef`, the body is never
-  consumed, and item removals are reconciled by the checkpoint sweep;
-* identity shallow official events wait up to `--audit-event-body-wait` (default `500ms`) for a body,
-  then drop if none arrives;
-* additional events with no body are dropped as malformed; other additional bodies park for their
-  `auditID`.
-
-The joiner uses one Redis key family:
-
-| Key | Purpose | Default TTL |
-|---|---|---|
-| `audit:body:v1:<auditID>` | parked additional body | `5m` |
-
-### The Demand Gate
-
-The gate is a shared Redis SET (`<prefix>:__required__`) of claimed type keys, fanned out to every
-ingest pod by a tiny ping STREAM (`…:__required__:updates`). Each pod keeps a local copy. It seeds
-with `SMEMBERS`, wakes on the ping, and slow polls as a backstop. The hot path
-`Allow(group, resource)` is an in memory lookup with no Redis round trip for each event. `SADD` is
-idempotent, so a transient `SADD`/`SREM` disagreement between pods resolves to harmless over capture
-or a checkpoint healed miss. See [the best effort posture above](#the-demand-gate-is-best-effort-by-design).
-
-### Redis Key Families
-
-Per type, base key `<prefix>:<group-or-core>:<resource>`:
-
-| Key | Purpose |
+| Field | Purpose |
 |---|---|
-| `…:audit:stream` | RV ordered audit log, IDs `<resourceVersion>-<subseq>` |
-| `…:audit:idstate` | high water mark + counters by type (main / diverted / rv missing) |
-| `…:objects:items` @ `…:objects:rv` | latest checkpoint contents + its revision |
-| `…:objects:state` | durable phase + full GVR for restart restore |
+| `auditID` | diagnostics / dedupe |
+| `user` / `impersonatedUser` | author candidate (human *or* service account) |
+| `verb`, `subresource` | explain the write |
+| `responseStatus.code`, `dryRun` | reject failures and non-persistent requests |
+| GVR, namespace, name, UID | exact join keys |
+| response object resourceVersion | exact watch-event match |
+| request/stage timestamps | bounded time matching |
 
-Global (under the prefix):
+The index is keyed for the join (strongest first: exact `(GVR, ns, name, uid, responseRV)`, then UID,
+then RV, then a weak time bucket). Retention is bounded by max audit delay plus the attribution grace
+period — minutes, not hours — because watch owns state and old facts are never needed for correctness.
 
-| Key | Purpose |
-|---|---|
-| `<prefix>:__index__` | set of all active base keys (enumerate without `SCAN`) |
-| `<prefix>:__required__` (+ `…:updates`) | demand gate set + ping stream |
-| `<prefix>:diag_all` | opt in diagnostic firehose (off by default) |
-| `<prefix>:commitrequests:authors:<id>` | CommitRequest author facts that survive diverts |
+### The resolver and its grace window
 
-A dedicated reader client (large connection pool) serves the blocking tails by type, kept separate
-from the mirror writer's client so dozens of parked `XREAD`s (a wildcard GitTarget follows many types)
-never starve the writes.
+A watch event waits a **bounded grace window** (`--attribution-grace`, default `3s`) for a matching fact
+to arrive, then ships regardless. On a strong match the real user or named service account becomes the
+author; the service-account naming policy (`--attribution-sa-naming`: `name` | `bot`) controls how a
+matched service account is named. A weak, conflicting, failed, dry-run, or absent fact resolves to the
+committer. A late fact that arrives after a commit has shipped **never rewrites it**. With no Redis the
+resolver is skipped entirely and every commit is committer-authored.
 
 ***
 
@@ -530,90 +471,61 @@ claimed**.
 
 A projection for each `GitTarget` from the type registry, filtered by that target's rules, recording resolved
 GVK/GVR/scope plus namespace and operation coverage. **This is where rule matching effectively
-happens:** ingestion mirrors per type for *anyone* who claims it, and the watched type table scopes
-each type back to specific GitTargets and namespaces at read time. It feeds three consumers:
+happens:** it resolves the set of `(GVR, scope)` a `GitTarget` claims, so the watch manager opens one
+watch per claimed ∩ followable `(GVR, scope)` and scopes each watch's events back to that GitTarget's
+namespaces. It feeds two consumers:
 
-* the demand `Declare`, the set of types the GitTarget claims for materialization;
-* the splice namespace scope by type, which of a type's objects this GitTarget mirrors;
-* the audit tail fan out by type, which GitTargets a live event routes to.
+* the set of `(GVR, scope)` the GitTarget claims, which the watch manager opens watches for;
+* the namespace scope per type, which of a type's objects this GitTarget mirrors.
 
 ***
 
-## Demand Driven Materialization and Reconcile
+## Watch Ingestion and Reconcile
 
-Desired state comes from a **checkpoint + audit log splice** by type. The checkpoint is filled from
-the live API, the audit log supplies the ordered changes after that checkpoint, and the worker applies
-the result as a type scoped mark and sweep reconcile. Full picture:
-[design/stream/architecture-and-bootstrap.md](design/stream/architecture-and-bootstrap.md),
-[finished/api-source-of-truth-reconcile.md](finished/api-source-of-truth-reconcile.md), and
-[finished/demand-driven-type-materialization-lifecycle.md](finished/demand-driven-type-materialization-lifecycle.md).
+Desired state comes from one **raw watch per `(GitTarget, GVR, scope)`**. Each event is sanitized,
+diffed against current Git content, and applied — there is no separate per-type object store to
+reconstruct, because Git already holds current state. The authoritative model is
+[design/watch-first-ingestion-architecture.md](design/watch-first-ingestion-architecture.md).
 
 * **Manager**: [internal/watch/manager.go](../internal/watch/manager.go)
-* **Materialization lifecycle**: [internal/watch/materialization.go](../internal/watch/materialization.go)
-* **Checkpoint fill (LIST)**: [internal/watch/type_objects_mirror.go](../internal/watch/type_objects_mirror.go)
-* **Audit tail by type**: [internal/watch/audit_tail.go](../internal/watch/audit_tail.go)
-* **Coverage watermark**: [internal/watch/target_type_watermark.go](../internal/watch/target_type_watermark.go)
-* **Splice (checkpoint + log → desired)**: [internal/queue/redis_type_splice.go](../internal/queue/redis_type_splice.go)
-* **Router**: [internal/watch/event_router.go](../internal/watch/event_router.go)
-* **Worker resync apply**: [internal/git/resync_flush.go](../internal/git/resync_flush.go)
+* **Watch / replay / resume**: [internal/watch/target_watch.go](../internal/watch/target_watch.go)
+* **Author resolver (attribution join + grace window)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
+* **Event router**: [internal/watch/event_router.go](../internal/watch/event_router.go)
+* **Worker resync apply (mark-and-sweep)**: [internal/git/resync_flush.go](../internal/git/resync_flush.go)
 
 ### The Watch Manager
 
 The watch manager is a controller runtime `Runnable` (`NeedLeaderElection`). It owns **type level**
-discovery, the demand `Materializer`, the checkpoint driver, the audit tails by type, the splicer,
-and the watched type tables for GitTargets. Its only always on resource intake is the audit webhook
-push; its scheduled API touch is the brief checkpoint LIST. Its watches/informers track the API
-surface itself (CRDs / APIServices) rather than every object instance of every followed type.
+discovery, the per-GitTarget watch sets, the `(GVR, scope) → RV` resume cursors, and the watched type
+tables for GitTargets. Its object-state intake is the watches themselves; its discovery
+watches/informers track the API surface (CRDs / APIServices) rather than driving object state.
 
-On `Start` it bootstraps the RuleStore from existing rules, replays durable checkpoints into the
-Materializer (so a restart resumes serving without listing again), refreshes the API catalog, updates the
-TypeRegistry, builds watched type tables, runs an initial reconcile, then services periodic reconciles
-plus CRD/APIService triggers and a ~hourly materialization sweep.
+On `Start` it bootstraps the RuleStore from existing rules, refreshes the API catalog, updates the
+TypeRegistry, builds watched type tables, and opens one watch per claimed ∩ followable `(GVR, scope)`,
+resuming from the Redis RV cursor when present or replaying from current state when not.
 
-### Materialization Lifecycle
+### Opening and resuming watches
 
-Materialization is the second axis (demand) layered on followability. A type a GitTarget claims moves
-`Dormant → Requested → Syncing → Synced`, then refreshes via `Synced ⇄ Resyncing`, with `Failing` when
-a checkpoint sync errors and a durable `removed` state when fully released.
+On each GitTarget reconcile the controller resolves the GitTarget's claimed ∩ followable `(GVR, scope)`
+set. Fully specified GVRs are claimed unconditionally; wildcard rules and rules without a version are
+resolved fail closed against discovery. For each `(GVR, scope)` the manager opens one watch:
 
-* **Declare.** On each GitTarget reconcile the controller declares the GitTarget's complete
-  watched type set again. Fully specified GVRs are claimed unconditionally; wildcard rules and rules
-  without a version are resolved fail closed against discovery. Declaring a type **synchronously opens the demand gate** for
-  it (mirroring starts before any event can arrive), claims it in the Materializer, and renews the
-  GitTarget's claim lease.
-* **Sweep.** A ~hourly ticker anchors claimed and Synced types again (requesting a fresh checkpoint), GCs
-  aged out leases, and releases types no longer claimed. The sweep interval *is* the release grace. A
-  healthy GitTarget reconciles far more often, so it always renews in time.
-* **Durable state.** `…:objects:state` stores phase + full GVR. On boot the composition root reads it
-  via `LoadSyncedCheckpoints` and `RestoreSyncedCheckpoint`s each type, so a restart serves the prior
-  checkpoint immediately.
+* **Mode A** resumes from the persisted `(GVR, scope) → resourceVersion` cursor (a delta watch that
+  carries any missed `DELETED`s);
+* **Mode B** opens with `sendInitialEvents=true` and runs a mark-and-sweep when the exact RV is gone
+  (compaction, cold start, or no Redis).
 
-### Checkpoint Fill (the consistent LIST)
-
-For a claimed type the driver fills a checkpoint with a streaming list watch
-(`sendInitialEvents=true`, `resourceVersionMatch=NotOlderThan`, `allowWatchBookmarks=true`), folding
-initial `ADDED` events until the initial events end bookmark pins the checkpoint revision; it falls
-back to a consistent LIST for servers that cannot stream. Results are sanitized, wrapped in an
-identity/RV envelope, and written to `…:objects:items` @ `…:objects:rv`. After a successful fill the
-audit log is trimmed below the checkpoint revision (the trim cursor).
-
-### Splice (the desired set)
-
-A reconcile asks the splice for the complete desired set: it reads the checkpoint at revision `R`,
-`XRANGE`s the audit log `(R, +]`, and folds each entry. Delete drops an identity. Any mutating verb
-upserts it. Last writer wins by stream order. The result is scoped to the GitTarget's namespaces and
-projected into desired resources. The splice **holds (fails closed)** unless the type's phase is
-`Synced`, so a reconcile never sweeps against a partial or missing checkpoint. It also returns the
-**coverage head** `Hc` (the last folded stream position) used to gate the audit tail.
+See [Resume and Recovery](#resume-and-recovery). There is **no periodic LIST, no checkpoint, and no
+timer-driven drift sweep** — the sweep fires only on watch re-establishment.
 
 ### Rule Change Reconcile
 
 A WatchRule / ClusterWatchRule / GitTarget / CRD / APIService change reaches a GitTarget through the
 **GitTarget controller**, which `Watches` those objects (generation change predicates) and queues
-the affected GitTarget again. On reconcile the GitTarget declares its watched type set again; a type a new
-rule starts watching is claimed, gated, checkpointed, and backfilled through the splice.
-`Manager.ReconcileForRuleChange` itself now only refreshes the API catalog and the watched type
-tables. It does not gather a whole GitTarget snapshot.
+the affected GitTarget again. On reconcile the GitTarget resolves its claimed `(GVR, scope)` set again;
+a type a new rule starts watching gets a new watch opened (with a `sendInitialEvents` replay) and a type
+no longer claimed has its watch closed. `Manager.ReconcileForRuleChange` itself refreshes the API
+catalog and the watched type tables.
 
 ### Mark and Sweep Resync
 
@@ -626,8 +538,9 @@ The BranchWorker applies a reconcile by scanning the GitTarget subtree and build
 * nothing is committed if the apply cannot complete safely.
 
 A reconcile can be **type scoped** (`ScopeGVR`): the sweep is restricted to one `(group, resource)`, so
-anchoring one type again never disturbs another's manifests. As established above, an empty desired set is
-authoritative only because the checkpoint completed for that type.
+anchoring one type again never disturbs another's manifests. The desired set for the sweep is the
+`sendInitialEvents` replay (everything marked `ADDED` up to `initial-events-end`), so a delete is
+reconciled only after the replay completes — see [Resume and Recovery](#resume-and-recovery).
 
 ***
 
@@ -711,28 +624,29 @@ current location instead of recomputing placement. Future placement policy is tr
 ## CommitRequest Finalize
 
 * **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
-* **Author attribution**: [internal/queue/commitrequest_author.go](../internal/queue/commitrequest_author.go)
-* **Design**: [design/stream/commitrequest-design.md](design/stream/commitrequest-design.md),
-  [finished/commitrequest-attribution-divert-reliability.md](finished/commitrequest-attribution-divert-reliability.md)
+* **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
+* **Design**: [design/stream/commitrequest-design.md](design/stream/commitrequest-design.md)
 
-A `CommitRequest` finalizes the open commit window for its GitTarget. The flow is ordered so the
-request always lands *after* the user mutations it is meant to capture:
+A `CommitRequest` finalizes the open commit window for its GitTarget. With Redis the request is
+attributed to its submitter from an audit fact; with no Redis it **finalizes as the committer** with a
+status note that finalization happened without end-user attribution — a missing Redis/audit never fails
+the request:
 
-1. The controller stamps `WaitingForAuditEvent` and waits for the CommitRequest's own create audit
-   event to be **attributed** to an author (up to a 60s timeout that fails closed).
-2. Author attribution is written at ingestion into a **dedicated store that survives diverts**
-   (`<prefix>:commitrequests:authors:<id>`, 10m TTL). It is deliberately separate from the ordered stream by type
-   stream so attribution survives demand gating and RV diverts.
-3. Once attributed, the controller eagerly **attaches** the request to the worker
-   (`AttachCommitRequest`), anchoring the finalize at `receipt + delaySeconds`. The worker binds it to
-   an open window only when author and GitTarget match. It **never finalizes another author's
-   window**; a window carries at most one request.
-4. The window finalizes on the deadline (or when it closes for any other reason). If a finalize closes
+1. The controller stamps `WaitingForAuditEvent`. When attribution is available it waits briefly for a
+   matching audit fact (bounded, fails *to committer* not closed); with no Redis it proceeds as the
+   committer immediately.
+2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), anchoring the
+   finalize at `receipt + delaySeconds`. The worker binds it to an open window only when author and
+   GitTarget match. It **never finalizes another author's window**; a window carries at most one
+   request.
+3. The window finalizes on the deadline (or when it closes for any other reason). If a finalize closes
    an open window, the worker always schedules a push, so a window closed by an otherwise no op resync
    is not stranded.
-5. Outcomes resolve on push: `Committed` carries the pushed `branch`/`sha`; `Rejected` carries a
-   structured reason; `Failed` carries a message (e.g. attribution that never arrived). There is no
-   watermark barrier in this path.
+4. Outcomes resolve on push: `Committed` carries the pushed `branch`/`sha`; `Rejected` carries a
+   structured reason; `Failed` carries a message. There is no watermark barrier in this path.
+
+The CommitRequest submitter is not recoverable from object state alone, so without an audit fact the
+finalize is committer-authored.
 
 ***
 
@@ -741,8 +655,8 @@ request always lands *after* the user mutations it is meant to capture:
 Controllers watch their dependencies so dependents reconcile quickly after spec changes:
 
 * `GitTargetReconciler` watches `GitProvider`, `WatchRule`, `ClusterWatchRule`, and the encryption
-  `Secret`; it Declares the GitTarget's demand and derives the `Synced` condition + materialization
-  summary.
+  `Secret`; it resolves the GitTarget's claimed `(GVR, scope)` watch set and derives the `Synced`
+  condition + materialization summary.
 * `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate
   the RuleStore, and trigger `ReconcileForRuleChange`.
 * `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
@@ -750,7 +664,7 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
 
 Dependency watches use generation change predicates to avoid queueing again on status only heartbeats.
 `GitProvider`, `GitTarget`, and `CommitRequest` carry immutability constraints where a spec change
-would invalidate materialized state or delayed audit behavior.
+would orphan a materialized subtree or invalidate an in-flight finalize.
 
 ***
 
@@ -766,19 +680,20 @@ flowchart TD
     D --> E[Create WorkerManager + register Runnable]
     E --> F[Create Watch Manager + EventRouter; inject TypeRegistry]
     F --> G[Register WatchRule + ClusterWatchRule controllers]
-    G --> H[Create queue by type, objects snapshot, demand gate, splicer, tail reader]
-    H --> I[Wire watchMgr: MirrorGate, AuditLogTrimmer, AuditKeyDeleter, TypeSplicer, AuditTailReader, LateEventNotifier]
-    I --> J[Restore durable checkpoints into Materializer]
-    J --> K[Create joiner + audit HTTP server]
-    K --> L[Setup + register Watch Manager]
-    L --> M[Register GitProvider + GitTarget + CommitRequest controllers]
-    M --> N[Add cert watchers + demand gate subscriber + Redis readiness gate + health checks]
-    N --> O[mgr.Start]
+    G --> H{Redis configured?}
+    H -->|yes| I[Create attribution index + audit fact extractor + audit HTTP server]
+    H -->|no| J[Committer-only: skip audit webhook + attribution]
+    I --> K[Setup + register Watch Manager]
+    J --> K
+    K --> L[Register GitProvider + GitTarget + CommitRequest controllers]
+    L --> M[Add cert watchers + health checks]
+    M --> N[mgr.Start]
 ```
 
-The audit HTTP handler is wired with the queue by type (mirror), the demand gate (`MirrorGate`), the
-joiner, the optional debug queue, and the CommitRequest author capturer. `/readyz` gates on a healthy
-audit ingress and a pingable Redis connection before the pod reports ready.
+When Redis is configured, the audit HTTP handler is wired with the attribution fact extractor and the
+Redis attribution index; the resolver reads that index during the bounded grace window. With no Redis
+the audit webhook and attribution are skipped entirely and every commit is committer-authored. `/readyz`
+gates on a healthy audit ingress (when enabled) before the pod reports ready.
 
 ***
 
@@ -790,8 +705,8 @@ Current limitations:
   unfinished (prep in [design/stream/ha-improvements.md](design/stream/ha-improvements.md));
 * no pull request creation; the operator writes directly to branches;
 * no multi cluster routing or file identity;
-* `deletecollection` reaches the audit stream and is reconciled by the checkpoint sweep, but does not
-  yet fan out per item on the live path;
+* `deletecollection` is reconciled by the watch (each item arrives as its own `DELETED`, or the
+  mark-and-sweep reconciles them on replay);
 * new file placement is based on the canonical path, not user configurable.
 
 ***
@@ -802,16 +717,14 @@ Current limitations:
 |---|---|
 | [api/v1alpha2/](../api/v1alpha2/) | CRD types |
 | [cmd/](../cmd/) | operator entry point and server setup |
-| [internal/audit/outcome/](../internal/audit/outcome/) | ingestion outcome classification for each event + the `audit_events_total` metric |
-| [internal/auditutil/](../internal/auditutil/) | audit identity, objectRef, and subresource helpers |
+| [internal/auditutil/](../internal/auditutil/) | audit identity, objectRef, and subresource helpers feeding attribution facts |
 | [internal/controller/](../internal/controller/) | Kubernetes reconcilers |
-| [internal/gate/](../internal/gate/) | demand gate (shared required types set + ping stream) |
 | [internal/git/](../internal/git/) | branch workers, Git ops, commit/signing/encryption, manifest writer |
 | [internal/git/manifestedit/](../internal/git/manifestedit/) | YAML document editor |
 | [internal/giteaclient/](../internal/giteaclient/) | Gitea helper client |
 | [internal/manifestanalyzer/](../internal/manifestanalyzer/) | manifest inventory, acceptance, and resync planning |
 | [internal/manifestreport/](../internal/manifestreport/) | projection of Kubernetes objects into comparable manifest reports |
-| [internal/queue/](../internal/queue/) | RV streams by type, objects snapshot/checkpoint, splice reader, CommitRequest author store, debug queue |
+| [internal/queue/](../internal/queue/) | Redis attribution index (audit facts keyed for the join) and the `(GVR, scope) → RV` resume cursors |
 | [internal/reconcile/](../internal/reconcile/) | event stream state for each GitTarget |
 | [internal/rulestore/](../internal/rulestore/) | compiled rule cache |
 | [internal/sanitize/](../internal/sanitize/) | Kubernetes object sanitization and stable YAML marshal |
@@ -819,9 +732,9 @@ Current limitations:
 | [internal/sshsig/](../internal/sshsig/) | SSH signature implementation |
 | [internal/telemetry/](../internal/telemetry/) | metrics and OTLP setup |
 | [internal/types/](../internal/types/) | shared resource identity/reference and sensitivity policy |
-| [internal/typeset/](../internal/typeset/) | type followability registry, lookup model, and the demand Materializer |
-| [internal/watch/](../internal/watch/) | discovery catalog, watch manager, materialization lifecycle, checkpoint fill, audit tail, splice, watched type tables, event router |
-| [internal/webhook/](../internal/webhook/) | audit ingress and audit event joiner |
+| [internal/typeset/](../internal/typeset/) | type followability registry, lookup model, and the relevance filter (controller-owned → don't mirror) |
+| [internal/watch/](../internal/watch/) | discovery catalog, watch manager, per-`(GVR, scope)` raw watches with `sendInitialEvents` replay/resume, watched type tables, event router |
+| [internal/webhook/](../internal/webhook/) | audit ingress and attribution fact extraction (no body joiner) |
 
 ***
 
@@ -829,7 +742,14 @@ Current limitations:
 
 Useful deeper dives live in [docs/design/](design/) and [docs/finished/](finished/).
 
-**Stream / ordering / reconcile (the current model):**
+**Ingestion and reconcile (the current model):**
+
+* [Watch-first ingestion architecture](design/watch-first-ingestion-architecture.md) — the authoritative
+  current model: watch is the only object-state source, audit is optional attribution.
+* [CommitRequest design](design/stream/commitrequest-design.md)
+* [HA improvements (future)](design/stream/ha-improvements.md)
+
+**Historical (the retired audit-as-correctness pipeline), kept for context:**
 
 * [Audit log ingestion and ordering](design/stream/audit-log-ingestion-and-ordering.md)
 * [Stream architecture and bootstrap](design/stream/architecture-and-bootstrap.md)
@@ -839,9 +759,7 @@ Useful deeper dives live in [docs/design/](design/) and [docs/finished/](finishe
 * [RV keyed streams experiment for each resource type](finished/per-resource-type-rv-keyed-streams-experiment.md)
 * [Reconcile and streaming tail by type](design/manifest/version2/per-type-reconcile-and-streaming-tail.md)
 * [Audit diagnostic streams plan](design/stream/audit-diagnostic-streams-plan.md)
-* [CommitRequest design](design/stream/commitrequest-design.md) and
-  [attribution/divert reliability](finished/commitrequest-attribution-divert-reliability.md)
-* [HA improvements (future)](design/stream/ha-improvements.md)
+* [CommitRequest attribution/divert reliability](finished/commitrequest-attribution-divert-reliability.md)
 
 **Types, discovery, status, and Git write side:**
 

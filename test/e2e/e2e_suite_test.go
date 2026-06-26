@@ -142,7 +142,7 @@ func committerOnlyModeEnabled() bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(out, "watch-first committer-only mode enabled")
+	return strings.Contains(out, "committer-only mode:")
 }
 
 var _ = AfterEach(func() {

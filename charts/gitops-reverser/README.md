@@ -170,17 +170,14 @@ nodeSelector:
 | `quickstart.gitProvider.secretRef.name` | Existing Secret name used by the starter `GitProvider` | `git-creds` |
 | `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget`; set `.` only to deliberately target the repo root | `live-cluster` |
 | `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
-| `queue.redis.addr` | Redis endpoint (`host:port`) for required durable audit queueing | `valkey:6379` |
+| `queue.redis.addr` | Redis endpoint (`host:port`) for the optional audit attribution index; empty = committer-only mode | `valkey:6379` |
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password | `valkey-auth` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
-| `queue.redis.maxLen` | Approximate stream max length (`0` disables trim, allowing unbounded growth) | `10000` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
-| `webhook.audit.debugStream.enabled` | Append every decoded audit event to the early Redis debug stream | `false` |
-| `webhook.audit.debugStream.stream` | Redis stream name for early decoded audit event debugging | `gitopsreverser.audit.debug.events.v1` |
-| `webhook.audit.debugStream.maxLen` | Approximate early debug stream max length (`0` disables trim, allowing unbounded growth) | `10000` |
-| `auditEventJoin.bodyTTL` | TTL for parked additional audit bodies waiting for the matching official event | `5m` |
-| `auditEventJoin.bodyWait` | Grace period for a bodyless official audit event to wait for a matching additional body while preserving official event order | `500ms` |
+| `attribution.redisPrefix` | Root key prefix for attribution facts (`<prefix>:attr:v1:<variant>:<id>`); empty uses the default | `""` |
+| `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
+| `attribution.serviceAccountNaming` | How a matched service account is named: `name` (its own username) or `bot` (collapse to the committer) | `name` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |
@@ -205,46 +202,15 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 
 ### Audit Webhook URL Contract
 
-`https://<service>:9444/audit-webhook` receives the canonical audit events that drive Git writes.
+`https://<service>:9444/audit-webhook` receives audit events from kube-apiserver. The operator
+extracts a minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace,
+name, UID, status, timestamps) into the optional Redis attribution index. Object state itself comes
+from Kubernetes **watch**, not from audit; audit only names the commit author.
 
-`https://<service>:9444/audit-webhook-additional` receives events whose request or response bodies
-un-shallow the official events on `/audit-webhook`, matched by `auditID`. Every event sent here is
-eligible to contribute a parked body; no API group allowlist is required. Bodyless additional
-events are dropped as malformed.
-
-`deletecollection` audit events are preserved in the canonical stream, but per-item Git write
-fan-out for collection deletes is not implemented yet.
+When `queue.redis.addr` is empty the audit webhook is not used at all and the product runs
+committer-only — every commit is authored by the configured committer.
 
 Cluster ID path segments are rejected.
-
-### Audit Queue Retention
-
-The Redis/Valkey stream is a durable **work queue**, not a long-term audit archive. Use
-Kubernetes audit logs or object storage for raw audit retention; this stream exists to
-buffer events between the kube-apiserver audit webhook and the controller.
-
-- `queue.redis.maxLen` is an **approximate** upper bound — the chart renders
-  `--audit-redis-max-len`, which is enforced with `XADD ... MAXLEN ~ N` for performance.
-- A bounded default (`10000`) protects Valkey memory and reload time. Sizing should be
-  based on expected audit events per second, the outage/catch-up window the queue
-  must tolerate, and a safety factor.
-- Setting `maxLen: 0` keeps the stream unbounded. The controller logs a startup warning
-  when either the canonical or debug stream is unbounded so accidental production
-  installs are visible.
-- **Too-low values** can drop entries before slow consumers catch up. **Too-high
-  values** create memory pressure and long Valkey RDB reload times after a restart.
-
-Operationally the queue is observable via Prometheus metrics:
-
-- `gitopsreverser_audit_queue_stream_length` — current entries in the canonical stream
-- `gitopsreverser_audit_queue_pending_entries` — claimed but unacked messages
-- `gitopsreverser_audit_queue_consumer_lag` — entries not yet read by the consumer group
-- `gitopsreverser_audit_queue_oldest_entry_age_seconds` — age of the oldest entry
-- `gitopsreverser_audit_queue_oldest_pending_age_seconds` — age of the oldest pending entry
-- `gitopsreverser_audit_debug_stream_length` — current entries in the debug stream
-
-`pending_entries` alone is not sufficient: it counts claimed but unacked messages, while
-`consumer_lag` captures backlog that may be trimmed before consumption.
 
 ## Custom Resource Definitions (CRDs)
 
