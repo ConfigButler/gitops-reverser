@@ -124,6 +124,9 @@ type Manager struct {
 	// checkpoint/audit-tail pipeline as the source of object state.
 	targetWatchesMu sync.Mutex
 	targetWatches   map[string]*targetWatchSet
+	// targetStreamStates is the readiness surface for targetWatches. It is keyed
+	// by GitTarget and watch key, and projected into status by controllers.
+	targetStreamStates map[string]map[targetWatchKey]targetStreamStatus
 
 	// gitTargetUIDs maps a GitTarget's namespace/name key to its object UID, captured
 	// from the controller on Declare. The watch data plane keys resume cursors by this

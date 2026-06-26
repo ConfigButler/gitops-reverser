@@ -46,31 +46,31 @@ func TestIsConditionTrue(t *testing.T) {
 		{
 			name:          "empty conditions returns false",
 			conditions:    nil,
-			conditionType: GitTargetConditionSynced,
+			conditionType: GitTargetConditionStreamsReady,
 			want:          false,
 		},
 		{
 			name: "condition present with status True returns true",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionSynced, Status: metav1.ConditionTrue},
+				{Type: GitTargetConditionStreamsReady, Status: metav1.ConditionTrue},
 			},
-			conditionType: GitTargetConditionSynced,
+			conditionType: GitTargetConditionStreamsReady,
 			want:          true,
 		},
 		{
 			name: "condition present with status False returns false",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionSynced, Status: metav1.ConditionFalse},
+				{Type: GitTargetConditionStreamsReady, Status: metav1.ConditionFalse},
 			},
-			conditionType: GitTargetConditionSynced,
+			conditionType: GitTargetConditionStreamsReady,
 			want:          false,
 		},
 		{
 			name: "condition present with status Unknown returns false",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionSynced, Status: metav1.ConditionUnknown},
+				{Type: GitTargetConditionStreamsReady, Status: metav1.ConditionUnknown},
 			},
-			conditionType: GitTargetConditionSynced,
+			conditionType: GitTargetConditionStreamsReady,
 			want:          false,
 		},
 		{
@@ -78,16 +78,16 @@ func TestIsConditionTrue(t *testing.T) {
 			conditions: []metav1.Condition{
 				{Type: GitTargetConditionValidated, Status: metav1.ConditionTrue},
 			},
-			conditionType: GitTargetConditionSynced,
+			conditionType: GitTargetConditionStreamsReady,
 			want:          false,
 		},
 		{
 			name: "target condition true alongside other conditions",
 			conditions: []metav1.Condition{
 				{Type: GitTargetConditionValidated, Status: metav1.ConditionTrue},
-				{Type: GitTargetConditionSynced, Status: metav1.ConditionTrue},
+				{Type: GitTargetConditionStreamsReady, Status: metav1.ConditionTrue},
 			},
-			conditionType: GitTargetConditionSynced,
+			conditionType: GitTargetConditionStreamsReady,
 			want:          true,
 		},
 	}

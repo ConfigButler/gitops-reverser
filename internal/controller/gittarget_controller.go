@@ -53,11 +53,9 @@ const (
 	GitTargetConditionReady                = ConditionTypeReady
 	GitTargetConditionValidated            = "Validated"
 	GitTargetConditionEncryptionConfigured = "EncryptionConfigured"
-	// GitTargetConditionSynced is the data-plane axis (status-design §3.1): True when every
-	// followable, claimed type is serviceable. It is orthogonal to Ready (control-plane) and
-	// replaces the removed EventStreamLive condition. Named "Synced" (not "Live"): it reports
-	// that the mirror reflects reality, not that a stream is wired.
-	GitTargetConditionSynced = "Synced"
+	// GitTargetConditionStreamsReady is the data-plane axis: True when every tracked type's
+	// watch has crossed its replay watermark or resumed from a durable cursor.
+	GitTargetConditionStreamsReady = ConditionTypeStreamsReady
 )
 
 // GitTargetReasonReady is a backward-compatible alias used by existing tests.
@@ -90,12 +88,7 @@ const (
 	GitTargetReadyReasonEncryptionNotConfigured = "EncryptionNotConfigured"
 	GitTargetReadyReasonWorkerUnavailable       = "WorkerUnavailable"
 
-	// GitTargetSyncedReasonOK and the constants below it are the Synced condition's reasons —
-	// the data-plane state the condition reports (status-design §4.2).
-	GitTargetSyncedReasonOK            = "OK"
-	GitTargetSyncedReasonInitializing  = "Initializing"
-	GitTargetSyncedReasonNotFollowable = "NotFollowable"
-	GitTargetSyncedReasonSyncFailing   = "SyncFailing"
+	GitTargetStreamsReadyReasonNotReady = "NotReady"
 )
 
 const (
@@ -179,12 +172,9 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: encryptionRequeueAfter}, nil
 	}
 
-	// Ensure the branch worker exists and register the GitTarget's event stream BEFORE declaring
-	// demand: the demand Declare drives the initial per-type splice reconcile (EnqueueResync needs
-	// the worker), so the worker must be live first or the very first reconcile of an already-Synced
-	// type would be dropped and not retried until the next ~10m reconcile. Worker wiring carries no
-	// condition of its own (status-design §2.1): it is internal plumbing the controller just gets
-	// right, so on its rare failure the GitTarget is simply NotReady with reason WorkerUnavailable.
+	// Ensure the branch worker exists and register the GitTarget's event stream before declaring
+	// streams. The watch data plane can route live events as soon as it reaches Streaming, so the
+	// destination worker must already be wired.
 	wired, wiringMessage := r.evaluateWorkerWiringGate(&target, providerNS, log)
 	if !wired {
 		r.setBlockedDataPlane(&target)
@@ -200,66 +190,38 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
 	}
 
-	// Control plane is correct: Ready is True from here on and stays independent of the data plane
-	// (status-design §2/§5). The materialization roll-up and Synced condition below never gate
-	// Ready, so a still-building or partially-followable mirror never reports as misconfigured.
+	// Control plane is correct: Ready is True from here on and stays independent of stream
+	// readiness. A still-replaying data plane never reports as a misconfigured GitTarget.
 	r.setReadyCondition(&target, metav1.ConditionTrue, GitTargetReasonOK, "All lifecycle gates satisfied")
 
-	// Renew this GitTarget's demand on the materialization axis every reconcile (DEC-L3): an
-	// idempotent full-set declaration that claims new types, renews present ones, and lets a type
-	// dropped from a rule age out at the next sweep (DEC-L5). It shares the splice scope resolve
-	// (resolveSnapshotGVRs), so it fails closed identically — an unobservable surface declares
-	// NOTHING rather than a withdrawal — and it drives the per-type splice reconcile for every
-	// watched type whose checkpoint is Synced (the worker is now live), so a newly-Ready target
-	// mirrors already-Synced types at once and, after a restart, re-reconciles off the durable
-	// checkpoint. The reconcile cadence (RequeueLongInterval) is comfortably shorter than the ~1h
-	// sweep, so a healthy target always renews between sweeps; a deleted target stops reconciling,
-	// so its claims age out. Demand bookkeeping only — it never gates readiness, so a transient
-	// resolve failure is logged and retried next reconcile.
-	materializationSettling := false
-	sum := watch.GitTargetMaterializationSummary{}
+	// Ensure watch-first data-plane streams exist, then project their readiness into a bounded
+	// status roll-up. A transient resolve failure never gates Ready; it leaves StreamsReady
+	// non-true and retries on the short settle cadence.
+	streamsSettling := false
+	var streams watch.StreamSummary
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
 		gitDest := types.NewResourceReference(target.Name, target.Namespace).WithUID(string(target.UID))
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(ctx, gitDest); declareErr != nil {
-			log.V(1).Info("materialization declare skipped; surface not observable",
+			log.V(1).Info("stream declaration skipped; surface not observable",
 				"gitDest", gitDest.String(), "err", declareErr.Error())
-			// A failed Declare claimed NOTHING (fail-closed: e.g. a watched type's discovery is
-			// wobbling), so nothing downstream — no claim, no checkpoint, no tail — will wake this
-			// target when the surface recovers. Retry on the settle cadence rather than stalling
-			// the whole target for RequeueLongInterval; Declare is idempotent and cheap.
-			materializationSettling = true
+			streamsSettling = true
 		}
-		// Roll up the demand-axis state for visibility (L-6): bounded per-GitTarget counts,
-		// not a per-type list, so the object stays small however many types are watched.
-		sum = r.EventRouter.WatchManager.MaterializationSummaryForGitTarget(gitDest)
-		now := metav1.Now()
-		target.Status.Materialization = &configbutleraiv1alpha2.GitTargetMaterializationStatus{
-			ClaimedTypes:       clampIntToInt32(sum.Claimed),
-			SyncedTypes:        clampIntToInt32(sum.Synced),
-			PendingTypes:       clampIntToInt32(sum.Pending),
-			FailingTypes:       clampIntToInt32(sum.Failing),
-			NotFollowableTypes: clampIntToInt32(sum.NotFollowable),
-			ObservedTime:       &now,
-		}
-		// Requeue fast only while a first checkpoint is genuinely in flight. Because the roll-up
-		// buckets on serviceability, a periodic re-anchor (Synced→Resyncing→Synced) leaves
-		// Pending at 0 and no longer churns this fast requeue (Gap 6 / status-design §3.2).
-		materializationSettling = materializationSettling || sum.Pending > 0
+		streams = r.EventRouter.WatchManager.StreamSummaryForGitTarget(gitDest)
+		target.Status.Streams = gitTargetStreamsStatus(streams)
+		streamsSettling = streamsSettling || !streams.StreamsReady()
+	} else {
+		streams = noResolvedStreamsSummary()
+		target.Status.Streams = gitTargetStreamsStatus(streams)
 	}
 
-	// Data-plane axis (status-design §3.3): derive the Synced condition and the informational
-	// phase purely from the serviceability roll-up. Orthogonal to Ready, computed every reconcile.
-	r.applySyncedConditionAndPhase(&target, sum)
+	r.applyStreamsReadyConditionAndPhase(&target, streams)
 
 	if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// While claimed types are still pending their checkpoint sync, requeue fast so the
-	// materialization roll-up converges with the actual phase transitions (which complete
-	// within seconds) instead of going stale until the next periodic revalidation.
-	if materializationSettling {
-		return ctrl.Result{RequeueAfter: RequeueMaterializationSettleInterval}, nil
+	if streamsSettling {
+		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
 	return ctrl.Result{RequeueAfter: RequeueLongInterval}, nil
 }
@@ -344,13 +306,9 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 }
 
 // evaluateWorkerWiringGate ensures the GitTarget's branch worker exists and registers its
-// GitTargetEventStream — the route the slim audit consumer uses for /scale field patches, and the
-// path the demand Declare needs to enqueue resyncs. With the api-source-of-truth pivot (R3) there
-// is no bootstrap snapshot gate: a type is serviceable the moment its checkpoint is Synced, and
-// the per-type splice reconcile does the mirroring. So this is just internal plumbing — "is the
-// worker/stream wired?" — and carries NO condition of its own (status-design §2.1): it returns
-// false + a message on its rare failure, and the caller folds that into Ready (reason
-// WorkerUnavailable). A nil EventRouter (test/standalone) is trivially wired.
+// GitTargetEventStream, the route live watch events use to reach the branch worker. This is
+// internal plumbing rather than a status condition of its own: rare failures fold into Ready
+// with reason WorkerUnavailable. A nil EventRouter (test/standalone) is trivially wired.
 func (r *GitTargetReconciler) evaluateWorkerWiringGate(
 	target *configbutleraiv1alpha2.GitTarget,
 	providerNS string,
@@ -368,71 +326,45 @@ func (r *GitTargetReconciler) evaluateWorkerWiringGate(
 	return true, ""
 }
 
-// setBlockedDataPlane marks the data-plane axis as not-yet-evaluated when a control-plane gate
-// blocked the reconcile before demand could be declared: Synced is Unknown (reason Blocked) and
-// the phase is Pending (status-design §3.3, §4.3). It keeps the Synced condition present and
-// honest — neither True nor a stale False — whenever Ready is False.
+// setBlockedDataPlane marks stream readiness as not-yet-evaluated when a control-plane gate
+// blocked the reconcile before watches could be declared.
 func (r *GitTargetReconciler) setBlockedDataPlane(target *configbutleraiv1alpha2.GitTarget) {
 	r.setCondition(
 		target,
-		GitTargetConditionSynced,
+		GitTargetConditionStreamsReady,
 		metav1.ConditionUnknown,
-		GitTargetReasonBlocked,
-		"Blocked by a control-plane gate; materialization not evaluated",
+		GitTargetStreamsReadyReasonNotReady,
+		"Blocked by Ready=False; streams not evaluated",
 	)
 	target.Status.Phase = GitTargetPhasePending
 }
 
-// applySyncedConditionAndPhase derives the data-plane Synced condition and the informational
-// status.phase from the serviceability roll-up and writes both. It is called only after Ready is
-// True (the control plane is correct), so phase is never Pending here — it is Synced, Initializing,
-// or Degraded per the §3.3 derivation.
-func (r *GitTargetReconciler) applySyncedConditionAndPhase(
+func (r *GitTargetReconciler) applyStreamsReadyConditionAndPhase(
 	target *configbutleraiv1alpha2.GitTarget,
-	sum watch.GitTargetMaterializationSummary,
+	streams watch.StreamSummary,
 ) {
-	d := deriveSyncedCondition(sum)
-	r.setCondition(target, GitTargetConditionSynced, d.Status, d.Reason, d.Message)
+	d := deriveStreamsReadyCondition(streams)
+	r.setCondition(target, GitTargetConditionStreamsReady, d.Status, d.Reason, d.Message)
 	target.Status.Phase = d.Phase
 }
 
-// syncedDecision is the derived data-plane verdict: the informational phase plus the Synced
-// condition (status/reason/message) it implies.
-type syncedDecision struct {
+type streamsReadyDecision struct {
 	Phase   string
 	Status  metav1.ConditionStatus
 	Reason  string
 	Message string
 }
 
-// deriveSyncedCondition is the pure data-plane derivation (status-design §3.3): given the
-// serviceability roll-up of a Ready GitTarget, it returns the phase and the Synced condition it
-// implies. The case order encodes the flowchart — a not-followable claimed type or a first-sync
-// stall is Degraded; otherwise a still-building first checkpoint is Initializing; otherwise every
-// followable claimed type is serviceable and the mirror is Synced. Because the roll-up buckets on
-// serviceability, a periodic re-anchor (Synced→Resyncing→Synced) keeps Synced True and never flaps.
-func deriveSyncedCondition(sum watch.GitTargetMaterializationSummary) syncedDecision {
+func deriveStreamsReadyCondition(streams watch.StreamSummary) streamsReadyDecision {
 	switch {
-	case sum.NotFollowable > 0:
-		return syncedDecision{
-			GitTargetPhaseDegraded, metav1.ConditionFalse, GitTargetSyncedReasonNotFollowable,
-			fmt.Sprintf("%d of %d claimed type(s) are not currently followable", sum.NotFollowable, sum.Claimed),
-		}
-	case sum.FailingNoCheckpoint > 0:
-		return syncedDecision{
-			GitTargetPhaseDegraded, metav1.ConditionFalse, GitTargetSyncedReasonSyncFailing,
-			fmt.Sprintf("%d claimed type(s) are failing their first checkpoint sync", sum.FailingNoCheckpoint),
-		}
-	case sum.Pending > 0:
-		return syncedDecision{
-			GitTargetPhaseInitializing, metav1.ConditionFalse, GitTargetSyncedReasonInitializing,
-			fmt.Sprintf("%d of %d claimed type(s) are building their first checkpoint", sum.Pending, sum.Claimed),
-		}
+	case streams.Blocked > 0:
+		return streamsReadyDecision{GitTargetPhaseDegraded, metav1.ConditionFalse, streams.Reason, streams.Message}
+	case streams.Replaying > 0:
+		return streamsReadyDecision{GitTargetPhaseInitializing, metav1.ConditionFalse, streams.Reason, streams.Message}
+	case streams.Total == 0:
+		return streamsReadyDecision{GitTargetPhaseInitializing, metav1.ConditionFalse, streams.Reason, streams.Message}
 	default:
-		return syncedDecision{
-			GitTargetPhaseSynced, metav1.ConditionTrue, GitTargetSyncedReasonOK,
-			fmt.Sprintf("all %d claimed type(s) are serviceable", sum.Claimed),
-		}
+		return streamsReadyDecision{GitTargetPhaseSynced, metav1.ConditionTrue, streams.Reason, streams.Message}
 	}
 }
 
@@ -848,6 +780,21 @@ func clampIntToInt32(value int) int32 {
 		return int32(maxInt32)
 	}
 	return int32(value)
+}
+
+func gitTargetStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha2.GitTargetStreamsStatus {
+	observed := streams.ObservedTime
+	if observed.IsZero() {
+		observed = metav1.Now()
+	}
+	return &configbutleraiv1alpha2.GitTargetStreamsStatus{
+		Summary:      streams.Summary(),
+		Total:        clampIntToInt32(streams.Total),
+		Ready:        clampIntToInt32(streams.Ready),
+		Replaying:    clampIntToInt32(streams.Replaying),
+		Blocked:      clampIntToInt32(streams.Blocked),
+		ObservedTime: &observed,
+	}
 }
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions.

@@ -116,11 +116,20 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "missing-target-rule"}, updatedRule)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedRule.Status.Conditions).To(HaveLen(1))
-			condition := updatedRule.Status.Conditions[0]
-			Expect(condition.Type).To(Equal(ConditionTypeReady))
+			Expect(updatedRule.Status.Conditions).To(HaveLen(2))
+			var condition, streamsReady metav1.Condition
+			for _, c := range updatedRule.Status.Conditions {
+				if c.Type == ConditionTypeReady {
+					condition = c
+				}
+				if c.Type == ConditionTypeStreamsReady {
+					streamsReady = c
+				}
+			}
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ClusterWatchRuleReasonGitTargetNotFound))
+			Expect(streamsReady.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(streamsReady.Reason).To(Equal(GitTargetStreamsReadyReasonNotReady))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, clusterRule)).Should(Succeed())

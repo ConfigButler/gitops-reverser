@@ -38,6 +38,7 @@ import (
 
 	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
 // WatchRule status condition reasons.
@@ -110,6 +111,13 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log.Info("Setting initial validating status")
 	r.setCondition(&watchRule, metav1.ConditionUnknown, //nolint:lll // Descriptive message
 		WatchRuleReasonValidating, "Validating WatchRule configuration...")
+	r.setTypedCondition(
+		&watchRule,
+		ConditionTypeStreamsReady,
+		metav1.ConditionUnknown,
+		GitTargetStreamsReadyReasonNotReady,
+		"Blocked by Ready=False; streams not evaluated",
+	)
 
 	// Route by configuration surface (Target is required now)
 	if watchRule.Spec.TargetRef.Name == "" {
@@ -199,6 +207,9 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
 		}
 		r.setResourceResolutionCondition(ctx, watchRule)
+		r.setStreamsReadyCondition(watchRule, r.WatchManager.StreamSummaryForWatchRule(*watchRule))
+	} else {
+		r.setStreamsReadyCondition(watchRule, noResolvedStreamsSummary())
 	}
 
 	log.Info("WatchRule reconciliation via GitTarget successful", "name", watchRule.Name)
@@ -265,6 +276,20 @@ func (r *WatchRuleReconciler) setResourceResolutionCondition(
 		reason = WatchRuleReasonResourcesResolved
 	}
 	r.setTypedCondition(watchRule, ConditionTypeResourcesResolved, status, reason, message)
+}
+
+func (r *WatchRuleReconciler) setStreamsReadyCondition(
+	watchRule *configbutleraiv1alpha2.WatchRule,
+	streams watch.StreamSummary,
+) {
+	watchRule.Status.Streams = watchRuleStreamsStatus(streams)
+	r.setTypedCondition(
+		watchRule,
+		ConditionTypeStreamsReady,
+		streamConditionStatus(streams),
+		streams.Reason,
+		streams.Message,
+	)
 }
 
 func (r *WatchRuleReconciler) setTypedCondition(

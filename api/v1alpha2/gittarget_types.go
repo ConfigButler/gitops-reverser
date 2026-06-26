@@ -119,39 +119,30 @@ type GitTargetStatus struct {
 	// +optional
 	LastPushTime *metav1.Time `json:"lastPushTime,omitempty"`
 
-	// Materialization is a bounded roll-up of the demand-driven checkpoint state for the
-	// resource types this GitTarget claims.
+	// Streams is the bounded data-plane roll-up over this GitTarget's tracked types.
+	// Counts, never a per-type list, so it stays bounded however many types are watched.
 	// +optional
-	Materialization *GitTargetMaterializationStatus `json:"materialization,omitempty"`
+	Streams *GitTargetStreamsStatus `json:"streams,omitempty"`
 }
 
-// GitTargetMaterializationStatus is a bounded roll-up of the demand-driven materialization
-// state for the types this GitTarget claims: how many it demands and where they sit in the
-// per-type checkpoint lifecycle. It is a summary (counts), not a per-type list, so it stays
-// bounded regardless of how many types are watched.
-type GitTargetMaterializationStatus struct {
-	// ClaimedTypes is how many resource types this GitTarget currently claims (demands).
+// GitTargetStreamsStatus is a bounded roll-up of the stream readiness state for the
+// types this GitTarget tracks.
+type GitTargetStreamsStatus struct {
+	// Summary is the display-only ready/total ratio.
 	// +optional
-	ClaimedTypes int32 `json:"claimedTypes,omitempty"`
+	Summary string `json:"summary,omitempty"`
 
-	// SyncedTypes is how many claimed types have a current checkpoint and are serviceable.
-	// +optional
-	SyncedTypes int32 `json:"syncedTypes,omitempty"`
+	// Total is how many types this target tracks.
+	Total int32 `json:"total"`
 
-	// PendingTypes is how many claimed types are still building their FIRST checkpoint and so are
-	// not yet serviceable (Requested/Syncing). A type refreshing an existing checkpoint (Resyncing)
-	// is NOT pending — it still serves the prior checkpoint and counts as Synced.
-	// +optional
-	PendingTypes int32 `json:"pendingTypes,omitempty"`
+	// Ready is how many tracked types are Streaming.
+	Ready int32 `json:"ready"`
 
-	// FailingTypes is how many claimed types last failed their checkpoint sync.
-	// +optional
-	FailingTypes int32 `json:"failingTypes,omitempty"`
+	// Replaying is how many tracked types are still replaying their initial events.
+	Replaying int32 `json:"replaying"`
 
-	// NotFollowableTypes is how many claimed types are not currently followable — the
-	// claim-vs-refused mismatch an operator should notice.
-	// +optional
-	NotFollowableTypes int32 `json:"notFollowableTypes,omitempty"`
+	// Blocked is how many tracked types cannot currently be watched.
+	Blocked int32 `json:"blocked"`
 
 	// ObservedTime is when this roll-up was last computed.
 	// +optional
@@ -162,10 +153,10 @@ type GitTargetMaterializationStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.providerRef.name`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`
-// +kubebuilder:printcolumn:name="Path",type=string,JSONPath=`.spec.path`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`
+// +kubebuilder:printcolumn:name="StreamsReady",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsReady")].status`
+// +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsReady")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitTarget is the Schema for the gittargets API.

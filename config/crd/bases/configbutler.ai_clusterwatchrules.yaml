@@ -21,8 +21,14 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].message
-      name: Status
+    - jsonPath: .status.conditions[?(@.type=="StreamsReady")].status
+      name: StreamsReady
+      type: string
+    - jsonPath: .status.streams.summary
+      name: Streams
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="StreamsReady")].reason
+      name: Reason
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -253,6 +259,48 @@ spec:
                   - type
                   type: object
                 type: array
+              streams:
+                description: Streams is the bounded stream-readiness roll-up for the
+                  types this rule resolves.
+                properties:
+                  blocked:
+                    description: Blocked is how many resolved types cannot currently
+                      be watched.
+                    format: int32
+                    type: integer
+                  observedTime:
+                    description: ObservedTime is when this roll-up was last computed.
+                    format: date-time
+                    type: string
+                  pendingSample:
+                    description: PendingSample is a bounded sample of types not yet
+                      ready.
+                    items:
+                      type: string
+                    maxItems: 5
+                    type: array
+                  ready:
+                    description: Ready is how many resolved types are Streaming.
+                    format: int32
+                    type: integer
+                  replaying:
+                    description: Replaying is how many resolved types are still replaying
+                      their initial events.
+                    format: int32
+                    type: integer
+                  summary:
+                    description: Summary is the display-only ready/total ratio.
+                    type: string
+                  total:
+                    description: Total is how many types this rule resolves.
+                    format: int32
+                    type: integer
+                required:
+                - blocked
+                - ready
+                - replaying
+                - total
+                type: object
             type: object
         required:
         - spec

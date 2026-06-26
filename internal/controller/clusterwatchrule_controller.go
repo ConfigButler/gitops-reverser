@@ -37,6 +37,7 @@ import (
 
 	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
 // ClusterWatchRule status condition reasons.
@@ -107,6 +108,13 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	log.Info("Setting initial validating status")
 	r.setCondition(&clusterRule, metav1.ConditionUnknown,
 		ClusterWatchRuleReasonValidating, "Validating ClusterWatchRule configuration...")
+	r.setTypedCondition(
+		&clusterRule,
+		ConditionTypeStreamsReady,
+		metav1.ConditionUnknown,
+		GitTargetStreamsReadyReasonNotReady,
+		"Blocked by Ready=False; streams not evaluated",
+	)
 
 	// Delegate to target-based reconciliation
 	return r.reconcileClusterWatchRuleViaTarget(ctx, &clusterRule)
@@ -189,6 +197,9 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
 		}
 		r.setResourceResolutionCondition(ctx, clusterRule)
+		r.setStreamsReadyCondition(clusterRule, r.WatchManager.StreamSummaryForClusterWatchRule(*clusterRule))
+	} else {
+		r.setStreamsReadyCondition(clusterRule, noResolvedStreamsSummary())
 	}
 
 	log.Info("ClusterWatchRule reconciliation via GitTarget successful", "name", clusterRule.Name)
@@ -257,6 +268,20 @@ func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
 		reason = ClusterWatchRuleReasonResourcesResolved
 	}
 	r.setTypedCondition(clusterRule, ConditionTypeResourcesResolved, status, reason, message)
+}
+
+func (r *ClusterWatchRuleReconciler) setStreamsReadyCondition(
+	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	streams watch.StreamSummary,
+) {
+	clusterRule.Status.Streams = watchRuleStreamsStatus(streams)
+	r.setTypedCondition(
+		clusterRule,
+		ConditionTypeStreamsReady,
+		streamConditionStatus(streams),
+		streams.Reason,
+		streams.Message,
+	)
 }
 
 func (r *ClusterWatchRuleReconciler) setTypedCondition(

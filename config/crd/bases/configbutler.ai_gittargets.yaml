@@ -21,17 +21,17 @@ spec:
     - jsonPath: .spec.branch
       name: Branch
       type: string
-    - jsonPath: .spec.path
-      name: Path
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .status.conditions[?(@.type=="StreamsReady")].status
+      name: StreamsReady
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].message
-      name: Status
+    - jsonPath: .status.streams.summary
+      name: Streams
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="StreamsReady")].reason
+      name: Reason
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -257,44 +257,6 @@ spec:
                   reconcile attempt.
                 format: date-time
                 type: string
-              materialization:
-                description: |-
-                  Materialization is a bounded roll-up of the demand-driven checkpoint state for the
-                  resource types this GitTarget claims.
-                properties:
-                  claimedTypes:
-                    description: ClaimedTypes is how many resource types this GitTarget
-                      currently claims (demands).
-                    format: int32
-                    type: integer
-                  failingTypes:
-                    description: FailingTypes is how many claimed types last failed
-                      their checkpoint sync.
-                    format: int32
-                    type: integer
-                  notFollowableTypes:
-                    description: |-
-                      NotFollowableTypes is how many claimed types are not currently followable — the
-                      claim-vs-refused mismatch an operator should notice.
-                    format: int32
-                    type: integer
-                  observedTime:
-                    description: ObservedTime is when this roll-up was last computed.
-                    format: date-time
-                    type: string
-                  pendingTypes:
-                    description: |-
-                      PendingTypes is how many claimed types are still building their FIRST checkpoint and so are
-                      not yet serviceable (Requested/Syncing). A type refreshing an existing checkpoint (Resyncing)
-                      is NOT pending — it still serves the prior checkpoint and counts as Synced.
-                    format: int32
-                    type: integer
-                  syncedTypes:
-                    description: SyncedTypes is how many claimed types have a current
-                      checkpoint and are serviceable.
-                    format: int32
-                    type: integer
-                type: object
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.
@@ -307,6 +269,42 @@ spec:
                   Degraded), informational only. Automation must gate on the conditions, never
                   on phase. See docs/design/status-design-git-target.md §3.3.
                 type: string
+              streams:
+                description: |-
+                  Streams is the bounded data-plane roll-up over this GitTarget's tracked types.
+                  Counts, never a per-type list, so it stays bounded however many types are watched.
+                properties:
+                  blocked:
+                    description: Blocked is how many tracked types cannot currently
+                      be watched.
+                    format: int32
+                    type: integer
+                  observedTime:
+                    description: ObservedTime is when this roll-up was last computed.
+                    format: date-time
+                    type: string
+                  ready:
+                    description: Ready is how many tracked types are Streaming.
+                    format: int32
+                    type: integer
+                  replaying:
+                    description: Replaying is how many tracked types are still replaying
+                      their initial events.
+                    format: int32
+                    type: integer
+                  summary:
+                    description: Summary is the display-only ready/total ratio.
+                    type: string
+                  total:
+                    description: Total is how many types this target tracks.
+                    format: int32
+                    type: integer
+                required:
+                - blocked
+                - ready
+                - replaying
+                - total
+                type: object
             type: object
         required:
         - spec

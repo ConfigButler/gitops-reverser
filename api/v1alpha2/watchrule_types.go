@@ -129,6 +129,39 @@ type WatchRuleStatus struct {
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
+	// Streams is the bounded stream-readiness roll-up for the types this rule resolves.
+	// +optional
+	Streams *WatchRuleStreamsStatus `json:"streams,omitempty"`
+}
+
+// WatchRuleStreamsStatus is a bounded roll-up of the stream-readiness state for the
+// types a WatchRule or ClusterWatchRule resolves.
+type WatchRuleStreamsStatus struct {
+	// Summary is the display-only ready/total ratio.
+	// +optional
+	Summary string `json:"summary,omitempty"`
+
+	// Total is how many types this rule resolves.
+	Total int32 `json:"total"`
+
+	// Ready is how many resolved types are Streaming.
+	Ready int32 `json:"ready"`
+
+	// Replaying is how many resolved types are still replaying their initial events.
+	Replaying int32 `json:"replaying"`
+
+	// Blocked is how many resolved types cannot currently be watched.
+	Blocked int32 `json:"blocked"`
+
+	// PendingSample is a bounded sample of types not yet ready.
+	// +optional
+	// +kubebuilder:validation:MaxItems=5
+	PendingSample []string `json:"pendingSample,omitempty"`
+
+	// ObservedTime is when this roll-up was last computed.
+	// +optional
+	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -136,7 +169,9 @@ type WatchRuleStatus struct {
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.targetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`
+// +kubebuilder:printcolumn:name="StreamsReady",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsReady")].status`
+// +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsReady")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // WatchRule watches namespaced resources within its own namespace.

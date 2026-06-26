@@ -30,6 +30,7 @@ import (
 
 	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
 var _ = Describe("WatchRule Controller", func() {
@@ -258,11 +259,20 @@ var _ = Describe("WatchRule Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying WatchRule is Ready")
-			Expect(updatedRule.Status.Conditions).To(HaveLen(1))
-			condition := updatedRule.Status.Conditions[0]
-			Expect(condition.Type).To(Equal(ConditionTypeReady))
+			Expect(updatedRule.Status.Conditions).To(HaveLen(2))
+			var condition, streamsReady metav1.Condition
+			for _, c := range updatedRule.Status.Conditions {
+				if c.Type == ConditionTypeReady {
+					condition = c
+				}
+				if c.Type == ConditionTypeStreamsReady {
+					streamsReady = c
+				}
+			}
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition.Reason).To(Equal(WatchRuleReasonReady))
+			Expect(streamsReady.Status).To(Equal(metav1.ConditionFalse))
+			Expect(streamsReady.Reason).To(Equal(watch.StreamReasonNoResolvedTypes))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, watchRule)).Should(Succeed())

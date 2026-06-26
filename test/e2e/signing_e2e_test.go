@@ -368,7 +368,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		}{watchRuleName, testNs, destName}
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, testNs)).To(Succeed())
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		waitForGitTargetSynced(destName, testNs)
+		waitForStreamsReady(destName, testNs)
 
 		_, err := kubectlRunInNamespace(testNs, "create", "configmap", cmName, "--from-literal=key=template-test")
 		Expect(err).NotTo(HaveOccurred())
@@ -517,7 +517,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 	// (internal/watch TestAuditTailFanout_*); a full e2e cannot classify the overlap band without an
 	// observable Hc or a tail-pause hook, so this only asserts the robust user-visible guarantees:
 	// the pre-existing seed set is reconcile-only for B (no per-event subject), content converges
-	// under B regardless of which path delivered it, and live events created after B is Synced still
+	// under B regardless of which path delivered it, and live events created after B is StreamsReady still
 	// flow as per-event commits. It deliberately does NOT wait for A to commit the overlap band
 	// before B exists — that consumes the entries before B joins and erases the very bug path (§8.1).
 	It("should not replay already-reconciled configmaps as per-event commits to a late-joining target", func() {
@@ -586,7 +586,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			Name, Namespace, DestinationName string
 		}{watchRuleNameA, testNs, destNameA}, testNs)).To(Succeed())
 		verifyResourceStatus("watchrule", watchRuleNameA, testNs, "True", "Ready", "")
-		waitForGitTargetSynced(destNameA, testNs)
+		waitForStreamsReady(destNameA, testNs)
 
 		By("proving the shared ConfigMap tail is live for A via a probe per-event commit")
 		_, err = kubectlRunInNamespace(testNs, "create", "configmap", "probe-a", "--from-literal=k=v")
@@ -612,7 +612,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		}{watchRuleNameB, testNs, destNameB}, testNs)).To(Succeed())
 		verifyResourceStatus("gittarget", destNameB, testNs, "True", "Ready", "")
 		verifyResourceStatus("watchrule", watchRuleNameB, testNs, "True", "Ready", "")
-		waitForGitTargetSynced(destNameB, testNs)
+		waitForStreamsReady(destNameB, testNs)
 
 		By("asserting seed + overlap content converges under path B with no seed leaked as a per-event commit")
 		Eventually(func(g Gomega) {
@@ -641,7 +641,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 				commitDiagnostics)
 		}).Should(Succeed())
 
-		By("creating the live-b band after B is Synced and asserting it flows as per-event commits")
+		By("creating the live-b band after B is StreamsReady and asserting it flows as per-event commits")
 		_, err = kubectlRunWithStdin(testNs, signingOverlapConfigMapsManifest(testNs, liveNames),
 			"apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred(), "failed to create live-b configmaps")
@@ -651,7 +651,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(logErr).NotTo(HaveOccurred())
 			for _, n := range liveNames {
 				g.Expect(logOut).To(ContainSubstring("[CREATE] v1/configmaps/"+n),
-					"a post-Synced create must reach path B as a live per-event commit\n%s",
+					"a post-StreamsReady create must reach path B as a live per-event commit\n%s",
 					recentCommitDiagnostics(signingRepo.CheckoutDir, commitPathB))
 			}
 		}).Should(Succeed())

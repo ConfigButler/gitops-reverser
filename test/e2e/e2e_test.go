@@ -224,19 +224,21 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 	Eventually(verifyStatus, "90s", "2s").Should(Succeed())
 }
 
-// waitForGitTargetSynced blocks until the GitTarget reports its data-plane Synced condition
-// True — every followable claimed type is serviceable. It is the first-class replacement for the
-// old roll-up-counting helper: the controller now derives one Synced condition on a serviceability
-// basis (status-design §3.2/§3.3), so tests gate on it via `kubectl wait` instead of re-deriving a
-// settle predicate from raw counts. A spec that needs live events attributed (authorship,
-// ordering) must create its resources only after this point: anything created while a type's first
-// checkpoint is still building is folded into the unattributed baseline splice and is then —
-// correctly — skipped by the audit tail, which anchors at the checkpoint rv.
-func waitForGitTargetSynced(name, ns string) {
-	By(fmt.Sprintf("waiting for gittarget '%s' in ns '%s' to report Synced=True", name, ns))
-	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=Synced=true",
+// waitForStreamsReady blocks until the GitTarget reports StreamsReady=True. Specs that assert
+// live per-event behavior, authorship, or ordering must create asserted resources only after this
+// point so the relevant watches are past their replay watermark.
+func waitForStreamsReady(name, ns string) {
+	By(fmt.Sprintf("waiting for gittarget '%s' in ns '%s' to report StreamsReady=True", name, ns))
+	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=StreamsReady=true",
 		"gittarget/"+name, "--timeout=120s")
-	Expect(err).NotTo(HaveOccurred(), "gittarget %s/%s did not reach Synced=True", ns, name)
+	Expect(err).NotTo(HaveOccurred(), "gittarget %s/%s did not reach StreamsReady=True", ns, name)
+}
+
+func waitForWatchRuleStreamsReady(name, ns string) { //nolint:unused // Helper for specs that need a rule-scoped gate.
+	By(fmt.Sprintf("waiting for watchrule '%s' in ns '%s' to report StreamsReady=True", name, ns))
+	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=StreamsReady=true",
+		"watchrule/"+name, "--timeout=120s")
+	Expect(err).NotTo(HaveOccurred(), "watchrule %s/%s did not reach StreamsReady=True", ns, name)
 }
 
 // showControllerLogs displays the current controller logs to help with debugging during test execution.

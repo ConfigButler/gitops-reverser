@@ -24,6 +24,8 @@ import (
 	"time"
 
 	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
 // WatchManagerInterface defines the interface for watch manager reconciliation.
@@ -32,6 +34,9 @@ type WatchManagerInterface interface {
 	ReconcileForRuleChange(ctx context.Context) error
 	ResolveWatchRuleResources(ctx context.Context, rule configv1alpha2.WatchRule) (bool, string)
 	ResolveClusterWatchRuleResources(ctx context.Context, rule configv1alpha2.ClusterWatchRule) (bool, string)
+	StreamSummaryForGitTarget(gitDest types.ResourceReference) watch.StreamSummary
+	StreamSummaryForWatchRule(rule configv1alpha2.WatchRule) watch.StreamSummary
+	StreamSummaryForClusterWatchRule(rule configv1alpha2.ClusterWatchRule) watch.StreamSummary
 }
 
 const (
@@ -39,6 +44,8 @@ const (
 	ConditionTypeReady = "Ready"
 	// ConditionTypeResourcesResolved indicates whether rule resources resolved to concrete GVRs.
 	ConditionTypeResourcesResolved = "ResourcesResolved"
+	// ConditionTypeStreamsReady indicates whether watched type streams are routing live events.
+	ConditionTypeStreamsReady = "StreamsReady"
 
 	// MsgSnapshotCompleted is returned as the condition message when the initial
 	// cluster snapshot has been successfully committed to Git.
@@ -50,12 +57,10 @@ const (
 	RequeueMediumInterval = 5 * time.Minute
 	// RequeueLongInterval is the requeue interval for periodic revalidation.
 	RequeueLongInterval = 10 * time.Minute
-	// RequeueMaterializationSettleInterval is the requeue interval while a Ready GitTarget
-	// still has claimed types pending their checkpoint sync. The materialization roll-up in
-	// status is only computed during reconcile, so a Ready target would otherwise report a
-	// stale pending state for up to RequeueLongInterval; pending phases settle within
-	// seconds, so this keeps status.materialization honest while it converges.
-	RequeueMaterializationSettleInterval = 10 * time.Second
+	// RequeueStreamSettleInterval is the requeue interval while a Ready GitTarget still
+	// has streams pending replay completion. Stream status is computed during reconcile, so
+	// this keeps status.streams fresh while watches converge.
+	RequeueStreamSettleInterval = 10 * time.Second
 
 	// RetryInitialDuration is the initial duration for exponential backoff retry.
 	RetryInitialDuration = 100 * time.Millisecond

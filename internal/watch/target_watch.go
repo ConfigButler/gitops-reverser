@@ -106,6 +106,30 @@ func (m *Manager) replaceGitTargetWatches(ctx context.Context, table WatchedType
 		prior.cancel()
 	}
 	m.targetWatches[key] = &targetWatchSet{cancel: cancel, specs: specs}
+	if m.targetStreamStates == nil {
+		m.targetStreamStates = map[string]map[targetWatchKey]targetStreamStatus{}
+	}
+	states := m.targetStreamStates[key]
+	if states == nil {
+		states = map[targetWatchKey]targetStreamStatus{}
+		m.targetStreamStates[key] = states
+	}
+	for stateKey := range states {
+		if _, ok := specs[stateKey]; !ok {
+			delete(states, stateKey)
+		}
+	}
+	for _, watchKey := range keys {
+		if _, ok := states[watchKey]; !ok {
+			m.markTargetStreamStateLocked(
+				table.GitDest,
+				watchKey,
+				StreamStateReplaying,
+				StreamReasonInitialReplay,
+				"waiting for target watch replay to complete",
+			)
+		}
+	}
 	m.targetWatchesMu.Unlock()
 
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
@@ -148,6 +172,7 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 		set.cancel()
 		delete(m.targetWatches, gitDest.Key())
 	}
+	m.dropTargetStreamStateLocked(gitDest)
 }
 
 func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
@@ -228,6 +253,7 @@ func (m *Manager) runTargetWatch(
 			return
 		}
 		if err != nil {
+			m.markTargetStreamState(gitDest, key, StreamStateBlocked, StreamReasonWatchError, err.Error())
 			log.Info("target watch session ended; reconnecting",
 				"gvr", key.GVR.String(), "namespace", key.Namespace, "err", err.Error())
 		}
@@ -244,11 +270,20 @@ func (m *Manager) targetWatchReplayAndStream(
 	key targetWatchKey,
 	ops OperationSet,
 ) error {
+	cursorExpired := false
 	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, key); ok {
 		err := m.targetWatchResumeAndStream(ctx, log, gitDest, key, ops, cursor)
 		if !errors.Is(err, errTargetWatchExpired) {
 			return err
 		}
+		cursorExpired = true
+		m.markTargetStreamState(
+			gitDest,
+			key,
+			StreamStateReplaying,
+			StreamReasonExpiredResourceVersion,
+			"stored watch cursor expired; rebuilding from a fresh replay",
+		)
 		// The stored resourceVersion is too old to resume from. Fall through to a
 		// fresh replay, which rebuilds from current state and overwrites the stale
 		// cursor — no explicit delete needed.
@@ -261,6 +296,17 @@ func (m *Manager) targetWatchReplayAndStream(
 		ResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
 		AllowWatchBookmarks:  true,
 	}
+	reason := StreamReasonInitialReplay
+	if cursorExpired {
+		reason = StreamReasonResumeReplay
+	}
+	m.markTargetStreamState(
+		gitDest,
+		key,
+		StreamStateReplaying,
+		reason,
+		"target watch replay in progress",
+	)
 	replaying := true
 	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, opts)
 	if err != nil {
@@ -272,6 +318,13 @@ func (m *Manager) targetWatchReplayAndStream(
 		if ctx.Err() != nil {
 			return nil
 		}
+		m.markTargetStreamState(
+			gitDest,
+			key,
+			StreamStateBlocked,
+			StreamReasonWatchError,
+			err.Error(),
+		)
 		return fmt.Errorf("open target watch %s/%q: %w", key.GVR.String(), key.Namespace, err)
 	}
 	defer w.Stop()
@@ -315,12 +368,26 @@ func (m *Manager) targetWatchResumeAndStream(
 		if ctx.Err() != nil {
 			return nil
 		}
+		m.markTargetStreamState(
+			gitDest,
+			key,
+			StreamStateBlocked,
+			StreamReasonWatchError,
+			err.Error(),
+		)
 		return fmt.Errorf("open target watch %s/%q from cursor %q: %w", key.GVR.String(), key.Namespace, cursor, err)
 	}
 	defer w.Stop()
 
 	log.V(1).Info("target watch resumed from cursor",
 		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace, "resourceVersion", cursor)
+	m.markTargetStreamState(
+		gitDest,
+		key,
+		StreamStateStreaming,
+		StreamReasonAllStreamsReady,
+		"target watch resumed from durable cursor",
+	)
 	m.recordTargetReconcileCompleted(gitDest, "cursor_resume")
 	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, ops, w.ResultChan())
 }
@@ -339,6 +406,13 @@ func (m *Manager) targetWatchListAndStream(
 		if ctx.Err() != nil {
 			return nil
 		}
+		m.markTargetStreamState(
+			gitDest,
+			key,
+			StreamStateBlocked,
+			StreamReasonWatchError,
+			err.Error(),
+		)
 		return fmt.Errorf("open target watch %s/%q for list fallback: %w", key.GVR.String(), key.Namespace, err)
 	}
 	defer w.Stop()
@@ -351,6 +425,13 @@ func (m *Manager) targetWatchListAndStream(
 		if ctx.Err() != nil {
 			return nil
 		}
+		m.markTargetStreamState(
+			gitDest,
+			key,
+			StreamStateBlocked,
+			StreamReasonWatchError,
+			err.Error(),
+		)
 		return fmt.Errorf("list target watch snapshot %s/%q: %w", key.GVR.String(), key.Namespace, err)
 	}
 	desired := desiredFromList(key.GVR, list)
@@ -364,6 +445,13 @@ func (m *Manager) targetWatchListAndStream(
 	log.Info("target watch list fallback complete",
 		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace,
 		"count", len(desired), "resourceVersion", revision)
+	m.markTargetStreamState(
+		gitDest,
+		key,
+		StreamStateStreaming,
+		StreamReasonAllStreamsReady,
+		"target watch list fallback complete",
+	)
 	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, ops, buffered, revision)
 }
 
@@ -395,6 +483,13 @@ func (m *Manager) handleTargetWatchSessionEvent(
 		return true, err
 	}
 	*replay = nil
+	m.markTargetStreamState(
+		gitDest,
+		key,
+		StreamStateStreaming,
+		StreamReasonAllStreamsReady,
+		"target watch replay complete",
+	)
 	return false, nil
 }
 

@@ -29,77 +29,61 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
-// TestDeriveSyncedCondition covers the §3.3 data-plane derivation for a Ready GitTarget: each
-// phase, the no-flap-on-re-anchor guarantee, and the case precedence (Degraded > Initializing >
-// Synced). The summary is the serviceability roll-up, so the inputs mirror what
-// MaterializationSummaryForGitTarget produces.
-func TestDeriveSyncedCondition(t *testing.T) {
+func TestDeriveStreamsReadyCondition(t *testing.T) {
 	tests := []struct {
 		name       string
-		sum        watch.GitTargetMaterializationSummary
+		streams    watch.StreamSummary
 		wantPhase  string
 		wantStatus metav1.ConditionStatus
 		wantReason string
 	}{
 		{
-			name:       "no claims is trivially synced",
-			sum:        watch.GitTargetMaterializationSummary{},
+			name: "all streams ready",
+			streams: watch.StreamSummary{
+				Total:   3,
+				Ready:   3,
+				Reason:  watch.StreamReasonAllStreamsReady,
+				Message: "3/3 streams ready",
+			},
 			wantPhase:  GitTargetPhaseSynced,
 			wantStatus: metav1.ConditionTrue,
-			wantReason: GitTargetSyncedReasonOK,
+			wantReason: watch.StreamReasonAllStreamsReady,
 		},
 		{
-			name:       "all claimed types serviceable",
-			sum:        watch.GitTargetMaterializationSummary{Claimed: 3, Synced: 3},
-			wantPhase:  GitTargetPhaseSynced,
-			wantStatus: metav1.ConditionTrue,
-			wantReason: GitTargetSyncedReasonOK,
-		},
-		{
-			name:       "first checkpoint still building",
-			sum:        watch.GitTargetMaterializationSummary{Claimed: 2, Synced: 1, Pending: 1},
+			name: "stream replaying",
+			streams: watch.StreamSummary{
+				Total: 2, Ready: 1, Replaying: 1, Reason: watch.StreamReasonReplaying,
+				Message: "1/2 streams ready; 1 replaying",
+			},
 			wantPhase:  GitTargetPhaseInitializing,
 			wantStatus: metav1.ConditionFalse,
-			wantReason: GitTargetSyncedReasonInitializing,
+			wantReason: watch.StreamReasonReplaying,
 		},
 		{
-			name:       "a claimed type is not followable",
-			sum:        watch.GitTargetMaterializationSummary{Claimed: 2, Synced: 1, NotFollowable: 1},
+			name: "stream blocked",
+			streams: watch.StreamSummary{
+				Total: 2, Ready: 1, Blocked: 1, Reason: watch.StreamReasonWatchError,
+				Message: "1/2 streams ready; 1 blocked",
+			},
 			wantPhase:  GitTargetPhaseDegraded,
 			wantStatus: metav1.ConditionFalse,
-			wantReason: GitTargetSyncedReasonNotFollowable,
+			wantReason: watch.StreamReasonWatchError,
 		},
 		{
-			name:       "a first sync is failing with no checkpoint",
-			sum:        watch.GitTargetMaterializationSummary{Claimed: 1, Failing: 1, FailingNoCheckpoint: 1},
-			wantPhase:  GitTargetPhaseDegraded,
+			name: "no resolved types",
+			streams: watch.StreamSummary{
+				Reason:  watch.StreamReasonNoResolvedTypes,
+				Message: "0/0 streams ready; no resolved resource types",
+			},
+			wantPhase:  GitTargetPhaseInitializing,
 			wantStatus: metav1.ConditionFalse,
-			wantReason: GitTargetSyncedReasonSyncFailing,
-		},
-		{
-			// The serviceability fix: a Resyncing/Failing-with-prior type still counts as Synced,
-			// so a periodic re-anchor (Synced→Resyncing→Synced) keeps the condition True and never
-			// flaps. Modeled here as a serviceable type that is also Failing (a re-anchor that
-			// errored): still serviceable, still Synced.
-			name:       "re-anchor failing-with-checkpoint does not flap Synced",
-			sum:        watch.GitTargetMaterializationSummary{Claimed: 1, Synced: 1, Failing: 1},
-			wantPhase:  GitTargetPhaseSynced,
-			wantStatus: metav1.ConditionTrue,
-			wantReason: GitTargetSyncedReasonOK,
-		},
-		{
-			// Precedence: not-followable outranks an in-flight first sync.
-			name:       "not-followable outranks pending",
-			sum:        watch.GitTargetMaterializationSummary{Claimed: 3, Synced: 1, Pending: 1, NotFollowable: 1},
-			wantPhase:  GitTargetPhaseDegraded,
-			wantStatus: metav1.ConditionFalse,
-			wantReason: GitTargetSyncedReasonNotFollowable,
+			wantReason: watch.StreamReasonNoResolvedTypes,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := deriveSyncedCondition(tt.sum)
+			d := deriveStreamsReadyCondition(tt.streams)
 			assert.Equal(t, tt.wantPhase, d.Phase)
 			assert.Equal(t, tt.wantStatus, d.Status)
 			assert.Equal(t, tt.wantReason, d.Reason)
@@ -108,22 +92,18 @@ func TestDeriveSyncedCondition(t *testing.T) {
 	}
 }
 
-// TestApplySyncedConditionAndPhase_SetsConditionAndPhase proves the apply step writes both the
-// Synced condition and the informational phase onto the GitTarget for a Ready (serviceable)
-// summary.
-func TestApplySyncedConditionAndPhase_SetsConditionAndPhase(t *testing.T) {
+func TestApplyStreamsReadyConditionAndPhase_SetsConditionAndPhase(t *testing.T) {
 	r := &GitTargetReconciler{}
 	target := &configbutleraiv1alpha2.GitTarget{}
 
-	r.applySyncedConditionAndPhase(target, watch.GitTargetMaterializationSummary{Claimed: 1, Synced: 1})
+	r.applyStreamsReadyConditionAndPhase(target, watch.StreamSummary{
+		Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams ready",
+	})
 
 	require.Equal(t, GitTargetPhaseSynced, target.Status.Phase)
-	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionSynced))
+	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionStreamsReady))
 }
 
-// TestSetBlockedDataPlane_MarksUnknownAndPending proves that when a control-plane gate blocks the
-// reconcile, the data-plane axis is left honest: Synced=Unknown and phase=Pending, never a stale
-// True/False.
 func TestSetBlockedDataPlane_MarksUnknownAndPending(t *testing.T) {
 	r := &GitTargetReconciler{}
 	target := &configbutleraiv1alpha2.GitTarget{}
@@ -131,13 +111,13 @@ func TestSetBlockedDataPlane_MarksUnknownAndPending(t *testing.T) {
 	r.setBlockedDataPlane(target)
 
 	require.Equal(t, GitTargetPhasePending, target.Status.Phase)
-	var synced *metav1.Condition
+	var streamsReady *metav1.Condition
 	for i := range target.Status.Conditions {
-		if target.Status.Conditions[i].Type == GitTargetConditionSynced {
-			synced = &target.Status.Conditions[i]
+		if target.Status.Conditions[i].Type == GitTargetConditionStreamsReady {
+			streamsReady = &target.Status.Conditions[i]
 		}
 	}
-	require.NotNil(t, synced)
-	assert.Equal(t, metav1.ConditionUnknown, synced.Status)
-	assert.Equal(t, GitTargetReasonBlocked, synced.Reason)
+	require.NotNil(t, streamsReady)
+	assert.Equal(t, metav1.ConditionUnknown, streamsReady.Status)
+	assert.Equal(t, GitTargetStreamsReadyReasonNotReady, streamsReady.Reason)
 }

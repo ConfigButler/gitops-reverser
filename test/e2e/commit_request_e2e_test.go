@@ -87,13 +87,13 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		applyDeploymentWatchRule(testNs, watchRuleName, gitTargetName)
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 
-		// Gate on Synced=True before any spec creates a Deployment: under watch-first, "Ready" only
+		// Gate on StreamsReady=True before any spec creates a Deployment: under watch-first, "Ready" only
 		// means the watch set is reconciled, not that each watch has opened and finished its
 		// sendInitialEvents replay. A Deployment created before the (empty) initial replay completes
 		// is folded into that committer-authored reconcile and committed immediately — establishing
 		// main and breaking the "branch not even created until the window is finalized" assertion.
-		// Synced=True is the documented barrier that the object is a genuine live, windowed event.
-		waitForGitTargetSynced(gitTargetName, testNs)
+		// StreamsReady=True is the documented barrier that the object is a genuine live, windowed event.
+		waitForStreamsReady(gitTargetName, testNs)
 	})
 
 	AfterAll(func() {
@@ -341,13 +341,13 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		applyDeploymentWatchRule(testNs, watchRuleName, gitTargetName)
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 
-		// Gate on Synced=True before any spec creates a Deployment: under watch-first, "Ready" only
+		// Gate on StreamsReady=True before any spec creates a Deployment: under watch-first, "Ready" only
 		// means the watch set is reconciled, not that each watch has opened and finished its
 		// sendInitialEvents replay. A Deployment created before the (empty) initial replay completes
 		// is folded into that committer-authored reconcile and committed immediately — establishing
 		// main and breaking the "branch not even created until the window is finalized" assertion.
-		// Synced=True is the documented barrier that the object is a genuine live, windowed event.
-		waitForGitTargetSynced(gitTargetName, testNs)
+		// StreamsReady=True is the documented barrier that the object is a genuine live, windowed event.
+		waitForStreamsReady(gitTargetName, testNs)
 	})
 
 	AfterAll(func() {
