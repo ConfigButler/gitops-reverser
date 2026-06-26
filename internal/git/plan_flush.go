@@ -62,6 +62,9 @@ func (w *BranchWorker) flushEventsToWorktree(
 	}
 
 	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, files)
+	if err := batch.refusal(); err != nil {
+		return false, err
+	}
 	for _, event := range events {
 		if err := batch.applyEvent(ctx, event); err != nil {
 			return false, err
@@ -89,10 +92,13 @@ func newWriteBatch(
 	mapper typeset.Lookup,
 	files []manifestedit.FileContent,
 ) *writeBatch {
-	// An empty allowlist materialises every KRM document — the live writer indexes
-	// the whole subtree for placement, exactly as the per-event inventory did. The
-	// acceptance gate (allowlist, scope, refusals) is applied upstream, not here.
-	store := manifestanalyzer.BuildStoreFromFiles(ctx, files, mapper, manifestanalyzer.Allowlist{})
+	// The writer allowlist retains build directives (kustomization.yaml) and the operator's
+	// own .sops.yaml bootstrap config outside the managed model — these are auxiliary input,
+	// not documents to materialise or to mis-refuse as standalone non-KRM. Every other KRM
+	// document is still materialised: the live writer indexes the whole subtree for
+	// placement. The structure-only acceptance gate is then run over this store by
+	// writeBatch.refusal.
+	store := manifestanalyzer.BuildStoreFromFiles(ctx, files, mapper, manifestanalyzer.WriterAllowlist())
 	contentByPath := make(map[string][]byte, len(files))
 	for _, f := range files {
 		contentByPath[f.Path] = f.Content
@@ -105,6 +111,20 @@ func newWriteBatch(
 		contentByPath: contentByPath,
 		buffers:       map[string]*fileBuffer{},
 	}
+}
+
+// refusal runs the structure-only acceptance gate over the batch's store and returns a
+// *manifestanalyzer.AcceptanceRefusedError when the GitTarget subtree holds content the
+// operator cannot safely manage: a duplicate manifest identity, an impure managed file, a
+// standalone non-KRM / invalid YAML file, a managed resource hiding in a build directive,
+// or an unsupported kustomization. A refusal aborts the commit before any file is touched,
+// so the folder is left exactly as the human left it until they clean it.
+//
+// It is structure-only on purpose: the writer must never refuse on a discovery-derived
+// followability fact (unwatched / out-of-scope), which can blink on a discovery wobble and
+// would otherwise turn a transient into a stuck, unwritable GitTarget.
+func (wb *writeBatch) refusal() error {
+	return manifestanalyzer.RefusalError(manifestanalyzer.AcceptStructureOnly(wb.store))
 }
 
 // fileBuffer is the commit-scoped, hydrated working copy of one file under the

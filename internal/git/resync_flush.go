@@ -331,6 +331,13 @@ func (w *BranchWorker) applyResyncToWorktree(
 	}
 
 	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, files)
+	// First materialization is the adoption gate: refuse a subtree that holds content the
+	// operator cannot safely manage (unsupported kustomization, duplicate identity, impure
+	// or non-KRM files) and commit nothing, so the watch layer surfaces it as a blocked
+	// stream instead of writing into a folder it does not understand.
+	if err := batch.refusal(); err != nil {
+		return ResyncStats{}, false, err
+	}
 	// The store is built from the same files the planner reads, so the plan and the apply
 	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
 	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync

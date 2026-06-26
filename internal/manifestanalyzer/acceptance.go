@@ -101,6 +101,12 @@ const (
 	// IssueOutOfScope marks a watched kind whose resource falls outside this
 	// GitTarget's scope (right kind, wrong namespace).
 	IssueOutOfScope IssueKind = "out-of-scope"
+	// IssueUnsupportedKustomize marks a retained kustomization.yaml that uses a feature
+	// the contextual-namespace writer cannot map back to editable source documents
+	// (generators / patches / components / helm / replacements / transformers /
+	// name(pre|suf)fix / remote bases). The folder is refused rather than written,
+	// because the operator cannot take responsibility for content produced this way.
+	IssueUnsupportedKustomize IssueKind = "unsupported-kustomize"
 )
 
 // Allowlist is the set of build-directive files that are retained on disk but never
@@ -133,6 +139,17 @@ func DefaultAllowlist() Allowlist {
 	return NewAllowlist("kustomization.yaml", "kustomization.yml")
 }
 
+// WriterAllowlist returns the allowlist the live writer and resync apply build their store
+// with: the kustomize build directives (DefaultAllowlist) plus the operator's own non-KRM
+// bootstrap artifact, the ".sops.yaml" creation-rules config. That file legitimately lives in
+// a managed subtree (it is staged by the bootstrap template when encryption is configured)
+// but is never KRM the operator materialises, so the acceptance gate must retain it rather
+// than refuse it as a standalone non-KRM file. Encrypted Secret payloads keep their own
+// "<name>.sops.yaml" basenames and are still materialised as the KRM Secrets they are.
+func WriterAllowlist() Allowlist {
+	return NewAllowlist("kustomization.yaml", "kustomization.yml", ".sops.yaml")
+}
+
 // Allows reports whether the file at path is an allowlisted build directive,
 // matching on basename.
 func (a Allowlist) Allows(path string) bool {
@@ -158,11 +175,33 @@ func filepathBase(path string) string {
 // documents are already in store.Retained rather than FilesByPath; Accept does not
 // re-derive retention. It is a pure function of (store, policy) and writes nothing.
 func Accept(store *ManifestStore, policy AcceptancePolicy) Acceptance {
+	return acceptWith(store, policy, hasAPISource(store))
+}
+
+// AcceptStructureOnly runs only the refusals that are pure structural facts about the
+// folder — duplicate identity, impure managed file, standalone non-KRM/invalid YAML,
+// a managed resource hiding in an allowlisted build-directive, and an unsupported
+// kustomization. It NEVER runs the mapping-aware refusals (unwatched / out-of-scope),
+// which depend on live followability discovery and can blink on a discovery wobble.
+//
+// This is the live writer's entry point. The writer's store is built with a ready
+// followability registry, so hasAPISource would be true and plain Accept would also run
+// the mapping refusals — but the writer must refuse only on the cases we already know are
+// a problem from structure alone, never on a transient discovery fact.
+func AcceptStructureOnly(store *ManifestStore) Acceptance {
+	return acceptWith(store, AcceptancePolicy{}, false)
+}
+
+// acceptWith is the shared gate core. The structure-only refusals always run; the
+// mapping-aware refusals run only when includeMapping is set (Accept, with an API
+// source). The unsupported-kustomize refusal is structural and always runs.
+func acceptWith(store *ManifestStore, policy AcceptancePolicy, includeMapping bool) Acceptance {
 	var issues []AcceptanceIssue
 	issues = append(issues, duplicateRefusals(store)...)
 	issues = append(issues, recordlessRefusals(store)...)
 	issues = append(issues, mixedFileRefusals(store)...)
-	if hasAPISource(store) {
+	issues = append(issues, unsupportedKustomizeRefusals(store)...)
+	if includeMapping {
 		issues = append(issues, mappingRefusals(store, policy)...)
 	}
 	sortIssues(issues)
@@ -171,6 +210,27 @@ func Accept(store *ManifestStore, policy AcceptancePolicy) Acceptance {
 		Issues:   issues,
 		Retained: store.Retained,
 	}
+}
+
+// unsupportedKustomizeRefusals refuses every retained kustomization.yaml the store marked
+// Unsupported at build time. These are the cases where we already know the folder cannot
+// be safely materialised, so the operator stops rather than write into it.
+func unsupportedKustomizeRefusals(store *ManifestStore) []AcceptanceIssue {
+	var out []AcceptanceIssue
+	for _, rd := range store.Retained {
+		if !rd.Unsupported {
+			continue
+		}
+		out = append(out, AcceptanceIssue{
+			Kind:          IssueUnsupportedKustomize,
+			Path:          rd.Location.Path,
+			DocumentIndex: rd.Location.DocumentIndex,
+			Message: "kustomization " + rd.Location.Path + " uses an unsupported feature " +
+				"(generators/patches/components/helm/replacements/transformers/namePrefix/nameSuffix/remote bases); " +
+				"the operator cannot map it back to editable source documents and will not write into this folder",
+		})
+	}
+	return out
 }
 
 // duplicateRefusals refuses every duplicate manifest identity, naming the loser and

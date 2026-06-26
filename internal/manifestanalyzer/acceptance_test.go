@@ -20,12 +20,21 @@ package manifestanalyzer
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
+
+// hardKustomizationY is a kustomization.yaml that uses an unsupported feature (a patches
+// block): the operator cannot map its output back to editable source documents.
+const hardKustomizationY = "apiVersion: kustomize.config.k8s.io/v1beta1\n" +
+	"kind: Kustomization\n" +
+	"resources:\n  - deploy.yaml\n" +
+	"patches:\n  - path: patch.yaml\n"
 
 const (
 	plainSecretYAML = "apiVersion: v1\nkind: Secret\nmetadata:\n  name: db\n  namespace: default\n"
@@ -321,5 +330,99 @@ func TestAllowlist(t *testing.T) {
 	}
 	if NewAllowlist().Allows("kustomization.yaml") {
 		t.Errorf("an empty NewAllowlist should allow nothing")
+	}
+}
+
+func TestAccept_UnsupportedKustomizeRefuses(t *testing.T) {
+	// A kustomization.yaml that uses a hard feature (patches) is retained, flagged
+	// Unsupported, and refused — the operator will not write into a folder it cannot map
+	// back to editable source documents.
+	fsys := fstest.MapFS{
+		"kustomization.yaml": {Data: []byte(hardKustomizationY)},
+		"deploy.yaml":        {Data: []byte(deployYAML)},
+	}
+	store, acc := acceptanceOf(t, fsys, snapMapper(), AcceptancePolicy{Allowlist: DefaultAllowlist()})
+
+	if acc.Accepted {
+		t.Fatalf("a hard-kustomize folder must be refused, got accepted")
+	}
+	if countAcceptance(acc, IssueUnsupportedKustomize) != 1 {
+		t.Fatalf("want one unsupported-kustomize refusal, got %+v", acc.Issues)
+	}
+	if len(store.Retained) != 1 || !store.Retained[0].Unsupported {
+		t.Fatalf("the kustomization should be retained and flagged Unsupported, got %+v", store.Retained)
+	}
+	// The refusal must name the offending file so a human can act on it.
+	for _, is := range acc.Issues {
+		if is.Kind == IssueUnsupportedKustomize && is.Path != "kustomization.yaml" {
+			t.Errorf("refusal should name kustomization.yaml, got %q", is.Path)
+		}
+	}
+}
+
+func TestAccept_CleanKustomizationNotFlaggedUnsupported(t *testing.T) {
+	// A plain kustomization (namespace/resources only) must NOT be flagged or refused —
+	// no false refusal on a legitimate build directive.
+	fsys := fstest.MapFS{
+		"kustomization.yaml": {Data: []byte(kustomizationY)},
+		"deploy.yaml":        {Data: []byte(deployYAML)},
+	}
+	store, acc := acceptanceOf(t, fsys, snapMapper(), AcceptancePolicy{Allowlist: DefaultAllowlist()})
+	if !acc.Accepted {
+		t.Fatalf("a clean kustomization folder must pass, got %+v", acc.Issues)
+	}
+	if len(store.Retained) != 1 || store.Retained[0].Unsupported {
+		t.Fatalf("a clean kustomization must not be flagged Unsupported, got %+v", store.Retained)
+	}
+}
+
+func TestAcceptStructureOnly_RefusesUnsupportedKustomize(t *testing.T) {
+	// The writer entrypoint (structure-only) still refuses hard-kustomize — the
+	// kustomize refusal is a structural fact, not a mapping one.
+	fsys := fstest.MapFS{
+		"kustomization.yaml": {Data: []byte(hardKustomizationY)},
+		"deploy.yaml":        {Data: []byte(deployYAML)},
+	}
+	store := buildStoreFS(context.Background(), fsys, snapMapper(), DefaultAllowlist())
+	acc := AcceptStructureOnly(store)
+	if acc.Accepted || countAcceptance(acc, IssueUnsupportedKustomize) != 1 {
+		t.Fatalf("AcceptStructureOnly should refuse hard-kustomize, got accepted=%v issues=%+v",
+			acc.Accepted, acc.Issues)
+	}
+}
+
+func TestAcceptStructureOnly_SkipsMappingRefusals(t *testing.T) {
+	// A served-but-empty registry makes a Widget NotFollowable. Plain Accept refuses it
+	// (IssueUnresolvedKRM); AcceptStructureOnly must NOT — the writer never refuses on a
+	// discovery-derived fact that can blink on a wobble.
+	fsys := fstest.MapFS{"w.yaml": {Data: []byte(widgetYAMLDoc)}}
+	mapper := typeset.NewSnapshotRegistry(typeset.Snapshot{Generation: 1})
+
+	store := buildStoreFS(context.Background(), fsys, mapper, Allowlist{})
+	if acc := Accept(store, AcceptancePolicy{}); acc.Accepted {
+		t.Fatalf("plain Accept should refuse an unwatched Widget, got accepted")
+	}
+	if acc := AcceptStructureOnly(store); !acc.Accepted {
+		t.Fatalf("AcceptStructureOnly must skip mapping refusals, got %+v", acc.Issues)
+	}
+}
+
+func TestRefusalError(t *testing.T) {
+	if err := RefusalError(Acceptance{Accepted: true}); err != nil {
+		t.Fatalf("RefusalError on an accepted result should be nil, got %v", err)
+	}
+	refused := Acceptance{
+		Accepted: false,
+		Issues: []AcceptanceIssue{
+			{Kind: IssueUnsupportedKustomize, Path: "team-a/kustomization.yaml", Message: "uses patches"},
+		},
+	}
+	err := RefusalError(refused)
+	var are *AcceptanceRefusedError
+	if !errors.As(err, &are) {
+		t.Fatalf("RefusalError should return *AcceptanceRefusedError, got %T", err)
+	}
+	if are.BlockMessage() == "" || !strings.Contains(are.Error(), "team-a/kustomization.yaml") {
+		t.Errorf("refusal error should name the offending file, got %q", are.Error())
 	}
 }

@@ -100,6 +100,13 @@ type RetainedDocument struct {
 	Location manifestedit.Location
 	Identity manifestedit.Identity
 	GVK      schema.GroupVersionKind
+	// Unsupported is true for a whole-file kustomization retention that uses a feature
+	// outside the supported contextual-namespace subset (generators / patches /
+	// components / helm / replacements / transformers / name(pre|suf)fix / remote bases).
+	// The operator cannot map such a folder back to editable source documents, so the
+	// acceptance gate refuses it (IssueUnsupportedKustomize) rather than writing into
+	// content it cannot safely manage. Only ever set on a whole-file retention.
+	Unsupported bool
 }
 
 // FileModel is one managed file under the scanned root. Its document set and
@@ -369,7 +376,10 @@ func buildStore(
 	// so it is known to acceptance (and shown) but never becomes a FileModel.
 	for _, f := range yamlFiles {
 		if allowlist.Allows(f.Path) && !hasNamedRecord[f.Path] {
-			store.Retained = append(store.Retained, RetainedDocument{Location: manifestedit.Location{Path: f.Path}})
+			store.Retained = append(store.Retained, RetainedDocument{
+				Location:    manifestedit.Location{Path: f.Path},
+				Unsupported: isKustomizationFile(f.Path) && kustomizationUsesUnsupportedFeature(f.Content),
+			})
 		}
 	}
 	sortRetained(store.Retained)
@@ -677,6 +687,20 @@ func parseKustomizations(files []manifestedit.FileContent) map[string]*kustomiza
 		out[slashDir(f.Path)] = doc
 	}
 	return out
+}
+
+// kustomizationUsesUnsupportedFeature reports whether a kustomization.yaml's bytes use a
+// feature outside the supported contextual-namespace subset — the same predicate that
+// disqualifies it as a namespace source (parseKustomizations), reused by the acceptance
+// gate to refuse the folder at the retention site. An unparseable kustomization is treated
+// as unsupported: if we cannot read it, we cannot vouch for what it produces.
+func kustomizationUsesUnsupportedFeature(content []byte) bool {
+	raw := map[string]interface{}{}
+	if err := yaml.Unmarshal(content, &raw); err != nil {
+		return true
+	}
+	resources := append(stringList(raw, "resources"), stringList(raw, "bases")...)
+	return hasUnsupportedKustomizeFeature(raw) || hasRemoteResource(resources)
 }
 
 // hasUnsupportedKustomizeFeature reports whether a kustomization uses a field that
