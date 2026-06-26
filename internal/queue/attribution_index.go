@@ -21,7 +21,6 @@ package queue
 import (
 	"context"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,8 +53,8 @@ const watchCursorTTL = time.Hour
 const keyPrefix = "gitops-reverser"
 
 const (
-	attributionKeySuffix     = ":attr:v1:"
-	watchCursorKeySuffix     = ":watch-cursor:v1:"
+	attributionKeySuffix     = ":attr:v2:"
+	watchCursorKeySuffix     = ":watch-cursor:v2:"
 	attributionVariantExact  = "e" // (group, resource, namespace, name, uid, rv)
 	attributionVariantUID    = "u" // (group, resource, namespace, name, uid)
 	attributionVariantRV     = "r" // (group, resource, namespace, name, rv)
@@ -133,12 +132,11 @@ func (a *AttributionIndex) Ping(ctx context.Context) error {
 // GitTarget watch shard. A miss means the watch must rebuild from a fresh replay.
 func (a *AttributionIndex) LookupWatchCursor(
 	ctx context.Context,
-	gitTargetNamespace, gitTargetName, gitTargetUID string,
+	gitTargetUID string,
 	gvr schema.GroupVersionResource,
 	namespace string,
 ) (string, bool) {
-	key := a.watchCursorKey(gitTargetNamespace, gitTargetName, gitTargetUID, gvr, namespace)
-	rv, err := a.client.Get(ctx, key).Result()
+	rv, err := a.client.Get(ctx, a.watchCursorKey(gitTargetUID, gvr, namespace)).Result()
 	if err != nil || rv == "" {
 		return "", false
 	}
@@ -151,15 +149,14 @@ func (a *AttributionIndex) LookupWatchCursor(
 // watch keeps it fresh, and a dead one's cursor simply expires.
 func (a *AttributionIndex) RecordWatchCursor(
 	ctx context.Context,
-	gitTargetNamespace, gitTargetName, gitTargetUID string,
+	gitTargetUID string,
 	gvr schema.GroupVersionResource,
 	namespace, rv string,
 ) error {
 	if rv == "" {
 		return nil
 	}
-	key := a.watchCursorKey(gitTargetNamespace, gitTargetName, gitTargetUID, gvr, namespace)
-	if err := a.client.Set(ctx, key, rv, watchCursorTTL).Err(); err != nil {
+	if err := a.client.Set(ctx, a.watchCursorKey(gitTargetUID, gvr, namespace), rv, watchCursorTTL).Err(); err != nil {
 		return fmt.Errorf("store watch cursor: %w", err)
 	}
 	return nil
@@ -283,26 +280,63 @@ func (a *AttributionIndex) factKeyVariants(group, resource, namespace, name stri
 	return keys
 }
 
+// factKey builds a readable, colon-joined key from a fact's parts, e.g.
+// "gitops-reverser:attr:v2:e:apps:deployments:team-a:web:uid-1:101". Each part is
+// escaped so a value that itself contains the ":" delimiter (notably RBAC names like
+// "system:node-proxier") cannot blur field boundaries and collide with another object.
+// Keys are only ever matched exactly, never parsed back, so escaping is one-way.
 func (a *AttributionIndex) factKey(variant string, parts ...string) string {
-	id := hex.EncodeToString([]byte(strings.Join(parts, "\x00")))
-	return keyPrefix + attributionKeySuffix + variant + ":" + id
+	return keyPrefix + attributionKeySuffix + variant + ":" + joinKeyFields(parts)
 }
 
+// watchCursorKey builds a readable cursor key identifying the GitTarget by its UID
+// alone, e.g. "gitops-reverser:watch-cursor:v2:<uid>:apps:v1:deployments:team-a". The
+// UID is globally unique, so the GitTarget's namespace/name would be redundant.
 func (a *AttributionIndex) watchCursorKey(
-	gitTargetNamespace, gitTargetName, gitTargetUID string,
+	gitTargetUID string,
 	gvr schema.GroupVersionResource,
 	namespace string,
 ) string {
-	id := hex.EncodeToString([]byte(strings.Join([]string{
-		gitTargetNamespace,
-		gitTargetName,
+	return keyPrefix + watchCursorKeySuffix + joinKeyFields([]string{
 		gitTargetUID,
 		gvr.Group,
 		gvr.Version,
 		gvr.Resource,
 		namespace,
-	}, "\x00")))
-	return keyPrefix + watchCursorKeySuffix + id
+	})
+}
+
+// joinKeyFields escapes each field and joins them with ":". Escaping only the
+// delimiter and the escape character keeps the common case (numeric RVs, plain
+// names) fully readable while making the encoding injective: distinct field tuples
+// always map to distinct keys.
+func joinKeyFields(parts []string) string {
+	escaped := make([]string, len(parts))
+	for i, p := range parts {
+		escaped[i] = escapeKeyField(p)
+	}
+	return strings.Join(escaped, ":")
+}
+
+// escapeKeyField neutralizes the ":" delimiter and the "%" escape character within a
+// single key field. Everything else passes through unchanged for readability.
+func escapeKeyField(s string) string {
+	if !strings.ContainsAny(s, "%:") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := range len(s) {
+		switch s[i] {
+		case '%':
+			b.WriteString("%25")
+		case ':':
+			b.WriteString("%3A")
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 // resourceVersionFromEvent returns the event's ResourceVersion when one is available,

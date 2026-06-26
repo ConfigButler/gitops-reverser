@@ -673,11 +673,11 @@ func (m *Manager) lookupTargetWatchCursor(
 	gitDest types.ResourceReference,
 	key targetWatchKey,
 ) (string, bool) {
-	if m.WatchCursorStore == nil {
+	uid := m.resolveGitTargetUID(gitDest)
+	if m.WatchCursorStore == nil || uid == "" {
 		return "", false
 	}
-	return m.WatchCursorStore.LookupWatchCursor(
-		ctx, gitDest.Namespace, gitDest.Name, gitDest.UID, key.GVR, key.Namespace)
+	return m.WatchCursorStore.LookupWatchCursor(ctx, uid, key.GVR, key.Namespace)
 }
 
 func (m *Manager) recordTargetWatchCursor(
@@ -686,11 +686,45 @@ func (m *Manager) recordTargetWatchCursor(
 	key targetWatchKey,
 	rv string,
 ) error {
-	if m.WatchCursorStore == nil || rv == "" {
+	uid := m.resolveGitTargetUID(gitDest)
+	if m.WatchCursorStore == nil || rv == "" || uid == "" {
 		return nil
 	}
-	return m.WatchCursorStore.RecordWatchCursor(
-		ctx, gitDest.Namespace, gitDest.Name, gitDest.UID, key.GVR, key.Namespace, rv)
+	return m.WatchCursorStore.RecordWatchCursor(ctx, uid, key.GVR, key.Namespace, rv)
+}
+
+// rememberGitTargetUID records the UID the controller observed for a GitTarget so the
+// watch data plane can key its cursors by UID even though the rule-derived watch tables
+// carry only namespace/name.
+func (m *Manager) rememberGitTargetUID(gitDest types.ResourceReference) {
+	if gitDest.UID == "" {
+		return
+	}
+	m.gitTargetUIDsMu.Lock()
+	defer m.gitTargetUIDsMu.Unlock()
+	if m.gitTargetUIDs == nil {
+		m.gitTargetUIDs = map[string]string{}
+	}
+	m.gitTargetUIDs[gitDest.Key()] = gitDest.UID
+}
+
+// forgetGitTargetUID drops the remembered UID when a GitTarget is deleted.
+func (m *Manager) forgetGitTargetUID(gitDest types.ResourceReference) {
+	m.gitTargetUIDsMu.Lock()
+	defer m.gitTargetUIDsMu.Unlock()
+	delete(m.gitTargetUIDs, gitDest.Key())
+}
+
+// resolveGitTargetUID returns the GitTarget UID for a cursor operation, preferring the
+// UID carried on gitDest and falling back to the remembered map — the data-plane gitDest
+// comes from the rule-derived watch table and has none.
+func (m *Manager) resolveGitTargetUID(gitDest types.ResourceReference) string {
+	if gitDest.UID != "" {
+		return gitDest.UID
+	}
+	m.gitTargetUIDsMu.Lock()
+	defer m.gitTargetUIDsMu.Unlock()
+	return m.gitTargetUIDs[gitDest.Key()]
 }
 
 func bufferTargetWatchEvents(ctx context.Context, in <-chan watch.Event, out chan<- watch.Event) {

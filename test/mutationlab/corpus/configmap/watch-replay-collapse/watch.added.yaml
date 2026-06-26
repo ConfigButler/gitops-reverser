@@ -1,0 +1,28 @@
+object:
+  apiVersion: v1
+  data:
+    key: modified
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts>
+    labels:
+      mutationlab.configbutler.ai/scenario: watch-replay-collapse
+    managedFields:
+    - apiVersion: v1
+      fieldsType: FieldsV1
+      fieldsV1:
+        f:data:
+          .: {}
+          f:key: {}
+        f:metadata:
+          f:labels:
+            .: {}
+            f:mutationlab.configbutler.ai/scenario: {}
+      manager: e2e.test
+      operation: Update
+      time: <ts>
+    name: cm-collapse
+    namespace: <ns-1>
+    resourceVersion: <rv-1>
+    uid: <uid-1>
+type: ADDED

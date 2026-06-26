@@ -370,6 +370,9 @@ func TestTargetWatchReplayAndStream_ResumesFromStoredCursor(t *testing.T) {
 			return nil, errors.New("cursor resume should not list")
 		},
 	}
+	// The data-plane gitDest carries no UID (it comes from the rule-derived watch
+	// table); the controller's Declare is what teaches the manager the UID.
+	manager.rememberGitTargetUID(gitDest.WithUID("uid-1"))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -390,6 +393,7 @@ func TestTargetWatchReplayAndStream_ResumesFromStoredCursor(t *testing.T) {
 
 	require.NoError(t, <-done)
 	assert.Equal(t, "42", store.lastRecordedRV())
+	assert.Equal(t, "uid-1", store.lastRecordedUID(), "cursor is keyed by the remembered GitTarget UID")
 	assert.Equal(t, "UPDATE", enqueuer.snapshot()[0].Operation)
 }
 
@@ -565,6 +569,22 @@ func TestTargetWatchReplayAndStream_ExpiredCursorFallsBackToFreshReplay(t *testi
 	assert.Equal(t, "uid-1", store.lastRecordedUID(), "the GitTarget UID scopes the cursor write")
 }
 
+func TestManager_GitTargetUIDLifecycle(t *testing.T) {
+	m := &Manager{}
+	gitDest := types.NewResourceReference("target", "default")
+
+	// A UID-less data-plane gitDest resolves to nothing until the controller's Declare
+	// teaches the manager the UID.
+	assert.Empty(t, m.resolveGitTargetUID(gitDest))
+
+	m.rememberGitTargetUID(gitDest.WithUID("uid-1"))
+	assert.Equal(t, "uid-1", m.resolveGitTargetUID(gitDest), "the data-plane gitDest resolves via the remembered map")
+	assert.Equal(t, "uid-9", m.resolveGitTargetUID(gitDest.WithUID("uid-9")), "an explicit UID on gitDest wins")
+
+	m.forgetGitTargetUID(gitDest)
+	assert.Empty(t, m.resolveGitTargetUID(gitDest))
+}
+
 func receiveOpenedWatch(t *testing.T, opened <-chan openedWatch) openedWatch {
 	t.Helper()
 	select {
@@ -639,7 +659,7 @@ type fakeWatchCursorStore struct {
 
 func (f *fakeWatchCursorStore) LookupWatchCursor(
 	_ context.Context,
-	_, _, gitTargetUID string,
+	gitTargetUID string,
 	_ schema.GroupVersionResource,
 	_ string,
 ) (string, bool) {
@@ -651,7 +671,7 @@ func (f *fakeWatchCursorStore) LookupWatchCursor(
 
 func (f *fakeWatchCursorStore) RecordWatchCursor(
 	_ context.Context,
-	_, _, gitTargetUID string,
+	gitTargetUID string,
 	_ schema.GroupVersionResource,
 	_, rv string,
 ) error {

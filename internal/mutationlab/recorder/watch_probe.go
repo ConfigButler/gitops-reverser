@@ -41,6 +41,15 @@ const (
 	WatchProbeBookmark WatchProbeMode = "bookmark"
 	// WatchProbeExpired captures the Status payload for an expired resourceVersion.
 	WatchProbeExpired WatchProbeMode = "expired"
+	// WatchProbeReplay captures the full SendInitialEvents replay window — every
+	// initial synthetic ADDED plus the terminating initial-events-end BOOKMARK —
+	// using the exact transport internal/watch/target_watch.go opens. It exists to
+	// document the replay watermark: a create-then-modify performed before the
+	// watch opens is delivered as the single collapsed ADDED at the post-modify
+	// resourceVersion, not as a distinct CREATE then MODIFIED, and it lands inside
+	// the replay window (before the bookmark) where the product files it as an
+	// unattributed baseline rather than an attributable per-event commit.
+	WatchProbeReplay WatchProbeMode = "replay"
 )
 
 // WatchProbeRequest describes one targeted watch transport capture.
@@ -81,6 +90,8 @@ func (p *WatchProbe) Probe(ctx context.Context, req WatchProbeRequest) ([]mutati
 		return p.probeBookmark(ctx, req)
 	case WatchProbeExpired:
 		return p.probeExpired(ctx, req)
+	case WatchProbeReplay:
+		return p.probeReplay(ctx, req)
 	default:
 		return nil, fmt.Errorf("unsupported watch probe mode %q", req.Mode)
 	}
@@ -97,6 +108,22 @@ func (p *WatchProbe) probeBookmark(ctx context.Context, req WatchProbeRequest) (
 	return p.captureUntil(ctx, req, opts, func(r mutationlab.Record) bool {
 		return r.Summary.WatchType == string(watch.Bookmark)
 	}, true)
+}
+
+func (p *WatchProbe) probeReplay(ctx context.Context, req WatchProbeRequest) ([]mutationlab.Record, error) {
+	sendInitial := true
+	opts := metav1.ListOptions{
+		AllowWatchBookmarks:  true,
+		LabelSelector:        req.LabelSelector,
+		ResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
+		SendInitialEvents:    &sendInitial,
+	}
+	// onlyTerminal=false keeps every replayed ADDED, not just the boundary — the
+	// collapsed observation is the point. The first BOOKMARK is the
+	// initial-events-end marker that closes the replay window.
+	return p.captureUntil(ctx, req, opts, func(r mutationlab.Record) bool {
+		return r.Summary.WatchType == string(watch.Bookmark)
+	}, false)
 }
 
 func (p *WatchProbe) probeExpired(ctx context.Context, req WatchProbeRequest) ([]mutationlab.Record, error) {

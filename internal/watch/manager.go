@@ -125,6 +125,13 @@ type Manager struct {
 	targetWatchesMu sync.Mutex
 	targetWatches   map[string]*targetWatchSet
 
+	// gitTargetUIDs maps a GitTarget's namespace/name key to its object UID, captured
+	// from the controller on Declare. The watch data plane keys resume cursors by this
+	// UID — the rule-derived watch tables don't carry it — so a GitTarget recreated
+	// under the same name never inherits its predecessor's cursor.
+	gitTargetUIDsMu sync.Mutex
+	gitTargetUIDs   map[string]string
+
 	// typeRegistry is the followability decision surface (see
 	// docs/design/manifest/version2/type-followability.md): one typeset.TypeRecord
 	// per served type, refreshed from the catalog scan on every catalog refresh. It

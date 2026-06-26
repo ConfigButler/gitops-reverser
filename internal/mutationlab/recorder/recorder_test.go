@@ -280,6 +280,45 @@ func TestWatchProbe_BookmarkRecordsOnlyBookmark(t *testing.T) {
 	}
 }
 
+// TestWatchProbe_ReplayKeepsCollapsedAdded pins the replay mode's defining trait:
+// unlike the bookmark probe (which returns only the boundary), the replay probe
+// keeps every initial ADDED that precedes the initial-events-end BOOKMARK. A
+// create-then-modify performed before the watch opens surfaces in the
+// SendInitialEvents replay as ONE synthetic ADDED at the post-modify rv — the
+// collapsed observation the product files as an unattributed baseline.
+func TestWatchProbe_ReplayKeepsCollapsedAdded(t *testing.T) {
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	client.PrependWatchReactor("configmaps", func(_ ktesting.Action) (bool, watch.Interface, error) {
+		w := watch.NewFakeWithChanSize(2, false)
+		// rv 12 is the post-modify resourceVersion; the create's rv is already gone.
+		w.Action(watch.Added, watchObject("cm-collapse", "12"))
+		w.Action(watch.Bookmark, watchObject("", "12"))
+		return true, w, nil
+	})
+
+	records, err := NewWatchProbe(client).Probe(context.Background(), WatchProbeRequest{
+		Scenario:      "watch-replay-collapse",
+		Mode:          WatchProbeReplay,
+		GVR:           gvr,
+		Namespace:     "lab-watch",
+		LabelSelector: ScenarioLabel + "=watch-replay-collapse",
+	})
+	if err != nil {
+		t.Fatalf("probe replay: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want the collapsed ADDED + the boundary BOOKMARK", len(records))
+	}
+	if got := records[0]; got.Summary.WatchType != "ADDED" || got.Key.Name != "cm-collapse" ||
+		got.Key.ResourceVersion != "12" || got.Scenario != "watch-replay-collapse" {
+		t.Fatalf("record[0] = %+v, want collapsed ADDED cm-collapse@12 (no MODIFIED)", got)
+	}
+	if got := records[1]; got.Summary.WatchType != "BOOKMARK" || got.Key.ResourceVersion != "12" {
+		t.Fatalf("record[1] = %+v, want initial-events-end BOOKMARK@12", got)
+	}
+}
+
 func TestWatchProbe_ExpiredWatchErrorBecomesRecord(t *testing.T) {
 	gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
 	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())

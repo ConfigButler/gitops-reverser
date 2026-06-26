@@ -118,6 +118,86 @@ func TestWatchBookmark(t *testing.T) {
 	h.syncCorpus(t, "configmap/watch-bookmark", records)
 }
 
+// TestWatchReplayCollapsesCreateThenModify captures the replay-watermark behavior
+// behind the signing-overlap and commit-author-attribution flakes. The product's
+// watch-first ingestion (internal/watch/target_watch.go) opens a SendInitialEvents
+// watch and files everything observed *before* the initial-events-end BOOKMARK as
+// an unattributed baseline resync; only events *after* the bookmark become
+// attributable per-event commits.
+//
+// This probe uses that exact transport. A ConfigMap is created and then modified
+// BEFORE the watch opens — and the replay delivers it as a SINGLE collapsed ADDED
+// at the post-modify resourceVersion: no distinct CREATE, no MODIFIED, the create's
+// resourceVersion invisible. So an object whose creation loses the race against the
+// watermark cannot be observed as a per-event CREATE and carries no per-event
+// attribution — it is indistinguishable from a long-existing object. Contrast Row 2
+// (TestUpdate), where the same modify on an already-live watch is a distinct
+// MODIFIED.
+func TestWatchReplayCollapsesCreateThenModify(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "watch-replay-collapse")
+
+	// Create then modify the SAME object, both before the replay watch opens.
+	cm := &corev1.ConfigMap{ObjectMeta: s.meta("cm-collapse"), Data: map[string]string{"key": "value"}}
+	created, err := h.kube.CoreV1().ConfigMaps(s.ns).Create(ctx, cm, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	created.Data["key"] = "modified"
+	updated, err := h.kube.CoreV1().ConfigMaps(s.ns).Update(ctx, created, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.ResourceVersion == created.ResourceVersion {
+		t.Fatalf("update did not advance resourceVersion (%s); the collapse proof needs two distinct writes",
+			created.ResourceVersion)
+	}
+	// Drain the background recorder's own watch/audit/admission for the two writes so
+	// they cannot bleed into a later scenario; the probe below returns its own records.
+	h.quiesceAndClear(t, s.id, 5)
+
+	records := h.probeWatch(t, watchProbeRequest{
+		Scenario:      s.id,
+		Mode:          "replay",
+		Resource:      configmapsResource,
+		Namespace:     s.ns,
+		LabelSelector: scenarioLabel + "=" + s.id,
+	})
+
+	// The replay window is exactly the collapsed ADDED plus the initial-events-end
+	// BOOKMARK that closes it — the create-then-modify is one event, not two.
+	if got := countWatchType(records, "ADDED"); got != 1 {
+		t.Errorf("replay produced %d ADDED events; want exactly 1 (create+modify collapse)", got)
+	}
+	if got := countWatchType(records, "MODIFIED"); got != 0 {
+		t.Errorf("replay produced %d MODIFIED events; want 0 (the modify is folded into the ADDED)", got)
+	}
+	if got := countWatchType(records, "BOOKMARK"); got != 1 {
+		t.Errorf("replay produced %d BOOKMARK events; want exactly 1 (initial-events-end)", got)
+	}
+
+	added := mustRecord(t, firstWatch(records, "ADDED"), "the collapsed replay ADDED for cm-collapse")
+	// The collapsed ADDED carries the POST-modify resourceVersion: the create moment
+	// (and its resourceVersion) is gone — which is why a late-joining watch cannot
+	// attribute or per-event-commit the create.
+	if added.Key.ResourceVersion != updated.ResourceVersion {
+		t.Errorf("replay ADDED rv = %s; want the post-modify rv %s (the latest state, not the create)",
+			added.Key.ResourceVersion, updated.ResourceVersion)
+	}
+	if added.Key.ResourceVersion == created.ResourceVersion {
+		t.Errorf("replay ADDED rv = %s equals the create rv; the modify should have been folded in",
+			added.Key.ResourceVersion)
+	}
+
+	bookmark := mustRecord(t, firstWatch(records, "BOOKMARK"), "the initial-events-end BOOKMARK")
+	if bookmark.Key.ResourceVersion == "" {
+		t.Error("initial-events-end BOOKMARK carried no resourceVersion; it is the replay watermark")
+	}
+
+	h.syncCorpus(t, "configmap/watch-replay-collapse", records)
+}
+
 func watchStatus(r mutationlab.Record) (int32, string) {
 	var env struct {
 		Object struct {

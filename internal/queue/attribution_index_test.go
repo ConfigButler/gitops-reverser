@@ -174,19 +174,19 @@ func TestAttributionIndex_WatchCursorRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	gvr := appsDeploymentGVR()
 
-	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-1", gvr, "apps")
+	_, ok := idx.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
 	require.False(t, ok)
 
-	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", "uid-1", gvr, "apps", "42"))
-	got, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-1", gvr, "apps")
+	require.NoError(t, idx.RecordWatchCursor(ctx, "uid-1", gvr, "apps", "42"))
+	got, ok := idx.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
 	require.True(t, ok)
 	require.Equal(t, "42", got)
 
 	// The cursor carries watchCursorTTL and is never deleted explicitly; it expires
 	// once a watch has been gone longer than the TTL.
-	require.Equal(t, watchCursorTTL, mr.TTL(idx.watchCursorKey("team-a", "target", "uid-1", gvr, "apps")))
+	require.Equal(t, watchCursorTTL, mr.TTL(idx.watchCursorKey("uid-1", gvr, "apps")))
 	mr.FastForward(watchCursorTTL + time.Second)
-	_, ok = idx.LookupWatchCursor(ctx, "team-a", "target", "uid-1", gvr, "apps")
+	_, ok = idx.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
 	require.False(t, ok)
 }
 
@@ -195,14 +195,14 @@ func TestAttributionIndex_WatchCursorIsolatedByGitTargetUID(t *testing.T) {
 	ctx := context.Background()
 	gvr := appsDeploymentGVR()
 
-	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", "uid-old", gvr, "apps", "42"))
+	require.NoError(t, idx.RecordWatchCursor(ctx, "uid-old", gvr, "apps", "42"))
 
 	// A GitTarget recreated under the same namespace/name but a new UID must not
 	// inherit its predecessor's cursor.
-	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-new", gvr, "apps")
+	_, ok := idx.LookupWatchCursor(ctx, "uid-new", gvr, "apps")
 	require.False(t, ok)
 
-	got, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-old", gvr, "apps")
+	got, ok := idx.LookupWatchCursor(ctx, "uid-old", gvr, "apps")
 	require.True(t, ok)
 	require.Equal(t, "42", got)
 }
@@ -211,8 +211,8 @@ func TestAttributionIndex_WatchCursorIgnoresEmptyResourceVersion(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", "uid-1", appsDeploymentGVR(), "apps", ""))
-	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-1", appsDeploymentGVR(), "apps")
+	require.NoError(t, idx.RecordWatchCursor(ctx, "uid-1", appsDeploymentGVR(), "apps", ""))
+	_, ok := idx.LookupWatchCursor(ctx, "uid-1", appsDeploymentGVR(), "apps")
 	require.False(t, ok)
 }
 
@@ -240,6 +240,53 @@ func TestAttributionIndex_FactTTLDefaultsWhenUnset(t *testing.T) {
 	keys := idx.factKeyVariants("apps", "deployments", "team-a", "web", "uid-1", "101")
 	require.NotEmpty(t, keys)
 	require.Equal(t, DefaultAttributionFactTTL, mr.TTL(keys[0]))
+}
+
+func TestEscapeKeyField(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"web", "web"},
+		{"101", "101"},
+		{"rbac.authorization.k8s.io", "rbac.authorization.k8s.io"},
+		{"system:node-proxier", "system%3Anode-proxier"},
+		{"a%b", "a%25b"},
+		{"%3A", "%253A"}, // a literal "%3A" must stay distinct from an escaped colon
+		{"", ""},
+	}
+	for _, c := range cases {
+		require.Equal(t, c.want, escapeKeyField(c.in), "escapeKeyField(%q)", c.in)
+	}
+}
+
+func TestJoinKeyFields_NoDelimiterCollision(t *testing.T) {
+	// Two field tuples that would collide under a naive ":" join produce distinct
+	// keys once each field is escaped.
+	require.NotEqual(t,
+		joinKeyFields([]string{"system", "node:proxier"}),
+		joinKeyFields([]string{"system:node", "proxier"}),
+	)
+}
+
+func TestAttributionIndex_FactKeyReadableFormat(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+
+	require.Equal(t, []string{
+		"gitops-reverser:attr:v2:e:apps:deployments:team-a:web:uid-1:101",
+		"gitops-reverser:attr:v2:u:apps:deployments:team-a:web:uid-1",
+		"gitops-reverser:attr:v2:r:apps:deployments:team-a:web:101",
+	}, idx.factKeyVariants("apps", "deployments", "team-a", "web", "uid-1", "101"))
+
+	// An RBAC-style colon-bearing name is escaped in place, not left raw.
+	require.Equal(t,
+		[]string{"gitops-reverser:attr:v2:u:rbac.authorization.k8s.io:clusterroles::system%3Anode-proxier:uid-9"},
+		idx.factKeyVariants("rbac.authorization.k8s.io", "clusterroles", "", "system:node-proxier", "uid-9", ""),
+	)
+}
+
+func TestAttributionIndex_WatchCursorKeyReadableFormat(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	key := idx.watchCursorKey("gtuid-3",
+		schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "team-a")
+	require.Equal(t, "gitops-reverser:watch-cursor:v2:gtuid-3:apps:v1:deployments:team-a", key)
 }
 
 func TestNewAttributionIndex_RequiresAddr(t *testing.T) {

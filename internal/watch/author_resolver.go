@@ -65,20 +65,21 @@ type AttributionLookup interface {
 	) (queue.AuthorFact, bool)
 }
 
-// CursorStore persists the last processed resourceVersion for each (GitTarget,
-// GVR, scope) watch shard, keyed by GitTarget UID and bounded by a TTL. Cursors are
-// refreshed on write and never deleted: a live watch keeps its cursor fresh, a dead
-// one's cursor expires. Nil means every new watch session rebuilds from a fresh replay.
+// CursorStore persists the last processed resourceVersion for each (GitTarget UID,
+// GVR, scope) watch shard, bounded by a TTL. The GitTarget is identified by its UID
+// alone — globally unique, so namespace/name would be redundant. Cursors are refreshed
+// on write and never deleted: a live watch keeps its cursor fresh, a dead one's cursor
+// expires. Nil means every new watch session rebuilds from a fresh replay.
 type CursorStore interface {
 	LookupWatchCursor(
 		ctx context.Context,
-		gitTargetNamespace, gitTargetName, gitTargetUID string,
+		gitTargetUID string,
 		gvr schema.GroupVersionResource,
 		namespace string,
 	) (string, bool)
 	RecordWatchCursor(
 		ctx context.Context,
-		gitTargetNamespace, gitTargetName, gitTargetUID string,
+		gitTargetUID string,
 		gvr schema.GroupVersionResource,
 		namespace, rv string,
 	) error
