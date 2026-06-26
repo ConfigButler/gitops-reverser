@@ -20,7 +20,6 @@ package git
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,8 +55,7 @@ func TestPlanFlush_RefusesUnsupportedKustomizeFolder(t *testing.T) {
 	_, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{event})
 
 	var refused *manifestanalyzer.AcceptanceRefusedError
-	require.Error(t, err, "an unsupported folder must be refused")
-	require.True(t, errors.As(err, &refused), "flush must refuse with *AcceptanceRefusedError, got %v", err)
+	require.ErrorAs(t, err, &refused, "flush must refuse with *AcceptanceRefusedError")
 	assert.Contains(t, refused.Error(), "kustomization.yaml", "the refusal must name the offending file")
 
 	// Nothing was written: the canonical ConfigMap path must not exist.
@@ -75,7 +73,8 @@ func TestPlanFlush_AcceptsPlainKustomizeFolder(t *testing.T) {
 	seedPlacedManifest(t, worktree, "kustomization.yaml", plainKustomizeYAML)
 
 	w := &BranchWorker{contentWriter: writer}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{cmEvent("CREATE", "fresh", "green")})
+	create := []Event{cmEvent("CREATE", "fresh", "green")}
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", create)
 	require.NoError(t, err, "a plain kustomization must not be refused")
 	assert.True(t, changed, "the ConfigMap must be written beside the retained kustomization")
 }
@@ -89,7 +88,8 @@ func TestPlanFlush_DoesNotRefuseOwnSopsConfig(t *testing.T) {
 	seedPlacedManifest(t, worktree, ".sops.yaml", "creation_rules:\n  - path_regex: .*\n")
 
 	w := &BranchWorker{contentWriter: writer}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{cmEvent("CREATE", "fresh", "green")})
+	create := []Event{cmEvent("CREATE", "fresh", "green")}
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", create)
 	require.NoError(t, err, ".sops.yaml is the operator's own config and must not be refused")
 	assert.True(t, changed, "the ConfigMap must still be written beside .sops.yaml")
 }

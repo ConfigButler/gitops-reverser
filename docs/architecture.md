@@ -542,10 +542,23 @@ tables.
 The BranchWorker applies a reconcile by scanning the GitTarget subtree and building a manifest plan (this
 write side is shared with live writes):
 
+* before anything is planned, a **structure-only acceptance gate** runs over the scanned subtree; if it
+  finds content the operator cannot safely manage — a kustomization using an unsupported feature
+  (generators / patches / components / helm / replacements / transformers / name(pre|suf)fix / remote
+  bases), a duplicate manifest identity, an impure managed file, or a standalone non-KRM / invalid YAML —
+  the whole apply is **refused**: nothing is committed and the type's stream is marked **Blocked**
+  (`StreamsReady=False`, reason `UnsupportedContent`, phase `Degraded`) until a human cleans the folder;
 * desired resources are upserted through the same content derived path as live writes;
 * existing managed documents that are watched but absent from the desired set are deleted;
-* untracked, non Kubernetes, unresolved, or unsafe YAML is left alone per analyzer policy;
+* the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary
+  YAML are retained, not materialised and not refused;
 * nothing is committed if the apply cannot complete safely.
+
+The acceptance gate is **structure-only on purpose**: it never refuses on a discovery-derived
+followability fact (unwatched / out-of-scope), which can blink on a discovery wobble; only facts that are
+true from the folder's structure alone block a GitTarget. The same gate runs on the live write path, so a
+refused folder is never written into by a racing live event either. See
+[unsupported-folder-refusal-plan.md](design/unsupported-folder-refusal-plan.md).
 
 A reconcile is **type scoped** (`ScopeGVR`): the sweep is restricted to one `(group, resource)`, so
 anchoring one type again never disturbs another's manifests. The desired set for the sweep is the

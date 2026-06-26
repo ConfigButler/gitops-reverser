@@ -222,19 +222,21 @@ asserted contract rather than an accident.
 > comments should survive re-encrypt, this test flips from "asserts dropped" to "asserts preserved" and
 > becomes the spec for that work.
 
-### Test D — Refuse an unsupported folder  *(blocked on a product decision — see §4)*
+### Test D — Refuse an unsupported folder  *(✅ IMPLEMENTED — 2026-06-26)*
 
-The behavior to test does not exist yet (§2.3). The test shape depends on which direction is chosen:
+The refusal was implemented (§4.1 DECIDED) and is proven end to end in
+[unsupported_folder_e2e_test.go](../../test/e2e/unsupported_folder_e2e_test.go): the test seeds a GitTarget
+path with a hard-Kustomize `kustomization.yaml` (a `patches` block) plus the ConfigMap it references,
+creates the GitTarget + a ConfigMap WatchRule, and asserts:
 
-- **If we implement refusal** (wire the acceptance gate into reconcile + a `Synced=False` /
-  `Reason=UnsupportedContent` condition that stops writes): the e2e seeds a target path containing a
-  hard-Kustomize `kustomization.yaml` (patches/generators), creates the GitTarget, and asserts the
-  GitTarget goes to a refused condition with a file-naming message and that **no commit** is produced
-  until the folder is cleaned. Reuse the unsupported corpus fixtures referenced by
-  `contextual_namespace_corpus_test.go`.
-- **If we document current behavior**: the e2e asserts the operator **leaves the unsupported files alone
-  and keeps writing** its own managed files — honest, but explicitly *not* a refusal. The test's name
-  and comments must make clear this documents a known limitation, linked back to §2.3.
+- the control plane is correctly configured (`Ready=True`), but
+- the data plane is **blocked**: `StreamsReady=False`, reason `UnsupportedContent` (phase `Degraded`), and
+- the operator **commits nothing** on top of the seed — the remote tip is unchanged.
+
+The implementation design is in [unsupported-folder-refusal-plan.md](unsupported-folder-refusal-plan.md);
+the structure-only refusals (duplicate identity, impure managed file, standalone non-KRM/invalid YAML,
+mixed managed+allowlisted) are unit-proven in `internal/manifestanalyzer/acceptance_test.go`, so the e2e
+focuses on the headline hard-Kustomize case and the status surface.
 
 ***
 
