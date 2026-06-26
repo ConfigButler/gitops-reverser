@@ -2,6 +2,23 @@
 
 Status: **proposed** (not started)
 
+> **Reconciliation note (watch-first rewrite).** This plan predates
+> [watch-first ingestion](../design/watch-first-ingestion-architecture.md), which removed the
+> audit-as-correctness pipeline. The **branch-ownership core is unchanged and remains the HA target**:
+> the `BranchWriteShard` model, the shard-ownership leases (HA-0 → HA-2), durable per-shard write
+> queues, and the `PushAtomic` compare-and-swap fence. What changed is the **ingress half**: object
+> state now comes from a per-GitTarget Kubernetes **WATCH** (`sendInitialEvents` replay +
+> mark-and-sweep), not from a shared canonical audit stream with per-type sequencing. So "Current
+> Shape", "Audit Ingress Fan-In", and "Resource-Type Sequencing Queues" below describe the retired
+> model; in the new model the durable write-shard queues (HA-1) are fed by the watch
+> [`EventRouter`](../../internal/watch/event_router.go), and audit is only an optional
+> [attribution lookup](../../internal/queue/attribution_index.go) that names the commit author.
+>
+> **Redis stays a hard dependency for HA.** It already holds the attribution facts; for multi-pod it
+> additionally holds the per-`(GVR, scope) → RV` watch **resume cursors** (so a failover resumes a
+> watch instead of cold-replaying), the **branch-shard ownership leases**, and the **durable write-shard
+> queues**. Committer-only single-replica operation is the only mode that runs without Redis.
+
 ## Goal
 
 Make GitOps Reverser run safely with multiple pods while preserving the most
@@ -20,9 +37,11 @@ exactly-once processing.
 
 The current implementation is intentionally single-active:
 
-- [AuditConsumer](../../internal/queue/redis_audit_consumer.go) uses Redis
-  consumer groups, but `NeedLeaderElection()` returns `true`, so only the leader
-  drains the canonical audit stream.
+- `AuditConsumer` (retired with watch-first) used Redis consumer groups under
+  leader election to drain the canonical audit stream. Object state now comes from
+  a per-GitTarget watch on the leader instead — see
+  [`watch.Manager`](../../internal/watch/manager.go) and
+  [`target_watch.go`](../../internal/watch/target_watch.go).
 - [WorkerManager](../../internal/git/worker_manager.go) also participates in
   leader election. It creates in-process [BranchWorker](../../internal/git/branch_worker.go)
   instances keyed by `(GitProvider namespace, GitProvider name, branch)`.
@@ -46,8 +65,9 @@ audit stream, as long as webhook handling stays a **producer-only** path:
 - each pod receives `/audit-webhook` traffic;
 - each pod performs request decode, validation, audit body joining, and
   canonical event preparation;
-- each pod appends accepted events to the shared Redis/Valkey stream with
-  [RedisAuditQueue](../../internal/queue/redis_audit_queue.go);
+- each pod appends accepted events to a shared Redis/Valkey stream (the
+  `RedisAuditQueue` that backed this — retired with watch-first; in the new model
+  the durable handoff is the per-shard write queue fed by the watch event router);
 - no ingress pod routes directly to a local `BranchWorker`.
 
 Redis stream append is atomic across producers, so multiple pods can `XADD` to
