@@ -59,6 +59,11 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
 
+		// createGitTarget enables SOPS encryption referencing the shared sops-age-key
+		// secret, so it must exist or the GitTarget's EncryptionConfigured gate (and thus
+		// Ready) never goes True — independent of the refusal under test.
+		applySOPSAgeKeyToNamespace(testNs)
+
 		By("creating the GitProvider")
 		createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
 		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
