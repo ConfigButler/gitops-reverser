@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 func (w *BranchWorker) buildGroupedPendingWrite(ctx context.Context, events []Event) (*PendingWrite, error) {
@@ -208,6 +209,30 @@ func (p PendingWrite) AuthorUserInfo() UserInfo {
 		return UserInfo{}
 	}
 	return p.Events[0].UserInfo
+}
+
+const (
+	authorKindUser           = "user"
+	authorKindServiceAccount = "serviceaccount"
+	authorKindCommitter      = "committer"
+)
+
+func (p PendingWrite) createdCommit() bool {
+	if p.Kind == PendingWriteResync {
+		return p.Committed != nil && *p.Committed
+	}
+	return !p.CommitSHA.IsZero()
+}
+
+func (p PendingWrite) authorKind() string {
+	author := p.Author()
+	if author == "" {
+		return authorKindCommitter
+	}
+	if strings.HasPrefix(author, "system:serviceaccount:") {
+		return authorKindServiceAccount
+	}
+	return authorKindUser
 }
 
 // Target returns the single resolved target metadata for this pending write.

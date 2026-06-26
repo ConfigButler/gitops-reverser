@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,6 +37,7 @@ import (
 
 	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // DefaultAttributionFactTTL is how long an attribution fact is retained in Redis
@@ -53,12 +56,36 @@ const watchCursorTTL = time.Hour
 const keyPrefix = "gitops-reverser"
 
 const (
-	attributionKeySuffix     = ":attr:v2:"
-	watchCursorKeySuffix     = ":watch-cursor:v2:"
-	attributionVariantExact  = "e" // (group, resource, namespace, name, uid, rv)
-	attributionVariantUID    = "u" // (group, resource, namespace, name, uid)
-	attributionVariantRV     = "r" // (group, resource, namespace, name, rv)
-	serviceAccountUserPrefix = "system:serviceaccount:"
+	attributionKeySuffix         = ":attr:v2:"
+	watchCursorKeySuffix         = ":watch-cursor:v2:"
+	attributionVariantExact      = "e" // (group, resource, namespace, name, uid, rv)
+	attributionVariantUID        = "u" // (group, resource, namespace, name, uid)
+	attributionVariantRV         = "r" // (group, resource, namespace, name, rv)
+	factTombstoneSuffix          = ":seen"
+	factMissSuffix               = ":miss"
+	factTombstoneTTLMultiplier   = 2
+	attributionFactScanBatchSize = 100
+	serviceAccountUserPrefix     = "system:serviceaccount:"
+)
+
+// AttributionResult is the bounded resolver outcome recorded for each watch event.
+type AttributionResult string
+
+const (
+	// AttributionExactUser is an exact UID+resourceVersion match for a human user.
+	AttributionExactUser AttributionResult = "exact_user"
+	// AttributionExactServiceAccount is an exact UID+resourceVersion match for a named service account.
+	AttributionExactServiceAccount AttributionResult = "exact_serviceaccount"
+	// AttributionServiceAccountCollapsed is set by the resolver when bot policy collapses a matched SA.
+	AttributionServiceAccountCollapsed AttributionResult = "serviceaccount_collapsed"
+	// AttributionWeak is a non-exact match, such as UID-only or RV-only.
+	AttributionWeak AttributionResult = "weak"
+	// AttributionConflict means multiple authors wrote facts for the selected join key.
+	AttributionConflict AttributionResult = "conflict"
+	// AttributionExpired means a fact key existed, but only its tombstone remains.
+	AttributionExpired AttributionResult = "expired"
+	// AttributionAbsent means no fact or tombstone matched.
+	AttributionAbsent AttributionResult = "absent"
 )
 
 // commitRequestResource is the plural resource name of the CommitRequest CRD; the
@@ -78,6 +105,13 @@ type AuthorFact struct {
 	ResourceVersion  string `json:"resourceVersion,omitempty"`
 	StageTimestamp   string `json:"stageTimestamp,omitempty"`
 	IsServiceAccount bool   `json:"isServiceAccount,omitempty"`
+	Conflict         bool   `json:"conflict,omitempty"`
+}
+
+// AuthorResolution is the structured result of an attribution lookup.
+type AuthorResolution struct {
+	Fact   AuthorFact
+	Result AttributionResult
 }
 
 // AttributionIndexConfig configures the Redis-backed attribution index.
@@ -207,11 +241,24 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, event auditv1.Event) 
 		return fmt.Errorf("marshal attribution fact: %w", err)
 	}
 
-	for _, key := range a.factKeyVariants(group, resource, identity.Namespace, identity.Name, identity.UID, fact.ResourceVersion) {
-		if err := a.client.Set(ctx, key, raw, a.factTTL).Err(); err != nil {
+	keys := a.factKeyVariants(group, resource, identity.Namespace, identity.Name, identity.UID, fact.ResourceVersion)
+	if len(keys) == 0 {
+		return nil
+	}
+	late := false
+	for _, key := range keys {
+		if a.client.Exists(ctx, a.factMissKey(key)).Val() > 0 {
+			late = true
+		}
+		if err := a.storeFactKey(ctx, key, raw, fact.Author); err != nil {
 			return fmt.Errorf("store attribution fact %q: %w", key, err)
 		}
 	}
+	a.recordFactEvent(ctx, "written")
+	if late {
+		a.recordFactEvent(ctx, "late")
+	}
+	a.recordFactIndexSize(ctx)
 	return nil
 }
 
@@ -225,21 +272,87 @@ func (a *AttributionIndex) LookupAuthor(
 	uid types.UID,
 	rv string,
 ) (AuthorFact, bool) {
-	for _, key := range a.factKeyVariants(gvr.Group, gvr.Resource, namespace, name, uid, rv) {
-		raw, err := a.client.Get(ctx, key).Bytes()
-		if err != nil {
-			continue
+	resolution := a.LookupAuthorResolution(ctx, gvr, namespace, name, uid, rv)
+	return resolution.Fact, resolution.Result != AttributionAbsent &&
+		resolution.Result != AttributionExpired && resolution.Result != AttributionConflict
+}
+
+// LookupAuthorResolution finds the strongest attribution fact and explains misses.
+func (a *AttributionIndex) LookupAuthorResolution(
+	ctx context.Context,
+	gvr schema.GroupVersionResource,
+	namespace, name string,
+	uid types.UID,
+	rv string,
+) AuthorResolution {
+	keys := a.factKeyVariants(gvr.Group, gvr.Resource, namespace, name, uid, rv)
+	expired := false
+	for i, key := range keys {
+		resolution, matched, keyExpired := a.lookupAuthorResolutionKey(ctx, key, i, uid, rv)
+		if matched {
+			return resolution
 		}
-		var fact AuthorFact
-		if err := json.Unmarshal(raw, &fact); err != nil {
-			continue
+		if keyExpired {
+			expired = true
 		}
-		if fact.Author == "" {
-			continue
-		}
-		return fact, true
 	}
-	return AuthorFact{}, false
+	if expired {
+		a.recordFactEvent(ctx, "expired_unmatched")
+		return AuthorResolution{Result: AttributionExpired}
+	}
+	return AuthorResolution{Result: AttributionAbsent}
+}
+
+func (a *AttributionIndex) lookupAuthorResolutionKey(
+	ctx context.Context,
+	key string,
+	variantIndex int,
+	uid types.UID,
+	rv string,
+) (AuthorResolution, bool, bool) {
+	raw, err := a.client.Get(ctx, key).Bytes()
+	if err != nil {
+		keyExpired := a.client.Exists(ctx, a.factTombstoneKey(key)).Val() > 0
+		return AuthorResolution{}, false, keyExpired
+	}
+	var fact AuthorFact
+	if err := json.Unmarshal(raw, &fact); err != nil {
+		return AuthorResolution{}, false, false
+	}
+	if fact.Conflict {
+		a.recordFactEvent(ctx, "matched")
+		return AuthorResolution{Result: AttributionConflict}, true, false
+	}
+	if fact.Author == "" {
+		return AuthorResolution{}, false, false
+	}
+	a.recordFactEvent(ctx, "matched")
+	result := attributionResultForMatch(variantIndex, uid, rv, fact)
+	return AuthorResolution{Fact: fact, Result: result}, true, false
+}
+
+func attributionResultForMatch(variantIndex int, uid types.UID, rv string, fact AuthorFact) AttributionResult {
+	if variantIndex != 0 || uid == "" || rv == "" {
+		return AttributionWeak
+	}
+	if fact.IsServiceAccount {
+		return AttributionExactServiceAccount
+	}
+	return AttributionExactUser
+}
+
+// RecordAuthorMiss marks the join keys for a watch event that shipped without an
+// author, so a later RecordFact can report op="late".
+func (a *AttributionIndex) RecordAuthorMiss(
+	ctx context.Context,
+	gvr schema.GroupVersionResource,
+	namespace, name string,
+	uid types.UID,
+	rv string,
+) {
+	for _, key := range a.factKeyVariants(gvr.Group, gvr.Resource, namespace, name, uid, rv) {
+		_ = a.client.Set(ctx, a.factMissKey(key), "1", a.factTombstoneTTL()).Err()
+	}
 }
 
 // LookupCommitRequestAuthor reads the CommitRequest create-author captured at audit
@@ -287,6 +400,69 @@ func (a *AttributionIndex) factKeyVariants(group, resource, namespace, name stri
 // Keys are only ever matched exactly, never parsed back, so escaping is one-way.
 func (a *AttributionIndex) factKey(variant string, parts ...string) string {
 	return keyPrefix + attributionKeySuffix + variant + ":" + joinKeyFields(parts)
+}
+
+func (a *AttributionIndex) storeFactKey(ctx context.Context, key string, raw []byte, author string) error {
+	existingRaw, err := a.client.Get(ctx, key).Bytes()
+	if err == nil {
+		var existing AuthorFact
+		if json.Unmarshal(existingRaw, &existing) == nil && (existing.Conflict ||
+			(existing.Author != "" && existing.Author != author)) {
+			raw, err = json.Marshal(AuthorFact{Conflict: true})
+			if err != nil {
+				return fmt.Errorf("marshal conflict marker: %w", err)
+			}
+		}
+	}
+	if err := a.client.Set(ctx, key, raw, a.factTTL).Err(); err != nil {
+		return err
+	}
+	return a.client.Set(ctx, a.factTombstoneKey(key), "1", a.factTombstoneTTL()).Err()
+}
+
+func (a *AttributionIndex) factTombstoneKey(key string) string {
+	return key + factTombstoneSuffix
+}
+
+func (a *AttributionIndex) factMissKey(key string) string {
+	return key + factMissSuffix
+}
+
+func (a *AttributionIndex) factTombstoneTTL() time.Duration {
+	return factTombstoneTTLMultiplier * a.factTTL
+}
+
+func (a *AttributionIndex) recordFactEvent(ctx context.Context, op string) {
+	if telemetry.AttributionFactEventsTotal == nil {
+		return
+	}
+	telemetry.AttributionFactEventsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("op", op)))
+}
+
+func (a *AttributionIndex) recordFactIndexSize(ctx context.Context) {
+	if telemetry.AttributionFactIndexSize == nil {
+		return
+	}
+	var cursor uint64
+	var count int64
+	pattern := keyPrefix + attributionKeySuffix + "*"
+	for {
+		keys, next, err := a.client.Scan(ctx, cursor, pattern, attributionFactScanBatchSize).Result()
+		if err != nil {
+			return
+		}
+		for _, key := range keys {
+			if strings.HasSuffix(key, factTombstoneSuffix) || strings.HasSuffix(key, factMissSuffix) {
+				continue
+			}
+			count++
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	telemetry.AttributionFactIndexSize.Record(ctx, count)
 }
 
 // watchCursorKey builds a readable cursor key identifying the GitTarget by its UID

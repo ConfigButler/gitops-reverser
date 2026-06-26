@@ -45,9 +45,12 @@ var (
 	// ObjectsWrittenTotal counts objects that resulted in file writes.
 	ObjectsWrittenTotal metric.Int64Counter
 	// CommitsTotal counts commit batches pushed to git, labelled by the recording
-	// BranchWorker's {provider_namespace, provider_name, branch} identity. Both the
-	// per-event and backfill-resync commit paths feed this one counter.
+	// BranchWorker's {provider_namespace, provider_name, branch, author_kind} identity.
+	// Both the per-event and backfill-resync commit paths feed this one counter.
 	CommitsTotal metric.Int64Counter
+	// ResyncSweepDeletesTotal counts managed documents deleted by mark-and-sweep
+	// resyncs, labelled by the swept resource {group, version, resource}.
+	ResyncSweepDeletesTotal metric.Int64Counter
 
 	// TargetReconcileCompletedTotal counts completed watch recovery passes per
 	// GitTarget: each increment marks either a streaming-snapshot resync applied on
@@ -104,6 +107,16 @@ var (
 	// AuditEventListDurationSeconds records how long the webhook takes to answer an
 	// EventList request, labelled by outcome.
 	AuditEventListDurationSeconds metric.Float64Histogram
+	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes,
+	// labelled by {result, group, version, resource}.
+	AttributionResolutionsTotal metric.Int64Counter
+	// AttributionFactEventsTotal counts attribution fact lifecycle events in Redis,
+	// labelled by bounded op (written/matched/expired_unmatched/late).
+	AttributionFactEventsTotal metric.Int64Counter
+	// AttributionResolutionWaitSeconds records resolver wait time by final result.
+	AttributionResolutionWaitSeconds metric.Float64Histogram
+	// AttributionFactIndexSize gauges attribution fact keys currently held in Redis.
+	AttributionFactIndexSize metric.Int64Gauge
 
 	// APICatalogResources gauges the count of served top-level resources in the catalog,
 	// split by the default-watch-policy allowed/excluded state.
@@ -211,11 +224,14 @@ func registerCounters() error {
 		{"gitopsreverser_git_operations_total", &GitOperationsTotal},
 		{"gitopsreverser_objects_written_total", &ObjectsWrittenTotal},
 		{"gitopsreverser_commits_total", &CommitsTotal},
+		{"gitopsreverser_resync_sweep_deletes_total", &ResyncSweepDeletesTotal},
 		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
 		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
 		{"gitopsreverser_audit_events_total", &AuditEventsTotal},
 		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
 		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
+		{"gitopsreverser_attribution_resolutions_total", &AttributionResolutionsTotal},
+		{"gitopsreverser_attribution_fact_events_total", &AttributionFactEventsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
@@ -240,8 +256,16 @@ func registerHistograms() error {
 	// catalogRefreshBuckets span discovery latency: two cached GETs on an aggregated
 	// apiserver (sub-second) up to a slow per-group fallback (seconds).
 	catalogRefreshBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+	// attributionWaitBuckets span zero-wait hits up through the default grace window
+	// and slower configured waits.
+	attributionWaitBuckets := []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10}
 	hists := []hSpec{
 		{"gitopsreverser_audit_eventlist_duration_seconds", &AuditEventListDurationSeconds, eventListDurationBuckets},
+		{
+			"gitopsreverser_attribution_resolution_wait_seconds",
+			&AttributionResolutionWaitSeconds,
+			attributionWaitBuckets,
+		},
 		{
 			"gitopsreverser_api_catalog_refresh_duration_seconds",
 			&APICatalogRefreshDurationSeconds,
@@ -269,6 +293,7 @@ func registerGauges() error {
 		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
 		{"gitopsreverser_watched_types", &WatchedTypes},
 		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
+		{"gitopsreverser_attribution_fact_index_size", &AttributionFactIndexSize},
 	}
 	for _, s := range gauges {
 		v, err := otelMeter.Int64Gauge(s.name)

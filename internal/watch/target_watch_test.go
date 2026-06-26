@@ -189,7 +189,13 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 	manager := &Manager{
 		EventRouter: router,
 		AuthorResolver: NewAuthorResolver(
-			&fakeLookup{fact: queue.AuthorFact{Author: "alice", Email: "alice@example.com"}, ok: true, hitAfter: 1},
+			&fakeLookup{
+				resolution: queue.AuthorResolution{
+					Fact:   queue.AuthorFact{Author: "alice", Email: "alice@example.com"},
+					Result: queue.AttributionExactUser,
+				},
+				hitAfter: 1,
+			},
 			time.Second, SANamePolicyName, logr.Discard(),
 		),
 	}

@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,6 +88,51 @@ func TestRecordPendingWritesMetrics_CommitsIsolatedByProviderNamespace(t *testin
 	otherNamespace["provider_namespace"] = "other-suite-ns"
 	_, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, otherNamespace)
 	assert.False(t, ok, "a different provider_namespace must not match this worker's commits")
+}
+
+func TestRecordPendingWritesMetrics_LabelsCommitsByAuthorKind(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	w.recordPendingWritesMetrics([]PendingWrite{
+		{
+			Kind:      PendingWriteCommit,
+			Events:    []Event{{UserInfo: UserInfo{Username: "alice"}}},
+			CommitSHA: plumbing.NewHash("1111111111111111111111111111111111111111"),
+		},
+		{
+			Kind: PendingWriteCommit,
+			Events: []Event{{
+				UserInfo: UserInfo{Username: "system:serviceaccount:flux-system:kustomize-controller"},
+			}},
+			CommitSHA: plumbing.NewHash("2222222222222222222222222222222222222222"),
+		},
+		{
+			Kind:      PendingWriteResync,
+			Committed: boolPtr(true),
+		},
+	}, 3)
+
+	labels := queueDepthLabels()
+	labels["author_kind"] = authorKindUser
+	count, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), count)
+
+	labels["author_kind"] = authorKindServiceAccount
+	count, ok = telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), count)
+
+	labels["author_kind"] = authorKindCommitter
+	count, ok = telemetry.CollectInt64Sum(reader, commitsTotalMetric, labels)
+	require.True(t, ok)
+	assert.Equal(t, int64(1), count)
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 // recordQueueDepth must report 0 for a freshly drained worker: empty queue and

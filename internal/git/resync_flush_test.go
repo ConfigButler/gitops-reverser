@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -144,6 +145,9 @@ func TestResync_InSyncResourceIsNoOp(t *testing.T) {
 // The core M8 behavior: a watched, resolved managed document absent from the desired
 // snapshot is a managed drop. Its file is deleted (mark-and-sweep).
 func TestResync_DropsManagedResourceAbsentFromCluster(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 	keepFull := seedPlacedManifest(t, worktree, "apps/keep.yaml", cmManifest("keep", "blue"))
@@ -158,6 +162,11 @@ func TestResync_DropsManagedResourceAbsentFromCluster(t *testing.T) {
 	require.NoError(t, keepErr, "the still-present resource is retained")
 	_, dropErr := os.Stat(dropFull)
 	assert.True(t, os.IsNotExist(dropErr), "the orphaned resource's file is deleted")
+
+	count, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_resync_sweep_deletes_total",
+		map[string]string{"group": "", "version": "v1", "resource": "configmaps"})
+	require.True(t, ok)
+	assert.Equal(t, int64(1), count)
 }
 
 // A manifest a human moved off its canonical path is still swept by content identity

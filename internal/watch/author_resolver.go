@@ -23,11 +23,14 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // DefaultAttributionGraceWindow is the bounded wait a watch event spends for a
@@ -56,13 +59,20 @@ const (
 // AttributionLookup is the read side of the optional audit attribution index. The
 // Redis-backed queue.AttributionIndex satisfies it; nil means committer-only.
 type AttributionLookup interface {
-	LookupAuthor(
+	LookupAuthorResolution(
 		ctx context.Context,
 		gvr schema.GroupVersionResource,
 		namespace, name string,
 		uid k8stypes.UID,
 		rv string,
-	) (queue.AuthorFact, bool)
+	) queue.AuthorResolution
+	RecordAuthorMiss(
+		ctx context.Context,
+		gvr schema.GroupVersionResource,
+		namespace, name string,
+		uid k8stypes.UID,
+		rv string,
+	)
 }
 
 // CursorStore persists the last processed resourceVersion for each (GitTarget UID,
@@ -129,36 +139,69 @@ func (r *attributionResolver) ResolveAuthor(
 	uid k8stypes.UID,
 	rv string,
 ) (git.UserInfo, bool) {
+	start := time.Now()
 	if r.lookup == nil {
+		recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
 		return git.UserInfo{}, false
 	}
 	deadline := time.Now().Add(r.grace)
 	for {
-		if fact, ok := r.lookup.LookupAuthor(ctx, gvr, namespace, name, uid, rv); ok {
-			return r.userInfoForFact(fact)
+		resolution := r.lookup.LookupAuthorResolution(ctx, gvr, namespace, name, uid, rv)
+		if resolution.Result != queue.AttributionAbsent {
+			ui, ok, result := r.userInfoForResolution(resolution)
+			recordAttributionResolution(ctx, gvr, result, time.Since(start))
+			return ui, ok
 		}
 		if !time.Now().Before(deadline) {
+			r.lookup.RecordAuthorMiss(ctx, gvr, namespace, name, uid, rv)
+			recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
 			return git.UserInfo{}, false
 		}
 		if !sleepOrDone(ctx, attributionPollInterval) {
+			r.lookup.RecordAuthorMiss(ctx, gvr, namespace, name, uid, rv)
+			recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
 			return git.UserInfo{}, false
 		}
 	}
 }
 
-// userInfoForFact turns a matched fact into a commit author, applying the
+// userInfoForResolution turns a matched fact into a commit author, applying the
 // service-account naming policy. A service account under the "bot" policy collapses
 // to the committer (ok=false); otherwise it is named by its own username.
-func (r *attributionResolver) userInfoForFact(fact queue.AuthorFact) (git.UserInfo, bool) {
+func (r *attributionResolver) userInfoForResolution(
+	resolution queue.AuthorResolution,
+) (git.UserInfo, bool, queue.AttributionResult) {
+	fact := resolution.Fact
+	result := resolution.Result
 	if fact.Author == "" {
-		return git.UserInfo{}, false
+		return git.UserInfo{}, false, result
 	}
 	if fact.IsServiceAccount && r.saPolicy == SANamePolicyBot {
-		return git.UserInfo{}, false
+		return git.UserInfo{}, false, queue.AttributionServiceAccountCollapsed
 	}
 	return git.UserInfo{
 		Username:    fact.Author,
 		DisplayName: fact.DisplayName,
 		Email:       fact.Email,
-	}, true
+	}, true, result
+}
+
+func recordAttributionResolution(
+	ctx context.Context,
+	gvr schema.GroupVersionResource,
+	result queue.AttributionResult,
+	wait time.Duration,
+) {
+	attrs := metric.WithAttributes(
+		attribute.String("result", string(result)),
+		attribute.String("group", gvr.Group),
+		attribute.String("version", gvr.Version),
+		attribute.String("resource", gvr.Resource),
+	)
+	if telemetry.AttributionResolutionsTotal != nil {
+		telemetry.AttributionResolutionsTotal.Add(ctx, 1, attrs)
+	}
+	if telemetry.AttributionResolutionWaitSeconds != nil {
+		telemetry.AttributionResolutionWaitSeconds.Record(ctx, wait.Seconds(), attrs)
+	}
 }

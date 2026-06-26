@@ -30,30 +30,43 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // fakeLookup returns fact/ok after `hitAfter` calls; calls counts invocations.
 type fakeLookup struct {
-	fact     queue.AuthorFact
-	ok       bool
-	hitAfter int
-	calls    int
+	resolution queue.AuthorResolution
+	hitAfter   int
+	calls      int
+	misses     int
 }
 
-func (f *fakeLookup) LookupAuthor(
+func (f *fakeLookup) LookupAuthorResolution(
 	_ context.Context, _ schema.GroupVersionResource, _, _ string, _ k8stypes.UID, _ string,
-) (queue.AuthorFact, bool) {
+) queue.AuthorResolution {
 	f.calls++
 	if f.calls >= f.hitAfter {
-		return f.fact, f.ok
+		return f.resolution
 	}
-	return queue.AuthorFact{}, false
+	return queue.AuthorResolution{Result: queue.AttributionAbsent}
+}
+
+func (f *fakeLookup) RecordAuthorMiss(
+	_ context.Context, _ schema.GroupVersionResource, _, _ string, _ k8stypes.UID, _ string,
+) {
+	f.misses++
 }
 
 var resolverGVR = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 
 func TestAuthorResolver_HumanHit(t *testing.T) {
-	lookup := &fakeLookup{fact: queue.AuthorFact{Author: "alice", Email: "a@x.io"}, ok: true, hitAfter: 1}
+	lookup := &fakeLookup{
+		resolution: queue.AuthorResolution{
+			Fact:   queue.AuthorFact{Author: "alice", Email: "a@x.io"},
+			Result: queue.AttributionExactUser,
+		},
+		hitAfter: 1,
+	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, SANamePolicyName, logr.Discard())
 
 	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
@@ -65,7 +78,13 @@ func TestAuthorResolver_HumanHit(t *testing.T) {
 
 func TestAuthorResolver_ServiceAccountNamePolicy(t *testing.T) {
 	sa := "system:serviceaccount:flux-system:kustomize-controller"
-	lookup := &fakeLookup{fact: queue.AuthorFact{Author: sa, IsServiceAccount: true}, ok: true, hitAfter: 1}
+	lookup := &fakeLookup{
+		resolution: queue.AuthorResolution{
+			Fact:   queue.AuthorFact{Author: sa, IsServiceAccount: true},
+			Result: queue.AttributionExactServiceAccount,
+		},
+		hitAfter: 1,
+	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, SANamePolicyName, logr.Discard())
 
 	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
@@ -74,24 +93,50 @@ func TestAuthorResolver_ServiceAccountNamePolicy(t *testing.T) {
 }
 
 func TestAuthorResolver_ServiceAccountBotPolicyCollapsesToCommitter(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
 	sa := "system:serviceaccount:flux-system:kustomize-controller"
-	lookup := &fakeLookup{fact: queue.AuthorFact{Author: sa, IsServiceAccount: true}, ok: true, hitAfter: 1}
+	lookup := &fakeLookup{
+		resolution: queue.AuthorResolution{
+			Fact:   queue.AuthorFact{Author: sa, IsServiceAccount: true},
+			Result: queue.AttributionExactServiceAccount,
+		},
+		hitAfter: 1,
+	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, SANamePolicyBot, logr.Discard())
 
 	_, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
 	assert.False(t, ok, "a service account under the bot policy commits as the committer")
+
+	count, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_resolutions_total",
+		map[string]string{"result": string(queue.AttributionServiceAccountCollapsed)})
+	require.True(t, ok)
+	assert.Equal(t, int64(1), count)
+
+	waitCount, ok := telemetry.CollectHistogramCount(reader, "gitopsreverser_attribution_resolution_wait_seconds",
+		map[string]string{"result": string(queue.AttributionServiceAccountCollapsed)})
+	require.True(t, ok)
+	assert.Equal(t, uint64(1), waitCount)
 }
 
 func TestAuthorResolver_MissExpiresToCommitter(t *testing.T) {
-	lookup := &fakeLookup{ok: false, hitAfter: 1000}
+	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}, hitAfter: 1000}
 	r := NewAuthorResolver(lookup, 0, SANamePolicyName, logr.Discard())
 
 	_, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
 	assert.False(t, ok)
+	assert.Equal(t, 1, lookup.misses)
 }
 
 func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
-	lookup := &fakeLookup{fact: queue.AuthorFact{Author: "bob"}, ok: true, hitAfter: 3}
+	lookup := &fakeLookup{
+		resolution: queue.AuthorResolution{
+			Fact:   queue.AuthorFact{Author: "bob"},
+			Result: queue.AttributionExactUser,
+		},
+		hitAfter: 3,
+	}
 	r := NewAuthorResolver(lookup, 2*time.Second, SANamePolicyName, logr.Discard())
 
 	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")

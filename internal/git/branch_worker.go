@@ -1274,22 +1274,34 @@ func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, 
 		telemetry.GitOperationsTotal.Add(w.ctx, int64(eventCount))
 	}
 	if telemetry.CommitsTotal != nil {
-		// Label by the recording BranchWorker's own identity {provider_namespace,
-		// provider_name, branch} — matching BranchWorkerQueueDepth (recordQueueDepth).
-		// The commit batch is produced at the branch-worker layer (one worker can
-		// serve multiple GitTargets sharing a provider+branch), so the worker, not a
-		// single GitTarget, is the honest attribution unit. The prefixed key names
-		// avoid the reserved Prometheus pod-scrape labels `namespace`/`name`, which a
-		// scrape with honor_labels=false would overwrite. Treat name/labels as a
-		// public observability contract (see telemetry.TargetReconcileCompletedTotal).
-		telemetry.CommitsTotal.Add(w.ctx, int64(commitsCreated), metric.WithAttributes(
-			attribute.String("provider_namespace", w.GitProviderNamespace),
-			attribute.String("provider_name", w.GitProviderRef),
-			attribute.String("branch", w.Branch),
-		))
+		w.recordCommitsByAuthorKind(pendingWrites, commitsCreated)
 	}
 	if telemetry.ObjectsWrittenTotal != nil {
 		telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(eventCount))
+	}
+}
+
+func (w *BranchWorker) recordCommitsByAuthorKind(pendingWrites []PendingWrite, commitsCreated int) {
+	counts := map[string]int64{}
+	for _, pendingWrite := range pendingWrites {
+		if !pendingWrite.createdCommit() {
+			continue
+		}
+		counts[pendingWrite.authorKind()]++
+	}
+	if len(counts) == 0 && commitsCreated > 0 {
+		counts[authorKindCommitter] = int64(commitsCreated)
+	}
+	for authorKind, count := range counts {
+		// Label by the recording BranchWorker's own identity {provider_namespace,
+		// provider_name, branch} plus author_kind. The prefixed key names avoid the
+		// reserved Prometheus pod-scrape labels `namespace`/`name`.
+		telemetry.CommitsTotal.Add(w.ctx, count, metric.WithAttributes(
+			attribute.String("provider_namespace", w.GitProviderNamespace),
+			attribute.String("provider_name", w.GitProviderRef),
+			attribute.String("branch", w.Branch),
+			attribute.String("author_kind", authorKind),
+		))
 	}
 }
 

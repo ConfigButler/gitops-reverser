@@ -34,6 +34,7 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 func newTestAttributionIndex(t *testing.T) *AttributionIndex {
@@ -103,6 +104,17 @@ func TestAttributionIndex_LookupByUIDWhenRVDiffers(t *testing.T) {
 	require.Equal(t, "alice", fact.Author)
 }
 
+func TestAttributionIndex_LookupResolutionWeakWhenExactMisses(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	require.NoError(t, idx.RecordFact(ctx, mutationEvent("delete", "uid-1", "101", "alice")))
+
+	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "999")
+	require.Equal(t, AttributionWeak, resolution.Result)
+	require.Equal(t, "alice", resolution.Fact.Author)
+}
+
 func TestAttributionIndex_LookupByRVWhenUIDAbsent(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
@@ -140,6 +152,59 @@ func TestAttributionIndex_LookupMiss(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	_, ok := idx.LookupAuthor(context.Background(), appsDeploymentGVR(), "team-a", "absent", "uid-x", "1")
 	require.False(t, ok)
+}
+
+func TestAttributionIndex_LookupResolutionConflict(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "bob")))
+
+	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
+	require.Equal(t, AttributionConflict, resolution.Result)
+	require.Empty(t, resolution.Fact.Author)
+}
+
+func TestAttributionIndex_LookupResolutionExpired(t *testing.T) {
+	mr := miniredis.RunT(t)
+	idx, err := NewAttributionIndex(AttributionIndexConfig{Addr: mr.Addr(), FactTTL: time.Minute})
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
+
+	mr.FastForward(time.Minute + time.Second)
+
+	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
+	require.Equal(t, AttributionExpired, resolution.Result)
+}
+
+func TestAttributionIndex_FactLifecycleMetrics(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	idx.RecordAuthorMiss(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
+	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
+	_ = idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
+
+	written, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_events_total",
+		map[string]string{"op": "written"})
+	require.True(t, ok)
+	require.Equal(t, int64(1), written)
+	late, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_events_total",
+		map[string]string{"op": "late"})
+	require.True(t, ok)
+	require.Equal(t, int64(1), late)
+	matched, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_events_total",
+		map[string]string{"op": "matched"})
+	require.True(t, ok)
+	require.Equal(t, int64(1), matched)
+	size, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_index_size", nil)
+	require.True(t, ok)
+	require.Equal(t, int64(3), size)
 }
 
 func TestAttributionIndex_RecordFactNoOpCases(t *testing.T) {

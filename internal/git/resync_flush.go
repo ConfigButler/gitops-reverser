@@ -25,6 +25,8 @@ import (
 	"path/filepath"
 
 	gogit "github.com/go-git/go-git/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -32,6 +34,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -379,6 +382,7 @@ func (wb *writeBatch) applyResyncPlan(
 		if action.Kind == manifestanalyzer.PlanDropOrphan {
 			if wb.dropDocument(action.Ref.FilePath, action.Identity) {
 				stats.Deleted++
+				recordResyncSweepDelete(ctx, action.Resource)
 			}
 		}
 	}
@@ -386,6 +390,17 @@ func (wb *writeBatch) applyResyncPlan(
 	// informational only and not part of the GitTarget status.
 	stats.Skipped = plan.Counts()[manifestanalyzer.PlanSkip]
 	return stats, nil
+}
+
+func recordResyncSweepDelete(ctx context.Context, resource types.ResourceIdentifier) {
+	if telemetry.ResyncSweepDeletesTotal == nil {
+		return
+	}
+	telemetry.ResyncSweepDeletesTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("group", resource.Group),
+		attribute.String("version", resource.Version),
+		attribute.String("resource", resource.Resource),
+	))
 }
 
 // dropDocument removes the managed document for id from filePath, re-deriving its

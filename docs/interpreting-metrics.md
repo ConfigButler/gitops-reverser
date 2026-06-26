@@ -75,18 +75,21 @@ signals. Background: [architecture.md → Git Write Architecture](architecture.m
 
 | Metric | Type | Labels | Notes |
 | --- | --- | --- | --- |
-| `commits_total` | counter | `provider_namespace`, `provider_name`, `branch` | Commit batches pushed. Both the per-event and backfill-resync paths feed this one counter. |
+| `commits_total` | counter | `provider_namespace`, `provider_name`, `branch`, `author_kind` | Commit batches pushed. Both the per-event and backfill-resync paths feed this one counter. |
 | `git_operations_total` | counter | — | Events that produced Git work in a flush. |
 | `objects_written_total` | counter | — | Objects that resulted in a file write in a flush. |
+| `resync_sweep_deletes_total` | counter | `group`, `version`, `resource` | Managed documents deleted by mark-and-sweep resyncs. Steady-state watch deletes do not increment this. |
 | `branch_worker_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed work; reads 0 only when the worker has fully drained. |
 | `target_reconcile_completed_total` | counter | `gittarget_namespace`, `gittarget_name`, `trigger` | One increment per completed watch-recovery pass (streaming-snapshot resync applied, or cursor-backed resume). |
 | `resync_background_failures_total` | counter | `gittarget_namespace`, `gittarget_name` | Rule-change resyncs whose apply failed/timed out **after** enqueue (otherwise only logged). |
 | `watched_types` | gauge | `gittarget_namespace`, `gittarget_name` | How many concrete types a GitTarget currently watches. |
 
-`commits_total` carries the **`BranchWorker`'s** `{provider_namespace, provider_name, branch}`
-identity, not a GitTarget: one worker can serve several GitTargets sharing a provider+branch,
-coalescing their writes into one commit batch, so the worker is the honest attribution unit. The
-namespace/name keys are **prefixed on purpose** — a Prometheus pod scrape with
+`commits_total` carries the **`BranchWorker`'s**
+`{provider_namespace, provider_name, branch, author_kind}` identity, not a GitTarget: one worker can
+serve several GitTargets sharing a provider+branch, coalescing their writes into one commit batch, so
+the worker is the honest attribution unit. `author_kind` is `user`, `serviceaccount`, or `committer`;
+reconcile/resync commits and unattributed events use `committer`. The namespace/name keys are
+**prefixed on purpose** — a Prometheus pod scrape with
 `honor_labels=false` overwrites a bare `namespace` attribute with the scraping pod's namespace,
 so a per-provider `namespace` selector would silently match nothing. The same reasoning applies to
 `target_reconcile_completed_total` and `branch_worker_queue_depth`.
@@ -95,6 +98,13 @@ so a per-provider `namespace` selector would silently match nothing. The same re
 
 ```promql
 sum by (provider_namespace, provider_name, branch) (rate(gitopsreverser_commits_total[5m]))
+```
+
+**Are real names landing in Git?** A wall of `author_kind="committer"` means the Git history is not
+showing human or named service-account authors, even if audit is flowing:
+
+```promql
+sum by (author_kind) (rate(gitopsreverser_commits_total[15m]))
 ```
 
 **Is a branch worker backing up?** A persistently rising gauge indicates a stalled remote:
@@ -126,6 +136,13 @@ sum by (gittarget_namespace, gittarget_name) (
 gitopsreverser_watched_types
 ```
 
+**Are resyncs sweeping resources out of Git?** Non-zero is expected after a resource disappears from
+the cluster and a scoped/full resync applies. This is not the steady-state delete path:
+
+```promql
+sum by (group, version, resource) (rate(gitopsreverser_resync_sweep_deletes_total[1h]))
+```
+
 ---
 
 ## Audit attribution (optional)
@@ -143,6 +160,10 @@ request boundary and the per-event census. Background:
 | `audit_eventlist_events_total` | counter | `outcome` |
 | `audit_eventlist_duration_seconds` | histogram | `outcome` |
 | `audit_events_total` | counter | `outcome`, `category`, `group`, `version`, `resource`, `verb` |
+| `attribution_resolutions_total` | counter | `result`, `group`, `version`, `resource` |
+| `attribution_resolution_wait_seconds` | histogram | `result` |
+| `attribution_fact_events_total` | counter | `op` |
+| `attribution_fact_index_size` | gauge | — |
 
 **EventList request boundary.** `audit_eventlists_total` and `audit_eventlist_duration_seconds`
 count requests at `/audit-webhook`; `audit_eventlist_events_total` counts the decoded event items
@@ -218,6 +239,47 @@ sum(rate(gitopsreverser_audit_eventlists_total{outcome="decode_error"}[5m]))
 ```promql
 histogram_quantile(0.95,
   sum by (le) (rate(gitopsreverser_audit_eventlist_duration_seconds_bucket[5m])))
+```
+
+**Does audit actually attribute watch events?** Match coverage includes service accounts intentionally
+collapsed to the committer by bot policy, so it measures "matched as configured":
+
+```promql
+sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*|serviceaccount_collapsed"}[5m]))
+/
+sum(rate(gitopsreverser_attribution_resolutions_total[5m]))
+```
+
+`result` is bounded:
+
+| `result` | Meaning |
+| --- | --- |
+| `exact_user` | Exact UID+resourceVersion match for a human user. |
+| `exact_serviceaccount` | Exact UID+resourceVersion match for a named service account. |
+| `serviceaccount_collapsed` | Service account matched, but bot policy authored as the committer. |
+| `weak` | Non-exact match, such as UID-only or RV-only. |
+| `conflict` | Multiple authors wrote facts for the selected join key. |
+| `expired` | A fact existed but aged out before the watch event joined it. |
+| `absent` | No fact or expiry evidence matched. |
+
+**Is the grace window paying for itself?** Misses waiting near the configured grace window mean the
+operator is delaying commits without finding facts:
+
+```promql
+histogram_quantile(0.95,
+  sum by (le, result) (
+    rate(gitopsreverser_attribution_resolution_wait_seconds_bucket{result=~"absent|expired"}[5m])))
+```
+
+**Is the Redis fact index healthy?** Facts should be written and later matched; a high `late` or
+`expired_unmatched` rate points at timing mismatch between audit and watch:
+
+```promql
+sum by (op) (rate(gitopsreverser_attribution_fact_events_total[5m]))
+```
+
+```promql
+gitopsreverser_attribution_fact_index_size
 ```
 
 ---
@@ -320,15 +382,9 @@ them — with a reference dashboard and an audit/attribution deep-dive — is
 [metrics-observability-plan.md](design/metrics-observability-plan.md) (see also
 [architecture.md → Observability](architecture.md#observability)):
 
-- **Watch ingestion** — per-`(gvr)` watch events received, reconnects/restarts,
-  `sendInitialEvents` replays, `410 Gone` rebuilds, mark-and-sweep deletes emitted, and
-  cursor-resume vs full-replay. Watch is the object-state source, yet it has almost no direct
-  coverage today; this is the biggest gap.
-- **Attribution coverage** — per-`(gvr)` outcome of the resolver (strong match / weak / committer
-  fallback) and the grace-window wait histogram. This is what turns "how often do real names
-  actually land?" into a number instead of an assumption.
-- **Commit author breakdown** — `commits_total` split by author kind (user / service account /
-  committer), the direct measure of attribution value.
+- **Watch ingestion** — per-type watch events received, reconnects/restarts, `sendInitialEvents`
+  replays, `410 Gone` rebuilds, and cursor-resume vs full-replay. Watch is the object-state source,
+  yet it has almost no direct coverage today; this is the biggest gap.
 - **Git push health** — push latency and conflict-retry counts. The instruments for these were
   removed because nothing recorded them; re-add them **with** a recording site when the need is
   real, not before.

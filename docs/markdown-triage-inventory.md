@@ -72,7 +72,7 @@ Markdown impact from those commits:
 | Done | File | Decision | Notes |
 | --- | --- | --- | --- |
 | [x] | `docs/finished/audit-readiness-probe-plan.md` | Finished | Implemented; moved to `docs/finished/`. |
-| [x] | `docs/design/e2e-metrics-over-logs-plan.md` | Finished | Implemented; moved to `docs/finished/`. |
+| [x] | `docs/finished/e2e-metrics-over-logs-plan.md` | Finished | Implemented; moved to `docs/finished/`. |
 | [ ] | `docs/design/git-credentials-interop.md` |  |  |
 | [ ] | `docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md` |  |  |
 | [ ] | `docs/design/manifest/e2e-full-suite-flakiness-findings-2026-06.md` |  |  |
