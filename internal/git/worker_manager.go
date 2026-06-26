@@ -266,7 +266,11 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 // Start implements manager.Runnable interface.
 // This is called by controller-runtime when the manager starts.
 func (m *WorkerManager) Start(ctx context.Context) error {
+	// Publish the context under m.mu: EnsureWorker reads m.ctx under the same lock,
+	// so guarding the write makes that read race-free regardless of call ordering.
+	m.mu.Lock()
 	m.ctx = ctx
+	m.mu.Unlock()
 	m.Log.Info("WorkerManager started")
 
 	<-ctx.Done()

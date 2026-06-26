@@ -36,14 +36,18 @@ import (
 	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 )
 
-const testAttributionPrefix = "test.attr.v1"
-
 func newTestAttributionIndex(t *testing.T) *AttributionIndex {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	idx, err := NewAttributionIndex(AttributionIndexConfig{Addr: mr.Addr(), Prefix: testAttributionPrefix})
-	require.NoError(t, err)
+	idx, _ := newTestAttributionIndexWithRedis(t)
 	return idx
+}
+
+func newTestAttributionIndexWithRedis(t *testing.T) (*AttributionIndex, *miniredis.Miniredis) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	idx, err := NewAttributionIndex(AttributionIndexConfig{Addr: mr.Addr()})
+	require.NoError(t, err)
+	return idx, mr
 }
 
 // mutationEvent builds an apps/deployments event for team-a/web authored by username,
@@ -166,30 +170,76 @@ func TestAttributionIndex_Ping(t *testing.T) {
 }
 
 func TestAttributionIndex_WatchCursorRoundTrip(t *testing.T) {
+	idx, mr := newTestAttributionIndexWithRedis(t)
+	ctx := context.Background()
+	gvr := appsDeploymentGVR()
+
+	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-1", gvr, "apps")
+	require.False(t, ok)
+
+	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", "uid-1", gvr, "apps", "42"))
+	got, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-1", gvr, "apps")
+	require.True(t, ok)
+	require.Equal(t, "42", got)
+
+	// The cursor carries watchCursorTTL and is never deleted explicitly; it expires
+	// once a watch has been gone longer than the TTL.
+	require.Equal(t, watchCursorTTL, mr.TTL(idx.watchCursorKey("team-a", "target", "uid-1", gvr, "apps")))
+	mr.FastForward(watchCursorTTL + time.Second)
+	_, ok = idx.LookupWatchCursor(ctx, "team-a", "target", "uid-1", gvr, "apps")
+	require.False(t, ok)
+}
+
+func TestAttributionIndex_WatchCursorIsolatedByGitTargetUID(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 	gvr := appsDeploymentGVR()
 
-	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", gvr, "apps")
+	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", "uid-old", gvr, "apps", "42"))
+
+	// A GitTarget recreated under the same namespace/name but a new UID must not
+	// inherit its predecessor's cursor.
+	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-new", gvr, "apps")
 	require.False(t, ok)
 
-	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", gvr, "apps", "42"))
-	got, ok := idx.LookupWatchCursor(ctx, "team-a", "target", gvr, "apps")
+	got, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-old", gvr, "apps")
 	require.True(t, ok)
 	require.Equal(t, "42", got)
-
-	require.NoError(t, idx.DeleteWatchCursor(ctx, "team-a", "target", gvr, "apps"))
-	_, ok = idx.LookupWatchCursor(ctx, "team-a", "target", gvr, "apps")
-	require.False(t, ok)
 }
 
 func TestAttributionIndex_WatchCursorIgnoresEmptyResourceVersion(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", appsDeploymentGVR(), "apps", ""))
-	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", appsDeploymentGVR(), "apps")
+	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", "uid-1", appsDeploymentGVR(), "apps", ""))
+	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", "uid-1", appsDeploymentGVR(), "apps")
 	require.False(t, ok)
+}
+
+func TestAttributionIndex_FactTTLConfigurable(t *testing.T) {
+	mr := miniredis.RunT(t)
+	idx, err := NewAttributionIndex(AttributionIndexConfig{Addr: mr.Addr(), FactTTL: 5 * time.Minute})
+	require.NoError(t, err)
+
+	require.NoError(t, idx.RecordFact(context.Background(), mutationEvent("update", "uid-1", "101", "alice")))
+
+	keys := idx.factKeyVariants("apps", "deployments", "team-a", "web", "uid-1", "101")
+	require.NotEmpty(t, keys)
+	for _, key := range keys {
+		require.Equal(t, 5*time.Minute, mr.TTL(key), "fact key %q", key)
+	}
+}
+
+func TestAttributionIndex_FactTTLDefaultsWhenUnset(t *testing.T) {
+	mr := miniredis.RunT(t)
+	idx, err := NewAttributionIndex(AttributionIndexConfig{Addr: mr.Addr()})
+	require.NoError(t, err)
+
+	require.NoError(t, idx.RecordFact(context.Background(), mutationEvent("update", "uid-1", "101", "alice")))
+
+	keys := idx.factKeyVariants("apps", "deployments", "team-a", "web", "uid-1", "101")
+	require.NotEmpty(t, keys)
+	require.Equal(t, DefaultAttributionFactTTL, mr.TTL(keys[0]))
 }
 
 func TestNewAttributionIndex_RequiresAddr(t *testing.T) {

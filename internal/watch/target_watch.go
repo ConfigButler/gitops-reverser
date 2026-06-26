@@ -137,24 +137,16 @@ func (m *Manager) refreshRunningTargetWatches(ctx context.Context) {
 	}
 }
 
+// forgetGitTargetWatches cancels and drops the in-memory watch set for a GitTarget.
+// It does not touch the durable resume cursors: those are UID-keyed and TTL-bounded,
+// so a deleted GitTarget's cursors expire on their own and a recreated one (new UID)
+// never inherits them.
 func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 	m.targetWatchesMu.Lock()
-	var keys []targetWatchKey
+	defer m.targetWatchesMu.Unlock()
 	if set := m.targetWatches[gitDest.Key()]; set != nil {
 		set.cancel()
-		keys = make([]targetWatchKey, 0, len(set.specs))
-		for key := range set.specs {
-			keys = append(keys, key)
-		}
 		delete(m.targetWatches, gitDest.Key())
-	}
-	m.targetWatchesMu.Unlock()
-
-	for _, key := range keys {
-		if err := m.deleteTargetWatchCursor(context.Background(), gitDest, key); err != nil {
-			m.Log.Error(err, "delete GitTarget watch cursor", "gitDest", gitDest.String(),
-				"gvr", key.GVR.String(), "namespace", key.Namespace)
-		}
 	}
 }
 
@@ -253,7 +245,15 @@ func (m *Manager) targetWatchReplayAndStream(
 	ops OperationSet,
 ) error {
 	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, key); ok {
-		return m.targetWatchResumeAndStream(ctx, log, gitDest, key, ops, cursor)
+		err := m.targetWatchResumeAndStream(ctx, log, gitDest, key, ops, cursor)
+		if !errors.Is(err, errTargetWatchExpired) {
+			return err
+		}
+		// The stored resourceVersion is too old to resume from. Fall through to a
+		// fresh replay, which rebuilds from current state and overwrites the stale
+		// cursor — no explicit delete needed.
+		log.Info("watch cursor expired; rebuilding from a fresh replay",
+			"gvr", key.GVR.String(), "namespace", key.Namespace, "resourceVersion", cursor)
 	}
 
 	opts := metav1.ListOptions{
@@ -310,9 +310,6 @@ func (m *Manager) targetWatchResumeAndStream(
 	})
 	if err != nil {
 		if watchOpenExpired(err) {
-			if deleteErr := m.deleteTargetWatchCursor(ctx, gitDest, key); deleteErr != nil {
-				return deleteErr
-			}
 			return errTargetWatchExpired
 		}
 		if ctx.Err() != nil {
@@ -521,9 +518,9 @@ func (m *Manager) processLiveTargetWatchEvent(
 	ev watch.Event,
 ) error {
 	if targetWatchExpired(ev) {
-		if err := m.deleteTargetWatchCursor(ctx, gitDest, key); err != nil {
-			return err
-		}
+		// The cursor's resourceVersion fell out of watch history. Reconnecting drops
+		// to the cursor-resume path, which gets the same "expired" and rebuilds from a
+		// fresh replay (overwriting the stale cursor); no explicit delete needed.
 		return errTargetWatchExpired
 	}
 	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev)
@@ -679,7 +676,8 @@ func (m *Manager) lookupTargetWatchCursor(
 	if m.WatchCursorStore == nil {
 		return "", false
 	}
-	return m.WatchCursorStore.LookupWatchCursor(ctx, gitDest.Namespace, gitDest.Name, key.GVR, key.Namespace)
+	return m.WatchCursorStore.LookupWatchCursor(
+		ctx, gitDest.Namespace, gitDest.Name, gitDest.UID, key.GVR, key.Namespace)
 }
 
 func (m *Manager) recordTargetWatchCursor(
@@ -691,18 +689,8 @@ func (m *Manager) recordTargetWatchCursor(
 	if m.WatchCursorStore == nil || rv == "" {
 		return nil
 	}
-	return m.WatchCursorStore.RecordWatchCursor(ctx, gitDest.Namespace, gitDest.Name, key.GVR, key.Namespace, rv)
-}
-
-func (m *Manager) deleteTargetWatchCursor(
-	ctx context.Context,
-	gitDest types.ResourceReference,
-	key targetWatchKey,
-) error {
-	if m.WatchCursorStore == nil {
-		return nil
-	}
-	return m.WatchCursorStore.DeleteWatchCursor(ctx, gitDest.Namespace, gitDest.Name, key.GVR, key.Namespace)
+	return m.WatchCursorStore.RecordWatchCursor(
+		ctx, gitDest.Namespace, gitDest.Name, gitDest.UID, key.GVR, key.Namespace, rv)
 }
 
 func bufferTargetWatchEvents(ctx context.Context, in <-chan watch.Event, out chan<- watch.Event) {

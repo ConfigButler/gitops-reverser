@@ -38,16 +38,20 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 )
 
-// DefaultAttributionPrefix is the default root key prefix for attribution facts.
-// Every fact key is "<prefix>:attr:v1:<variant>:<hex-join-key>".
-const DefaultAttributionPrefix = "gitops-reverser"
+// DefaultAttributionFactTTL is how long an attribution fact is retained in Redis
+// waiting for the matching watch event to join it. Facts are never object state, so
+// they expire on their own — nothing deletes them. Configurable via --attribution-ttl.
+const DefaultAttributionFactTTL = 10 * time.Minute
 
-// attributionFactTTL bounds attribution facts in Redis. Watch owns object state,
-// so a fact is only ever needed within the short window between an audit event and
-// the matching watch event (plus the resolver's grace window and a little slack
-// for leader failover). Minutes, never hours — old facts are never a correctness
-// input. See docs/design/watch-first-ingestion-architecture.md ("Attribution").
-const attributionFactTTL = 10 * time.Minute
+// watchCursorTTL bounds a stored watch-resume cursor. A live GitTarget refreshes its
+// cursor on every watch event and ~minutely bookmark, so the TTL only fires once a
+// watch has been gone longer than this — a deleted GitTarget, or a long outage — after
+// which the next session safely rebuilds from a fresh replay. The GitTarget UID is part
+// of the key, so a recreated target never inherits a stale predecessor's cursor.
+const watchCursorTTL = time.Hour
+
+// keyPrefix is the fixed root namespace for every Redis key this index owns.
+const keyPrefix = "gitops-reverser"
 
 const (
 	attributionKeySuffix     = ":attr:v1:"
@@ -83,18 +87,16 @@ type AttributionIndexConfig struct {
 	Username   string
 	AuthValue  string
 	DB         int
-	Prefix     string
+	FactTTL    time.Duration
 	TLSEnabled bool
 }
 
-// AttributionIndex is the optional, Redis-backed lookup table that names a commit
-// author from audit facts. It replaces the per-type audit object-log: it stores
-// only attribution facts keyed for a join against watch events, never object state.
-// When no index is configured the product runs committer-only, so every method is
-// safe to call only on a non-nil index.
+// AttributionIndex is the Redis-backed lookup table that names a commit author from
+// audit facts and persists per-watch resume cursors. It stores only attribution facts
+// keyed for a join against watch events and short-lived cursors, never object state.
 type AttributionIndex struct {
-	client *redis.Client
-	prefix string
+	client  *redis.Client
+	factTTL time.Duration
 }
 
 // NewAttributionIndex builds the Redis-backed attribution index.
@@ -103,9 +105,9 @@ func NewAttributionIndex(cfg AttributionIndexConfig) (*AttributionIndex, error) 
 		return nil, errors.New("redis address is required")
 	}
 
-	prefix := strings.TrimSpace(cfg.Prefix)
-	if prefix == "" {
-		prefix = DefaultAttributionPrefix
+	factTTL := cfg.FactTTL
+	if factTTL <= 0 {
+		factTTL = DefaultAttributionFactTTL
 	}
 
 	options := &redis.Options{
@@ -118,7 +120,7 @@ func NewAttributionIndex(cfg AttributionIndexConfig) (*AttributionIndex, error) 
 		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 
-	return &AttributionIndex{client: redis.NewClient(options), prefix: prefix}, nil
+	return &AttributionIndex{client: redis.NewClient(options), factTTL: factTTL}, nil
 }
 
 // Ping checks liveness of the underlying Redis/Valkey connection. The readiness
@@ -128,15 +130,15 @@ func (a *AttributionIndex) Ping(ctx context.Context) error {
 }
 
 // LookupWatchCursor returns the last resourceVersion durably processed for one
-// GitTarget watch shard. A miss means the watch must rebuild from a fresh list or
-// streaming-list replay.
+// GitTarget watch shard. A miss means the watch must rebuild from a fresh replay.
 func (a *AttributionIndex) LookupWatchCursor(
 	ctx context.Context,
-	gitTargetNamespace, gitTargetName string,
+	gitTargetNamespace, gitTargetName, gitTargetUID string,
 	gvr schema.GroupVersionResource,
 	namespace string,
 ) (string, bool) {
-	rv, err := a.client.Get(ctx, a.watchCursorKey(gitTargetNamespace, gitTargetName, gvr, namespace)).Result()
+	key := a.watchCursorKey(gitTargetNamespace, gitTargetName, gitTargetUID, gvr, namespace)
+	rv, err := a.client.Get(ctx, key).Result()
 	if err != nil || rv == "" {
 		return "", false
 	}
@@ -144,34 +146,21 @@ func (a *AttributionIndex) LookupWatchCursor(
 }
 
 // RecordWatchCursor stores the last resourceVersion durably processed for one
-// GitTarget watch shard. Cursors have no TTL; expiration is handled by the
-// apiserver's normal "resourceVersion too old" watch error path.
+// GitTarget watch shard, refreshing watchCursorTTL on each write. The cursor is keyed
+// by GitTarget UID and bounded by the TTL, so it never needs explicit deletion: a live
+// watch keeps it fresh, and a dead one's cursor simply expires.
 func (a *AttributionIndex) RecordWatchCursor(
 	ctx context.Context,
-	gitTargetNamespace, gitTargetName string,
+	gitTargetNamespace, gitTargetName, gitTargetUID string,
 	gvr schema.GroupVersionResource,
 	namespace, rv string,
 ) error {
 	if rv == "" {
 		return nil
 	}
-	if err := a.client.Set(ctx, a.watchCursorKey(gitTargetNamespace, gitTargetName, gvr, namespace), rv, 0).
-		Err(); err != nil {
+	key := a.watchCursorKey(gitTargetNamespace, gitTargetName, gitTargetUID, gvr, namespace)
+	if err := a.client.Set(ctx, key, rv, watchCursorTTL).Err(); err != nil {
 		return fmt.Errorf("store watch cursor: %w", err)
-	}
-	return nil
-}
-
-// DeleteWatchCursor removes a stale cursor after the apiserver reports it has
-// expired from watch history.
-func (a *AttributionIndex) DeleteWatchCursor(
-	ctx context.Context,
-	gitTargetNamespace, gitTargetName string,
-	gvr schema.GroupVersionResource,
-	namespace string,
-) error {
-	if err := a.client.Del(ctx, a.watchCursorKey(gitTargetNamespace, gitTargetName, gvr, namespace)).Err(); err != nil {
-		return fmt.Errorf("delete watch cursor: %w", err)
 	}
 	return nil
 }
@@ -222,7 +211,7 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, event auditv1.Event) 
 	}
 
 	for _, key := range a.factKeyVariants(group, resource, identity.Namespace, identity.Name, identity.UID, fact.ResourceVersion) {
-		if err := a.client.Set(ctx, key, raw, attributionFactTTL).Err(); err != nil {
+		if err := a.client.Set(ctx, key, raw, a.factTTL).Err(); err != nil {
 			return fmt.Errorf("store attribution fact %q: %w", key, err)
 		}
 	}
@@ -296,23 +285,24 @@ func (a *AttributionIndex) factKeyVariants(group, resource, namespace, name stri
 
 func (a *AttributionIndex) factKey(variant string, parts ...string) string {
 	id := hex.EncodeToString([]byte(strings.Join(parts, "\x00")))
-	return a.prefix + attributionKeySuffix + variant + ":" + id
+	return keyPrefix + attributionKeySuffix + variant + ":" + id
 }
 
 func (a *AttributionIndex) watchCursorKey(
-	gitTargetNamespace, gitTargetName string,
+	gitTargetNamespace, gitTargetName, gitTargetUID string,
 	gvr schema.GroupVersionResource,
 	namespace string,
 ) string {
 	id := hex.EncodeToString([]byte(strings.Join([]string{
 		gitTargetNamespace,
 		gitTargetName,
+		gitTargetUID,
 		gvr.Group,
 		gvr.Version,
 		gvr.Resource,
 		namespace,
 	}, "\x00")))
-	return a.prefix + watchCursorKeySuffix + id
+	return keyPrefix + watchCursorKeySuffix + id
 }
 
 // resourceVersionFromEvent returns the event's ResourceVersion when one is available,

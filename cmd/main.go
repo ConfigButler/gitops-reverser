@@ -186,10 +186,9 @@ func main() {
 		WatchManager: watchMgr,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
-	// Optional audit-based attribution. With Redis configured (the default) the audit webhook records
-	// minimal facts and live watch events are author-attributed when an audit fact matches; with
-	// audit-redis-addr empty the product runs committer-only. This is graceful degradation on the
-	// absence of Redis, NOT a dedicated watch-only mode.
+	// Redis-backed attribution and watch cursors. The audit webhook records minimal facts and live
+	// watch events are author-attributed when a fact matches. An empty audit-redis-addr runs
+	// committer-only (single-replica): no audit, no cursors, every commit authored by the committer.
 	var (
 		attributionIndex *queue.AttributionIndex
 		auditRunnable    *auditServerRunnable
@@ -203,7 +202,7 @@ func main() {
 			Username:   cfg.auditRedisUsername,
 			AuthValue:  cfg.auditRedisPassword,
 			DB:         cfg.auditRedisDB,
-			Prefix:     cfg.attributionPrefix,
+			FactTTL:    cfg.attributionFactTTL,
 			TLSEnabled: cfg.auditRedisTLS,
 		})
 		fatalIfErr(err, "unable to build audit attribution index")
@@ -325,7 +324,7 @@ type appConfig struct {
 	auditRedisPassword       string
 	auditRedisDB             int
 	auditRedisTLS            bool
-	attributionPrefix        string
+	attributionFactTTL       time.Duration
 	attributionGrace         time.Duration
 	attributionSANaming      string
 	branchBufferMaxBytes     int64
@@ -393,22 +392,18 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.DurationVar(&cfg.auditIdleTimeout, "audit-idle-timeout", defaultAuditIdleTimeout,
 		"Idle timeout for the dedicated audit ingress HTTPS server.")
 	fs.StringVar(&cfg.auditRedisAddr, "audit-redis-addr", "valkey:6379",
-		"Redis server address (<host>:<port>) for the audit attribution index. Set empty to run "+
-			"committer-only (no audit, no Redis): every commit is authored by the configured committer.")
-	fs.StringVar(&cfg.auditRedisUsername, "audit-redis-username", "",
-		"Optional Redis username for the audit attribution index.")
+		"Redis address (host:port) for attribution facts and watch cursors. Empty runs committer-only.")
+	fs.StringVar(&cfg.auditRedisUsername, "audit-redis-username", "", "Optional Redis username.")
 	fs.StringVar(
 		&cfg.auditRedisPassword,
 		"audit-redis-password",
 		os.Getenv("REDIS_PASSWORD"),
-		"Redis password for the audit attribution index. Prefer setting via REDIS_PASSWORD env var from a Secret.",
+		"Redis password. Prefer setting via REDIS_PASSWORD env var from a Secret.",
 	)
-	fs.IntVar(&cfg.auditRedisDB, "audit-redis-db", 0,
-		"Redis database index for the audit attribution index.")
-	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false,
-		"If set, the Redis connection for the audit attribution index uses TLS.")
-	fs.StringVar(&cfg.attributionPrefix, "attribution-redis-prefix", queue.DefaultAttributionPrefix,
-		"Root key prefix for attribution facts (<prefix>:attr:v1:<variant>:<id>).")
+	fs.IntVar(&cfg.auditRedisDB, "audit-redis-db", 0, "Redis database index.")
+	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false, "If set, the Redis connection uses TLS.")
+	fs.DurationVar(&cfg.attributionFactTTL, "attribution-ttl", queue.DefaultAttributionFactTTL,
+		"How long an attribution fact is retained waiting for the matching watch event to join it.")
 	fs.DurationVar(&cfg.attributionGrace, "attribution-grace", watch.DefaultAttributionGraceWindow,
 		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
 			"configured committer. Larger values raise attribution hit-rate at the cost of commit latency.")
@@ -488,10 +483,8 @@ func bindServerCertFlags(
 		fmt.Sprintf("The name of the %s key file.", component))
 }
 
-// auditAttributionEnabled reports whether audit-based attribution is configured.
-// An empty audit-redis-addr is committer-only mode: no audit webhook, no Redis,
-// commits authored by the configured committer. It is the absence of Redis, not a
-// dedicated mode flag.
+// auditAttributionEnabled reports whether a Redis endpoint is configured. An empty
+// audit-redis-addr is committer-only mode (single-replica).
 func auditAttributionEnabled(cfg appConfig) bool {
 	return strings.TrimSpace(cfg.auditRedisAddr) != ""
 }
@@ -499,6 +492,9 @@ func auditAttributionEnabled(cfg appConfig) bool {
 func validateAuditConfig(cfg appConfig) error {
 	if cfg.attributionGrace < 0 {
 		return fmt.Errorf("attribution-grace must be >= 0, got %s", cfg.attributionGrace)
+	}
+	if cfg.attributionFactTTL <= 0 {
+		return fmt.Errorf("attribution-ttl must be > 0, got %s", cfg.attributionFactTTL)
 	}
 	switch watch.ServiceAccountNamingPolicy(cfg.attributionSANaming) {
 	case watch.SANamePolicyName, watch.SANamePolicyBot:

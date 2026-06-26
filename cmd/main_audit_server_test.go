@@ -57,7 +57,7 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
 	assert.Equal(t, "valkey:6379", cfg.auditRedisAddr)
 	assert.False(t, cfg.auditRedisTLS)
-	assert.Equal(t, "gitops-reverser", cfg.attributionPrefix)
+	assert.Equal(t, 10*time.Minute, cfg.attributionFactTTL)
 	assert.Equal(t, 3*time.Second, cfg.attributionGrace)
 	assert.Equal(t, "name", cfg.attributionSANaming)
 	assert.False(t, cfg.zapOpts.Development)
@@ -114,7 +114,7 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-redis-password=pass",
 		"--audit-redis-db=2",
 		"--audit-redis-tls",
-		"--attribution-redis-prefix=custom-prefix",
+		"--attribution-ttl=20m",
 		"--attribution-grace=750ms",
 		"--attribution-sa-naming=bot",
 	}
@@ -138,7 +138,7 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, "pass", cfg.auditRedisPassword)
 	assert.Equal(t, 2, cfg.auditRedisDB)
 	assert.True(t, cfg.auditRedisTLS)
-	assert.Equal(t, "custom-prefix", cfg.attributionPrefix)
+	assert.Equal(t, 20*time.Minute, cfg.attributionFactTTL)
 	assert.Equal(t, 750*time.Millisecond, cfg.attributionGrace)
 	assert.Equal(t, "bot", cfg.attributionSANaming)
 }
@@ -195,6 +195,14 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "negative attribution grace",
 			args: []string{"--attribution-grace=-1s"},
+		},
+		{
+			name: "zero attribution ttl",
+			args: []string{"--attribution-ttl=0s"},
+		},
+		{
+			name: "negative attribution ttl",
+			args: []string{"--attribution-ttl=-1m"},
 		},
 		{
 			name: "invalid attribution sa naming",

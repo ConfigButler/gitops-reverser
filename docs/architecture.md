@@ -67,8 +67,11 @@ The solution, in the vocabulary used throughout this document:
 * **Recovery prefers watch.** A new watch normally starts with `sendInitialEvents`, establishes a
   current snapshot boundary, and runs a **mark-and-sweep**: any Git file whose object is no longer
   present is deleted. When Redis has a fresh per-type cursor, the operator skips the snapshot and
-  resumes a normal watch from that resourceVersion. Older APIs that reject `sendInitialEvents` fall
-  back to LIST plus buffered WATCH. The sweep fires on snapshot establishment, **never on a timer**.
+  resumes a normal watch from that resourceVersion. Cursors are keyed by `GitTarget` UID and carry a
+  TTL refreshed on every watch event and bookmark, so a live watch keeps its cursor warm while a deleted
+  one's cursor simply expires — and a stale resourceVersion (`410 Gone`) rebuilds from a fresh replay.
+  Older APIs that reject `sendInitialEvents` fall back to LIST plus buffered WATCH. The sweep fires on
+  snapshot establishment, **never on a timer**.
 * **Audit, when configured, only names the author.** It is an optional attribution lookup; a missing or
   late fact costs author fidelity, never correctness, and with no Redis the product commits as the
   configured committer.

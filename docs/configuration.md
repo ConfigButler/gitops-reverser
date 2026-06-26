@@ -498,10 +498,9 @@ author to each watch event by matching a fact (by resourceVersion/UID) within a 
 The same Redis connection also stores per-watch resume cursors, so short reconnects can resume a normal
 watch from the last processed resourceVersion when the apiserver can still serve that history.
 
-Redis-backed attribution and cursors run only when a Redis endpoint is configured. Leave
-`--audit-redis-addr` (chart `queue.redis.addr`) empty to run **committer-only**: the audit webhook is
-not used, every commit is authored by the configured committer, and watch recovery uses replay/list
-snapshots instead of persisted resume cursors.
+Redis stores attribution facts and watch resume cursors. Leave `--audit-redis-addr` (chart
+`queue.redis.addr`) empty to run **committer-only** (single-replica): the audit webhook is unused and
+every commit is authored by the configured committer.
 
 ```yaml
 queue:
@@ -514,7 +513,8 @@ queue:
 
 The attribution flags tune the join:
 
-- `--attribution-redis-prefix`: root key prefix for attribution facts; empty uses the default.
+- `--attribution-ttl` (default `10m`): how long an attribution fact is retained waiting for the
+  matching watch event to join it.
 - `--attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
   watch event ships authored by the committer.
 - `--attribution-sa-naming` (`name` | `bot`): how a matched service account is named — `name` uses the
@@ -522,7 +522,7 @@ The attribution flags tune the join:
 
 ```yaml
 attribution:
-  redisPrefix: ""
+  ttl: "10m"
   grace: "3s"
   serviceAccountNaming: "name"
 ```

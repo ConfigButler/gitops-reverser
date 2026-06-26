@@ -52,7 +52,7 @@ type playgroundRun struct {
 // playgroundRepo holds the reusable repo fixtures for the playground flow.
 var playgroundRepo *RepoArtifacts
 
-var _ = Describe("playground", Label("playground"), Ordered, func() {
+var _ = Describe("playground", Label("playground"), Ordered, Serial, func() {
 	var run playgroundRun
 
 	BeforeAll(func() {

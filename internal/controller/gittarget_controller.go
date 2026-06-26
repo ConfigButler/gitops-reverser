@@ -219,7 +219,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	materializationSettling := false
 	sum := watch.GitTargetMaterializationSummary{}
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
-		gitDest := types.NewResourceReference(target.Name, target.Namespace)
+		gitDest := types.NewResourceReference(target.Name, target.Namespace).WithUID(string(target.UID))
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(ctx, gitDest); declareErr != nil {
 			log.V(1).Info("materialization declare skipped; surface not observable",
 				"gitDest", gitDest.String(), "err", declareErr.Error())

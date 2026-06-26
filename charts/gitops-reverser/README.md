@@ -175,7 +175,7 @@ nodeSelector:
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
-| `attribution.redisPrefix` | Root key prefix for attribution facts (`<prefix>:attr:v1:<variant>:<id>`); empty uses the default | `""` |
+| `attribution.ttl` | How long an attribution fact is retained waiting for the matching watch event to join it | `10m` |
 | `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
 | `attribution.serviceAccountNaming` | How a matched service account is named: `name` (its own username) or `bot` (collapse to the committer) | `name` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |

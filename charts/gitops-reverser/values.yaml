@@ -94,17 +94,14 @@ servers:
       # Leave empty to use the chart-generated Secret name.
       secretNameOverride: ""
 
-# Optional Redis-backed audit attribution index. Watch is the source of object state;
-# audit only names the commit author. Leave queue.redis.addr empty to run committer-only
-# (no audit, no Redis) — every commit is authored by the configured committer.
+# Redis-backed attribution facts and watch resume cursors. Empty addr runs committer-only.
 queue:
   redis:
-    # Redis endpoint in host:port format. Empty = committer-only mode (no attribution).
+    # Redis endpoint (host:port). Empty disables Redis (single-replica only).
     addr: "valkey:6379"
     auth:
-      # Name of a pre-existing Secret in the same namespace that holds the Redis password.
-      # The Secret must be created before installing this chart. You may leave it empty only
-      # for dev/local environments where Valkey runs without authentication.
+      # Pre-existing Secret (same namespace) holding the Redis password. Create it before install;
+      # leave empty only for dev clusters where Valkey runs without authentication.
       existingSecret: "valkey-auth"
       # Key within the Secret that holds the password value.
       existingSecretKey: "password"
@@ -116,8 +113,8 @@ queue:
 
 # Commit-author attribution from audit facts. Only applies when queue.redis.addr is set.
 attribution:
-  # Root key prefix for attribution facts (<prefix>:attr:v1:<variant>:<id>). Empty uses the default.
-  redisPrefix: ""
+  # How long an attribution fact is retained waiting for the matching watch event to join it.
+  ttl: "10m"
   # Bounded per-event wait for a matching audit fact before a watch event ships as the committer.
   # Larger values raise attribution hit-rate at the cost of commit latency.
   grace: "3s"

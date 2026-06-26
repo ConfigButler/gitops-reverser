@@ -21,12 +21,14 @@ package watch
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -382,13 +384,13 @@ func TestTargetWatchReplayAndStream_ResumesFromStoredCursor(t *testing.T) {
 
 	fw.Modify(configMapObject("42"))
 	require.Eventually(t, func() bool {
-		return len(enqueuer.events) == 1
+		return len(enqueuer.snapshot()) == 1
 	}, time.Second, 10*time.Millisecond)
 	cancel()
 
 	require.NoError(t, <-done)
-	assert.Equal(t, "42", store.recordedRV)
-	assert.Equal(t, "UPDATE", enqueuer.events[0].Operation)
+	assert.Equal(t, "42", store.lastRecordedRV())
+	assert.Equal(t, "UPDATE", enqueuer.snapshot()[0].Operation)
 }
 
 func TestOpenTargetWatch_UsesConfiguredHook(t *testing.T) {
@@ -485,10 +487,8 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 	defer cancel()
 	cancelled := make(chan struct{})
 	childCtx, childCancel := context.WithCancel(ctx)
-	store := &fakeWatchCursorStore{}
 	watchKey := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 	manager := &Manager{
-		WatchCursorStore: store,
 		targetWatches: map[string]*targetWatchSet{
 			gitDest.Key(): {
 				cancel: func() {
@@ -500,6 +500,8 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 		},
 	}
 
+	// Forget only cancels and drops in-memory state; the durable cursors are left to
+	// expire by TTL, so a recreated GitTarget (new UID) never inherits them.
 	manager.forgetGitTargetWatches(gitDest)
 
 	select {
@@ -509,7 +511,58 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 	}
 	require.ErrorIs(t, childCtx.Err(), context.Canceled)
 	assert.Empty(t, manager.targetWatches)
-	assert.True(t, store.deleted)
+}
+
+func TestTargetWatchReplayAndStream_ExpiredCursorFallsBackToFreshReplay(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default").WithUID("uid-1")
+	store := &fakeWatchCursorStore{rv: "41", ok: true}
+	fresh := watch.NewFake()
+	var resumeAttempts, replayOpens int
+	manager := &Manager{
+		Log:              logr.Discard(),
+		WatchCursorStore: store,
+		targetWatchOpen: func(
+			_ context.Context,
+			_ schema.GroupVersionResource,
+			_ string,
+			opts metav1.ListOptions,
+		) (watch.Interface, error) {
+			if opts.ResourceVersion == "41" && opts.SendInitialEvents == nil {
+				resumeAttempts++
+				return nil, apierrors.NewResourceExpired("resourceVersion too old")
+			}
+			require.NotNil(t, opts.SendInitialEvents)
+			assert.True(t, *opts.SendInitialEvents)
+			replayOpens++
+			return fresh, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.targetWatchReplayAndStream(
+			ctx, logr.Discard(), gitDest,
+			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil,
+		)
+	}()
+
+	// The stale cursor fails to resume (410 Gone), so the watch rebuilds from a fresh
+	// sendInitialEvents replay, which overwrites the cursor — no delete required.
+	fresh.Add(configMapObject("42"))
+	bookmark := &unstructured.Unstructured{}
+	bookmark.SetResourceVersion("43")
+	bookmark.SetAnnotations(map[string]string{metav1.InitialEventsAnnotationKey: "true"})
+	fresh.Action(watch.Bookmark, bookmark)
+	require.Eventually(t, func() bool {
+		return store.lastRecordedRV() == "43"
+	}, time.Second, 10*time.Millisecond)
+	cancel()
+
+	require.NoError(t, <-done)
+	assert.Equal(t, 1, resumeAttempts)
+	assert.Equal(t, 1, replayOpens)
+	assert.Equal(t, "uid-1", store.lastLookedUpUID(), "the GitTarget UID scopes the cursor lookup")
+	assert.Equal(t, "uid-1", store.lastRecordedUID(), "the GitTarget UID scopes the cursor write")
 }
 
 func receiveOpenedWatch(t *testing.T, opened <-chan openedWatch) openedWatch {
@@ -540,11 +593,22 @@ type openedWatch struct {
 }
 
 type recordingEnqueuer struct {
+	mu     sync.Mutex
 	events []git.Event
 }
 
 func (r *recordingEnqueuer) Enqueue(event git.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.events = append(r.events, event)
+}
+
+// snapshot returns a copy of the recorded events under lock, safe to read while a
+// watch goroutine is still enqueuing.
+func (r *recordingEnqueuer) snapshot() []git.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]git.Event(nil), r.events...)
 }
 
 func configMapObject(rv string) *unstructured.Unstructured {
@@ -565,37 +629,55 @@ func configMapObject(rv string) *unstructured.Unstructured {
 }
 
 type fakeWatchCursorStore struct {
-	rv         string
-	ok         bool
-	recordedRV string
-	deleted    bool
+	mu          sync.Mutex
+	rv          string
+	ok          bool
+	recordedRV  string
+	recordedUID string
+	lookedUpUID string
 }
 
 func (f *fakeWatchCursorStore) LookupWatchCursor(
 	_ context.Context,
-	_, _ string,
+	_, _, gitTargetUID string,
 	_ schema.GroupVersionResource,
 	_ string,
 ) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lookedUpUID = gitTargetUID
 	return f.rv, f.ok
 }
 
 func (f *fakeWatchCursorStore) RecordWatchCursor(
 	_ context.Context,
-	_, _ string,
+	_, _, gitTargetUID string,
 	_ schema.GroupVersionResource,
 	_, rv string,
 ) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordedUID = gitTargetUID
 	f.recordedRV = rv
 	return nil
 }
 
-func (f *fakeWatchCursorStore) DeleteWatchCursor(
-	_ context.Context,
-	_, _ string,
-	_ schema.GroupVersionResource,
-	_ string,
-) error {
-	f.deleted = true
-	return nil
+// lastRecordedRV, lastRecordedUID, and lastLookedUpUID read the recorded values under
+// lock, safe to call while a watch goroutine is still recording cursors.
+func (f *fakeWatchCursorStore) lastRecordedRV() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.recordedRV
+}
+
+func (f *fakeWatchCursorStore) lastRecordedUID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.recordedUID
+}
+
+func (f *fakeWatchCursorStore) lastLookedUpUID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lookedUpUID
 }

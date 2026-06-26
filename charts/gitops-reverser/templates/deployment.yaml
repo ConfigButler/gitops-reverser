@@ -73,9 +73,7 @@ spec:
             {{- if .Values.queue.redis.tls.enabled }}
             - --audit-redis-tls
             {{- end }}
-            {{- with .Values.attribution.redisPrefix }}
-            - --attribution-redis-prefix={{ . }}
-            {{- end }}
+            - --attribution-ttl={{ .Values.attribution.ttl }}
             - --attribution-grace={{ .Values.attribution.grace }}
             - --attribution-sa-naming={{ .Values.attribution.serviceAccountNaming }}
             {{- with .Values.controllerManager.additionalSensitiveResources }}
