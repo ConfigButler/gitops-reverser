@@ -20,6 +20,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -226,19 +227,18 @@ func (r *EventRouter) enqueueScopedResync(
 // never re-fires the gather.
 func (r *EventRouter) drainScopedResync(
 	gitDest types.ResourceReference,
-	gvr schema.GroupVersionResource,
+	key targetWatchKey,
 	kind string,
 	resultCh chan git.ResyncResult,
 ) {
 	select {
 	case result := <-resultCh:
 		if result.Err != nil {
-			r.Log.Error(result.Err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "gvr", gvr.String())
-			r.recordBackgroundResyncFailure(gitDest)
+			r.handleScopedResyncError(gitDest, key, kind, result.Err)
 			return
 		}
 		r.Log.V(1).Info("per-type "+kind+" applied",
-			"gitDest", gitDest.String(), "gvr", gvr.String(),
+			"gitDest", gitDest.String(), "gvr", key.GVR.String(),
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
 		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile
@@ -247,9 +247,34 @@ func (r *EventRouter) drainScopedResync(
 			r.WatchManager.recordTargetReconcileCompleted(gitDest, "type_reconcile")
 		}
 	case <-time.After(resyncSignalTimeout):
-		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "gvr", gvr.String())
+		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "gvr", key.GVR.String())
 		r.recordBackgroundResyncFailure(gitDest)
 	}
+}
+
+// handleScopedResyncError classifies a failed resync. A folder the acceptance gate refused
+// is not a transient write fault: nothing was committed, the human must clean the folder, so
+// it is surfaced as a Blocked stream (StreamsReady=False, reason UnsupportedContent) and is
+// NOT counted as a background resync failure. Every other error stays a background failure so
+// a silently-recovered fault remains observable.
+func (r *EventRouter) handleScopedResyncError(
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+	kind string,
+	err error,
+) {
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	if errors.As(err, &refused) {
+		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget folder content",
+			"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
+		if r.WatchManager != nil {
+			r.WatchManager.markTargetStreamState(
+				gitDest, key, StreamStateBlocked, StreamReasonUnsupportedContent, refused.BlockMessage())
+		}
+		return
+	}
+	r.Log.Error(err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "gvr", key.GVR.String())
+	r.recordBackgroundResyncFailure(gitDest)
 }
 
 // RegisterGitTargetEventStream registers a GitTargetEventStream with the router.

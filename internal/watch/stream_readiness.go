@@ -52,6 +52,13 @@ const (
 	StreamReasonAllStreamsReady        = "AllStreamsReady"
 	StreamReasonReplaying              = "Replaying"
 	StreamReasonNoResolvedTypes        = "NoResolvedTypes"
+	// StreamReasonUnsupportedContent blocks a type whose GitTarget subtree holds content
+	// the operator cannot safely manage (an unsupported kustomization, a duplicate
+	// identity, an impure or non-KRM file). The acceptance gate refused the
+	// first-materialization resync, so nothing was written; the human must clean the
+	// folder before the mirror can resume. Surfaced on status.streams + the StreamsReady
+	// condition (reason UnsupportedContent, phase Degraded).
+	StreamReasonUnsupportedContent = "UnsupportedContent"
 )
 
 const pendingStreamSampleLimit = 5

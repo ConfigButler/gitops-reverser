@@ -436,7 +436,7 @@ func (m *Manager) targetWatchListAndStream(
 	}
 	desired := desiredFromList(key.GVR, list)
 	revision := list.GetResourceVersion()
-	if err := m.enqueueReplayResync(ctx, log, gitDest, key.GVR, desired, revision); err != nil {
+	if err := m.enqueueReplayResync(ctx, log, gitDest, key, desired, revision); err != nil {
 		return err
 	}
 	if err := m.recordTargetWatchCursor(ctx, gitDest, key, revision); err != nil {
@@ -476,7 +476,7 @@ func (m *Manager) handleTargetWatchSessionEvent(
 	if err != nil || !done {
 		return true, err
 	}
-	if err := m.enqueueReplayResync(ctx, log, gitDest, key.GVR, *replay, rv); err != nil {
+	if err := m.enqueueReplayResync(ctx, log, gitDest, key, *replay, rv); err != nil {
 		return true, err
 	}
 	if err := m.recordTargetWatchCursor(ctx, gitDest, key, rv); err != nil {
@@ -535,24 +535,27 @@ func (m *Manager) enqueueReplayResync(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	gvr schema.GroupVersionResource,
+	key targetWatchKey,
 	desired []manifestanalyzer.DesiredResource,
 	revision string,
 ) error {
 	if m.EventRouter == nil {
 		return nil
 	}
-	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(ctx, gitDest, gvr, desired, revision, false)
+	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(ctx, gitDest, key.GVR, desired, revision, false)
 	if err != nil {
 		return err
 	}
 	if !enqueued {
 		return fmt.Errorf("target replay resync for %s on %s dropped: %w",
-			gvr.String(), gitDest.String(), git.ErrFinalizeQueueFull)
+			key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
 	}
-	go m.EventRouter.drainScopedResync(gitDest, gvr, "reconcile", resultCh)
+	// The key (GVR + namespace) is threaded to the drain so a refused folder marks THIS
+	// type's stream Blocked: the resync result decides whether the stream the watch just
+	// marked Streaming must drop back to Blocked (unsupported content).
+	go m.EventRouter.drainScopedResync(gitDest, key, "reconcile", resultCh)
 	log.V(1).Info("target replay resync enqueued",
-		"gitDest", gitDest.String(), "gvr", gvr.String(), "revision", revision, "count", len(desired))
+		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "revision", revision, "count", len(desired))
 	return nil
 }
 

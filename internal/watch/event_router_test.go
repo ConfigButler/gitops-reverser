@@ -20,6 +20,7 @@ package watch
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 
 	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -136,7 +138,7 @@ func TestDrainScopedResync_CompletesSuccessfulResult(t *testing.T) {
 	go func() {
 		router.drainScopedResync(
 			types.NewResourceReference("team-a-config", "team-a"),
-			configmapsGVR,
+			targetWatchKey{GVR: configmapsGVR},
 			"reconcile",
 			resultCh,
 		)
@@ -148,6 +150,38 @@ func TestDrainScopedResync_CompletesSuccessfulResult(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("expected scoped resync drain to complete")
 	}
+}
+
+// A resync that the acceptance gate refused (an unsupported GitTarget folder) must mark the
+// type's stream Blocked with reason UnsupportedContent — the user-visible refusal — and must
+// NOT be counted as a generic background resync failure. The typed error is wrapped, exactly
+// as commitPendingWrites wraps it, so this also pins the errors.As recovery.
+func TestDrainScopedResync_RefusalMarksStreamBlocked(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	mgr := &Manager{Log: logr.Discard()}
+	router := NewEventRouter(workerManager, mgr, client, logr.Discard())
+
+	gitDest := types.NewResourceReference("team-a-config", "team-a")
+	key := targetWatchKey{GVR: configmapsGVR}
+	refusal := &manifestanalyzer.AcceptanceRefusedError{Issues: []manifestanalyzer.AcceptanceIssue{{
+		Kind:    manifestanalyzer.IssueUnsupportedKustomize,
+		Path:    "team-a/kustomization.yaml",
+		Message: "uses patches",
+	}}}
+	resultCh := make(chan git.ResyncResult, 1)
+	resultCh <- git.ResyncResult{Err: fmt.Errorf("execute pending writes: %w", refusal)}
+
+	router.drainScopedResync(gitDest, key, "reconcile", resultCh)
+
+	mgr.targetWatchesMu.Lock()
+	st := mgr.targetStreamStates[gitDest.Key()][key]
+	mgr.targetWatchesMu.Unlock()
+
+	assert.Equal(t, StreamStateBlocked, st.state, "a refused folder must block the stream")
+	assert.Equal(t, StreamReasonUnsupportedContent, st.reason)
+	assert.Contains(t, st.message, "kustomization.yaml", "the block message must name the offending file")
 }
 
 func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
