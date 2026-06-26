@@ -92,6 +92,9 @@ var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func
 
 		By("verifying the WatchRule reaches Ready=True")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+
+		By("waiting for the flunder stream to be live before asserting per-event commits")
+		waitForStreamsReady(targetName, testNs)
 	}
 
 	AfterAll(func() {
@@ -261,13 +264,14 @@ spec:
 			deleteCommitHash := readLatestCommitForPath(g, "[DELETE]")
 			g.Expect(deleteCommitHash).NotTo(Equal(updateCommitHash))
 
-			subjectsOutput, err := gitRun(repo.CheckoutDir, "log", "--format=%s", "-n", "3", "--", repoPath)
-			g.Expect(err).NotTo(HaveOccurred())
-			subjects := nonEmptyTrimmedLines(subjectsOutput)
-			subjectsJoined := strings.Join(subjects, "\n")
-			g.Expect(subjectsJoined).To(ContainSubstring("[DELETE]"))
-			g.Expect(subjectsJoined).To(ContainSubstring("[UPDATE]"))
-			g.Expect(subjectsJoined).To(ContainSubstring("[CREATE]"))
+			// The flunder path's only writers are the create/update/delete this spec performed, so
+			// its full history is exactly those three commits, newest first.
+			subjects := commitSubjectsForPath(g, repo.CheckoutDir, repoPath, 3)
+			g.Expect(subjects).To(HaveLen(3),
+				"flunder path history should be exactly create+update+delete, got %v", subjects)
+			g.Expect(subjects[0]).To(ContainSubstring("[DELETE]"))
+			g.Expect(subjects[1]).To(ContainSubstring("[UPDATE]"))
+			g.Expect(subjects[2]).To(ContainSubstring("[CREATE]"))
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 })

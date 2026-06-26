@@ -239,7 +239,7 @@ spec:
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+		waitForStreamsReady(destName, testNs)
 
 		By("creating Secret in watched namespace")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "secret", secretName, "--ignore-not-found=true")
@@ -254,7 +254,7 @@ spec:
 		)
 		Expect(err).NotTo(HaveOccurred(), "Secret creation should succeed")
 
-		By("patching Secret once to avoid informer start race and force an update event")
+		By("patching Secret to set the final value asserted below")
 		_, err = kubectlRunInNamespace(
 			testNs,
 			"patch",
@@ -342,6 +342,7 @@ spec:
 		err := applyFromTemplate("test/e2e/templates/watchrule-secret.tmpl", data, testNs)
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		waitForStreamsReady(destName, testNs)
 
 		By("validating generated encryption secret has recipient and warning annotations")
 		var generatedAgeKey string
@@ -409,7 +410,7 @@ spec:
 		)
 		Expect(err).NotTo(HaveOccurred(), "Secret creation should succeed")
 
-		By("patching Secret once to avoid informer start race and force an update event")
+		By("patching Secret to set the final value asserted below")
 		_, err = kubectlRunInNamespace(
 			testNs,
 			"patch",
@@ -487,11 +488,10 @@ spec:
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
-		// Let any in-flight reconciles from prior specs drain before triggering
-		// our event. Without this, a stale WatchRule still in informer cache can
-		// double-commit the same ConfigMap under a different commitPath and end
-		// up on HEAD, masking our commit.
-		time.Sleep(5 * time.Second)
+		// Gate on StreamsReady so the configmaps watch is past its replay watermark before we create
+		// the ConfigMap: a create observed mid-replay folds into the unattributed baseline instead of
+		// producing the live [CREATE] event commit (attributed to jane@acme.com) asserted below.
+		waitForStreamsReady(destName, testNs)
 
 		By("creating test ConfigMap to trigger Git commit")
 		configMapData := struct {
@@ -722,10 +722,9 @@ spec:
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
-		// See "should create Git commit when ConfigMap is added": prior specs'
-		// WatchRules can still be in the controller's event router and pile on
-		// extra commits at unrelated commitPaths, knocking HEAD off our commit.
-		time.Sleep(5 * time.Second)
+		// Gate on StreamsReady so both the create and the delete below are live per-event commits
+		// rather than baseline folds, making the [DELETE] commit on the file's path deterministic.
+		waitForStreamsReady(destName, testNs)
 
 		By("creating test ConfigMap to trigger Git commit")
 		configMapData := struct {
@@ -793,14 +792,11 @@ spec:
 				},
 			)
 
-			// Verify git log shows DELETE commit
-			By("verifying git log shows DELETE operation")
-			gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
-			gitLogCmd.Dir = watchRuleRepo.CheckoutDir
-			logOutput, logErr := gitLogCmd.CombinedOutput()
-			g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
-			g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
-				"Git log should contain DELETE operation")
+			// The latest commit touching the file's path must be the DELETE event — assert it
+			// directly instead of scanning the last few commits for the substring.
+			By("verifying the latest commit for the path is a DELETE")
+			g.Expect(latestCommitSubjectForPath(g, watchRuleRepo.CheckoutDir, expectedRelativePath)).
+				To(ContainSubstring("[DELETE]"), "latest commit for %s should be a [DELETE]", expectedRelativePath)
 		}
 		// 60s (vs the 30s default) tolerates a busier shared controller under
 		// Ginkgo parallelism: the DELETE commit can lag when other processes are

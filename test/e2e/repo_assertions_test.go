@@ -111,6 +111,29 @@ func recentCommitDiagnostics(checkoutDir, pathspec string) string {
 	return "recent commits:\n" + out
 }
 
+// latestCommitSubjectForPath returns the subject (first line of the message) of the most recent
+// commit that touched relPath. With the StreamsReady gate in place the latest commit for a path is
+// deterministic, so specs assert against it directly instead of scanning a window of recent commits
+// for a substring.
+func latestCommitSubjectForPath(g Gomega, checkoutDir, relPath string) string {
+	GinkgoHelper()
+
+	out, err := gitRun(checkoutDir, "log", "-1", "--format=%s", "--", relPath)
+	g.Expect(err).NotTo(HaveOccurred(), "git log failed for %q: %s", relPath, out)
+	return strings.TrimSpace(out)
+}
+
+// commitSubjectsForPath returns up to limit commit subjects (newest first) that touched relPath.
+// Used to assert an exact, ordered operation history for a path whose only writers are the
+// operations the spec performed.
+func commitSubjectsForPath(g Gomega, checkoutDir, relPath string, limit int) []string {
+	GinkgoHelper()
+
+	out, err := gitRun(checkoutDir, "log", "--format=%s", "-n", strconv.Itoa(limit), "--", relPath)
+	g.Expect(err).NotTo(HaveOccurred(), "git log failed for %q: %s", relPath, out)
+	return nonEmptyTrimmedLines(out)
+}
+
 func assertLatestCommitForPathTouchesOnlyWithOptional(
 	g Gomega,
 	checkoutDir string,

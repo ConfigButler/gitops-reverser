@@ -6,9 +6,11 @@ under bounded Ginkgo parallelism (Phase 2.5 of
 [e2e-speedup-plan.md](e2e-speedup-plan.md)).
 
 > De-serializing any row below is an isolation refactor, not a label flip.
-> `crd_lifecycle`, the two audit-consumer specs, `bi_directional`, and
-> `aggregated_apiserver` have all been de-serialized (see the "De-serialized"
-> section) — only the two singleton-controller specs remain.
+> The two audit-consumer specs, `bi_directional`, and `aggregated_apiserver` have
+> all been de-serialized (see the "De-serialized" section). `crd_lifecycle` was
+> de-serialized and then **re-serialized** (commit `3d249e3`) when a residual
+> cluster-wide CRD-discovery churn re-flaked it. The current Serial set is the two
+> singleton-controller specs, `crd_lifecycle`, and `playground`.
 
 ## Rule
 
@@ -29,22 +31,23 @@ row below.
 |---|---|---|---|
 | [test/e2e/restart_reconcile_e2e_test.go](../../test/e2e/restart_reconcile_e2e_test.go) | `Restart Reconcile Safety` | Rollout-restarts the controller deployment. | The controller is a singleton; restarting it disrupts in-flight reconciles/commits for every other spec. |
 | [test/e2e/image_refresh_test.go](../../test/e2e/image_refresh_test.go) | `image refresh dependency chain` | Changes the controller image / redeploys the controller. | Same singleton controller; an image swap perturbs all concurrent specs. |
+| [test/e2e/crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go) | `Manager CRD Lifecycle` | Installs/deletes a cluster-scoped CRD and watches all `customresourcedefinitions` cluster-wide, asserting exact Git file presence/absence. | A concurrent CRD install/delete bumps the global discovery-catalog generation and re-resolves every GitTarget's watched-type tables, delaying this spec's reconcile (CRD file appears late / post-delete sweep lags — the 649↔673 flake). A cluster-wide catalog bump cannot be scoped by name. |
+| [test/e2e/tilt_playground_e2e_test.go](../../test/e2e/tilt_playground_e2e_test.go) | `playground` | Reusable manual-playground fixture: fixed (non-randomized) `tilt-playground` namespace and `playground` repo/provider names, preserved across runs. | A singleton by construction — its resource names are intentionally stable so `task playground-*` can re-attach, so per-run name isolation does not apply. |
 
 ### De-serialized
 
 `Manager CRD Lifecycle` ([crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go))
-**was** `Serial` because installing/deleting its CRD changes cluster-wide
-discovery and historically forced unrelated GitTargets to resnapshot (leaking
-`reconcile: sync …` commits into other specs' exact `[CREATE]`/`[DELETE]`
-assertions). It now runs parallel (`Ordered`, not `Serial`) because:
-
-- Finding #2's fix ([manager.go:1191](../../internal/watch/manager.go#L1191))
-  only resnapshots a target when its *resolved* plan hash changes, so a catalog
-  refresh no longer perturbs targets that do not match the new GVR.
-- Per-file CRD groups ([icecream.go:30](../../test/e2e/icecream.go#L30)) keep the
-  `IceCreamOrder` CRD name-isolated, and the only other wildcard-ish
-  `ClusterWatchRule` (`restart_reconcile`) is itself `Serial`, so no concurrent
-  spec has a rule matching the icecream group.
+**was de-serialized and then re-serialized** — it is in the Serial table above, not
+here. Finding #2's fix ([manager.go:1191](../../internal/watch/manager.go#L1191)) —
+resnapshot a target only when its *resolved* plan hash changes — removed the worst
+symptom: a catalog refresh no longer drags unrelated targets into `reconcile: sync …`
+resnapshots, and per-file CRD groups ([icecream.go:30](../../test/e2e/icecream.go#L30))
+keep the `IceCreamOrder` CRD name-isolated. But a residual effect remained — a
+concurrent CRD install/delete still bumps the cluster-wide discovery-catalog
+generation and re-resolves every GitTarget's watched-type tables, delaying this
+spec's *own* reconcile enough to flake its exact file presence/absence checks (the
+649↔673 flake). It was re-serialized in commit `3d249e3`; de-serializing it again
+needs that catalog-churn delay fixed in the controller, not another label flip.
 
 The former `Audit Redis Queue` / `Audit Redis Consumer` containers were retired:
 the producer-path and basic consumer-commit assertions duplicated coverage in

@@ -193,6 +193,7 @@ func (r *quickstartFrameworkRun) verifyQuickstartResourcesReady() {
 	verifyResourceStatus("gitprovider", r.providerName, ns, "True", "Ready", "")
 	verifyResourceStatus("gittarget", r.targetName, ns, "True", "Ready", "")
 	verifyResourceStatus("watchrule", r.watchRuleName, ns, "True", "Ready", "")
+	waitForStreamsReady(r.targetName, ns)
 }
 
 func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret() string {

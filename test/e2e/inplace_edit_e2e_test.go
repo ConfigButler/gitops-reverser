@@ -92,9 +92,7 @@ var _ = Describe("Manager In-Place Manifest Editing", Label("manager", "inplace-
 		Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap WatchRule")
 		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 		verifyResourceStatus("watchrule", ruleName, testNs, "True", "Ready", "")
-
-		// Let any in-flight reconciles from prior specs settle before our event.
-		time.Sleep(5 * time.Second)
+		waitForStreamsReady(destName, testNs)
 
 		By("creating the ConfigMap with color=blue")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
@@ -231,6 +229,7 @@ var _ = Describe(
 			Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap WatchRule")
 			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 			verifyResourceStatus("watchrule", ruleName, testNs, "True", "Ready", "")
+			waitForStreamsReady(destName, testNs)
 
 			By("patching ConfigMaps that live in a multi-document file and a nested folder")
 			_, err = kubectlRunInNamespace(testNs, "patch", "configmap", bundleConfigMapName,

@@ -237,6 +237,10 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
+		// Gate on StreamsReady so this and the later modify/delete specs (which share this Ordered
+		// GitTarget) act on a live stream — the [DELETE] commit assertion downstream depends on it.
+		waitForStreamsReady(destName, testNs)
+
 		By("creating CR with labels and annotations to trigger Git commit")
 		crdInstanceData := struct {
 			Name         string
@@ -583,24 +587,21 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		Expect(err).NotTo(HaveOccurred(), "CRD instance deletion should succeed")
 
 		By("verifying CRD instance file is deleted from Git repository")
+		relPath := filepath.Join(
+			"e2e/icecream-test",
+			fmt.Sprintf("%s/%s/%s.yaml", iceCreamInstanceDir(crdGroupCRDLifecycle), testNs, crdInstanceName))
 		verifyFileDeleted := func(g Gomega) {
 			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
-			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
-				"e2e/icecream-test",
-				fmt.Sprintf("%s/%s/%s.yaml", iceCreamInstanceDir(crdGroupCRDLifecycle), testNs, crdInstanceName))
+			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir, relPath)
 			_, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).
 				To(HaveOccurred(), fmt.Sprintf("CRD instance file should NOT exist at %s", expectedFile))
 			g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
 
-			By("verifying git log shows DELETE commit")
-			gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
-			gitLogCmd.Dir = crdLifecycleRepo.CheckoutDir
-			logOutput, logErr := gitLogCmd.CombinedOutput()
-			g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
-			g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
-				"Git log should contain DELETE operation")
+			By("verifying the latest commit for the path is a DELETE")
+			g.Expect(latestCommitSubjectForPath(g, crdLifecycleRepo.CheckoutDir, relPath)).
+				To(ContainSubstring("[DELETE]"), "latest commit for %s should be a [DELETE]", relPath)
 		}
 		Eventually(verifyFileDeleted).Should(Succeed())
 
@@ -636,6 +637,9 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
 
+		By("waiting for the CRD stream to be live so the deletion is a live [DELETE] event")
+		waitForStreamsReady(destName, testNs)
+
 		By("verifying CRD file exists in Git before deletion")
 		verifyFileExists := func(g Gomega) {
 			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
@@ -652,23 +656,20 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		_, deleteErr := kubectlRun("delete", "crd", crdName)
 		Expect(deleteErr).NotTo(HaveOccurred(), "CRD deletion should succeed")
 		By("verifying CRD file is deleted from Git repository")
+		crdRelPath := filepath.Join(
+			"e2e/crd-delete-test",
+			"apiextensions.k8s.io/v1/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
 		verifyFileDeleted := func(g Gomega) {
 			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
-			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
-				"e2e/crd-delete-test",
-				"apiextensions.k8s.io/v1/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
+			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir, crdRelPath)
 			_, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).To(HaveOccurred(), "CRD file should NOT exist after deletion")
 			g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
 
-			// Verify git log shows DELETE commit
-			gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
-			gitLogCmd.Dir = crdLifecycleRepo.CheckoutDir
-			logOutput, logErr := gitLogCmd.CombinedOutput()
-			g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
-			g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
-				"Git log should contain DELETE operation")
+			By("verifying the latest commit for the path is a DELETE")
+			g.Expect(latestCommitSubjectForPath(g, crdLifecycleRepo.CheckoutDir, crdRelPath)).
+				To(ContainSubstring("[DELETE]"), "latest commit for %s should be a [DELETE]", crdRelPath)
 		}
 		Eventually(verifyFileDeleted, "60s", "1s").Should(Succeed())
 

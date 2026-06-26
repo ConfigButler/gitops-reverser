@@ -93,6 +93,10 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 		applyIsolationWatchRule(ruleB, testNs, targetB, `"configmaps"`)
 		verifyResourceStatus("watchrule", ruleA, testNs, "True", "Ready", "")
 		verifyResourceStatus("watchrule", ruleB, testNs, "True", "Ready", "")
+
+		By("waiting for both targets' configmaps streams to be live before any event is created")
+		waitForStreamsReady(targetA, testNs)
+		waitForStreamsReady(targetB, testNs)
 	})
 
 	AfterAll(func() {
@@ -103,11 +107,6 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	It("keeps target A's commits as events while target B's rules churn", func() {
-		// Let any in-flight reconciles from setup drain before we begin, so the
-		// baseline reconcile commits are settled and only our event commits land
-		// next on target A's path.
-		time.Sleep(5 * time.Second)
-
 		// Each iteration changes target B's effective watch plan (toggling an
 		// extra GVR on/off, which also churns the global informer set) and then
 		// creates a brand-new ConfigMap that target A must commit. If isolation

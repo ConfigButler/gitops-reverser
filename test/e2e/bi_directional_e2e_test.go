@@ -192,6 +192,11 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForGitTargetReady()
 		verifyResourceStatus("watchrule", run.watchRuleName, testNs, "True", "Ready", "")
 
+		// Gate on StreamsReady so the IceCreamOrder watch is live before the API-driven patch below:
+		// the exact commit-count assertions depend on that change arriving as one live per-event
+		// commit rather than being folded into the unattributed baseline.
+		waitForStreamsReady(run.gitTargetName, testNs)
+
 		sharedBaselineCommitCount := run.waitForStableRemoteCommitCount(biStableCountShortWait)
 
 		By("committing two IceCreamOrders through normal GitOps")
