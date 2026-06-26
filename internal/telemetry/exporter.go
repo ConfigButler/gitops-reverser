@@ -62,10 +62,10 @@ var (
 	// RepoBranchQueueDepth is a gauge for per-repo-branch queue depth.
 	RepoBranchQueueDepth metric.Int64UpDownCounter
 
-	// TargetReconcileCompletedTotal counts completed rule-set snapshot reconcile
-	// passes per GitTarget: each increment marks one pass where the streaming-snapshot
-	// resync was gathered and ENQUEUED on the branch worker (not waited on to commit —
-	// see Manager.recordTargetReconcileCompleted). Labelled by {gittarget_namespace,
+	// TargetReconcileCompletedTotal counts completed watch recovery passes per
+	// GitTarget: each increment marks either a streaming-snapshot resync applied on
+	// the branch worker or a cursor-backed watch resume (see Manager.recordTargetReconcileCompleted).
+	// Labelled by {gittarget_namespace,
 	// gittarget_name, trigger} where trigger is `rule_change` (the GVR/rule reconcile
 	// path). A counter, not a
 	// latched gauge, on purpose: a counter resets to 0 on a fresh pod, so a

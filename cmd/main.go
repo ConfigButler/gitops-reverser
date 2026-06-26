@@ -228,6 +228,7 @@ func main() {
 			watch.ServiceAccountNamingPolicy(cfg.attributionSANaming),
 			ctrl.Log.WithName("attribution"),
 		)
+		watchMgr.WatchCursorStore = attributionIndex
 		setupLog.Info("audit attribution enabled: matched audit facts name the commit author",
 			"redisAddr", cfg.auditRedisAddr, "grace", cfg.attributionGrace.String())
 	} else {

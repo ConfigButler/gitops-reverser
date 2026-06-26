@@ -495,10 +495,13 @@ kube-apiserver posts audit events to a single HTTP path, `/audit-webhook`, and t
 minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID,
 status, timestamps) into a Redis attribution index keyed for the join. A resolver attaches the commit
 author to each watch event by matching a fact (by resourceVersion/UID) within a bounded grace window.
+The same Redis connection also stores per-watch resume cursors, so short reconnects can resume a normal
+watch from the last processed resourceVersion when the apiserver can still serve that history.
 
-Attribution runs only when a Redis endpoint is configured. Leave `--audit-redis-addr` (chart
-`queue.redis.addr`) empty to run **committer-only**: the audit webhook is not used and every commit is
-authored by the configured committer.
+Redis-backed attribution and cursors run only when a Redis endpoint is configured. Leave
+`--audit-redis-addr` (chart `queue.redis.addr`) empty to run **committer-only**: the audit webhook is
+not used, every commit is authored by the configured committer, and watch recovery uses replay/list
+snapshots instead of persisted resume cursors.
 
 ```yaml
 queue:

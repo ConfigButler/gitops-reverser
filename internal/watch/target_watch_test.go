@@ -133,7 +133,7 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 	manager := &Manager{EventRouter: router}
 
 	obj := configMapObject("12")
-	err := manager.routeLiveTargetWatchEvent(
+	_, err := manager.routeLiveTargetWatchEvent(
 		context.Background(),
 		logr.Discard(),
 		gitDest,
@@ -163,7 +163,7 @@ func TestRouteLiveTargetWatchEvent_RespectsOperationFilters(t *testing.T) {
 	}
 	manager := &Manager{EventRouter: router}
 
-	err := manager.routeLiveTargetWatchEvent(
+	_, err := manager.routeLiveTargetWatchEvent(
 		context.Background(),
 		logr.Discard(),
 		gitDest,
@@ -192,7 +192,7 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 		),
 	}
 
-	err := manager.routeLiveTargetWatchEvent(
+	_, err := manager.routeLiveTargetWatchEvent(
 		context.Background(),
 		logr.Discard(),
 		gitDest,
@@ -282,17 +282,11 @@ func TestTargetWatchReplayAndStream_ReturnsWhenContextCancels(t *testing.T) {
 
 func TestTargetWatchReplayAndStream_FallsBackWhenReplayWatchIsForbidden(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
-	enqueuer := &recordingEnqueuer{}
-	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
-	router := &EventRouter{
-		Log:              logr.Discard(),
-		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
-	}
 	fw := watch.NewFake()
 	openCount := 0
+	listed := make(chan struct{})
 	manager := &Manager{
-		Log:         logr.Discard(),
-		EventRouter: router,
+		Log: logr.Discard(),
 		targetWatchOpen: func(
 			_ context.Context,
 			_ schema.GroupVersionResource,
@@ -304,6 +298,17 @@ func TestTargetWatchReplayAndStream_FallsBackWhenReplayWatchIsForbidden(t *testi
 				return nil, errors.New("sendInitialEvents: Forbidden: sendInitialEvents is forbidden")
 			}
 			return fw, nil
+		},
+		targetWatchList: func(
+			_ context.Context,
+			_ schema.GroupVersionResource,
+			_ string,
+			_ metav1.ListOptions,
+		) (*unstructured.UnstructuredList, error) {
+			list := &unstructured.UnstructuredList{}
+			list.SetResourceVersion("9")
+			close(listed)
+			return list, nil
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -318,15 +323,72 @@ func TestTargetWatchReplayAndStream_FallsBackWhenReplayWatchIsForbidden(t *testi
 		)
 	}()
 
-	fw.Add(configMapObject("10"))
+	select {
+	case <-listed:
+	case <-time.After(time.Second):
+		t.Fatal("expected fallback list to run")
+	}
+	cancel()
+
+	require.NoError(t, <-done)
+	assert.Equal(t, 2, openCount)
+}
+
+func TestTargetWatchReplayAndStream_ResumesFromStoredCursor(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	enqueuer := &recordingEnqueuer{}
+	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
+	}
+	fw := watch.NewFake()
+	store := &fakeWatchCursorStore{rv: "41", ok: true}
+	manager := &Manager{
+		Log:              logr.Discard(),
+		EventRouter:      router,
+		WatchCursorStore: store,
+		targetWatchOpen: func(
+			_ context.Context,
+			_ schema.GroupVersionResource,
+			_ string,
+			opts metav1.ListOptions,
+		) (watch.Interface, error) {
+			assert.Nil(t, opts.SendInitialEvents)
+			assert.Equal(t, "41", opts.ResourceVersion)
+			return fw, nil
+		},
+		targetWatchList: func(
+			_ context.Context,
+			_ schema.GroupVersionResource,
+			_ string,
+			_ metav1.ListOptions,
+		) (*unstructured.UnstructuredList, error) {
+			t.Fatal("cursor resume should not list")
+			return nil, errors.New("cursor resume should not list")
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.targetWatchReplayAndStream(
+			ctx,
+			logr.Discard(),
+			gitDest,
+			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
+			nil,
+		)
+	}()
+
+	fw.Modify(configMapObject("42"))
 	require.Eventually(t, func() bool {
 		return len(enqueuer.events) == 1
 	}, time.Second, 10*time.Millisecond)
 	cancel()
 
 	require.NoError(t, <-done)
-	assert.Equal(t, 2, openCount)
-	assert.Equal(t, "CREATE", enqueuer.events[0].Operation)
+	assert.Equal(t, "42", store.recordedRV)
+	assert.Equal(t, "UPDATE", enqueuer.events[0].Operation)
 }
 
 func TestOpenTargetWatch_UsesConfiguredHook(t *testing.T) {
@@ -423,14 +485,17 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 	defer cancel()
 	cancelled := make(chan struct{})
 	childCtx, childCancel := context.WithCancel(ctx)
+	store := &fakeWatchCursorStore{}
+	watchKey := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 	manager := &Manager{
+		WatchCursorStore: store,
 		targetWatches: map[string]*targetWatchSet{
 			gitDest.Key(): {
 				cancel: func() {
 					childCancel()
 					close(cancelled)
 				},
-				specs: map[targetWatchKey]string{},
+				specs: map[targetWatchKey]string{watchKey: "[*]"},
 			},
 		},
 	}
@@ -444,6 +509,7 @@ func TestForgetGitTargetWatches_CancelsAndRemovesSet(t *testing.T) {
 	}
 	require.ErrorIs(t, childCtx.Err(), context.Canceled)
 	assert.Empty(t, manager.targetWatches)
+	assert.True(t, store.deleted)
 }
 
 func receiveOpenedWatch(t *testing.T, opened <-chan openedWatch) openedWatch {
@@ -496,4 +562,40 @@ func configMapObject(rv string) *unstructured.Unstructured {
 	obj.SetName("demo")
 	obj.SetResourceVersion(rv)
 	return obj
+}
+
+type fakeWatchCursorStore struct {
+	rv         string
+	ok         bool
+	recordedRV string
+	deleted    bool
+}
+
+func (f *fakeWatchCursorStore) LookupWatchCursor(
+	_ context.Context,
+	_, _ string,
+	_ schema.GroupVersionResource,
+	_ string,
+) (string, bool) {
+	return f.rv, f.ok
+}
+
+func (f *fakeWatchCursorStore) RecordWatchCursor(
+	_ context.Context,
+	_, _ string,
+	_ schema.GroupVersionResource,
+	_, rv string,
+) error {
+	f.recordedRV = rv
+	return nil
+}
+
+func (f *fakeWatchCursorStore) DeleteWatchCursor(
+	_ context.Context,
+	_, _ string,
+	_ schema.GroupVersionResource,
+	_ string,
+) error {
+	f.deleted = true
+	return nil
 }

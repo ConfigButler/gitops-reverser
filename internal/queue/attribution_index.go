@@ -51,6 +51,7 @@ const attributionFactTTL = 10 * time.Minute
 
 const (
 	attributionKeySuffix     = ":attr:v1:"
+	watchCursorKeySuffix     = ":watch-cursor:v1:"
 	attributionVariantExact  = "e" // (group, resource, namespace, name, uid, rv)
 	attributionVariantUID    = "u" // (group, resource, namespace, name, uid)
 	attributionVariantRV     = "r" // (group, resource, namespace, name, rv)
@@ -124,6 +125,55 @@ func NewAttributionIndex(cfg AttributionIndexConfig) (*AttributionIndex, error) 
 // gate uses it so the pod does not join the audit Service before it can store facts.
 func (a *AttributionIndex) Ping(ctx context.Context) error {
 	return a.client.Ping(ctx).Err()
+}
+
+// LookupWatchCursor returns the last resourceVersion durably processed for one
+// GitTarget watch shard. A miss means the watch must rebuild from a fresh list or
+// streaming-list replay.
+func (a *AttributionIndex) LookupWatchCursor(
+	ctx context.Context,
+	gitTargetNamespace, gitTargetName string,
+	gvr schema.GroupVersionResource,
+	namespace string,
+) (string, bool) {
+	rv, err := a.client.Get(ctx, a.watchCursorKey(gitTargetNamespace, gitTargetName, gvr, namespace)).Result()
+	if err != nil || rv == "" {
+		return "", false
+	}
+	return rv, true
+}
+
+// RecordWatchCursor stores the last resourceVersion durably processed for one
+// GitTarget watch shard. Cursors have no TTL; expiration is handled by the
+// apiserver's normal "resourceVersion too old" watch error path.
+func (a *AttributionIndex) RecordWatchCursor(
+	ctx context.Context,
+	gitTargetNamespace, gitTargetName string,
+	gvr schema.GroupVersionResource,
+	namespace, rv string,
+) error {
+	if rv == "" {
+		return nil
+	}
+	if err := a.client.Set(ctx, a.watchCursorKey(gitTargetNamespace, gitTargetName, gvr, namespace), rv, 0).
+		Err(); err != nil {
+		return fmt.Errorf("store watch cursor: %w", err)
+	}
+	return nil
+}
+
+// DeleteWatchCursor removes a stale cursor after the apiserver reports it has
+// expired from watch history.
+func (a *AttributionIndex) DeleteWatchCursor(
+	ctx context.Context,
+	gitTargetNamespace, gitTargetName string,
+	gvr schema.GroupVersionResource,
+	namespace string,
+) error {
+	if err := a.client.Del(ctx, a.watchCursorKey(gitTargetNamespace, gitTargetName, gvr, namespace)).Err(); err != nil {
+		return fmt.Errorf("delete watch cursor: %w", err)
+	}
+	return nil
 }
 
 // RecordFact stores the attribution fact for one accepted, mutating audit event
@@ -247,6 +297,22 @@ func (a *AttributionIndex) factKeyVariants(group, resource, namespace, name stri
 func (a *AttributionIndex) factKey(variant string, parts ...string) string {
 	id := hex.EncodeToString([]byte(strings.Join(parts, "\x00")))
 	return a.prefix + attributionKeySuffix + variant + ":" + id
+}
+
+func (a *AttributionIndex) watchCursorKey(
+	gitTargetNamespace, gitTargetName string,
+	gvr schema.GroupVersionResource,
+	namespace string,
+) string {
+	id := hex.EncodeToString([]byte(strings.Join([]string{
+		gitTargetNamespace,
+		gitTargetName,
+		gvr.Group,
+		gvr.Version,
+		gvr.Resource,
+		namespace,
+	}, "\x00")))
+	return a.prefix + watchCursorKeySuffix + id
 }
 
 // resourceVersionFromEvent returns the event's ResourceVersion when one is available,

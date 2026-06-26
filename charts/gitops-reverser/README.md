@@ -170,7 +170,7 @@ nodeSelector:
 | `quickstart.gitProvider.secretRef.name` | Existing Secret name used by the starter `GitProvider` | `git-creds` |
 | `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget`; set `.` only to deliberately target the repo root | `live-cluster` |
 | `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
-| `queue.redis.addr` | Redis endpoint (`host:port`) for the optional audit attribution index; empty = committer-only mode | `valkey:6379` |
+| `queue.redis.addr` | Redis endpoint (`host:port`) for optional audit attribution and watch resume cursors; empty = committer-only mode with replay/list recovery | `valkey:6379` |
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password | `valkey-auth` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
@@ -204,11 +204,14 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 
 `https://<service>:9444/audit-webhook` receives audit events from kube-apiserver. The operator
 extracts a minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace,
-name, UID, status, timestamps) into the optional Redis attribution index. Object state itself comes
-from Kubernetes **watch**, not from audit; audit only names the commit author.
+name, UID, status, timestamps) into the optional Redis attribution index. The same Redis endpoint stores
+watch resume cursors, so reconnects can resume a normal watch from the last processed resourceVersion
+when the apiserver can still serve that history. Object state itself comes from Kubernetes **watch**, not
+from audit; audit only names the commit author.
 
 When `queue.redis.addr` is empty the audit webhook is not used at all and the product runs
-committer-only — every commit is authored by the configured committer.
+committer-only — every commit is authored by the configured committer and watch recovery uses replay/list
+snapshots instead of persisted resume cursors.
 
 Cluster ID path segments are rejected.
 

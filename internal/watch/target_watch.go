@@ -23,10 +23,12 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -40,9 +42,15 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-const targetWatchBackoff = 2 * time.Second
+const (
+	targetWatchBackoff        = 2 * time.Second
+	targetWatchBufferCapacity = 1024
+)
 
-var errTargetWatchClosed = errors.New("target watch result channel closed")
+var (
+	errTargetWatchClosed  = errors.New("target watch result channel closed")
+	errTargetWatchExpired = errors.New("target watch resourceVersion expired")
+)
 
 type targetWatchSet struct {
 	cancel context.CancelFunc
@@ -55,9 +63,9 @@ type targetWatchKey struct {
 }
 
 // EnsureGitTargetWatches makes the GitTarget's raw watch set match its current
-// claimed, followable (GVR, scope) table. Each watch replays current state with
-// sendInitialEvents, performs a scoped mark-and-sweep at the initial-events-end
-// bookmark, then streams live object events to the GitTargetEventStream.
+// claimed, followable (GVR, scope) table. Each watch resumes from its stored
+// cursor when possible; otherwise it initializes with sendInitialEvents and a
+// scoped mark-and-sweep before streaming live object events.
 func (m *Manager) EnsureGitTargetWatches(ctx context.Context, gitDest types.ResourceReference) error {
 	if m.EventRouter == nil {
 		return nil
@@ -131,10 +139,22 @@ func (m *Manager) refreshRunningTargetWatches(ctx context.Context) {
 
 func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
+	var keys []targetWatchKey
 	if set := m.targetWatches[gitDest.Key()]; set != nil {
 		set.cancel()
+		keys = make([]targetWatchKey, 0, len(set.specs))
+		for key := range set.specs {
+			keys = append(keys, key)
+		}
 		delete(m.targetWatches, gitDest.Key())
+	}
+	m.targetWatchesMu.Unlock()
+
+	for _, key := range keys {
+		if err := m.deleteTargetWatchCursor(context.Background(), gitDest, key); err != nil {
+			m.Log.Error(err, "delete GitTarget watch cursor", "gitDest", gitDest.String(),
+				"gvr", key.GVR.String(), "namespace", key.Namespace)
+		}
 	}
 }
 
@@ -232,6 +252,10 @@ func (m *Manager) targetWatchReplayAndStream(
 	key targetWatchKey,
 	ops OperationSet,
 ) error {
+	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, key); ok {
+		return m.targetWatchResumeAndStream(ctx, log, gitDest, key, ops, cursor)
+	}
+
 	opts := metav1.ListOptions{
 		SendInitialEvents:    ptr.To(true),
 		ResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
@@ -240,20 +264,15 @@ func (m *Manager) targetWatchReplayAndStream(
 	replaying := true
 	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, opts)
 	if err != nil {
-		if watchListForbidden(err) {
-			log.Info("target watch replay unsupported; falling back to live watch",
+		if watchListUnsupported(err) {
+			log.Error(err, "WARNING: sendInitialEvents unsupported; falling back to LIST plus buffered WATCH",
 				"gvr", key.GVR.String(), "namespace", key.Namespace, "err", err.Error())
-			w, err = m.openTargetWatch(ctx, key.GVR, key.Namespace, metav1.ListOptions{
-				AllowWatchBookmarks: true,
-			})
-			replaying = false
+			return m.targetWatchListAndStream(ctx, log, gitDest, key, ops)
 		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("open target watch %s/%q: %w", key.GVR.String(), key.Namespace, err)
+		if ctx.Err() != nil {
+			return nil
 		}
+		return fmt.Errorf("open target watch %s/%q: %w", key.GVR.String(), key.Namespace, err)
 	}
 	defer w.Stop()
 
@@ -277,6 +296,80 @@ func (m *Manager) targetWatchReplayAndStream(
 	}
 }
 
+func (m *Manager) targetWatchResumeAndStream(
+	ctx context.Context,
+	log logr.Logger,
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+	ops OperationSet,
+	cursor string,
+) error {
+	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, metav1.ListOptions{
+		ResourceVersion:     cursor,
+		AllowWatchBookmarks: true,
+	})
+	if err != nil {
+		if watchOpenExpired(err) {
+			if deleteErr := m.deleteTargetWatchCursor(ctx, gitDest, key); deleteErr != nil {
+				return deleteErr
+			}
+			return errTargetWatchExpired
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("open target watch %s/%q from cursor %q: %w", key.GVR.String(), key.Namespace, cursor, err)
+	}
+	defer w.Stop()
+
+	log.V(1).Info("target watch resumed from cursor",
+		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace, "resourceVersion", cursor)
+	m.recordTargetReconcileCompleted(gitDest, "cursor_resume")
+	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, ops, w.ResultChan())
+}
+
+func (m *Manager) targetWatchListAndStream(
+	ctx context.Context,
+	log logr.Logger,
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+	ops OperationSet,
+) error {
+	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, metav1.ListOptions{
+		AllowWatchBookmarks: true,
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("open target watch %s/%q for list fallback: %w", key.GVR.String(), key.Namespace, err)
+	}
+	defer w.Stop()
+
+	buffered := make(chan watch.Event, targetWatchBufferCapacity)
+	go bufferTargetWatchEvents(ctx, w.ResultChan(), buffered)
+
+	list, err := m.openTargetList(ctx, key.GVR, key.Namespace, metav1.ListOptions{})
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("list target watch snapshot %s/%q: %w", key.GVR.String(), key.Namespace, err)
+	}
+	desired := desiredFromList(key.GVR, list)
+	revision := list.GetResourceVersion()
+	if err := m.enqueueReplayResync(ctx, log, gitDest, key.GVR, desired, revision); err != nil {
+		return err
+	}
+	if err := m.recordTargetWatchCursor(ctx, gitDest, key, revision); err != nil {
+		return err
+	}
+	log.Info("target watch list fallback complete",
+		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace,
+		"count", len(desired), "resourceVersion", revision)
+	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, ops, buffered, revision)
+}
+
 func (m *Manager) handleTargetWatchSessionEvent(
 	ctx context.Context,
 	log logr.Logger,
@@ -288,13 +381,20 @@ func (m *Manager) handleTargetWatchSessionEvent(
 	replay *[]manifestanalyzer.DesiredResource,
 ) (bool, error) {
 	if !replaying {
-		return false, m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev)
+		rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev)
+		if err != nil {
+			return false, err
+		}
+		return false, m.recordTargetWatchCursor(ctx, gitDest, key, rv)
 	}
 	done, rv, err := m.foldTargetReplayEvent(log, gitDest, key, ev, replay)
 	if err != nil || !done {
 		return true, err
 	}
 	if err := m.enqueueReplayResync(ctx, log, gitDest, key.GVR, *replay, rv); err != nil {
+		return true, err
+	}
+	if err := m.recordTargetWatchCursor(ctx, gitDest, key, rv); err != nil {
 		return true, err
 	}
 	*replay = nil
@@ -364,9 +464,73 @@ func (m *Manager) enqueueReplayResync(
 	return nil
 }
 
-func watchListForbidden(err error) bool {
+func watchListUnsupported(err error) bool {
 	msg := err.Error()
-	return strings.Contains(msg, "sendInitialEvents") && strings.Contains(msg, "Forbidden")
+	return strings.Contains(msg, "sendInitialEvents")
+}
+
+func watchOpenExpired(err error) bool {
+	if apierrors.IsGone(err) {
+		return true
+	}
+	apiStatus, ok := err.(apierrors.APIStatus)
+	if !ok {
+		return false
+	}
+	status := apiStatus.Status()
+	return status.Reason == metav1.StatusReasonExpired || status.Code == httpStatusGone
+}
+
+func (m *Manager) streamLiveTargetWatchEvents(
+	ctx context.Context,
+	log logr.Logger,
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+	ops OperationSet,
+	events <-chan watch.Event,
+	floors ...string,
+) error {
+	floor := ""
+	if len(floors) > 0 {
+		floor = floors[0]
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev, ok := <-events:
+			if !ok {
+				return errTargetWatchClosed
+			}
+			if targetWatchEventAtOrBeforeFloor(ev, floor) {
+				continue
+			}
+			if err := m.processLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (m *Manager) processLiveTargetWatchEvent(
+	ctx context.Context,
+	log logr.Logger,
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+	ops OperationSet,
+	ev watch.Event,
+) error {
+	if targetWatchExpired(ev) {
+		if err := m.deleteTargetWatchCursor(ctx, gitDest, key); err != nil {
+			return err
+		}
+		return errTargetWatchExpired
+	}
+	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev)
+	if err != nil {
+		return err
+	}
+	return m.recordTargetWatchCursor(ctx, gitDest, key, rv)
 }
 
 func (m *Manager) routeLiveTargetWatchEvent(
@@ -376,32 +540,34 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	key targetWatchKey,
 	ops OperationSet,
 	ev watch.Event,
-) error {
+) (string, error) {
+	rv := targetWatchEventResourceVersion(ev)
 	switch ev.Type {
 	case watch.Bookmark:
-		return nil
+		return rv, nil
 	case watch.Added, watch.Modified, watch.Deleted:
 		op := operationForWatchEvent(ev.Type)
 		if !ops.Match(op) {
-			return nil
+			return rv, nil
 		}
 		u, ok := ev.Object.(*unstructured.Unstructured)
 		if !ok {
 			log.V(1).Info("target watch non-unstructured event skipped",
 				"gvr", key.GVR.String(), "type", string(ev.Type))
-			return nil
+			return rv, nil
 		}
 		event := targetWatchGitEvent(key.GVR, u, op)
 		m.attachAuthor(ctx, &event, key.GVR, u)
 		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
 			log.V(1).Info("target watch route failed",
 				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "err", err.Error())
+			return rv, err
 		}
-		return nil
+		return rv, nil
 	case watch.Error:
-		return fmt.Errorf("target watch error for %s: %v", key.GVR.String(), ev.Object)
+		return rv, fmt.Errorf("target watch error for %s: %v", key.GVR.String(), ev.Object)
 	default:
-		return nil
+		return rv, nil
 	}
 }
 
@@ -483,6 +649,143 @@ func (m *Manager) openTargetWatch(
 		return resource.Namespace(namespace).Watch(ctx, opts)
 	}
 	return resource.Watch(ctx, opts)
+}
+
+func (m *Manager) openTargetList(
+	ctx context.Context,
+	gvr schema.GroupVersionResource,
+	namespace string,
+	opts metav1.ListOptions,
+) (*unstructured.UnstructuredList, error) {
+	if m.targetWatchList != nil {
+		return m.targetWatchList(ctx, gvr, namespace, opts)
+	}
+	dc := m.dynamicClientFromConfig(m.Log)
+	if dc == nil {
+		return nil, errors.New("no dynamic client for target watch list")
+	}
+	resource := dc.Resource(gvr)
+	if namespace != "" {
+		return resource.Namespace(namespace).List(ctx, opts)
+	}
+	return resource.List(ctx, opts)
+}
+
+func (m *Manager) lookupTargetWatchCursor(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+) (string, bool) {
+	if m.WatchCursorStore == nil {
+		return "", false
+	}
+	return m.WatchCursorStore.LookupWatchCursor(ctx, gitDest.Namespace, gitDest.Name, key.GVR, key.Namespace)
+}
+
+func (m *Manager) recordTargetWatchCursor(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+	rv string,
+) error {
+	if m.WatchCursorStore == nil || rv == "" {
+		return nil
+	}
+	return m.WatchCursorStore.RecordWatchCursor(ctx, gitDest.Namespace, gitDest.Name, key.GVR, key.Namespace, rv)
+}
+
+func (m *Manager) deleteTargetWatchCursor(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+) error {
+	if m.WatchCursorStore == nil {
+		return nil
+	}
+	return m.WatchCursorStore.DeleteWatchCursor(ctx, gitDest.Namespace, gitDest.Name, key.GVR, key.Namespace)
+}
+
+func bufferTargetWatchEvents(ctx context.Context, in <-chan watch.Event, out chan<- watch.Event) {
+	defer close(out)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-in:
+			if !ok {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case out <- ev:
+			}
+		}
+	}
+}
+
+func desiredFromList(
+	gvr schema.GroupVersionResource,
+	list *unstructured.UnstructuredList,
+) []manifestanalyzer.DesiredResource {
+	if list == nil {
+		return nil
+	}
+	desired := make([]manifestanalyzer.DesiredResource, 0, len(list.Items))
+	for i := range list.Items {
+		if item, ok := desiredFromObject(gvr, &list.Items[i]); ok {
+			desired = append(desired, item)
+		}
+	}
+	return desired
+}
+
+func targetWatchExpired(ev watch.Event) bool {
+	if ev.Type != watch.Error || ev.Object == nil {
+		return false
+	}
+	statusErr := apierrors.FromObject(ev.Object)
+	apiStatus, ok := statusErr.(apierrors.APIStatus)
+	if !ok {
+		return false
+	}
+	status := apiStatus.Status()
+	return status.Reason == metav1.StatusReasonExpired || status.Code == httpStatusGone
+}
+
+const httpStatusGone = 410
+
+func targetWatchEventResourceVersion(ev watch.Event) string {
+	switch obj := ev.Object.(type) {
+	case *unstructured.Unstructured:
+		return obj.GetResourceVersion()
+	case *metav1.Status:
+		return ""
+	default:
+		if obj == nil {
+			return ""
+		}
+		if accessor, ok := obj.(interface{ GetResourceVersion() string }); ok {
+			return accessor.GetResourceVersion()
+		}
+		return ""
+	}
+}
+
+func targetWatchEventAtOrBeforeFloor(ev watch.Event, floor string) bool {
+	eventRV := targetWatchEventResourceVersion(ev)
+	if floor == "" || eventRV == "" {
+		return false
+	}
+	eventNum, err := strconv.ParseUint(eventRV, 10, 64)
+	if err != nil {
+		return false
+	}
+	floorNum, err := strconv.ParseUint(floor, 10, 64)
+	if err != nil {
+		return false
+	}
+	return eventNum <= floorNum
 }
 
 func sleepOrDone(ctx context.Context, d time.Duration) bool {

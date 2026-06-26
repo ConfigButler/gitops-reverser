@@ -5,3 +5,12 @@ resources:
   - prometheus/instance.yaml
   - prometheus/prometheus-rbac.yaml
   - prometheus/servicemonitor.yaml
+  - sample-apiserver/namespace.yaml
+  - sample-apiserver/sa.yaml
+  - sample-apiserver/deployment.yaml
+  - sample-apiserver/service.yaml
+  - sample-apiserver/apiservice.yaml
+  - sample-apiserver/auth-delegator.yaml
+  - sample-apiserver/auth-reader.yaml
+  - sample-apiserver/rbac.yaml
+  - sample-apiserver/rbac-bind.yaml

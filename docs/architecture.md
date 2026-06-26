@@ -36,11 +36,11 @@ resourceVersion, GVR/namespace/name/UID, status, timestamps) into a Redis attrib
 join, and a resolver attaches the commit author to a watch event by matching a fact within a bounded
 grace window. A missing, late, or absent fact never blocks state capture; it only changes the author.
 
-**Redis/Valkey is optional for a single replica.** When present it stores the attribution facts, which
-are not a correctness input. With no Redis the product runs **committer-only**: it mirrors cluster state
-to Git authored by the configured committer, and needs neither Redis nor the audit webhook. Redis
-becomes a **hard dependency for high availability** (multi-pod needs durable cross-pod state — resume
-cursors, branch-shard leases, durable write queues); see [Operational Boundaries](#operational-boundaries)
+**Redis/Valkey is optional for a single replica.** When present it stores attribution facts and
+per-watch resume cursors. With no Redis the product runs **committer-only**: it mirrors cluster state
+to Git authored by the configured committer and uses replay/list recovery instead of cursor resume.
+Redis becomes a **hard dependency for high availability** (multi-pod needs durable cross-pod state:
+branch-shard leases and durable write queues); see [Operational Boundaries](#operational-boundaries)
 and the [HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md).
 
 ***
@@ -64,10 +64,11 @@ The solution, in the vocabulary used throughout this document:
   persisted state the watch observed.
 * **Watches are per `GitTarget` and scaled by claims.** A watch opens only for the claimed ∩ followable
   `(GVR, scope)` set, so cost scales with what `GitTarget`s actually claim, not with cluster type count.
-* **Recovery is replay plus mark-and-sweep.** On every (re)connect the watch replays current state with
-  `sendInitialEvents` and runs a **mark-and-sweep** at the end of the replay: any Git file whose object
-  is no longer present is deleted. This is what reconciles a delete that happened while no watch was
-  running. The sweep fires on watch re-establishment, **never on a timer**.
+* **Recovery prefers watch.** A new watch normally starts with `sendInitialEvents`, establishes a
+  current snapshot boundary, and runs a **mark-and-sweep**: any Git file whose object is no longer
+  present is deleted. When Redis has a fresh per-type cursor, the operator skips the snapshot and
+  resumes a normal watch from that resourceVersion. Older APIs that reject `sendInitialEvents` fall
+  back to LIST plus buffered WATCH. The sweep fires on snapshot establishment, **never on a timer**.
 * **Audit, when configured, only names the author.** It is an optional attribution lookup; a missing or
   late fact costs author fidelity, never correctness, and with no Redis the product commits as the
   configured committer.
@@ -322,12 +323,15 @@ namespace/name/UID/resourceVersion/deletionTimestamp, and the sanitized object b
 `initial-events-end` bookmark marks the end of a replay, and an `ERROR` such as `410 Gone` triggers a
 fresh `sendInitialEvents` reconnect.
 
-### Recovery: replay plus mark-and-sweep
+### Recovery: resume, replay, or list plus mark-and-sweep
 
-Losing a watch (pod eviction, rollout, crash, `410 Gone`) is normal. On every (re)connect the watch opens
-with `sendInitialEvents=true` and `ResourceVersionMatch=NotOlderThan`, so the apiserver streams current
-state as a replay of `ADDED` events terminated by the `initial-events-end` bookmark. The operator runs a
-**mark-and-sweep** over that replay:
+Losing a watch (pod eviction, rollout, crash, `410 Gone`) is normal. When Redis has a cursor for the
+watch shard, the next session first opens a normal watch from that resourceVersion. If the apiserver
+can supply all events since that cursor, the watch simply continues from there. If the cursor is
+expired, or no cursor exists, the watch opens with `sendInitialEvents=true` and
+`ResourceVersionMatch=NotOlderThan`, so the apiserver streams current state as a replay of `ADDED`
+events terminated by the `initial-events-end` bookmark. The operator runs a **mark-and-sweep** over
+that replay:
 
 1. every replayed object is **marked** `ADDED`, up to `initial-events-end`;
 2. at the bookmark, any Git file under that GitTarget whose object was **not** marked no longer exists,
@@ -340,8 +344,10 @@ happened while no watch was running, so it is what makes the watch safe to lose 
 is applied through the same per-type reconcile/writer machinery as live writes (see
 [Mark and Sweep Resync](#mark-and-sweep-resync)).
 
-If the apiserver forbids `sendInitialEvents` for a type (RBAC), the watch falls back to a plain live
-watch with no replay and therefore no sweep for that type; this is a degraded edge case.
+If the apiserver forbids `sendInitialEvents` for a type, the operator logs an explicit warning, starts a
+normal watch, buffers its events, performs a LIST snapshot, runs the same scoped mark-and-sweep from
+that list, and only then lets the buffered watch events through. This is the compatibility path for
+older aggregated API servers that do not implement streaming lists.
 
 ### Relevance filtering is product code
 
@@ -723,10 +729,10 @@ Current limitations:
   object-state work runs on one elected pod; multi-pod HA is not finished. The target design is the
   [HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md), which needs Redis for
   resume cursors, branch-shard leases, and durable write queues.
-* **Every watch (re)connect replays.** Recovery is always a `sendInitialEvents` replay + mark-and-sweep
-  (the correctness path). The exact-RV resume optimization (resume from a persisted `(GVR, scope) → RV`
-  cursor with a delta-only watch, avoiding a full replay on short gaps) is designed but **not yet
-  implemented**.
+* **Resume cursors are best-effort.** With Redis configured, each watch shard stores the last processed
+  resourceVersion and short reconnects resume a normal watch from that cursor. If the apiserver expires
+  the cursor, or Redis is not configured, recovery falls back to `sendInitialEvents` replay or LIST +
+  mark-and-sweep.
 * **Per-watch and per-attribution metrics are not yet emitted** (see [Observability](#observability)).
 * **No pull request creation;** the operator writes directly to branches.
 * **No multi cluster routing;** cluster ID path segments on `/audit-webhook` are rejected.
@@ -749,7 +755,7 @@ Current limitations:
 | [internal/giteaclient/](../internal/giteaclient/) | Gitea helper client |
 | [internal/manifestanalyzer/](../internal/manifestanalyzer/) | manifest inventory, acceptance, and resync planning |
 | [internal/manifestreport/](../internal/manifestreport/) | projection of Kubernetes objects into comparable manifest reports |
-| [internal/queue/](../internal/queue/) | Redis attribution index (audit facts keyed for the join) |
+| [internal/queue/](../internal/queue/) | Redis attribution index (audit facts keyed for the join) and per-watch resume cursors |
 | [internal/reconcile/](../internal/reconcile/) | per-GitTarget event stream (watch event → branch worker) |
 | [internal/rulestore/](../internal/rulestore/) | compiled rule cache |
 | [internal/sanitize/](../internal/sanitize/) | Kubernetes object sanitization and stable YAML marshal |

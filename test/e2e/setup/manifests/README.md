@@ -6,9 +6,9 @@ Flux-managed shared services are ready.
 Use this for small, cluster-local resources that are still easier to keep as a final `kubectl apply` step than to model
 as additional Flux sources.
 
-The aggregated API e2e stack now lives under `test/e2e/setup/flux/` and is bootstrapped by Flux
-from the upstream `apiservice-audit-proxy` chart instead of being maintained here as local
-manifests.
+The aggregated API e2e stack uses the Kubernetes sample-apiserver ("Wardle") manifests in
+`sample-apiserver/`. It intentionally does not install the retired aggregated API audit proxy; the
+tests exercise ordinary aggregated API list/watch behavior.
 
 Organize related resources in subdirectories when that keeps the intent clearer.
 

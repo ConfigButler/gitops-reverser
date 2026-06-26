@@ -250,6 +250,17 @@ tasks:
         echo "✅ Wrote e2e-cover.out"
         go tool cover -func=e2e-cover.out | tail -1
 
+  test-e2e-aggregated-api:
+    desc: Run aggregated API server e2e scenarios
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=aggregated-api \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-aggregated-api.json"
+
   allure-e2e-results:
     desc: Convert local e2e Ginkgo JSON reports into Allure results
     aliases:
@@ -736,6 +747,36 @@ tasks:
         kubectl --context "{{.CTX}}" apply -k test/e2e/setup/manifests
         touch "{{.CS}}/services.ready"
 
+  _aggregated-api-ready:
+    method: timestamp
+    deps:
+      - _services-ready
+    sources:
+      - '{{.CS}}/services.ready'
+      - 'test/e2e/setup/manifests/sample-apiserver/**/*.yaml'
+    generates:
+      - '{{.CS}}/aggregated-api.ready'
+    status:
+      - test -f "{{.CS}}/aggregated-api.ready"
+    cmds:
+      - |
+        kubectl --context "{{.CTX}}" -n wardle rollout status deployment/wardle-server --timeout=180s
+        kubectl --context "{{.CTX}}" wait apiservice/v1alpha1.wardle.example.com \
+          --for=condition=Available --timeout=180s
+        for i in $(seq 1 30); do
+          if kubectl --context "{{.CTX}}" api-resources --api-group=wardle.example.com | grep -q flunders; then
+            break
+          fi
+          if [ "${i}" -eq 30 ]; then
+            echo "wardle APIService became Available, but discovery never surfaced flunders" >&2
+            kubectl --context "{{.CTX}}" get apiservice v1alpha1.wardle.example.com -o yaml >&2
+            kubectl --context "{{.CTX}}" api-resources --api-group=wardle.example.com >&2 || true
+            exit 1
+          fi
+          sleep 2
+        done
+        touch "{{.CS}}/aggregated-api.ready"
+
   _controller-image-id:
     method: timestamp
     sources:
@@ -1070,12 +1111,14 @@ tasks:
       - _controller-deployed
       - _webhook-tls-ready
       - _sops-secret-applied
+      - _aggregated-api-ready
     sources:
       - '{{.CS}}/{{.NAMESPACE}}/{{.INSTALL_MODE}}/install.yaml'
       - '{{.CS}}/image.loaded'
       - '{{.CS}}/{{.NAMESPACE}}/controller.deployed'
       - '{{.CS}}/{{.NAMESPACE}}/webhook-tls.ready'
       - '{{.CS}}/{{.NAMESPACE}}/sops-secret.applied'
+      - '{{.CS}}/aggregated-api.ready'
     generates:
       - '{{.CS}}/{{.NAMESPACE}}/prepare-e2e.ready'
     status:

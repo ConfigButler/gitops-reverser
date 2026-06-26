@@ -165,6 +165,33 @@ func TestAttributionIndex_Ping(t *testing.T) {
 	require.NoError(t, idx.Ping(context.Background()))
 }
 
+func TestAttributionIndex_WatchCursorRoundTrip(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+	gvr := appsDeploymentGVR()
+
+	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", gvr, "apps")
+	require.False(t, ok)
+
+	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", gvr, "apps", "42"))
+	got, ok := idx.LookupWatchCursor(ctx, "team-a", "target", gvr, "apps")
+	require.True(t, ok)
+	require.Equal(t, "42", got)
+
+	require.NoError(t, idx.DeleteWatchCursor(ctx, "team-a", "target", gvr, "apps"))
+	_, ok = idx.LookupWatchCursor(ctx, "team-a", "target", gvr, "apps")
+	require.False(t, ok)
+}
+
+func TestAttributionIndex_WatchCursorIgnoresEmptyResourceVersion(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	require.NoError(t, idx.RecordWatchCursor(ctx, "team-a", "target", appsDeploymentGVR(), "apps", ""))
+	_, ok := idx.LookupWatchCursor(ctx, "team-a", "target", appsDeploymentGVR(), "apps")
+	require.False(t, ok)
+}
+
 func TestNewAttributionIndex_RequiresAddr(t *testing.T) {
 	_, err := NewAttributionIndex(AttributionIndexConfig{})
 	require.Error(t, err)

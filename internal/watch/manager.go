@@ -31,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
@@ -65,6 +66,9 @@ type Manager struct {
 	// joining the audit attribution index (RV/UID match, bounded grace window). Nil
 	// is committer-only mode (no audit/Redis): every event commits as the committer.
 	AuthorResolver AuthorResolver
+	// WatchCursorStore optionally persists per-watch resourceVersion cursors so
+	// reconnects can resume without replaying the full type snapshot.
+	WatchCursorStore CursorStore
 	// SensitiveResources is the startup-configured policy classifying which types must
 	// use the encrypted Git write path. It is applied when the followability registry
 	// builds its observations, so each TypeRecord carries the right Sensitive fact. The
@@ -82,6 +86,14 @@ type Manager struct {
 		namespace string,
 		opts metav1.ListOptions,
 	) (watch.Interface, error)
+	// targetWatchList overrides how per-GitTarget fallback snapshots are listed.
+	// nil means build them from dynamicClient/rest config.
+	targetWatchList func(
+		ctx context.Context,
+		gvr schema.GroupVersionResource,
+		namespace string,
+		opts metav1.ListOptions,
+	) (*unstructured.UnstructuredList, error)
 
 	// resourceCatalog is the shared discovery-backed API surface used by rule planning.
 	resourceCatalogMu sync.Mutex
@@ -257,12 +269,11 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	return nil
 }
 
-// recordTargetReconcileCompleted increments the per-GitTarget reconcile counter once a
-// per-type splice reconcile has been APPLIED on the branch worker, tagged with the trigger
-// that drove the pass. On a controller restart the new pod's counter starts at 0, so a
-// per-pod `{pod="<new>"} > 0` reading shows the new pod completed a reconcile off the
-// restored checkpoint — the drain signal the restart-reconcile e2e gate reads. No-op until
-// the counter is registered.
+// recordTargetReconcileCompleted increments the per-GitTarget recovery counter once a
+// per-type reconcile has been applied, or a cursor-backed watch resume has been established,
+// tagged with the trigger that drove the pass. On a controller restart the new pod's counter
+// starts at 0, so a per-pod `{pod="<new>"} > 0` reading shows the new pod completed its own
+// recovery. No-op until the counter is registered.
 func (m *Manager) recordTargetReconcileCompleted(gitDest types.ResourceReference, trigger string) {
 	if telemetry.TargetReconcileCompletedTotal == nil {
 		return

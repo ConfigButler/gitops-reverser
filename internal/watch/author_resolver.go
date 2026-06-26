@@ -65,6 +65,30 @@ type AttributionLookup interface {
 	) (queue.AuthorFact, bool)
 }
 
+// CursorStore persists the last processed resourceVersion for each (GitTarget,
+// GVR, scope) watch shard. Nil means every new watch session rebuilds from a
+// fresh replay/list snapshot.
+type CursorStore interface {
+	LookupWatchCursor(
+		ctx context.Context,
+		gitTargetNamespace, gitTargetName string,
+		gvr schema.GroupVersionResource,
+		namespace string,
+	) (string, bool)
+	RecordWatchCursor(
+		ctx context.Context,
+		gitTargetNamespace, gitTargetName string,
+		gvr schema.GroupVersionResource,
+		namespace, rv string,
+	) error
+	DeleteWatchCursor(
+		ctx context.Context,
+		gitTargetNamespace, gitTargetName string,
+		gvr schema.GroupVersionResource,
+		namespace string,
+	) error
+}
+
 // AuthorResolver names the commit author for a live watch event from audit facts.
 type AuthorResolver interface {
 	// ResolveAuthor returns the author UserInfo for a watch event, or ok=false to
