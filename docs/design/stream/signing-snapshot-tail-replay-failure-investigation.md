@@ -9,7 +9,7 @@
 > attempt 1, commit `113b4bc0224cfc0e5f900e38f877b8676828dfe9`.
 >
 > Related:
-> [materialization-tail-and-live-readiness-review.md](./materialization-tail-and-live-readiness-review.md)
+> [materialization-tail-and-live-readiness-review.md](../../finished/materialization-tail-and-live-readiness-review.md)
 > (Gap 2 / Rec 2),
 > [github-e2e-per-type-tail-failure-investigation.md](github-e2e-per-type-tail-failure-investigation.md),
 > [audit-log-ingestion-and-ordering.md](./audit-log-ingestion-and-ordering.md).
@@ -287,7 +287,7 @@ flowchart LR
 ## 6. Reconciliation With the Readiness Review
 
 The readiness review's
-[Rec 2 "Implementation note (landed)"](./materialization-tail-and-live-readiness-review.md)
+[Rec 2 "Implementation note (landed)"](../../finished/materialization-tail-and-live-readiness-review.md)
 explicitly declined to add a per-`(GitTarget, type)` tail-delivery gate:
 
 > The broader "tail does not *deliver* to an un-backfilled target" per-target gate

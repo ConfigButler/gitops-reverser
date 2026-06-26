@@ -1,13 +1,15 @@
 # Interpreting GitOps Reverser Metrics
 
-> Last updated: May 2026
+> Last updated: June 2026 — reconciled to the live instrument set in
+> [`internal/telemetry/exporter.go`](../internal/telemetry/exporter.go).
 
 This is the operator's field guide to the metrics GitOps Reverser exports. It explains how to
 read each metric family and gives copy-pasteable PromQL for the questions operators actually
 ask.
 
-It is a living document. New metrics should arrive here with at least one example query — a
-metric nobody knows how to read is not observable.
+Every metric documented here has a real recording site in the code. If you find a metric in a
+dashboard that is not listed here, it was removed — see [Known gaps](#known-gaps-not-yet-emitted)
+for the areas that are deliberately not instrumented yet.
 
 ---
 
@@ -50,148 +52,154 @@ rate(gitopsreverser_foo_seconds_sum[5m]) / rate(gitopsreverser_foo_seconds_count
 
 ---
 
-## Audit ingestion pipeline
+## What is instrumented today
 
-This is the most timing-sensitive subsystem, so it gets the most coverage. Background:
-[architecture.md → Audit Ingestion Pipeline](architecture.md#audit-ingestion-pipeline).
+Object state is ingested by **watch**; **audit is an optional attribution lookup** that only
+names the author of a watch-observed change (see
+[architecture.md → Optional Attribution](architecture.md#optional-attribution)). The metric
+coverage reflects that split, with one important caveat: the **watch ingestion path itself is
+only lightly instrumented today** — most of the live metrics sit at the Git-write and
+discovery edges. The deliberately-uncovered areas are listed under
+[Known gaps](#known-gaps-not-yet-emitted) so a blank dashboard panel is never mistaken for a
+healthy zero.
 
-The pipeline has four stages — ingress, join, consume, route+write — and metrics are emitted
-at the edge of each. This map shows where every audit-pipeline metric is recorded before you
-read the per-metric rows:
+The live metric families are: **Git write & reconcile**, **Audit attribution**, **API resource
+catalog**, and **Secret encryption**.
 
-```mermaid
-flowchart TD
-    KAS["kube-apiserver"]
-    PROXY["apiservice-audit-proxy"]
+---
 
-    subgraph S1["① Ingress — AuditHandler (webhook pod)"]
-        WH["receive + classify event quality"]
-    end
-    subgraph S2["② Join — AuditEventJoiner (webhook pod)"]
-        JOIN["park / merge / decide → one canonical event per auditID"]
-    end
-    STREAM[("Redis stream<br/>gitopsreverser.audit.events.v1")]
-    subgraph S3["③ Consume — AuditConsumer (leader pod)"]
-        CONS["filter stage/verb · rule match · extract + sanitize object"]
-    end
-    subgraph S4["④ Route + write — EventRouter → BranchWorker"]
-        ROUTE["dedup → coalesce → commit → push"]
-    end
-    GIT[("Git commit")]
+## Git write & reconcile
 
-    KAS -->|official EventList| WH
-    PROXY -->|additional EventList| WH
-    WH --> JOIN
-    JOIN -->|canonical event| STREAM
-    STREAM --> CONS
-    CONS -->|matched + sanitized| ROUTE
-    ROUTE --> GIT
+The path from a watch-observed change to a pushed commit, plus the per-GitTarget reconcile
+signals. Background: [architecture.md → Git Write Architecture](architecture.md#git-write-architecture).
 
-    M0["audit_eventlists_total<br/>audit_eventlist_events_total<br/>audit_eventlist_duration_seconds"]
-    M1["audit_events_total<br/>(outcome, category)"]
-    M2["audit_events_total{outcome=parked/shallow_dropped/…}<br/>audit_join_skew_seconds<br/>audit_official_gate_wait_seconds"]
-    M3["audit_pipeline_events_total<br/>audit_pipeline_route_targets_total"]
-    M4["git_operations_total · commits_total<br/>objects_written_total · git_push_duration_seconds"]
+| Metric | Type | Labels | Notes |
+| --- | --- | --- | --- |
+| `commits_total` | counter | `provider_namespace`, `provider_name`, `branch` | Commit batches pushed. Both the per-event and backfill-resync paths feed this one counter. |
+| `git_operations_total` | counter | — | Events that produced Git work in a flush. |
+| `objects_written_total` | counter | — | Objects that resulted in a file write in a flush. |
+| `branch_worker_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed work; reads 0 only when the worker has fully drained. |
+| `target_reconcile_completed_total` | counter | `gittarget_namespace`, `gittarget_name`, `trigger` | One increment per completed watch-recovery pass (streaming-snapshot resync applied, or cursor-backed resume). |
+| `resync_background_failures_total` | counter | `gittarget_namespace`, `gittarget_name` | Rule-change resyncs whose apply failed/timed out **after** enqueue (otherwise only logged). |
+| `watched_types` | gauge | `gittarget_namespace`, `gittarget_name` | How many concrete types a GitTarget currently watches. |
 
-    WH -. metrics .-> M0
-    WH -. metrics .-> M1
-    JOIN -. metrics .-> M2
-    CONS -. metrics .-> M3
-    ROUTE -. metrics .-> M4
+`commits_total` carries the **`BranchWorker`'s** `{provider_namespace, provider_name, branch}`
+identity, not a GitTarget: one worker can serve several GitTargets sharing a provider+branch,
+coalescing their writes into one commit batch, so the worker is the honest attribution unit. The
+namespace/name keys are **prefixed on purpose** — a Prometheus pod scrape with
+`honor_labels=false` overwrites a bare `namespace` attribute with the scraping pod's namespace,
+so a per-provider `namespace` selector would silently match nothing. The same reasoning applies to
+`target_reconcile_completed_total` and `branch_worker_queue_depth`.
 
-    classDef metric fill:#fff3e0,stroke:#ff9800,color:#000;
-    classDef stage fill:#e8f4fd,stroke:#2196f3,color:#000;
-    class M0,M1,M2,M3,M4 metric;
-    class WH,JOIN,CONS,ROUTE,S1,S2,S3,S4 stage;
+**Commit rate per provider/branch:**
+
+```promql
+sum by (provider_namespace, provider_name, branch) (rate(gitopsreverser_commits_total[5m]))
 ```
 
-Event-identity labels read consistently as `group`/`version`/`resource`/`verb` across every
-stage, so one PromQL `sum by (group, version)` aggregates the whole pipeline.
+**Is a branch worker backing up?** A persistently rising gauge indicates a stalled remote:
 
-The pipeline joins two event sources per `auditID`: the **official** kube-apiserver audit event
-(authoritative for *who/when*) and an **additional** body contribution from a proxy
-(authoritative for *what*, on aggregated-API paths). They race. The healthy case is the
-additional body arriving first and parking; when the official wins the race it waits up to
-`--audit-event-body-wait` (default `500ms`) for the body before dropping.
+```promql
+gitopsreverser_branch_worker_queue_depth
+```
 
-### The metrics
+**Did a new pod redo its reconciles after a rollout?** `target_reconcile_completed_total` is a
+counter (not a latched gauge) precisely so a fresh pod's series starts at 0; a per-pod
+`increase(...) > 0` proves the new pod did its own work rather than inheriting the old pod's
+stale series. This is the restart-reconcile guarantee:
 
-> **Per-event census (2026-06):** the former per-event audit counters
-> (`audit_events_received_total`, `audit_event_quality_total`, `audit_join_parked_total`,
-> `audit_join_emitted_total`, `audit_shallow_dropped_total`, `audit_events_filtered_total`,
-> `audit_late_lane_diverted_total`) are unified into a single counter,
-> `gitopsreverser_audit_events_total`, where every event increments exactly once labelled by its
-> `outcome` and `category`. Use `outcome="…"` instead of the old metric names (e.g.
-> `outcome="shallow_dropped"` for the old `audit_shallow_dropped_total`). See the outcome catalog
-> in [docs/design/stream/audit-diagnostic-streams-plan.md](design/stream/audit-diagnostic-streams-plan.md).
+```promql
+sum by (pod) (increase(gitopsreverser_target_reconcile_completed_total[10m]))
+```
 
-| Metric | Type | Labels | Stage |
-| --- | --- | --- | --- |
-| `audit_eventlists_total` | counter | `source`, `outcome` | ① ingress |
-| `audit_eventlist_events_total` | counter | `source`, `outcome` | ① ingress |
-| `audit_eventlist_duration_seconds` | histogram | `source`, `outcome` | ① ingress |
-| `audit_events_total` | counter | `outcome`, `category` (`stored`/`held`/`dropped`/`error`), `group`, `version`, `resource`, `verb` | per-event census (① ingress → ② join → enqueue) |
-| `audit_join_skew_seconds` | histogram | `arrival` (`body_first`/`official_first`), `outcome` (`merged`/`timed_out`) | ② join |
-| `audit_official_gate_wait_seconds` | histogram | — | ② join |
-| `audit_pipeline_events_total` | counter | `group`, `version`, `resource`, `verb`, `outcome` | ③ consume |
-| `audit_pipeline_route_targets_total` | counter | `git_target_namespace`, `git_target`, `rule_kind`, `outcome` | ③ route |
+**Are background resyncs silently failing?** Should be zero; non-zero means snapshots are not
+committing and the folder is relying on steady-state events to catch up:
 
-**Stage ① — EventList ingress.** `audit_eventlists_total` and `audit_eventlist_duration_seconds`
-count request attempts at the webhook's two audit endpoints; `audit_eventlist_events_total`
-counts the decoded event items inside them. `outcome` is bounded: `processed`, `empty`,
-`decode_error`, `process_error`. This is the raw delivery boundary — it answers "are EventLists
-arriving?" before any join or rule logic runs. `audit_events_total` then describes individual
-decoded events by `outcome`.
+```promql
+sum by (gittarget_namespace, gittarget_name) (
+  rate(gitopsreverser_resync_background_failures_total[15m]))
+```
+
+**How much is each GitTarget watching?**
+
+```promql
+gitopsreverser_watched_types
+```
+
+---
+
+## Audit attribution (optional)
+
+Audit runs **only when Redis is configured**. The kube-apiserver POSTs audit `EventList`
+payloads to `/audit-webhook`; the handler applies an intrinsic accept gate and, for an accepted
+event, writes a minimal attribution fact to the Redis index. There is **no body join and no
+second source** — watch, not audit, carries the object body — so the only audit metrics are the
+request boundary and the per-event census. Background:
+[architecture.md → Optional Attribution](architecture.md#optional-attribution).
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `audit_eventlists_total` | counter | `outcome` |
+| `audit_eventlist_events_total` | counter | `outcome` |
+| `audit_eventlist_duration_seconds` | histogram | `outcome` |
+| `audit_events_total` | counter | `outcome`, `category`, `group`, `version`, `resource`, `verb` |
+
+**EventList request boundary.** `audit_eventlists_total` and `audit_eventlist_duration_seconds`
+count requests at `/audit-webhook`; `audit_eventlist_events_total` counts the decoded event items
+inside them. `outcome` is bounded: `processed`, `empty`, `decode_error`, `process_error`. This is
+the raw delivery edge — "are EventLists arriving at all?" — before any gate or attribution logic.
+
+**Per-event census.** `audit_events_total` increments exactly once per decoded event. `category`
+is the coarse bucket of `outcome` (carried as its own label so the health invariant is a simple
+selector):
+
+| `category` | Live `outcome` values | Meaning |
+| --- | --- | --- |
+| `stored` | `queued` | Accepted; an attribution fact was written to the index. |
+| `dropped` | `nil_event`, `stage`, `read_only_or_unknown_verb`, `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource` | Correctly rejected at the accept gate — not an error. |
+| `error` | `write_error` | The fact store rejected the write. The one category that should stay zero. |
+
+The full enum lives in [`internal/audit/outcome/outcome.go`](../internal/audit/outcome/outcome.go)
+— it is the source of truth.
+
+**Is audit attribution alive?** Any positive rate means events are flowing:
+
+```promql
+sum(rate(gitopsreverser_audit_events_total[5m]))
+```
+
+**The health invariant — fact-store errors must be zero:**
+
+```promql
+sum(rate(gitopsreverser_audit_events_total{category="error"}[5m]))
+```
+
+**Live audit stream by type — what is actually streaming in.** This is the per-type view of the
+audit firehose; a type you expect to attribute but never see here means the audit policy is not
+delivering it:
+
+```promql
+sum by (group, version, resource) (rate(gitopsreverser_audit_events_total[5m]))
+```
+
+**Have we ever seen audit for this type?** Useful for deciding whether attribution is worth
+waiting on for a given type — zero over a long window means audit never delivers it:
+
+```promql
+sum by (group, resource) (increase(gitopsreverser_audit_events_total[1h])) > 0
+```
+
+**What strange or high-volume traffic is the webhook receiving?** Top event shapes by outcome —
+surfaces an unexpected flood at a glance:
+
+```promql
+topk(15, sum by (resource, verb, outcome) (rate(gitopsreverser_audit_events_total[5m])))
+```
 
 A non-`/scale` subresource (`exec`, `status`, `log`, …) cannot describe a top-level object the
-Git pipeline can mirror, so it is dropped at ingress as `audit_events_total{outcome="non_scale_subresource"}`.
-That outcome makes a `pods/exec` flood visible as exactly that (with `resource="pods"`), rather
-than looking like real pod mutations.
-
-**Stage ③ — consumer output.** `audit_pipeline_events_total` is recorded once per canonical
-event in the consumer, after rule matching. `outcome` tells you which resource events reach the
-consumer but do not become Git work: `routed` (reached at least one BranchWorker), `unmatched`
-(no rule matched), `dropped_no_body` (matched but no usable body), `route_failed` (every matched
-target route failed). `audit_pipeline_route_targets_total` breaks routed/failed attempts down by
-destination GitTarget.
-
-`audit_join_skew_seconds` is the centerpiece for timing health. Every official↔additional pair
-produces one observation:
-
-- **`arrival="body_first"`** — the additional body was already parked when the official arrived.
-  The value is the proxy's *lead time*: how long the body sat parked. Always `outcome="merged"`.
-- **`arrival="official_first"`** — the official arrived first and waited on the canonical gate.
-  The value is the wait duration. `outcome="merged"` if the body arrived in time,
-  `outcome="timed_out"` if the grace period expired (that event is also counted as
-  `audit_events_total{outcome="shallow_dropped"}`).
-
-### Query cookbook
-
-**Are both audit sources delivering EventLists?** If one `source` flatlines, that sender is
-down or misrouted:
-
-```promql
-sum by (source, outcome) (rate(gitopsreverser_audit_eventlists_total[5m]))
-```
-
-**How many audit event items arrive per second from each source?**
-
-```promql
-sum by (source) (rate(gitopsreverser_audit_eventlist_events_total[5m]))
-```
-
-**What strange or high-volume traffic is the webhook receiving?** The top event shapes by outcome —
-this surfaces an unexpected resource flood at a glance:
-
-```promql
-topk(15, sum by (resource, verb, outcome) (
-  rate(gitopsreverser_audit_events_total[5m])))
-```
-
-A non-`/scale` subresource is dropped at ingress as `outcome="non_scale_subresource"`. A large
-`pods`/`exec` row is the canonical example — see
-[shallow-audit-event-misclassification.md](finished/shallow-audit-event-misclassification.md). To
-look only at the dropped subresource traffic:
+Git pipeline mirrors, so it is dropped at the gate as `outcome="non_scale_subresource"`. A
+`pods/exec` flood shows up as exactly that (with `resource="pods"`) rather than looking like real
+pod mutations:
 
 ```promql
 topk(10, sum by (resource, verb) (
@@ -202,168 +210,14 @@ topk(10, sum by (resource, verb) (
 something that is not an `audit.k8s.io/v1 EventList`:
 
 ```promql
-sum by (source) (rate(gitopsreverser_audit_eventlists_total{outcome="decode_error"}[5m]))
+sum(rate(gitopsreverser_audit_eventlists_total{outcome="decode_error"}[5m]))
 ```
 
-**Are events being stored?** Rate of events that reached the per-type log:
-
-```promql
-sum(rate(gitopsreverser_audit_events_total{outcome="queued"}[5m]))
-```
-
-A merged event (an official completed by a parked/awaited body) is also `outcome="queued"` — the
-merge is provenance, not a separate fate; `outcome="parked"` counts the bodies awaiting their
-official, and `outcome="shallow_dropped"` staying zero confirms the merge path is healthy.
-
-**How often does the race go the "wrong" way?** Fraction of joins where the official arrived
-before its body:
-
-```promql
-sum(rate(gitopsreverser_audit_join_skew_seconds_count{arrival="official_first"}[5m]))
-/
-sum(rate(gitopsreverser_audit_join_skew_seconds_count[5m]))
-```
-
-Near `0` is healthy. Climbing toward `1` means the proxy is consistently behind the apiserver.
-
-**Is `--audit-event-body-wait=500ms` enough?** p95 of the time officials spend waiting:
+**How long does the webhook take to answer?** p95 of the EventList handling time:
 
 ```promql
 histogram_quantile(0.95,
-  sum by (le) (rate(gitopsreverser_audit_join_skew_seconds_bucket{arrival="official_first"}[5m])))
-```
-
-If this creeps toward the configured `bodyWait`, raise the flag **before** drops start — this
-is the early-warning signal. If it sits near zero, the wait budget has plenty of headroom.
-
-**Did waiting actually pay off?** Merged-after-wait vs timed-out:
-
-```promql
-sum by (outcome) (rate(gitopsreverser_audit_join_skew_seconds_count{arrival="official_first"}[5m]))
-```
-
-`outcome="timed_out"` here equals `rate(gitopsreverser_audit_events_total{outcome="shallow_dropped"}[5m])` — two views of the
-same failure.
-
-**What's the margin against `--audit-event-body-ttl` (5m)?** p99 of the proxy's lead time:
-
-```promql
-histogram_quantile(0.99,
-  sum by (le) (rate(gitopsreverser_audit_join_skew_seconds_bucket{arrival="body_first"}[5m])))
-```
-
-Parked bodies expire at `bodyTTL`. If p99 lead time approaches it, bodies are parking far too
-early (or the official stream has stalled) and orphan expiry is imminent.
-
-**Are shallow events being lost?** Non-zero means misconfiguration — no proxy, or an audit
-policy that omits bodies:
-
-```promql
-sum by (resource, verb) (rate(gitopsreverser_audit_events_total{outcome="shallow_dropped"}[5m]))
-```
-
-**Is the canonical gate causing backpressure?** A shallow official holds the in-pod gate for up
-to `bodyWait`; later officials queue behind it. p95 of that queueing delay:
-
-```promql
-histogram_quantile(0.95,
-  sum by (le) (rate(gitopsreverser_audit_official_gate_wait_seconds_bucket[5m])))
-```
-
-Sub-millisecond is normal. Sustained values near `bodyWait` mean officials are serializing
-behind shallow events — consider whether the audit policy should be supplying bodies directly.
-
-**Is a webhook retry storm happening?** Duplicate drops should be rare:
-
-```promql
-sum by (reason) (rate(gitopsreverser_audit_join_duplicate_dropped_total[5m]))
-```
-
-**"Am I seeing a lot of pod create events flow through?"** The question this pipeline exists to
-answer — routed events by resource:
-
-```promql
-sum by (resource) (
-  increase(gitopsreverser_audit_pipeline_events_total{verb="create",outcome="routed"}[1h]))
-```
-
-**Which events reach the consumer but never become Git work?** A high `unmatched` rate for a
-resource you expect to capture points at a missing or wrong `WatchRule`:
-
-```promql
-topk(10, sum by (group, version, resource, verb, outcome) (
-  rate(gitopsreverser_audit_pipeline_events_total{outcome!="routed"}[5m])))
-```
-
-**Is runtime traffic reaching each GitTarget, and is routing into it failing?**
-
-```promql
-sum by (git_target_namespace, git_target, outcome) (
-  rate(gitopsreverser_audit_pipeline_route_targets_total[5m]))
-```
-
-### Suggested alerts
-
-| Condition | Meaning |
-| --- | --- |
-| `rate(gitopsreverser_audit_events_total{outcome="shallow_dropped"}[10m]) > 0` | Bodies are being lost — install the proxy or fix the audit policy. |
-| `histogram_quantile(0.95, ...skew_seconds_bucket{arrival="official_first"}...) > 0.4` (with `bodyWait=500ms`) | Grace period about to be exhausted; raise `--audit-event-body-wait`. |
-| `rate(audit_join_body_late_total[15m]) > 0` sustained | Additional bodies arriving after the decision — proxy slower than `bodyTTL`. |
-| `rate(audit_join_duplicate_dropped_total[5m])` spike | Likely webhook retry storm. |
-| `rate(audit_eventlists_total{outcome="decode_error"}[10m]) > 0` | A sender is posting non-EventList payloads to an audit endpoint. |
-| `rate(audit_pipeline_route_targets_total{outcome="route_failed"}[10m]) > 0` | Matched events are failing to reach their GitTarget — check GitTarget/GitProvider readiness. |
-
----
-
-## Git write pipeline
-
-Metrics for the path from matched event to pushed commit. Background:
-[architecture.md → Git Operations](architecture.md#git-operations).
-
-| Metric | Type | Notes |
-| --- | --- | --- |
-| `git_operations_total` | counter | Git operations attempted. |
-| `commits_total` | counter | Commit batches pushed. Labelled by `provider_namespace`, `provider_name`, `branch` (the recording `BranchWorker`'s identity). |
-| `commit_bytes_total` | counter | Approximate bytes written across commits. |
-| `objects_scanned_total` | counter | Objects seen by list/informer paths. |
-| `objects_written_total` | counter | Objects that resulted in a file write. |
-| `files_deleted_total` | counter | Files removed during orphan cleanup. |
-| `rebase_retries_total` | counter | Non-fast-forward push retries (conflict → fetch + replay). |
-| `ownership_conflicts_total` | counter | Marker/lease ownership conflicts. |
-| `lease_acquire_failures_total` | counter | Failures to acquire/renew a lease. |
-| `marker_conflicts_total` | counter | Repository marker conflicts. |
-| `watch_duplicates_skipped_total` | counter | Watch events skipped by content-hash dedup. |
-| `git_push_duration_seconds` | histogram | End-to-end push latency. |
-| `repo_branch_active_workers` | gauge | Active `BranchWorker` goroutines. |
-| `repo_branch_queue_depth` | gauge | Per-`(provider,branch)` pending-event depth. |
-
-`commits_total` carries the branch worker's `{provider_namespace, provider_name, branch}`
-identity — the same prefixed-key convention as the branch-worker gauges, chosen so a pod
-scrape with `honor_labels=false` cannot overwrite a bare `namespace`/`name` attribute. A
-commit batch is produced at the branch-worker layer (one worker can serve several GitTargets
-sharing a provider+branch), so the worker, not a single GitTarget, is the attribution unit.
-Both the per-event and backfill-resync commit paths feed this one counter, so
-`sum(...)` over it counts every commit regardless of path.
-
-**Push latency p95:**
-
-```promql
-histogram_quantile(0.95, sum by (le) (rate(gitopsreverser_git_push_duration_seconds_bucket[5m])))
-```
-
-**Conflict rate** — how often pushes hit a diverged remote and replayed:
-
-```promql
-rate(gitopsreverser_rebase_retries_total[5m]) / rate(gitopsreverser_commits_total[5m])
-```
-
-A steadily rising ratio means remotes are being written by something other than this operator,
-or multiple branches are contending.
-
-**Is a branch worker backing up?** A persistently rising gauge indicates a stalled remote:
-
-```promql
-gitopsreverser_repo_branch_queue_depth
+  sum by (le) (rate(gitopsreverser_audit_eventlist_duration_seconds_bucket[5m])))
 ```
 
 ---
@@ -373,8 +227,7 @@ gitopsreverser_repo_branch_queue_depth
 The API resource catalog is GitOps Reverser's single trusted in-memory view of the cluster's
 served API surface — every `WatchRule` and `ClusterWatchRule` is resolved against it. The watch
 manager refreshes it from Kubernetes discovery on its 30 s reconcile ticker, on every
-CRD/APIService change, and on every rule change. Background:
-[audit-metrics-overhaul-plan.md → API resource catalog observability](design/audit-metrics-overhaul-plan.md).
+CRD/APIService change, and on every rule change.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
@@ -382,7 +235,7 @@ CRD/APIService change, and on every rule change. Background:
 | `api_catalog_group_versions` | gauge | `state` (`trusted`/`degraded`) |
 | `api_catalog_refresh_total` | counter | `outcome` (`changed`/`unchanged`/`error`) |
 | `api_catalog_refresh_duration_seconds` | histogram | — |
-| `api_catalog_generation` | gauge | Current published catalog generation. |
+| `api_catalog_generation` | gauge | — |
 
 `excluded` resources are the default-watch-policy set (pods, events, leases, jobs, …) — served
 by the cluster but deliberately never watched. `degraded` group/versions are ones discovery
@@ -420,8 +273,8 @@ histogram_quantile(0.95,
 
 ## Secret encryption
 
-Background: [architecture.md → Encryption](architecture.md#encryption). Secrets are never
-committed in plaintext; these metrics confirm the encryption path is healthy.
+Background: [architecture.md → Bootstrap, Encryption, and Signing](architecture.md#bootstrap-encryption-and-signing).
+Secrets are never committed in plaintext; these metrics confirm the encryption path is healthy.
 
 | Metric | Type | Notes |
 | --- | --- | --- |
@@ -447,8 +300,45 @@ rate(gitopsreverser_secret_encryption_attempts_total[5m])
 
 ---
 
+## Suggested alerts
+
+| Condition | Meaning |
+| --- | --- |
+| `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | Attribution fact-store writes are failing — check Redis. |
+| `rate(gitopsreverser_audit_eventlists_total{outcome="decode_error"}[10m]) > 0` | A sender is posting non-EventList payloads to `/audit-webhook`. |
+| `rate(gitopsreverser_resync_background_failures_total[15m]) > 0` sustained | Background resyncs are not committing; the folder relies on steady-state events to catch up. |
+| `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | Part of the API surface is hidden behind a broken APIService. |
+| `rate(gitopsreverser_secret_encryption_failures_total[10m]) > 0` | Secret writes are being rejected by the encryption path. |
+| `gitopsreverser_branch_worker_queue_depth` rising and not draining | A branch worker is backing up against a stalled remote. |
+
+---
+
+## Known gaps (not yet emitted)
+
+These are real holes, listed so a missing panel is never read as a healthy zero. The plan to close
+them — with a reference dashboard and an audit/attribution deep-dive — is
+[metrics-observability-plan.md](design/metrics-observability-plan.md) (see also
+[architecture.md → Observability](architecture.md#observability)):
+
+- **Watch ingestion** — per-`(gvr)` watch events received, reconnects/restarts,
+  `sendInitialEvents` replays, `410 Gone` rebuilds, mark-and-sweep deletes emitted, and
+  cursor-resume vs full-replay. Watch is the object-state source, yet it has almost no direct
+  coverage today; this is the biggest gap.
+- **Attribution coverage** — per-`(gvr)` outcome of the resolver (strong match / weak / committer
+  fallback) and the grace-window wait histogram. This is what turns "how often do real names
+  actually land?" into a number instead of an assumption.
+- **Commit author breakdown** — `commits_total` split by author kind (user / service account /
+  committer), the direct measure of attribution value.
+- **Git push health** — push latency and conflict-retry counts. The instruments for these were
+  removed because nothing recorded them; re-add them **with** a recording site when the need is
+  real, not before.
+
+---
+
 ## Adding a new metric to this document
 
-When you add a metric, add a row here too. The bar: a reader who has never seen the metric
-should learn (1) what it measures, (2) at least one query that answers a real operator
+When you add a metric, add a row here too — **and only after it has a production recording
+site**. A defined-but-unrecorded instrument is a contract the code does not honor; it does not
+belong in `exporter.go` or in this document. The bar for a row: a reader who has never seen the
+metric should learn (1) what it measures, (2) at least one query that answers a real operator
 question, and (3) what a bad value looks like. A metric without an interpretation is noise.

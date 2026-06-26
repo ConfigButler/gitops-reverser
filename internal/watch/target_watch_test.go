@@ -617,10 +617,11 @@ type recordingEnqueuer struct {
 	events []git.Event
 }
 
-func (r *recordingEnqueuer) Enqueue(event git.Event) {
+func (r *recordingEnqueuer) Enqueue(event git.Event) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, event)
+	return true
 }
 
 // snapshot returns a copy of the recorded events under lock, safe to read while a

@@ -19,6 +19,10 @@ limitations under the License.
 /*
 Package telemetry provides the OpenTelemetry-based metrics exporter for GitOps Reverser.
 It configures Prometheus-compatible metrics collection for monitoring controller operations.
+
+Every instrument declared here MUST have at least one production recording site. A metric
+that is defined but never recorded is a contract the code does not honor; document it in
+docs/interpreting-metrics.md only once it actually emits.
 */
 package telemetry
 
@@ -34,33 +38,16 @@ import (
 )
 
 var (
-	otelMeter              metric.Meter
-	GitOperationsTotal     metric.Int64Counter
-	GitPushDurationSeconds metric.Float64Histogram
+	otelMeter metric.Meter
 
-	// ObjectsScannedTotal counts objects scanned by list/polling/informer paths.
-	ObjectsScannedTotal metric.Int64Counter
+	// GitOperationsTotal counts git operations performed by branch workers.
+	GitOperationsTotal metric.Int64Counter
 	// ObjectsWrittenTotal counts objects that resulted in file writes.
 	ObjectsWrittenTotal metric.Int64Counter
-	// FilesDeletedTotal counts deleted files during orphan cleanup.
-	FilesDeletedTotal metric.Int64Counter
-	// CommitsTotal counts commit batches pushed to git.
+	// CommitsTotal counts commit batches pushed to git, labelled by the recording
+	// BranchWorker's {provider_namespace, provider_name, branch} identity. Both the
+	// per-event and backfill-resync commit paths feed this one counter.
 	CommitsTotal metric.Int64Counter
-	// CommitBytesTotal counts approximate bytes written across commits.
-	CommitBytesTotal metric.Int64Counter
-	// RebaseRetriesTotal counts retries due to non fast-forward push errors.
-	RebaseRetriesTotal metric.Int64Counter
-	// OwnershipConflictsTotal counts ownership conflicts (marker/lease).
-	OwnershipConflictsTotal metric.Int64Counter
-	// LeaseAcquireFailuresTotal counts failures to acquire/renew leases.
-	LeaseAcquireFailuresTotal metric.Int64Counter
-	// MarkerConflictsTotal counts repository marker conflicts.
-	MarkerConflictsTotal metric.Int64Counter
-
-	// RepoBranchActiveWorkers is a gauge for active repo-branch workers.
-	RepoBranchActiveWorkers metric.Int64UpDownCounter
-	// RepoBranchQueueDepth is a gauge for per-repo-branch queue depth.
-	RepoBranchQueueDepth metric.Int64UpDownCounter
 
 	// TargetReconcileCompletedTotal counts completed watch recovery passes per
 	// GitTarget: each increment marks either a streaming-snapshot resync applied on
@@ -102,64 +89,20 @@ var (
 	// folder is relying on steady-state events to catch up.
 	ResyncBackgroundFailuresTotal metric.Int64Counter
 
-	// TypeLifecycleReconcileTotal counts M12 per-type reconciles driven by a registry
-	// TypeActivated transition: each increment is one (GitTarget, type) reconcile enqueued
-	// after the type settled into the followable set. Labelled by {gittarget_namespace,
-	// gittarget_name}; an increase tracks types coming online (e.g. a CRD installed) being
-	// mirrored without a whole-GitTarget resync.
-	TypeLifecycleReconcileTotal metric.Int64Counter
-	// TypeLifecycleSweepTotal counts M12 per-type sweeps driven by a registry TypeRemoved
-	// transition (a type whose removal grace elapsed): each increment is one (GitTarget,
-	// type) scoped sweep enqueued. Labelled by {gittarget_namespace, gittarget_name}; an
-	// increase tracks types going away (e.g. a CRD deleted) having only their own documents
-	// pruned.
-	TypeLifecycleSweepTotal metric.Int64Counter
-
-	// MaterializationSyncEventsTotal counts demand-axis transitions the checkpoint driver
-	// handles, labelled by {kind} (SyncRequested/SyncStarted/TypeSynced/SyncFailed/Released).
-	// It tracks demand-driven checkpoint activity per the materialization lifecycle
-	// (docs/design/stream/demand-driven-type-materialization-lifecycle.md, L-6/L10).
-	MaterializationSyncEventsTotal metric.Int64Counter
-	// MaterializationCheckpointFillsTotal counts completed per-type checkpoint fills, labelled by
-	// {path}: "watch" for the WATCH-first streaming-list (sendInitialEvents + the
-	// initial-events-end bookmark) and "list" for the consistent-LIST fallback taken when a
-	// backend does not honor streaming-list (e.g. an aggregated API that never emits the
-	// bookmark). A rising "list" share is the fallback surface — which clusters/types are not on
-	// the cheaper streaming path. Pair it with the per-GVR `objects-mirror: snapshot loaded ...
-	// path=...` log line to identify the specific type. See
-	// docs/design/stream/watch-list-checkpoint-plan.md.
-	MaterializationCheckpointFillsTotal metric.Int64Counter
-
-	// WatchAuditComparisonsTotal counts watch-vs-audit desired-set comparisons, labelled by
-	// {gvr, result} where result is "agree" or "diverge" — Phase 1 of
-	// docs/design/watch-first-ingestion-architecture.md. A rising "diverge" rate is the signal that
-	// the parallel watch-state stream is NOT yet a faithful replacement for the audit-derived set.
-	// Only emitted when --watch-state-stream is enabled.
-	WatchAuditComparisonsTotal metric.Int64Counter
-
-	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
-	WatchDuplicatesSkippedTotal metric.Int64Counter
 	// AuditEventsTotal is the single per-event census: every successfully decoded, converted, and
 	// validated audit event increments it exactly once, labelled by {outcome, category, group,
-	// version, resource, verb}. It subsumes the former received/quality/parked/emitted/shallow/
-	// filtered/late-lane counters — see internal/audit/outcome and
-	// docs/design/stream/audit-diagnostic-streams-plan.md. Liveness = sum(...) > 0; the e2e
-	// invariant gates on category="error" == 0.
+	// version, resource, verb}. Audit is attribution-only — it names the author of a watch-observed
+	// change; it never carries object state. Liveness = sum(...) > 0; the e2e invariant gates on
+	// category="error" == 0.
 	AuditEventsTotal metric.Int64Counter
-	// AuditJoinSkewSeconds records the arrival skew between an official audit event and its
-	// matching additional body, labelled by which arrived first and how the join resolved.
-	AuditJoinSkewSeconds metric.Float64Histogram
-	// AuditOfficialGateWaitSeconds records how long an official audit event waited to acquire
-	// the in-pod mirror ordering gate before processing.
-	AuditOfficialGateWaitSeconds metric.Float64Histogram
 	// AuditEventListsTotal counts inbound audit EventList requests at the webhook boundary,
-	// labelled by source and bounded outcome.
+	// labelled by bounded outcome (processed/empty/decode_error/process_error).
 	AuditEventListsTotal metric.Int64Counter
 	// AuditEventListEventsTotal counts decoded audit event items delivered in EventLists,
-	// labelled by source and bounded outcome.
+	// labelled by the same bounded outcome.
 	AuditEventListEventsTotal metric.Int64Counter
 	// AuditEventListDurationSeconds records how long the webhook takes to answer an
-	// EventList request, including in-pod join wait work.
+	// EventList request, labelled by outcome.
 	AuditEventListDurationSeconds metric.Float64Histogram
 
 	// APICatalogResources gauges the count of served top-level resources in the catalog,
@@ -176,23 +119,7 @@ var (
 	// WatchedTypes gauges the number of watched types per GitTarget, labelled by
 	// gittarget_namespace and gittarget_name.
 	WatchedTypes metric.Int64Gauge
-	// MaterializationTypePhase gauges how many types sit in each materialization phase,
-	// labelled by {phase} (dormant/requested/syncing/synced/resyncing/failing) — the per-type
-	// phase distribution of the demand axis (L-6/L10).
-	MaterializationTypePhase metric.Int64Gauge
-	// MaterializationClaimedTypes gauges how many types currently hold ≥1 GitTarget claim
-	// (the demand surface: how much of the catalog is actually wanted).
-	MaterializationClaimedTypes metric.Int64Gauge
-	// MaterializationClaimedUnfollowable gauges how many claimed types are not currently
-	// followable — the claim-vs-refused mismatch an operator should notice (L10).
-	MaterializationClaimedUnfollowable metric.Int64Gauge
-	// WatchAuditDivergence gauges, per {gvr, reason}, how many objects diverge between the
-	// watch-derived and audit-derived desired sets at the last comparison — reason is "audit_only"
-	// (present in audit's set, missing from watch's), "watch_only" (the reverse), or "mismatch"
-	// (present in both, sanitized bodies differ). Zero on every reason means watch reproduced audit's
-	// set exactly. Phase 1 of docs/design/watch-first-ingestion-architecture.md; only emitted when
-	// --watch-state-stream is enabled.
-	WatchAuditDivergence metric.Int64Gauge
+
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -261,10 +188,6 @@ type (
 		dest    *metric.Float64Histogram
 		buckets []float64
 	}
-	uSpec struct {
-		name string
-		dest *metric.Int64UpDownCounter
-	}
 	gSpec struct {
 		name string
 		dest *metric.Int64Gauge
@@ -280,25 +203,16 @@ func registerInstruments() error {
 	if err := registerHistograms(); err != nil {
 		return err
 	}
-	if err := registerGauges(); err != nil {
-		return err
-	}
-	return registerUpDownCounters()
+	return registerGauges()
 }
 
 func registerCounters() error {
 	counters := []cSpec{
 		{"gitopsreverser_git_operations_total", &GitOperationsTotal},
-		{"gitopsreverser_objects_scanned_total", &ObjectsScannedTotal},
 		{"gitopsreverser_objects_written_total", &ObjectsWrittenTotal},
-		{"gitopsreverser_files_deleted_total", &FilesDeletedTotal},
 		{"gitopsreverser_commits_total", &CommitsTotal},
-		{"gitopsreverser_commit_bytes_total", &CommitBytesTotal},
-		{"gitopsreverser_rebase_retries_total", &RebaseRetriesTotal},
-		{"gitopsreverser_ownership_conflicts_total", &OwnershipConflictsTotal},
-		{"gitopsreverser_lease_acquire_failures_total", &LeaseAcquireFailuresTotal},
-		{"gitopsreverser_marker_conflicts_total", &MarkerConflictsTotal},
-		{"gitopsreverser_watch_duplicates_skipped_total", &WatchDuplicatesSkippedTotal},
+		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
+		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
 		{"gitopsreverser_audit_events_total", &AuditEventsTotal},
 		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
 		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
@@ -308,13 +222,6 @@ func registerCounters() error {
 		{"gitopsreverser_secret_encryption_failures_total", &SecretEncryptionFailuresTotal},
 		{"gitopsreverser_secret_encryption_cache_hits_total", &SecretEncryptionCacheHitsTotal},
 		{"gitopsreverser_secret_encryption_marker_skips_total", &SecretEncryptionMarkerSkipsTotal},
-		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
-		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
-		{"gitopsreverser_type_lifecycle_reconcile_total", &TypeLifecycleReconcileTotal},
-		{"gitopsreverser_type_lifecycle_sweep_total", &TypeLifecycleSweepTotal},
-		{"gitopsreverser_materialization_sync_events_total", &MaterializationSyncEventsTotal},
-		{"gitopsreverser_materialization_checkpoint_fills_total", &MaterializationCheckpointFillsTotal},
-		{"gitopsreverser_watch_audit_comparisons_total", &WatchAuditComparisonsTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
@@ -327,17 +234,14 @@ func registerCounters() error {
 }
 
 func registerHistograms() error {
-	// auditJoinBuckets span the wait budget (sub-second) and the parked-body TTL margin
-	// (seconds to minutes) so one set of boundaries fits both skew and gate-wait timings.
-	auditJoinBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 5, 30, 300}
+	// eventListDurationBuckets span the webhook's EventList answer time: sub-millisecond decode
+	// up through a slow request, plus headroom for an attribution lookup wait.
+	eventListDurationBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 5, 30, 300}
 	// catalogRefreshBuckets span discovery latency: two cached GETs on an aggregated
 	// apiserver (sub-second) up to a slow per-group fallback (seconds).
 	catalogRefreshBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 	hists := []hSpec{
-		{"gitopsreverser_git_push_duration_seconds", &GitPushDurationSeconds, nil},
-		{"gitopsreverser_audit_join_skew_seconds", &AuditJoinSkewSeconds, auditJoinBuckets},
-		{"gitopsreverser_audit_official_gate_wait_seconds", &AuditOfficialGateWaitSeconds, auditJoinBuckets},
-		{"gitopsreverser_audit_eventlist_duration_seconds", &AuditEventListDurationSeconds, auditJoinBuckets},
+		{"gitopsreverser_audit_eventlist_duration_seconds", &AuditEventListDurationSeconds, eventListDurationBuckets},
 		{
 			"gitopsreverser_api_catalog_refresh_duration_seconds",
 			&APICatalogRefreshDurationSeconds,
@@ -364,10 +268,6 @@ func registerGauges() error {
 		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
 		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
 		{"gitopsreverser_watched_types", &WatchedTypes},
-		{"gitopsreverser_materialization_type_phase", &MaterializationTypePhase},
-		{"gitopsreverser_materialization_claimed_types", &MaterializationClaimedTypes},
-		{"gitopsreverser_materialization_claimed_unfollowable", &MaterializationClaimedUnfollowable},
-		{"gitopsreverser_watch_audit_divergence", &WatchAuditDivergence},
 		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
 	}
 	for _, s := range gauges {
@@ -377,21 +277,5 @@ func registerGauges() error {
 		}
 		*s.dest = v
 	}
-	return nil
-}
-
-func registerUpDownCounters() error {
-	upDowns := []uSpec{
-		{"gitopsreverser_repo_branch_active_workers", &RepoBranchActiveWorkers},
-		{"gitopsreverser_repo_branch_queue_depth", &RepoBranchQueueDepth},
-	}
-	for _, s := range upDowns {
-		v, err := otelMeter.Int64UpDownCounter(s.name)
-		if err != nil {
-			return err
-		}
-		*s.dest = v
-	}
-
 	return nil
 }

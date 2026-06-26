@@ -21,7 +21,7 @@ This plan makes `/readyz` reflect the **locally-checkable audit-serving precondi
 in the wild, the kube-apiserver stops routing audit traffic to a pod that isn't ready to receive
 it — without the e2e's external probing. It is the production implementation of recommendation
 **A1** in
-[startup-robustness-cert-and-crd-wobble.md](./startup-robustness-cert-and-crd-wobble.md#L163-L167).
+[startup-robustness-cert-and-crd-wobble.md](../design/startup-robustness-cert-and-crd-wobble.md#L163-L167).
 
 ---
 
@@ -195,7 +195,7 @@ and call it once at boot to satisfy the gate; no new client or pool is needed.
 ## 8. Relationship to existing work
 
 - Implements **A1** from
-  [startup-robustness-cert-and-crd-wobble.md](./startup-robustness-cert-and-crd-wobble.md#L163-L167);
+  [startup-robustness-cert-and-crd-wobble.md](../design/startup-robustness-cert-and-crd-wobble.md#L163-L167);
   complementary to **A2** (apply certs before the Deployment) — A2 shrinks the not-ready window,
   this makes the window safe.
 - Orthogonal to the CRD-wobble hazard (B-series) in the same doc.

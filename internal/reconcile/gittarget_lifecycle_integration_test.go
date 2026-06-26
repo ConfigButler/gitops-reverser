@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -40,8 +41,8 @@ func TestGitTargetEventStream_MultipleStreamsWithSharedWorker(t *testing.T) {
 	stream1 := NewGitTargetEventStream("target1", "default", mockWorker, logger)
 	stream2 := NewGitTargetEventStream("target2", "default", mockWorker, logger)
 
-	stream1.OnWatchEvent(createTestEventWithPath("pod", "app-pod", "CREATE", "apps"))
-	stream2.OnWatchEvent(createTestEventWithPath("deployment", "nginx", "CREATE", "infra"))
+	require.NoError(t, stream1.OnWatchEvent(createTestEventWithPath("pod", "app-pod", "CREATE", "apps")))
+	require.NoError(t, stream2.OnWatchEvent(createTestEventWithPath("deployment", "nginx", "CREATE", "infra")))
 
 	assert.Len(t, mockWorker.events, 2, "Both events should reach shared worker")
 
@@ -69,8 +70,14 @@ func TestGitTargetEventStream_DuplicateEventsAcrossStreams(t *testing.T) {
 	streamClusterA := NewGitTargetEventStream("cluster-a-target", "default", mockWorker, logger)
 	streamClusterB := NewGitTargetEventStream("cluster-b-target", "default", mockWorker, logger)
 
-	streamClusterA.OnWatchEvent(createTestEventWithPath("configmap", "shared-config", "UPDATE", "cluster-a"))
-	streamClusterB.OnWatchEvent(createTestEventWithPath("configmap", "shared-config", "UPDATE", "cluster-b"))
+	require.NoError(
+		t,
+		streamClusterA.OnWatchEvent(createTestEventWithPath("configmap", "shared-config", "UPDATE", "cluster-a")),
+	)
+	require.NoError(
+		t,
+		streamClusterB.OnWatchEvent(createTestEventWithPath("configmap", "shared-config", "UPDATE", "cluster-b")),
+	)
 
 	assert.Len(t, mockWorker.events, 2, "Both duplicate events should be enqueued")
 
@@ -97,14 +104,14 @@ func TestGitTargetEventStream_StreamDeletion(t *testing.T) {
 	stream1 := NewGitTargetEventStream("target1", "default", mockWorker, logger)
 	stream2 := NewGitTargetEventStream("target2", "default", mockWorker, logger)
 
-	stream1.OnWatchEvent(createTestEventWithPath("pod", "app-pod", "CREATE", "apps"))
-	stream2.OnWatchEvent(createTestEventWithPath("deployment", "infra-deploy", "CREATE", "infra"))
+	require.NoError(t, stream1.OnWatchEvent(createTestEventWithPath("pod", "app-pod", "CREATE", "apps")))
+	require.NoError(t, stream2.OnWatchEvent(createTestEventWithPath("deployment", "infra-deploy", "CREATE", "infra")))
 
 	initialEventCount := len(mockWorker.events)
 	assert.Equal(t, 2, initialEventCount, "Both initial events should be enqueued")
 
 	// stream1 is "deleted" (no longer used); stream2 keeps sending.
-	stream2.OnWatchEvent(createTestEventWithPath("service", "infra-svc", "CREATE", "infra"))
+	require.NoError(t, stream2.OnWatchEvent(createTestEventWithPath("service", "infra-svc", "CREATE", "infra")))
 
 	assert.Greater(t, len(mockWorker.events), initialEventCount, "Worker should continue processing events")
 
@@ -136,7 +143,12 @@ func TestGitTargetEventStream_EventConvergence(t *testing.T) {
 		wg.Add(1)
 		go func(idx int, s *GitTargetEventStream, path string) {
 			defer wg.Done()
-			s.OnWatchEvent(createTestEventWithPath("pod", "pod-"+string(rune('a'+idx)), "CREATE", path))
+			// assert (not require) inside a goroutine: require's FailNow must run on the
+			// test goroutine only (testifylint go-require).
+			assert.NoError(
+				t,
+				s.OnWatchEvent(createTestEventWithPath("pod", "pod-"+string(rune('a'+idx)), "CREATE", path)),
+			)
 		}(i, stream, paths[i])
 	}
 
@@ -160,8 +172,8 @@ func TestGitTargetEventStream_ForwardsWithoutDeduplication(t *testing.T) {
 	mockWorker := &mockEventEnqueuer{events: make([]git.Event, 0)}
 	stream := NewGitTargetEventStream("target1", "default", mockWorker, logr.Discard())
 
-	stream.OnWatchEvent(createTestEventWithPath("pod", "test-pod", "UPDATE", "apps"))
-	stream.OnWatchEvent(createTestEventWithPath("pod", "test-pod", "UPDATE", "apps")) // identical
+	require.NoError(t, stream.OnWatchEvent(createTestEventWithPath("pod", "test-pod", "UPDATE", "apps")))
+	require.NoError(t, stream.OnWatchEvent(createTestEventWithPath("pod", "test-pod", "UPDATE", "apps"))) // identical
 
 	assert.Len(t, mockWorker.events, 2, "every call is forwarded; no content-hash dedup remains")
 }
@@ -172,10 +184,11 @@ type mockEventEnqueuer struct {
 	events []git.Event
 }
 
-func (m *mockEventEnqueuer) Enqueue(event git.Event) {
+func (m *mockEventEnqueuer) Enqueue(event git.Event) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.events = append(m.events, event)
+	return true
 }
 
 // createTestEventWithPath creates a test event with a specific path.

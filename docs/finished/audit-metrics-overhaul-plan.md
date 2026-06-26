@@ -1,7 +1,13 @@
 # Implementation Plan: Audit Ingestion Metrics Overhaul
 
-> Status: proposed — not yet implemented
-> Scope: audit ingestion pipeline observability, plus API resource catalog
+> **Status: SUPERSEDED — moved to `finished/` 2026-06.** This plan targeted the
+> audit *ingestion* pipeline (official↔additional body join, consumer, Redis stream).
+> That architecture was retired: object state now comes from **watch**, and audit is an
+> optional attribution lookup with no body join — so the join/skew/gate/pipeline metrics
+> proposed here do not apply. The API-resource-catalog observability portion *did* ship
+> (`api_catalog_*`). Kept for historical context; the live metric set is documented in
+> [`../interpreting-metrics.md`](../interpreting-metrics.md).
+> Scope (historical): audit ingestion pipeline observability, plus API resource catalog
 > (watch path) observability — see the dedicated section near the end
 
 ## Goal

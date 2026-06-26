@@ -283,9 +283,12 @@ func (w *BranchWorker) Stop() {
 	w.Log.Info("Branch worker stopped")
 }
 
-// Enqueue adds a single live event to this worker's queue.
-func (w *BranchWorker) Enqueue(event Event) {
-	w.enqueueRequest(&WriteRequest{
+// Enqueue adds a single live event to this worker's queue. It reports whether the
+// event entered the FIFO; a false return means the queue was full and the event was
+// dropped, so a caller advancing a durable watch cursor past this event must not treat
+// the drop as success (see reconcile.GitTargetEventStream.OnWatchEvent).
+func (w *BranchWorker) Enqueue(event Event) bool {
+	return w.enqueueRequest(&WriteRequest{
 		Events:        []Event{event},
 		CommitMode:    CommitModePerEvent,
 		CommitMessage: "",
@@ -356,9 +359,13 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	}
 }
 
-func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
+// enqueueRequest places a write request on the FIFO and reports whether it was
+// accepted. A false return means the queue was full and the item was dropped, so a
+// caller that gates durable state on the write (a watch cursor) must not treat the
+// drop as success.
+func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	if request == nil {
-		return
+		return false
 	}
 	item := WorkItem{Request: request}
 	// Increment before the send so inflightItems can never lag the loop's
@@ -373,12 +380,14 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
 		// the loop republishes on every received item, so the gauge converges
 		// without an enqueue-side write that could latch a stale value.
+		return true
 	default:
 		w.inflightItems.Add(-1)
 		w.Log.Error(nil, "Event queue full, request dropped",
 			"events", len(request.Events),
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName)
+		return false
 	}
 }
 

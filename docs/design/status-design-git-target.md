@@ -7,7 +7,7 @@ gate chain (and a `Ready` that depended on the initial snapshot). The api-source
 pivot removed that lifecycle: there is no bootstrap snapshot gate anymore — a type is
 serviceable the moment its per-type checkpoint is `Synced`, and a per-type splice reconcile
 does the mirroring. See
-[materialization-tail-and-live-readiness-review.md](./stream/materialization-tail-and-live-readiness-review.md)
+[materialization-tail-and-live-readiness-review.md](../finished/materialization-tail-and-live-readiness-review.md)
 (Gap 3, Gap 6, Rec 4) for the analysis this doc records as a decision.
 
 ## Outcomes

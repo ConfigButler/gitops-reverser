@@ -1,5 +1,11 @@
 # Materialization, the freshness tail, and GitTarget liveness — review + plan
 
+> **SUPERSEDED — moved to `finished/` 2026-06.** A dated `poc/redis-copy` branch review. Its
+> metric names predate the June 2026 metrics cleanup — many referenced here (`audit_join_*`,
+> `audit_event_quality_total`, `materialization_*`, `git_push_duration_seconds`,
+> `rebase_retries_total`, `repo_branch_*`, …) have since been removed. For the live metric set
+> see [`../interpreting-metrics.md`](../interpreting-metrics.md). Kept for historical context.
+
 Status: review / proposal · Branch: `poc/redis-copy` · Date: 2026-06-12
 
 This document reviews how a resource type goes from *claimed* to *checkpointed* to
@@ -15,7 +21,7 @@ It is the companion to:
   splice/tail architecture.
 - [demand-driven-type-materialization-lifecycle.md](./demand-driven-type-materialization-lifecycle.md)
   — the demand axis (claims, phases) this builds on.
-- [audit-log-ingestion-and-ordering.md](./audit-log-ingestion-and-ordering.md) — the
+- [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) — the
   per-type RV-ordered stream and the late lane.
 
 ---
@@ -406,7 +412,7 @@ latent re-anchor flap, move into the controller and are fixed there). Because `R
 counts as serviceable, a periodic re-anchor does **not** flap the phase. Also **delete the
 vestigial `status.snapshot`** while here. The full two-axis status contract (conditions,
 phase derivation, reasons, tests) is written up in
-[../status-design-git-target.md](../status-design-git-target.md).
+[../status-design-git-target.md](../design/status-design-git-target.md).
 
 ### Rec 5 — Tests to add
 

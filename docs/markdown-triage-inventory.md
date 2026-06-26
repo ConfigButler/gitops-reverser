@@ -71,8 +71,8 @@ Markdown impact from those commits:
 
 | Done | File | Decision | Notes |
 | --- | --- | --- | --- |
-| [ ] | `docs/design/audit-readiness-probe-plan.md` |  |  |
-| [ ] | `docs/design/e2e-metrics-over-logs-plan.md` |  |  |
+| [x] | `docs/finished/audit-readiness-probe-plan.md` | Finished | Implemented; moved to `docs/finished/`. |
+| [x] | `docs/design/e2e-metrics-over-logs-plan.md` | Finished | Implemented; moved to `docs/finished/`. |
 | [ ] | `docs/design/git-credentials-interop.md` |  |  |
 | [ ] | `docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md` |  |  |
 | [ ] | `docs/design/manifest/e2e-full-suite-flakiness-findings-2026-06.md` |  |  |
@@ -104,11 +104,11 @@ Markdown impact from those commits:
 | [ ] | `docs/design/stream/ha-improvements.md` |  |  |
 | [ ] | `docs/design/stream/implementation-prompt-materialization-and-status.md` |  |  |
 | [ ] | `docs/design/stream/late-lane-e2e-2026-06-16-investigation.md` |  |  |
-| [ ] | `docs/design/stream/materialization-tail-and-live-readiness-review.md` |  |  |
+| [x] | `docs/finished/materialization-tail-and-live-readiness-review.md` | Finished | Superseded (stale metrics); moved to `docs/finished/`. |
 | [ ] | `docs/design/stream/residual-e2e-flakes-2026-06-19.md` |  | Added in latest six commits. |
 | [ ] | `docs/design/stream/signing-overlap-band-coverage-drop-investigation.md` |  |  |
 | [ ] | `docs/design/stream/signing-snapshot-tail-replay-failure-investigation.md` |  |  |
-| [ ] | `docs/design/stream/watch-list-checkpoint-plan.md` |  |  |
+| [x] | `docs/finished/watch-list-checkpoint-plan.md` | Finished | Implemented; moved to `docs/finished/`. |
 | [ ] | `docs/design/typeset-owns-discovery-grace.md` |  |  |
 
 ### Facts

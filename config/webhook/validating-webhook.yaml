@@ -7,6 +7,14 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: gitops-reverser
   name: gitops-reverser-validating-webhook
+# E2E-ONLY. This ValidatingWebhookConfiguration is part of the kustomize SUT
+# overlay (config/) and is intentionally NOT packaged in the Helm chart
+# (charts/gitops-reverser). The admission server is gated behind
+# --admission-webhook-enabled, which defaults to false; the chart never enables
+# it and ships no webhook/cert templates. The handler always allows (pure
+# observation, see internal/webhook/admission_allow_handler.go); when a real,
+# rejecting policy becomes product behavior, the chart must gain matching
+# packaging and this comment must change.
 webhooks:
 - admissionReviewVersions:
   - v1
@@ -48,5 +56,7 @@ webhooks:
     - '*'
     scope: '*'
   sideEffects: None
-  timeoutSeconds: 10
-
+  # 1s, not the apiserver max of 30s. failurePolicy is Ignore, so on a slow or
+  # unreachable backend the request is admitted anyway after the timeout — a
+  # large value only adds latency to every cluster write, it buys no safety.
+  timeoutSeconds: 1

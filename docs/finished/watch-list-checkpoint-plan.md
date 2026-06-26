@@ -11,8 +11,8 @@
 > Related:
 > [materialization-tail-and-live-readiness-review.md](./materialization-tail-and-live-readiness-review.md)
 > Rec 6,
-> [audit-log-ingestion-and-ordering.md](./audit-log-ingestion-and-ordering.md),
-> [../upgrade-finding.md](../upgrade-finding.md).
+> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md),
+> [../upgrade-finding.md](../design/upgrade-finding.md).
 
 ## Goal
 
@@ -111,7 +111,7 @@ The fallback is primarily for:
 
 Standard kube-apiserver-backed resources, including normal built-ins and CRDs, should be expected to
 take the WATCH-first path. Aggregated APIs are the risk surface. This matches the production warning
-captured in [upgrade-finding.md](../upgrade-finding.md): client-go can wait forever for the special
+captured in [upgrade-finding.md](../design/upgrade-finding.md): client-go can wait forever for the special
 bookmark if an aggregated backend never emits it.
 
 ## Tests

@@ -44,9 +44,12 @@ type GitTargetEventStream struct {
 	logger       logr.Logger
 }
 
-// EventEnqueuer enqueues live events onto a branch worker (allows mocking).
+// EventEnqueuer enqueues live events onto a branch worker (allows mocking). Enqueue
+// reports whether the event entered the worker's FIFO; a false return means the queue
+// was full and the event was dropped, so the caller must not advance a durable watch
+// cursor past it.
 type EventEnqueuer interface {
-	Enqueue(event git.Event)
+	Enqueue(event git.Event) bool
 }
 
 // NewGitTargetEventStream creates a new event stream for a GitTarget.
@@ -64,18 +67,27 @@ func NewGitTargetEventStream(
 }
 
 // OnWatchEvent forwards a live event to the GitTarget's branch worker. An event with no object
-// payload that is neither a DELETE nor a field patch carries nothing to write and is dropped.
-func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
+// payload that is neither a DELETE nor a field patch carries nothing to write and is dropped
+// (returns nil — there is nothing to durably hand off). It returns a non-nil error only when the
+// worker's queue is full and a real event was dropped, so the watch loop does not advance its
+// durable cursor past an event the worker never accepted: the watch reconnects from the
+// un-advanced cursor and redelivers, which is safe because the writer's no-op detection at the
+// commit boundary makes redelivery idempotent.
+func (s *GitTargetEventStream) OnWatchEvent(event git.Event) error {
 	if event.Object == nil && !event.IsFieldPatch() && event.Operation != "DELETE" {
 		s.logger.V(1).Info("Skipping event with no object payload",
 			"resource", event.Identifier.Key(), "operation", event.Operation)
-		return
+		return nil
 	}
 
 	event.GitTargetName = s.gitTargetName
 	event.GitTargetNamespace = s.gitTargetNamespace
-	s.branchWorker.Enqueue(event)
+	if !s.branchWorker.Enqueue(event) {
+		return fmt.Errorf("branch worker queue full for gitTarget %s/%s; dropped %s event for %s",
+			s.gitTargetNamespace, s.gitTargetName, event.Operation, event.Identifier.Key())
+	}
 	s.logger.V(1).Info("Forwarded event", "resource", event.Identifier.Key(), "operation", event.Operation)
+	return nil
 }
 
 // String returns a string representation for debugging.

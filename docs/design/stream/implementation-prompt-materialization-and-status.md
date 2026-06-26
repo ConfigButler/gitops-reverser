@@ -2,7 +2,7 @@
 
 Hand this to a fresh agent (or use it yourself). It implements the two agreed designs:
 
-- [materialization-tail-and-live-readiness-review.md](./materialization-tail-and-live-readiness-review.md)
+- [materialization-tail-and-live-readiness-review.md](../../finished/materialization-tail-and-live-readiness-review.md)
   (Gaps 1–6, Recs 1–6)
 - [../status-design-git-target.md](../status-design-git-target.md) (the two-axis status
   contract: `Ready` vs `Synced`, removing `EventStreamLive` and `status.snapshot`)

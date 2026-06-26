@@ -10,7 +10,7 @@
 >
 > Related:
 > [watch-first-ingestion-architecture.md](../watch-first-ingestion-architecture.md),
-> [materialization-tail-and-live-readiness-review.md](./materialization-tail-and-live-readiness-review.md)
+> [materialization-tail-and-live-readiness-review.md](../../finished/materialization-tail-and-live-readiness-review.md)
 > (the `Initializing / PartiallyLive / Live` liveness proposal this aligns with),
 > [signing-snapshot-tail-replay-failure-investigation.md](./signing-snapshot-tail-replay-failure-investigation.md),
 > [mutation-capture-lab-design.md](../mutation-capture-lab-design.md).
@@ -204,7 +204,7 @@ conflate "configured and valid" with "caught up and streaming". `Ready` keeps me
 `StreamsReady`.
 
 > Superseded: earlier drafts floated an `Initializing / PartiallyLive / Live` axis
-> (from [materialization-tail-and-live-readiness-review.md](./materialization-tail-and-live-readiness-review.md)).
+> (from [materialization-tail-and-live-readiness-review.md](../../finished/materialization-tail-and-live-readiness-review.md)).
 > The companion docs replace it with two happy-path states (`Replaying` → `Streaming`)
 > plus a `Blocked` dead-end, surfaced as a single `StreamsReady` condition. Treat the
 > `Initializing / PartiallyLive / Live` phrasing as historical context, not an active

@@ -55,7 +55,7 @@ var _ = Describe("GitTargetEventStream", func() {
 	})
 
 	It("forwards an object event immediately, stamped with the GitTarget identity", func() {
-		stream.OnWatchEvent(createTestEvent("pod", "test-pod", "UPDATE"))
+		Expect(stream.OnWatchEvent(createTestEvent("pod", "test-pod", "UPDATE"))).To(Succeed())
 
 		Expect(mockWorker.events).To(HaveLen(1))
 		Expect(mockWorker.events[0].GitTargetName).To(Equal(gitTargetName))
@@ -63,7 +63,7 @@ var _ = Describe("GitTargetEventStream", func() {
 	})
 
 	It("forwards a field-patch event that carries no object", func() {
-		stream.OnWatchEvent(createTestFieldPatchEvent(3))
+		Expect(stream.OnWatchEvent(createTestFieldPatchEvent(3))).To(Succeed())
 
 		Expect(mockWorker.events).To(HaveLen(1))
 		Expect(mockWorker.events[0].IsFieldPatch()).To(BeTrue())
@@ -73,7 +73,7 @@ var _ = Describe("GitTargetEventStream", func() {
 	It("forwards a DELETE event even when it carries no object payload", func() {
 		ev := createTestEvent("pod", "gone", "DELETE")
 		ev.Object = nil
-		stream.OnWatchEvent(ev)
+		Expect(stream.OnWatchEvent(ev)).To(Succeed())
 
 		Expect(mockWorker.events).To(HaveLen(1))
 	})
@@ -81,26 +81,43 @@ var _ = Describe("GitTargetEventStream", func() {
 	It("drops a non-delete, non-field-patch event with no object payload", func() {
 		ev := createTestEvent("pod", "empty", "UPDATE")
 		ev.Object = nil
-		stream.OnWatchEvent(ev)
+		Expect(stream.OnWatchEvent(ev)).To(Succeed())
 
 		Expect(mockWorker.events).To(BeEmpty())
 	})
 
 	It("forwards each call without deduplication (RV order + writer no-op detection own that now)", func() {
-		stream.OnWatchEvent(createTestFieldPatchEvent(3))
-		stream.OnWatchEvent(createTestFieldPatchEvent(3)) // identical redelivery is forwarded too
+		Expect(stream.OnWatchEvent(createTestFieldPatchEvent(3))).To(Succeed())
+		// identical redelivery is forwarded too
+		Expect(stream.OnWatchEvent(createTestFieldPatchEvent(3))).To(Succeed())
 
 		Expect(mockWorker.events).To(HaveLen(2))
 	})
+
+	It("returns an error and forwards nothing when the worker queue is full", func() {
+		// Models the cursor-safety contract: a full FIFO must surface as an error so the
+		// watch loop leaves its durable cursor un-advanced and redelivers on reconnect,
+		// rather than silently dropping the event and skipping it forever.
+		mockWorker.full = true
+
+		Expect(stream.OnWatchEvent(createTestEvent("configmap", "full-queue", "UPDATE"))).NotTo(Succeed())
+		Expect(mockWorker.events).To(BeEmpty())
+	})
 })
 
-// mockBranchWorker implements the EventEnqueuer interface for testing.
+// mockBranchWorker implements the EventEnqueuer interface for testing. When full is set
+// it models a full FIFO: Enqueue records nothing and reports the drop.
 type mockBranchWorker struct {
 	events []git.Event
+	full   bool
 }
 
-func (m *mockBranchWorker) Enqueue(event git.Event) {
+func (m *mockBranchWorker) Enqueue(event git.Event) bool {
+	if m.full {
+		return false
+	}
 	m.events = append(m.events, event)
+	return true
 }
 
 // createTestEvent creates a test event with minimal required fields.

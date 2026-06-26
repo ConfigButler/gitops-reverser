@@ -5,7 +5,7 @@
 > Fixes the timing problem documented in
 > [watch-replay-watermark-stream-readiness-investigation.md](./watch-replay-watermark-stream-readiness-investigation.md).
 > Deliberately simpler than the `Initializing / PartiallyLive / Live` axis sketched
-> in [materialization-tail-and-live-readiness-review.md](./materialization-tail-and-live-readiness-review.md):
+> in [materialization-tail-and-live-readiness-review.md](../../finished/materialization-tail-and-live-readiness-review.md):
 > two happy-path states per watched type plus one condition to wait on.
 >
 > The concrete status objects, fields, printer columns, naming rationale, state

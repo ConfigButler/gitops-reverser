@@ -47,13 +47,14 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	// Verify representative metrics across counters, histograms, and gauges
 	// are initialized.
 	assert.NotNil(t, GitOperationsTotal)
-	assert.NotNil(t, GitPushDurationSeconds)
-	assert.NotNil(t, ObjectsScannedTotal)
+	assert.NotNil(t, ObjectsWrittenTotal)
+	assert.NotNil(t, CommitsTotal)
+	assert.NotNil(t, BranchWorkerQueueDepth)
+	assert.NotNil(t, TargetReconcileCompletedTotal)
 	assert.NotNil(t, AuditEventListsTotal)
 	assert.NotNil(t, AuditEventListEventsTotal)
 	assert.NotNil(t, AuditEventListDurationSeconds)
 	assert.NotNil(t, AuditEventsTotal)
-	assert.NotNil(t, MaterializationCheckpointFillsTotal)
 	assert.NotNil(t, APICatalogResources)
 	assert.NotNil(t, APICatalogGroupVersions)
 	assert.NotNil(t, APICatalogRefreshTotal)
@@ -79,12 +80,6 @@ func TestMetricsInitialization(t *testing.T) {
 	t.Run("GitOperationsTotal", func(t *testing.T) {
 		assert.NotPanics(t, func() {
 			GitOperationsTotal.Add(ctx, 1)
-		})
-	})
-
-	t.Run("GitPushDurationSeconds", func(t *testing.T) {
-		assert.NotPanics(t, func() {
-			GitPushDurationSeconds.Record(ctx, 1.5)
 		})
 	})
 
@@ -207,7 +202,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 		defer func() { done <- true }()
 		for i := range 100 {
 			GitOperationsTotal.Add(ctx, 1)
-			GitPushDurationSeconds.Record(ctx, float64(i)*0.01)
+			AuditEventListDurationSeconds.Record(ctx, float64(i)*0.01)
 		}
 	}()
 
@@ -232,7 +227,6 @@ func TestHistogramMetricBehavior(t *testing.T) {
 	for _, value := range testValues {
 		t.Run(fmt.Sprintf("Duration_%g", value), func(t *testing.T) {
 			assert.NotPanics(t, func() {
-				GitPushDurationSeconds.Record(ctx, value)
 				AuditEventListDurationSeconds.Record(ctx, value)
 				APICatalogRefreshDurationSeconds.Record(ctx, value)
 			})
@@ -332,11 +326,11 @@ func TestInitTestExporterAndCollect(t *testing.T) {
 	})
 
 	t.Run("histogram count", func(t *testing.T) {
-		AuditEventListDurationSeconds.Record(ctx, 0.1, metricAttrs("source", "official"))
-		AuditEventListDurationSeconds.Record(ctx, 0.2, metricAttrs("source", "official"))
+		AuditEventListDurationSeconds.Record(ctx, 0.1, metricAttrs("outcome", "processed"))
+		AuditEventListDurationSeconds.Record(ctx, 0.2, metricAttrs("outcome", "processed"))
 
 		count, ok := CollectHistogramCount(reader, "gitopsreverser_audit_eventlist_duration_seconds",
-			map[string]string{"source": "official"})
+			map[string]string{"outcome": "processed"})
 		require.True(t, ok)
 		assert.Equal(t, uint64(2), count)
 
@@ -372,7 +366,7 @@ func TestNoOpMeterProvider(t *testing.T) {
 
 	assert.NotPanics(t, func() {
 		GitOperationsTotal.Add(ctx, 1)
-		GitPushDurationSeconds.Record(ctx, 1.0)
+		AuditEventListDurationSeconds.Record(ctx, 1.0)
 		AuditEventsTotal.Add(ctx, 1, metricAttrs("outcome", "queued"))
 		APICatalogResources.Record(ctx, 1)
 	})

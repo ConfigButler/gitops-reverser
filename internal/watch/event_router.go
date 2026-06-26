@@ -90,7 +90,10 @@ func (r *EventRouter) RouteEvent(
 			providerNamespace, providerName, branch)
 	}
 
-	worker.Enqueue(event)
+	if !worker.Enqueue(event) {
+		return fmt.Errorf("worker queue full for provider=%s/%s branch=%s; event dropped",
+			providerNamespace, providerName, branch)
+	}
 
 	r.Log.V(1).Info("Event routed to worker",
 		"provider", providerName,
@@ -299,7 +302,9 @@ func (r *EventRouter) RouteToGitTargetEventStream(
 		return fmt.Errorf("no GitTargetEventStream registered for %s", key)
 	}
 
-	stream.OnWatchEvent(event)
+	if err := stream.OnWatchEvent(event); err != nil {
+		return err
+	}
 
 	r.Log.V(1).Info("Event routed to GitTargetEventStream",
 		"gitDest", gitDest.String(),

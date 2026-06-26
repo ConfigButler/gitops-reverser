@@ -388,6 +388,35 @@ Properties this gives us for free:
 Per-cell causal ordering reuses the existing RECONCILING→LIVE buffering, scoped to
 the cell (requirement 1.7).
 
+**Seed transport — streaming-list with a per-GVR fallback.** A cell seeds by
+opening a single streaming-list watch (`SendInitialEvents=true`,
+`ResourceVersionMatch=NotOlderThan`, `AllowWatchBookmarks=true`) rather than a
+mega-LIST: the apiserver replays each existing object as a synthetic `ADDED` and
+closes the initial set with a `k8s.io/initial-events-end` bookmark, whose
+resourceVersion becomes the live resume cursor
+([target_watch.go](../../internal/watch/target_watch.go)). That replay window
+*is* the cell's seed — exactly the cell-scoped, one-watch-per-GVR shape this model
+wants, with no re-list race that could miss an in-flight delete.
+
+This only holds where the serving apiserver honors `SendInitialEvents` and emits
+the terminating bookmark. Standard kube-apiserver and `genericregistry.Store`-backed
+resources do; hand-written `rest.Storage` in aggregated servers may not, and the
+hazard is **per-GVR, not per-APIService** — one aggregated binary can serve a
+conformant group beside a non-conformant one. So the fallback is keyed by GVR and
+is structural, not a kill switch: when the streaming option is unsupported the
+cell drops to a plain **LIST + buffered WATCH** for that one GVR
+([`watchListUnsupported` → `targetWatchListAndStream`](../../internal/watch/target_watch.go)),
+yielding the same seed-then-stream result while every other cell keeps the
+streaming path. There is deliberately no binary-level "disable streaming-list"
+switch — the per-GVR fallback is the emergency valve.
+
+Operationally this is an audit per unfamiliar cluster, not a one-time task: for
+each non-local `APIService` a target watches, confirm it is
+`genericregistry.Store`-based, handles `SendInitialEvents` in its `Watch` (grep
+its source for `SendInitialEvents` / `k8s.io/initial-events-end`), or rides the
+plain-LIST fallback. The runtime fallback means a missed audit degrades one cell
+gracefully instead of hanging its seed.
+
 ## 3.4 How the existing docs fold in
 
 - **Discovery-lag fix** → disappears as a special case: the surface never reports
@@ -397,8 +426,6 @@ the cell (requirement 1.7).
 - **Wildcard support plan** → its phases map onto building Layers 1–3; the
   "snapshot robustness" risk (its Phase 2) is resolved structurally by per-cell
   seeding rather than needing a bespoke list-failure policy.
-- **Initial-seed-via-watch-list** → the per-cell seed is exactly where the
-  cache-backed `WatchListClient` seed belongs.
 
 ## 3.5 Suggested build order
 
