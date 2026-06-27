@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Stalled")].status
       name: Stalled
       type: string
+    - jsonPath: .status.conditions[?(@.type=="GitTargetReady")].status
+      name: GitTargetReady
+      type: string
     - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
       name: StreamsRunning
       type: string

@@ -328,7 +328,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionReconciling)).To(BeTrue())
 				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionStalled)).To(BeFalse())
 				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionStreamsRunning)).To(BeFalse())
-				g.Expect(got.Status.Phase).To(Equal(GitTargetPhaseInitializing))
 				for _, c := range got.Status.Conditions {
 					g.Expect(c.Type).NotTo(Equal("EventStreamLive"), "EventStreamLive condition was removed")
 				}

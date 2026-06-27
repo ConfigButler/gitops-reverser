@@ -173,15 +173,18 @@ branch.
 Status has a kstatus-compatible summary layer plus domain conditions:
 
 * `Ready`, `Reconciling`, and `Stalled` are the generic conditions used by GitOps tooling. `Ready=True`
-  means the latest observed generation is valid, the folder is accepted, and source streams are running.
+  means the latest observed generation is valid, the Git path is accepted, and source streams are running.
   Initial replay reports `Reconciling=True`. A human-fixable block reports `Stalled=True`.
 * `Validated` and `EncryptionConfigured` explain control-plane health.
 * `StreamsRunning` explains the source side: every tracked type is past initial replay and routing live
   events.
-* `FolderAccepted` explains the target side: the selected Git folder is safe for the operator to
+* `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
   materialize.
-* `status.phase` (`Pending`/`Initializing`/`Synced`/`Degraded`) is informational only. Automation gates on
-  conditions, never phase. `status.streams` is a bounded count summary, not a per-type list.
+* `status.streams` is a bounded count summary, not a per-type list.
+
+WatchRule and ClusterWatchRule add `ResourcesResolved` and `GitTargetReady`. `ResourcesResolved` explains
+the source selector. `GitTargetReady` mirrors the referenced GitTarget's write readiness. This keeps
+`StreamsRunning` honest: it only says source watches are running, not that Git writes can succeed.
 
 ### GitProvider
 
@@ -546,8 +549,8 @@ write side is shared with live writes):
   finds content the operator cannot safely manage — a kustomization using an unsupported feature
   (generators / patches / components / helm / replacements / transformers / name(pre|suf)fix / remote
   bases), a duplicate manifest identity, an impure managed file, or a standalone non-KRM / invalid YAML —
-  the whole apply is **refused**: nothing is committed, `FolderAccepted=False`, `Stalled=True`, and
-  `Ready=False` with reason `UnsupportedContent` until a human cleans the folder;
+  the whole apply is **refused**: nothing is committed, `GitPathAccepted=False`, `Stalled=True`, and
+  `Ready=False` with reason `UnsupportedContent` until a human cleans the path;
 * desired resources are upserted through the same content derived path as live writes;
 * existing managed documents that are watched but absent from the desired set are deleted;
 * the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary
@@ -556,8 +559,8 @@ write side is shared with live writes):
 
 The acceptance gate is **structure-only on purpose**: it never refuses on a discovery-derived
 followability fact (unwatched / out-of-scope), which can blink on a discovery wobble; only facts that are
-true from the folder's structure alone block a GitTarget. The same gate runs on the live write path, so a
-refused folder is never written into by a racing live event either. See
+true from the path's structure alone block a GitTarget. The same gate runs on the live write path, so a
+refused path is never written into by a racing live event either. See
 [unsupported-folder-refusal-plan.md](design/unsupported-folder-refusal-plan.md).
 
 A reconcile is **type scoped** (`ScopeGVR`): the sweep is restricted to one `(group, resource)`, so

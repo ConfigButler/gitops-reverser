@@ -152,10 +152,10 @@ func TestDrainScopedResync_CompletesSuccessfulResult(t *testing.T) {
 	}
 }
 
-// A resync that the acceptance gate refused (an unsupported GitTarget folder) must mark the
-// target folder refused without changing per-stream watch readiness. The typed error is
+// A resync that the acceptance gate refused (an unsupported GitTarget path) must mark the
+// target Git path refused without changing per-stream watch readiness. The typed error is
 // wrapped, exactly as commitPendingWrites wraps it, so this also pins errors.As recovery.
-func TestDrainScopedResync_RefusalMarksFolderRefused(t *testing.T) {
+func TestDrainScopedResync_RefusalMarksGitPathRefused(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
@@ -174,12 +174,12 @@ func TestDrainScopedResync_RefusalMarksFolderRefused(t *testing.T) {
 
 	router.drainScopedResync(gitDest, key, "reconcile", resultCh)
 
-	folder := mgr.FolderAcceptanceForGitTarget(gitDest)
+	gitPath := mgr.GitPathAcceptanceForGitTarget(gitDest)
 
-	assert.False(t, folder.Accepted, "a refused folder must mark the target folder unaccepted")
-	assert.Equal(t, "UnsupportedContent", folder.Reason)
-	assert.Contains(t, folder.Message, "kustomization.yaml", "the refusal message must name the offending file")
-	assert.Empty(t, mgr.targetStreamStates, "folder refusal must not mutate stream readiness")
+	assert.False(t, gitPath.Accepted, "a refused Git path must mark the target path unaccepted")
+	assert.Equal(t, "UnsupportedContent", gitPath.Reason)
+	assert.Contains(t, gitPath.Message, "kustomization.yaml", "the refusal message must name the offending file")
+	assert.Empty(t, mgr.targetStreamStates, "Git path refusal must not mutate stream readiness")
 }
 
 func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {

@@ -127,9 +127,9 @@ type Manager struct {
 	// targetStreamStates is the readiness surface for targetWatches. It is keyed
 	// by GitTarget and watch key, and projected into status by controllers.
 	targetStreamStates map[string]map[targetWatchKey]targetStreamStatus
-	// targetFolderAcceptance is the target-side acceptance surface. It is keyed by
-	// GitTarget and projected into GitTarget status as FolderAccepted.
-	targetFolderAcceptance map[string]FolderAcceptanceStatus
+	// targetGitPathAcceptance is the target-side acceptance surface. It is keyed by
+	// GitTarget and projected into GitTarget status as GitPathAccepted.
+	targetGitPathAcceptance map[string]GitPathAcceptanceStatus
 
 	// gitTargetUIDs maps a GitTarget's namespace/name key to its object UID, captured
 	// from the controller on Declare. The watch data plane keys resume cursors by this
@@ -173,8 +173,8 @@ type Manager struct {
 	lateNudgeAt map[schema.GroupVersionResource]time.Time
 }
 
-// FolderAcceptanceStatus is the whole-target write-safety status for a GitTarget folder.
-type FolderAcceptanceStatus struct {
+// GitPathAcceptanceStatus is the whole-target write-safety status for a GitTarget path.
+type GitPathAcceptanceStatus struct {
 	Accepted bool
 	Reason   string
 	Message  string

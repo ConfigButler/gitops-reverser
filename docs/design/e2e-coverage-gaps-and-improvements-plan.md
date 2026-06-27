@@ -229,7 +229,7 @@ The refusal was implemented (§4.1 DECIDED) and is proven end to end in
 path with a hard-Kustomize `kustomization.yaml` (a `patches` block) plus the ConfigMap it references,
 creates the GitTarget + a ConfigMap WatchRule, and asserts:
 
-- the folder is refused: `FolderAccepted=False`, reason `UnsupportedContent`,
+- the folder is refused: `GitPathAccepted=False`, reason `UnsupportedContent`,
 - the kstatus surface reports a human-fixable block: `Ready=False`, `Reconciling=False`, `Stalled=True`, and
 - the operator **commits nothing** on top of the seed — the remote tip is unchanged.
 

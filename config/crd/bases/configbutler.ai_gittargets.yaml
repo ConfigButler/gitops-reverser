@@ -30,6 +30,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Stalled")].status
       name: Stalled
       type: string
+    - jsonPath: .status.conditions[?(@.type=="GitPathAccepted")].status
+      name: GitPathAccepted
+      type: string
     - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
       name: StreamsRunning
       type: string
@@ -271,12 +274,6 @@ spec:
                   by the controller.
                 format: int64
                 type: integer
-              phase:
-                description: |-
-                  Phase is a small, derived, human-facing summary of the GitTarget's state.
-                  It is only a projection of Ready, Reconciling, and Stalled. Automation should
-                  gate on conditions, never on phase.
-                type: string
               streams:
                 description: |-
                   Streams is the bounded data-plane roll-up over this GitTarget's tracked types.

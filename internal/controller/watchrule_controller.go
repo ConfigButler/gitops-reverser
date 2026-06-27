@@ -121,6 +121,13 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	)
 	r.setTypedCondition(
 		&watchRule,
+		ConditionTypeGitTargetReady,
+		metav1.ConditionUnknown,
+		ReasonProgressing,
+		"Blocked by validation; GitTarget not evaluated",
+	)
+	r.setTypedCondition(
+		&watchRule,
 		ConditionTypeReconciling,
 		metav1.ConditionTrue,
 		ReasonChecking,
@@ -138,6 +145,13 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if watchRule.Spec.TargetRef.Name == "" {
 		r.setCondition(
 			&watchRule,
+			metav1.ConditionFalse,
+			WatchRuleReasonGitDestinationInvalid,
+			"Target.name must be specified",
+		)
+		r.setTypedCondition(
+			&watchRule,
+			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
 			WatchRuleReasonGitDestinationInvalid,
 			"Target.name must be specified",
@@ -176,9 +190,17 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 				err,
 			),
 		)
+		r.setTypedCondition(
+			watchRule,
+			ConditionTypeGitTargetReady,
+			metav1.ConditionFalse,
+			WatchRuleReasonGitTargetNotFound,
+			"Referenced GitTarget not found",
+		)
 		r.setRuleStalled(watchRule, WatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
 		return r.updateStatusAndRequeue(ctx, watchRule, RequeueShortInterval)
 	}
+	r.setGitTargetReadyCondition(watchRule, target)
 
 	// Resolve the GitProvider named by the target. A GitProviderReference is a
 	// name-only reference to a GitProvider in the GitTarget's own namespace.
@@ -200,6 +222,13 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 				providerName,
 				err,
 			),
+		)
+		r.setTypedCondition(
+			watchRule,
+			ConditionTypeGitTargetReady,
+			metav1.ConditionFalse,
+			WatchRuleReasonGitProviderNotFound,
+			"Referenced GitProvider not found",
 		)
 		r.setRuleStalled(watchRule, WatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
 		return r.updateStatusAndRequeue(ctx, watchRule, RequeueShortInterval)
@@ -252,6 +281,9 @@ func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	if conditionIsFalse(watchRule.Status.Conditions, ConditionTypeResourcesResolved) {
 		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
 	}
+	if !conditionIsTrue(watchRule.Status.Conditions, ConditionTypeGitTargetReady) {
+		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
+	}
 	if !conditionIsTrue(watchRule.Status.Conditions, ConditionTypeStreamsRunning) {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
@@ -262,6 +294,14 @@ func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 func (r *WatchRuleReconciler) setCondition( //nolint:lll // Function signature
 	watchRule *configbutleraiv1alpha2.WatchRule, status metav1.ConditionStatus, reason, message string) {
 	r.setTypedCondition(watchRule, ConditionTypeReady, status, reason, message)
+}
+
+func (r *WatchRuleReconciler) setGitTargetReadyCondition(
+	watchRule *configbutleraiv1alpha2.WatchRule,
+	target configbutleraiv1alpha2.GitTarget,
+) {
+	ready := gitTargetReadyCondition(target)
+	r.setTypedCondition(watchRule, ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
 }
 
 func (r *WatchRuleReconciler) setResourceResolutionCondition(

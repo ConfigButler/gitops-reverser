@@ -34,13 +34,13 @@ type AcceptanceRefusedError struct {
 // deterministic.
 func (e *AcceptanceRefusedError) Error() string {
 	if len(e.Issues) == 0 {
-		return "git folder refused: unspecified unsupported content"
+		return "Git path refused: unspecified unsupported content"
 	}
 	first := e.Issues[0]
 	if len(e.Issues) == 1 {
-		return fmt.Sprintf("git folder refused at %s: %s", first.Path, first.Message)
+		return fmt.Sprintf("Git path refused at %s: %s", first.Path, first.Message)
 	}
-	return fmt.Sprintf("git folder refused at %s: %s (and %d more issue(s))",
+	return fmt.Sprintf("Git path refused at %s: %s (and %d more issue(s))",
 		first.Path, first.Message, len(e.Issues)-1)
 }
 

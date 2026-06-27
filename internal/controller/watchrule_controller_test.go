@@ -258,15 +258,18 @@ var _ = Describe("WatchRule Controller", func() {
 			}, updatedRule)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying WatchRule is reconciling until streams are running")
-			Expect(updatedRule.Status.Conditions).To(HaveLen(4))
-			var condition, streamsRunning, reconciling, stalled metav1.Condition
+			By("Verifying WatchRule is reconciling until the GitTarget and streams are ready")
+			Expect(updatedRule.Status.Conditions).To(HaveLen(5))
+			var condition, streamsRunning, gitTargetReady, reconciling, stalled metav1.Condition
 			for _, c := range updatedRule.Status.Conditions {
 				if c.Type == ConditionTypeReady {
 					condition = c
 				}
 				if c.Type == ConditionTypeStreamsRunning {
 					streamsRunning = c
+				}
+				if c.Type == ConditionTypeGitTargetReady {
+					gitTargetReady = c
 				}
 				if c.Type == ConditionTypeReconciling {
 					reconciling = c
@@ -276,9 +279,11 @@ var _ = Describe("WatchRule Controller", func() {
 				}
 			}
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(watch.StreamReasonNoResolvedTypes))
+			Expect(condition.Reason).To(Equal(ReasonProgressing))
 			Expect(streamsRunning.Status).To(Equal(metav1.ConditionFalse))
 			Expect(streamsRunning.Reason).To(Equal(watch.StreamReasonNoResolvedTypes))
+			Expect(gitTargetReady.Status).To(Equal(metav1.ConditionFalse))
+			Expect(gitTargetReady.Reason).To(Equal(ReasonProgressing))
 			Expect(reconciling.Status).To(Equal(metav1.ConditionTrue))
 			Expect(stalled.Status).To(Equal(metav1.ConditionFalse))
 

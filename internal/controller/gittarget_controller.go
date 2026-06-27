@@ -55,7 +55,7 @@ const (
 	GitTargetConditionStalled              = ConditionTypeStalled
 	GitTargetConditionValidated            = "Validated"
 	GitTargetConditionEncryptionConfigured = "EncryptionConfigured"
-	GitTargetConditionFolderAccepted       = ConditionTypeFolderAccepted
+	GitTargetConditionGitPathAccepted      = ConditionTypeGitPathAccepted
 	// GitTargetConditionStreamsRunning is the source data-plane axis: True when every tracked type's
 	// watch has crossed its replay watermark or resumed from a durable cursor.
 	GitTargetConditionStreamsRunning = ConditionTypeStreamsRunning
@@ -66,15 +66,6 @@ const GitTargetReasonReady = GitTargetConditionReady
 const GitTargetReasonConflict = GitTargetReasonTargetConflict
 const GitTargetConditionStreamsReady = GitTargetConditionStreamsRunning
 const GitTargetStreamsReadyReasonNotReady = GitTargetStreamsRunningReasonNotReady
-
-// GitTarget status.phase values (status-design §3.3). Phase is a pure projection of the
-// conditions; automation must gate on conditions, never on phase.
-const (
-	GitTargetPhasePending      = "Pending"
-	GitTargetPhaseInitializing = "Initializing"
-	GitTargetPhaseSynced       = "Synced"
-	GitTargetPhaseDegraded     = "Degraded"
-)
 
 const (
 	GitTargetReasonOK                   = "OK"
@@ -88,7 +79,7 @@ const (
 	GitTargetReasonMissingSecret        = "MissingSecret"
 	GitTargetReasonInvalidConfig        = "InvalidConfig"
 	GitTargetReasonSecretCreateDisabled = "SecretCreateDisabled"
-	GitTargetReasonFolderAccepted       = "FolderAccepted"
+	GitTargetReasonGitPathAccepted      = "GitPathAccepted"
 	GitTargetReasonUnsupportedContent   = "UnsupportedContent"
 
 	GitTargetReadyReasonValidationFailed        = "ValidationFailed"
@@ -131,7 +122,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	target.Status.ObservedGeneration = target.Generation
 	target.Status.LastReconcileTime = metav1.Now()
-	folderWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionFolderAccepted)
+	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
 
 	providerNS := target.Namespace
 	validated, validationMsg, validationResult, validationErr := r.evaluateValidatedGate(ctx, &target, providerNS)
@@ -147,7 +138,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			"Blocked by Validated=False",
 		)
 		r.setBlockedDataPlane(&target)
-		r.setFolderAcceptedUnknown(&target, "Blocked by Validated=False")
+		r.setGitPathAcceptedUnknown(&target, "Blocked by Validated=False")
 		r.setStalledConditions(
 			&target,
 			GitTargetReadyReasonValidationFailed,
@@ -168,7 +159,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	encryptionReady, encryptionMessage, encryptionRequeueAfter := r.evaluateEncryptionGate(ctx, &target, log)
 	if !encryptionReady {
 		r.setBlockedDataPlane(&target)
-		r.setFolderAcceptedUnknown(&target, "Blocked by EncryptionConfigured=False")
+		r.setGitPathAcceptedUnknown(&target, "Blocked by EncryptionConfigured=False")
 		r.setStalledConditions(
 			&target,
 			GitTargetReadyReasonEncryptionNotConfigured,
@@ -186,7 +177,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	wired, wiringMessage := r.evaluateWorkerWiringGate(&target, providerNS, log)
 	if !wired {
 		r.setBlockedDataPlane(&target)
-		r.setFolderAcceptedUnknown(&target, "Blocked by worker wiring failure")
+		r.setGitPathAcceptedUnknown(&target, "Blocked by worker wiring failure")
 		r.setStalledConditions(
 			&target,
 			GitTargetReadyReasonWorkerUnavailable,
@@ -202,33 +193,33 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// into the kstatus trio.
 	streamsSettling := false
 	var streams watch.StreamSummary
-	folder := watch.FolderAcceptanceStatus{
+	gitPath := watch.GitPathAcceptanceStatus{
 		Accepted: true,
-		Reason:   GitTargetReasonFolderAccepted,
-		Message:  "GitTarget folder accepted",
+		Reason:   GitTargetReasonGitPathAccepted,
+		Message:  "GitTarget path accepted",
 	}
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
 		gitDest := types.NewResourceReference(target.Name, target.Namespace).WithUID(string(target.UID))
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(
 			ctx,
 			gitDest,
-			folderWasRefused,
+			gitPathWasRefused,
 		); declareErr != nil {
 			log.V(1).Info("stream declaration skipped; surface not observable",
 				"gitDest", gitDest.String(), "err", declareErr.Error())
 			streamsSettling = true
 		}
 		streams = r.EventRouter.WatchManager.StreamSummaryForGitTarget(gitDest)
-		folder = r.EventRouter.WatchManager.FolderAcceptanceForGitTarget(gitDest)
+		gitPath = r.EventRouter.WatchManager.GitPathAcceptanceForGitTarget(gitDest)
 		target.Status.Streams = gitTargetStreamsStatus(streams)
-		streamsSettling = streamsSettling || !streams.StreamsRunning() || !folder.Accepted
+		streamsSettling = streamsSettling || !streams.StreamsRunning() || !gitPath.Accepted
 	} else {
 		streams = noResolvedStreamsSummary()
 		target.Status.Streams = gitTargetStreamsStatus(streams)
 		streamsSettling = true
 	}
 
-	r.applyDataPlaneConditionsAndPhase(&target, streams, folder)
+	r.applyDataPlaneConditions(&target, streams, gitPath)
 
 	if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 		return ctrl.Result{}, err
@@ -350,16 +341,15 @@ func (r *GitTargetReconciler) setBlockedDataPlane(target *configbutleraiv1alpha2
 		GitTargetStreamsRunningReasonNotReady,
 		"Blocked by control-plane gate; streams not evaluated",
 	)
-	target.Status.Phase = GitTargetPhasePending
 }
 
-func (r *GitTargetReconciler) setFolderAcceptedUnknown(
+func (r *GitTargetReconciler) setGitPathAcceptedUnknown(
 	target *configbutleraiv1alpha2.GitTarget,
 	message string,
 ) {
 	r.setCondition(
 		target,
-		GitTargetConditionFolderAccepted,
+		GitTargetConditionGitPathAccepted,
 		metav1.ConditionUnknown,
 		GitTargetReasonNotChecked,
 		message,
@@ -373,17 +363,16 @@ func (r *GitTargetReconciler) setStalledConditions(
 	r.setCondition(target, GitTargetConditionReady, metav1.ConditionFalse, reason, message)
 	r.setCondition(target, GitTargetConditionReconciling, metav1.ConditionFalse, reason, "Reconciliation is stalled")
 	r.setCondition(target, GitTargetConditionStalled, metav1.ConditionTrue, reason, message)
-	target.Status.Phase = GitTargetPhaseDegraded
 }
 
-func (r *GitTargetReconciler) applyDataPlaneConditionsAndPhase(
+func (r *GitTargetReconciler) applyDataPlaneConditions(
 	target *configbutleraiv1alpha2.GitTarget,
 	streams watch.StreamSummary,
-	folder watch.FolderAcceptanceStatus,
+	gitPath watch.GitPathAcceptanceStatus,
 ) {
-	d := deriveGitTargetDataPlaneStatus(streams, folder)
+	d := deriveGitTargetDataPlaneStatus(streams, gitPath)
 	r.setCondition(target, GitTargetConditionStreamsRunning, d.StreamsStatus, d.StreamsReason, d.StreamsMessage)
-	r.setCondition(target, GitTargetConditionFolderAccepted, d.FolderStatus, d.FolderReason, d.FolderMessage)
+	r.setCondition(target, GitTargetConditionGitPathAccepted, d.GitPathStatus, d.GitPathReason, d.GitPathMessage)
 	r.setCondition(target, GitTargetConditionReady, d.ReadyStatus, d.ReadyReason, d.ReadyMessage)
 	r.setCondition(
 		target,
@@ -393,17 +382,15 @@ func (r *GitTargetReconciler) applyDataPlaneConditionsAndPhase(
 		d.ReconcilingMessage,
 	)
 	r.setCondition(target, GitTargetConditionStalled, d.StalledStatus, d.StalledReason, d.StalledMessage)
-	target.Status.Phase = d.Phase
 }
 
 type gitTargetDataPlaneDecision struct {
-	Phase              string
 	StreamsStatus      metav1.ConditionStatus
 	StreamsReason      string
 	StreamsMessage     string
-	FolderStatus       metav1.ConditionStatus
-	FolderReason       string
-	FolderMessage      string
+	GitPathStatus      metav1.ConditionStatus
+	GitPathReason      string
+	GitPathMessage     string
 	ReadyStatus        metav1.ConditionStatus
 	ReadyReason        string
 	ReadyMessage       string
@@ -417,56 +404,54 @@ type gitTargetDataPlaneDecision struct {
 
 func deriveGitTargetDataPlaneStatus(
 	streams watch.StreamSummary,
-	folder watch.FolderAcceptanceStatus,
+	gitPath watch.GitPathAcceptanceStatus,
 ) gitTargetDataPlaneDecision {
 	streamsStatus := metav1.ConditionFalse
 	if streams.StreamsRunning() {
 		streamsStatus = metav1.ConditionTrue
 	}
-	folderStatus := metav1.ConditionTrue
-	folderReason := GitTargetReasonFolderAccepted
-	folderMessage := "GitTarget folder accepted"
-	if !folder.Accepted {
-		folderStatus = metav1.ConditionFalse
-		folderReason = folder.Reason
-		if folderReason == "" {
-			folderReason = GitTargetReasonUnsupportedContent
+	gitPathStatus := metav1.ConditionTrue
+	gitPathReason := GitTargetReasonGitPathAccepted
+	gitPathMessage := "GitTarget path accepted"
+	if !gitPath.Accepted {
+		gitPathStatus = metav1.ConditionFalse
+		gitPathReason = gitPath.Reason
+		if gitPathReason == "" {
+			gitPathReason = GitTargetReasonUnsupportedContent
 		}
-		folderMessage = folder.Message
+		gitPathMessage = gitPath.Message
 	}
-	if folderMessage == "" {
-		folderMessage = "GitTarget folder accepted"
+	if gitPathMessage == "" {
+		gitPathMessage = "GitTarget path accepted"
 	}
 
 	switch {
-	case !folder.Accepted:
+	case !gitPath.Accepted:
 		return gitTargetDataPlaneDecision{
-			Phase:              GitTargetPhaseDegraded,
 			StreamsStatus:      streamsStatus,
 			StreamsReason:      streams.Reason,
 			StreamsMessage:     streams.Message,
-			FolderStatus:       folderStatus,
-			FolderReason:       folderReason,
-			FolderMessage:      folderMessage,
+			GitPathStatus:      gitPathStatus,
+			GitPathReason:      gitPathReason,
+			GitPathMessage:     gitPathMessage,
 			ReadyStatus:        metav1.ConditionFalse,
-			ReadyReason:        folderReason,
-			ReadyMessage:       folderMessage,
+			ReadyReason:        gitPathReason,
+			ReadyMessage:       gitPathMessage,
 			ReconcilingStatus:  metav1.ConditionFalse,
-			ReconcilingReason:  folderReason,
+			ReconcilingReason:  gitPathReason,
 			ReconcilingMessage: "Reconciliation is stalled",
 			StalledStatus:      metav1.ConditionTrue,
-			StalledReason:      folderReason,
-			StalledMessage:     folderMessage,
+			StalledReason:      gitPathReason,
+			StalledMessage:     gitPathMessage,
 		}
 	case streams.Blocked > 0:
 		return gitTargetDataPlaneDecision{
-			Phase:              GitTargetPhaseDegraded,
 			StreamsStatus:      metav1.ConditionFalse,
 			StreamsReason:      streams.Reason,
 			StreamsMessage:     streams.Message,
-			FolderStatus:       folderStatus,
-			FolderReason:       folderReason,
-			FolderMessage:      folderMessage,
+			GitPathStatus:      gitPathStatus,
+			GitPathReason:      gitPathReason,
+			GitPathMessage:     gitPathMessage,
 			ReadyStatus:        metav1.ConditionFalse,
 			ReadyReason:        streams.Reason,
 			ReadyMessage:       streams.Message,
@@ -479,13 +464,12 @@ func deriveGitTargetDataPlaneStatus(
 		}
 	case !streams.StreamsRunning():
 		return gitTargetDataPlaneDecision{
-			Phase:              GitTargetPhaseInitializing,
 			StreamsStatus:      metav1.ConditionFalse,
 			StreamsReason:      streams.Reason,
 			StreamsMessage:     streams.Message,
-			FolderStatus:       folderStatus,
-			FolderReason:       folderReason,
-			FolderMessage:      folderMessage,
+			GitPathStatus:      gitPathStatus,
+			GitPathReason:      gitPathReason,
+			GitPathMessage:     gitPathMessage,
 			ReadyStatus:        metav1.ConditionFalse,
 			ReadyReason:        ReasonProgressing,
 			ReadyMessage:       streams.Message,
@@ -498,13 +482,12 @@ func deriveGitTargetDataPlaneStatus(
 		}
 	}
 	return gitTargetDataPlaneDecision{
-		Phase:              GitTargetPhaseSynced,
 		StreamsStatus:      metav1.ConditionTrue,
 		StreamsReason:      streams.Reason,
 		StreamsMessage:     streams.Message,
-		FolderStatus:       folderStatus,
-		FolderReason:       folderReason,
-		FolderMessage:      folderMessage,
+		GitPathStatus:      gitPathStatus,
+		GitPathReason:      gitPathReason,
+		GitPathMessage:     gitPathMessage,
 		ReadyStatus:        metav1.ConditionTrue,
 		ReadyReason:        GitTargetReasonOK,
 		ReadyMessage:       "GitTarget is fully reconciled",

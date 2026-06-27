@@ -50,8 +50,10 @@ const (
 	ConditionTypeStalled = "Stalled"
 	// ConditionTypeStreamsRunning indicates whether watched type streams are routing live events.
 	ConditionTypeStreamsRunning = "StreamsRunning"
-	// ConditionTypeFolderAccepted indicates whether the GitTarget folder is safe to materialize.
-	ConditionTypeFolderAccepted = "FolderAccepted"
+	// ConditionTypeGitPathAccepted indicates whether the GitTarget path is safe to materialize.
+	ConditionTypeGitPathAccepted = "GitPathAccepted"
+	// ConditionTypeGitTargetReady indicates whether the referenced GitTarget is ready for writes.
+	ConditionTypeGitTargetReady = "GitTargetReady"
 	// ConditionTypeStreamsReady is a source-compatibility alias for StreamsRunning.
 	ConditionTypeStreamsReady = ConditionTypeStreamsRunning
 

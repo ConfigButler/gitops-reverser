@@ -241,7 +241,7 @@ func (r *EventRouter) drainScopedResync(
 			"gitDest", gitDest.String(), "gvr", key.GVR.String(),
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
 		if r.WatchManager != nil {
-			r.WatchManager.MarkTargetFolderAccepted(gitDest)
+			r.WatchManager.MarkTargetGitPathAccepted(gitDest)
 		}
 		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile
@@ -255,9 +255,9 @@ func (r *EventRouter) drainScopedResync(
 	}
 }
 
-// handleScopedResyncError classifies a failed resync. A folder the acceptance gate refused
-// is not a transient write fault: nothing was committed, the human must clean the folder, so
-// it is surfaced as target-level FolderAccepted=False and is NOT counted as a background
+// handleScopedResyncError classifies a failed resync. A path the acceptance gate refused
+// is not a transient write fault: nothing was committed, the human must clean the Git path, so
+// it is surfaced as target-level GitPathAccepted=False and is NOT counted as a background
 // resync failure. Every other error stays a background failure so a silently-recovered fault
 // remains observable.
 func (r *EventRouter) handleScopedResyncError(
@@ -268,10 +268,10 @@ func (r *EventRouter) handleScopedResyncError(
 ) {
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	if errors.As(err, &refused) {
-		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget folder content",
+		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget path content",
 			"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
 		if r.WatchManager != nil {
-			r.WatchManager.MarkTargetFolderRefused(gitDest, "UnsupportedContent", refused.BlockMessage())
+			r.WatchManager.MarkTargetGitPathRefused(gitDest, "UnsupportedContent", refused.BlockMessage())
 		}
 		return
 	}

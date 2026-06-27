@@ -196,7 +196,7 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 		delete(m.targetWatches, gitDest.Key())
 	}
 	m.dropTargetStreamStateLocked(gitDest)
-	m.dropTargetFolderAcceptanceLocked(gitDest)
+	m.dropTargetGitPathAcceptanceLocked(gitDest)
 }
 
 func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
@@ -575,7 +575,7 @@ func (m *Manager) enqueueReplayResync(
 			key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
 	}
 	// The key (GVR + namespace) is threaded to the drain for diagnostics. A refused
-	// folder is target-level state, so the drain records FolderAccepted=False rather
+	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather
 	// than mutating this stream's watch readiness.
 	go m.EventRouter.drainScopedResync(gitDest, key, "reconcile", resultCh)
 	log.V(1).Info("target replay resync enqueued",

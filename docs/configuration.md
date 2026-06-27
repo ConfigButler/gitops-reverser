@@ -351,7 +351,7 @@ spec:
   path: live-cluster
 ```
 
-`spec.path` is required so a target never writes to the repository root by accident. Use a folder
+`spec.path` is required so a target never writes to the repository root by accident. Use a path
 such as `live-cluster` for the first install. To deliberately target the repository root, set
 `path: "."`. Do not use a leading slash, and do not add a trailing slash.
 
@@ -367,21 +367,24 @@ and `kind` default to `configbutler.ai` / `GitProvider`, so in practice you only
 
 The most useful status fields are:
 
-- `Ready`: true when the target is valid, the folder is accepted, and watched streams are running.
+- `Ready`: true when the target is valid, the Git path is accepted, and watched streams are running.
 - `Reconciling`: true while initial replay, a recheck, or another coarse progress step is in flight.
-- `Stalled`: true when the target is blocked until a human fixes configuration, RBAC, or folder content.
+- `Stalled`: true when the target is blocked until a human fixes configuration, RBAC, or Git path content.
 - `Validated` and `EncryptionConfigured`: control-plane details.
 - `StreamsRunning`: true when the source watches are past initial replay and routing live events.
-- `FolderAccepted`: true when the target Git folder is safe to materialize.
-- `status.phase`: a human-facing summary (`Pending`, `Initializing`, `Synced`, or `Degraded`).
+- `GitPathAccepted`: true when the target Git path is safe to materialize.
 - `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
 
-Use conditions for automation. `status.phase` is intended for humans and `kubectl get` output.
+Use conditions for automation.
 
 ## `WatchRule`
 
 `WatchRule` is the normal namespaced watcher. It only watches resources in its own namespace and
 writes them to the referenced `GitTarget`.
+
+Status uses `ResourcesResolved` for selector resolution, `StreamsRunning` for source-watch readiness, and
+`GitTargetReady` for the referenced target's write readiness. A rule can have `StreamsRunning=True` and
+still remain `Ready=False` when its GitTarget reports `GitPathAccepted=False`.
 
 The important fields are:
 

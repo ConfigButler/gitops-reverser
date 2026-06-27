@@ -116,14 +116,17 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "missing-target-rule"}, updatedRule)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedRule.Status.Conditions).To(HaveLen(4))
-			var condition, streamsRunning, reconciling, stalled metav1.Condition
+			Expect(updatedRule.Status.Conditions).To(HaveLen(5))
+			var condition, streamsRunning, gitTargetReady, reconciling, stalled metav1.Condition
 			for _, c := range updatedRule.Status.Conditions {
 				if c.Type == ConditionTypeReady {
 					condition = c
 				}
 				if c.Type == ConditionTypeStreamsRunning {
 					streamsRunning = c
+				}
+				if c.Type == ConditionTypeGitTargetReady {
+					gitTargetReady = c
 				}
 				if c.Type == ConditionTypeReconciling {
 					reconciling = c
@@ -136,6 +139,8 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 			Expect(condition.Reason).To(Equal(ClusterWatchRuleReasonGitTargetNotFound))
 			Expect(streamsRunning.Status).To(Equal(metav1.ConditionUnknown))
 			Expect(streamsRunning.Reason).To(Equal(GitTargetStreamsRunningReasonNotReady))
+			Expect(gitTargetReady.Status).To(Equal(metav1.ConditionFalse))
+			Expect(gitTargetReady.Reason).To(Equal(ClusterWatchRuleReasonGitTargetNotFound))
 			Expect(reconciling.Status).To(Equal(metav1.ConditionFalse))
 			Expect(stalled.Status).To(Equal(metav1.ConditionTrue))
 			Expect(stalled.Reason).To(Equal(ClusterWatchRuleReasonGitTargetNotFound))

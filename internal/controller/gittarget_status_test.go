@@ -33,26 +33,24 @@ func TestDeriveGitTargetDataPlaneStatus(t *testing.T) {
 	tests := []struct {
 		name              string
 		streams           watch.StreamSummary
-		folder            watch.FolderAcceptanceStatus
-		wantPhase         string
+		gitPath           watch.GitPathAcceptanceStatus
 		wantReady         metav1.ConditionStatus
 		wantReconciling   metav1.ConditionStatus
 		wantStalled       metav1.ConditionStatus
-		wantFolder        metav1.ConditionStatus
+		wantGitPath       metav1.ConditionStatus
 		wantStreams       metav1.ConditionStatus
 		wantStalledReason string
 	}{
 		{
-			name: "all streams running and folder accepted",
+			name: "all streams running and Git path accepted",
 			streams: watch.StreamSummary{
 				Total: 3, Ready: 3, Reason: watch.StreamReasonAllStreamsReady, Message: "3/3 streams running",
 			},
-			folder:          watch.FolderAcceptanceStatus{Accepted: true},
-			wantPhase:       GitTargetPhaseSynced,
+			gitPath:         watch.GitPathAcceptanceStatus{Accepted: true},
 			wantReady:       metav1.ConditionTrue,
 			wantReconciling: metav1.ConditionFalse,
 			wantStalled:     metav1.ConditionFalse,
-			wantFolder:      metav1.ConditionTrue,
+			wantGitPath:     metav1.ConditionTrue,
 			wantStreams:     metav1.ConditionTrue,
 		},
 		{
@@ -61,12 +59,11 @@ func TestDeriveGitTargetDataPlaneStatus(t *testing.T) {
 				Total: 2, Ready: 1, Replaying: 1, Reason: watch.StreamReasonReplaying,
 				Message: "1/2 streams running; 1 replaying",
 			},
-			folder:          watch.FolderAcceptanceStatus{Accepted: true},
-			wantPhase:       GitTargetPhaseInitializing,
+			gitPath:         watch.GitPathAcceptanceStatus{Accepted: true},
 			wantReady:       metav1.ConditionFalse,
 			wantReconciling: metav1.ConditionTrue,
 			wantStalled:     metav1.ConditionFalse,
-			wantFolder:      metav1.ConditionTrue,
+			wantGitPath:     metav1.ConditionTrue,
 			wantStreams:     metav1.ConditionFalse,
 		},
 		{
@@ -75,30 +72,28 @@ func TestDeriveGitTargetDataPlaneStatus(t *testing.T) {
 				Total: 2, Ready: 1, Blocked: 1, Reason: watch.StreamReasonWatchError,
 				Message: "1/2 streams running; 1 blocked",
 			},
-			folder:            watch.FolderAcceptanceStatus{Accepted: true},
-			wantPhase:         GitTargetPhaseDegraded,
+			gitPath:           watch.GitPathAcceptanceStatus{Accepted: true},
 			wantReady:         metav1.ConditionFalse,
 			wantReconciling:   metav1.ConditionFalse,
 			wantStalled:       metav1.ConditionTrue,
-			wantFolder:        metav1.ConditionTrue,
+			wantGitPath:       metav1.ConditionTrue,
 			wantStreams:       metav1.ConditionFalse,
 			wantStalledReason: watch.StreamReasonWatchError,
 		},
 		{
-			name: "folder refused",
+			name: "Git path refused",
 			streams: watch.StreamSummary{
 				Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
 			},
-			folder: watch.FolderAcceptanceStatus{
+			gitPath: watch.GitPathAcceptanceStatus{
 				Accepted: false,
 				Reason:   GitTargetReasonUnsupportedContent,
-				Message:  "git folder refused at kustomization.yaml: uses patches",
+				Message:  "Git path refused at kustomization.yaml: uses patches",
 			},
-			wantPhase:         GitTargetPhaseDegraded,
 			wantReady:         metav1.ConditionFalse,
 			wantReconciling:   metav1.ConditionFalse,
 			wantStalled:       metav1.ConditionTrue,
-			wantFolder:        metav1.ConditionFalse,
+			wantGitPath:       metav1.ConditionFalse,
 			wantStreams:       metav1.ConditionTrue,
 			wantStalledReason: GitTargetReasonUnsupportedContent,
 		},
@@ -106,12 +101,11 @@ func TestDeriveGitTargetDataPlaneStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := deriveGitTargetDataPlaneStatus(tt.streams, tt.folder)
-			assert.Equal(t, tt.wantPhase, d.Phase)
+			d := deriveGitTargetDataPlaneStatus(tt.streams, tt.gitPath)
 			assert.Equal(t, tt.wantReady, d.ReadyStatus)
 			assert.Equal(t, tt.wantReconciling, d.ReconcilingStatus)
 			assert.Equal(t, tt.wantStalled, d.StalledStatus)
-			assert.Equal(t, tt.wantFolder, d.FolderStatus)
+			assert.Equal(t, tt.wantGitPath, d.GitPathStatus)
 			assert.Equal(t, tt.wantStreams, d.StreamsStatus)
 			if tt.wantStalledReason != "" {
 				assert.Equal(t, tt.wantStalledReason, d.StalledReason)
@@ -121,18 +115,17 @@ func TestDeriveGitTargetDataPlaneStatus(t *testing.T) {
 	}
 }
 
-func TestApplyDataPlaneConditionsAndPhase_SetsKstatusTrio(t *testing.T) {
+func TestApplyDataPlaneConditions_SetsKstatusTrio(t *testing.T) {
 	r := &GitTargetReconciler{}
 	target := &configbutleraiv1alpha2.GitTarget{}
 
-	r.applyDataPlaneConditionsAndPhase(target, watch.StreamSummary{
+	r.applyDataPlaneConditions(target, watch.StreamSummary{
 		Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
-	}, watch.FolderAcceptanceStatus{Accepted: true})
+	}, watch.GitPathAcceptanceStatus{Accepted: true})
 
-	require.Equal(t, GitTargetPhaseSynced, target.Status.Phase)
 	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionReady))
 	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionStreamsRunning))
-	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionFolderAccepted))
+	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionGitPathAccepted))
 	require.False(t, isConditionTrue(target.Status.Conditions, GitTargetConditionReconciling))
 	require.False(t, isConditionTrue(target.Status.Conditions, GitTargetConditionStalled))
 }
@@ -143,7 +136,6 @@ func TestSetBlockedDataPlane_MarksUnknownAndPending(t *testing.T) {
 
 	r.setBlockedDataPlane(target)
 
-	require.Equal(t, GitTargetPhasePending, target.Status.Phase)
 	streamsRunning := conditionByType(target.Status.Conditions, GitTargetConditionStreamsRunning)
 	require.NotNil(t, streamsRunning)
 	assert.Equal(t, metav1.ConditionUnknown, streamsRunning.Status)

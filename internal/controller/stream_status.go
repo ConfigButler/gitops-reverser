@@ -64,13 +64,20 @@ func applyRuleKstatus(
 	setStalled func(string, string),
 ) {
 	resources := conditionByType(conditions, ConditionTypeResourcesResolved)
+	gitTarget := conditionByType(conditions, ConditionTypeGitTargetReady)
 	streams := conditionByType(conditions, ConditionTypeStreamsRunning)
+
+	if stalled := stalledRuleCondition(resources, gitTarget, streams); stalled != nil {
+		setStalled(stalled.Reason, stalled.Message)
+		return
+	}
+	if gitTarget != nil && gitTarget.Status != metav1.ConditionTrue {
+		reason, message := conditionReasonMessage(gitTarget, ReasonProgressing, "Waiting for GitTarget to become ready")
+		setRuleProgressing(reason, message, notStalledMessage, setCondition)
+		return
+	}
+
 	switch {
-	case resources != nil && resources.Status == metav1.ConditionFalse:
-		setStalled(resources.Reason, resources.Message)
-	case streams != nil && streams.Status == metav1.ConditionFalse &&
-		(streams.Reason == watch.StreamReasonWatchError || streams.Reason == watch.StreamReasonWatchNotPermitted):
-		setStalled(streams.Reason, streams.Message)
 	case streams != nil && streams.Status == metav1.ConditionTrue:
 		setCondition(ConditionTypeReady, metav1.ConditionTrue, readyReason, readyMessage)
 		setCondition(ConditionTypeReconciling, metav1.ConditionFalse, readyReason, "Reconciliation complete")
@@ -80,8 +87,69 @@ func applyRuleKstatus(
 		if streams != nil {
 			reason, message = streams.Reason, streams.Message
 		}
-		setCondition(ConditionTypeReady, metav1.ConditionFalse, reason, message)
-		setCondition(ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
-		setCondition(ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
+		setRuleProgressing(reason, message, notStalledMessage, setCondition)
+	}
+}
+
+func stalledRuleCondition(resources, gitTarget, streams *metav1.Condition) *metav1.Condition {
+	switch {
+	case resources != nil && resources.Status == metav1.ConditionFalse:
+		return resources
+	case gitTarget != nil && gitTarget.Status == metav1.ConditionFalse && gitTargetReadyReasonIsStalled(gitTarget.Reason):
+		return gitTarget
+	case streams != nil && streams.Status == metav1.ConditionFalse && streamReasonIsStalled(streams.Reason):
+		return streams
+	default:
+		return nil
+	}
+}
+
+func setRuleProgressing(
+	reason string,
+	message string,
+	notStalledMessage string,
+	setCondition func(string, metav1.ConditionStatus, string, string),
+) {
+	setCondition(ConditionTypeReady, metav1.ConditionFalse, reason, message)
+	setCondition(ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
+	setCondition(ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
+}
+
+func conditionReasonMessage(condition *metav1.Condition, defaultReason, defaultMessage string) (string, string) {
+	if condition == nil {
+		return defaultReason, defaultMessage
+	}
+	reason := condition.Reason
+	if reason == "" {
+		reason = defaultReason
+	}
+	message := condition.Message
+	if message == "" {
+		message = defaultMessage
+	}
+	return reason, message
+}
+
+func streamReasonIsStalled(reason string) bool {
+	return reason == watch.StreamReasonWatchError || reason == watch.StreamReasonWatchNotPermitted
+}
+
+func gitTargetReadyReasonIsStalled(reason string) bool {
+	switch reason {
+	case GitTargetReasonProviderNotFound,
+		GitTargetReasonBranchNotAllowed,
+		GitTargetReasonTargetConflict,
+		GitTargetReasonUnsupportedContent,
+		GitTargetReadyReasonValidationFailed,
+		GitTargetReadyReasonEncryptionNotConfigured,
+		GitTargetReadyReasonWorkerUnavailable,
+		WatchRuleReasonGitTargetNotFound,
+		WatchRuleReasonGitProviderNotFound,
+		WatchRuleReasonGitDestinationInvalid,
+		watch.StreamReasonWatchError,
+		watch.StreamReasonWatchNotPermitted:
+		return true
+	default:
+		return false
 	}
 }

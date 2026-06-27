@@ -54,7 +54,8 @@ const (
     TypeValidated            = "Validated"
     TypeEncryptionConfigured = "EncryptionConfigured"
     TypeStreamsRunning       = "StreamsRunning"
-    TypeFolderAccepted       = "FolderAccepted"
+    TypeGitPathAccepted       = "GitPathAccepted"
+    TypeGitTargetReady       = "GitTargetReady"
 )
 ```
 
@@ -62,6 +63,7 @@ Canonical reads:
 
 * fully mirrored: `Ready=True`, `Reconciling=False`, `Stalled=False`
 * initial replay or recheck: `Ready=False`, `Reconciling=True`, `Stalled=False`
-* refused folder, invalid provider, RBAC denial, or broken encryption: `Ready=False`, `Reconciling=False`,
+* refused Git path, invalid provider, RBAC denial, or broken encryption: `Ready=False`, `Reconciling=False`,
   `Stalled=True`
-* folder refusal details live on `FolderAccepted=False` and `Stalled=True`, reason `UnsupportedContent`
+* Git path refusal details live on `GitPathAccepted=False` and `Stalled=True`, reason `UnsupportedContent`
+* WatchRule and ClusterWatchRule carry target dependency health in `GitTargetReady`

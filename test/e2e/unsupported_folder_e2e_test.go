@@ -29,20 +29,22 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// This spec proves the acceptance gate end to end: when a GitTarget's folder holds content
+// This spec proves the acceptance gate end to end: when a GitTarget's path holds content
 // the operator cannot safely manage — here a kustomization.yaml that uses an unsupported
 // feature (a patches block) — the first-materialization resync is REFUSED. The operator
-// commits nothing and surfaces the refusal on GitTarget status as FolderAccepted=False,
-// Stalled=True, and Ready=False. The source streams stay truthful to watch state; the folder
-// is left untouched until a human cleans it. See docs/design/unsupported-folder-refusal-plan.md.
+// commits nothing and surfaces the refusal on GitTarget status as GitPathAccepted=False,
+// Stalled=True, and Ready=False. WatchRule and ClusterWatchRule surface the same dependency
+// on GitTargetReady. The source streams stay truthful to watch state; the path is left untouched
+// until a human cleans it. See docs/design/unsupported-folder-refusal-plan.md.
 var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsupported-folder"), Ordered, func() {
 	var (
-		testNs       string
-		repo         *RepoArtifacts
-		providerName = "unsupported-folder-provider"
-		destName     = "unsupported-folder-dest"
-		ruleName     = "unsupported-folder-rule"
-		gitPath      = "e2e/unsupported-folder"
+		testNs          string
+		repo            *RepoArtifacts
+		providerName    = "unsupported-folder-provider"
+		destName        = "unsupported-folder-dest"
+		ruleName        = "unsupported-folder-rule"
+		clusterRuleName = "unsupported-folder-cluster-rule"
+		gitPath         = "e2e/unsupported-folder"
 	)
 
 	const repoName = "e2e-unsupported-folder"
@@ -70,13 +72,14 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 
 	AfterAll(func() {
 		cleanupWatchRule(ruleName, testNs)
+		cleanupClusterWatchRule(clusterRuleName)
 		cleanupGitTarget(destName, testNs)
 		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
 		cleanupNamespace(testNs)
 	})
 
-	It("refuses a hard-Kustomize folder without writing", func() {
-		By("seeding the Git repository with a folder that uses an unsupported Kustomize feature")
+	It("refuses a hard-Kustomize path without writing", func() {
+		By("seeding the Git repository with a path that uses an unsupported Kustomize feature")
 		seedFolder := writeUnsupportedKustomizeFolder(testNs)
 		DeferCleanup(func() { _ = os.RemoveAll(seedFolder) })
 		seedRenderedFolderIntoRepo(repo, testNs, seedFolder, gitPath)
@@ -89,7 +92,7 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 			g.Expect(seedHead).NotTo(BeEmpty(), "the seed commit must be on the remote")
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
-		By("creating the GitTarget and a ConfigMap WatchRule pointed at the unsupported folder")
+		By("creating the GitTarget, WatchRule, and ClusterWatchRule pointed at the unsupported path")
 		createGitTarget(destName, testNs, providerName, gitPath, "main")
 		err := applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", struct {
 			Name            string
@@ -97,24 +100,29 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 			DestinationName string
 		}{Name: ruleName, Namespace: testNs, DestinationName: destName}, testNs)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap WatchRule")
+		applyUnsupportedPathClusterWatchRule(clusterRuleName, testNs, destName)
 
-		By("the folder is refused and the GitTarget is stalled")
-		waitForGitTargetFolderRefused(destName, testNs, "UnsupportedContent")
+		By("the path is refused and the GitTarget is stalled")
+		waitForGitTargetGitPathRefused(destName, testNs, "UnsupportedContent")
 
-		By("the operator commits nothing on top of the unsupported folder")
+		By("the WatchRule and ClusterWatchRule surface the refused GitTarget dependency")
+		waitForRuleBlockedByGitPath("watchrule", ruleName, testNs, "UnsupportedContent")
+		waitForRuleBlockedByGitPath("clusterwatchrule", clusterRuleName, "", "UnsupportedContent")
+
+		By("the operator commits nothing on top of the unsupported path")
 		Consistently(func(g Gomega) {
 			g.Expect(remoteBranchHead(g, repo.CheckoutDir)).
-				To(Equal(seedHead), "the operator must not commit into a refused folder")
+				To(Equal(seedHead), "the operator must not commit into a refused path")
 		}, 20*time.Second, 4*time.Second).Should(Succeed())
 
-		By("unsupported folder refused: GitTarget stalled, nothing written")
+		By("unsupported Git path refused: GitTarget stalled, nothing written")
 	})
 })
 
 // writeUnsupportedKustomizeFolder renders a temp folder holding a kustomization.yaml that uses
 // an unsupported feature (a patches block) plus the ConfigMap it references. The operator
 // cannot map a patched render back to editable source documents, so the acceptance gate must
-// refuse the whole folder.
+// refuse the whole Git path.
 func writeUnsupportedKustomizeFolder(namespace string) string {
 	GinkgoHelper()
 
@@ -141,34 +149,73 @@ func writeUnsupportedKustomizeFolder(namespace string) string {
 	return dir
 }
 
-// waitForGitTargetFolderRefused polls until the GitTarget reports the target-side folder
+// waitForGitTargetGitPathRefused polls until the GitTarget reports the target-side Git path
 // refusal in the kstatus shape generic tooling expects.
-func waitForGitTargetFolderRefused(name, namespace, expectedReason string) {
+func waitForGitTargetGitPathRefused(name, namespace, expectedReason string) {
 	GinkgoHelper()
 
 	Eventually(func(g Gomega) {
-		folderStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
-			"-o", "jsonpath={.status.conditions[?(@.type=='FolderAccepted')].status}")
+		gitPathStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
+			"-o", "jsonpath={.status.conditions[?(@.type=='GitPathAccepted')].status}")
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(folderStatus)).To(Equal("False"),
-			"FolderAccepted must be False for an unsupported folder")
+		g.Expect(strings.TrimSpace(gitPathStatus)).To(Equal("False"),
+			"GitPathAccepted must be False for an unsupported path")
 
-		folderReason, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
-			"-o", "jsonpath={.status.conditions[?(@.type=='FolderAccepted')].reason}")
+		gitPathReason, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
+			"-o", "jsonpath={.status.conditions[?(@.type=='GitPathAccepted')].reason}")
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(folderReason)).To(Equal(expectedReason),
-			"FolderAccepted reason must name the unsupported content")
+		g.Expect(strings.TrimSpace(gitPathReason)).To(Equal(expectedReason),
+			"GitPathAccepted reason must name the unsupported content")
 
 		readyStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
 			"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.TrimSpace(readyStatus)).To(Equal("False"),
-			"Ready must be False for a refused folder")
+			"Ready must be False for a refused path")
 
 		stalledStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
 			"-o", "jsonpath={.status.conditions[?(@.type=='Stalled')].status}")
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(strings.TrimSpace(stalledStatus)).To(Equal("True"),
-			"Stalled must be True for a refused folder")
+			"Stalled must be True for a refused path")
 	}, 150*time.Second, 3*time.Second).Should(Succeed())
+}
+
+func waitForRuleBlockedByGitPath(resourceType, name, namespace, expectedReason string) {
+	GinkgoHelper()
+
+	verifyResourceCondition(
+		resourceType,
+		name,
+		namespace,
+		"GitTargetReady",
+		"False",
+		expectedReason,
+		"kustomization.yaml",
+	)
+	verifyResourceCondition(resourceType, name, namespace, "Ready", "False", expectedReason, "kustomization.yaml")
+	verifyResourceCondition(resourceType, name, namespace, "Stalled", "True", expectedReason, "kustomization.yaml")
+	verifyResourceCondition(resourceType, name, namespace, "Reconciling", "False", expectedReason, "stalled")
+}
+
+func applyUnsupportedPathClusterWatchRule(name, targetNamespace, targetName string) {
+	GinkgoHelper()
+
+	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha2
+kind: ClusterWatchRule
+metadata:
+  name: %s
+spec:
+  targetRef:
+    name: %s
+    namespace: %s
+  rules:
+  - scope: Namespaced
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["configmaps"]
+`, name, targetName, targetNamespace)
+
+	_, err := kubectlRunWithStdin("", manifest, "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap ClusterWatchRule")
 }

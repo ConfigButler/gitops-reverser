@@ -1,6 +1,6 @@
 # Refuse unsupported folder content — design + implementation plan
 
-> Status: PROPOSAL — 2026-06-26, **revised 2026-06-27**. The mechanics (refuse a GitTarget folder the
+> Status: PROPOSAL — 2026-06-26, **revised 2026-06-27**. The mechanics (refuse a GitTarget path the
 > operator cannot safely manage) are settled. The **status surface** is reopened: this revision records the
 > back-and-forth that turned a single overloaded `StreamsReady=Blocked` refusal into a deliberate
 > two-sided status model, and then — after the `k8s-crd-design-review` skill grew a `kstatus-readiness`
@@ -10,7 +10,7 @@
 >
 > **Decision recorded** in
 > [e2e-coverage-gaps-and-improvements-plan.md §4.1](e2e-coverage-gaps-and-improvements-plan.md): the
-> operator must **refuse** a GitTarget folder it cannot safely manage, for the cases where we already
+> operator must **refuse** a GitTarget path it cannot safely manage, for the cases where we already
 > know the content is a problem — not silently keep writing. Written against the **actual** current code,
 > not the superseded `Synced`/`materialization` model in
 > [status-design-git-target.md](status-design-git-target.md).
@@ -82,7 +82,7 @@ Two independent critiques landed against v1:
 1. **The "Blocked" framing is inaccurate.** `StreamStateBlocked` is documented as *"the watch cannot
    currently run"* ([stream_readiness.go:42](../../internal/watch/stream_readiness.go#L42)). But a folder
    refusal is **not** a watch failure — the cluster watch runs perfectly. What is unsafe is the **write
-   target** (the Git folder). Saying "the watch can't run" to describe "the Git folder is rejected"
+   target** (the Git path). Saying "the watch can't run" to describe "the Git path is rejected"
    overloads one axis with two unrelated failure modes, which §7 already flagged as a risk.
 
 2. **`Ready=True` while refusing to mirror is misleading, and it contradicts our own conventions.**
@@ -112,21 +112,21 @@ conditions, one per side:
 | Condition | Side | True means | False driver |
 |---|---|---|---|
 | `StreamsRunning` (was `StreamsReady`) | **Source** — cluster | the watches are past initial sync and reconciling **live, continuously** — as designed | initial sync in progress, `WatchError`, `WatchNotPermitted` |
-| `FolderAccepted` (NEW) | **Target** — Git | the selected Git folder is safe to materialize | acceptance gate refused: unsupported kustomize, duplicate identity, impure / non-KRM file |
+| `GitPathAccepted` (NEW) | **Target** — Git | the selected Git path is safe to materialize | acceptance gate refused: unsupported kustomize, duplicate identity, impure / non-KRM file |
 
 This directly fixes both critiques:
 
-- **Honesty (critique 1).** A folder refusal sets `FolderAccepted=False` and leaves `StreamsRunning`
+- **Honesty (critique 1).** A folder refusal sets `GitPathAccepted=False` and leaves `StreamsRunning`
   telling the truth about the watch. We no longer claim "the watch can't run" when it can. The source side
   and the target side fail independently and report independently.
-- **Right granularity.** The acceptance gate is **whole-folder** (§6.1), so `FolderAccepted` is naturally a
+- **Right granularity.** The acceptance gate is **whole-folder** (§6.1), so `GitPathAccepted` is naturally a
   **target-level** condition — a cleaner fit than the per-type `Blocked` stream v1 used to approximate it.
 - **It is the condition v1 already foreshadowed.** v1's own note said *"if we later want a dedicated
-  `Writable`/acceptance condition … this refusal is the first concrete driver for it."* `FolderAccepted`
+  `Writable`/acceptance condition … this refusal is the first concrete driver for it."* `GitPathAccepted`
   **is** that condition; this reframe just promotes it from "later" to "now," because we have a concrete
   driver today.
 
-> **Naming note (D1 — decided: `StreamsRunning` + `FolderAccepted`).** The source-side condition ships
+> **Naming note (D1 — decided: `StreamsRunning` + `GitPathAccepted`).** The source-side condition ships
 > today as `StreamsReady`; we **rename it to `StreamsRunning`**. "Running" states the truth precisely: once
 > past the initial sync the streams reconcile *continuously*, exactly as designed — and that steady live
 > state is what the condition asserts. They are **not** running during the initial sync (still downloading
@@ -150,7 +150,7 @@ LAYER 1 — kstatus generic trio (the contract tooling reads)
   Ready        positive polarity   True  = latest observed generation satisfies the GitTarget contract
                                             (control plane valid AND data plane live)
   Reconciling  abnormal-true       True  = progress in flight (initial replay, scoped resync, CP settle)
-  Stalled      abnormal-true       True  = blocked, won't self-heal (folder refused, RBAC denied,
+  Stalled      abnormal-true       True  = blocked, won't self-heal (Git path refused, RBAC denied,
                                             provider/branch invalid, encryption misconfigured)
   status.observedGeneration        already present & set (gittarget_controller.go:125); per-condition too
 
@@ -158,13 +158,12 @@ LAYER 2 — domain conditions (the "why", for operators reading the object)
   Validated             control plane: provider + branch resolve, no conflicts
   EncryptionConfigured  control plane: SOPS/age usable (or not required)
   StreamsRunning        SOURCE side:  past initial sync, reconciling live (continuous), as designed
-  FolderAccepted (NEW)  TARGET side:  Git folder safe to materialize
+  GitPathAccepted (NEW)  TARGET side:  Git path safe to materialize
 ```
 
-Layer 2 explains Layer 1: `FolderAccepted=False` is *why* `Stalled=True`; `StreamsRunning=False` during
-the initial sync is *why* `Reconciling=True`. `status.phase` drops to documented lossy human sugar — never the
-contract (the skill is explicit: don't let `phase`/`state` be the primary lifecycle API, and `Degraded`
-now duplicates `Stalled`/`Ready`).
+Layer 2 explains Layer 1: `GitPathAccepted=False` is *why* `Stalled=True`; `StreamsRunning=False` during
+the initial sync is *why* `Reconciling=True`. GitTarget no longer carries `status.phase`; the condition
+set is the lifecycle API.
 
 ### 3.4 The open debate — what does `Ready` aggregate?
 
@@ -177,7 +176,7 @@ table is the artifact for the team to decide against (**Open — see decision D2
 | `Ready=True` means | spec/provider/branch/encryption valid | fully mirroring *right now* | configured **and** no unrecoverable block |
 | `kubectl wait Ready` | misleads — True while refusing the folder | truthful | truthful for real faults; tolerates replay |
 | Source replaying | `Ready` True | `Ready` **False** (flaps on every watch reconnect) | `Ready` True (replay is progress, not a fault) |
-| `FolderAccepted=False` | `Ready` True (only `phase=Degraded`) | `Ready` False | `Ready` False |
+| `GitPathAccepted=False` | `Ready` True (only `phase=Degraded`) | `Ready` False | `Ready` False |
 | `WatchNotPermitted` (RBAC) | `Ready` True | `Ready` False | `Ready` False |
 | Matches our status guide / skill | ✗ (`Ready` not a summary; aggregate hidden in `phase`) | ✓ | ✓ |
 | Matches k8s convention | ✗ (control-plane-only `Ready` is unusual) | ~ (replay shouldn't read as broken) | ✓ (replay ≈ `Progressing`, blocks ≈ not `Available`) |
@@ -192,11 +191,11 @@ data plane never reports as a misconfigured GitTarget"*):
   `Ready` (rules out A).
 
 So C draws the `Ready` line at **"any hard, non-transient block"** rather than "any not-yet-streaming
-state." Concretely: `Ready=False` when `FolderAccepted=False` **or** a stream is `Blocked` for a
+state." Concretely: `Ready=False` when `GitPathAccepted=False` **or** a stream is `Blocked` for a
 non-replay reason; `Ready` stays `True` while streams are merely `Replaying`.
 
 A sub-variant worth noting: **the two sides need not be symmetric in their effect on `Ready`.** One could
-argue `FolderAccepted=False` should drop `Ready` (the user must edit Git) while *all* source-side
+argue `GitPathAccepted=False` should drop `Ready` (the user must edit Git) while *all* source-side
 non-readiness is treated as operational and kept out of `Ready`. C rejects that only because
 `WatchNotPermitted` is a source-side fault that is **not** transient and **is** human-fixable — so the
 clean line is "transient vs hard," not "source vs target."
@@ -227,7 +226,7 @@ The conflation the original design made ("Ready=False == looks broken") is exact
 
 **Recommendation: adopt the two-layer model (§3.3) with kstatus polarity.**
 
-- **Folder refusal → `FolderAccepted=False` (domain) ⟹ `Stalled=True`, reason `UnsupportedContent`,
+- **Folder refusal → `GitPathAccepted=False` (domain) ⟹ `Stalled=True`, reason `UnsupportedContent`,
   `Ready=False`, `Reconciling=False`.** kstatus computes `Failed`, so Flux/Argo/`helm --wait` flag it as a
   blocked resource a human must fix — the literal truth of a refused folder. This single mapping is the
   biggest compatibility win in the whole design. And it is genuinely `Stalled`, not soft progress: the
@@ -235,7 +234,7 @@ The conflation the original design made ("Ready=False == looks broken") is exact
   it — so a refusal stays stuck until someone intervenes. `Failed` is the right alarm to wake GitOps
   tooling, not a `Reconciling` that quietly spins forever.
 - **Recovery:** the forced acceptance recheck (§4.1) runs as `Reconciling=True` (`Stalled` clears); on
-  pass, `FolderAccepted=True`, `Ready=True`.
+  pass, `GitPathAccepted=True`, `Ready=True`.
 - `Ready=True` is defined per kstatus as *"the latest observed generation satisfies the GitTarget
   contract"* — control plane valid **and** the data plane live — **not** "the whole universe is healthy."
 - **observedGeneration is already there**
@@ -268,7 +267,7 @@ dedicated state for *"working correctly, not yet done"*: `Ready=False, Reconcili
 
 Therefore:
 
-- `Ready=True` ⟺ control plane valid **and** `FolderAccepted=True` **and** `StreamsRunning=True` (initial
+- `Ready=True` ⟺ control plane valid **and** `GitPathAccepted=True` **and** `StreamsRunning=True` (initial
   sync complete, now live) **and** `observedGeneration == generation`.
 - Initial sync (streams established, first snapshot still downloading): `StreamsRunning=False`,
   `Reconciling=True`, `Ready=False`, `Stalled=False` → `InProgress`. This is your "kstatus returns
@@ -298,13 +297,13 @@ the "`Ready` before `StreamsRunning`" idea, but keeps everything it was reaching
    over `phase`. That showed v1's `Ready` already **deviates from our own guide**, weakening "it's
    consistent with the code" — the code was consistent with itself but offside the documented contract.
 4. **Two-sided reframe** — name the two halves of the sync as their own conditions (`StreamsReady`
-   source, `FolderAccepted` target). This dissolves critique 1 entirely and turns the `Ready` question
+   source, `GitPathAccepted` target). This dissolves critique 1 entirely and turns the `Ready` question
    into a clean aggregation choice (A/B/C) rather than an overloading hack.
 5. **kstatus (this revision)** — the skill's new `kstatus-readiness.md` reframes the aggregation choice as
    a *solved* problem: positive `Ready` + abnormal-true `Reconciling`/`Stalled` + fresh
    `observedGeneration`. Option C's "Ready stays True during replay" is dropped in favour of
    `Ready=False + Reconciling=True`, and the folder refusal becomes a first-class `Stalled=True` that
-   generic GitOps tooling reads as `Failed`. The domain conditions (`StreamsRunning`, `FolderAccepted`)
+   generic GitOps tooling reads as `Failed`. The domain conditions (`StreamsRunning`, `GitPathAccepted`)
    survive as the "why" layer beneath the trio.
 
 ---
@@ -315,7 +314,7 @@ Under the recommended two-layer kstatus model (§3.3, §3.5), a refusal produces
 
 - The acceptance gate refuses the first-materialization resync → the resync **commits nothing** and
   replies with a typed `AcceptanceRefusedError` naming the offending file(s).
-- The controller projects that into **`FolderAccepted=False`**, reason `UnsupportedContent`, message
+- The controller projects that into **`GitPathAccepted=False`**, reason `UnsupportedContent`, message
   naming the file — a **target-level** condition (whole-folder gate → whole-target condition).
 - `status.streams` continues to report the **source** truth (watches may stay `Streaming`); we do **not**
   fake a `Blocked` stream for a write-target problem.
@@ -325,17 +324,17 @@ Under the recommended two-layer kstatus model (§3.3, §3.5), a refusal produces
 
 > Migration note vs v1: the previously-planned path set a per-type `Blocked` stream with reason
 > `UnsupportedContent` ([stream_readiness.go:55-61](../../internal/watch/stream_readiness.go#L55-L61)). If
-> we adopt `FolderAccepted`, that stream reason becomes redundant for *folder* refusals and should be
+> we adopt `GitPathAccepted`, that stream reason becomes redundant for *folder* refusals and should be
 > retired in favour of the condition (keep `Blocked` strictly for genuine "watch cannot run" cases). If
 > the team instead keeps v1's overloaded `Blocked`, §3 critique 1 stands unresolved — call it out.
 
 ### 4.1 Recovery is not sticky
 
 A human can update Git so the folder becomes compatible. The GitTarget reconcile must **recheck**
-`FolderAccepted` even when the watched-type set did not change. The current `DeclareForGitTarget` path is
-idempotent when watch specs are unchanged, so recovery needs an explicit hook: if `FolderAccepted=False`,
+`GitPathAccepted` even when the watched-type set did not change. The current `DeclareForGitTarget` path is
+idempotent when watch specs are unchanged, so recovery needs an explicit hook: if `GitPathAccepted=False`,
 enqueue a fresh scoped resync during reconcile. That resync rescans the folder and reruns the gate; when
-it passes, `FolderAccepted` flips back to `True` (and `Ready` recovers) with no CRD schema change or manual
+it passes, `GitPathAccepted` flips back to `True` (and `Ready` recovers) with no CRD schema change or manual
 status reset. **There is no sticky refusal bit.**
 
 ### 4.2 Init and recovery state machine
@@ -351,8 +350,8 @@ stateDiagram-v2
   Declared --> Replaying: open watch, gather replay snapshot  (Reconciling=True, Ready=False)
   Replaying --> ScanningGit: enqueue scoped resync
 
-  ScanningGit --> FolderRefused: acceptance refused  (FolderAccepted=False, Stalled=True, Ready=False)
-  FolderRefused --> ScanningGit: reconcile forces recheck  (Reconciling=True, Stalled clears)
+  ScanningGit --> GitPathRefused: acceptance refused  (GitPathAccepted=False, Stalled=True, Ready=False)
+  GitPathRefused --> ScanningGit: reconcile forces recheck  (Reconciling=True, Stalled clears)
 
   ScanningGit --> Streaming: acceptance passed + resync applied  (Ready=True, Reconciling=False)
   Streaming --> Replaying: watch reconnect / resourceVersion expired
@@ -360,7 +359,7 @@ stateDiagram-v2
   ScanningGit --> Streaming: live write accepted
 ```
 
-The important edge is `FolderRefused --> ScanningGit`: the reconcile loop must force a fresh acceptance
+The important edge is `GitPathRefused --> ScanningGit`: the reconcile loop must force a fresh acceptance
 scan for a refused target. No sticky bit.
 
 ---
@@ -386,10 +385,10 @@ unsafe folder. Both share one helper.
 ```
 watch replay → enqueueScopedResync → BranchWorker.applyResync
    └─ scan subtree → build store (DefaultAllowlist) → Accept(structure-only + hard-kustomize)
-        ├─ accepted  → commit as today                      → FolderAccepted=True
+        ├─ accepted  → commit as today                      → GitPathAccepted=True
         └─ REFUSED   → reply ResyncResult{Err: *AcceptanceRefusedError{Issues}}  (commit nothing)
                           └─ drainScopedResync sees the typed error
-                               └─ controller projects FolderAccepted=False,
+                               └─ controller projects GitPathAccepted=False,
                                       reason "UnsupportedContent", message "<file>: <why>"
                                     └─ Ready derived per §3.4 ; phase Degraded
 ```
@@ -424,7 +423,7 @@ Each phase is independently compilable and unit-testable; validate per phase bef
 - Unit tests at `internal/git`: a seeded worktree with an unsupported file → flush/resync returns the
   refusal error and writes nothing, **including no staged `.sops.yaml`**; a clean worktree → unchanged.
 
-### Phase 3 — status: surface refusal on `FolderAccepted` (model-dependent)
+### Phase 3 — status: surface refusal on `GitPathAccepted` (model-dependent)
 
 > This phase encodes the §3 decision: the two-layer kstatus model (§3.3) with the trio derivation (§3.5).
 > If the team keeps v1's overloaded `Blocked` stream instead, replace this phase with the v1 plan and note
@@ -438,33 +437,33 @@ Each phase is independently compilable and unit-testable; validate per phase bef
   `event_router_test.go`. Folder refusal no longer touches stream state; `Blocked` stays only for genuine
   "watch cannot run" reasons (`WatchError`, `WatchNotPermitted`).
 - Add the kstatus trio condition types `Reconciling` and `Stalled` (abnormal-true) alongside the existing
-  positive `Ready`, plus the domain `FolderAccepted` condition + reason constant
+  positive `Ready`, plus the domain `GitPathAccepted` condition + reason constant
   `GitTargetReasonUnsupportedContent` (now a **condition** reason, not a stream reason). Document them as
   stable condition types (do **not** CEL-enum the allowed set — that makes adding a condition later a
   breaking change; see the skill's conditions reference).
 - In `drainScopedResync`, detect `errors.As(result.Err, *AcceptanceRefusedError)` and route it to a
-  controller-visible signal that sets `FolderAccepted=False` with the offending file in the message. Keep
+  controller-visible signal that sets `GitPathAccepted=False` with the offending file in the message. Keep
   the existing failure metric. Do **not** fabricate a `Blocked` stream for the folder refusal.
-- Derive the trio (supersedes Option C, see §3.5): `Stalled=True` when `FolderAccepted=False` **or** a
+- Derive the trio (supersedes Option C, see §3.5): `Stalled=True` when `GitPathAccepted=False` **or** a
   stream is `Blocked` for a hard reason (`WatchError`, `WatchNotPermitted`) **or** a control-plane gate
   failed; `Reconciling=True` while any stream is in initial sync (`StreamsRunning=False`) / scoped resync /
-  control-plane settle; `Ready=True` **only** when control plane valid AND `FolderAccepted=True` AND
+  control-plane settle; `Ready=True` **only** when control plane valid AND `GitPathAccepted=True` AND
   `StreamsRunning=True` AND `observedGeneration == generation`. Do **not** flap `Reconciling` on individual
   live events. Update the stream-status projection (`applyStreamsReadyConditionAndPhase` / successor) and
   `setReadyCondition`.
 - Confirm `status.observedGeneration` is stamped on every status write (incl. failure paths) and on each
   condition (the field already exists, set at
   [gittarget_controller.go:125](../../internal/controller/gittarget_controller.go#L125)).
-- On GitTarget reconcile, if `FolderAccepted=False` (`Stalled` for `UnsupportedContent`), force a fresh
+- On GitTarget reconcile, if `GitPathAccepted=False` (`Stalled` for `UnsupportedContent`), force a fresh
   acceptance recheck for that target even if `replaceGitTargetWatches` would otherwise no-op.
 - Add/adjust **printer columns**: keep `Ready`; add `Reconciling` and `Stalled` (or a single `Status`
   column off `Ready`'s reason/message) so `kubectl get` tells the same story kstatus computes, and ensure
   the refusal **reason/message survive into a column** — the offending file name must be reachable from
   `kubectl get`, not collapsed to a bare count.
-- Unit tests: a resync drain with a refusal error sets `FolderAccepted=False` (reason + file) and the trio
+- Unit tests: a resync drain with a refusal error sets `GitPathAccepted=False` (reason + file) and the trio
   to `Stalled=True, Reconciling=False, Ready=False` (kstatus `Failed`); a transient replay keeps
   `Reconciling=True, Ready=False` (kstatus `InProgress`); a clean recheck returns the trio to `Ready=True`;
-  a reconcile with `FolderAccepted=False` enqueues a fresh acceptance recheck.
+  a reconcile with `GitPathAccepted=False` enqueues a fresh acceptance recheck.
 
 ### Phase 4 — tests: prove the kstatus contract flips as designed
 
@@ -502,7 +501,7 @@ initial sync is instant and the `Reconciling=True` window is unobservable. Seed 
 (≈50–100 ConfigMaps across two namespaces) so the first materialization takes long enough to capture, in
 order: `InProgress` (`StreamsRunning=False, Reconciling=True`) → `Current` (`Ready=True`). Then, in the
 same spec, swap in the hard-Kustomize folder (and, as a Tier-1 case, a duplicate-identity folder) and
-assert the flip to `Failed` (`Stalled=True`, `FolderAccepted=False`) with **no commit** (reuse the
+assert the flip to `Failed` (`Stalled=True`, `GitPathAccepted=False`) with **no commit** (reuse the
 `remoteBranchHead`/`Consistently` pattern already in the spec). Finally clean the folder, reconcile, and
 assert recovery back through `InProgress` → `Current`.
 
@@ -523,7 +522,7 @@ stand-in. Log the deferral so coverage intent is explicit.
 - **Reconcile [status-conditions-guide.md](status-conditions-guide.md)** with the kstatus trio so the
   project has **one** story (its current `Ready`=summary gloss and stale `Available`/`Active`/`Synced`
   example predate `GitTarget`; align the example to the two-layer model:
-  `Ready`/`Reconciling`/`Stalled` + `Validated`/`EncryptionConfigured`/`StreamsRunning`/`FolderAccepted`,
+  `Ready`/`Reconciling`/`Stalled` + `Validated`/`EncryptionConfigured`/`StreamsRunning`/`GitPathAccepted`,
   and document the four canonical kstatus reads). Add a `kubectl`/kstatus smoke note so reviewers can
   confirm a refused folder polls as `Failed`.
 - Flip the e2e plan's Test D from "blocked" to "implemented."
@@ -535,7 +534,7 @@ stand-in. Log the deferral so coverage intent is explicit.
 ### Settled
 
 1. **Whole-folder vs type-scoped refusal.** Evaluate whole-folder (the gate's natural unit). Under the
-   two-sided model this surfaces as a **target-level** `FolderAccepted` condition rather than per-type
+   two-sided model this surfaces as a **target-level** `GitPathAccepted` condition rather than per-type
    state. Revisit only if per-type granularity proves necessary.
 2. **Default allowlist in the writer.** Use `DefaultAllowlist()` (not `Allowlist{}`) so a legit kustomize
    entrypoint is retained, not mis-refused as non-KRM. Verify no placement regression.
@@ -550,26 +549,27 @@ stand-in. Log the deferral so coverage intent is explicit.
 ### Decided this round
 
 - **D1 — condition naming — DECIDED.** Rename `StreamsReady` → **`StreamsRunning`** (source/cluster) and
-  add **`FolderAccepted`** (target/Git). "Running" = past initial sync, reconciling live continuously as
+  add **`GitPathAccepted`** (target/Git). "Running" = past initial sync, reconciling live continuously as
   designed; **not** running during the initial sync. Rename touches all three CRDs + `internal/watch`.
 - **D2 — what `Ready` aggregates — DECIDED (§3.5).** `Ready=True` ⟺ control plane valid AND
-  `FolderAccepted=True` AND `StreamsRunning=True` (initial sync complete) AND `observedGeneration` current.
+  `GitPathAccepted=True` AND `StreamsRunning=True` (initial sync complete) AND `observedGeneration` current.
   Initial sync → `Reconciling=True, Ready=False` (`InProgress`); folder refusal / RBAC / config →
   `Stalled=True, Ready=False` (`Failed`). `Ready` is **not** flipped True during the initial download —
   `InProgress` already expresses "working, not done" (refines the first-pass idea; see §3.5).
 - **D3 — retire the `UnsupportedContent` stream reason — DECIDED: remove it fully.** Folder refusal is
-  carried only by `FolderAccepted=False` + `Stalled=True`. Delete `StreamReasonUnsupportedContent`
+  carried only by `GitPathAccepted=False` + `Stalled=True`. Delete `StreamReasonUnsupportedContent`
   ([stream_readiness.go:55-61](../../internal/watch/stream_readiness.go#L55)), its marking in
   [event_router.go:272](../../internal/watch/event_router.go#L272), the `event_router_test.go` assertion,
   and rewrite [unsupported_folder_e2e_test.go:106](../../test/e2e/unsupported_folder_e2e_test.go#L106) to
-  assert `FolderAccepted=False`/`Stalled=True`. `Blocked` stays only for `WatchError`/`WatchNotPermitted`.
+  assert `GitPathAccepted=False`/`Stalled=True`. `Blocked` stays only for `WatchError`/`WatchNotPermitted`.
 
 ### Still open
 
 - **D4 — adopt the kstatus trio across all three CRDs?** `StreamsRunning` printer columns will exist on
-  GitTarget, WatchRule, and ClusterWatchRule alike. *Lean:* **yes** — add `Reconciling`/`Stalled` + define
-  `Ready` as the kstatus aggregate on GitTarget now, then extend to the WatchRule CRDs so the whole API
-  speaks one status contract. Keep `StreamsRunning`/`FolderAccepted` as the domain "why" layer.
+  GitTarget, WatchRule, and ClusterWatchRule alike. *Decision:* **yes** — add `Reconciling`/`Stalled` +
+  define `Ready` as the kstatus aggregate on GitTarget, WatchRule, and ClusterWatchRule. Keep
+  `StreamsRunning`/`GitPathAccepted` as the domain "why" layer, and add `GitTargetReady` on WatchRule and
+  ClusterWatchRule so target-side refusals are visible without overloading source stream status.
 
 ---
 
@@ -581,12 +581,12 @@ stand-in. Log the deferral so coverage intent is explicit.
 - **e2e flakiness.** Keep Test D `Serial`/small; reuse existing repo-setup + readiness wait helpers.
 - **Dirty worktree after refusal.** Bootstrap staging must not happen before acceptance, or it must be
   rolled back on refusal — otherwise a later commit can carry a stray `.sops.yaml` from a refused attempt.
-- **Lost diagnostic.** The refusal message (the file name) must survive into the `FolderAccepted` condition
+- **Lost diagnostic.** The refusal message (the file name) must survive into the `GitPathAccepted` condition
   message **and** a printer column; the user needs it to fix Git.
 - **Two-doc drift (resolved by Phase 5).** Until [status-conditions-guide.md](status-conditions-guide.md)
   is reconciled, the repo holds two contradictory stories about what `Ready` means. The D2 decision must be
   written back into the guide, not just here.
-- **Naming / contract churn.** Adding `FolderAccepted`/`Reconciling`/`Stalled` and redefining `Ready` as
+- **Naming / contract churn.** Adding `GitPathAccepted`/`Reconciling`/`Stalled` and redefining `Ready` as
   the kstatus aggregate changes the public status contract. It is safe **now** (`v1alpha2`), but it is a
   breaking semantic change for any client gating on `Ready`'s old control-plane meaning — land it before
   stabilizing the API.

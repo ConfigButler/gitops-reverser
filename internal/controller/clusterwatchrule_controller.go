@@ -116,6 +116,13 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		GitTargetStreamsRunningReasonNotReady,
 		"Blocked by validation; streams not evaluated",
 	)
+	r.setTypedCondition(
+		&clusterRule,
+		ConditionTypeGitTargetReady,
+		metav1.ConditionUnknown,
+		ReasonProgressing,
+		"Blocked by validation; GitTarget not evaluated",
+	)
 	r.setTypedCondition(&clusterRule, ConditionTypeReconciling, metav1.ConditionTrue, ReasonChecking,
 		"Validating ClusterWatchRule")
 	r.setTypedCondition(&clusterRule, ConditionTypeStalled, metav1.ConditionFalse, ReasonChecking,
@@ -136,6 +143,13 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	if clusterRule.Spec.TargetRef.Name == "" {
 		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.name must be specified for ClusterWatchRule")
+		r.setTypedCondition(
+			clusterRule,
+			ConditionTypeGitTargetReady,
+			metav1.ConditionFalse,
+			ClusterWatchRuleReasonGitDestinationInvalid,
+			"Target.name must be specified for ClusterWatchRule",
+		)
 		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.name must be specified for ClusterWatchRule")
 		return r.updateStatusAndRequeue(ctx, clusterRule)
@@ -146,6 +160,13 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	if targetNS == "" {
 		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.namespace must be specified for ClusterWatchRule")
+		r.setTypedCondition(
+			clusterRule,
+			ConditionTypeGitTargetReady,
+			metav1.ConditionFalse,
+			ClusterWatchRuleReasonGitDestinationInvalid,
+			"Target.namespace must be specified for ClusterWatchRule",
+		)
 		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.namespace must be specified for ClusterWatchRule")
 		return r.updateStatusAndRequeue(ctx, clusterRule)
@@ -158,16 +179,10 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 		log.Error(err, "Failed to get referenced GitTarget",
 			"gitTargetName", clusterRule.Spec.TargetRef.Name,
 			"gitTargetNamespace", targetNS)
-		r.setCondition(
-			clusterRule,
-			metav1.ConditionFalse,
-			ClusterWatchRuleReasonGitTargetNotFound,
-			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v",
-				targetNS, clusterRule.Spec.TargetRef.Name, err),
-		)
-		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
+		r.setGitTargetNotFound(clusterRule, targetNS, err)
 		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
+	r.setGitTargetReadyCondition(clusterRule, target)
 
 	// Resolve GitProvider from target
 	providerName := target.Spec.ProviderRef.Name
@@ -184,6 +199,13 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 			ClusterWatchRuleReasonGitProviderNotFound,
 			fmt.Sprintf("GitProvider '%s/%s' (from GitTarget) not found: %v",
 				providerNS, providerName, err),
+		)
+		r.setTypedCondition(
+			clusterRule,
+			ConditionTypeGitTargetReady,
+			metav1.ConditionFalse,
+			ClusterWatchRuleReasonGitProviderNotFound,
+			"Referenced GitProvider not found",
 		)
 		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
 		return r.updateStatusAndRequeue(ctx, clusterRule)
@@ -234,6 +256,9 @@ func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	if conditionIsFalse(clusterRule.Status.Conditions, ConditionTypeResourcesResolved) {
 		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
 	}
+	if !conditionIsTrue(clusterRule.Status.Conditions, ConditionTypeGitTargetReady) {
+		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
+	}
 	if !conditionIsTrue(clusterRule.Status.Conditions, ConditionTypeStreamsRunning) {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
@@ -247,6 +272,35 @@ func (r *ClusterWatchRuleReconciler) setCondition(
 	reason, message string,
 ) {
 	r.setTypedCondition(clusterRule, ConditionTypeReady, status, reason, message)
+}
+
+func (r *ClusterWatchRuleReconciler) setGitTargetNotFound(
+	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	targetNS string,
+	err error,
+) {
+	r.setCondition(
+		clusterRule,
+		metav1.ConditionFalse,
+		ClusterWatchRuleReasonGitTargetNotFound,
+		fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v", targetNS, clusterRule.Spec.TargetRef.Name, err),
+	)
+	r.setTypedCondition(
+		clusterRule,
+		ConditionTypeGitTargetReady,
+		metav1.ConditionFalse,
+		ClusterWatchRuleReasonGitTargetNotFound,
+		"Referenced GitTarget not found",
+	)
+	r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
+}
+
+func (r *ClusterWatchRuleReconciler) setGitTargetReadyCondition(
+	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	target configbutleraiv1alpha2.GitTarget,
+) {
+	ready := gitTargetReadyCondition(target)
+	r.setTypedCondition(clusterRule, ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
 }
 
 func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
