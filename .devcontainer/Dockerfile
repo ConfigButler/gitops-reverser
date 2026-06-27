@@ -228,6 +228,20 @@ RUN printf '%s\n' \
     'fi' \
     >> /etc/bash.bashrc
 
+# Install Node.js (provides npm + npx, e.g. for installing Claude Code skills).
+# Dev stage only; CI does not need a JS runtime.
+# NODE_MAJOR -> https://github.com/nodejs/node/releases (track a current LTS line)
+RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && chmod a+r /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get -y install --no-install-recommends nodejs \
+    && apt-get autoremove -y \
+    && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Tilt CLI (local dev loop orchestration; dev stage only)
 RUN arch="$(dpkg --print-architecture)" && \
     case "${arch}" in \

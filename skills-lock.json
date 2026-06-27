@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "k8s-crd-design-review": {
+      "source": "configbutler/skills",
+      "sourceType": "github",
+      "skillPath": "skills/k8s-crd-design-review/SKILL.md",
+      "computedHash": "ed5967bf3ca17c943ac2258605e17a3d9ee6f2f18a9ab4f012b3e448fc8ade77"
+    }
+  }
+}
