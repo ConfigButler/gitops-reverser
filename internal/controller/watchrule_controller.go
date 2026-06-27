@@ -106,6 +106,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		"target", watchRule.Spec.TargetRef,
 		"generation", watchRule.Generation,
 		"resourceVersion", watchRule.ResourceVersion)
+	watchRule.Status.ObservedGeneration = watchRule.Generation
 
 	// Set initial validating status
 	log.Info("Setting initial validating status")
@@ -113,10 +114,24 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		WatchRuleReasonValidating, "Validating WatchRule configuration...")
 	r.setTypedCondition(
 		&watchRule,
-		ConditionTypeStreamsReady,
+		ConditionTypeStreamsRunning,
 		metav1.ConditionUnknown,
-		GitTargetStreamsReadyReasonNotReady,
-		"Blocked by Ready=False; streams not evaluated",
+		GitTargetStreamsRunningReasonNotReady,
+		"Blocked by validation; streams not evaluated",
+	)
+	r.setTypedCondition(
+		&watchRule,
+		ConditionTypeReconciling,
+		metav1.ConditionTrue,
+		ReasonChecking,
+		"Validating WatchRule",
+	)
+	r.setTypedCondition(
+		&watchRule,
+		ConditionTypeStalled,
+		metav1.ConditionFalse,
+		ReasonChecking,
+		"WatchRule is not stalled",
 	)
 
 	// Route by configuration surface (Target is required now)
@@ -127,6 +142,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			WatchRuleReasonGitDestinationInvalid,
 			"Target.name must be specified",
 		)
+		r.setRuleStalled(&watchRule, WatchRuleReasonGitDestinationInvalid, "Target.name must be specified")
 		return r.updateStatusAndRequeue(ctx, &watchRule, RequeueShortInterval)
 	}
 	return r.reconcileWatchRuleViaTarget(ctx, &watchRule)
@@ -160,6 +176,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 				err,
 			),
 		)
+		r.setRuleStalled(watchRule, WatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
 		return r.updateStatusAndRequeue(ctx, watchRule, RequeueShortInterval)
 	}
 
@@ -184,6 +201,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 				err,
 			),
 		)
+		r.setRuleStalled(watchRule, WatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
 		return r.updateStatusAndRequeue(ctx, watchRule, RequeueShortInterval)
 	}
 
@@ -227,17 +245,15 @@ func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 		targetNS,
 		watchRule.Spec.TargetRef.Name,
 	)
-	r.setCondition(
-		watchRule,
-		metav1.ConditionTrue,
-		WatchRuleReasonReady,
-		msg,
-	)
+	r.setRuleKstatus(watchRule, msg)
 	if err := r.updateStatusWithRetry(ctx, watchRule); err != nil {
 		return ctrl.Result{}, err
 	}
 	if conditionIsFalse(watchRule.Status.Conditions, ConditionTypeResourcesResolved) {
 		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+	}
+	if !conditionIsTrue(watchRule.Status.Conditions, ConditionTypeStreamsRunning) {
+		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
 	return ctrl.Result{RequeueAfter: RequeueMediumInterval}, nil
 }
@@ -245,23 +261,7 @@ func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 // setCondition sets or updates the Ready condition.
 func (r *WatchRuleReconciler) setCondition( //nolint:lll // Function signature
 	watchRule *configbutleraiv1alpha2.WatchRule, status metav1.ConditionStatus, reason, message string) {
-	condition := metav1.Condition{
-		Type:               ConditionTypeReady,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	}
-
-	// Update existing condition or add new one
-	for i, existingCondition := range watchRule.Status.Conditions {
-		if existingCondition.Type == ConditionTypeReady {
-			watchRule.Status.Conditions[i] = condition
-			return
-		}
-	}
-
-	watchRule.Status.Conditions = append(watchRule.Status.Conditions, condition)
+	r.setTypedCondition(watchRule, ConditionTypeReady, status, reason, message)
 }
 
 func (r *WatchRuleReconciler) setResourceResolutionCondition(
@@ -285,10 +285,38 @@ func (r *WatchRuleReconciler) setStreamsReadyCondition(
 	watchRule.Status.Streams = watchRuleStreamsStatus(streams)
 	r.setTypedCondition(
 		watchRule,
-		ConditionTypeStreamsReady,
+		ConditionTypeStreamsRunning,
 		streamConditionStatus(streams),
 		streams.Reason,
 		streams.Message,
+	)
+}
+
+func (r *WatchRuleReconciler) setRuleStalled(
+	watchRule *configbutleraiv1alpha2.WatchRule,
+	reason string,
+	message string,
+) {
+	r.setTypedCondition(watchRule, ConditionTypeReady, metav1.ConditionFalse, reason, message)
+	r.setTypedCondition(watchRule, ConditionTypeReconciling, metav1.ConditionFalse, reason, "Reconciliation is stalled")
+	r.setTypedCondition(watchRule, ConditionTypeStalled, metav1.ConditionTrue, reason, message)
+}
+
+func (r *WatchRuleReconciler) setRuleKstatus(
+	watchRule *configbutleraiv1alpha2.WatchRule,
+	readyMessage string,
+) {
+	applyRuleKstatus(
+		watchRule.Status.Conditions,
+		readyMessage,
+		WatchRuleReasonReady,
+		"WatchRule is not stalled",
+		func(conditionType string, status metav1.ConditionStatus, reason, message string) {
+			r.setTypedCondition(watchRule, conditionType, status, reason, message)
+		},
+		func(reason, message string) {
+			r.setRuleStalled(watchRule, reason, message)
+		},
 	)
 }
 
@@ -299,20 +327,14 @@ func (r *WatchRuleReconciler) setTypedCondition(
 	reason string,
 	message string,
 ) {
-	condition := metav1.Condition{
-		Type:               conditionType,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	}
-	for i, existingCondition := range watchRule.Status.Conditions {
-		if existingCondition.Type == conditionType {
-			watchRule.Status.Conditions[i] = condition
-			return
-		}
-	}
-	watchRule.Status.Conditions = append(watchRule.Status.Conditions, condition)
+	watchRule.Status.Conditions = upsertCondition(
+		watchRule.Status.Conditions,
+		conditionType,
+		status,
+		reason,
+		message,
+		watchRule.Generation,
+	)
 }
 
 func conditionIsFalse(conditions []metav1.Condition, conditionType string) bool {

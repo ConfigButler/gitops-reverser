@@ -26,7 +26,7 @@ import (
 )
 
 func streamConditionStatus(streams watch.StreamSummary) metav1.ConditionStatus {
-	if streams.StreamsReady() {
+	if streams.StreamsRunning() {
 		return metav1.ConditionTrue
 	}
 	return metav1.ConditionFalse
@@ -35,7 +35,7 @@ func streamConditionStatus(streams watch.StreamSummary) metav1.ConditionStatus {
 func noResolvedStreamsSummary() watch.StreamSummary {
 	return watch.StreamSummary{
 		Reason:  watch.StreamReasonNoResolvedTypes,
-		Message: "0/0 streams ready; no resolved resource types",
+		Message: "0/0 streams running; no resolved resource types",
 	}
 }
 
@@ -52,5 +52,36 @@ func watchRuleStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha2
 		Blocked:       clampIntToInt32(streams.Blocked),
 		PendingSample: append([]string(nil), streams.PendingSample...),
 		ObservedTime:  &observed,
+	}
+}
+
+func applyRuleKstatus(
+	conditions []metav1.Condition,
+	readyMessage string,
+	readyReason string,
+	notStalledMessage string,
+	setCondition func(string, metav1.ConditionStatus, string, string),
+	setStalled func(string, string),
+) {
+	resources := conditionByType(conditions, ConditionTypeResourcesResolved)
+	streams := conditionByType(conditions, ConditionTypeStreamsRunning)
+	switch {
+	case resources != nil && resources.Status == metav1.ConditionFalse:
+		setStalled(resources.Reason, resources.Message)
+	case streams != nil && streams.Status == metav1.ConditionFalse &&
+		(streams.Reason == watch.StreamReasonWatchError || streams.Reason == watch.StreamReasonWatchNotPermitted):
+		setStalled(streams.Reason, streams.Message)
+	case streams != nil && streams.Status == metav1.ConditionTrue:
+		setCondition(ConditionTypeReady, metav1.ConditionTrue, readyReason, readyMessage)
+		setCondition(ConditionTypeReconciling, metav1.ConditionFalse, readyReason, "Reconciliation complete")
+		setCondition(ConditionTypeStalled, metav1.ConditionFalse, readyReason, notStalledMessage)
+	default:
+		reason, message := ReasonProgressing, "Waiting for streams to run"
+		if streams != nil {
+			reason, message = streams.Reason, streams.Message
+		}
+		setCondition(ConditionTypeReady, metav1.ConditionFalse, reason, message)
+		setCondition(ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
+		setCondition(ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
 	}
 }

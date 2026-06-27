@@ -367,13 +367,14 @@ and `kind` default to `configbutler.ai` / `GitProvider`, so in practice you only
 
 The most useful status fields are:
 
-- `Ready`: the control-plane condition, true when the target is valid, encryption is configured, and
-  a branch worker is wired.
-- `Synced`: the data-plane condition, true when the claimed resource types are serviceable from their
-  checkpoints.
+- `Ready`: true when the target is valid, the folder is accepted, and watched streams are running.
+- `Reconciling`: true while initial replay, a recheck, or another coarse progress step is in flight.
+- `Stalled`: true when the target is blocked until a human fixes configuration, RBAC, or folder content.
+- `Validated` and `EncryptionConfigured`: control-plane details.
+- `StreamsRunning`: true when the source watches are past initial replay and routing live events.
+- `FolderAccepted`: true when the target Git folder is safe to materialize.
 - `status.phase`: a human-facing summary (`Pending`, `Initializing`, `Synced`, or `Degraded`).
-- `status.materialization`: bounded counts for claimed, synced, pending, failing, and not-followable
-  resource types.
+- `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
 
 Use conditions for automation. `status.phase` is intended for humans and `kubectl get` output.
 

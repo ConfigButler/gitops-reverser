@@ -25,8 +25,9 @@ Only update `lastTransitionTime` when `status` actually changes — not on every
 1. **Always have a summary condition.** `Ready` for long-running objects, `Succeeded` for
    bounded ones. This is what operators and scripts will `kubectl wait` on.
 
-2. **Consistent polarity.** Pick positive (`True` = healthy) or negative (`False` = healthy)
-   and stick to it across all conditions. Mixing causes confusion when scanning a conditions list.
+2. **Consistent polarity, except for kstatus.** Domain conditions should be positive
+   (`True` = healthy). `Reconciling` and `Stalled` are the sanctioned kstatus exceptions:
+   they are abnormal-true because generic tooling expects that vocabulary.
 
 3. **Names describe states, not transitions.** `ScaledOut` not `Scaling`. This way `True` =
    success, `False` = failed, `Unknown` = in progress — all unambiguous.
@@ -36,11 +37,31 @@ Only update `lastTransitionTime` when `status` actually changes — not on every
 
 ## Applied to this project
 
+GitTarget, WatchRule, and ClusterWatchRule use the kstatus trio as the generic layer:
+
 ```go
 const (
-    TypeReady     = "Ready"      // summary — True when everything is healthy
-    TypeAvailable = "Available"  // can we reach the Git repository?
-    TypeActive    = "Active"     // is the BranchWorker running? (not "Progressing")
-    TypeSynced    = "Synced"     // are all changes pushed to Git?
+    TypeReady       = "Ready"       // True when the latest observed generation is fully satisfied
+    TypeReconciling = "Reconciling" // True while coarse progress is in flight
+    TypeStalled     = "Stalled"     // True when a human-fixable block prevents progress
 )
 ```
+
+GitTarget adds domain conditions that explain the summary:
+
+```go
+const (
+    TypeValidated            = "Validated"
+    TypeEncryptionConfigured = "EncryptionConfigured"
+    TypeStreamsRunning       = "StreamsRunning"
+    TypeFolderAccepted       = "FolderAccepted"
+)
+```
+
+Canonical reads:
+
+* fully mirrored: `Ready=True`, `Reconciling=False`, `Stalled=False`
+* initial replay or recheck: `Ready=False`, `Reconciling=True`, `Stalled=False`
+* refused folder, invalid provider, RBAC denial, or broken encryption: `Ready=False`, `Reconciling=False`,
+  `Stalled=True`
+* folder refusal details live on `FolderAccepted=False` and `Stalled=True`, reason `UnsupportedContent`

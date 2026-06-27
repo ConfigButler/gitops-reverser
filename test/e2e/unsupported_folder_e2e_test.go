@@ -32,10 +32,9 @@ import (
 // This spec proves the acceptance gate end to end: when a GitTarget's folder holds content
 // the operator cannot safely manage — here a kustomization.yaml that uses an unsupported
 // feature (a patches block) — the first-materialization resync is REFUSED. The operator
-// commits nothing and surfaces the refusal on GitTarget status as a blocked data plane
-// (StreamsReady=False, reason UnsupportedContent, phase Degraded) while the control plane
-// stays correctly configured (Ready=True). The folder is left untouched until a human cleans
-// it. See docs/design/unsupported-folder-refusal-plan.md.
+// commits nothing and surfaces the refusal on GitTarget status as FolderAccepted=False,
+// Stalled=True, and Ready=False. The source streams stay truthful to watch state; the folder
+// is left untouched until a human cleans it. See docs/design/unsupported-folder-refusal-plan.md.
 var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsupported-folder"), Ordered, func() {
 	var (
 		testNs       string
@@ -76,7 +75,7 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 		cleanupNamespace(testNs)
 	})
 
-	It("refuses a hard-Kustomize folder and blocks the stream without writing", func() {
+	It("refuses a hard-Kustomize folder without writing", func() {
 		By("seeding the Git repository with a folder that uses an unsupported Kustomize feature")
 		seedFolder := writeUnsupportedKustomizeFolder(testNs)
 		DeferCleanup(func() { _ = os.RemoveAll(seedFolder) })
@@ -99,11 +98,8 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 		}{Name: ruleName, Namespace: testNs, DestinationName: destName}, testNs)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap WatchRule")
 
-		By("the control plane is correctly configured: Ready=True")
-		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
-
-		By("the data plane is blocked: StreamsReady=False, reason UnsupportedContent")
-		waitForGitTargetStreamsBlocked(destName, testNs, "UnsupportedContent")
+		By("the folder is refused and the GitTarget is stalled")
+		waitForGitTargetFolderRefused(destName, testNs, "UnsupportedContent")
 
 		By("the operator commits nothing on top of the unsupported folder")
 		Consistently(func(g Gomega) {
@@ -111,7 +107,7 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 				To(Equal(seedHead), "the operator must not commit into a refused folder")
 		}, 20*time.Second, 4*time.Second).Should(Succeed())
 
-		By("✅ unsupported folder refused: data plane blocked, nothing written")
+		By("unsupported folder refused: GitTarget stalled, nothing written")
 	})
 })
 
@@ -145,22 +141,34 @@ func writeUnsupportedKustomizeFolder(namespace string) string {
 	return dir
 }
 
-// waitForGitTargetStreamsBlocked polls until the GitTarget's StreamsReady condition is False
-// with the expected reason — the user-visible signal that the data plane refused the folder.
-func waitForGitTargetStreamsBlocked(name, namespace, expectedReason string) {
+// waitForGitTargetFolderRefused polls until the GitTarget reports the target-side folder
+// refusal in the kstatus shape generic tooling expects.
+func waitForGitTargetFolderRefused(name, namespace, expectedReason string) {
 	GinkgoHelper()
 
 	Eventually(func(g Gomega) {
-		status, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
-			"-o", "jsonpath={.status.conditions[?(@.type=='StreamsReady')].status}")
+		folderStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
+			"-o", "jsonpath={.status.conditions[?(@.type=='FolderAccepted')].status}")
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(status)).To(Equal("False"),
-			"StreamsReady must be False for an unsupported folder")
+		g.Expect(strings.TrimSpace(folderStatus)).To(Equal("False"),
+			"FolderAccepted must be False for an unsupported folder")
 
-		reason, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
-			"-o", "jsonpath={.status.conditions[?(@.type=='StreamsReady')].reason}")
+		folderReason, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
+			"-o", "jsonpath={.status.conditions[?(@.type=='FolderAccepted')].reason}")
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(reason)).To(Equal(expectedReason),
-			"StreamsReady reason must name the unsupported content")
+		g.Expect(strings.TrimSpace(folderReason)).To(Equal(expectedReason),
+			"FolderAccepted reason must name the unsupported content")
+
+		readyStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
+			"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(readyStatus)).To(Equal("False"),
+			"Ready must be False for a refused folder")
+
+		stalledStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
+			"-o", "jsonpath={.status.conditions[?(@.type=='Stalled')].status}")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(stalledStatus)).To(Equal("True"),
+			"Stalled must be True for a refused folder")
 	}, 150*time.Second, 3*time.Second).Should(Succeed())
 }

@@ -24,14 +24,23 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - jsonPath: .status.conditions[?(@.type=="StreamsReady")].status
-      name: StreamsReady
+    - jsonPath: .status.conditions[?(@.type=="Reconciling")].status
+      name: Reconciling
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Stalled")].status
+      name: Stalled
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
+      name: StreamsRunning
       type: string
     - jsonPath: .status.streams.summary
       name: Streams
       type: string
-    - jsonPath: .status.conditions[?(@.type=="StreamsReady")].reason
+    - jsonPath: .status.conditions[?(@.type=="Stalled")].reason
       name: Reason
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Stalled")].message
+      name: Status
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -264,10 +273,9 @@ spec:
                 type: integer
               phase:
                 description: |-
-                  Phase is a small, derived, human-facing summary of the GitTarget's state —
-                  purely a projection of the conditions (Pending / Initializing / Synced /
-                  Degraded), informational only. Automation must gate on the conditions, never
-                  on phase. See docs/design/status-design-git-target.md §3.3.
+                  Phase is a small, derived, human-facing summary of the GitTarget's state.
+                  It is only a projection of Ready, Reconciling, and Stalled. Automation should
+                  gate on conditions, never on phase.
                 type: string
               streams:
                 description: |-

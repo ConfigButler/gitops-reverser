@@ -52,13 +52,6 @@ const (
 	StreamReasonAllStreamsReady        = "AllStreamsReady"
 	StreamReasonReplaying              = "Replaying"
 	StreamReasonNoResolvedTypes        = "NoResolvedTypes"
-	// StreamReasonUnsupportedContent blocks a type whose GitTarget subtree holds content
-	// the operator cannot safely manage (an unsupported kustomization, a duplicate
-	// identity, an impure or non-KRM file). The acceptance gate refused the
-	// first-materialization resync, so nothing was written; the human must clean the
-	// folder before the mirror can resume. Surfaced on status.streams + the StreamsReady
-	// condition (reason UnsupportedContent, phase Degraded).
-	StreamReasonUnsupportedContent = "UnsupportedContent"
 )
 
 const pendingStreamSampleLimit = 5
@@ -93,8 +86,8 @@ func (s StreamSummary) Summary() string {
 	return fmt.Sprintf("%d/%d", s.Ready, s.Total)
 }
 
-// StreamsReady reports whether all resolved streams are Streaming.
-func (s StreamSummary) StreamsReady() bool {
+// StreamsRunning reports whether all resolved streams are Streaming.
+func (s StreamSummary) StreamsRunning() bool {
 	return s.Total > 0 && s.Ready == s.Total
 }
 
@@ -284,9 +277,9 @@ func streamSummaryReasonAndMessage(
 	case out.Replaying > 0:
 		return StreamReasonReplaying, streamSummaryMessage(out, "replaying", replayingNames)
 	case out.Total == 0:
-		return StreamReasonNoResolvedTypes, "0/0 streams ready; no resolved resource types"
+		return StreamReasonNoResolvedTypes, "0/0 streams running; no resolved resource types"
 	default:
-		return StreamReasonAllStreamsReady, fmt.Sprintf("%d/%d streams ready", out.Ready, out.Total)
+		return StreamReasonAllStreamsReady, fmt.Sprintf("%d/%d streams running", out.Ready, out.Total)
 	}
 }
 
@@ -324,7 +317,7 @@ func blockedReason(statuses map[schema.GroupVersionResource]targetStreamStatus) 
 }
 
 func streamSummaryMessage(summary StreamSummary, label string, names []string) string {
-	msg := fmt.Sprintf("%d/%d streams ready; %d %s", summary.Ready, summary.Total,
+	msg := fmt.Sprintf("%d/%d streams running; %d %s", summary.Ready, summary.Total,
 		summary.Total-summary.Ready, label)
 	if len(names) == 0 {
 		return msg

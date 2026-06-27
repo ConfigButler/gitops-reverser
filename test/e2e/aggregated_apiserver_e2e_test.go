@@ -70,7 +70,7 @@ var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func
 		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
 
 		createGitTarget(targetName, testNs, providerName, aggregatedPath, "main")
-		verifyResourceStatus("gittarget", targetName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", targetName, testNs, "Validated", "True", "OK", "")
 	})
 
 	ensureFlunderWatchRuleReady := func() {
@@ -94,7 +94,7 @@ var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 
 		By("waiting for the flunder stream to be live before asserting per-event commits")
-		waitForStreamsReady(targetName, testNs)
+		waitForStreamsRunning(targetName, testNs)
 	}
 
 	AfterAll(func() {

@@ -284,7 +284,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
 		})
 
-		It("Should surface the two-axis status (Ready + StreamsReady/phase) and no EventStreamLive", func() {
+		It("Should surface kstatus and data-plane status without EventStreamLive", func() {
 			ctx := context.Background()
 
 			gitProvider := &configbutleraiv1alpha2.GitProvider{
@@ -319,14 +319,15 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			key := types.NamespacedName{Name: "test-target-two-axis", Namespace: "default"}
 			// With no EventRouter wired in the suite, a validated target has no resolved streams.
-			// Ready remains independent, while StreamsReady reports the data-plane contract. The point is
-			// that BOTH axes are present and the retired EventStreamLive condition / snapshot are
-			// not.
+			// Ready stays false while Reconciling carries progress, and the retired EventStreamLive
+			// condition / snapshot stay absent.
 			Eventually(func(g Gomega) {
 				var got configbutleraiv1alpha2.GitTarget
 				g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
-				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionReady)).To(BeTrue())
-				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionStreamsReady)).To(BeFalse())
+				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionReady)).To(BeFalse())
+				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionReconciling)).To(BeTrue())
+				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionStalled)).To(BeFalse())
+				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionStreamsRunning)).To(BeFalse())
 				g.Expect(got.Status.Phase).To(Equal(GitTargetPhaseInitializing))
 				for _, c := range got.Status.Conditions {
 					g.Expect(c.Type).NotTo(Equal("EventStreamLive"), "EventStreamLive condition was removed")

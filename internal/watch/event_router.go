@@ -240,6 +240,9 @@ func (r *EventRouter) drainScopedResync(
 		r.Log.V(1).Info("per-type "+kind+" applied",
 			"gitDest", gitDest.String(), "gvr", key.GVR.String(),
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
+		if r.WatchManager != nil {
+			r.WatchManager.MarkTargetFolderAccepted(gitDest)
+		}
 		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile
 		// e2e gate reads (a sweep is excluded; it is a removal, not a steady-state reconcile).
@@ -254,9 +257,9 @@ func (r *EventRouter) drainScopedResync(
 
 // handleScopedResyncError classifies a failed resync. A folder the acceptance gate refused
 // is not a transient write fault: nothing was committed, the human must clean the folder, so
-// it is surfaced as a Blocked stream (StreamsReady=False, reason UnsupportedContent) and is
-// NOT counted as a background resync failure. Every other error stays a background failure so
-// a silently-recovered fault remains observable.
+// it is surfaced as target-level FolderAccepted=False and is NOT counted as a background
+// resync failure. Every other error stays a background failure so a silently-recovered fault
+// remains observable.
 func (r *EventRouter) handleScopedResyncError(
 	gitDest types.ResourceReference,
 	key targetWatchKey,
@@ -268,8 +271,7 @@ func (r *EventRouter) handleScopedResyncError(
 		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget folder content",
 			"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
 		if r.WatchManager != nil {
-			r.WatchManager.markTargetStreamState(
-				gitDest, key, StreamStateBlocked, StreamReasonUnsupportedContent, refused.BlockMessage())
+			r.WatchManager.MarkTargetFolderRefused(gitDest, "UnsupportedContent", refused.BlockMessage())
 		}
 		return
 	}

@@ -237,9 +237,9 @@ spec:
 
 		err := applyFromTemplate("test/e2e/templates/watchrule-secret.tmpl", data, testNs)
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
-		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		waitForStreamsReady(destName, testNs)
+		waitForStreamsRunning(destName, testNs)
 
 		By("creating Secret in watched namespace")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "secret", secretName, "--ignore-not-found=true")
@@ -342,7 +342,7 @@ spec:
 		err := applyFromTemplate("test/e2e/templates/watchrule-secret.tmpl", data, testNs)
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		waitForStreamsReady(destName, testNs)
+		waitForStreamsRunning(destName, testNs)
 
 		By("validating generated encryption secret has recipient and warning annotations")
 		var generatedAgeKey string
@@ -486,12 +486,12 @@ spec:
 
 		By("verifying WatchRule is ready")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
 
-		// Gate on StreamsReady so the configmaps watch is past its replay watermark before we create
+		// Gate on StreamsRunning so the configmaps watch is past its replay watermark before we create
 		// the ConfigMap: a create observed mid-replay folds into the unattributed baseline instead of
 		// producing the live [CREATE] event commit (attributed to jane@acme.com) asserted below.
-		waitForStreamsReady(destName, testNs)
+		waitForStreamsRunning(destName, testNs)
 
 		By("creating test ConfigMap to trigger Git commit")
 		configMapData := struct {
@@ -627,7 +627,7 @@ spec:
 		By("creating GitTarget but no WatchRule yet")
 		destName := watchRuleName + "-dest"
 		createGitTarget(destName, testNs, gitProviderName, "e2e/backfill-rule-add", "main")
-		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
 
 		By("creating the ConfigMap BEFORE the rule that should select it")
 		configMapData := struct {
@@ -720,11 +720,11 @@ spec:
 
 		By("verifying WatchRule is ready")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
 
-		// Gate on StreamsReady so both the create and the delete below are live per-event commits
+		// Gate on StreamsRunning so both the create and the delete below are live per-event commits
 		// rather than baseline folds, making the [DELETE] commit on the file's path deterministic.
-		waitForStreamsReady(destName, testNs)
+		waitForStreamsRunning(destName, testNs)
 
 		By("creating test ConfigMap to trigger Git commit")
 		configMapData := struct {

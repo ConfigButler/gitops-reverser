@@ -258,21 +258,29 @@ var _ = Describe("WatchRule Controller", func() {
 			}, updatedRule)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying WatchRule is Ready")
-			Expect(updatedRule.Status.Conditions).To(HaveLen(2))
-			var condition, streamsReady metav1.Condition
+			By("Verifying WatchRule is reconciling until streams are running")
+			Expect(updatedRule.Status.Conditions).To(HaveLen(4))
+			var condition, streamsRunning, reconciling, stalled metav1.Condition
 			for _, c := range updatedRule.Status.Conditions {
 				if c.Type == ConditionTypeReady {
 					condition = c
 				}
-				if c.Type == ConditionTypeStreamsReady {
-					streamsReady = c
+				if c.Type == ConditionTypeStreamsRunning {
+					streamsRunning = c
+				}
+				if c.Type == ConditionTypeReconciling {
+					reconciling = c
+				}
+				if c.Type == ConditionTypeStalled {
+					stalled = c
 				}
 			}
-			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-			Expect(condition.Reason).To(Equal(WatchRuleReasonReady))
-			Expect(streamsReady.Status).To(Equal(metav1.ConditionFalse))
-			Expect(streamsReady.Reason).To(Equal(watch.StreamReasonNoResolvedTypes))
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(watch.StreamReasonNoResolvedTypes))
+			Expect(streamsRunning.Status).To(Equal(metav1.ConditionFalse))
+			Expect(streamsRunning.Reason).To(Equal(watch.StreamReasonNoResolvedTypes))
+			Expect(reconciling.Status).To(Equal(metav1.ConditionTrue))
+			Expect(stalled.Status).To(Equal(metav1.ConditionFalse))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, watchRule)).Should(Succeed())

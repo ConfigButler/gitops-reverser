@@ -170,18 +170,18 @@ One materialization destination: `(provider, branch, path)`. Key fields:
 materialization. The controller also rejects path overlaps between GitTargets sharing a provider and
 branch.
 
-Status splits into two **orthogonal axes** (see
-[design/status-design-git-target.md](design/status-design-git-target.md)):
+Status has a kstatus-compatible summary layer plus domain conditions:
 
-* **Control plane. Is it configured and wired?** `Validated` (provider exists, branch allowed, path valid
-  with no overlap), `EncryptionConfigured` (required key material present), and `Ready` (the aggregate of
-  those plus a wired branch worker). `Ready` does **not** depend on data plane sync.
-* **Data plane. Is desired state actually materializing?** `Synced`, a pure projection of the
-  materialization summary, with reasons `OK` / `Initializing` / `NotFollowable` / `SyncFailing`.
-  `status.phase` (`Pending`/`Initializing`/`Synced`/`Degraded`) is an informational projection only;
-  automation gates on conditions, never phase. `status.materialization` is a bounded **counts** summary
-  (`claimedTypes`, `syncedTypes`, `pendingTypes`, `failingTypes`, `notFollowableTypes`, `observedTime`),
-  not a list by type.
+* `Ready`, `Reconciling`, and `Stalled` are the generic conditions used by GitOps tooling. `Ready=True`
+  means the latest observed generation is valid, the folder is accepted, and source streams are running.
+  Initial replay reports `Reconciling=True`. A human-fixable block reports `Stalled=True`.
+* `Validated` and `EncryptionConfigured` explain control-plane health.
+* `StreamsRunning` explains the source side: every tracked type is past initial replay and routing live
+  events.
+* `FolderAccepted` explains the target side: the selected Git folder is safe for the operator to
+  materialize.
+* `status.phase` (`Pending`/`Initializing`/`Synced`/`Degraded`) is informational only. Automation gates on
+  conditions, never phase. `status.streams` is a bounded count summary, not a per-type list.
 
 ### GitProvider
 
@@ -546,8 +546,8 @@ write side is shared with live writes):
   finds content the operator cannot safely manage — a kustomization using an unsupported feature
   (generators / patches / components / helm / replacements / transformers / name(pre|suf)fix / remote
   bases), a duplicate manifest identity, an impure managed file, or a standalone non-KRM / invalid YAML —
-  the whole apply is **refused**: nothing is committed and the type's stream is marked **Blocked**
-  (`StreamsReady=False`, reason `UnsupportedContent`, phase `Degraded`) until a human cleans the folder;
+  the whole apply is **refused**: nothing is committed, `FolderAccepted=False`, `Stalled=True`, and
+  `Ready=False` with reason `UnsupportedContent` until a human cleans the folder;
 * desired resources are upserted through the same content derived path as live writes;
 * existing managed documents that are watched but absent from the desired set are deleted;
 * the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary

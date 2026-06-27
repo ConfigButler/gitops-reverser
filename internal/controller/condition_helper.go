@@ -59,3 +59,17 @@ func upsertCondition(
 	result = append(result, next)
 	return result
 }
+
+func conditionByType(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
+
+func conditionIsTrue(conditions []metav1.Condition, conditionType string) bool {
+	condition := conditionByType(conditions, conditionType)
+	return condition != nil && condition.Status == metav1.ConditionTrue
+}

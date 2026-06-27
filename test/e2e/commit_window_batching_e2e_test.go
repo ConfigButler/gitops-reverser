@@ -84,7 +84,7 @@ var _ = Describe("Commit Window Batching",
 			verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
 
 			createGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-window-test", "main")
-			verifyResourceStatus("gittarget", gitTargetName, testNs, "True", "Ready", "")
+			verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
 
 			watchRuleData := struct {
 				Name            string
@@ -100,7 +100,7 @@ var _ = Describe("Commit Window Batching",
 			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 
 			By("waiting for the configmaps stream to be live so the seed and burst are live events")
-			waitForStreamsReady(gitTargetName, testNs)
+			waitForStreamsRunning(gitTargetName, testNs)
 		})
 
 		AfterAll(func() {

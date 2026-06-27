@@ -128,7 +128,7 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 			"test/e2e/templates/restart/clusterwatchrule-wildcard.tmpl", cwrData, "",
 		)).To(Succeed(), "failed to apply wildcard ClusterWatchRule")
 
-		verifyResourceStatus("gittarget", gitTargetName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
 		verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
 
 		By("creating quiet IceCreamOrder resources to build up the git mirror")

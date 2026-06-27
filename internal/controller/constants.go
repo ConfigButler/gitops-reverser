@@ -44,8 +44,16 @@ const (
 	ConditionTypeReady = "Ready"
 	// ConditionTypeResourcesResolved indicates whether rule resources resolved to concrete GVRs.
 	ConditionTypeResourcesResolved = "ResourcesResolved"
-	// ConditionTypeStreamsReady indicates whether watched type streams are routing live events.
-	ConditionTypeStreamsReady = "StreamsReady"
+	// ConditionTypeReconciling is the kstatus progress condition. It is abnormal-true.
+	ConditionTypeReconciling = "Reconciling"
+	// ConditionTypeStalled is the kstatus blocked condition. It is abnormal-true.
+	ConditionTypeStalled = "Stalled"
+	// ConditionTypeStreamsRunning indicates whether watched type streams are routing live events.
+	ConditionTypeStreamsRunning = "StreamsRunning"
+	// ConditionTypeFolderAccepted indicates whether the GitTarget folder is safe to materialize.
+	ConditionTypeFolderAccepted = "FolderAccepted"
+	// ConditionTypeStreamsReady is a source-compatibility alias for StreamsRunning.
+	ConditionTypeStreamsReady = ConditionTypeStreamsRunning
 
 	// MsgSnapshotCompleted is returned as the condition message when the initial
 	// cluster snapshot has been successfully committed to Git.
@@ -73,6 +81,12 @@ const (
 
 	// ReasonChecking indicates that the controller is checking the resource status.
 	ReasonChecking = "Checking"
+	// ReasonReconciling indicates that reconciliation is still making progress.
+	ReasonReconciling = "Reconciling"
+	// ReasonStalled indicates that reconciliation is blocked until a human fixes the object or dependency.
+	ReasonStalled = "Stalled"
+	// ReasonProgressing indicates that a stream or control-plane gate is still converging.
+	ReasonProgressing = "Progressing"
 	// ReasonSecretNotFound indicates that the referenced secret was not found.
 	ReasonSecretNotFound = "SecretNotFound"
 	// ReasonSecretMalformed indicates that the referenced secret is invalid.

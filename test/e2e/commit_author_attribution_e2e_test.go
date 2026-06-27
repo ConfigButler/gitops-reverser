@@ -87,7 +87,7 @@ var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() 
 		verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
 
 		createGitTarget(gitTargetName, testNs, gitProvName, basePath, "main")
-		verifyResourceStatus("gittarget", gitTargetName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
 
 		data := struct {
 			Name            string
@@ -105,8 +105,8 @@ var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() 
 		// Authorship only flows through the per-event audit tail. A ConfigMap created
 		// while the configmaps type is still building its first checkpoint would land in
 		// the unattributed baseline splice instead (fallback author), so wait until the
-		// GitTarget reports StreamsReady before producing the impersonated writes.
-		waitForStreamsReady(gitTargetName, testNs)
+		// GitTarget reports StreamsRunning before producing the impersonated writes.
+		waitForStreamsRunning(gitTargetName, testNs)
 	})
 
 	AfterAll(func() {

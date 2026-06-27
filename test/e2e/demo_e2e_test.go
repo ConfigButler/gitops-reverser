@@ -297,7 +297,8 @@ func (r *demoRun) removeLegacyDemoResources() {
 
 func (r *demoRun) verifyCoffeeConfigReverseResourcesReady() {
 	verifyResourceStatus("gitprovider", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Ready", "")
-	verifyResourceStatus("gittarget", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Ready", "")
+	verifyResourceCondition(
+		"gittarget", demoCoffeeConfigGitProviderName, voterTestNamespace, "Validated", "True", "OK", "")
 	verifyResourceStatus("watchrule", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Ready", "")
 }
 

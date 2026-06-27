@@ -126,7 +126,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying ClusterWatchRule is ready")
 		verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
-		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
 
 		By("installing the IceCreamOrder CRD to trigger Git commit")
 		err = applyIceCreamCRD(crdGroupCRDLifecycle)
@@ -235,11 +235,11 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying WatchRule is ready")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
 
-		// Gate on StreamsReady so this and the later modify/delete specs (which share this Ordered
+		// Gate on StreamsRunning so this and the later modify/delete specs (which share this Ordered
 		// GitTarget) act on a live stream — the [DELETE] commit assertion downstream depends on it.
-		waitForStreamsReady(destName, testNs)
+		waitForStreamsRunning(destName, testNs)
 
 		By("creating CR with labels and annotations to trigger Git commit")
 		crdInstanceData := struct {
@@ -618,7 +618,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		By("creating ClusterWatchRule with Cluster scope for CRDs")
 		destName := clusterWatchRuleName + "-dest"
 		createGitTarget(destName, testNs, gitProviderName, "e2e/crd-delete-test", "main")
-		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
 
 		clusterWatchRuleData := struct {
 			Name            string
@@ -638,7 +638,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
 
 		By("waiting for the CRD stream to be live so the deletion is a live [DELETE] event")
-		waitForStreamsReady(destName, testNs)
+		waitForStreamsRunning(destName, testNs)
 
 		By("verifying CRD file exists in Git before deletion")
 		verifyFileExists := func(g Gomega) {

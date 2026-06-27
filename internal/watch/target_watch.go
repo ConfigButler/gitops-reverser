@@ -66,7 +66,11 @@ type targetWatchKey struct {
 // claimed, followable (GVR, scope) table. Each watch resumes from its stored
 // cursor when possible; otherwise it initializes with sendInitialEvents and a
 // scoped mark-and-sweep before streaming live object events.
-func (m *Manager) EnsureGitTargetWatches(ctx context.Context, gitDest types.ResourceReference) error {
+func (m *Manager) EnsureGitTargetWatches(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+	forceRecheck ...bool,
+) error {
 	if m.EventRouter == nil {
 		return nil
 	}
@@ -84,26 +88,29 @@ func (m *Manager) EnsureGitTargetWatches(ctx context.Context, gitDest types.Reso
 		return fmt.Errorf("aborting watch setup for %s: %s within the removal grace (currently unserved)",
 			gitDest.String(), gvkListSummary(retained))
 	}
-	return m.replaceGitTargetWatches(ctx, table)
+	force := len(forceRecheck) > 0 && forceRecheck[0]
+	return m.replaceGitTargetWatches(ctx, table, force)
 }
 
-func (m *Manager) replaceGitTargetWatches(ctx context.Context, table WatchedTypeTable) error {
+func (m *Manager) replaceGitTargetWatches(
+	ctx context.Context,
+	table WatchedTypeTable,
+	forceRecheck ...bool,
+) error {
 	specs := targetWatchSpecs(table)
 	keys := sortedTargetWatchSpecKeys(specs)
 	childCtx, cancel := context.WithCancel(ctx)
+	force := len(forceRecheck) > 0 && forceRecheck[0]
 
 	m.targetWatchesMu.Lock()
 	if m.targetWatches == nil {
 		m.targetWatches = map[string]*targetWatchSet{}
 	}
 	key := table.GitDest.Key()
-	if prior := m.targetWatches[key]; prior != nil {
-		if equalTargetWatchSpecs(prior.specs, specs) {
-			m.targetWatchesMu.Unlock()
-			cancel()
-			return nil
-		}
-		prior.cancel()
+	if m.prepareTargetWatchSetReplacementLocked(key, specs, force) {
+		m.targetWatchesMu.Unlock()
+		cancel()
+		return nil
 	}
 	m.targetWatches[key] = &targetWatchSet{cancel: cancel, specs: specs}
 	if m.targetStreamStates == nil {
@@ -120,7 +127,7 @@ func (m *Manager) replaceGitTargetWatches(ctx context.Context, table WatchedType
 		}
 	}
 	for _, watchKey := range keys {
-		if _, ok := states[watchKey]; !ok {
+		if _, ok := states[watchKey]; force || !ok {
 			m.markTargetStreamStateLocked(
 				table.GitDest,
 				watchKey,
@@ -139,6 +146,22 @@ func (m *Manager) replaceGitTargetWatches(ctx context.Context, table WatchedType
 	}
 	log.Info("watch-first target watch set reconciled", "watchCount", len(keys))
 	return nil
+}
+
+func (m *Manager) prepareTargetWatchSetReplacementLocked(
+	key string,
+	specs map[targetWatchKey]string,
+	force bool,
+) bool {
+	prior := m.targetWatches[key]
+	if prior == nil {
+		return false
+	}
+	if !force && equalTargetWatchSpecs(prior.specs, specs) {
+		return true
+	}
+	prior.cancel()
+	return false
 }
 
 func (m *Manager) refreshRunningTargetWatches(ctx context.Context) {
@@ -173,6 +196,7 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 		delete(m.targetWatches, gitDest.Key())
 	}
 	m.dropTargetStreamStateLocked(gitDest)
+	m.dropTargetFolderAcceptanceLocked(gitDest)
 }
 
 func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
@@ -550,9 +574,9 @@ func (m *Manager) enqueueReplayResync(
 		return fmt.Errorf("target replay resync for %s on %s dropped: %w",
 			key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
 	}
-	// The key (GVR + namespace) is threaded to the drain so a refused folder marks THIS
-	// type's stream Blocked: the resync result decides whether the stream the watch just
-	// marked Streaming must drop back to Blocked (unsupported content).
+	// The key (GVR + namespace) is threaded to the drain for diagnostics. A refused
+	// folder is target-level state, so the drain records FolderAccepted=False rather
+	// than mutating this stream's watch readiness.
 	go m.EventRouter.drainScopedResync(gitDest, key, "reconcile", resultCh)
 	log.V(1).Info("target replay resync enqueued",
 		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "revision", revision, "count", len(desired))

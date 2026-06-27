@@ -112,7 +112,7 @@ func recentCommitDiagnostics(checkoutDir, pathspec string) string {
 }
 
 // latestCommitSubjectForPath returns the subject (first line of the message) of the most recent
-// commit that touched relPath. With the StreamsReady gate in place the latest commit for a path is
+// commit that touched relPath. With the StreamsRunning gate in place the latest commit for a path is
 // deterministic, so specs assert against it directly instead of scanning a window of recent commits
 // for a substring.
 func latestCommitSubjectForPath(g Gomega, checkoutDir, relPath string) string {

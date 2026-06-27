@@ -100,10 +100,9 @@ type GitTargetStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Phase is a small, derived, human-facing summary of the GitTarget's state —
-	// purely a projection of the conditions (Pending / Initializing / Synced /
-	// Degraded), informational only. Automation must gate on the conditions, never
-	// on phase. See docs/design/status-design-git-target.md §3.3.
+	// Phase is a small, derived, human-facing summary of the GitTarget's state.
+	// It is only a projection of Ready, Reconciling, and Stalled. Automation should
+	// gate on conditions, never on phase.
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
@@ -154,9 +153,12 @@ type GitTargetStreamsStatus struct {
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.providerRef.name`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="StreamsReady",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsReady")].status`
+// +kubebuilder:printcolumn:name="Reconciling",type=string,JSONPath=`.status.conditions[?(@.type=="Reconciling")].status`
+// +kubebuilder:printcolumn:name="Stalled",type=string,JSONPath=`.status.conditions[?(@.type=="Stalled")].status`
+// +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
-// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsReady")].reason`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Stalled")].reason`
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Stalled")].message`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitTarget is the Schema for the gittargets API.

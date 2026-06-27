@@ -245,6 +245,10 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	target := pendingWrite.Target()
 	base := sanitizePath(target.Path)
 
+	if err := w.refuseUnsafeWorktree(ctx, worktree, base); err != nil {
+		return 0, err
+	}
+
 	// Stage the path's bootstrap template (its directory and any .sops.yaml) before
 	// applying, exactly as the per-event path does via ensureBootstrapTemplateInPath.
 	// Without it a first resync into a fresh subtree has no directory for SOPS to chdir
@@ -295,6 +299,16 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		"created", stats.Created, "updated", stats.Updated,
 		"deleted", stats.Deleted, "skipped", stats.Skipped, "revision", pendingWrite.Revision)
 	return 1, nil
+}
+
+func (w *BranchWorker) refuseUnsafeWorktree(ctx context.Context, worktree *gogit.Worktree, base string) error {
+	root := worktree.Filesystem.Root()
+	files, err := scanWorktreeYAML(filepath.Join(root, base))
+	if err != nil {
+		return err
+	}
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, files)
+	return batch.refusal()
 }
 
 // applyResyncToWorktree is the streaming mark-and-sweep resync apply (M8), described

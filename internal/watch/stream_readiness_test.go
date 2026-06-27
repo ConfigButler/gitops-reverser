@@ -63,5 +63,5 @@ func TestStreamSummaryForTypes_BlockedOutranksReplaying(t *testing.T) {
 	assert.Equal(t, 1, summary.Blocked)
 	assert.Equal(t, 1, summary.Replaying)
 	assert.Equal(t, StreamReasonWatchError, summary.Reason)
-	assert.False(t, summary.StreamsReady())
+	assert.False(t, summary.StreamsRunning())
 }

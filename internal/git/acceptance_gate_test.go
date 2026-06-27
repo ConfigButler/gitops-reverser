@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -92,4 +93,38 @@ func TestPlanFlush_DoesNotRefuseOwnSopsConfig(t *testing.T) {
 	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", create)
 	require.NoError(t, err, ".sops.yaml is the operator's own config and must not be refused")
 	assert.True(t, changed, "the ConfigMap must still be written beside .sops.yaml")
+}
+
+func TestResyncRefusal_DoesNotStageSOPSBootstrap(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	repo, err := gogit.PlainOpen(root)
+	require.NoError(t, err)
+
+	seedPlacedManifest(t, worktree, "apps/kustomization.yaml", hardKustomizeYAML)
+
+	w := &BranchWorker{contentWriter: writer, mapper: configMapMapper()}
+	pending := PendingWrite{
+		Kind:               PendingWriteResync,
+		GitTargetName:      "target-a",
+		GitTargetNamespace: "default",
+		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
+			{Name: "target-a", Namespace: "default"}: {
+				Name:      "target-a",
+				Namespace: "default",
+				Path:      "apps",
+				BootstrapOptions: buildBootstrapOptions(&ResolvedEncryptionConfig{
+					AgeRecipients: []string{"age1testrecipient"},
+				}),
+			},
+		},
+	}
+
+	_, err = w.executeResyncPendingWrite(context.Background(), repo, worktree, pending)
+	var refused *manifestanalyzer.AcceptanceRefusedError
+	require.ErrorAs(t, err, &refused)
+
+	_, statErr := os.Stat(filepath.Join(root, "apps", ".sops.yaml"))
+	assert.True(t, os.IsNotExist(statErr), "a refused resync must not stage bootstrap .sops.yaml")
 }

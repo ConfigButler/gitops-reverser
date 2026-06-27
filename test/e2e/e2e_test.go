@@ -168,12 +168,27 @@ func discoverControllerPodName(ns string) (string, error) {
 // verifyResourceStatus verifies a resource's status conditions match expected values.
 // For cluster-scoped resources, provide an empty namespace.
 func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason, expectedMessageContains string) {
+	verifyResourceCondition(
+		resourceType,
+		name,
+		ns,
+		"Ready",
+		expectedStatus,
+		expectedReason,
+		expectedMessageContains,
+	)
+}
+
+func verifyResourceCondition(
+	resourceType, name, ns, conditionType, expectedStatus, expectedReason, expectedMessageContains string,
+) {
 	By(
 		fmt.Sprintf(
-			"verifying %s '%s' in ns '%s' status is '%s' with reason '%s'",
+			"verifying %s '%s' in ns '%s' condition %s is '%s' with reason '%s'",
 			resourceType,
 			name,
 			ns,
+			conditionType,
 			expectedStatus,
 			expectedReason,
 		),
@@ -193,28 +208,28 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 		conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 		g.Expect(found).To(BeTrue(), "status.conditions not found")
 
-		var readyStatus, readyReason, readyMessage string
+		var conditionStatus, conditionReason, conditionMessage string
 		for _, cond := range conditions {
 			condMap, ok := cond.(map[string]interface{})
 			if !ok {
 				continue
 			}
-			if condMap["type"] == "Ready" {
-				readyStatus, _ = condMap["status"].(string)
-				readyReason, _ = condMap["reason"].(string)
-				readyMessage, _ = condMap["message"].(string)
+			if condMap["type"] == conditionType {
+				conditionStatus, _ = condMap["status"].(string)
+				conditionReason, _ = condMap["reason"].(string)
+				conditionMessage, _ = condMap["message"].(string)
 				break
 			}
 		}
 
-		g.Expect(readyStatus).To(Equal(expectedStatus))
-		if resourceType == "gittarget" && expectedReason == "Ready" {
-			g.Expect([]string{"Ready", "OK"}).To(ContainElement(readyReason))
+		g.Expect(conditionStatus).To(Equal(expectedStatus))
+		if resourceType == "gittarget" && conditionType == "Ready" && expectedReason == "Ready" {
+			g.Expect([]string{"Ready", "OK"}).To(ContainElement(conditionReason))
 		} else {
-			g.Expect(readyReason).To(Equal(expectedReason))
+			g.Expect(conditionReason).To(Equal(expectedReason))
 		}
 		if expectedMessageContains != "" {
-			g.Expect(readyMessage).To(ContainSubstring(expectedMessageContains))
+			g.Expect(conditionMessage).To(ContainSubstring(expectedMessageContains))
 		}
 	}
 	// 90s (vs the 30s default) absorbs slow-CI and parallel load: in particular,
@@ -224,21 +239,21 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 	Eventually(verifyStatus, "90s", "2s").Should(Succeed())
 }
 
-// waitForStreamsReady blocks until the GitTarget reports StreamsReady=True. Specs that assert
+// waitForStreamsRunning blocks until the GitTarget reports StreamsRunning=True. Specs that assert
 // live per-event behavior, authorship, or ordering must create asserted resources only after this
 // point so the relevant watches are past their replay watermark.
-func waitForStreamsReady(name, ns string) {
-	By(fmt.Sprintf("waiting for gittarget '%s' in ns '%s' to report StreamsReady=True", name, ns))
-	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=StreamsReady=true",
+func waitForStreamsRunning(name, ns string) {
+	By(fmt.Sprintf("waiting for gittarget '%s' in ns '%s' to report StreamsRunning=True", name, ns))
+	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=StreamsRunning=true",
 		"gittarget/"+name, "--timeout=120s")
-	Expect(err).NotTo(HaveOccurred(), "gittarget %s/%s did not reach StreamsReady=True", ns, name)
+	Expect(err).NotTo(HaveOccurred(), "gittarget %s/%s did not reach StreamsRunning=True", ns, name)
 }
 
-func waitForWatchRuleStreamsReady(name, ns string) { //nolint:unused // Helper for specs that need a rule-scoped gate.
-	By(fmt.Sprintf("waiting for watchrule '%s' in ns '%s' to report StreamsReady=True", name, ns))
-	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=StreamsReady=true",
+func waitForWatchRuleStreamsRunning(name, ns string) { //nolint:unused // Helper for specs that need a rule-scoped gate.
+	By(fmt.Sprintf("waiting for watchrule '%s' in ns '%s' to report StreamsRunning=True", name, ns))
+	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=StreamsRunning=true",
 		"watchrule/"+name, "--timeout=120s")
-	Expect(err).NotTo(HaveOccurred(), "watchrule %s/%s did not reach StreamsReady=True", ns, name)
+	Expect(err).NotTo(HaveOccurred(), "watchrule %s/%s did not reach StreamsRunning=True", ns, name)
 }
 
 // showControllerLogs displays the current controller logs to help with debugging during test execution.

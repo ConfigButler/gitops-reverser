@@ -191,9 +191,9 @@ func (r *quickstartFrameworkRun) applyQuickstartResources() {
 func (r *quickstartFrameworkRun) verifyQuickstartResourcesReady() {
 	ns := testNamespaceFor("quickstart-framework")
 	verifyResourceStatus("gitprovider", r.providerName, ns, "True", "Ready", "")
-	verifyResourceStatus("gittarget", r.targetName, ns, "True", "Ready", "")
+	verifyResourceCondition("gittarget", r.targetName, ns, "Validated", "True", "OK", "")
 	verifyResourceStatus("watchrule", r.watchRuleName, ns, "True", "Ready", "")
-	waitForStreamsReady(r.targetName, ns)
+	waitForStreamsRunning(r.targetName, ns)
 }
 
 func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret() string {

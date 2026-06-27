@@ -85,8 +85,8 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 		By("creating two independent GitTargets writing to separate paths in the same repo")
 		createGitTarget(targetA, testNs, providerName, pathA, "main")
 		createGitTarget(targetB, testNs, providerName, pathB, "main")
-		verifyResourceStatus("gittarget", targetA, testNs, "True", "Ready", "")
-		verifyResourceStatus("gittarget", targetB, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", targetA, testNs, "Validated", "True", "OK", "")
+		verifyResourceCondition("gittarget", targetB, testNs, "Validated", "True", "OK", "")
 
 		By("target A and target B both watch ConfigMaps (baseline steady state)")
 		applyIsolationWatchRule(ruleA, testNs, targetA, `"configmaps"`)
@@ -95,8 +95,8 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 		verifyResourceStatus("watchrule", ruleB, testNs, "True", "Ready", "")
 
 		By("waiting for both targets' configmaps streams to be live before any event is created")
-		waitForStreamsReady(targetA, testNs)
-		waitForStreamsReady(targetB, testNs)
+		waitForStreamsRunning(targetA, testNs)
+		waitForStreamsRunning(targetB, testNs)
 	})
 
 	AfterAll(func() {

@@ -103,6 +103,7 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		"target", clusterRule.Spec.TargetRef,
 		"generation", clusterRule.Generation,
 		"resourceVersion", clusterRule.ResourceVersion)
+	clusterRule.Status.ObservedGeneration = clusterRule.Generation
 
 	// Set initial validating status
 	log.Info("Setting initial validating status")
@@ -110,11 +111,15 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ClusterWatchRuleReasonValidating, "Validating ClusterWatchRule configuration...")
 	r.setTypedCondition(
 		&clusterRule,
-		ConditionTypeStreamsReady,
+		ConditionTypeStreamsRunning,
 		metav1.ConditionUnknown,
-		GitTargetStreamsReadyReasonNotReady,
-		"Blocked by Ready=False; streams not evaluated",
+		GitTargetStreamsRunningReasonNotReady,
+		"Blocked by validation; streams not evaluated",
 	)
+	r.setTypedCondition(&clusterRule, ConditionTypeReconciling, metav1.ConditionTrue, ReasonChecking,
+		"Validating ClusterWatchRule")
+	r.setTypedCondition(&clusterRule, ConditionTypeStalled, metav1.ConditionFalse, ReasonChecking,
+		"ClusterWatchRule is not stalled")
 
 	// Delegate to target-based reconciliation
 	return r.reconcileClusterWatchRuleViaTarget(ctx, &clusterRule)
@@ -131,6 +136,8 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	if clusterRule.Spec.TargetRef.Name == "" {
 		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.name must be specified for ClusterWatchRule")
+		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitDestinationInvalid,
+			"Target.name must be specified for ClusterWatchRule")
 		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
@@ -138,6 +145,8 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	targetNS := clusterRule.Spec.TargetRef.Namespace
 	if targetNS == "" {
 		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
+			"Target.namespace must be specified for ClusterWatchRule")
+		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.namespace must be specified for ClusterWatchRule")
 		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
@@ -156,6 +165,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v",
 				targetNS, clusterRule.Spec.TargetRef.Name, err),
 		)
+		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
 		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
@@ -175,6 +185,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 			fmt.Sprintf("GitProvider '%s/%s' (from GitTarget) not found: %v",
 				providerNS, providerName, err),
 		)
+		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
 		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
@@ -216,17 +227,15 @@ func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 		clusterRule.Spec.TargetRef.Namespace,
 		clusterRule.Spec.TargetRef.Name,
 	)
-	r.setCondition(
-		clusterRule,
-		metav1.ConditionTrue,
-		ClusterWatchRuleReasonReady,
-		msg,
-	)
+	r.setRuleKstatus(clusterRule, msg)
 	if err := r.updateStatusWithRetry(ctx, clusterRule); err != nil {
 		return ctrl.Result{}, err
 	}
 	if conditionIsFalse(clusterRule.Status.Conditions, ConditionTypeResourcesResolved) {
 		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+	}
+	if !conditionIsTrue(clusterRule.Status.Conditions, ConditionTypeStreamsRunning) {
+		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
 	return ctrl.Result{RequeueAfter: RequeueMediumInterval}, nil
 }
@@ -237,23 +246,7 @@ func (r *ClusterWatchRuleReconciler) setCondition(
 	status metav1.ConditionStatus,
 	reason, message string,
 ) {
-	condition := metav1.Condition{
-		Type:               ConditionTypeReady,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	}
-
-	// Update existing condition or add new one
-	for i, existingCondition := range clusterRule.Status.Conditions {
-		if existingCondition.Type == ConditionTypeReady {
-			clusterRule.Status.Conditions[i] = condition
-			return
-		}
-	}
-
-	clusterRule.Status.Conditions = append(clusterRule.Status.Conditions, condition)
+	r.setTypedCondition(clusterRule, ConditionTypeReady, status, reason, message)
 }
 
 func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
@@ -277,10 +270,44 @@ func (r *ClusterWatchRuleReconciler) setStreamsReadyCondition(
 	clusterRule.Status.Streams = watchRuleStreamsStatus(streams)
 	r.setTypedCondition(
 		clusterRule,
-		ConditionTypeStreamsReady,
+		ConditionTypeStreamsRunning,
 		streamConditionStatus(streams),
 		streams.Reason,
 		streams.Message,
+	)
+}
+
+func (r *ClusterWatchRuleReconciler) setRuleStalled(
+	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	reason string,
+	message string,
+) {
+	r.setTypedCondition(clusterRule, ConditionTypeReady, metav1.ConditionFalse, reason, message)
+	r.setTypedCondition(
+		clusterRule,
+		ConditionTypeReconciling,
+		metav1.ConditionFalse,
+		reason,
+		"Reconciliation is stalled",
+	)
+	r.setTypedCondition(clusterRule, ConditionTypeStalled, metav1.ConditionTrue, reason, message)
+}
+
+func (r *ClusterWatchRuleReconciler) setRuleKstatus(
+	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	readyMessage string,
+) {
+	applyRuleKstatus(
+		clusterRule.Status.Conditions,
+		readyMessage,
+		ClusterWatchRuleReasonReady,
+		"ClusterWatchRule is not stalled",
+		func(conditionType string, status metav1.ConditionStatus, reason, message string) {
+			r.setTypedCondition(clusterRule, conditionType, status, reason, message)
+		},
+		func(reason, message string) {
+			r.setRuleStalled(clusterRule, reason, message)
+		},
 	)
 }
 
@@ -291,20 +318,14 @@ func (r *ClusterWatchRuleReconciler) setTypedCondition(
 	reason string,
 	message string,
 ) {
-	condition := metav1.Condition{
-		Type:               conditionType,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	}
-	for i, existingCondition := range clusterRule.Status.Conditions {
-		if existingCondition.Type == conditionType {
-			clusterRule.Status.Conditions[i] = condition
-			return
-		}
-	}
-	clusterRule.Status.Conditions = append(clusterRule.Status.Conditions, condition)
+	clusterRule.Status.Conditions = upsertCondition(
+		clusterRule.Status.Conditions,
+		conditionType,
+		status,
+		reason,
+		message,
+		clusterRule.Generation,
+	)
 }
 
 // updateStatusAndRequeue updates the status and returns requeue result.

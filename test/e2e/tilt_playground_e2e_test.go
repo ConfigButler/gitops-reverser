@@ -117,7 +117,7 @@ func (r playgroundRun) applyResources() {
 
 func (r playgroundRun) verifyResourcesReady() {
 	verifyResourceStatus("gitprovider", r.providerName, r.namespace, "True", "Ready", "")
-	verifyResourceStatus("gittarget", r.targetName, r.namespace, "True", "Ready", "")
+	verifyResourceCondition("gittarget", r.targetName, r.namespace, "Validated", "True", "OK", "")
 	verifyResourceStatus("watchrule", r.watchRuleName, r.namespace, "True", "Ready", "")
 }
 
