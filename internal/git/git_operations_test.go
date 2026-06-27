@@ -421,8 +421,9 @@ func TestBranchWorker_BranchCreationAndPush(t *testing.T) {
 	remotePath := filepath.Join(tempDir, "remote")
 	createBareRepo(t, remotePath)
 
-	// Simulate client creating initial commit on main
-	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "file.txt", "hello world")
+	// Simulate client creating initial commit on main. README.md is a recognized operator
+	// artifact (role 3), so it coexists with the operator-exclusive subtree.
+	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "README.md", "hello world")
 
 	// Clone to local
 	// Create test event for new branch
@@ -501,8 +502,9 @@ func TestBranchWorker_ConcurrentOperations(t *testing.T) {
 	remotePath := filepath.Join(tempDir, "remote.git")
 	createBareRepo(t, remotePath)
 
-	// Simulate client creating initial commit
-	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "hello.txt", "init")
+	// Simulate client creating initial commit. README.md is a recognized operator artifact,
+	// so it does not trip the operator-exclusive-subtree refusal.
+	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "README.md", "init")
 
 	// Number of concurrent operations
 	numWorkers := 3
@@ -668,7 +670,7 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	setHead(serverRepo, defaultBranchname) // Now it's also default branch: that's what is returned as HEAD to clients
 
 	// Simulate client creating initial commit on myuniquedefault
-	simulateClientCommitOnDisk(t, remoteURL, defaultBranchname, "some-file.txt", "Some file")
+	simulateClientCommitOnDisk(t, remoteURL, defaultBranchname, "README.md", "Some file")
 
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
@@ -740,12 +742,13 @@ func TestPullBranch_DanglingHead(t *testing.T) {
 	setHead(serverRepo, defaultBranchname)
 
 	// 2. Create initial content (so the repo isn't empty)
-	// This creates 'myuniquedefault'
-	simulateClientCommitOnDisk(t, remoteURL, defaultBranchname, "init.txt", "Initial content")
+	// This creates 'myuniquedefault'. README.md is a recognized operator artifact, so it
+	// coexists with the operator-exclusive subtree.
+	simulateClientCommitOnDisk(t, remoteURL, defaultBranchname, "README.md", "Initial content")
 
 	// 3. Create the 'feature' branch
 	// We need this to exist, otherwise if we delete default, there is NOTHING to fetch.
-	simulateClientCommitOnDisk(t, remoteURL, "feature", "feature.txt", "Feature content")
+	simulateClientCommitOnDisk(t, remoteURL, "feature", "README.md", "Feature content")
 
 	// 4. THE SABOTAGE: Delete 'myuniquedefault' on the server
 	// This leaves HEAD pointing to 'refs/heads/myuniquedefault', which no longer exists.
@@ -861,7 +864,7 @@ func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
 
 	// Simulate client creating initial commit on myuniquedefault
 	setHeadToMain(serverRepo)
-	simulateClientCommitOnDisk(t, remoteURL, "main", "some-file.txt", "Some file")
+	simulateClientCommitOnDisk(t, remoteURL, "main", "README.md", "Some file")
 
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
@@ -1010,7 +1013,7 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 	createBareRepo(t, serverPathEmpty)
 
 	// Simulate client creating initial commit
-	simulateClientCommitOnDisk(t, remoteURL, "main", "some-file.txt", "Some file")
+	simulateClientCommitOnDisk(t, remoteURL, "main", "README.md", "Some file")
 
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)

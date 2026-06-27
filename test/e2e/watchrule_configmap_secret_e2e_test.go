@@ -544,6 +544,7 @@ spec:
 				[]string{
 					path.Join("e2e/configmap-test", "README.md"),
 					path.Join("e2e/configmap-test", ".sops.yaml"),
+					path.Join("e2e/configmap-test", ".gittargetignore"),
 				},
 			)
 			assertLatestCommitTouchesNoNamespaces(

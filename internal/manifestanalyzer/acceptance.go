@@ -107,6 +107,22 @@ const (
 	// name(pre|suf)fix / remote bases). The folder is refused rather than written,
 	// because the operator cannot take responsibility for content produced this way.
 	IssueUnsupportedKustomize IssueKind = "unsupported-kustomize"
+	// IssueForeignFile marks a non-YAML regular file under spec.path that matches no
+	// recognized role — the operator-exclusive subtree refuses content it cannot manage
+	// (docs/design/gitpath-foreign-content-stringency.md §3). Foreign YAML is already
+	// refused as IssueNonKRM; this is the non-YAML case the gate was previously blind to.
+	IssueForeignFile IssueKind = "foreign-file"
+	// IssueForeignSymlink marks any symlink under spec.path. A writer could follow it out
+	// of the subtree, so it is refused rather than silently skipped.
+	IssueForeignSymlink IssueKind = "foreign-symlink"
+	// IssueForeignSubmodule marks a gitlink / git submodule under spec.path — content the
+	// operator cannot own or reason about.
+	IssueForeignSubmodule IssueKind = "foreign-submodule"
+	// IssueIgnoreShadowsManaged marks a .gittargetignore that would blind the operator to a
+	// path it writes (§4.3): a catastrophic parse-time pattern, or — via the writer's
+	// write-plan precondition — an ignore pattern matching a planned write/edit/delete path.
+	// It surfaces as the GitTarget reason IgnoreShadowsManagedPath.
+	IssueIgnoreShadowsManaged IssueKind = "ignore-shadows-managed"
 )
 
 // Allowlist is the set of build-directive files that are retained on disk but never
@@ -201,6 +217,12 @@ func acceptWith(store *ManifestStore, policy AcceptancePolicy, includeMapping bo
 	issues = append(issues, recordlessRefusals(store)...)
 	issues = append(issues, mixedFileRefusals(store)...)
 	issues = append(issues, unsupportedKustomizeRefusals(store)...)
+	// Structural foreign-content refusals and the parse-time .gittargetignore denylist are
+	// pure facts about the bytes/entries on disk, so they run on every path (live writer
+	// and resync via AcceptStructureOnly, dry-run scan via Accept) and never false-refuse
+	// on a discovery wobble.
+	issues = append(issues, foreignContentRefusals(store)...)
+	issues = append(issues, store.IgnoreIssues...)
 	if includeMapping {
 		issues = append(issues, mappingRefusals(store, policy)...)
 	}

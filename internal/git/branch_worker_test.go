@@ -154,6 +154,10 @@ func TestBranchWorker_EnsurePathBootstrapped_EmptyPathCreatesTemplate(t *testing
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", sopsConfigFileName))
 	require.NoError(t, err)
+	// The fully-commented .gittargetignore escape hatch is staged alongside the other
+	// bootstrap artifacts and must self-accept (it ignores nothing until edited).
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", gitTargetIgnoreFileName))
+	require.NoError(t, err)
 }
 
 func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathBootstrapsMissingFiles(t *testing.T) {

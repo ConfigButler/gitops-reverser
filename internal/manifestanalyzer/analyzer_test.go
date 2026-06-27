@@ -19,6 +19,7 @@ limitations under the License.
 package manifestanalyzer
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -128,6 +129,12 @@ func TestAnalyze_Issues(t *testing.T) {
 		IssueUnresolvedKRM:        0,
 		IssueOutOfScope:           0,
 		IssueUnsupportedKustomize: 0,
+		// Foreign-content and ignore-shadow refusals are acceptance-gate facts, not part of
+		// the structure-only Analyze report, so they never surface here.
+		IssueForeignFile:          0,
+		IssueForeignSymlink:       0,
+		IssueForeignSubmodule:     0,
+		IssueIgnoreShadowsManaged: 0,
 	}
 	for kind, n := range want {
 		if got := countIssues(rep, kind); got != n {
@@ -251,22 +258,31 @@ func TestAnalyzeDir(t *testing.T) {
 	}
 }
 
-func TestAnalyzeDir_SymlinkSkipped(t *testing.T) {
+func TestAnalyzeDir_SymlinkIsForeign(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "deploy.yaml", deployYAML)
 	if err := os.Symlink(filepath.Join(dir, "deploy.yaml"), filepath.Join(dir, "link.yaml")); err != nil {
 		t.Skipf("symlinks unsupported: %v", err)
 	}
 
+	// The report never counts the symlink as a managed YAML file.
 	rep, err := AnalyzeDir(dir)
 	if err != nil {
 		t.Fatalf("AnalyzeDir: %v", err)
 	}
-	if !hasDiag(rep, "link.yaml", "symlink skipped") {
-		t.Errorf("expected a symlink-skipped diagnostic for link.yaml: %+v", rep.Diagnostics)
-	}
 	if rep.Summary.YAMLFiles != 1 {
 		t.Errorf("yaml files = %d, want 1 (symlink not counted)", rep.Summary.YAMLFiles)
+	}
+
+	// A symlink under spec.path is now foreign content: the acceptance gate refuses it
+	// rather than silently skipping it.
+	store := BuildStore(context.Background(), os.DirFS(dir), nil)
+	if len(store.Foreign) != 1 || store.Foreign[0].Path != "link.yaml" ||
+		store.Foreign[0].Kind != ForeignSymlink {
+		t.Fatalf("foreign = %+v, want a single link.yaml symlink", store.Foreign)
+	}
+	if acc := AcceptStructureOnly(store); acc.Accepted {
+		t.Error("expected a refusal for a symlink under spec.path")
 	}
 }
 

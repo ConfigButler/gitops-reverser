@@ -212,8 +212,7 @@ func buildStoreFS(
 	lookup typeset.Lookup,
 	allowlist Allowlist,
 ) *ManifestStore {
-	yamlFiles, _, scanDiags := collectFiles(fsys)
-	return buildStore(ctx, yamlFiles, scanDiags, lookup, allowlist)
+	return buildStore(ctx, collectFiles(fsys), lookup, allowlist)
 }
 
 // Analyze scans fsys and returns a Report. It is read-only and never fails: any
@@ -221,13 +220,13 @@ func buildStoreFS(
 // diagnostic rather than an error. The Report is a projection rendered from the
 // ManifestStore built by buildStore.
 func Analyze(fsys fs.FS) Report {
-	yamlFiles, nonYAML, scanDiags := collectFiles(fsys)
+	scan := collectFiles(fsys)
 	// Analyze is the no-cluster default: a nil mapper keeps it structure-only, so the
 	// resource index stays empty and no mapping diagnostics are emitted. It
 	// materialises every KRM document (the empty allowlist), since the legacy report
 	// classifies the whole tree rather than adopting it.
-	store := buildStore(context.Background(), yamlFiles, scanDiags, nil, Allowlist{})
-	return projectReport(store, yamlFiles, nonYAML)
+	store := buildStore(context.Background(), scan, nil, Allowlist{})
+	return projectReport(store, scan.YAMLFiles, scan.NonYAML)
 }
 
 // projectReport renders the analyzer Report from the store plus the scan's file
@@ -276,19 +275,20 @@ func projectReport(store *ManifestStore, yamlFiles []manifestedit.FileContent, n
 	}
 }
 
-// collectFiles walks fsys, returning YAML files (path + content), the paths of
-// non-YAML files, and scan-level diagnostics. Symlinks are skipped.
-func collectFiles(fsys fs.FS) ([]manifestedit.FileContent, []string, []manifestedit.Diagnostic) {
-	var (
-		yamlFiles []manifestedit.FileContent
-		nonYAML   []string
-		diags     []manifestedit.Diagnostic
-	)
+// collectFiles walks fsys into a FolderScan: the YAML files to model, the non-YAML
+// inventory, the foreign entries to refuse, and the active root .gittargetignore matcher.
+// The matcher is loaded once up front (order-independent, never relying on walk order) and
+// every entry is classified through the shared ClassifyEntry policy, so the analyzer scan
+// and the live writer's worktree scan apply the foreign-content and ignore rules
+// identically. An ignored entry — file, symlink, or whole subtree — is never read.
+func collectFiles(fsys fs.FS) FolderScan {
+	ignore, ignoreIssues := loadRootGitTargetIgnore(fsys)
+	scan := FolderScan{Ignore: ignore, IgnoreIssues: ignoreIssues}
 
 	walkErr := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			diags = append(
-				diags,
+			scan.Diagnostics = append(
+				scan.Diagnostics,
 				manifestedit.Diagnostic{Level: manifestedit.DiagWarning, Path: path, Message: err.Error()},
 			)
 			return nil //nolint:nilerr // a per-entry error must not abort the whole scan
@@ -296,44 +296,42 @@ func collectFiles(fsys fs.FS) ([]manifestedit.FileContent, []string, []manifeste
 		if path == "." {
 			return nil
 		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			diags = append(
-				diags,
-				manifestedit.Diagnostic{Level: manifestedit.DiagInfo, Path: path, Message: "symlink skipped"},
-			)
-			if d.IsDir() {
-				return fs.SkipDir
+		switch ClassifyEntry(path, d, ignore) {
+		case RoleSkipDir:
+			return fs.SkipDir
+		case RoleManagedYAML:
+			content, readErr := fs.ReadFile(fsys, path)
+			if readErr != nil {
+				scan.Diagnostics = append(
+					scan.Diagnostics,
+					manifestedit.Diagnostic{Level: manifestedit.DiagWarning, Path: path, Message: readErr.Error()},
+				)
+				return nil //nolint:nilerr // an unreadable file must not abort the whole scan
 			}
-			return nil
+			scan.YAMLFiles = append(scan.YAMLFiles, manifestedit.FileContent{Path: path, Content: content})
+		case RoleOperatorArtifact:
+			scan.NonYAML = append(scan.NonYAML, path)
+		case RoleForeignFile:
+			scan.NonYAML = append(scan.NonYAML, path)
+			scan.Foreign = append(scan.Foreign, ForeignEntry{Path: path, Kind: ForeignFile})
+		case RoleForeignSymlink:
+			scan.Foreign = append(scan.Foreign, ForeignEntry{Path: path, Kind: ForeignSymlink})
+		case RoleIgnored, RoleDescend:
+			// Ignored content is never read; a normal directory is simply descended.
 		}
-		if d.IsDir() {
-			return nil
-		}
-		if !isYAMLFile(path) {
-			nonYAML = append(nonYAML, path)
-			return nil
-		}
-		content, readErr := fs.ReadFile(fsys, path)
-		if readErr != nil {
-			diags = append(
-				diags,
-				manifestedit.Diagnostic{Level: manifestedit.DiagWarning, Path: path, Message: readErr.Error()},
-			)
-			return nil //nolint:nilerr // an unreadable file must not abort the whole scan
-		}
-		yamlFiles = append(yamlFiles, manifestedit.FileContent{Path: path, Content: content})
 		return nil
 	})
 	if walkErr != nil {
-		diags = append(
-			diags,
+		scan.Diagnostics = append(
+			scan.Diagnostics,
 			manifestedit.Diagnostic{Level: manifestedit.DiagError, Path: ".", Message: walkErr.Error()},
 		)
 	}
 
-	sort.Slice(yamlFiles, func(i, j int) bool { return yamlFiles[i].Path < yamlFiles[j].Path })
-	sort.Strings(nonYAML)
-	return yamlFiles, nonYAML, diags
+	sort.Slice(scan.YAMLFiles, func(i, j int) bool { return scan.YAMLFiles[i].Path < scan.YAMLFiles[j].Path })
+	sort.Strings(scan.NonYAML)
+	sort.Slice(scan.Foreign, func(i, j int) bool { return scan.Foreign[i].Path < scan.Foreign[j].Path })
+	return scan
 }
 
 // projectFileReport assembles per-document classification for one YAML file by

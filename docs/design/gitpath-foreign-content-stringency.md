@@ -1,6 +1,33 @@
 # GitTarget path stringency — refuse foreign content, own the subtree
 
-> Status: PROPOSAL — 2026-06-27. Companion to
+> Status: IMPLEMENTED — 2026-06-27. The structural foreign-content refusal, the
+> `.gittargetignore` filter + parse-time denylist, the write-plan invariant (D-foreign-6), the
+> bootstrap template, and the distinct `IgnoreShadowsManagedPath` status reason have all
+> landed. Where it lives:
+> - **Matcher, foreign classification, denylist, role policy** —
+>   [internal/manifestanalyzer/gittargetignore.go](../../internal/manifestanalyzer/gittargetignore.go)
+>   (`ClassifyEntry`, `LoadGitTargetIgnore`, `IgnoreMatcher`, `foreignContentRefusals`).
+> - **Scan wiring** — `collectFiles`
+>   ([analyzer.go](../../internal/manifestanalyzer/analyzer.go)) and the writer's
+>   `scanWorktreeSubtree` ([plan_flush.go](../../internal/git/plan_flush.go)) both produce a
+>   `FolderScan` carrying foreign entries + the matcher; the store carries them to the gate.
+> - **New refusals** — `IssueForeignFile` / `IssueForeignSymlink` / `IssueForeignSubmodule` /
+>   `IssueIgnoreShadowsManaged` in [acceptance.go](../../internal/manifestanalyzer/acceptance.go),
+>   run in `AcceptStructureOnly` (live writer + resync) and `Accept` (scan).
+> - **Write-plan precondition (§4.3)** — `writeBatch.ignoreShadowPrecondition` in
+>   [plan_flush.go](../../internal/git/plan_flush.go), enforced at the top of `flush`.
+> - **Bootstrap** — a fully-commented
+>   [.gittargetignore](../../internal/git/bootstrapped-repo-template/.gittargetignore) staged
+>   alongside README.md / .sops.yaml.
+> - **Status reason** — `IgnoreShadowsManagedPath` ([gittarget_controller.go](../../internal/controller/gittarget_controller.go),
+>   wired in [event_router.go](../../internal/watch/event_router.go), kept in the stalled set in
+>   [stream_status.go](../../internal/controller/stream_status.go)).
+> - **Tests** — unit ([gittargetignore_test.go](../../internal/manifestanalyzer/gittargetignore_test.go)),
+>   writer-integration ([gittargetignore_writer_test.go](../../internal/git/gittargetignore_writer_test.go)),
+>   and e2e ([foreign_content_e2e_test.go](../../test/e2e/foreign_content_e2e_test.go)). Gitlink/submodule
+>   detection and the manually-moved-file residual edge remain the noted later hardening.
+>
+> Companion to
 > [unsupported-folder-refusal-plan.md](unsupported-folder-refusal-plan.md). That doc settled *how* a
 > refusal is mechanically wired and surfaced (the `GitPathAccepted` condition + kstatus trio). This doc
 > asks the next question the author raised: **the gate is good at refusing the bad YAML it can see — but
@@ -232,6 +259,71 @@ set, written **fully commented** — every example pattern behind `#` — so a f
 ignores nothing until a human deliberately edits it. That gives users a discoverable, in-place template
 (with the syntax reminder) without changing behaviour on day one.
 
+### 4.3 The shadowing hazard, and the write-time invariant that closes it (D-foreign-6)
+
+There is one collision in `.gittargetignore` that is **unrecoverable** if it ever lands, so it gets its own
+treatment: an ignore pattern that matches a path the operator **writes to**. Sequence: the operator
+materializes a managed resource at path `P`; a `.gittargetignore` pattern matches `P`; on the next scan `P`
+is dropped (role 4, "never read"); the operator is now **blind to its own file**. It cannot diff it, cannot
+update it, cannot delete it when the object goes away, and — finding no file for a still-desired object —
+re-creates it, churning forever or leaving a stale file for a deleted resource. The mirror is permanently
+wrong, and nothing self-heals, because the operator literally cannot see the file. This is the one place
+`.gittargetignore` can do real damage.
+
+**Static detection is not viable, and that is the crux.** The path the operator writes is dynamic — it
+comes from the live object's `(group, version, resource, namespace, name)`, and once placement becomes
+configurable (see below) it is **user-templated**. Ignore patterns are flexible globs with negation. You
+cannot prove at config time that "no future write will ever be shadowed." Trying to is a dead end — the
+author is right about that.
+
+**The resolution: stop trying to predict it. Enforce one invariant at the moment the truth is available.**
+
+> **Invariant: no path the operator writes is ever matched by the active `.gittargetignore`.**
+
+The write path is unknowable *ahead* of time but perfectly known *at* write time — and the matcher is
+already loaded (the writer parsed `.gittargetignore` during the scan). So the check is O(1) at exactly the
+right moment:
+
+1. **Write-plan precondition (the guarantee).** Before any commit, the writer tests **every** path in the
+   planned write set — creates, in-place edits, and deletes-by-path — against the active matcher. If any is
+   matched, it **aborts the whole flush, commits nothing**, and fails the GitTarget:
+   `GitPathAccepted=False`, `Stalled=True` (kstatus `Failed`), a new reason
+   `IgnoreShadowsManagedPath`, message naming **both the path and the matching pattern**. This is the
+   author's "fail to create the file, and fail the whole GitTarget" — made airtight by being a
+   **precondition**: it refuses *before* a byte is written, never write-then-detect (writing first would
+   already have created the unreadable file — the exact unrecoverable state). It reuses the existing
+   "refusal aborts the commit before any file is touched" seam
+   ([acceptance_refusal.go](../../internal/manifestanalyzer/acceptance_refusal.go)); it is just the
+   acceptance gate evaluated against *candidate* paths, not only existing ones.
+2. **Resync covers already-materialized objects.** Resync re-plans the **full** desired set (from the
+   cluster watches, not from reading disk) on every watch re-establishment, so a `.gittargetignore` edit
+   that would shadow an existing object's path is caught on the next resync by the same check — **without
+   ever reading an ignored file** (the desired set says where the operator *would* write; we assert that
+   path is not ignored).
+3. **Optional fast feedback.** Re-run the same assertion when `.gittargetignore` changes, against the
+   current desired set, so the user gets an immediate `Stalled` instead of waiting for the next write. Same
+   logic, no new semantics.
+
+**A cheap, simple static guard — not a collision prover.** At parse time, reject a small denylist of
+catastrophic whole-space patterns (`*`, `**`, `*.yaml`, `/`) and fail the target immediately with the same
+reason. A user who writes `*.yaml` into `.gittargetignore` almost certainly erred; catching the obvious
+footgun at parse time is worth it. This is explicitly **not** an attempt to statically prove the general
+case (which is infeasible) — it is a guardrail, kept deliberately small.
+
+**Residual edge (honest disclosure).** One case escapes the path-based check: a file **manually moved** off
+canonical placement to a location that is *later* ignored, where canonical itself is *not* ignored. The
+operator re-creates at canonical (check passes) and a stale, invisible duplicate lingers at the ignored
+path. Closing this fully requires **reading ignored files for validation** (a raw-scan compare), which
+softens "never read" to "never *managed*; read only by the safety gate." Defer it as optional hardening;
+the common cases are all covered without it.
+
+**Why this matters more under configurable placement (the author's flag).** The write-time invariant is
+**placement-agnostic** — it holds no matter how the write path is templated. So it is exactly what makes a
+future "configurable file creation" feature *safe to add*: whatever path a user's placement template
+produces, the operator still validates "candidate path not ignored" before writing. When that feature is
+designed, it should add its **own** admission-time best-effort static check on the template, but **this
+invariant remains the real guarantee.** Flag it loudly in that future doc.
+
 ---
 
 ## 5. Where this fits the existing code
@@ -271,12 +363,20 @@ Then a new `foreignContentRefusals(store)` issues one refusal per foreign entry 
 filter and matched none of roles 1–3. Proposed `IssueKind`s, alongside the existing ones:
 
 ```go
-IssueForeignFile      IssueKind = "foreign-file"      // non-YAML regular file in no recognized role
-IssueForeignSymlink   IssueKind = "foreign-symlink"   // any symlink under the subtree
-IssueForeignSubmodule IssueKind = "foreign-submodule" // gitlink under the subtree
+IssueForeignFile          IssueKind = "foreign-file"       // non-YAML regular file in no recognized role
+IssueForeignSymlink       IssueKind = "foreign-symlink"    // any symlink under the subtree
+IssueForeignSubmodule     IssueKind = "foreign-submodule"  // gitlink under the subtree
+IssueIgnoreShadowsManaged IssueKind = "ignore-shadows-managed" // §4.3 write-time invariant: an ignore
+                                                               // pattern matches a path the operator writes
 ```
 
 (`IssueNonKRM` already covers foreign *YAML*; this adds the non-YAML / symlink / submodule cases.)
+
+The **write-plan precondition** of §4.3 is the one piece that runs *outside* the folder scan: the writer
+tests each planned write/edit/delete path against the active matcher before committing, emitting
+`IssueIgnoreShadowsManaged` (which surfaces as reason `IgnoreShadowsManagedPath`) and aborting the flush if
+any match. A minimal parse-time denylist (`*`, `**`, `*.yaml`, `/`) rejects catastrophic patterns when
+`.gittargetignore` is first read.
 
 **`.gittargetignore` is cheap to implement — no new dependency.** `github.com/go-git/go-git/v5` is already a
 direct dependency used throughout `internal/git`, and it ships
@@ -314,12 +414,12 @@ semantics rather than reinventing glob handling.
   implicitly.
 - **Gitlinks / submodules: refuse.** A submodule in the managed subtree is content the operator cannot
   own or reason about. `.gittargetignore` is again the explicit escape.
-- **`.gittargetignore` must not shadow managed-resource paths.** It is for *foreign* passengers. If a user
-  ignores a path the operator materializes into (under the canonical
-  `{group}/{version}/{resource}/{ns}/{name}.yaml` placement), the operator stops seeing its own file and
-  may re-create or churn it. v1 documents this as unsupported; a future guard could warn when an ignore
-  pattern overlaps a managed write path. Likewise, ignoring an active `kustomization.yaml` changes namespace
-  resolution — allowed, but a semantic change the user owns.
+- **`.gittargetignore` shadowing a managed write path is the one unrecoverable case — handled in §4.3.**
+  An ignore pattern that matches a path the operator writes would blind the operator to its own file. This
+  is **not** left as "documented as unsupported"; it is enforced by the **write-time invariant** (§4.3): the
+  flush is refused and the GitTarget fails (`IgnoreShadowsManagedPath`) before any byte is written. Likewise,
+  ignoring an active `kustomization.yaml` changes namespace resolution — allowed, but a semantic change the
+  user owns.
 - **Case-insensitive checkouts.** Two files differing only in case can collide on macOS/Windows working
   trees. Out of scope for the foreign-content rule (identity duplicates are already refused), but worth a
   one-line note in the user docs.
@@ -339,9 +439,13 @@ semantics rather than reinventing glob handling.
   foreign file name it in the root `.gittargetignore` — versioned, reviewed, and scoped to that pattern.
   There is **no** blanket "tolerate everything" mode in v1 (D-foreign-4: keep it simple); the strict default
   is never a dead end, but every exception is spelled out in the repo.
-- **`.gittargetignore` footgun: shadowing managed paths (§6).** Ignoring a path the operator materializes into
-  causes churn. Document loudly; consider a future overlap guard. This is the one place `.gittargetignore` can
-  bite, and it is a misuse, not the intended use.
+- **The unrecoverable footgun — shadowing a managed write path — is closed by the write-time invariant
+  (§4.3), not merely documented.** A `.gittargetignore` that matches a path the operator writes would blind
+  it to its own file forever. The fix is a precondition check over the full planned write set: refuse the
+  flush and fail the GitTarget (`IgnoreShadowsManagedPath`) *before* writing. Static detection is infeasible
+  (templated/dynamic write paths), so the guarantee lives at write time where the path is known; a small
+  parse-time denylist (`*`, `**`, `*.yaml`, `/`) catches the obvious mistakes early. This invariant is also
+  what makes future *configurable placement* safe to add.
 - **Do not over-reach into discovery-derived refusals.** This proposal is strictly structural. The
   mapping-aware refusals (unwatched / out-of-scope KRM) stay deferred for the same discovery-blink reason
   the unsupported-folder plan already records — do not let "be more stringent" pull them onto the live
@@ -391,6 +495,15 @@ semantics rather than reinventing glob handling.
   this design owes it is to *keep the route open*, which refusing foreign content now does: a future
   opt-in could wrap matched foreign files into a ConfigMap without a breaking change. It gets its own design
   (and its own narrow field) when the time comes.
+- **D-foreign-6 — shadowing is closed by a write-time invariant, not static analysis — DECIDED (§4.3).**
+  The unrecoverable case (an ignore pattern shadowing a path the operator writes) is prevented by a
+  **precondition over the planned write set**: refuse the flush and fail the GitTarget
+  (`IgnoreShadowsManagedPath`) *before* any byte is written, reusing the existing "abort before touching a
+  file" seam. Static detection is infeasible (write paths are dynamic/templated), so the guarantee lives at
+  write time, complemented by a tiny parse-time denylist for catastrophic patterns. The invariant is
+  placement-agnostic and is the safety precondition for any future **configurable file placement** — call it
+  out prominently in that feature's design. Optional later hardening (raw-scan read of ignored files) closes
+  the manually-moved-file residual edge.
 
 ---
 
@@ -402,7 +515,11 @@ reversible, accepting is not — the future-proof move is to declare the path an
 subtree** of five roles (managed KRM, active build directives, operator artifacts, `.gittargetignore`-ignored,
 foreign), and refuse the foreign role **now** as a purely structural check (reusing the existing
 `AcceptStructureOnly` seam and `GitPathAccepted` surface). The escape hatch is **not** a CRD field but an
-in-repo `.gittargetignore` (`.gitignore` syntax, never-read semantics), so the widening surface lives in the
-repo and the API gains *zero* new config. That keeps every future option open — including the author's
-auto-ConfigMap idea — at the cost of a single new structural refusal and a ~50-line `.gittargetignore` filter
-built on the go-git parser the project already vendors.
+in-repo `.gittargetignore` (`.gitignore` syntax, never-read semantics, honoured only at the path root), so
+the widening surface lives in the repo and the API gains *zero* new config. Its one dangerous case — an
+ignore pattern shadowing a path the operator writes, which would be unrecoverable — is closed not by
+(infeasible) static analysis but by a **write-time invariant**: the flush is refused and the GitTarget fails
+*before* a byte is written, a guarantee that is placement-agnostic and therefore the safety foundation for
+future configurable placement too. That keeps every future option open — including the author's auto-ConfigMap
+idea — at the cost of a single new structural refusal, the write-time precondition, and a ~50-line
+`.gittargetignore` filter built on the go-git parser the project already vendors.

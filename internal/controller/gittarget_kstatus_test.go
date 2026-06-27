@@ -67,6 +67,21 @@ func TestGitTargetKstatusContract(t *testing.T) {
 			wantStatus: kstatus.FailedStatus,
 			wantMsg:    "kustomization.yaml",
 		},
+		{
+			name: "Git path refused: .gittargetignore shadows a managed write path",
+			conds: []map[string]interface{}{
+				conditionMap(ConditionTypeReady, "False", GitTargetReasonIgnoreShadowsManagedPath,
+					".gittargetignore pattern \"v1/\" shadows the managed write path v1/pods/default/web.yaml"),
+				conditionMap(ConditionTypeReconciling, "False", GitTargetReasonIgnoreShadowsManagedPath,
+					"Reconciliation is stalled"),
+				conditionMap(ConditionTypeStalled, "True", GitTargetReasonIgnoreShadowsManagedPath,
+					".gittargetignore pattern \"v1/\" shadows the managed write path v1/pods/default/web.yaml"),
+				conditionMap(ConditionTypeGitPathAccepted, "False", GitTargetReasonIgnoreShadowsManagedPath,
+					".gittargetignore pattern \"v1/\" shadows the managed write path v1/pods/default/web.yaml"),
+			},
+			wantStatus: kstatus.FailedStatus,
+			wantMsg:    "shadows the managed write path",
+		},
 	}
 
 	for _, tt := range tests {

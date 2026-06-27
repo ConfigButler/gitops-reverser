@@ -85,6 +85,22 @@ type ManifestStore struct {
 	// file that illegally shares its bytes with one (a mixed file). It is empty
 	// unless the store was built with a non-empty allowlist.
 	Retained []RetainedDocument
+
+	// Foreign lists the filesystem entries under spec.path that matched no recognized role
+	// (non-YAML files, symlinks, submodules) and survived the .gittargetignore filter. The
+	// acceptance gate refuses each one (foreignContentRefusals); the path is an
+	// operator-exclusive subtree. See docs/design/gitpath-foreign-content-stringency.md.
+	Foreign []ForeignEntry
+
+	// Ignore is the active root .gittargetignore matcher (nil when the path carries none).
+	// It is consulted by the writer's write-plan precondition (§4.3) to assert that no path
+	// the operator writes is shadowed by an ignore pattern — the one unrecoverable case.
+	Ignore *IgnoreMatcher
+
+	// IgnoreIssues carries parse-time .gittargetignore refusals (the catastrophic-pattern
+	// denylist). The acceptance gate appends them so a footgun fails the GitTarget at the
+	// same surface as any other refusal.
+	IgnoreIssues []AcceptanceIssue
 }
 
 // RetainedDocument records an allowlisted build-directive that is excluded from the
@@ -333,8 +349,7 @@ type RecordRef struct {
 // materialises every KRM record, the legacy structure-only behaviour.
 func buildStore(
 	ctx context.Context,
-	yamlFiles []manifestedit.FileContent,
-	scanDiags []manifestedit.Diagnostic,
+	scan FolderScan,
 	lookup typeset.Lookup,
 	allowlist Allowlist,
 ) *ManifestStore {
@@ -343,6 +358,7 @@ func buildStore(
 		// ready, so it judges nothing.
 		lookup = typeset.NewRegistry()
 	}
+	yamlFiles := scan.YAMLFiles
 	inv, indexDiags := manifestedit.IndexFiles(yamlFiles)
 	nsAssignments := kustomizeNamespaceAssignments(yamlFiles)
 
@@ -351,7 +367,13 @@ func buildStore(
 		ByManifestIdentity: map[manifestedit.Identity]*DocumentModel{},
 		ByResourceIdentity: map[types.ResourceIdentifier]*DocumentModel{},
 		ByGVK:              map[schema.GroupVersionKind][]*DocumentModel{},
-		Diagnostics:        retainedDiagnostics(scanDiags, indexDiags, allowlist),
+		Diagnostics:        retainedDiagnostics(scan.Diagnostics, indexDiags, allowlist),
+		// The foreign-content view and the active .gittargetignore travel with the store so
+		// the acceptance gate (foreignContentRefusals + IgnoreIssues) and the writer's
+		// write-plan precondition both read them from one place.
+		Foreign:      scan.Foreign,
+		Ignore:       scan.Ignore,
+		IgnoreIssues: scan.IgnoreIssues,
 	}
 
 	// inv.Records are exactly the KRM documents (editable or not), in stable scan
@@ -403,7 +425,22 @@ func BuildStoreFromFiles(
 	lookup typeset.Lookup,
 	allowlist Allowlist,
 ) *ManifestStore {
-	return buildStore(ctx, files, nil, lookup, allowlist)
+	return buildStore(ctx, FolderScan{YAMLFiles: files}, lookup, allowlist)
+}
+
+// BuildStoreFromScan builds the store from a FolderScan that already carries the YAML
+// files, the foreign-content view, and the active .gittargetignore matcher. It is the live
+// writer's and resync apply's entry point: they walk the worktree subtree once (the same
+// scan the planner reads) and hand the whole structural view here, so the store, the bytes
+// the plan is applied to, and the foreign/ignore facts the acceptance gate enforces are one
+// snapshot. lookup and allowlist behave exactly as BuildStoreFromFiles.
+func BuildStoreFromScan(
+	ctx context.Context,
+	scan FolderScan,
+	lookup typeset.Lookup,
+	allowlist Allowlist,
+) *ManifestStore {
+	return buildStore(ctx, scan, lookup, allowlist)
 }
 
 // DocumentLocations returns the (file path, document index) of every managed

@@ -397,6 +397,11 @@ func TestBranchWorker_Replay_UsesResolvedMetadata_GitTargetDeletedMidBurst(t *te
 	seedPath := filepath.Join(tempDir, "seed")
 	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
 	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	// The contending external actor below pushes a loose OUTSIDE.md at the GitTarget root.
+	// Under the operator-exclusive-subtree rule that file would be refused as foreign on the
+	// replay re-scan, so the operator names it in the in-repo escape hatch: a root
+	// .gittargetignore that ignores it, exactly as a real user would keep a known passenger.
+	commitFileChange(t, seedWorktree, seedPath, ".gittargetignore", "OUTSIDE.md\n")
 	require.NoError(t, seedRepo.Push(&git.PushOptions{
 		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
 	}))

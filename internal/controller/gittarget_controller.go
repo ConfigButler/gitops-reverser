@@ -81,6 +81,13 @@ const (
 	GitTargetReasonSecretCreateDisabled = "SecretCreateDisabled"
 	GitTargetReasonGitPathAccepted      = "GitPathAccepted"
 	GitTargetReasonUnsupportedContent   = "UnsupportedContent"
+	// GitTargetReasonIgnoreShadowsManagedPath is the terminal reason for the one
+	// unrecoverable .gittargetignore footgun (docs/design/gitpath-foreign-content-stringency.md
+	// §4.3): an ignore pattern matches a path the operator writes, which would blind it to its
+	// own file. The writer's write-plan precondition refuses the flush before any byte is
+	// written and the GitTarget is failed with this reason. The string must stay in sync with
+	// the watch package's gitPathRefusalReason.
+	GitTargetReasonIgnoreShadowsManagedPath = "IgnoreShadowsManagedPath"
 
 	GitTargetReadyReasonValidationFailed        = "ValidationFailed"
 	GitTargetReadyReasonEncryptionNotConfigured = "EncryptionNotConfigured"

@@ -182,6 +182,30 @@ func TestDrainScopedResync_RefusalMarksGitPathRefused(t *testing.T) {
 	assert.Empty(t, mgr.targetStreamStates, "Git path refusal must not mutate stream readiness")
 }
 
+func TestGitPathRefusalReason(t *testing.T) {
+	shadow := manifestanalyzer.AcceptanceIssue{
+		Kind: manifestanalyzer.IssueIgnoreShadowsManaged,
+		Path: ".gittargetignore",
+	}
+	foreign := manifestanalyzer.AcceptanceIssue{Kind: manifestanalyzer.IssueForeignFile, Path: "notes.txt"}
+
+	cases := []struct {
+		name   string
+		issues []manifestanalyzer.AcceptanceIssue
+		want   string
+	}{
+		{"pure shadow refusal", []manifestanalyzer.AcceptanceIssue{shadow}, "IgnoreShadowsManagedPath"},
+		{"foreign content refusal", []manifestanalyzer.AcceptanceIssue{foreign}, "UnsupportedContent"},
+		{"mixed refusal falls back", []manifestanalyzer.AcceptanceIssue{shadow, foreign}, "UnsupportedContent"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := gitPathRefusalReason(&manifestanalyzer.AcceptanceRefusedError{Issues: c.issues})
+			assert.Equal(t, c.want, got)
+		})
+	}
+}
+
 func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	gitTarget := &configv1alpha2.GitTarget{

@@ -271,12 +271,26 @@ func (r *EventRouter) handleScopedResyncError(
 		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget path content",
 			"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
 		if r.WatchManager != nil {
-			r.WatchManager.MarkTargetGitPathRefused(gitDest, "UnsupportedContent", refused.BlockMessage())
+			r.WatchManager.MarkTargetGitPathRefused(gitDest, gitPathRefusalReason(refused), refused.BlockMessage())
 		}
 		return
 	}
 	r.Log.Error(err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "gvr", key.GVR.String())
 	r.recordBackgroundResyncFailure(gitDest)
+}
+
+// gitPathRefusalReason picks the GitTarget status reason for a refused path. A refusal made
+// up purely of the .gittargetignore-shadows-a-write case (§4.3) gets its own terminal reason
+// IgnoreShadowsManagedPath so an operator can tell the unrecoverable footgun apart from any
+// other unsupported content; every other refusal keeps the umbrella UnsupportedContent. The
+// strings mirror the controller's GitTargetReason* constants (the watch package cannot import
+// controller without a cycle), and BOTH are members of the controller's stalled-reason set,
+// so either way the GitTarget is surfaced as Stalled=True / kstatus Failed.
+func gitPathRefusalReason(refused *manifestanalyzer.AcceptanceRefusedError) string {
+	if refused.AllIssuesOfKind(manifestanalyzer.IssueIgnoreShadowsManaged) {
+		return "IgnoreShadowsManagedPath"
+	}
+	return "UnsupportedContent"
 }
 
 // RegisterGitTargetEventStream registers a GitTargetEventStream with the router.

@@ -140,6 +140,7 @@ func gitTargetReadyReasonIsStalled(reason string) bool {
 		GitTargetReasonBranchNotAllowed,
 		GitTargetReasonTargetConflict,
 		GitTargetReasonUnsupportedContent,
+		GitTargetReasonIgnoreShadowsManagedPath,
 		GitTargetReadyReasonValidationFailed,
 		GitTargetReadyReasonEncryptionNotConfigured,
 		GitTargetReadyReasonWorkerUnavailable,

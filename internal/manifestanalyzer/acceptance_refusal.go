@@ -49,6 +49,23 @@ func (e *AcceptanceRefusedError) Error() string {
 // the surface intent is explicit at the call site.
 func (e *AcceptanceRefusedError) BlockMessage() string { return e.Error() }
 
+// AllIssuesOfKind reports whether the refusal is composed entirely of one issue kind. The
+// surface uses it to pick a precise status reason: a refusal that is purely
+// IssueIgnoreShadowsManaged is the unrecoverable .gittargetignore-shadows-a-write case
+// (§4.3) and deserves its own reason, whereas any mix falls back to the umbrella
+// UnsupportedContent. An empty issue set returns false.
+func (e *AcceptanceRefusedError) AllIssuesOfKind(kind IssueKind) bool {
+	if len(e.Issues) == 0 {
+		return false
+	}
+	for _, iss := range e.Issues {
+		if iss.Kind != kind {
+			return false
+		}
+	}
+	return true
+}
+
 // RefusalError returns an *AcceptanceRefusedError when the acceptance was not accepted, or
 // nil when the folder is clean. The writer calls this immediately after running the gate, so
 // a refusal aborts the commit before any file is touched.

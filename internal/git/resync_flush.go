@@ -303,11 +303,11 @@ func (w *BranchWorker) executeResyncPendingWrite(
 
 func (w *BranchWorker) refuseUnsafeWorktree(ctx context.Context, worktree *gogit.Worktree, base string) error {
 	root := worktree.Filesystem.Root()
-	files, err := scanWorktreeYAML(filepath.Join(root, base))
+	scan, err := scanWorktreeSubtree(filepath.Join(root, base))
 	if err != nil {
 		return err
 	}
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, files)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan)
 	return batch.refusal()
 }
 
@@ -339,16 +339,17 @@ func (w *BranchWorker) applyResyncToWorktree(
 	scopeGVR *schema.GroupVersionResource,
 ) (ResyncStats, bool, error) {
 	root := worktree.Filesystem.Root()
-	files, err := scanWorktreeYAML(filepath.Join(root, base))
+	scan, err := scanWorktreeSubtree(filepath.Join(root, base))
 	if err != nil {
 		return ResyncStats{}, false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, files)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan)
 	// First materialization is the adoption gate: refuse a subtree that holds content the
 	// operator cannot safely manage (unsupported kustomization, duplicate identity, impure
-	// or non-KRM files) and commit nothing, so the watch layer surfaces it as a blocked
-	// stream instead of writing into a folder it does not understand.
+	// or non-KRM files, foreign content, a catastrophic .gittargetignore) and commit nothing,
+	// so the watch layer surfaces it as a blocked stream instead of writing into a folder it
+	// does not understand.
 	if err := batch.refusal(); err != nil {
 		return ResyncStats{}, false, err
 	}
@@ -356,7 +357,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
 	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
 	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
-	plan := resyncPlan(batch.store, files, desired, scopeGVR)
+	plan := resyncPlan(batch.store, scan.YAMLFiles, desired, scopeGVR)
 
 	stats, err := batch.applyResyncPlan(ctx, desired, plan)
 	if err != nil {

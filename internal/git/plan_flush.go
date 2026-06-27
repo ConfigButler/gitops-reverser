@@ -21,6 +21,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -56,12 +57,12 @@ func (w *BranchWorker) flushEventsToWorktree(
 	events []Event,
 ) (bool, error) {
 	root := worktree.Filesystem.Root()
-	files, err := scanWorktreeYAML(filepath.Join(root, base))
+	scan, err := scanWorktreeSubtree(filepath.Join(root, base))
 	if err != nil {
 		return false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, files)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan)
 	if err := batch.refusal(); err != nil {
 		return false, err
 	}
@@ -90,17 +91,18 @@ func newWriteBatch(
 	ctx context.Context,
 	writer eventContentWriter,
 	mapper typeset.Lookup,
-	files []manifestedit.FileContent,
+	scan manifestanalyzer.FolderScan,
 ) *writeBatch {
 	// The writer allowlist retains build directives (kustomization.yaml) and the operator's
 	// own .sops.yaml bootstrap config outside the managed model — these are auxiliary input,
 	// not documents to materialise or to mis-refuse as standalone non-KRM. Every other KRM
 	// document is still materialised: the live writer indexes the whole subtree for
-	// placement. The structure-only acceptance gate is then run over this store by
-	// writeBatch.refusal.
-	store := manifestanalyzer.BuildStoreFromFiles(ctx, files, mapper, manifestanalyzer.WriterAllowlist())
-	contentByPath := make(map[string][]byte, len(files))
-	for _, f := range files {
+	// placement. The scan also carries the foreign-content view and the active
+	// .gittargetignore, so the structure-only acceptance gate (run by writeBatch.refusal) and
+	// the write-plan precondition (run by writeBatch.flush) read both from the store.
+	store := manifestanalyzer.BuildStoreFromScan(ctx, scan, mapper, manifestanalyzer.WriterAllowlist())
+	contentByPath := make(map[string][]byte, len(scan.YAMLFiles))
+	for _, f := range scan.YAMLFiles {
 		contentByPath[f.Path] = f.Content
 	}
 	return &writeBatch{
@@ -448,7 +450,17 @@ func currentDocIndex(filePath string, content []byte, id manifestedit.Identity) 
 // flush writes every dirty buffer and removes every deleted buffer under the
 // GitTarget base path, staging each change in the worktree. It returns true when at
 // least one file was written or removed.
+//
+// Before touching a single byte it enforces the write-plan precondition (§4.3 of
+// docs/design/gitpath-foreign-content-stringency.md): no path the operator is about to
+// write, edit, or delete may be shadowed by the active .gittargetignore. The check is a
+// precondition, not a post-hoc detector, so the unrecoverable state (an ignored file the
+// operator can no longer see) is never reached — the flush is refused and the GitTarget
+// fails before the file exists.
 func (wb *writeBatch) flush(ctx context.Context, worktree *gogit.Worktree, root, base string) (bool, error) {
+	if err := wb.ignoreShadowPrecondition(); err != nil {
+		return false, err
+	}
 	logger := log.FromContext(ctx)
 	changed := false
 	for _, rel := range sortedBufferKeys(wb.buffers) {
@@ -471,6 +483,41 @@ func (wb *writeBatch) flush(ctx context.Context, worktree *gogit.Worktree, root,
 	return changed, nil
 }
 
+// ignoreShadowPrecondition tests every planned write in the batch — a created or edited
+// file (dirty) and a removed file (deleted) — against the active .gittargetignore matcher.
+// On a match it returns an *AcceptanceRefusedError carrying one IssueIgnoreShadowsManaged
+// per shadowed path, naming both the path and the matching pattern, so the whole flush is
+// aborted and nothing is committed. The write path is unknowable ahead of time (it is
+// dynamic and, with configurable placement, templated) but perfectly known here, and the
+// matcher is already loaded — so this O(touched files) check is the airtight guarantee that
+// static analysis cannot give. A path with no active matcher can never be shadowed.
+func (wb *writeBatch) ignoreShadowPrecondition() error {
+	if wb.store.Ignore == nil {
+		return nil
+	}
+	var issues []manifestanalyzer.AcceptanceIssue
+	for _, rel := range sortedBufferKeys(wb.buffers) {
+		buf := wb.buffers[rel]
+		if !buf.dirty() && !buf.deleted() {
+			continue
+		}
+		if pattern := wb.store.Ignore.MatchingPattern(rel, false); pattern != "" {
+			issues = append(issues, manifestanalyzer.AcceptanceIssue{
+				Kind: manifestanalyzer.IssueIgnoreShadowsManaged,
+				Path: rel,
+				Message: fmt.Sprintf(
+					"%s pattern %q shadows the managed write path %s; the operator would be blind to its own "+
+						"file. Remove the pattern or move the resource out of its match",
+					manifestanalyzer.GitTargetIgnoreFileName, pattern, rel),
+			})
+		}
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
+}
+
 // writeAndStageFile writes a file's bytes to disk (creating parent directories) and
 // stages it in the worktree.
 func writeAndStageFile(worktree *gogit.Worktree, worktreePath, fullPath string, content []byte) error {
@@ -489,47 +536,75 @@ func writeAndStageFile(worktree *gogit.Worktree, worktreePath, fullPath string, 
 	return nil
 }
 
-// scanWorktreeYAML reads every YAML manifest under absBase into base-relative
-// FileContent for store construction and hydration. A missing base directory (a
-// never-written GitTarget path) yields no files, not an error. Symlinks are never
-// followed.
-func scanWorktreeYAML(absBase string) ([]manifestedit.FileContent, error) {
-	var files []manifestedit.FileContent
+// scanWorktreeSubtree walks the GitTarget subtree at absBase into a
+// manifestanalyzer.FolderScan: the YAML manifests to model and hydrate, the foreign
+// entries the acceptance gate refuses, and the active root .gittargetignore matcher the
+// write-plan precondition consults. It applies the SAME shared ClassifyEntry policy the
+// analyzer's fs.FS scan uses, so the live writer and a dry-run scan agree on what is
+// foreign, what is ignored, and what is an operator artifact.
+//
+// A missing base directory (a never-written GitTarget path) yields an empty scan, not an
+// error. Unlike the analyzer scan, a mid-walk read error is fatal: the live writer must
+// never plan against a partial view of the subtree (an unreadable managed file it skipped
+// would be re-created, churning the mirror). Symlinks are never followed.
+func scanWorktreeSubtree(absBase string) (manifestanalyzer.FolderScan, error) {
+	ignore, ignoreIssues := loadWorktreeGitTargetIgnore(absBase)
+	scan := manifestanalyzer.FolderScan{Ignore: ignore, IgnoreIssues: ignoreIssues}
+
 	walkErr := filepath.WalkDir(absBase, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.Type()&os.ModeSymlink != 0 {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() || !isYAMLManifest(p) {
+		if p == absBase {
 			return nil
 		}
 		rel, relErr := filepath.Rel(absBase, p)
 		if relErr != nil {
 			return relErr
 		}
-		content, readErr := os.ReadFile(p) //nolint:gosec // scanning the GitTarget worktree subtree is the feature
-		if readErr != nil {
-			return readErr
+		rel = filepath.ToSlash(rel)
+		switch manifestanalyzer.ClassifyEntry(rel, d, ignore) {
+		case manifestanalyzer.RoleSkipDir:
+			return filepath.SkipDir
+		case manifestanalyzer.RoleManagedYAML:
+			content, readErr := os.ReadFile(p) //nolint:gosec // scanning the GitTarget worktree subtree is the feature
+			if readErr != nil {
+				return readErr
+			}
+			scan.YAMLFiles = append(scan.YAMLFiles, manifestedit.FileContent{Path: rel, Content: content})
+		case manifestanalyzer.RoleOperatorArtifact:
+			scan.NonYAML = append(scan.NonYAML, rel)
+		case manifestanalyzer.RoleForeignFile:
+			scan.NonYAML = append(scan.NonYAML, rel)
+			scan.Foreign = append(scan.Foreign, manifestanalyzer.ForeignEntry{
+				Path: rel, Kind: manifestanalyzer.ForeignFile,
+			})
+		case manifestanalyzer.RoleForeignSymlink:
+			scan.Foreign = append(scan.Foreign, manifestanalyzer.ForeignEntry{
+				Path: rel, Kind: manifestanalyzer.ForeignSymlink,
+			})
+		case manifestanalyzer.RoleIgnored, manifestanalyzer.RoleDescend:
+			// Ignored content is never read; a normal directory is simply descended.
 		}
-		files = append(files, manifestedit.FileContent{Path: filepath.ToSlash(rel), Content: content})
 		return nil
 	})
 	if walkErr != nil && !os.IsNotExist(walkErr) {
-		return nil, walkErr
+		return manifestanalyzer.FolderScan{}, walkErr
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-	return files, nil
+	sort.Slice(scan.YAMLFiles, func(i, j int) bool { return scan.YAMLFiles[i].Path < scan.YAMLFiles[j].Path })
+	sort.Strings(scan.NonYAML)
+	sort.Slice(scan.Foreign, func(i, j int) bool { return scan.Foreign[i].Path < scan.Foreign[j].Path })
+	return scan, nil
 }
 
-// isYAMLManifest reports whether a path is a YAML manifest by extension.
-func isYAMLManifest(p string) bool {
-	ext := filepath.Ext(p)
-	return ext == ".yaml" || ext == ".yml"
+// loadWorktreeGitTargetIgnore reads and parses the one honoured .gittargetignore at the
+// subtree root. A missing file is the common case and yields a nil matcher with no issues.
+func loadWorktreeGitTargetIgnore(absBase string) (*manifestanalyzer.IgnoreMatcher, []manifestanalyzer.AcceptanceIssue) {
+	content, err := os.ReadFile(filepath.Join(absBase, manifestanalyzer.GitTargetIgnoreFileName))
+	if err != nil {
+		return nil, nil
+	}
+	return manifestanalyzer.LoadGitTargetIgnore(content)
 }
 
 // groupEventsByBase buckets events by their sanitized GitTarget base path, preserving

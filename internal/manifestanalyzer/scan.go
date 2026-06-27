@@ -47,10 +47,10 @@ func Scan(
 	desired []DesiredResource,
 	policy ScanPolicy,
 ) ScanResult {
-	yamlFiles, _, scanDiags := collectFiles(fsys)
-	store := buildStore(ctx, yamlFiles, scanDiags, lookup, policy.Acceptance.Allowlist)
+	scan := collectFiles(fsys)
+	store := buildStore(ctx, scan, lookup, policy.Acceptance.Allowlist)
 	acc := Accept(store, policy.Acceptance)
-	plan := BuildPlan(store, yamlFiles, desired, policy.Plan)
+	plan := BuildPlan(store, scan.YAMLFiles, desired, policy.Plan)
 	return ScanResult{Store: store, Acceptance: acc, Plan: plan}
 }
 

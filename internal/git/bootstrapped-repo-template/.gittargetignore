@@ -1,0 +1,24 @@
+# .gittargetignore — the in-repo escape hatch for GitOps Reverser.
+#
+# This path is an operator-EXCLUSIVE subtree: GitOps Reverser mirrors API state here and
+# refuses content it does not manage (loose files, scripts, binaries, symlinks). Patterns
+# listed below name files the operator must NEVER read — even if they are YAML — so you can
+# keep specific non-managed passengers alongside the mirror. Syntax is exactly .gitignore.
+#
+# Shipped fully commented: out of the box it ignores NOTHING, so the strict default stays in
+# force until you deliberately opt a file out. Uncomment or add patterns as needed.
+#
+# WARNING — never ignore a path the operator writes (a managed manifest). Doing so would
+# blind the operator to its own file: it could not update or delete it, and would re-create
+# it forever. The operator refuses any flush whose write path a pattern here would shadow,
+# and rejects catastrophic whole-tree patterns (*, **, /, *.yaml, *.yml) outright — both
+# fail this GitTarget rather than silently corrupting the mirror.
+#
+# Examples (uncomment the ones you need):
+#
+# LICENSE                 # a license file kept in the mirror
+# .gitignore              # a hand-maintained git ignore
+# .gitattributes
+# docs/                   # a hand-maintained docs subtree the operator should leave alone
+# *.md                    # loose markdown notes
+# legacy/old-config.yaml  # a YAML file kept in the repo but not operator-managed

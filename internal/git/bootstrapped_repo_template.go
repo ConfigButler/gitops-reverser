@@ -35,11 +35,12 @@ import (
 
 const (
 	sopsConfigFileName        = ".sops.yaml"
+	gitTargetIgnoreFileName   = ".gittargetignore"
 	bootstrapTemplateDir      = "bootstrapped-repo-template"
 	bootstrapTemplateFilePerm = 0600
 )
 
-//go:embed bootstrapped-repo-template/* bootstrapped-repo-template/.sops.yaml
+//go:embed bootstrapped-repo-template/* bootstrapped-repo-template/.sops.yaml bootstrapped-repo-template/.gittargetignore
 var bootstrapTemplateFS embed.FS
 
 type bootstrapTemplateData struct {
