@@ -56,6 +56,14 @@ const (
 	ConditionTypeGitTargetReady = "GitTargetReady"
 	// ConditionTypeStreamsReady is a source-compatibility alias for StreamsRunning.
 	ConditionTypeStreamsReady = ConditionTypeStreamsRunning
+	// ConditionTypeAttributed indicates whether a CommitRequest's commit author is
+	// settled: immediately True when attribution is not required (committer-only),
+	// True when resolved from the create audit event, and False when the audit event
+	// never arrived and the commit was authored by the configured committer.
+	ConditionTypeAttributed = "Attributed"
+	// ConditionTypePushed indicates whether a CommitRequest's commit reached the
+	// remote repository.
+	ConditionTypePushed = "Pushed"
 
 	// MsgSnapshotCompleted is returned as the condition message when the initial
 	// cluster snapshot has been successfully committed to Git.

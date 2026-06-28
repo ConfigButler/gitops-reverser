@@ -25,7 +25,6 @@ import (
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -140,7 +139,7 @@ type CommitRequestReconciler struct {
 func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 
-	commitRequest, done, err := r.loadActionableCommitRequest(ctx, log, req)
+	commitRequest, done, err := r.loadActionableCommitRequest(ctx, req)
 	if done || err != nil {
 		return ctrl.Result{}, err
 	}
@@ -151,20 +150,24 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	// 1. ATTRIBUTE: bind the request to a strong audit author when one is
-	// available. Without audit/Redis, or after the bounded wait expires, use the
-	// configured committer identity (blank author).
-	var author string
-	if r.AuthorLookup != nil {
-		var attributed bool
-		author, attributed = r.AuthorLookup.LookupCommitRequestAuthor(
-			ctx, commitRequest.Namespace, commitRequest.Name, commitRequest.UID)
-		if !attributed && time.Since(commitRequest.CreationTimestamp.Time) < commitRequestAttributionTimeout {
-			return ctrl.Result{RequeueAfter: commitRequestAttributionRetryDelay}, nil
+	// First sight: stamp the still-running conditions so the object reports its
+	// progress (kstatus InProgress) and — in committer-only mode — Attributed=True
+	// immediately. A disabled controller returns above, so it never stamps.
+	if conditionByType(commitRequest.Status.Conditions, ConditionTypeReady) == nil {
+		markCommitRequestInProgress(commitRequest, r.AuthorLookup != nil)
+		if err := r.Status().Update(ctx, commitRequest); err != nil {
+			return ctrl.Result{}, err
 		}
-		if !attributed {
-			log.Info(attributionFallbackMessage, "name", req.NamespacedName)
-		}
+		log.V(1).Info("Stamped CommitRequest in-progress conditions", "name", req.NamespacedName)
+	}
+
+	// 1. ATTRIBUTE: settle the commit author. Committer-only mode needs no audit
+	// event; attributed mode waits briefly for the create audit event and, past the
+	// bound, falls back to the configured committer (a missing event never fails the
+	// request).
+	author, attribution, waitForAudit := r.attributeAuthor(ctx, log, commitRequest)
+	if waitForAudit {
+		return ctrl.Result{RequeueAfter: commitRequestAttributionRetryDelay}, nil
 	}
 
 	// 2. ATTACH + POLL: register the attach idempotently the instant we attribute
@@ -178,7 +181,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		GitTargetName:      commitRequest.Spec.TargetRef.Name,
 		GitTargetNamespace: commitRequest.Namespace,
 		Message:            capCommitRequestMessage(commitRequest.Spec.Message),
-		DelaySeconds:       commitRequest.Spec.DelaySeconds,
+		CloseDelaySeconds:  commitRequest.Spec.CloseDelaySeconds,
 	})
 	if serviceErr != nil || !resolved {
 		if serviceErr != nil {
@@ -186,11 +189,15 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				"name", req.NamespacedName, "err", serviceErr.Error())
 		}
 		if time.Since(commitRequest.CreationTimestamp.Time) < commitRequestResolveTimeout {
+			if err := r.recordCloseDelayWait(ctx, commitRequest, attribution); err != nil {
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
 		}
 		log.Info("CommitRequest did not resolve within the safety window; failing closed",
 			"name", req.NamespacedName)
-		r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, errors.New(resolveTimeoutMessage))
+		r.writeTerminalStatus(ctx, log, commitRequest,
+			git.FinalizeResult{}, errors.New(resolveTimeoutMessage), attribution)
 		return ctrl.Result{}, nil
 	}
 
@@ -198,27 +205,66 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Error(result.Err, "CommitRequest finalize failed",
 			"gitTarget", commitRequest.Spec.TargetRef.Name, "name", req.NamespacedName)
 	}
-	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err)
+	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution)
 	return ctrl.Result{}, nil
+}
+
+// attributeAuthor settles the commit author. It returns the author string, the
+// settled attribution decision, and waitForAudit=true when the request must keep
+// polling for its create audit event (attributed mode, within the bound).
+func (r *CommitRequestReconciler) attributeAuthor(
+	ctx context.Context,
+	log logr.Logger,
+	commitRequest *configbutleraiv1alpha2.CommitRequest,
+) (string, commitRequestAttribution, bool) {
+	if r.AuthorLookup == nil {
+		return "", attributionNotRequired, false
+	}
+	author, attributed := r.AuthorLookup.LookupCommitRequestAuthor(
+		ctx, commitRequest.Namespace, commitRequest.Name, commitRequest.UID)
+	if attributed {
+		return author, attributionResolved, false
+	}
+	if time.Since(commitRequest.CreationTimestamp.Time) < commitRequestAttributionTimeout {
+		return "", attributionPending, true
+	}
+	log.Info(attributionFallbackMessage, "name", client.ObjectKeyFromObject(commitRequest))
+	return "", attributionTimedOut, false
+}
+
+// recordCloseDelayWait makes the post-attribution wait — the closeDelaySeconds
+// collect window followed by the commit and push — an observable state distinct from
+// the WaitingForAuditEvent wait. It writes once, at the transition, and is a no-op
+// once the request is already showing the WaitingForCloseDelay reason (so polling
+// does not re-write status every interval).
+func (r *CommitRequestReconciler) recordCloseDelayWait(
+	ctx context.Context,
+	commitRequest *configbutleraiv1alpha2.CommitRequest,
+	attribution commitRequestAttribution,
+) error {
+	if c := conditionByType(commitRequest.Status.Conditions, ConditionTypeReconciling); c != nil &&
+		c.Reason == crReasonWaitingForCloseDelay {
+		return nil
+	}
+	markCommitRequestWaitingForCloseDelay(commitRequest, attribution)
+	return r.Status().Update(ctx, commitRequest)
 }
 
 // loadActionableCommitRequest fetches the CommitRequest and short-circuits
 // everything that must not reach the finalize: a deleted object, a terminal
-// phase, and — via an uncached re-read — a stale cache echo of our own
+// outcome, and — via an uncached re-read — a stale cache echo of our own
 // terminal write from a previous invocation (work past this point must happen
-// at most once per CommitRequest). A freshly created object is stamped with
-// the initial phase on the way through. done=true means the reconcile has
-// nothing further to do.
+// at most once per CommitRequest). done=true means the reconcile has nothing
+// further to do.
 func (r *CommitRequestReconciler) loadActionableCommitRequest(
 	ctx context.Context,
-	log logr.Logger,
 	req ctrl.Request,
 ) (*configbutleraiv1alpha2.CommitRequest, bool, error) {
 	var commitRequest configbutleraiv1alpha2.CommitRequest
 	if err := r.Get(ctx, req.NamespacedName, &commitRequest); err != nil {
 		return nil, true, client.IgnoreNotFound(err)
 	}
-	if isTerminalCommitRequestPhase(commitRequest.Status.Phase) {
+	if commitRequestIsTerminal(&commitRequest) {
 		return nil, true, nil
 	}
 
@@ -226,17 +272,9 @@ func (r *CommitRequestReconciler) loadActionableCommitRequest(
 		if err := r.APIReader.Get(ctx, req.NamespacedName, &commitRequest); err != nil {
 			return nil, true, client.IgnoreNotFound(err)
 		}
-		if isTerminalCommitRequestPhase(commitRequest.Status.Phase) {
+		if commitRequestIsTerminal(&commitRequest) {
 			return nil, true, nil
 		}
-	}
-
-	if commitRequest.Status.Phase == "" {
-		commitRequest.Status.Phase = configbutleraiv1alpha2.CommitRequestPhaseWaitingForAuditEvent
-		if err := r.Status().Update(ctx, &commitRequest); err != nil {
-			return nil, true, err
-		}
-		log.V(1).Info("Stamped CommitRequest as WaitingForAuditEvent", "name", req.NamespacedName)
 	}
 
 	return &commitRequest, false, nil
@@ -256,8 +294,8 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 	commitRequest *configbutleraiv1alpha2.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
+	attribution commitRequestAttribution,
 ) {
-	now := metav1.Now()
 	expectedUID := commitRequest.UID
 	reader := r.APIReader
 	if reader == nil {
@@ -266,7 +304,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 
 	current := commitRequest
 	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
-		applyFinalizeResultToStatus(current, result, finalizeErr, now)
+		applyFinalizeResultToStatus(current, result, finalizeErr, attribution)
 
 		err := r.Status().Update(ctx, current)
 		if err == nil {
@@ -274,11 +312,14 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 			if finalizeErr != nil {
 				finalizeError = finalizeErr.Error()
 			}
+			readyReason, readyMessage := commitRequestReadyReason(current)
 			log.Info("CommitRequest finalized",
 				"name", client.ObjectKeyFromObject(current),
-				"phase", current.Status.Phase,
-				"reason", current.Status.Reason,
-				"message", current.Status.Message,
+				"ready", commitRequestConditionStatus(current, ConditionTypeReady),
+				"reason", readyReason,
+				"message", readyMessage,
+				"attributed", commitRequestConditionStatus(current, ConditionTypeAttributed),
+				"pushed", commitRequestConditionStatus(current, ConditionTypePushed),
 				"branch", current.Status.Branch,
 				"sha", current.Status.SHA,
 				"outcome", result.Outcome,
@@ -303,13 +344,13 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 			return
 		}
 		// Never stamp the outcome onto a different incarnation or over a
-		// terminal phase another writer got in first.
+		// terminal outcome another writer got in first.
 		if fresh.UID != expectedUID {
 			log.Info("CommitRequest UID changed before status could be written; skipping",
 				"expectedUID", expectedUID, "objectUID", fresh.UID)
 			return
 		}
-		if isTerminalCommitRequestPhase(fresh.Status.Phase) {
+		if commitRequestIsTerminal(&fresh) {
 			return
 		}
 		current = &fresh

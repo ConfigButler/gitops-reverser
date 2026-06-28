@@ -50,7 +50,7 @@ the branch had committed work plus staged and unstaged local edits.
 ### CommitRequest workflow
 
 - Added controller-driven, audit-attributed finalization.
-- Added delayed finalization via `spec.delaySeconds`.
+- Added a delayed window close via `spec.closeDelaySeconds`.
 - Added resolve-on-push so committed requests get the pushed SHA.
 - Added terminal `Rejected` outcomes with machine-readable reasons.
 - Added eager message attach and more unit/e2e coverage around commit windows.
@@ -65,7 +65,9 @@ the branch had committed work plus staged and unstaged local edits.
 - Flux `GitRepository` enum values were removed from `GitTarget.spec.providerRef`; the reference is
   now only to `configbutler.ai/GitProvider`.
 - `GitTarget.status` gained phase/materialization roll-up fields.
-- `CommitRequest.status.phase` now includes `Rejected` and `status.reason`.
+- `CommitRequest.status` reports kstatus-compatible **conditions** (`Ready`, `Reconciling`, `Stalled`,
+  `Attributed`, `Pushed`) plus `observedGeneration`; the former `phase`/`reason`/`message`/`observedTime`
+  fields were removed.
 
 ### Git credentials and security
 
@@ -127,7 +129,8 @@ The new Markdown set is useful, but it is not yet tidy enough to ignore during m
 5. **Finish migration documentation.**
    `docs/UPGRADING.md` should cover all breaking changes, not only credentials/providerRef:
    required `GitTarget.spec.path`, immutable destination fields, `snapshotTemplate` to
-   `reconcileTemplate`, CommitRequest `NoOpenWindow` to `Rejected`, and status shape changes.
+   `reconcileTemplate`, the CommitRequest status move from `phase`/`reason` to conditions
+   (`Ready`/`Reconciling`/`Stalled`/`Attributed`/`Pushed`), and other status shape changes.
 
 6. **Triage the new Markdown set.**
    Use [`markdown-triage-inventory.md`](markdown-triage-inventory.md) to mark each new Markdown file

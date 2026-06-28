@@ -215,6 +215,94 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 	assert.Equal(t, "alice@example.com", enqueuer.events[0].UserInfo.Email)
 }
 
+// TestRouteLiveTargetWatchEvent_DeletionTimestampRendersAsDelete proves the
+// deletion-as-intent rule: a MODIFIED carrying a deletionTimestamp renders as a
+// bodyless DELETE (the object is logically absent), not an UPDATE that would commit
+// the terminating state.
+func TestRouteLiveTargetWatchEvent_DeletionTimestampRendersAsDelete(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	enqueuer := &recordingEnqueuer{}
+	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
+	}
+	manager := &Manager{EventRouter: router}
+
+	_, err := manager.routeLiveTargetWatchEvent(
+		context.Background(),
+		logr.Discard(),
+		gitDest,
+		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
+		OperationSet{"DELETE": struct{}{}},
+		watch.Event{Type: watch.Modified, Object: terminatingConfigMapObject("20")},
+	)
+
+	require.NoError(t, err)
+	require.Len(t, enqueuer.events, 1)
+	assert.Equal(t, "DELETE", enqueuer.events[0].Operation,
+		"a terminating object renders as a removal, not an update")
+	assert.Nil(t, enqueuer.events[0].Object, "a DELETE event carries no body")
+	assert.Equal(t, "demo", enqueuer.events[0].Identifier.Name)
+}
+
+// TestRouteLiveTargetWatchEvent_ModifiedWithoutDeletionTimestampRendersAsUpdate is
+// the guard: a normal MODIFIED still renders as a sanitized UPDATE.
+func TestRouteLiveTargetWatchEvent_ModifiedWithoutDeletionTimestampRendersAsUpdate(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	enqueuer := &recordingEnqueuer{}
+	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
+	}
+	manager := &Manager{EventRouter: router}
+
+	_, err := manager.routeLiveTargetWatchEvent(
+		context.Background(),
+		logr.Discard(),
+		gitDest,
+		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
+		OperationSet{"UPDATE": struct{}{}},
+		watch.Event{Type: watch.Modified, Object: configMapObject("21")},
+	)
+
+	require.NoError(t, err)
+	require.Len(t, enqueuer.events, 1)
+	assert.Equal(t, "UPDATE", enqueuer.events[0].Operation)
+	assert.NotNil(t, enqueuer.events[0].Object, "an UPDATE carries the sanitized object")
+}
+
+// TestRouteLiveTargetWatchEvent_TerminatingThenDeletedAreIdenticalRemovals proves the
+// follow-on events fold: the deletionTimestamp MODIFIED and the eventual DELETED emit
+// the same bodyless removal for the same path, so the writer collapses the second to
+// a no-op against the already-absent file.
+func TestRouteLiveTargetWatchEvent_TerminatingThenDeletedAreIdenticalRemovals(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	enqueuer := &recordingEnqueuer{}
+	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
+	}
+	manager := &Manager{EventRouter: router}
+	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
+	ops := OperationSet{"DELETE": struct{}{}}
+
+	_, err := manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, key, ops,
+		watch.Event{Type: watch.Modified, Object: terminatingConfigMapObject("20")})
+	require.NoError(t, err)
+	_, err = manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, key, ops,
+		watch.Event{Type: watch.Deleted, Object: configMapObject("22")})
+	require.NoError(t, err)
+
+	require.Len(t, enqueuer.events, 2)
+	assert.Equal(t, "DELETE", enqueuer.events[0].Operation)
+	assert.Equal(t, "DELETE", enqueuer.events[1].Operation)
+	assert.Equal(t, enqueuer.events[0].Identifier, enqueuer.events[1].Identifier,
+		"both removals target the same path, so the writer folds the second to a no-op")
+}
+
 func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T) {
 	manager := &Manager{}
 	gitDest := types.NewResourceReference("target", "default")
@@ -456,6 +544,13 @@ func TestTargetWatchOperationHelpers(t *testing.T) {
 	assert.True(t, OperationSet{"*": struct{}{}}.Match("UPDATE"))
 	assert.Equal(t, "DELETE", operationForWatchEvent(watch.Deleted))
 	assert.Empty(t, operationForWatchEvent(watch.Error))
+
+	// Deletion-as-intent: a deletionTimestamp forces DELETE regardless of event type;
+	// otherwise the helper mirrors operationForWatchEvent.
+	assert.Equal(t, "UPDATE", operationForLiveTargetWatchEvent(watch.Modified, configMapObject("1")))
+	assert.Equal(t, "DELETE", operationForLiveTargetWatchEvent(watch.Modified, terminatingConfigMapObject("1")))
+	assert.Equal(t, "CREATE", operationForLiveTargetWatchEvent(watch.Added, configMapObject("1")))
+	assert.Equal(t, "DELETE", operationForLiveTargetWatchEvent(watch.Added, terminatingConfigMapObject("1")))
 }
 
 func TestFoldTargetReplayEvent_AccumulatesUntilInitialEventsBookmark(t *testing.T) {
@@ -652,6 +747,17 @@ func configMapObject(rv string) *unstructured.Unstructured {
 	obj.SetNamespace("apps")
 	obj.SetName("demo")
 	obj.SetResourceVersion(rv)
+	return obj
+}
+
+// terminatingConfigMapObject is a ConfigMap that has been marked for deletion: it
+// carries a deletionTimestamp (and a finalizer keeping it alive) but still exists in
+// the cluster. It models the object the watch delivers as a MODIFIED while Kubernetes
+// finalization is in flight.
+func terminatingConfigMapObject(rv string) *unstructured.Unstructured {
+	obj := configMapObject(rv)
+	obj.SetDeletionTimestamp(&metav1.Time{Time: time.Unix(0, 0).UTC()})
+	obj.SetFinalizers([]string{"example.com/cleanup"})
 	return obj
 }
 

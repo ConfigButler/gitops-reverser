@@ -84,9 +84,10 @@ type AttachCommitRequest struct {
 	// Message is the verbatim commit message to attach to the window. Empty keeps
 	// the generated grouped-commit message.
 	Message string
-	// DelaySeconds is the collect-grace: the worker finalizes the attached window
-	// at receipt + DelaySeconds (the grace is anchored at attribution, §6.4.4).
-	DelaySeconds int32
+	// CloseDelaySeconds is the close-delay collect window: the worker closes the
+	// attached window and finalizes it at receipt + CloseDelaySeconds (the delay is
+	// anchored at attribution, §6.4.4).
+	CloseDelaySeconds int32
 }
 
 // commitRequestID is the worker-local key for a CommitRequest: its namespaced
@@ -111,7 +112,7 @@ type pendingCommitRequest struct {
 	gitTargetName      string
 	gitTargetNamespace string
 	message            string
-	// finalizeAt is receipt + DelaySeconds, stamped once on first registration
+	// finalizeAt is receipt + CloseDelaySeconds, stamped once on first registration
 	// (idempotent re-sends keep it).
 	finalizeAt time.Time
 	// attached is true once this request's message is bound to the open window.

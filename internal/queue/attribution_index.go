@@ -78,6 +78,11 @@ const (
 	AttributionExactServiceAccount AttributionResult = "exact_serviceaccount"
 	// AttributionWeak is a non-exact match, such as UID-only or RV-only.
 	AttributionWeak AttributionResult = "weak"
+	// AttributionExactDeleteCollectionItem is a UID match to a fact expanded from a
+	// deletecollection response body — a precise per-object credit for one member of
+	// a collection delete, joined by UID (the body item's RV is the pre-delete RV and
+	// never matches the removal event's RV, so UID is the only stable join key).
+	AttributionExactDeleteCollectionItem AttributionResult = "exact_deletecollection_item"
 	// AttributionConflict means multiple authors wrote facts for the selected join key.
 	AttributionConflict AttributionResult = "conflict"
 	// AttributionExpired means a fact key existed, but only its tombstone remains.
@@ -209,6 +214,12 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, event auditv1.Event) 
 		return nil
 	}
 
+	// A deletecollection is name-less, so it can never name a single object. When the
+	// API server returns the deleted set, expand it into one fact per object instead.
+	if strings.EqualFold(event.Verb, "deletecollection") {
+		return a.RecordDeleteCollectionFacts(ctx, event)
+	}
+
 	op, _ := auditutil.VerbToOperation(event.Verb)
 	identity := auditutil.IdentityFromAuditEvent(event, op)
 	if identity.Name == "" {
@@ -258,6 +269,125 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, event auditv1.Event) 
 	}
 	a.recordFactIndexSize(ctx)
 	return nil
+}
+
+// RecordDeleteCollectionFacts expands a deletecollection response body into one
+// uid-only attribution fact per listed object, joined by UID against the per-object
+// removal watch event. It is a no-op for any other verb, or when the body is absent,
+// hollow, or unparseable — an aggregated / metadata-only deletecollection then
+// degrades to a committer-authored removal.
+//
+// It writes ONLY the uid-only key: the body item's resourceVersion is the pre-delete
+// RV, which no watch removal event ever presents, so the exact and rv-only variants
+// would be dead keys. Finalizer-pending items are NOT skipped — under the
+// deletion-as-intent rule a deletionTimestamp already removes the file, so the actor
+// who ran the collection delete is credited with that removal even while Kubernetes
+// finalization is still in flight. See
+// docs/design/deletecollection-attribution-expander.md.
+func (a *AttributionIndex) RecordDeleteCollectionFacts(ctx context.Context, event auditv1.Event) error {
+	if !strings.EqualFold(event.Verb, "deletecollection") || event.ObjectRef == nil || event.ObjectRef.Resource == "" {
+		return nil
+	}
+	user := resolveUserInfo(event)
+	if user.Username == "" {
+		return nil
+	}
+	items := deleteCollectionItems(event.ResponseObject)
+	if len(items) == 0 {
+		return nil
+	}
+
+	fact := AuthorFact{
+		Author:           user.Username,
+		DisplayName:      user.DisplayName,
+		Email:            user.Email,
+		Verb:             "deletecollection",
+		AuditID:          string(event.AuditID),
+		IsServiceAccount: strings.HasPrefix(user.Username, serviceAccountUserPrefix),
+	}
+	if !event.StageTimestamp.IsZero() {
+		fact.StageTimestamp = event.StageTimestamp.UTC().Format(time.RFC3339Nano)
+	}
+	raw, err := json.Marshal(fact)
+	if err != nil {
+		return fmt.Errorf("marshal deletecollection fact: %w", err)
+	}
+	return a.storeDeleteCollectionFacts(
+		ctx,
+		event.ObjectRef.APIGroup,
+		event.ObjectRef.Resource,
+		items,
+		raw,
+		fact.Author,
+	)
+}
+
+// storeDeleteCollectionFacts writes one uid-only fact per joinable item and records
+// the expander metrics when at least one item was written. rv="" makes
+// factKeyVariants yield exactly the uid-only key.
+func (a *AttributionIndex) storeDeleteCollectionFacts(
+	ctx context.Context,
+	group, resource string,
+	items []deleteCollectionItem,
+	raw []byte,
+	author string,
+) error {
+	expanded := false
+	for _, item := range items {
+		if item.Name == "" || item.UID == "" {
+			continue
+		}
+		for _, key := range a.factKeyVariants(group, resource, item.Namespace, item.Name, item.UID, "") {
+			if err := a.storeFactKey(ctx, key, raw, author); err != nil {
+				return fmt.Errorf("store deletecollection fact %q: %w", key, err)
+			}
+		}
+		expanded = true
+	}
+	if expanded {
+		a.recordFactEvent(ctx, "deletecollection_expanded")
+		a.recordFactIndexSize(ctx)
+	}
+	return nil
+}
+
+// deleteCollectionItem is the per-object identity read from a deletecollection
+// response list.
+type deleteCollectionItem struct {
+	Namespace string
+	Name      string
+	UID       types.UID
+}
+
+// deleteCollectionItems parses the per-object identities from a deletecollection
+// response body. It accepts any list-shaped body (a typed "…List", a v1.List, or
+// anything carrying an "items" array) and returns nil for a Status, hollow, or
+// unparseable body — the caller then degrades to a committer-authored removal.
+func deleteCollectionItems(obj *runtime.Unknown) []deleteCollectionItem {
+	if obj == nil || len(obj.Raw) == 0 {
+		return nil
+	}
+	var envelope struct {
+		Items []struct {
+			Metadata struct {
+				Namespace string    `json:"namespace"`
+				Name      string    `json:"name"`
+				UID       types.UID `json:"uid"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(obj.Raw, &envelope); err != nil {
+		return nil
+	}
+	items := make([]deleteCollectionItem, 0, len(envelope.Items))
+	for _, it := range envelope.Items {
+		items = append(items, deleteCollectionItem{
+			Namespace: it.Metadata.Namespace,
+			Name:      it.Metadata.Name,
+			UID:       it.Metadata.UID,
+		})
+	}
+	return items
 }
 
 // LookupAuthor finds the strongest attribution fact for a watch event, trying the
@@ -330,6 +460,12 @@ func (a *AttributionIndex) lookupAuthorResolutionKey(
 }
 
 func attributionResultForMatch(variantIndex int, uid types.UID, rv string, fact AuthorFact) AttributionResult {
+	if strings.EqualFold(fact.Verb, "deletecollection") {
+		// A deletecollection fact is expanded per object and joined by UID; the body
+		// item's RV never matches the removal event's RV, so this is the precise
+		// credit despite not being an exact uid+rv match.
+		return AttributionExactDeleteCollectionItem
+	}
 	if variantIndex != 0 || uid == "" || rv == "" {
 		return AttributionWeak
 	}

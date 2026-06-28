@@ -433,13 +433,22 @@ spec:
     name: platform
   message: "Manual save"
 status:
-  phase: Committed   # WaitingForAuditEvent | Committed | NoOpenWindow | Failed
+  conditions:
+    - type: Ready        # summary: True once it reached a non-error terminal outcome
+      status: "True"
+      reason: Committed  # Committed | NoWindowInGrace | WindowMismatch | AlreadyPresent | FinalizeFailed
+    - type: Attributed   # True immediately when attribution is not required (committer-only)
+      status: "True"
+      reason: AttributedFromAuditEvent
+    - type: Pushed       # True once the commit is in the remote repository
+      status: "True"
+      reason: Pushed
   branch: main
   sha: abc123def
 ```
 
 Because it is an ordinary resource, a request CRD automatically gets
-`kubectl get`/`describe`/`wait`, watch support, status conditions/phases, RBAC,
+`kubectl get`/`describe`/`wait`, watch support, status conditions, RBAC,
 an audit trail, and durable retry/reconciliation — none of which a one-shot
 subresource call provides. This is why it is the GitOps-friendly way to model an
 action: the request itself is a durable, inspectable object.

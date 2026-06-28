@@ -18,20 +18,20 @@ spec:
     - jsonPath: .spec.targetRef.name
       name: GitTarget
       type: string
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
       type: string
-    - jsonPath: .status.reason
-      name: Reason
+    - jsonPath: .status.conditions[?(@.type=="Attributed")].status
+      name: Attributed
       type: string
-    - jsonPath: .status.branch
-      name: Branch
+    - jsonPath: .status.conditions[?(@.type=="Pushed")].status
+      name: Pushed
       type: string
     - jsonPath: .status.sha
       name: SHA
       type: string
-    - jsonPath: .spec.message
-      name: Message
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -64,15 +64,15 @@ spec:
           spec:
             description: spec defines the desired state of CommitRequest
             properties:
-              delaySeconds:
+              closeDelaySeconds:
                 description: |-
-                  DelaySeconds optionally holds the finalize for this many seconds after
-                  the CommitRequest's creation, acting as an extra collect window:
-                  changes the author makes in the meantime still join the open commit
-                  window and are included in the finalized commit. Omitted or 0 finalizes
-                  as soon as the CommitRequest is attributed to its author. The window
-                  can still be closed earlier by another author's change or by the
-                  provider's commit window timer, exactly as without a CommitRequest.
+                  CloseDelaySeconds optionally delays closing the open commit window for this
+                  many seconds after the CommitRequest is attributed, acting as an extra collect
+                  window: changes the author makes in the meantime still join the open commit
+                  window and are included in the resulting commit. Omitted or 0 closes the window
+                  as soon as the CommitRequest is attributed to its author. The window can still
+                  be closed earlier by another author's change or by the provider's commit window
+                  timer, exactly as without a CommitRequest.
                 format: int32
                 maximum: 300
                 minimum: 0
@@ -123,39 +123,81 @@ spec:
             description: status defines the observed state of CommitRequest
             properties:
               branch:
-                description: Branch is the Git branch the commit landed on. Set when
-                  Phase is Committed.
-                type: string
-              message:
                 description: |-
-                  Message is a human-readable detail for the terminal phase. When Phase is
-                  Failed it carries the reason the finalize could not complete; when Phase is
-                  Rejected it carries the prose for status.reason.
+                  Branch is the Git branch the GitTarget commits to. Populated once the
+                  finalize resolves.
                 type: string
-              observedTime:
-                description: ObservedTime is the timestamp at which the terminal phase
-                  was recorded.
-                format: date-time
-                type: string
-              phase:
-                description: Phase is the lifecycle state of this CommitRequest.
-                enum:
-                - WaitingForAuditEvent
-                - Committed
-                - Rejected
-                - Failed
-                type: string
-              reason:
+              conditions:
                 description: |-
-                  Reason explains a Rejected phase: the machine-readable discriminator that
-                  status consumers and tests assert on. Empty for non-Rejected phases.
-                enum:
-                - NoWindowInGrace
-                - WindowMismatch
-                - AlreadyPresent
-                type: string
+                  Conditions report the request's progress and terminal outcome: the Ready
+                  summary, the kstatus Reconciling/Stalled pair, and the domain conditions
+                  Attributed and Pushed.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
               sha:
-                description: SHA is the resulting commit SHA. Set when Phase is Committed.
+                description: SHA is the resulting commit SHA. Set when the commit
+                  was pushed (Pushed=True).
                 type: string
             type: object
         required:

@@ -465,7 +465,8 @@ The important fields are:
 
 - `spec.targetRef.name`: target whose open window should be finalized
 - `spec.message`: optional verbatim commit message
-- `spec.delaySeconds`: optional 0-300 second collect grace after the request is attributed
+- `spec.closeDelaySeconds`: optional 0-300 second delay before the open window is closed, after the
+  request is attributed — an extra collect window
 
 Example:
 
@@ -479,18 +480,28 @@ spec:
   targetRef:
     name: example-target
   message: "save default/example-target"
-  delaySeconds: 2
+  closeDelaySeconds: 2
 ```
 
 The entire spec is immutable. Create a new `CommitRequest` for each save attempt.
 
-Status moves from `WaitingForAuditEvent` to one terminal phase:
+Progress and outcome are reported through kstatus-compatible **conditions** (no `phase` string).
+`kubectl get commitrequest` surfaces `Ready`, `Attributed`, and `Pushed`; `kubectl wait
+--for=condition=Ready` blocks until the request settles:
 
-- `Committed`: a commit was pushed; `status.branch` and `status.sha` are set.
-- `Rejected`: the request was handled correctly but produced no commit. `status.reason` is
-  `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`.
-- `Failed`: the finalize could not complete, for example because the request's own audit event was
-  never observed and the operator could not attribute it to an author.
+- **Ready** (summary): `True` once the request reached a non-error terminal outcome. The `Ready`
+  condition's `reason` says which: `Committed` (a commit was pushed; `status.branch`/`status.sha` set),
+  or a benign no-commit — `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`. A failed finalize is
+  `Ready=False` with reason `FinalizeFailed`.
+- **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` through both
+  progress waits, told apart by its `reason`: `WaitingForAuditEvent` while learning the author, then
+  `WaitingForCloseDelay` once attached (the `closeDelaySeconds` collect window, then commit and push).
+  `Stalled=True` when the finalize failed and needs attention (kstatus reports the object Failed).
+- **Attributed**: `True` once the author is settled — immediately in committer-only mode
+  (`AttributionNotRequired`), when resolved from the create audit event (`AttributedFromAuditEvent`), and
+  `False` (`AuditEventNotObserved`) when the audit event never arrived and the commit was authored by the
+  configured committer.
+- **Pushed**: `True` once the commit is in the remote repository.
 
 ## Audit ingestion settings
 

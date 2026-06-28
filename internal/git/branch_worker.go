@@ -318,7 +318,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 			"request", req.Namespace+"/"+req.Name,
 			"author", req.Author,
 			"target", req.GitTargetNamespace+"/"+req.GitTargetName,
-			"delaySeconds", req.DelaySeconds,
+			"closeDelaySeconds", req.CloseDelaySeconds,
 			"messageOverride", req.Message != "")
 		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
 		// the loop republishes on every received item, so the gauge converges

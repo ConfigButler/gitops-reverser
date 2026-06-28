@@ -665,14 +665,14 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	case watch.Bookmark:
 		return rv, nil
 	case watch.Added, watch.Modified, watch.Deleted:
-		op := operationForWatchEvent(ev.Type)
-		if !ops.Match(op) {
-			return rv, nil
-		}
 		u, ok := ev.Object.(*unstructured.Unstructured)
 		if !ok {
 			log.V(1).Info("target watch non-unstructured event skipped",
 				"gvr", key.GVR.String(), "type", string(ev.Type))
+			return rv, nil
+		}
+		op := operationForLiveTargetWatchEvent(ev.Type, u)
+		if !ops.Match(op) {
 			return rv, nil
 		}
 		event := targetWatchGitEvent(key.GVR, u, op)
@@ -735,6 +735,23 @@ func operationForWatchEvent(eventType watch.EventType) string {
 	default:
 		return ""
 	}
+}
+
+// operationForLiveTargetWatchEvent maps a live watch event to a Git operation,
+// applying the deletion-as-intent rule: an object carrying a deletionTimestamp is
+// treated as logically absent from the intent tree, so it renders as a DELETE even
+// while it is still Terminating in the cluster (Kubernetes keeps it until finalizers
+// clear). The removal is attributed to whoever requested the deletion; the later
+// finalizer updates and the eventual DELETED event re-issue the same removal, which
+// the writer folds to a no-op against the already-absent path. deletionTimestamp is
+// server-owned runtime metadata (sanitize strips it), never desired state, so the
+// intent tree's invariant — a file present means the resource is intended to exist —
+// holds. See docs/design/deletecollection-attribution-expander.md §2.
+func operationForLiveTargetWatchEvent(eventType watch.EventType, u *unstructured.Unstructured) string {
+	if u != nil && u.GetDeletionTimestamp() != nil {
+		return string(configv1alpha2.OperationDelete)
+	}
+	return operationForWatchEvent(eventType)
 }
 
 // Match reports whether the operation is included in the operation set. A nil or

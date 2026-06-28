@@ -22,48 +22,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// CommitRequestPhase enumerates the lifecycle states of a CommitRequest.
-type CommitRequestPhase string
-
-const (
-	// CommitRequestPhaseWaitingForAuditEvent is the initial phase: the
-	// CommitRequest's own create audit event — the source its author is
-	// attributed from, and the anchor that orders the finalize after the
-	// author's earlier changes — has not been observed yet, or the finalize
-	// it gates (optional delay + audit-pipeline drain + commit) has not
-	// completed.
-	CommitRequestPhaseWaitingForAuditEvent CommitRequestPhase = "WaitingForAuditEvent"
-	// CommitRequestPhaseCommitted is terminal: the open commit window was
-	// finalized, pushed to the remote, and status.branch / status.sha are set.
-	CommitRequestPhaseCommitted CommitRequestPhase = "Committed"
-	// CommitRequestPhaseRejected is terminal: the request was handled correctly
-	// but produced no commit. status.reason distinguishes why (NoWindowInGrace,
-	// WindowMismatch, AlreadyPresent). This is not an error.
-	CommitRequestPhaseRejected CommitRequestPhase = "Rejected"
-	// CommitRequestPhaseFailed is terminal: the finalize could not be completed
-	// (for example a failed local commit, a push that can never land, or
-	// attribution that never arrived). status.message carries the failure detail.
-	CommitRequestPhaseFailed CommitRequestPhase = "Failed"
-)
-
-// CommitRequestRejectReason explains a Rejected CommitRequest: the request was
-// handled correctly but produced no commit. It is set only when phase is Rejected.
-// +kubebuilder:validation:Enum=NoWindowInGrace;WindowMismatch;AlreadyPresent
-type CommitRequestRejectReason string
-
-const (
-	// RejectNoWindowInGrace means the grace period elapsed with no matching
-	// same-author window — nothing was pending to save.
-	RejectNoWindowInGrace CommitRequestRejectReason = "NoWindowInGrace"
-	// RejectWindowMismatch means an open window existed but belonged to a different
-	// author or GitTarget, so it was deliberately left untouched.
-	RejectWindowMismatch CommitRequestRejectReason = "WindowMismatch"
-	// RejectAlreadyPresent means a matching window was finalized but produced no
-	// diff — the change already matches the remote, so the commit was dropped (loop
-	// prevention).
-	RejectAlreadyPresent CommitRequestRejectReason = "AlreadyPresent"
-)
-
 // CommitRequestSpec defines the desired state of CommitRequest. The spec is
 // immutable after creation: a CEL validation rule rejects any update that
 // changes it, so a delayed audit event always acts on the spec the object was
@@ -89,58 +47,66 @@ type CommitRequestSpec struct {
 	// +kubebuilder:validation:Pattern=`^[^\x00-\x09\x0B-\x1F\x7F]*$`
 	Message string `json:"message,omitempty"`
 
-	// DelaySeconds optionally holds the finalize for this many seconds after
-	// the CommitRequest's creation, acting as an extra collect window:
-	// changes the author makes in the meantime still join the open commit
-	// window and are included in the finalized commit. Omitted or 0 finalizes
-	// as soon as the CommitRequest is attributed to its author. The window
-	// can still be closed earlier by another author's change or by the
-	// provider's commit window timer, exactly as without a CommitRequest.
+	// CloseDelaySeconds optionally delays closing the open commit window for this
+	// many seconds after the CommitRequest is attributed, acting as an extra collect
+	// window: changes the author makes in the meantime still join the open commit
+	// window and are included in the resulting commit. Omitted or 0 closes the window
+	// as soon as the CommitRequest is attributed to its author. The window can still
+	// be closed earlier by another author's change or by the provider's commit window
+	// timer, exactly as without a CommitRequest.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=300
-	DelaySeconds int32 `json:"delaySeconds,omitempty"`
+	CloseDelaySeconds int32 `json:"closeDelaySeconds,omitempty"`
 }
 
-// CommitRequestStatus defines the observed state of CommitRequest.
+// CommitRequestStatus defines the observed state of CommitRequest. Progress and
+// outcome are reported entirely through conditions (kstatus-compatible), so the
+// object carries no lifecycle phase string:
+//
+//   - Ready (summary): True once the request reached a terminal outcome that is not
+//     an error — a pushed commit, or a benign no-commit (nothing to save, already
+//     present, or a foreign open window). False while in progress or when it failed.
+//   - Reconciling / Stalled: the kstatus progress / blocked pair. Reconciling=True
+//     while finalizing; Stalled=True when the finalize failed and needs attention.
+//   - Attributed (domain): True once the author is settled — immediately True when
+//     attribution is not required (committer-only), True when resolved from the
+//     create audit event, and False if the audit event never arrived and the commit
+//     was authored by the configured committer.
+//   - Pushed (domain): True once the commit is in the remote repository.
 type CommitRequestStatus struct {
-	// Phase is the lifecycle state of this CommitRequest.
+	// ObservedGeneration is the most recent generation observed by the controller.
 	// +optional
-	// +kubebuilder:validation:Enum=WaitingForAuditEvent;Committed;Rejected;Failed
-	Phase CommitRequestPhase `json:"phase,omitempty"`
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Reason explains a Rejected phase: the machine-readable discriminator that
-	// status consumers and tests assert on. Empty for non-Rejected phases.
+	// Conditions report the request's progress and terminal outcome: the Ready
+	// summary, the kstatus Reconciling/Stalled pair, and the domain conditions
+	// Attributed and Pushed.
 	// +optional
-	Reason CommitRequestRejectReason `json:"reason,omitempty"`
+	// +listType=map
+	// +listMapKey=type
+	// +patchStrategy=merge
+	// +patchMergeKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Message is a human-readable detail for the terminal phase. When Phase is
-	// Failed it carries the reason the finalize could not complete; when Phase is
-	// Rejected it carries the prose for status.reason.
-	// +optional
-	Message string `json:"message,omitempty"`
-
-	// Branch is the Git branch the commit landed on. Set when Phase is Committed.
+	// Branch is the Git branch the GitTarget commits to. Populated once the
+	// finalize resolves.
 	// +optional
 	Branch string `json:"branch,omitempty"`
 
-	// SHA is the resulting commit SHA. Set when Phase is Committed.
+	// SHA is the resulting commit SHA. Set when the commit was pushed (Pushed=True).
 	// +optional
 	SHA string `json:"sha,omitempty"`
-
-	// ObservedTime is the timestamp at which the terminal phase was recorded.
-	// +optional
-	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.targetRef.name`
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.reason`
-// +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Attributed",type=string,JSONPath=`.status.conditions[?(@.type=="Attributed")].status`
+// +kubebuilder:printcolumn:name="Pushed",type=string,JSONPath=`.status.conditions[?(@.type=="Pushed")].status`
 // +kubebuilder:printcolumn:name="SHA",type=string,JSONPath=`.status.sha`
-// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.spec.message`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CommitRequest is a one-shot "save" signal: creating one finalizes the open

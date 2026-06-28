@@ -126,13 +126,14 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		By("creating a CommitRequest to finalize the open window now")
 		applyCommitRequest(testNs, commitRequestName, gitTargetName, message)
 
-		By("waiting for the CommitRequest to reach the Committed phase")
+		By("waiting for the CommitRequest to become Ready (committed and pushed)")
 		var reportedSHA string
 		Eventually(func(g Gomega) {
-			phase := commitRequestField(g, testNs, commitRequestName, "{.status.phase}")
-			g.Expect(phase).To(Equal("Committed"),
-				"CommitRequest should finalize the window and report Committed\n%s",
+			g.Expect(commitRequestCondition(g, testNs, commitRequestName, "Ready")).To(Equal("True"),
+				"CommitRequest should finalize the window and become Ready\n%s",
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
+			g.Expect(commitRequestCondition(g, testNs, commitRequestName, "Pushed")).To(Equal("True"),
+				"a committed CommitRequest must report Pushed=True")
 
 			reportedSHA = commitRequestField(g, testNs, commitRequestName, "{.status.sha}")
 			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
@@ -207,8 +208,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		By("creating a CommitRequest and confirming the branch then advances with the held edit")
 		applyCommitRequest(testNs, commitRequestName, gitTargetName, message)
 		Eventually(func(g Gomega) {
-			phase := commitRequestField(g, testNs, commitRequestName, "{.status.phase}")
-			g.Expect(phase).To(Equal("Committed"), "CommitRequest should finalize the open window")
+			g.Expect(commitRequestCondition(g, testNs, commitRequestName, "Ready")).To(Equal("True"),
+				"CommitRequest should finalize the open window")
 			g.Expect(remoteBranchHead(g, repo.CheckoutDir)).NotTo(Equal(baseSHA),
 				"finalizing must advance main past the previously-established HEAD")
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
@@ -231,8 +232,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	// generateName creates surface the bug described in
 	// docs/tasks/generated-name-support.md: the audit objectRef.name is empty
 	// for collection POSTs, so the consumer must resolve the generated name
-	// from responseObject. Without the fix the CommitRequest stays stuck in
-	// WaitingForAuditEvent forever.
+	// from responseObject. Without the fix the CommitRequest never becomes Ready
+	// — its create audit event is never matched, so it stays Reconciling forever.
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
 		if committerOnlyModeEnabled() {
 			Skip("generateName attribution regression only applies to audit-backed CommitRequests")
@@ -250,12 +251,11 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		By("creating a CommitRequest with metadata.generateName")
 		generatedName := applyCommitRequestWithGenerateName(testNs, commitRequestPrefix, gitTargetName, message)
 
-		By("waiting for the generated-name CommitRequest to reach Committed")
+		By("waiting for the generated-name CommitRequest to become Ready")
 		var reportedSHA string
 		Eventually(func(g Gomega) {
-			phase := commitRequestField(g, testNs, generatedName, "{.status.phase}")
-			g.Expect(phase).To(Equal("Committed"),
-				"a CommitRequest created via generateName must reach Committed\n%s",
+			g.Expect(commitRequestCondition(g, testNs, generatedName, "Ready")).To(Equal("True"),
+				"a CommitRequest created via generateName must become Ready\n%s",
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			reportedSHA = commitRequestField(g, testNs, generatedName, "{.status.sha}")
@@ -288,8 +288,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 // The UC2 suite exercises a `kubectl apply` bundle that includes a CommitRequest
 // as its FIRST document — the deliberately-hard ordering where the save intent
 // arrives before the work it is meant to save (docs/design/stream/commitrequest-design.md
-// §2 UC2, §6.2, §8.2). A non-zero spec.delaySeconds is the collect-grace that
-// lets the bundle's resources arrive and join the same window after the
+// §2 UC2, §6.2, §8.2). A non-zero spec.closeDelaySeconds is the close-delay collect
+// window that lets the bundle's resources arrive and join the same window after the
 // CommitRequest is attributed, so the whole bundle lands in ONE commit carrying
 // the CommitRequest's message.
 //
@@ -375,8 +375,8 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		}, 5*time.Second, 1*time.Second).Should(Succeed())
 
 		By("applying a bundle whose FIRST document is a CommitRequest, then three Deployments")
-		// delaySeconds is sized to comfortably exceed the bundle's per-type ingestion
-		// spread so the collect-grace (§6.2) is deterministic.
+		// closeDelaySeconds is sized to comfortably exceed the bundle's per-type ingestion
+		// spread so the close-delay collect window (§6.2) is deterministic.
 		var bundle strings.Builder
 		bundle.WriteString(commitRequestManifest(testNs, commitRequestName, gitTargetName, message, 8))
 		for _, name := range deployNames {
@@ -386,12 +386,11 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		_, err := kubectlRunWithStdin(testNs, bundle.String(), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred(), "failed to apply the CommitRequest+Deployments bundle")
 
-		By("waiting for the CommitRequest to reach the Committed phase")
+		By("waiting for the bundle's CommitRequest to become Ready")
 		var reportedSHA string
 		Eventually(func(g Gomega) {
-			phase := commitRequestField(g, testNs, commitRequestName, "{.status.phase}")
-			g.Expect(phase).To(Equal("Committed"),
-				"the bundle's CommitRequest should finalize the collected window and report Committed\n%s",
+			g.Expect(commitRequestCondition(g, testNs, commitRequestName, "Ready")).To(Equal("True"),
+				"the bundle's CommitRequest should finalize the collected window and become Ready\n%s",
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			reportedSHA = commitRequestField(g, testNs, commitRequestName, "{.status.sha}")
@@ -442,9 +441,9 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 })
 
 // commitRequestManifest renders a single CommitRequest document with an explicit
-// message and delaySeconds (the collect-grace). It is used to build multi-document
-// `kubectl apply` bundles where the CommitRequest is the first document.
-func commitRequestManifest(namespace, name, gitTargetName, message string, delaySeconds int) string {
+// message and closeDelaySeconds (the close-delay collect window). It is used to build
+// multi-document `kubectl apply` bundles where the CommitRequest is the first document.
+func commitRequestManifest(namespace, name, gitTargetName, message string, closeDelaySeconds int) string {
 	return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha2
 kind: CommitRequest
 metadata:
@@ -454,8 +453,8 @@ spec:
   targetRef:
     name: %s
   message: %q
-  delaySeconds: %d
-`, name, namespace, gitTargetName, message, delaySeconds)
+  closeDelaySeconds: %d
+`, name, namespace, gitTargetName, message, closeDelaySeconds)
 }
 
 // deploymentManifest renders a single zero-replica Deployment document for use in
@@ -531,4 +530,10 @@ func commitRequestField(g Gomega, namespace, name, jsonPath string) string {
 		"-o", "jsonpath="+jsonPath)
 	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to read %s of CommitRequest %s", jsonPath, name))
 	return strings.TrimSpace(out)
+}
+
+// commitRequestCondition reads the status of one condition off a CommitRequest.
+func commitRequestCondition(g Gomega, namespace, name, conditionType string) string {
+	return commitRequestField(g, namespace, name,
+		fmt.Sprintf(`{.status.conditions[?(@.type=="%s")].status}`, conditionType))
 }

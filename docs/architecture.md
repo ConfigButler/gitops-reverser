@@ -144,12 +144,16 @@ instead of waiting for the silence timer. The **entire spec is immutable**. Key 
 
 * `spec.targetRef.name`: target whose open window should be finalized.
 * `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
-* `spec.delaySeconds`: optional `0–300s` grace so the author's own in flight changes can join the window
-  before it closes.
-* `status.phase`: `WaitingForAuditEvent` (initial) → terminal `Committed`, `Rejected`, or `Failed`.
-* `status.reason` (when `Rejected`): `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`. `Rejected`
-  is a correct, non error outcome.
-* `status.branch` / `status.sha`: set when `Committed`.
+* `spec.closeDelaySeconds`: optional `0–300s` delay before the window is closed, so the author's own
+  in flight changes can join the window before it closes.
+* `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
+  terminal outcome that is not an error — a pushed commit, or a benign no-commit); **Reconciling**/**Stalled**
+  are the kstatus progress/blocked pair; **Attributed** reports whether the author is settled (immediately
+  True in committer-only mode); **Pushed** reports whether the commit reached the remote. The `Ready`
+  condition's `reason` carries `Committed`, `NoWindowInGrace`, `WindowMismatch`, `AlreadyPresent`, or
+  `FinalizeFailed`. A benign no-commit (e.g. `NoWindowInGrace`) is `Ready=True`, `Stalled=False` — a correct,
+  non-error outcome — whereas a `FinalizeFailed` is `Ready=False`, `Stalled=True`.
+* `status.branch` / `status.sha`: set when the commit was pushed (`Pushed=True`).
 
 How attribution and finalization interact is described under
 [CommitRequest Finalize](#commitrequest-finalize).
@@ -655,17 +659,19 @@ is attributed to its submitter from an audit fact; with attribution disabled it 
 committer** with a status note that finalization happened without end-user attribution — a missing audit
 fact never fails the request:
 
-1. The controller stamps `WaitingForAuditEvent`. When attribution is available it waits briefly for a
-   matching audit fact (bounded, and on timeout it finalizes *as the committer*, not closed); with no
-   Redis it proceeds as the committer immediately.
+1. The controller stamps the in-progress conditions (`Reconciling=True`). With attribution enabled it then
+   waits briefly for a matching audit fact (`Attributed` stays `Unknown`; bounded, and on timeout it
+   finalizes *as the committer*, not closed). With attribution disabled there is no audit event to wait
+   for, so `Attributed` is `True` (`AttributionNotRequired`) immediately and it proceeds as the committer.
 2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), anchoring the
-   finalize at `receipt + delaySeconds`. The worker binds it to an open window only when author and
+   finalize at `receipt + closeDelaySeconds`. The worker binds it to an open window only when author and
    GitTarget match. It **never finalizes another author's window**; a window carries at most one request.
 3. The window finalizes on the deadline (or when it closes for any other reason). If a finalize closes an
    open window, the worker always schedules a push, so a window closed by an otherwise no-op resync is not
    stranded.
-4. Outcomes resolve on push: `Committed` carries the pushed `branch`/`sha`; `Rejected` carries a
-   structured reason; `Failed` carries a message.
+4. Outcomes resolve on push and are reported as conditions: a pushed commit sets `Ready=True` /
+   `Pushed=True` with `branch`/`sha`; a benign no-commit sets `Ready=True` with the reason on `Ready` and
+   `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message.
 
 The CommitRequest submitter is not recoverable from object state alone, so without an audit fact the
 finalize is committer-authored.

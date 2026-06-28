@@ -252,7 +252,7 @@ func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T)
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
-	// No events routed and delaySeconds 0, so the worker has no window: the attach
+	// No events routed and closeDelaySeconds 0, so the worker has no window: the attach
 	// is enqueued, processed by the worker loop, and resolves NoOpenWindow. The
 	// controller polls via repeated (idempotent) ServiceCommitRequest calls.
 	attach := saveAttach("team-a-config", "team-a")

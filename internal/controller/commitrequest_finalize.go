@@ -21,6 +21,7 @@ package controller
 import (
 	"unicode/utf8"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
@@ -32,73 +33,217 @@ import (
 // arriving by any other path.
 const commitRequestMessageMaxBytes = 1024
 
-// noWindowInGraceMessage is the prose for a Rejected/NoWindowInGrace request: the
-// grace elapsed with nothing pending to save.
+// CommitRequest condition reasons (CamelCase tokens surfaced on status.conditions).
+const (
+	crReasonWaitingForAuditEvent   = "WaitingForAuditEvent"
+	crReasonWaitingForCloseDelay   = "WaitingForCloseDelay"
+	crReasonCommitted              = "Committed"
+	crReasonNoWindowInGrace        = "NoWindowInGrace"
+	crReasonWindowMismatch         = "WindowMismatch"
+	crReasonAlreadyPresent         = "AlreadyPresent"
+	crReasonFinalizeFailed         = "FinalizeFailed"
+	crReasonUnexpectedOutcome      = "UnexpectedOutcome"
+	crReasonAttributionNotRequired = "AttributionNotRequired"
+	crReasonAttributedFromAudit    = "AttributedFromAuditEvent"
+	crReasonAuditEventNotObserved  = "AuditEventNotObserved"
+	crReasonPushed                 = "Pushed"
+)
+
+// noWindowInGraceMessage is the prose for a NoWindowInGrace outcome: the grace
+// elapsed with nothing pending to save.
 const noWindowInGraceMessage = "no matching open commit window was collected within the grace; " +
 	"nothing was pending to save"
 
-// alreadyPresentMessage is the prose for a Rejected/AlreadyPresent request: the
-// finalized window produced no diff.
+// alreadyPresentMessage is the prose for an AlreadyPresent outcome: the finalized
+// window produced no diff.
 const alreadyPresentMessage = "the change already matches the remote, so no commit was made"
 
-// applyFinalizeResultToStatus maps a FinalizeResult (or a finalize error) onto
-// a CommitRequest's status.
+// notStalledMessage is the boilerplate message for a False Stalled condition.
+const notStalledMessage = "the CommitRequest is not stalled"
+
+// commitRequestAttribution is the settled author decision threaded from the
+// attribute step into the terminal status write so the Attributed condition can
+// record how (and whether) the commit author was named.
+type commitRequestAttribution int
+
+const (
+	// attributionPending means the attribution decision is not settled yet
+	// (attributed mode, still waiting for the create audit event).
+	attributionPending commitRequestAttribution = iota
+	// attributionNotRequired means attribution is disabled (committer-only); the
+	// author is settled immediately as the configured committer.
+	attributionNotRequired
+	// attributionResolved means the author was named from the create audit event.
+	attributionResolved
+	// attributionTimedOut means the audit event never arrived within the bound, so
+	// the commit is authored by the configured committer.
+	attributionTimedOut
+)
+
+// setCommitRequestCondition upserts a condition keyed by type, stamping it with
+// the request's generation so kstatus can tell a current status from a stale one.
+func setCommitRequestCondition(
+	cr *configv1alpha2.CommitRequest,
+	conditionType string,
+	status metav1.ConditionStatus,
+	reason, message string,
+) {
+	cr.Status.Conditions = upsertCondition(cr.Status.Conditions, conditionType, status, reason, message, cr.Generation)
+}
+
+// Progress-condition messages. A CommitRequest passes through two distinct,
+// observable waits before it terminates: WaitingForAuditEvent (waiting to learn the
+// author) and WaitingForCloseDelay (author settled, attached to the worker, waiting
+// out the close delay before the window closes and the commit is made and pushed).
+const (
+	waitingForAuditMessage = "waiting for the CommitRequest's create audit event to attribute the author"
+	closeDelayMessage      = "attached to the open commit window; waiting out the close delay " +
+		"before the commit is made and pushed"
+	pushPendingMessage = "the commit has not been pushed yet"
+)
+
+// setCommitRequestProgress stamps the four progress conditions (Ready=False,
+// Reconciling=True, Stalled=False, Pushed=Unknown) with one unifying reason, so a
+// single wait reads consistently across them.
+func setCommitRequestProgress(cr *configv1alpha2.CommitRequest, reason, message string) {
+	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionFalse, reason, message)
+	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
+	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
+	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionUnknown, reason, pushPendingMessage)
+}
+
+// markCommitRequestInProgress stamps the first-sight, still-running conditions.
+// attributionRequired is false in committer-only mode, where the author is settled
+// immediately (Attributed=True) and the request enters the WaitingForCloseDelay wait
+// at once; otherwise it starts in the WaitingForAuditEvent wait (Attributed=Unknown)
+// until its create audit event arrives.
+func markCommitRequestInProgress(cr *configv1alpha2.CommitRequest, attributionRequired bool) {
+	cr.Status.ObservedGeneration = cr.Generation
+	if attributionRequired {
+		setCommitRequestProgress(cr, crReasonWaitingForAuditEvent, waitingForAuditMessage)
+		setCommitRequestCondition(cr, ConditionTypeAttributed, metav1.ConditionUnknown,
+			crReasonWaitingForAuditEvent, "waiting for the create audit event that names the author")
+		return
+	}
+	// Committer-only: no audit wait — settle the author and enter the close-delay wait.
+	setCommitRequestAttributed(cr, attributionNotRequired)
+	setCommitRequestProgress(cr, crReasonWaitingForCloseDelay, closeDelayMessage)
+}
+
+// markCommitRequestWaitingForCloseDelay records the post-attribution wait — the
+// second of the two progress waits — as its own observable state: the author is
+// settled (Attributed), and the request is attached to the worker, waiting out the
+// close delay before the window closes and the commit is made and pushed
+// (Reconciling=True, reason WaitingForCloseDelay).
+func markCommitRequestWaitingForCloseDelay(cr *configv1alpha2.CommitRequest, attribution commitRequestAttribution) {
+	cr.Status.ObservedGeneration = cr.Generation
+	setCommitRequestAttributed(cr, attribution)
+	setCommitRequestProgress(cr, crReasonWaitingForCloseDelay, closeDelayMessage)
+}
+
+// setCommitRequestAttributed records the settled author decision on the Attributed
+// condition. attributionPending is left to the in-progress stamp and never reaches here.
+func setCommitRequestAttributed(cr *configv1alpha2.CommitRequest, attribution commitRequestAttribution) {
+	switch attribution {
+	case attributionResolved:
+		setCommitRequestCondition(cr, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributedFromAudit,
+			"the author was attributed from the CommitRequest's create audit event")
+	case attributionTimedOut:
+		setCommitRequestCondition(cr, ConditionTypeAttributed, metav1.ConditionFalse, crReasonAuditEventNotObserved,
+			"the create audit event was not observed within the bound; committed as the configured committer")
+	case attributionNotRequired, attributionPending:
+		setCommitRequestCondition(cr, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributionNotRequired,
+			"attribution is disabled; committing as the configured committer")
+	}
+}
+
+// applyFinalizeResultToStatus maps a FinalizeResult (or a finalize error) and the
+// settled attribution onto a CommitRequest's terminal conditions. Ready is the
+// summary; Reconciling/Stalled carry kstatus; Attributed records the author
+// decision; Pushed records whether a commit reached the remote.
 func applyFinalizeResultToStatus(
-	commitRequest *configv1alpha2.CommitRequest,
+	cr *configv1alpha2.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
-	now metav1.Time,
+	attribution commitRequestAttribution,
 ) {
-	commitRequest.Status.ObservedTime = &now
-	commitRequest.Status.Branch = result.Branch
-	commitRequest.Status.Message = ""
-	commitRequest.Status.Reason = ""
+	cr.Status.ObservedGeneration = cr.Generation
+	cr.Status.Branch = result.Branch
+	setCommitRequestAttributed(cr, attribution)
 
 	if finalizeErr != nil {
-		commitRequest.Status.Phase = configv1alpha2.CommitRequestPhaseFailed
-		commitRequest.Status.Message = finalizeErr.Error()
+		failCommitRequest(cr, crReasonFinalizeFailed, finalizeErr.Error())
 		return
 	}
 
 	switch result.Outcome {
 	case git.FinalizeCommitted:
-		commitRequest.Status.Phase = configv1alpha2.CommitRequestPhaseCommitted
-		commitRequest.Status.SHA = result.SHA
+		cr.Status.SHA = result.SHA
+		const committedMsg = "the open commit window was closed, committed, and pushed"
+		setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionFalse, crReasonCommitted, committedMsg)
+		setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, crReasonCommitted, notStalledMessage)
+		setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed,
+			"the commit was pushed to the remote repository")
+		setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted, committedMsg)
 	case git.FinalizeNoOpenWindow:
 		// Benign: the grace elapsed with nothing pending to save.
-		rejectCommitRequest(commitRequest, configv1alpha2.RejectNoWindowInGrace, noWindowInGraceMessage)
+		rejectCommitRequest(cr, crReasonNoWindowInGrace, noWindowInGraceMessage)
 	case git.FinalizeWindowMismatch:
 		// The author-bound refusal: deliberately not a failure — the foreign
 		// window stays open for its own author — but the reason is surfaced.
-		rejectCommitRequest(commitRequest, configv1alpha2.RejectWindowMismatch, windowMismatchMessage)
+		rejectCommitRequest(cr, crReasonWindowMismatch, windowMismatchMessage)
 	case git.FinalizeAlreadyPresent:
 		// The change already matches the remote, so the commit was dropped.
-		rejectCommitRequest(commitRequest, configv1alpha2.RejectAlreadyPresent, alreadyPresentMessage)
+		rejectCommitRequest(cr, crReasonAlreadyPresent, alreadyPresentMessage)
 	default:
 		// An empty or unknown outcome with no error is a bug, not a benign
-		// rejection; record it as Failed so it is not silently hidden.
-		commitRequest.Status.Phase = configv1alpha2.CommitRequestPhaseFailed
-		commitRequest.Status.Message = "unexpected finalize outcome: " + string(result.Outcome)
+		// rejection; fail it so it is not silently hidden.
+		failCommitRequest(cr, crReasonUnexpectedOutcome, "unexpected finalize outcome: "+string(result.Outcome))
 	}
 }
 
-// rejectCommitRequest stamps the Rejected phase with its structured reason and prose.
-func rejectCommitRequest(
-	commitRequest *configv1alpha2.CommitRequest,
-	reason configv1alpha2.CommitRequestRejectReason,
-	message string,
-) {
-	commitRequest.Status.Phase = configv1alpha2.CommitRequestPhaseRejected
-	commitRequest.Status.Reason = reason
-	commitRequest.Status.Message = message
+// rejectCommitRequest records a benign terminal outcome that produced no commit:
+// Ready=True (the request was serviced correctly, with the specific reason),
+// Pushed=False, and Stalled=False — kstatus Current, not Failed.
+func rejectCommitRequest(cr *configv1alpha2.CommitRequest, reason, message string) {
+	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionFalse, reason, message)
+	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
+	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionFalse, reason, message)
+	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionTrue, reason, message)
 }
 
-// isTerminalCommitRequestPhase reports whether the phase is one of the
-// terminal states (anything other than the initial WaitingForAuditEvent).
-func isTerminalCommitRequestPhase(phase configv1alpha2.CommitRequestPhase) bool {
-	return phase == configv1alpha2.CommitRequestPhaseCommitted ||
-		phase == configv1alpha2.CommitRequestPhaseRejected ||
-		phase == configv1alpha2.CommitRequestPhaseFailed
+// failCommitRequest records a hard terminal failure: Ready=False, Pushed=False, and
+// Stalled=True — kstatus Failed, a human-fixable block.
+func failCommitRequest(cr *configv1alpha2.CommitRequest, reason, message string) {
+	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionFalse, reason, message)
+	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionFalse, reason, "no commit was pushed")
+	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionTrue, reason, message)
+	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionFalse, reason, message)
+}
+
+// commitRequestIsTerminal reports whether the request has reached a terminal
+// outcome: Ready=True (committed or benignly rejected) or Stalled=True (failed).
+func commitRequestIsTerminal(cr *configv1alpha2.CommitRequest) bool {
+	return conditionIsTrue(cr.Status.Conditions, ConditionTypeReady) ||
+		conditionIsTrue(cr.Status.Conditions, ConditionTypeStalled)
+}
+
+// commitRequestConditionStatus returns the status of one condition as a loggable
+// string, or "" when the condition is absent.
+func commitRequestConditionStatus(cr *configv1alpha2.CommitRequest, conditionType string) string {
+	if c := apimeta.FindStatusCondition(cr.Status.Conditions, conditionType); c != nil {
+		return string(c.Status)
+	}
+	return ""
+}
+
+// commitRequestReadyReason returns the Ready condition's reason and message for
+// logging (both empty when the condition is absent).
+func commitRequestReadyReason(cr *configv1alpha2.CommitRequest) (string, string) {
+	if c := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady); c != nil {
+		return c.Reason, c.Message
+	}
+	return "", ""
 }
 
 // capCommitRequestMessage caps a user-supplied commit message at a defensive

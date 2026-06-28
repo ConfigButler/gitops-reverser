@@ -1,5 +1,17 @@
 # CommitRequest: design around two use cases
 
+> **Status & field correction (2026-06-28):** this note predates two renames.
+> (1) CommitRequest now reports progress and outcome through kstatus-compatible **conditions** — `Ready`
+> (summary), `Reconciling`/`Stalled` (kstatus), and the domain conditions `Attributed` and `Pushed` — with
+> no `phase` string. Where the text below says `WaitingForAuditEvent`, read "in-progress (`Reconciling=True`,
+> `Attributed` not yet `True`)"; the post-attribution wait the text calls "in grace" / "Finalizing" is now
+> the `Reconciling` reason **`WaitingForCloseDelay`**; `Committed`/`Rejected`/`Failed` map to the
+> `Ready`/`Pushed`/`Stalled` conditions and the `Ready` reason.
+> (2) The spec field `delaySeconds` is now **`closeDelaySeconds`** (it delays closing the open window).
+> Read every `delaySeconds` below as `closeDelaySeconds`. See
+> [status-conditions-guide.md](../status-conditions-guide.md) §CommitRequest and
+> `api/v1alpha2/commitrequest_types.go` for the contract.
+
 > Status: living design note, 2026-06-12.
 > Supersedes the speculative redesign in
 > [github-e2e-per-type-tail-failure-investigation.md](./github-e2e-per-type-tail-failure-investigation.md) §11–§15.

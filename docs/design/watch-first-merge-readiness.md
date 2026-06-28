@@ -44,7 +44,7 @@ The vision shift is real and, in this reviewer's read, a net improvement:
 | CommitRequest: fail-closed → finalize-as-committer | ✅ done | `internal/controller/commitrequest_controller.go` |
 | Refuse unsupported folder + GitTarget status | ✅ done + e2e | `manifestanalyzer/acceptance*`, `test/e2e/unsupported_folder_e2e_test.go` |
 | `.gittargetignore` support | ✅ done + unit tests | `manifestanalyzer/gittargetignore.go`, `git/gittargetignore_writer_test.go` |
-| DeleteCollection **attribution** expander | ❌ not implemented | no expander in `attribution_index.go`; reason code `exact-deletecollection-item` unused |
+| DeleteCollection **attribution** expander + deletion-as-intent | ✅ done + unit + e2e | `RecordDeleteCollectionFacts` in `attribution_index.go`, `operationForLiveTargetWatchEvent` in `target_watch.go`, `exact_deletecollection_item` reason code, `test/e2e/deletecollection_intent_e2e_test.go`. See [deletecollection-attribution-expander.md](deletecollection-attribution-expander.md) |
 | No-op suppression *on the watch hot path* | ⚠️ deferred to writer | writer diffs to no-op; design-acknowledged CPU cost, not a correctness gap |
 
 **No `TODO`/`FIXME`/`panic("unimplemented")` in the core data path.** The only two TODOs are unrelated
@@ -81,29 +81,29 @@ GitProvider-readiness notes in the watchrule/clusterwatchrule controllers.
    (`test/e2e/setup/manifests/sample-apiserver/`, `aggregated_apiserver_e2e_test.go`).
 4. **`docs/tasks/bounded-queue.md` is obsolete.** It is about bounding the audit Redis stream
    (`--audit-redis-max-len`), a flag and a subsystem that no longer exist. Archive or delete.
-5. **Attribution reason-code granularity + DeleteCollection expander.** Reason codes implemented today:
-   `exact_user`, `exact_serviceaccount`, `weak`, `conflict`, `expired`, `absent`. The design's finer
-   codes (`weak-no-rv`, `conflict-multi-user`, `absent-no-redis`, `absent-policy-dropped`,
-   `exact-deletecollection-item`) are not distinct, and the DeleteCollection **attribution** expander
-   (§4) is not built. Not blocking; fast-follows that improve attribution fidelity and observability.
-   (Note: the SA naming policy / `serviceaccount_collapsed` result was removed — a matched service
-   account is always named by its own username.)
+5. **Attribution reason-code granularity.** Reason codes implemented today: `exact_user`,
+   `exact_serviceaccount`, `weak`, `exact_deletecollection_item` (✅ landed with the expander — §4),
+   `conflict`, `expired`, `absent`. The remaining finer codes (`weak-no-rv`, `conflict-multi-user`,
+   `absent-no-redis`, `absent-policy-dropped`) are still not distinct. Not blocking; fast-follows that improve
+   attribution fidelity and observability. (Note: the SA naming policy / `serviceaccount_collapsed` result was
+   removed — a matched service account is always named by its own username.)
 
 ### Nice-to-have (test breadth)
 
 6. Test B — comments survive a resync/restart (extends the live-path in-place edit proof).
 7. Test C — encryption re-encrypt boundary (pins "comments dropped on re-encrypt" as an explicit contract).
 
-## 4. The DeleteCollection nuance (so it isn't misread as a gap)
+## 4. The DeleteCollection nuance (now closed)
 
-"Watch-first solves DeleteCollection" is **true at the state level** and needs no special code: each
-deleted object produces its own watch `DELETED`. What is *not* built is the **attribution expander** that
-would name the actor on each of those N deletes (design §Attribution: expand one `deletecollection` audit
-fact into N per-UID candidates, join the watch `DELETED` by UID not RV). Without it, a collection delete
-in attributed mode commits as **committer**, not as the user who ran it. That is a *degraded attribution*,
-not a *lost or wrong state*, and it is consistent with the design's "a wrong author is worse than no
-author" rule. Recommendation: ship the state correctness (it's done); treat the expander as a fast-follow,
-and add the reason code when it lands.
+"Watch-first solves DeleteCollection" was always **true at the state level** (each deleted object produces its
+own watch event). The **attribution expander** is now **built** ([deletecollection-attribution-expander.md](deletecollection-attribution-expander.md)):
+`RecordDeleteCollectionFacts` expands one `deletecollection` response body into N per-UID facts, joined to each
+removal event by UID (not RV), surfacing as `exact_deletecollection_item`. It ships alongside the
+**deletion-as-intent** render rule — an object marked with a `deletionTimestamp` is removed from the intent tree
+at delete-request time and attributed to the requester, even while a finalizer keeps it Terminating; later
+finalizer cleanup folds to a no-op. When the API server returns a hollow body (aggregated / metadata-only), the
+collection delete still commits as **committer** (the documented v1 limit), consistent with "a wrong author is
+worse than no author." Unit + e2e coverage landed (`test/e2e/deletecollection_intent_e2e_test.go`).
 
 ## 5. Work completed in this pass
 

@@ -51,7 +51,7 @@ func serviceAttach(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
 	loop.serviceCommitRequests()
 }
 
-func attachReq(author string, delaySeconds int32) *AttachCommitRequest {
+func attachReq(author string, closeDelaySeconds int32) *AttachCommitRequest {
 	return &AttachCommitRequest{
 		Namespace:          "default",
 		Name:               crName,
@@ -59,7 +59,7 @@ func attachReq(author string, delaySeconds int32) *AttachCommitRequest {
 		Author:             author,
 		GitTargetName:      crTarget,
 		GitTargetNamespace: "default",
-		DelaySeconds:       delaySeconds,
+		CloseDelaySeconds:  closeDelaySeconds,
 	}
 }
 
@@ -105,7 +105,7 @@ func TestEnqueueAttach_Nil(t *testing.T) {
 	assert.Empty(t, w.eventQueue)
 }
 
-// TestAttach_NoOpenWindow verifies an attach (delaySeconds 0) with nothing pending
+// TestAttach_NoOpenWindow verifies an attach (closeDelaySeconds 0) with nothing pending
 // resolves NoOpenWindow — the author pressed save with no edits, not an error.
 func TestAttach_NoOpenWindow(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
@@ -369,7 +369,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentPromptly(t *testing.T) {
 	loop.lastPushAt = time.Now()
 
 	// A second window re-asserts the SAME object: no diff. Attach a CommitRequest and
-	// finalize it (delaySeconds 0).
+	// finalize it (closeDelaySeconds 0).
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events:     []Event{configMapTargetEvent("present", "alice", "team-a")},
 		CommitMode: CommitModePerEvent,
