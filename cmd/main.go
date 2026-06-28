@@ -186,27 +186,32 @@ func main() {
 		WatchManager: watchMgr,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
-	// Redis-backed attribution and watch cursors. The audit webhook records minimal facts and live
-	// watch events are author-attributed when a fact matches. An empty audit-redis-addr runs
-	// committer-only (single-replica): no audit, no cursors, every commit authored by the committer.
+	// Valkey/Redis is a required dependency: it holds each GitTarget's watch resume cursors so work is
+	// re-picked up exactly where it left off after a restart or reconnect (and it underpins HA and the
+	// planned durable branch-worker queue). It is built unconditionally and the cursor store is always
+	// wired. The audit webhook / author attribution is the only optional part (see below).
+	attributionIndex, err := queue.NewAttributionIndex(queue.AttributionIndexConfig{
+		Addr:       cfg.auditRedisAddr,
+		Username:   cfg.auditRedisUsername,
+		AuthValue:  cfg.auditRedisPassword,
+		DB:         cfg.auditRedisDB,
+		FactTTL:    cfg.attributionFactTTL,
+		TLSEnabled: cfg.auditRedisTLS,
+	})
+	fatalIfErr(err, "unable to build Redis attribution/cursor index")
+	watchMgr.WatchCursorStore = attributionIndex
+
+	redisGate := newRedisReadinessGate(attributionIndex)
+	fatalIfErr(mgr.Add(redisGate), "unable to add redis readiness gate")
+
+	// Optional audit attribution. When enabled, the audit webhook records minimal facts and live watch
+	// events are author-attributed when a fact matches; when disabled (committer-only), commits use the
+	// configured committer identity but the cursor store above stays active.
 	var (
-		attributionIndex *queue.AttributionIndex
 		auditRunnable    *auditServerRunnable
 		auditCertWatcher *certwatcher.CertWatcher
-		redisGate        *redisReadinessGate
 	)
-	if auditAttributionEnabled(cfg) {
-		var err error
-		attributionIndex, err = queue.NewAttributionIndex(queue.AttributionIndexConfig{
-			Addr:       cfg.auditRedisAddr,
-			Username:   cfg.auditRedisUsername,
-			AuthValue:  cfg.auditRedisPassword,
-			DB:         cfg.auditRedisDB,
-			FactTTL:    cfg.attributionFactTTL,
-			TLSEnabled: cfg.auditRedisTLS,
-		})
-		fatalIfErr(err, "unable to build audit attribution index")
-
+	if cfg.auditAttributionEnabled {
 		auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
 			MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
 			FactRecorder:        attributionIndex,
@@ -218,20 +223,16 @@ func main() {
 		fatalIfErr(initErr, "unable to initialize audit ingress server")
 		fatalIfErr(mgr.Add(auditRunnable), "unable to add audit ingress server runnable")
 
-		redisGate = newRedisReadinessGate(attributionIndex)
-		fatalIfErr(mgr.Add(redisGate), "unable to add audit redis readiness gate")
-
 		watchMgr.AuthorResolver = watch.NewAuthorResolver(
 			attributionIndex,
 			cfg.attributionGrace,
-			watch.ServiceAccountNamingPolicy(cfg.attributionSANaming),
 			ctrl.Log.WithName("attribution"),
 		)
-		watchMgr.WatchCursorStore = attributionIndex
 		setupLog.Info("audit attribution enabled: matched audit facts name the commit author",
 			"redisAddr", cfg.auditRedisAddr, "grace", cfg.attributionGrace.String())
 	} else {
-		setupLog.Info("committer-only mode: no audit Redis configured; commits use the committer identity")
+		setupLog.Info("committer-only mode: audit attribution disabled; commits use the committer identity "+
+			"(Redis still required for watch resume cursors)", "redisAddr", cfg.auditRedisAddr)
 	}
 
 	// Setup watch manager (must be after controllers are set up)
@@ -257,9 +258,10 @@ func main() {
 	}
 	// AuthorLookup is the optional attribution index. It must be a nil interface — not a
 	// non-nil interface wrapping a nil *AttributionIndex — when attribution is off, so the
-	// controller's nil check selects finalize-as-committer.
+	// controller's nil check selects finalize-as-committer instead of waiting for facts that
+	// will never arrive.
 	var commitRequestAuthorLookup controller.CommitRequestAuthorLookup
-	if attributionIndex != nil {
+	if cfg.auditAttributionEnabled {
 		commitRequestAuthorLookup = attributionIndex
 	}
 	if err := (&controller.CommitRequestReconciler{
@@ -324,9 +326,9 @@ type appConfig struct {
 	auditRedisPassword       string
 	auditRedisDB             int
 	auditRedisTLS            bool
+	auditAttributionEnabled  bool
 	attributionFactTTL       time.Duration
 	attributionGrace         time.Duration
-	attributionSANaming      string
 	branchBufferMaxBytes     int64
 	sensitiveResources       types.SensitiveResourcePolicy
 	sshHostKeys              git.SSHHostKeyConfig
@@ -392,7 +394,12 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.DurationVar(&cfg.auditIdleTimeout, "audit-idle-timeout", defaultAuditIdleTimeout,
 		"Idle timeout for the dedicated audit ingress HTTPS server.")
 	fs.StringVar(&cfg.auditRedisAddr, "audit-redis-addr", "valkey:6379",
-		"Redis address (host:port) for attribution facts and watch cursors. Empty runs committer-only.")
+		"Redis/Valkey address (host:port). Required: it holds each GitTarget's watch resume cursors "+
+			"(state continuity) and, when attribution is enabled, the audit attribution facts.")
+	fs.BoolVar(&cfg.auditAttributionEnabled, "audit-attribution-enabled", true,
+		"If set, run the audit webhook ingress and attribute commit authors from matching audit facts. "+
+			"When false, the operator runs committer-only (commits use the configured committer identity); "+
+			"Redis is still required for watch resume cursors.")
 	fs.StringVar(&cfg.auditRedisUsername, "audit-redis-username", "", "Optional Redis username.")
 	fs.StringVar(
 		&cfg.auditRedisPassword,
@@ -407,9 +414,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.DurationVar(&cfg.attributionGrace, "attribution-grace", watch.DefaultAttributionGraceWindow,
 		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
 			"configured committer. Larger values raise attribution hit-rate at the cost of commit latency.")
-	fs.StringVar(&cfg.attributionSANaming, "attribution-sa-naming", string(watch.SANamePolicyName),
-		"How a matched service-account actor is named as the commit author: \"name\" authors as the "+
-			"service account's own username; \"bot\" collapses every service account to the committer.")
 	branchBufferMaxBytesStr := os.Getenv("BRANCH_BUFFER_MAX_BYTES")
 	if branchBufferMaxBytesStr == "" {
 		branchBufferMaxBytesStr = defaultBranchBufferMaxBytesStr
@@ -483,12 +487,6 @@ func bindServerCertFlags(
 		fmt.Sprintf("The name of the %s key file.", component))
 }
 
-// auditAttributionEnabled reports whether a Redis endpoint is configured. An empty
-// audit-redis-addr is committer-only mode (single-replica).
-func auditAttributionEnabled(cfg appConfig) bool {
-	return strings.TrimSpace(cfg.auditRedisAddr) != ""
-}
-
 func validateAuditConfig(cfg appConfig) error {
 	if cfg.attributionGrace < 0 {
 		return fmt.Errorf("attribution-grace must be >= 0, got %s", cfg.attributionGrace)
@@ -496,14 +494,18 @@ func validateAuditConfig(cfg appConfig) error {
 	if cfg.attributionFactTTL <= 0 {
 		return fmt.Errorf("attribution-ttl must be > 0, got %s", cfg.attributionFactTTL)
 	}
-	switch watch.ServiceAccountNamingPolicy(cfg.attributionSANaming) {
-	case watch.SANamePolicyName, watch.SANamePolicyBot:
-	default:
-		return fmt.Errorf("attribution-sa-naming must be \"name\" or \"bot\", got %q", cfg.attributionSANaming)
+	// Redis/Valkey is required in every mode: it holds each GitTarget's watch resume cursors. This is
+	// independent of audit attribution, which only adds commit-author naming on top.
+	if strings.TrimSpace(cfg.auditRedisAddr) == "" {
+		return errors.New("audit-redis-addr is required: Valkey/Redis holds each GitTarget's watch " +
+			"resume cursors (run committer-only with --audit-attribution-enabled=false, but keep Redis)")
 	}
-	if !auditAttributionEnabled(cfg) {
-		// Committer-only mode: the audit ingress server is not started, so its
-		// server/TLS/Redis settings are irrelevant.
+	if cfg.auditRedisDB < 0 {
+		return fmt.Errorf("audit-redis-db must be >= 0, got %d", cfg.auditRedisDB)
+	}
+	if !cfg.auditAttributionEnabled {
+		// Committer-only mode: the audit ingress server is not started, so its server/TLS settings
+		// are irrelevant. Redis is still required and was validated above.
 		return nil
 	}
 	if cfg.auditPort <= 0 {
@@ -523,9 +525,6 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	if !cfg.auditInsecure && strings.TrimSpace(cfg.auditClientCAPath) == "" {
 		return errors.New("audit-client-ca-path is required when audit TLS is enabled")
-	}
-	if cfg.auditRedisDB < 0 {
-		return fmt.Errorf("audit-redis-db must be >= 0, got %d", cfg.auditRedisDB)
 	}
 	return nil
 }

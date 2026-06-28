@@ -94,10 +94,11 @@ servers:
       # Leave empty to use the chart-generated Secret name.
       secretNameOverride: ""
 
-# Redis-backed attribution facts and watch resume cursors. Empty addr runs committer-only.
+# Redis/Valkey is a required dependency: it holds each GitTarget's watch resume cursors (so work is
+# re-picked up after a restart/reconnect) and, when attribution is enabled, the audit attribution facts.
 queue:
   redis:
-    # Redis endpoint (host:port). Empty disables Redis (single-replica only).
+    # Redis/Valkey endpoint (host:port). Required — the operator refuses to start without it.
     addr: "valkey:6379"
     auth:
       # Pre-existing Secret (same namespace) holding the Redis password. Create it before install;
@@ -111,16 +112,17 @@ queue:
     tls:
       enabled: false
 
-# Commit-author attribution from audit facts. Only applies when queue.redis.addr is set.
+# Commit-author attribution from audit facts. This is the only optional capability — with it off, the
+# operator runs committer-only (still requires Redis), and every commit uses the configured committer.
 attribution:
+  # When true, run the audit webhook ingress and name commit authors from matching audit facts. When
+  # false, run committer-only (no audit ingress, commits authored by the committer); Redis stays required.
+  enabled: true
   # How long an attribution fact is retained waiting for the matching watch event to join it.
   ttl: "10m"
   # Bounded per-event wait for a matching audit fact before a watch event ships as the committer.
   # Larger values raise attribution hit-rate at the cost of commit latency.
   grace: "3s"
-  # How a matched service account is named as the author: "name" (the service account's own
-  # username) or "bot" (collapse every service account to the committer).
-  serviceAccountNaming: "name"
 
 # TLS certificate management (Kubernetes requires this for API server callbacks)
 certificates:

@@ -241,11 +241,11 @@ histogram_quantile(0.95,
   sum by (le) (rate(gitopsreverser_audit_eventlist_duration_seconds_bucket[5m])))
 ```
 
-**Does audit actually attribute watch events?** Match coverage includes service accounts intentionally
-collapsed to the committer by bot policy, so it measures "matched as configured":
+**Does audit actually attribute watch events?** Match coverage is the share of resolutions that named an
+actor (human or service account) rather than falling back to the committer:
 
 ```promql
-sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*|serviceaccount_collapsed"}[5m]))
+sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m]))
 /
 sum(rate(gitopsreverser_attribution_resolutions_total[5m]))
 ```
@@ -256,7 +256,6 @@ sum(rate(gitopsreverser_attribution_resolutions_total[5m]))
 | --- | --- |
 | `exact_user` | Exact UID+resourceVersion match for a human user. |
 | `exact_serviceaccount` | Exact UID+resourceVersion match for a named service account. |
-| `serviceaccount_collapsed` | Service account matched, but bot policy authored as the committer. |
 | `weak` | Non-exact match, such as UID-only or RV-only. |
 | `conflict` | Multiple authors wrote facts for the selected join key. |
 | `expired` | A fact existed but aged out before the watch event joined it. |

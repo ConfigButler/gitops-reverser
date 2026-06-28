@@ -57,9 +57,9 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
 	assert.Equal(t, "valkey:6379", cfg.auditRedisAddr)
 	assert.False(t, cfg.auditRedisTLS)
+	assert.True(t, cfg.auditAttributionEnabled)
 	assert.Equal(t, 10*time.Minute, cfg.attributionFactTTL)
 	assert.Equal(t, 3*time.Second, cfg.attributionGrace)
-	assert.Equal(t, "name", cfg.attributionSANaming)
 	assert.False(t, cfg.zapOpts.Development)
 	assert.Equal(t, []string{"secrets"}, cfg.sensitiveResources.Entries())
 }
@@ -116,7 +116,6 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-redis-tls",
 		"--attribution-ttl=20m",
 		"--attribution-grace=750ms",
-		"--attribution-sa-naming=bot",
 	}
 
 	cfg, err := parseFlagsWithArgs(fs, args)
@@ -140,16 +139,28 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.True(t, cfg.auditRedisTLS)
 	assert.Equal(t, 20*time.Minute, cfg.attributionFactTTL)
 	assert.Equal(t, 750*time.Millisecond, cfg.attributionGrace)
-	assert.Equal(t, "bot", cfg.attributionSANaming)
 }
 
-func TestParseFlagsWithArgs_CommitterOnlyWhenRedisEmpty(t *testing.T) {
+func TestParseFlagsWithArgs_RedisAddrRequired(t *testing.T) {
+	fs := flag.NewFlagSet("test-redis-required", flag.ContinueOnError)
+	// Redis/Valkey holds each GitTarget's watch resume cursors, so an empty audit-redis-addr is a
+	// hard error in every mode — committer-only disables attribution, it does not drop Redis.
+	_, err := parseFlagsWithArgs(fs, []string{"--audit-redis-addr="})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audit-redis-addr is required")
+}
+
+func TestParseFlagsWithArgs_CommitterOnlyDisablesAttribution(t *testing.T) {
 	fs := flag.NewFlagSet("test-committer-only", flag.ContinueOnError)
-	// An empty audit-redis-addr is committer-only mode and must validate even without
-	// audit TLS / client-CA configured (the audit ingress server is not started).
-	cfg, err := parseFlagsWithArgs(fs, []string{"--audit-redis-addr="})
+	// Committer-only = attribution off, Redis still required (default addr). The audit ingress server
+	// is not started, so its TLS / client-CA settings need not be configured.
+	cfg, err := parseFlagsWithArgs(fs, []string{
+		"--audit-attribution-enabled=false",
+		"--audit-client-ca-path=",
+	})
 	require.NoError(t, err)
-	assert.Empty(t, cfg.auditRedisAddr)
+	assert.False(t, cfg.auditAttributionEnabled)
+	assert.Equal(t, "valkey:6379", cfg.auditRedisAddr)
 }
 
 func TestParseFlagsWithArgs_AdditionalSensitiveResources(t *testing.T) {
@@ -203,10 +214,6 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "negative attribution ttl",
 			args: []string{"--attribution-ttl=-1m"},
-		},
-		{
-			name: "invalid attribution sa naming",
-			args: []string{"--attribution-sa-naming=invalid"},
 		},
 		{
 			name: "invalid sensitive resource",

@@ -502,9 +502,11 @@ author to each watch event by matching a fact (by resourceVersion/UID) within a 
 The same Redis connection also stores per-watch resume cursors, so short reconnects can resume a normal
 watch from the last processed resourceVersion when the apiserver can still serve that history.
 
-Redis stores attribution facts and watch resume cursors. Leave `--audit-redis-addr` (chart
-`queue.redis.addr`) empty to run **committer-only** (single-replica): the audit webhook is unused and
-every commit is authored by the configured committer.
+Redis/Valkey is **required**: it stores each GitTarget's watch resume cursors (state continuity, so a
+restart or reconnect resumes where it left off), and when attribution is enabled it also stores the audit
+facts. To run **committer-only** — the audit webhook unused and every commit authored by the configured
+committer — set `--audit-attribution-enabled=false` (chart `attribution.enabled: false`); Redis stays
+required either way.
 
 ```yaml
 queue:
@@ -521,14 +523,15 @@ The attribution flags tune the join:
   matching watch event to join it.
 - `--attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
   watch event ships authored by the committer.
-- `--attribution-sa-naming` (`name` | `bot`): how a matched service account is named — `name` uses the
-  service account's own username, `bot` collapses every service account to the committer.
+
+A matched actor is always named by its own username — humans and service accounts alike (e.g.
+`system:serviceaccount:flux-system:kustomize-controller`); there is no option to collapse service
+accounts to the committer.
 
 ```yaml
 attribution:
   ttl: "10m"
   grace: "3s"
-  serviceAccountNaming: "name"
 ```
 
 ## Quickstart vs hand-managed resources

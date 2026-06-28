@@ -67,7 +67,7 @@ func TestAuthorResolver_HumanHit(t *testing.T) {
 		},
 		hitAfter: 1,
 	}
-	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, SANamePolicyName, logr.Discard())
+	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
 	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
 	require.True(t, ok)
@@ -76,26 +76,12 @@ func TestAuthorResolver_HumanHit(t *testing.T) {
 	assert.Equal(t, 1, lookup.calls)
 }
 
-func TestAuthorResolver_ServiceAccountNamePolicy(t *testing.T) {
-	sa := "system:serviceaccount:flux-system:kustomize-controller"
-	lookup := &fakeLookup{
-		resolution: queue.AuthorResolution{
-			Fact:   queue.AuthorFact{Author: sa, IsServiceAccount: true},
-			Result: queue.AttributionExactServiceAccount,
-		},
-		hitAfter: 1,
-	}
-	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, SANamePolicyName, logr.Discard())
-
-	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
-	require.True(t, ok)
-	assert.Equal(t, sa, ui.Username)
-}
-
-func TestAuthorResolver_ServiceAccountBotPolicyCollapsesToCommitter(t *testing.T) {
+func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
+	// A matched service account is always named by its own username — never collapsed
+	// to the committer — and the resolution is recorded as exact_serviceaccount.
 	sa := "system:serviceaccount:flux-system:kustomize-controller"
 	lookup := &fakeLookup{
 		resolution: queue.AuthorResolution{
@@ -104,25 +90,26 @@ func TestAuthorResolver_ServiceAccountBotPolicyCollapsesToCommitter(t *testing.T
 		},
 		hitAfter: 1,
 	}
-	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, SANamePolicyBot, logr.Discard())
+	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	_, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
-	assert.False(t, ok, "a service account under the bot policy commits as the committer")
+	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
+	require.True(t, ok, "a matched service account is named, not collapsed to the committer")
+	assert.Equal(t, sa, ui.Username)
 
 	count, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_resolutions_total",
-		map[string]string{"result": string(queue.AttributionServiceAccountCollapsed)})
+		map[string]string{"result": string(queue.AttributionExactServiceAccount)})
 	require.True(t, ok)
 	assert.Equal(t, int64(1), count)
 
 	waitCount, ok := telemetry.CollectHistogramCount(reader, "gitopsreverser_attribution_resolution_wait_seconds",
-		map[string]string{"result": string(queue.AttributionServiceAccountCollapsed)})
+		map[string]string{"result": string(queue.AttributionExactServiceAccount)})
 	require.True(t, ok)
 	assert.Equal(t, uint64(1), waitCount)
 }
 
 func TestAuthorResolver_MissExpiresToCommitter(t *testing.T) {
 	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}, hitAfter: 1000}
-	r := NewAuthorResolver(lookup, 0, SANamePolicyName, logr.Discard())
+	r := NewAuthorResolver(lookup, 0, logr.Discard())
 
 	_, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
 	assert.False(t, ok)
@@ -137,7 +124,7 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 		},
 		hitAfter: 3,
 	}
-	r := NewAuthorResolver(lookup, 2*time.Second, SANamePolicyName, logr.Discard())
+	r := NewAuthorResolver(lookup, 2*time.Second, logr.Discard())
 
 	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
 	require.True(t, ok)
@@ -146,7 +133,7 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 }
 
 func TestAuthorResolver_NilLookupIsCommitter(t *testing.T) {
-	r := NewAuthorResolver(nil, DefaultAttributionGraceWindow, SANamePolicyName, logr.Discard())
+	r := NewAuthorResolver(nil, DefaultAttributionGraceWindow, logr.Discard())
 	_, ok := r.ResolveAuthor(context.Background(), resolverGVR, "team-a", "web", "uid-1", "101")
 	assert.False(t, ok)
 }

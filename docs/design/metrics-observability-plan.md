@@ -105,7 +105,7 @@ metric at the smallest honest boundary.
 |---|---|---|---|
 | `audit_events_total` *(have)* | counter | `outcome`, `category`, `group`, `version`, `resource`, `verb` | every audit event by fate (`queued` = attribution fact written) |
 | `audit_eventlists_total` / `_eventlist_events_total` / `_eventlist_duration_seconds` *(have)* | counter/hist | `outcome` | the `/audit-webhook` request boundary |
-| `attribution_resolutions_total` | counter | `result` (`exact_user`/`exact_serviceaccount`/`weak`/`conflict`/`absent`/`expired`/`serviceaccount_collapsed`), `group`, `version`, `resource` | **does attribution actually land, per type** |
+| `attribution_resolutions_total` | counter | `result` (`exact_user`/`exact_serviceaccount`/`weak`/`conflict`/`absent`/`expired`), `group`, `version`, `resource` | **does attribution actually land, per type** |
 | `attribution_resolution_wait_seconds` | histogram | `result` | grace-window latency cost (`--attribution-grace` tuning) |
 | `attribution_fact_events_total` | counter | `op` (`written`/`matched`/`expired_unmatched`/`late`) | fact-index lifecycle — written vs joined vs wasted |
 | `attribution_fact_index_size` | gauge | — | facts currently parked in Redis awaiting a join |
@@ -148,22 +148,20 @@ must be 0). This is the ingress half we already have.
 is the new heart. Phase 1 first changes the `AttributionLookup` / `AuthorResolver` path from a
 boolean hit/miss to a structured resolution result, so the metric records facts the code truly knows
 instead of inferring them after the fact. It splits every resolved watch event into
-`exact_user`, `exact_serviceaccount`, `weak`, `conflict`, `absent`, `expired`, or
-`serviceaccount_collapsed` **per type**:
+`exact_user`, `exact_serviceaccount`, `weak`, `conflict`, `absent`, or `expired` **per type**:
 
 | Result | Meaning | Work needed |
 |---|---|---|
 | `exact_user` | exact UID+resourceVersion match for a human user | structured result |
-| `exact_serviceaccount` | exact UID+resourceVersion match for a service account that policy names directly | structured result |
-| `serviceaccount_collapsed` | service account matched, but `SANamePolicyBot` intentionally authors as committer | structured result |
+| `exact_serviceaccount` | exact UID+resourceVersion match for a service account, named by its own username | structured result |
 | `weak` | non-exact match, such as UID-only or RV-only | define and expose match strength |
 | `conflict` | multiple candidate authors share a join key | detect collisions while recording or looking up facts |
 | `expired` | a fact existed but aged out before the watch event joined it | add tombstone or last-seen evidence; Redis TTL alone is silent |
 | `absent` | no matching fact and no evidence that one expired | structured miss result |
 
-Match coverage = `(exact_user + exact_serviceaccount + serviceaccount_collapsed) / all`. That avoids
-false alerts for clusters that intentionally collapse controller service accounts to the committer.
-Real-name coverage is still shown by `commits_total{author_kind}` below.
+Match coverage = `(exact_user + exact_serviceaccount) / all` — the share of events that named an actor
+(human or service account) rather than falling back to the committer. Real-name coverage is also shown by
+`commits_total{author_kind}` below.
 
 **(c) Are real names actually landing in Git?** — `commits_total{author_kind}`. This is the bottom
 line: a wall of `author_kind="committer"` means attribution is effectively off even if audit is
@@ -198,14 +196,14 @@ panel is copy-pasteable.
 **Row 0 — SLO header (stat panels):**
 - Commit rate: `sum(rate(gitopsreverser_commits_total[5m]))`
 - Audit errors (must be 0): `sum(rate(gitopsreverser_audit_events_total{category="error"}[5m]))`
-- Attribution match coverage %: `sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*|serviceaccount_collapsed"}[5m])) / sum(rate(gitopsreverser_attribution_resolutions_total[5m]))`
+- Attribution match coverage %: `sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m])) / sum(rate(gitopsreverser_attribution_resolutions_total[5m]))`
 - Push latency p95: `histogram_quantile(0.95, sum by (le)(rate(gitopsreverser_git_push_duration_seconds_bucket[5m])))`
 - Max worker queue depth: `max(gitopsreverser_branch_worker_queue_depth)`
 
 **Row 1 — AUDIT & ATTRIBUTION (marquee):**
 - *Live audit stream by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_audit_events_total[1m]))`
 - *Audit outcome mix* (stacked): `sum by (category,outcome)(rate(gitopsreverser_audit_events_total[5m]))`
-- *Attribution match coverage by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*|serviceaccount_collapsed"}[5m])) / sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total[5m]))`
+- *Attribution match coverage by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m])) / sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total[5m]))`
 - *Commit author mix* (pie/stacked): `sum by (author_kind)(rate(gitopsreverser_commits_total[15m]))`
 - *Grace-window wait p95 by result* (timeseries) with an `--attribution-grace` threshold line: `histogram_quantile(0.95, sum by (le,result)(rate(gitopsreverser_attribution_resolution_wait_seconds_bucket[5m])))`
 - *Fact-index health* (timeseries): `sum by (op)(rate(gitopsreverser_attribution_fact_events_total[5m]))` + `gitopsreverser_attribution_fact_index_size`
@@ -246,7 +244,7 @@ panel is copy-pasteable.
 | Alert | Expression (sketch) | Meaning |
 |---|---|---|
 | Audit fact-store errors | `rate(audit_events_total{outcome="write_error"}[10m]) > 0` | Redis fact writes failing |
-| Attribution match coverage collapse | match coverage `< 0.5` for 30m while audit flowing | facts stopped matching, accounting for service-account bot policy |
+| Attribution match coverage drop | match coverage `< 0.5` for 30m while audit flowing | facts stopped matching watch events |
 | Grace window saturating | `attribution_resolution_wait_seconds{result=~"absent|expired"}` p95 → `--attribution-grace` | misses are waiting the full grace; raise grace or skip never-attributed types |
 | Watch restart storm | `rate(watch_restarts_total{reason="410_gone"}[15m])` spike | RV churn / compaction pressure |
 | List fallback in use | `rate(watch_recovery_total{mode="list_fallback"}[1h]) > 0` | an aggregated API isn't honoring streaming list |

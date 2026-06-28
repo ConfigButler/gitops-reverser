@@ -30,18 +30,20 @@ observed. Audit never defines *what* changed — it only, optionally, explains *
 `(GitProvider namespace, GitProvider name, branch)` tuple. Multiple `GitTarget`s may share one branch.
 Every write to that branch goes through the worker's single event loop and commit window.
 
-**Audit is an optional attribution lookup.** When Redis is configured, kube-apiserver posts audit
+**Audit is an optional attribution lookup.** When attribution is enabled, kube-apiserver posts audit
 events to `/audit-webhook`; the operator extracts a minimal attribution fact (auditID, user, verb,
 resourceVersion, GVR/namespace/name/UID, status, timestamps) into a Redis attribution index keyed for a
 join, and a resolver attaches the commit author to a watch event by matching a fact within a bounded
 grace window. A missing, late, or absent fact never blocks state capture; it only changes the author.
 
-**Redis/Valkey is optional for a single replica.** When present it stores attribution facts and
-per-watch resume cursors. With no Redis the product runs **committer-only**: it mirrors cluster state
-to Git authored by the configured committer and uses replay/list recovery instead of cursor resume.
-Redis becomes a **hard dependency for high availability** (multi-pod needs durable cross-pod state:
-branch-shard leases and durable write queues); see [Operational Boundaries](#operational-boundaries)
-and the [HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md).
+**Redis/Valkey is required.** It stores each GitTarget's per-watch resume cursors, so the operator
+resumes exactly where it left off after a restart or reconnect instead of re-listing from scratch; when
+attribution is enabled it also stores the audit facts. Running **committer-only**
+(`--audit-attribution-enabled=false`) disables the audit webhook and author attribution — every commit
+is authored by the configured committer — but still requires Redis. Redis is further the substrate for
+**high availability** (multi-pod needs durable cross-pod state: branch-shard leases and durable write
+queues); see [Operational Boundaries](#operational-boundaries) and the
+[HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md).
 
 ***
 
@@ -72,9 +74,9 @@ The solution, in the vocabulary used throughout this document:
   one's cursor simply expires — and a stale resourceVersion (`410 Gone`) rebuilds from a fresh replay.
   Older APIs that reject `sendInitialEvents` fall back to LIST plus buffered WATCH. The sweep fires on
   snapshot establishment, **never on a timer**.
-* **Audit, when configured, only names the author.** It is an optional attribution lookup; a missing or
-  late fact costs author fidelity, never correctness, and with no Redis the product commits as the
-  configured committer.
+* **Audit, when enabled, only names the author.** It is an optional attribution lookup; a missing or
+  late fact costs author fidelity, never correctness, and with attribution disabled the product commits
+  as the configured committer.
 * **One `BranchWorker` per Git branch serializes all writes.** Every write to a branch funnels through a
   single worker and a single commit window, which keeps concurrent GitTargets and authors from racing
   each other into a corrupt tree.
@@ -268,7 +270,7 @@ Following the ConfigMap edit:
 3. **Resolve the author.** When Redis is present, the resolver waits a bounded grace window
    (`--attribution-grace`, default `3s`) for a matching audit fact in the attribution index, joining by
    resourceVersion/UID. On a strong match the real user or named service account becomes the author;
-   otherwise (no Redis, no match, or expiry) the commit is authored by the configured committer. This
+   otherwise (attribution off, no match, or expiry) the commit is authored by the configured committer. This
    wait is per-event and never reorders a watch — see [Watch Event Ordering](#watch-event-ordering).
 4. **Route + window.** The event flows into the
    [GitTargetEventStream](../internal/reconcile/git_target_event_stream.go), and the
@@ -417,12 +419,11 @@ old facts are never needed for correctness because watch owns state.
 ### The resolver and its grace window
 
 A watch event waits a **bounded grace window** (`--attribution-grace`, default `3s`) for a matching fact
-to arrive, then ships regardless. On a strong match the real user or named service account becomes the
-author; the service-account naming policy (`--attribution-sa-naming`: `name` | `bot`) controls how a
-matched service account is named — `name` authors as the service account's own username, `bot` collapses
-it to the committer. A weak, conflicting, missing, or expired fact resolves to the committer. A late fact
-that arrives after a commit has shipped **never rewrites it**. With no Redis the resolver is absent and
-every commit is committer-authored.
+to arrive, then ships regardless. On a strong match the actor becomes the author — a human or a service
+account alike, always named by its own username (e.g.
+`system:serviceaccount:flux-system:kustomize-controller`). A weak, conflicting, missing, or expired fact
+resolves to the committer. A late fact that arrives after a commit has shipped **never rewrites it**.
+With attribution disabled the resolver is absent and every commit is committer-authored.
 
 The CommitRequest controller reads the same index by `(namespace, name, uid)` to attribute a request to
 its submitter (see [CommitRequest Finalize](#commitrequest-finalize)).
@@ -649,9 +650,10 @@ location instead of recomputing placement.
 * **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
 * **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
 
-A `CommitRequest` finalizes the open commit window for its GitTarget. With Redis the request is attributed
-to its submitter from an audit fact; with no Redis it **finalizes as the committer** with a status note
-that finalization happened without end-user attribution — a missing Redis/audit never fails the request:
+A `CommitRequest` finalizes the open commit window for its GitTarget. With attribution enabled the request
+is attributed to its submitter from an audit fact; with attribution disabled it **finalizes as the
+committer** with a status note that finalization happened without end-user attribution — a missing audit
+fact never fails the request:
 
 1. The controller stamps `WaitingForAuditEvent`. When attribution is available it waits briefly for a
    matching audit fact (bounded, and on timeout it finalizes *as the committer*, not closed); with no
@@ -701,9 +703,10 @@ flowchart TD
     D --> E[Create WorkerManager + register Runnable]
     E --> F[Create Watch Manager + EventRouter; inject TypeRegistry]
     F --> G[Register WatchRule + ClusterWatchRule controllers]
-    G --> H{audit-redis-addr set?}
-    H -->|yes| I[Create attribution index + audit fact extractor + audit HTTP server + resolver]
-    H -->|no| J[Committer-only: skip audit webhook + attribution]
+    G --> H[Create Redis attribution/cursor index + wire WatchCursorStore - required]
+    H --> Hq{audit-attribution-enabled?}
+    Hq -->|yes| I[Add audit fact extractor + audit HTTP server + resolver]
+    Hq -->|no| J[Committer-only: skip audit webhook + attribution]
     I --> K[Setup + register Watch Manager]
     J --> K
     K --> L[Register GitProvider + GitTarget + CommitRequest controllers]

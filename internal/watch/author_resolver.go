@@ -43,19 +43,6 @@ const DefaultAttributionGraceWindow = 3 * time.Second
 // waits out the grace window for a fact that has not arrived yet.
 const attributionPollInterval = 150 * time.Millisecond
 
-// ServiceAccountNamingPolicy decides how a matched service-account actor is named
-// as the commit author. A matched controller is a *named* attribution, not unknown.
-type ServiceAccountNamingPolicy string
-
-const (
-	// SANamePolicyName authors the commit as the service account's own username
-	// (e.g. system:serviceaccount:flux-system:kustomize-controller). The default.
-	SANamePolicyName ServiceAccountNamingPolicy = "name"
-	// SANamePolicyBot collapses every matched service account to the committer
-	// identity, so only humans ever appear as named authors.
-	SANamePolicyBot ServiceAccountNamingPolicy = "bot"
-)
-
 // AttributionLookup is the read side of the optional audit attribution index. The
 // Redis-backed queue.AttributionIndex satisfies it; nil means committer-only.
 type AttributionLookup interface {
@@ -111,25 +98,21 @@ type AuthorResolver interface {
 }
 
 type attributionResolver struct {
-	lookup   AttributionLookup
-	grace    time.Duration
-	saPolicy ServiceAccountNamingPolicy
-	log      logr.Logger
+	lookup AttributionLookup
+	grace  time.Duration
+	log    logr.Logger
 }
 
 // NewAuthorResolver builds the conservative author resolver over the attribution
-// index. grace bounds the per-event wait for a late fact; saPolicy controls how a
-// matched service account is named. A zero grace disables waiting (single lookup).
+// index. grace bounds the per-event wait for a late fact; a zero grace disables
+// waiting (single lookup). A matched actor — human or service account — is always
+// named by its own username.
 func NewAuthorResolver(
 	lookup AttributionLookup,
 	grace time.Duration,
-	saPolicy ServiceAccountNamingPolicy,
 	log logr.Logger,
 ) AuthorResolver {
-	if saPolicy != SANamePolicyBot {
-		saPolicy = SANamePolicyName
-	}
-	return &attributionResolver{lookup: lookup, grace: grace, saPolicy: saPolicy, log: log}
+	return &attributionResolver{lookup: lookup, grace: grace, log: log}
 }
 
 func (r *attributionResolver) ResolveAuthor(
@@ -165,9 +148,9 @@ func (r *attributionResolver) ResolveAuthor(
 	}
 }
 
-// userInfoForResolution turns a matched fact into a commit author, applying the
-// service-account naming policy. A service account under the "bot" policy collapses
-// to the committer (ok=false); otherwise it is named by its own username.
+// userInfoForResolution turns a matched fact into a commit author. The matched
+// actor — human or service account — is always named by its own username; a fact
+// with no author falls back to the committer (ok=false).
 func (r *attributionResolver) userInfoForResolution(
 	resolution queue.AuthorResolution,
 ) (git.UserInfo, bool, queue.AttributionResult) {
@@ -175,9 +158,6 @@ func (r *attributionResolver) userInfoForResolution(
 	result := resolution.Result
 	if fact.Author == "" {
 		return git.UserInfo{}, false, result
-	}
-	if fact.IsServiceAccount && r.saPolicy == SANamePolicyBot {
-		return git.UserInfo{}, false, queue.AttributionServiceAccountCollapsed
 	}
 	return git.UserInfo{
 		Username:    fact.Author,

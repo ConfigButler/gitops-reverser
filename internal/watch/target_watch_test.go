@@ -196,7 +196,7 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 				},
 				hitAfter: 1,
 			},
-			time.Second, SANamePolicyName, logr.Discard(),
+			time.Second, logr.Discard(),
 		),
 	}
 

@@ -76,8 +76,6 @@ const (
 	AttributionExactUser AttributionResult = "exact_user"
 	// AttributionExactServiceAccount is an exact UID+resourceVersion match for a named service account.
 	AttributionExactServiceAccount AttributionResult = "exact_serviceaccount"
-	// AttributionServiceAccountCollapsed is set by the resolver when bot policy collapses a matched SA.
-	AttributionServiceAccountCollapsed AttributionResult = "serviceaccount_collapsed"
 	// AttributionWeak is a non-exact match, such as UID-only or RV-only.
 	AttributionWeak AttributionResult = "weak"
 	// AttributionConflict means multiple authors wrote facts for the selected join key.

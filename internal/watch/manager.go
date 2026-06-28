@@ -150,27 +150,10 @@ type Manager struct {
 	// stable refusal is logged once, not on every refresh. Guarded by resourceCatalogMu.
 	typeRefusalsLogged map[string]string
 
-	// materializer is the demand-met second axis beside typeRegistry (see
-	// docs/design/stream/demand-driven-type-materialization-lifecycle.md): it owns the
-	// per-(GitTarget, type) claim table and the materialization phase machine. The
-	// registry answers "can we follow this type?"; the materializer answers "has any
-	// GitTarget claimed it, and have we listed it?". materializerInit guards its lazy
-	// construction for zero-value Managers in tests, mirroring typeRegistryInit.
-	materializerInit sync.Once
-	materializer     *typeset.Materializer
-	// declaredGVRsMu guards declaredGVRs: the type-set each GitTarget last Declared, so the per-type
-	// splice reconcile fires ONCE per (GitTarget, type) — when the type is newly claimed and already
-	// Synced — for the initial backfill, after which the per-event audit tail owns live changes
-	// (preserving their authorship). Re-folding the log on every Declare would re-commit live changes
-	// with the bulk reconcile's default author and churn Git ("initial = checkpoint, then replay").
+	// declaredGVRsMu guards declaredGVRs: the type-set each GitTarget last Declared. The watch-first
+	// data plane reads it to drive the per-(GitTarget, type) watch set; re-declaring is idempotent.
 	declaredGVRsMu sync.Mutex
 	declaredGVRs   map[string]map[schema.GroupVersionResource]struct{}
-
-	// lateNudgeMu guards lateNudgeAt: the last time a divert nudged a type's
-	// resync (NudgeTypeResyncForLateEvent), the per-type floor that keeps sustained
-	// out-of-order arrivals from churning checkpoint LISTs.
-	lateNudgeMu sync.Mutex
-	lateNudgeAt map[schema.GroupVersionResource]time.Time
 }
 
 // GitPathAcceptanceStatus is the whole-target write-safety status for a GitTarget path.

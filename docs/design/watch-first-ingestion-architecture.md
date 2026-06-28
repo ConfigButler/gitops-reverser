@@ -2,6 +2,21 @@
 
 > Status: **accepted direction — big-bang rewrite**
 > Date: 2026-06-25
+>
+> **Correction (2026-06-28): Redis/Valkey is REQUIRED, not optional.** This document's Decision 2 and
+> several passages below call Redis optional and describe a "no Redis → committer-only" mode. That framing
+> is superseded: Redis holds each GitTarget's watch **resume cursors** (state continuity / work
+> re-pickup) and is the substrate for HA and the planned durable branch-worker queue, so it is a hard
+> dependency in every mode. The **only** optional capability is **audit attribution** (the audit webhook),
+> toggled by `--audit-attribution-enabled` (chart `attribution.enabled`). "Committer-only" now means
+> *attribution off, Redis still on*. Wherever the text below says "no Redis," read "attribution disabled."
+>
+> **Correction (2026-06-28): no service-account naming policy.** The "name / bot / label" SA-naming knob
+> floated below (the "Two knobs" passage, the confidence table's `collapse-to-bot`, and the Stage-2
+> "SA-naming policy" note) was **not** shipped. A matched actor — human **or** service account — is always
+> named by its own username; there is no option to collapse service accounts to the committer. The
+> `serviceaccount_collapsed` reason code does not exist.
+> See [architecture.md](../architecture.md) and [watch-first-merge-readiness.md](watch-first-merge-readiness.md).
 > Related:
 > [Current architecture](../architecture.md),
 > [Mutation Capture Lab](mutation-capture-lab-design.md),
@@ -310,7 +325,7 @@ attribution, not "unknown." Naming `system:serviceaccount:flux-system:kustomize-
 | Confidence | When | Author |
 |---|---|---|
 | Exact (human) | watch UID/name/GVR/RV matches audit response; success; non-dry-run; real user | real user |
-| Exact (service account) | same match strength; actor is an SA/controller | named SA (policy: name / collapse-to-bot / label) |
+| Exact (service account) | same match strength; actor is an SA/controller | named SA (its own username) |
 | Strong causal | scale subresource with matching parent objectRef + response RV (the parent watch event lands at exactly that RV) | real user / SA |
 | Deletecollection | a `deletecollection` audit fact whose `responseObject` is a List is expanded into per-object candidates; each watch `DELETED` joins by **GVR + namespace + name + UID** — **not** RV (audit lists the pre-delete RV, watch the later delete RV; UID is the stable key) | real user / SA (reason `exact-deletecollection-item`) |
 | Terminal delete (finalizer / cascade) | finalizer-removal or owner-ref cascade: the watch `DELETED` lands at a later RV and the actor that removed the object is a controller (corpus Rows 8/10) | committer, unless an *exact* match to the removing actor's audit fact exists (then that named SA) |

@@ -73,9 +73,9 @@ spec:
             {{- if .Values.queue.redis.tls.enabled }}
             - --audit-redis-tls
             {{- end }}
+            - --audit-attribution-enabled={{ .Values.attribution.enabled }}
             - --attribution-ttl={{ .Values.attribution.ttl }}
             - --attribution-grace={{ .Values.attribution.grace }}
-            - --attribution-sa-naming={{ .Values.attribution.serviceAccountNaming }}
             {{- with .Values.controllerManager.additionalSensitiveResources }}
             - {{ printf "--additional-sensitive-resources=%s" (join "," .) | quote }}
             {{- end }}
