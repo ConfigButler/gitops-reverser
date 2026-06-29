@@ -416,11 +416,9 @@ func sourceRank(s mutationlab.Source) int {
 		return 1
 	case mutationlab.SourceAudit:
 		return 2
-	case mutationlab.SourceAuditAdditional:
-		return 3
 	case mutationlab.SourceWatch:
-		return 4
+		return 3
 	default:
-		return 5
+		return 4
 	}
 }

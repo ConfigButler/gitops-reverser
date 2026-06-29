@@ -68,20 +68,14 @@ type auditEventLite struct {
 	ResponseObject json.RawMessage `json:"responseObject"`
 }
 
-// Audit records audit-webhook EventList posts into the store. It serves two
-// roles distinguished by Source: the official kube-apiserver audit webhook and
-// the supplementary "additional" webhook the apiservice-audit-proxy posts
-// enriched bodies to.
+// Audit records kube-apiserver audit-webhook EventList posts into the store.
 type Audit struct {
-	store  *store.Store
-	source mutationlab.Source
+	store *store.Store
 }
 
-// NewAudit returns an Audit recorder for the given source. Use
-// mutationlab.SourceAudit for the official webhook and
-// mutationlab.SourceAuditAdditional for the proxy's enrichment endpoint.
-func NewAudit(s *store.Store, source mutationlab.Source) *Audit {
-	return &Audit{store: s, source: source}
+// NewAudit returns an Audit recorder for the kube-apiserver audit webhook.
+func NewAudit(s *store.Store) *Audit {
+	return &Audit{store: s}
 }
 
 // ServeHTTP decodes one EventList and records each event. The apiserver audit
@@ -110,7 +104,7 @@ func (a *Audit) recordEvent(raw json.RawMessage) {
 		return
 	}
 	a.store.Add(mutationlab.Record{
-		Source:     a.source,
+		Source:     mutationlab.SourceAudit,
 		Scenario:   scenarioFromAuditEvent(&ev),
 		ObservedAt: time.Now(),
 		Key:        auditObjectKey(&ev),

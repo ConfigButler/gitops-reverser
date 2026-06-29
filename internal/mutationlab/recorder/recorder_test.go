@@ -50,7 +50,7 @@ func postJSON(t *testing.T, h http.Handler, body string) *httptest.ResponseRecor
 
 func TestAudit_RecordsEventWithSummaryAndScenario(t *testing.T) {
 	s := store.New()
-	h := NewAudit(s, mutationlab.SourceAudit)
+	h := NewAudit(s)
 	body := `{"apiVersion":"audit.k8s.io/v1","kind":"EventList","items":[
 		{"auditID":"abc","verb":"create","stage":"ResponseComplete",
 		 "user":{"username":"kubernetes-admin"},
@@ -81,7 +81,7 @@ func TestAudit_DecodesEventWithTimestamps(t *testing.T) {
 	// Regression: audit events carry metav1.MicroTime timestamps and embedded
 	// objects; a plain json.Unmarshal silently rejects them. The codec must not.
 	s := store.New()
-	h := NewAudit(s, mutationlab.SourceAudit)
+	h := NewAudit(s)
 	body := `{"items":[{"auditID":"ts-1","verb":"create","stage":"ResponseComplete",
 		"requestReceivedTimestamp":"2026-06-24T10:00:00.000000Z",
 		"stageTimestamp":"2026-06-24T10:00:00Z",
@@ -101,7 +101,7 @@ func TestAudit_DecodesEventWithTimestamps(t *testing.T) {
 
 func TestAudit_DeletecollectionScenarioFromObjectRefNamespace(t *testing.T) {
 	s := store.New()
-	h := NewAudit(s, mutationlab.SourceAudit)
+	h := NewAudit(s)
 	// Name-less deletecollection: scenario still recovered from objectRef namespace.
 	body := `{"items":[{"auditID":"d1","verb":"deletecollection",
 		"requestURI":"/api/v1/namespaces/lab-dc-2/configmaps?labelSelector=x%3Dy",
@@ -112,18 +112,9 @@ func TestAudit_DeletecollectionScenarioFromObjectRefNamespace(t *testing.T) {
 	}
 }
 
-func TestAudit_AdditionalSourceLabeled(t *testing.T) {
-	s := store.New()
-	h := NewAudit(s, mutationlab.SourceAuditAdditional)
-	postJSON(t, h, `{"items":[{"auditID":"e1","verb":"patch","objectRef":{"namespace":"ns","resource":"configmaps"}}]}`)
-	if got := s.List("ns"); len(got) != 1 || got[0].Source != mutationlab.SourceAuditAdditional {
-		t.Fatalf("additional source wrong: %+v", got)
-	}
-}
-
 func TestAudit_BadBody(t *testing.T) {
 	s := store.New()
-	h := NewAudit(s, mutationlab.SourceAudit)
+	h := NewAudit(s)
 	if rec := postJSON(t, h, `{not json`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}

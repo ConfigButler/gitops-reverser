@@ -1,7 +1,7 @@
 annotations:
-  all-events-test-only.configbutler.ai/scenario: create-succeeds
   authorization.k8s.io/decision: allow
   authorization.k8s.io/reason: ""
+  validate-all.configbutler.ai/scenario: create-succeeds
 auditID: <auditID-1>
 level: RequestResponse
 objectRef:

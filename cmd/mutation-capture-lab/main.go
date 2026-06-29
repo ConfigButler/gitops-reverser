@@ -23,12 +23,8 @@ limitations under the License.
 // docs/design/mutation-capture-lab-design.md.
 //
 // It deliberately serves the SAME webhook URLs as the product
-// (/validate-all, /audit-webhook, /audit-webhook-additional) so a
-// lab deployment can swap the product image without reconfiguring the cluster's
-// admission/audit wiring. The /audit-webhook-additional endpoint is the
-// integration point the apiservice-audit-proxy posts enriched bodies to; the lab
-// records it separately so the corpus shows what that proxy adds — and whether a
-// live watch already carries it, which would make the proxy unnecessary.
+// (/validate-all, /audit-webhook) so a lab deployment can swap the product image
+// without reconfiguring the cluster's admission/audit wiring.
 package main
 
 import (
@@ -50,7 +46,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/ConfigButler/gitops-reverser/internal/mutationlab"
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab/labserver"
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab/recorder"
 	"github.com/ConfigButler/gitops-reverser/internal/mutationlab/store"
@@ -79,7 +74,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.admissionCert, "admission-cert-dir", "",
 		"Directory holding tls.crt/tls.key for the admission server. Empty serves plain HTTP (local only).")
 	flag.StringVar(&cfg.auditAddr, "audit-addr", ":8444",
-		"Address for the audit webhook HTTPS server (/audit-webhook, /audit-webhook-additional).")
+		"Address for the audit webhook HTTPS server (/audit-webhook).")
 	flag.StringVar(&cfg.auditCert, "audit-cert-dir", "",
 		"Directory holding tls.crt/tls.key for the audit server. Empty serves plain HTTP (local only).")
 	flag.StringVar(&cfg.auditClientCA, "audit-client-ca", "",
@@ -105,8 +100,7 @@ func main() {
 	s := store.New()
 	admission := recorder.NewAdmission(s, recorder.RejectByLabel)
 	conversion := recorder.NewConversion(s)
-	auditOfficial := recorder.NewAudit(s, mutationlab.SourceAudit)
-	auditAdditional := recorder.NewAudit(s, mutationlab.SourceAuditAdditional)
+	audit := recorder.NewAudit(s)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -117,7 +111,7 @@ func main() {
 	if watchClient != nil {
 		api = labserver.NewAPI(s, recorder.NewWatchProbe(watchClient))
 	}
-	servers := buildServers(cfg, admission, conversion, auditOfficial, auditAdditional, api)
+	servers := buildServers(cfg, admission, conversion, audit, api)
 	run(ctx, logger, cfg, servers)
 }
 
@@ -132,7 +126,7 @@ type server struct {
 
 func buildServers(
 	cfg config,
-	admission, conversion, auditOfficial, auditAdditional http.Handler,
+	admission, conversion, audit http.Handler,
 	api *labserver.API,
 ) []server {
 	admissionMux := http.NewServeMux()
@@ -142,8 +136,7 @@ func buildServers(
 	admissionMux.Handle("/convert", conversion)
 
 	auditMux := http.NewServeMux()
-	auditMux.Handle("/audit-webhook", auditOfficial)
-	auditMux.Handle("/audit-webhook-additional", auditAdditional)
+	auditMux.Handle("/audit-webhook", audit)
 
 	return []server{
 		{name: "admission", certDir: cfg.admissionCert, srv: &http.Server{

@@ -104,23 +104,6 @@ func TestBuild_CollisionWithoutNamesUsesOrdinal(t *testing.T) {
 	}
 }
 
-func TestBuild_AdditionalAuditSourceLabel(t *testing.T) {
-	// The proxy-enriched body lands under its own source label so the corpus can
-	// show the official-vs-enriched split side by side.
-	r := mutationlab.Record{
-		Source:  mutationlab.SourceAuditAdditional,
-		Summary: mutationlab.RecordSummary{Operation: "deletecollection"},
-		Raw:     json.RawMessage(`{"verb":"deletecollection"}`),
-	}
-	moments, err := Build([]mutationlab.Record{r})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	if moments[0].Name != "audit-additional.deletecollection.yaml" {
-		t.Errorf("name = %q, want audit-additional.deletecollection.yaml", moments[0].Name)
-	}
-}
-
 func TestWriteThenCompare_RoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	moments, err := Build([]mutationlab.Record{watchRec("ADDED", "cm-a", "u1", "10")})

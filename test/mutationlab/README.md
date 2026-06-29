@@ -39,7 +39,7 @@ gap (see [Capturing Intent, Not State](../../docs/design/mutation-capture-lab-de
 | 12 | Record-and-reject | `configmap_scenarios_test.go` · `TestRecordAndReject` | `configmap/record-and-reject/` | audit, admission — **no** watch / **no** etcd object |
 | 13 | Optimistic-concurrency conflict | `configmap_scenarios_test.go` · `TestOptimisticConcurrencyConflict` | `configmap/conflict-update/` | audit ×1 (`update`, code 409) — **no** watch / **no** admission (rejected at storage, before admission) |
 | 14 | Multi-version CRD conversion | `crd_conversion_test.go` · `TestCRDConversion` | `widget/crd-conversion/` | watch (v2), audit (v1), admission (v1), conversion ×2 (both directions) |
-| 15 | Aggregated API write | `aggregated_api_test.go` · `TestAggregatedAPIWrite` | `flunder/aggregated-api-write/` | watch (full object), audit (empty body), audit-additional (proxy-enriched full body); admission is observed but not committed |
+| 15 | Aggregated API write | `aggregated_api_test.go` · `TestAggregatedAPIWrite` | `flunder/aggregated-api-write/` | watch (full object), audit (empty body); admission is observed but not committed |
 | 16 | Watch resync (`410 Gone`) | `watch_transport_test.go` · `TestWatchExpiredResourceVersion` | `configmap/watch-resync/` | watch ERROR (`Status` 410); driver verifies relist recovery |
 | 17 | Bookmark | `watch_transport_test.go` · `TestWatchBookmark` | `configmap/watch-bookmark/` | watch BOOKMARK with resourceVersion |
 
@@ -52,18 +52,16 @@ design notes.
 ## How it integrates: swap the image, reuse the wiring
 
 The lab serves the **same** webhook URLs as the product —
-`/validate-all`, `/audit-webhook`, and the proxy-enrichment
-`/audit-webhook-additional` — on the same ports and TLS cert mounts. So making a
-cluster capture with the lab is just swapping the controller image: no new audit
-policy, webhook config, or certificates. `task lab-e2e` does this on the
+`/validate-all` and `/audit-webhook` — on the same ports and TLS cert mounts. So
+making a cluster capture with the lab is just swapping the controller image: no
+new audit policy, webhook config, or certificates. `task lab-e2e` does this on the
 already-prepared e2e cluster, then drives the scenarios serially.
 
-The `/audit-webhook-additional` endpoint is the integration point the
-[`apiservice-audit-proxy`](https://github.com/ConfigButler/apiservice-audit-proxy)
-posts enriched bodies to. The lab records it as its own source so the corpus can
-show, side by side, what the official audit event carried versus what the proxy
-added — and whether a live watch already carries the same object, which would
-make that proxy unnecessary for object content.
+Row 15 (aggregated API write) is what settled the body-enrichment question: the
+official audit event for an aggregated-API write carries an empty body, yet the
+live watch carries the full object. Because the watch supplies the object content
+natively, the supplementary `/audit-webhook-additional` body-enrichment proxy was
+retired — so the lab no longer serves or records that endpoint.
 
 ## Running it (opt-in, serial)
 

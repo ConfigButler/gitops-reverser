@@ -1,9 +1,9 @@
 annotations:
-  all-events-test-only.configbutler.ai/scenario: owner-ref-cascade
   authorization.k8s.io/decision: allow
   authorization.k8s.io/reason: 'RBAC: allowed by ClusterRoleBinding "system:controller:generic-garbage-collector"
     of ClusterRole "system:controller:generic-garbage-collector" to ServiceAccount
     "generic-garbage-collector/kube-system"'
+  validate-all.configbutler.ai/scenario: owner-ref-cascade
 auditID: <auditID-1>
 level: RequestResponse
 objectRef:

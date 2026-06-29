@@ -10,10 +10,10 @@ The corpus is captured against **k8s v1.36.1+k3s1** (recorded in
 `test/mutationlab/corpus/CLUSTER.md`). **All seventeen** catalogued scenarios are captured today — see
 the [Difficult Cases Catalog](#difficult-cases-catalog).
 
-The lab reuses the product's webhook URLs (`/validate-all`, `/audit-webhook`, and the
-proxy-enrichment `/audit-webhook-additional`) on the same ports and TLS mounts, so capturing is just
-an **image swap** on an already-prepared e2e cluster — no new audit policy, webhook config, or
-certificates. The binary lives under `cmd/mutation-capture-lab/`, the recorders/normalizer/store/
+The lab reuses the product's webhook URLs (`/validate-all`, `/audit-webhook`) on the same ports and
+TLS mounts, so capturing is just an **image swap** on an already-prepared e2e cluster — no new audit
+policy, webhook config, or certificates. The binary lives under `cmd/mutation-capture-lab/`, the
+recorders/normalizer/store/
 record model under `internal/mutationlab/`, and the live-cluster driver plus golden corpus under
 `test/mutationlab/` (driver behind the `mutationlab_e2e` build tag, so the normal lane never needs a
 cluster).
@@ -114,15 +114,15 @@ This is the headline product result. Two captured data points sit side by side i
   still cannot be relied on for per-object identity across versions or audit levels.)
 - **Aggregated API (Row 15).** The official kube-apiserver audit event carries **no `requestObject`
   and no `responseObject`** (the apiserver proxies the aggregated request and has no schema to render
-  the object), yet the watch `ADDED` carries the full object, spec included. The
-  `apiservice-audit-proxy` reconstructs the body onto `/audit-webhook-additional` — the very
-  enrichment a watch-based capture would not need.
+  the object), yet the watch `ADDED` carries the full object, spec included. A body-enrichment proxy
+  (`apiservice-audit-proxy`) could reconstruct the body — but the watch already carries it, so that
+  enrichment is exactly what a watch-based capture does not need.
 
-**Consequence:** a watch-based capture would not need the body-enrichment proxy for object *content*;
-the watch supplies natively what the proxy reconstructs. **Caveat:** this holds only **while the watch
-is live** — a watch that is down or lagging loses the event and its body outright — with a periodic
-list + reconcile as the gap backstop. Body-enrichment is therefore an *audit-mode* concern, not a
-universal requirement.
+**Consequence:** a watch-based capture does not need the body-enrichment proxy for object *content*;
+the watch supplies natively what such a proxy would reconstruct. This is the finding that retired the
+proxy and its `/audit-webhook-additional` endpoint — the lab no longer serves or records it.
+**Caveat:** this holds only **while the watch is live** — a watch that is down or lagging loses the
+event and its body outright — with a periodic list + reconcile as the gap backstop.
 
 ### 2. Where provenance mechanisms fall silent, the watch is the lone witness
 
@@ -338,7 +338,7 @@ test/mutationlab/corpus/
       conversion.to-v1.yaml       # one representative call per direction
       conversion.to-v2.yaml
   flunder/                        # the aggregated API (Row 15)
-    aggregated-api-write/         # watch.added (full) · audit.create (empty) · audit-additional.create (full)
+    aggregated-api-write/         # watch.added (full) · audit.create (empty)
 ```
 
 `CLUSTER.md` is load-bearing: a captured shape is only meaningful against a known apiserver version.
@@ -395,7 +395,7 @@ payload (after normalization) becomes the golden YAML.
 ```go
 type Record struct {
     ID         string          `json:"id"`
-    Source     string          `json:"source"` // watch, audit, audit-additional, admission, conversion
+    Source     string          `json:"source"` // watch, audit, admission, conversion
     Scenario   string          `json:"scenario,omitempty"`
     ObservedAt time.Time       `json:"observedAt"`
     Key        ObjectKey       `json:"key,omitempty"`
@@ -453,8 +453,7 @@ next has started. The lab **isolates** scenarios rather than trusting a clean sl
   audit batch is awaited rather than missed and a stray cross-scenario event is rejected rather than
   averaged in.
 
-Endpoints: `POST /audit-webhook`, `POST /audit-webhook-additional` (the proxy-enrichment endpoint,
-recorded as its own source), `POST /validate-all`, `POST /convert` (CRD conversion),
+Endpoints: `POST /audit-webhook`, `POST /validate-all`, `POST /convert` (CRD conversion),
 `POST /watch-probe` (targeted transport rows), `GET /records[?scenario=…]`, `DELETE /records`,
 `GET /healthz`, `GET /readyz`.
 

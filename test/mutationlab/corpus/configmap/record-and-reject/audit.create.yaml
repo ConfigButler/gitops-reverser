@@ -1,7 +1,7 @@
 annotations:
-  all-events-test-only.configbutler.ai/scenario: record-and-reject
   authorization.k8s.io/decision: allow
   authorization.k8s.io/reason: ""
+  validate-all.configbutler.ai/scenario: record-and-reject
 auditID: <auditID-1>
 level: RequestResponse
 objectRef:
@@ -26,14 +26,14 @@ responseObject:
   apiVersion: v1
   code: 403
   kind: Status
-  message: 'admission webhook "all-events-test-only.configbutler.ai" denied the request:
-    rejected by mutation-capture-lab record-and-reject policy'
+  message: 'admission webhook "validate-all.configbutler.ai" denied the request: rejected
+    by mutation-capture-lab record-and-reject policy'
   metadata: {}
   status: Failure
 responseStatus:
   code: 403
-  message: 'admission webhook "all-events-test-only.configbutler.ai" denied the request:
-    rejected by mutation-capture-lab record-and-reject policy'
+  message: 'admission webhook "validate-all.configbutler.ai" denied the request: rejected
+    by mutation-capture-lab record-and-reject policy'
   metadata: {}
   status: Failure
 sourceIPs:

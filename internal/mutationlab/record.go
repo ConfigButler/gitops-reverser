@@ -37,11 +37,6 @@ const (
 	SourceWatch Source = "watch"
 	// SourceAudit is the kube-apiserver audit webhook recorder.
 	SourceAudit Source = "audit"
-	// SourceAuditAdditional is the supplementary ("additional") audit webhook, the
-	// integration point the apiservice-audit-proxy posts enriched bodies to. The
-	// lab records it separately from SourceAudit so the corpus can show, side by
-	// side, what the official audit event carried versus what the proxy added.
-	SourceAuditAdditional Source = "audit-additional"
 	// SourceAdmission is the validating admission webhook recorder.
 	SourceAdmission Source = "admission"
 	// SourceConversion is the CRD conversion webhook recorder. The apiserver calls
