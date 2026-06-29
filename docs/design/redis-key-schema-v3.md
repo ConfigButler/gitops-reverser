@@ -6,18 +6,18 @@
 > [commitrequest-admission-authorship.md](commitrequest-admission-authorship.md) is a separate round and
 > is **not** wired up yet). Scope: (1) replace the opaque `attr` namespace with a top-level `author`
 > domain; (2) re-lay audit-sourced resource author facts as a readable, **object-grouped** hierarchy
-> (`<group/resource>:object:<uid>/<rv>` + `/last`, plus a type-scoped `:rv:<rv>` escape hatch), carrying
+> (`<group/resource>:object:<uid>:<rv>` + `:last`, plus a type-scoped `:rv:<rv>` escape hatch), carrying
 > name/namespace in the value; (3) put command authorship from admission in the same `author` domain but
 > a separate `command` subfamily; and (4) replace the old `watch-cursor` family with a smaller `watch`
 > domain whose leaf is the per-shard `last-rv`.
 >
 > **Implementation note (resolver / rv: hatch).** §4.2 reads as if an exact-capable event consults
-> *only* `object:<uid>/<rv>`. As shipped, an exact-capable event tries the exact key **and then** the
-> type-scoped `rv:<rv>` key (still never `/last`). This is what makes the `rv:` escape hatch reachable —
+> *only* `object:<uid>:<rv>`. As shipped, an exact-capable event tries the exact key **and then** the
+> type-scoped `rv:<rv>` key (still never `:last`). This is what makes the `rv:` escape hatch reachable —
 > §5's own parenthetical ("…the watch side always carries a UID, so it would resolve via
-> `object:<uid>/…` first and never reach it") confirms `rv:` sits in the fallback chain. Without that
+> `object:<uid>:…` first and never reach it") confirms `rv:` sits in the fallback chain. Without that
 > fallback the `rv:` key would be dead. `rv:` is type-scoped and per-write, so consulting it does not
-> reintroduce the stale-LWW hazard `/last` would.
+> reintroduce the stale-LWW hazard `:last` would.
 > Related:
 > [`internal/queue/attribution_index.go`](../../internal/queue/attribution_index.go),
 > [`internal/queue/redis_store.go`](../../internal/queue/redis_store.go),
@@ -75,24 +75,24 @@ that was a key field except the type, the UID, and the RV moves into the value.
 
 ```
 # exact — one immutable fact per write (uid + rv)
-gitops-reverser:author:v1:audit:apps/deployments:object:bb1c4d09-4dce-4cc2-be34-f9bff17406c4/101
+gitops-reverser:author:v1:audit:apps/deployments:object:bb1c4d09-4dce-4cc2-be34-f9bff17406c4:101
 # uid latest — last-writer-wins pointer for the object (the RV-mismatch fallback)
-gitops-reverser:author:v1:audit:apps/deployments:object:bb1c4d09-4dce-4cc2-be34-f9bff17406c4/last
+gitops-reverser:author:v1:audit:apps/deployments:object:bb1c4d09-4dce-4cc2-be34-f9bff17406c4:last
 # rv-only — type-scoped escape hatch for a fact that has an RV but no UID (see §5)
 gitops-reverser:author:v1:audit:apps/deployments:rv:101
 ```
 
 - **GroupResource** = `resource` for core (`configmaps`, `secrets`), `group/resource` otherwise
   (`apps/deployments`, `rbac.authorization.k8s.io/roles`). Readable, `SCAN`-friendly per type.
-- **`object:<uid>/…`** groups every fact for one object under one prefix — `SCAN
-  author:v1:audit:apps/deployments:object:<uid>/*` shows the whole history-in-flight for that object.
+- **`object:<uid>:…`** groups every fact for one object under one prefix — `SCAN
+  author:v1:audit:apps/deployments:object:<uid>:*` shows the whole history-in-flight for that object.
 - **`author:v1`** is the durable naming decision. `audit` is the source-specific subfamily for
   persisted-resource authorship; command authorship uses `author:v1:command` (§9).
-- **`/<rv>`** is the exact per-write fact; **`/last`** is the latest-writer pointer.
+- **`:<rv>`** is the exact per-write fact; **`:last`** is the latest-writer pointer.
 - **`rv:<rv>`** is the rv-only fallback, sitting under a `rv:` sibling of `object:` (no UID in it),
   **type-scoped** because RV is not globally unique (§5). Shipped from the start, not deferred.
-- **Both `/last` and `/<rv>` hold the full author fact** — `/last` is just a copy of the most recent
-  write, so the resolver never needs a second round-trip. (In the end that *is* what `/last` is.)
+- **Both `:last` and `:<rv>` hold the full author fact** — `:last` is just a copy of the most recent
+  write, so the resolver never needs a second round-trip. (In the end that *is* what `:last` is.)
 - **Value** carries what the key no longer encodes: `groupResource`, `namespace`, `name`, `uid`, plus
   the existing author/evidence fields.
 
@@ -155,47 +155,47 @@ now). RVs are numeric in practice; treat them as opaque and reject/escape a stra
 
 | Lookup (resolver order) | v3 key | v2 equivalent | When it wins |
 |---|---|---|---|
-| exact | `…:object:<uid>/<rv>` | `e` | normal create/update — the watch event's post-write RV matches the fact. |
-| uid latest | `…:object:<uid>/last` | `u` | known RV-mismatch events: deletes and deletecollection. |
+| exact | `…:object:<uid>:<rv>` | `e` | normal create/update — the watch event's post-write RV matches the fact. |
+| uid latest | `…:object:<uid>:last` | `u` | known RV-mismatch events: deletes and deletecollection. |
 | rv-only | `…:rv:<rv>` | `r` | a fact that has an RV but no UID (§5) — the escape hatch. |
 
 The resolver keeps the same join power as v2 but no longer uses the same unconditional fallback chain:
-exact-capable events stop at the exact key, while known RV-mismatch events may use `/last` (§4.2).
+exact-capable events stop at the exact key, while known RV-mismatch events may use `:last` (§4.2).
 CommitRequest authorship leaves this path entirely and uses `author:v1:command` from admission (§9).
 
-## 4. The win: `/<rv>` is immutable, so conflict-marking retires
+## 4. The win: `:<rv>` is immutable, so conflict-marking retires
 
 A given `(uid, rv)` had **exactly one writer** — that RV exists *because* of that single write. So
-`object:<uid>/<rv>` is **written once and never contended**. That dissolves the machinery v2 needed:
+`object:<uid>:<rv>` is **written once and never contended**. That dissolves the machinery v2 needed:
 
 - **v2:** the shared `u` (uid-only) key is written by every author of the object, so a second, different
   author collapses it to a `{conflict:true}` marker ([`storeFactKey`](../../internal/queue/attribution_index.go#L457)),
   and only the `e` (exact) key rescues precise per-write credit.
-- **v3:** each write owns its own immutable `/<rv>` key, so there is **nothing to conflict**. The
-  resolver rule becomes **"exact for exact-capable events; `/last` only for known RV-mismatch events."**
+- **v3:** each write owns its own immutable `:<rv>` key, so there is **nothing to conflict**. The
+  resolver rule becomes **"exact for exact-capable events; `:last` only for known RV-mismatch events."**
 
-### 4.1 `/last` is last-writer-wins, and that is correct here
+### 4.1 `:last` is last-writer-wins, and that is correct here
 
-`/last` is overwritten with the newest author on every write. It is consulted **only** when the exact
-`/<rv>` misses — i.e. RV-mismatch events:
+`:last` is overwritten with the newest author on every write. It is consulted **only** when the exact
+`:<rv>` misses — i.e. RV-mismatch events:
 
-- A **delete** writes `/last` = the deleter; the `DELETED` watch event (RV ≠ any write RV) resolves the
+- A **delete** writes `:last` = the deleter; the `DELETED` watch event (RV ≠ any write RV) resolves the
   deleter. Correct.
-- A **deletecollection** expands one `/last` per member = the actor; each per-object removal joins it
+- A **deletecollection** expands one `:last` per member = the actor; each per-object removal joins it
   (see [deletecollection §3](deletecollection-attribution-expander.md)). The whole reason that design
-  pinned itself to the uid-only variant — body RV ≠ removal RV — is just "use `/last`" here.
-- A **burst** (author₁ rv₁, author₂ rv₂): `/<rv1>`=author₁, `/<rv2>`=author₂ (both precise), `/last`=author₂.
+  pinned itself to the uid-only variant — body RV ≠ removal RV — is just "use `:last`" here.
+- A **burst** (author₁ rv₁, author₂ rv₂): `:<rv1>`=author₁, `:<rv2>`=author₂ (both precise), `:last`=author₂.
   Watch events for rv₁ and rv₂ each hit their exact key → both precise. This is the precision an earlier
   single-key sketch gave up; the grouped scheme keeps it.
 
-### 4.2 Safety rule — exact-capable events do not fall through to `/last`
+### 4.2 Safety rule — exact-capable events do not fall through to `:last`
 
 No tombstone. The fundamental correctness rule is simpler and stronger:
 
 - If a watch event has a UID **and** RV and is an exact-capable event (`ADDED` / `MODIFIED`), lookup only
-  `object:<uid>/<rv>`; if it misses after the attribution grace, return `absent` and commit as the
+  `object:<uid>:<rv>`; if it misses after the attribution grace, return `absent` and commit as the
   committer.
-- Use `/last` only for known RV-mismatch events (`DELETED`, deletecollection-expanded removals, and any
+- Use `:last` only for known RV-mismatch events (`DELETED`, deletecollection-expanded removals, and any
   future path that deliberately records author intent without a matching post-write RV).
 - Use `rv:<rv>` only when the audit fact had RV but no UID; a normal UID-bearing watch event tries exact
   first and never needs the rv-only key.
@@ -216,7 +216,7 @@ an `objectRef` without a UID. Under the `RequestResponse` audit level this proje
 the body even for `generateName` creates, so a no-UID fact is uncommon — but when it happens, `rv:`
 is the difference between a precise author and a committer fallback. It is **cheap and shipped now**: one
 extra key, written *only* when the fact has no UID (a UID-bearing fact's `rv:` key would be dead — the
-watch side always carries a UID, so it would resolve via `object:<uid>/…` first and never reach it). This
+watch side always carries a UID, so it would resolve via `object:<uid>:…` first and never reach it). This
 is a deliberate improvement over v2, which wrote a dead rv-only key for *every* event.
 
 The `object:`/`rv:` discriminator is what keeps the two cohabiting unambiguously: without it, `…:<uid>`
@@ -226,13 +226,13 @@ and can never be mistaken for an object key.
 
 ## 6. Reason codes simplify
 
-Because `/<rv>` is a real exact match again, the v2 reason tiers keep their meaning — unlike a single-key
+Because `:<rv>` is a real exact match again, the v2 reason tiers keep their meaning — unlike a single-key
 collapse, which would have erased `exact` vs `weak`:
 
 | Reason | Source |
 |---|---|
-| `exact_user` / `exact_serviceaccount` | `object:<uid>/<rv>` matched, `isServiceAccount` flag |
-| `weak` | `object:<uid>/last` or `rv:<rv>` matched (known RV-mismatch or rv-only fallback) |
+| `exact_user` / `exact_serviceaccount` | `object:<uid>:<rv>` matched, `isServiceAccount` flag |
+| `weak` | `object:<uid>:last` or `rv:<rv>` matched (known RV-mismatch or rv-only fallback) |
 | `exact_deletecollection_item` | matched fact with `verb == deletecollection` (read from the **value**, not a key variant) |
 | `absent` | no usable author fact matched before the grace elapsed |
 
@@ -243,7 +243,7 @@ disappears because `:seen` tombstones are gone (§4.2). Net dashboard change: dr
 ## 7. deletecollection stops being a special case at the key layer
 
 [`RecordDeleteCollectionFacts`](../../internal/queue/attribution_index.go#L205) exists to write "only the
-uid-only variant" because the body RV is dead. In v3 that is simply "write `object:<uid>/last`" — the
+uid-only variant" because the body RV is dead. In v3 that is simply "write `object:<uid>:last`" — the
 same key any RV-mismatch event uses. The only deletecollection-specific thing left is the **reason code**,
 now driven by `fact.verb` in the value, not by which key variant matched.
 
@@ -255,7 +255,7 @@ a watch shard's **last processed RV**, so the family should say that directly:
 
 ```
 v2: gitops-reverser:watch-cursor:v2:<gitTargetUID>:<group>:<version>:<resource>:<ns>
-v1: gitops-reverser:watch:v1:target:<gitTargetUID>:<group/resource>:<scope>/last-rv
+v1: gitops-reverser:watch:v1:target:<gitTargetUID>:<group/resource>:<scope>:last-rv
 ```
 
 - **`watch:v1`** is the durable namespace. This is not an author record, so it should not live under
@@ -267,24 +267,24 @@ v1: gitops-reverser:watch:v1:target:<gitTargetUID>:<group/resource>:<scope>/last
   resume-cursor key. If one GitTarget ever watched a resource at two versions, their cursors would merge;
   that is harmless because the RV space is shared. In practice each shard watches one version.
 - **`<scope>` stays, without a `scope:` label.** This is where I would push back on the shorter
-  `gitops-reverser:watch:v1:uid:<group/resource>:/last-rv` form: the live data plane opens one raw watch
+  `gitops-reverser:watch:v1:uid:<group/resource>:last-rv` form: the live data plane opens one raw watch
   per `(GitTarget, GVR, namespace scope)`, not just per `(GitTarget, type)`. A namespaced `WatchRule` and
   a cluster-wide `ClusterWatchRule` are different watch collections, and two named namespaces can also be
   separate watch shards. Sharing one RV key across those shards risks resuming the wrong collection.
-- **`/last-rv`** names the leaf. The value is just the resourceVersion string.
+- **`:last-rv`** names the leaf. The value is just the resourceVersion string.
 
 `scope` encoding:
 
 | Watch scope | Key segment |
 |---|---|
 | Cluster-wide watch, including cluster-scoped resources and ClusterWatchRule over a namespaced resource | `cluster` |
-| One namespace-scoped watch | `namespace/<namespace>` |
+| One namespace-scoped watch | `namespace:<namespace>` |
 
 Examples:
 
 ```
-gitops-reverser:watch:v1:target:gtuid-3:apps/deployments:namespace/team-a/last-rv
-gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster/last-rv
+gitops-reverser:watch:v1:target:gtuid-3:apps/deployments:namespace:team-a:last-rv
+gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv
 ```
 
 The GitTarget UID stays — it is what stops a recreated GitTarget inheriting a dead predecessor's cursor
@@ -336,27 +336,27 @@ author facts and cursor together only if a resync is already expected; otherwise
   - Raise `DefaultAttributionFactTTL` from 10 minutes to 15 minutes.
   - Replace `factKeyVariants`/`factKey` with three small builders: `factKeyExact(gr, uid, rv)`,
     `factKeyLast(gr, uid)`, `factKeyRV(gr, rv)`, all over the `groupResourceKey` helper.
-  - `RecordFact`: write `…/<rv>` (immutable `SET NX`-ish — last write for an RV is identical anyway) **and**
-    overwrite `…/last`; **also** write `rv:<rv>` when `uid == ""` (the §5 escape hatch — shipped, just
+  - `RecordFact`: write `…:<rv>` (immutable `SET NX`-ish — last write for an RV is identical anyway) **and**
+    overwrite `…:last`; **also** write `rv:<rv>` when `uid == ""` (the §5 escape hatch — shipped, just
     skipped for UID-bearing facts whose `rv:` key would be dead). No conflict read/merge.
   - `AuthorFact` gains `GroupResource`, `Namespace`, `Name`, `UID`; **drop `Conflict`**.
   - `storeFactKey`'s conflict-detection block is **deleted** (§4).
   - Delete `factTombstoneSuffix`, `factTombstoneTTLMultiplier`, `factTombstoneKey`, `factMissSuffix`,
     `factMissKey`, and `RecordAuthorMiss`; no sibling keys.
-  - Resolver: exact-capable events try `/<rv>` only; known RV-mismatch events use `/last`; no tombstone
+  - Resolver: exact-capable events try `:<rv>` only; known RV-mismatch events use `:last`; no tombstone
     branch, no `expired` result, and no `op="late"` metric from Redis miss markers.
   - `attributionResultForMatch` derives the reason from the matched key kind + `fact` (§6); remove
     `AttributionConflict` and `AttributionExpired`; keep `AttributionExactDeleteCollectionItem` (now keyed
     off `fact.Verb`).
-  - `RecordDeleteCollectionFacts`/expander: write one `…/last` per member (§7).
+  - `RecordDeleteCollectionFacts`/expander: write one `…:last` per member (§7).
   - `recordFactIndexSize` scans `author:v1:audit:*`.
 - **`redis_store.go`** — `watchCursorKeySuffix` → `:watch:v1:`; `watchCursorKey` emits
-  `target:<uid>:<group/resource>:<scope>/last-rv` (drop `gvr.Version`). `CursorStore` interface
+  `target:<uid>:<group/resource>:<scope>:last-rv` (drop `gvr.Version`). `CursorStore` interface
   signatures unchanged.
 - **`command_author_store.go`** — add the CommitRequest plan's store with
   `commandAuthorKeySuffix = ":author:v1:command:"`, not `:command-author:v1:`.
 - **`author_resolver.go` / `watch`** — drop the `conflict` result label; otherwise no logic change.
-- **Tests** — key-shape assertions in `attribution_index_test.go`; burst → both-precise; delete → `/last`;
+- **Tests** — key-shape assertions in `attribution_index_test.go`; burst → both-precise; delete → `:last`;
   no-uid fact → `rv:` written and joined (no dead `rv:` for a UID-bearing fact); deletecollection
   join-shape; `watch:v1` cursor shape; command-author key shape and miss-is-immediate behavior.
 
@@ -366,12 +366,12 @@ author facts and cursor together only if a resync is already expected; otherwise
 |---|---|---|
 | `author` top-level namespace | Names what Redis stores; avoids `attr` ambiguity | Slightly longer keys |
 | `audit` and `command` subfamilies | Keeps provenance and invariants legible | Callers must choose the right builder |
-| Object-grouped keys (`object:<uid>/…`) | Self-describing, `SCAN`-per-object, ns/name off the key | Same ~3 keys/write as v2 (no key-count reduction — readability over count) |
-| `/<rv>` immutable + `/last` LWW | Retires conflict-marking; burst stays precise; `/last` only for known RV-mismatch events | Requires event-kind-aware resolver branching (§4.2) |
+| Object-grouped keys (`object:<uid>:…`) | Self-describing, `SCAN`-per-object, ns/name off the key | Same ~3 keys/write as v2 (no key-count reduction — readability over count) |
+| `:<rv>` immutable + `:last` LWW | Retires conflict-marking; burst stays precise; `:last` only for known RV-mismatch events | Requires event-kind-aware resolver branching (§4.2) |
 | `rv:<rv>` type-scoped, shipped | Closes the no-UID-fact gap precisely; one extra key only when needed | Needs the `object:`/`rv:` discriminator (already in the scheme) |
 | Reason codes simplified | `conflict` and `expired` disappear | Dashboards drop both series |
 | deletecollection un-specialed at key layer | Less special-casing | None (reason via `fact.verb`) |
-| Watch: `watch:v1:target:.../last-rv` | Names the store and leaf directly; version redundancy gone | One cold resync per shard on the bump (§10) |
+| Watch: `watch:v1:target:...:last-rv` | Names the store and leaf directly; version redundancy gone | One cold resync per shard on the bump (§10) |
 | Command author under `author:v1:command` | CommitRequest plan fits the same naming system | None if changed before code lands |
 | Version bump | No migration code | Brief committer/replay window during rollout (§10) |
 
@@ -380,37 +380,37 @@ author facts and cursor together only if a resync is already expected; otherwise
 Adopt `author` as the top-level domain. Use `audit` below it for mirrored-resource facts:
 
 ```
-gitops-reverser:author:v1:audit:<group/resource>:object:<uid>/<rv>    # exact, immutable
-gitops-reverser:author:v1:audit:<group/resource>:object:<uid>/last    # latest, LWW
+gitops-reverser:author:v1:audit:<group/resource>:object:<uid>:<rv>    # exact, immutable
+gitops-reverser:author:v1:audit:<group/resource>:object:<uid>:last    # latest, LWW
 gitops-reverser:author:v1:audit:<group/resource>:rv:<rv>              # rv-only, type-scoped
 gitops-reverser:author:v1:command:<uid>                               # command submitter
-gitops-reverser:watch:v1:target:<uid>:<group/resource>:<scope>/last-rv
+gitops-reverser:watch:v1:target:<uid>:<group/resource>:<scope>:last-rv
 ```
 
 For audit facts: value-carried name/namespace, **conflict-marking retired** in favor of immutable
-`/<rv>` + LWW `/last`, no tombstones, a 15 minute audit fact TTL, and an event-kind-aware resolver:
-exact-capable events do not fall through to `/last` (§4.2). Reason codes are preserved minus `conflict`
+`:<rv>` + LWW `:last`, no tombstones, a 15 minute audit fact TTL, and an event-kind-aware resolver:
+exact-capable events do not fall through to `:last` (§4.2). Reason codes are preserved minus `conflict`
 and `expired` (§6). All three audit keys ship together; the `rv:` escape hatch is written only for a
 no-UID fact (§5). For command authorship: keep the separate `command` subfamily from the first
 implementation, with no audit fields and no wait (§9). Move watch cursors to the simpler
-`watch:v1:.../last-rv` shape, keeping the namespace scope because the live watch shard includes it (§8).
+`watch:v1:...:last-rv` shape, keeping the namespace scope because the live watch shard includes it (§8).
 Bump author facts and watch cursors in the same release only if a resync is already expected.
 
 ### Definition of done (when implemented)
 
-- Audit author keys are under `:author:v1:audit:` as `…:object:<uid>/<rv>`,
-  `…:object:<uid>/last`, and `…:rv:<rv>`, with no `:seen` or `:miss` siblings. `AuthorFact` carries
+- Audit author keys are under `:author:v1:audit:` as `…:object:<uid>:<rv>`,
+  `…:object:<uid>:last`, and `…:rv:<rv>`, with no `:seen` or `:miss` siblings. `AuthorFact` carries
   group-resource/namespace/name/uid and **no `Conflict`**.
 - Command author keys are under `:author:v1:command:<uid>`; records carry only command author fields and
   a cleanup TTL.
 - Audit fact TTL is 15 minutes.
 - Conflict-marking removed; resolver is event-kind-aware: exact-capable events try exact only; known
-  RV-mismatch events may use `/last`; `rv:` keys are type-scoped and written only for no-UID facts (§5).
+  RV-mismatch events may use `:last`; `rv:` keys are type-scoped and written only for no-UID facts (§5).
 - Reason set: `exact_user` / `exact_serviceaccount` / `weak` / `exact_deletecollection_item` / `absent`;
   `conflict` and `expired` dropped; dashboards updated.
-- Watch-cursor key is `:watch:v1:target:<uid>:<group/resource>:<scope>/last-rv`; version dropped,
+- Watch-cursor key is `:watch:v1:target:<uid>:<group/resource>:<scope>:last-rv`; version dropped,
   namespace scope retained.
-- Unit tests assert the v3 key shapes and the burst→both-precise, delete→`/last`, and no-UID→`rv:`
-  behaviours; the deletecollection join-shape test passes against `/last`.
+- Unit tests assert the v3 key shapes and the burst→both-precise, delete→`:last`, and no-UID→`rv:`
+  behaviours; the deletecollection join-shape test passes against `:last`.
 - Full validation per AGENTS.md once code lands: `task fmt → generate → manifests → vet → lint → test →
   test-e2e` (e2e sequential).

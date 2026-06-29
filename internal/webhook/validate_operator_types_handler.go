@@ -32,11 +32,14 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
 
-// InternalCommandsPath is the validating admission endpoint that captures the
-// submitter of our own command kinds (a CommitRequest today). It is distinct from
-// the always-allow observer on ValidateAdmissionWebhookPath: this one has a single
-// side effect (a Redis upsert) and always allows.
-const InternalCommandsPath = "/internal-commands"
+// ValidateOperatorTypesPath is the validating admission endpoint scoped to our own
+// operator CRDs. Today its one job is command authorship — capturing the submitter of a
+// command kind (a CommitRequest) into Redis and always allowing — but it is the intended
+// home for per-our-type admission generally (e.g. config validation of WatchRule /
+// GitProvider / GitTarget later), which would be added as additional webhook-config
+// entries with their own rules and failurePolicy. Distinct from the broad observe-all
+// ValidateAllPath.
+const ValidateOperatorTypesPath = "/validate-operator-types"
 
 const (
 	// displayNameExtraKey is the user.extra key carrying the OIDC "name" claim, when
@@ -68,12 +71,15 @@ type CommandAuthorRecorder interface {
 	RecordCommandAuthor(ctx context.Context, uid types.UID, author queue.CommandAuthor) error
 }
 
-// InternalCommandsHandler captures the authenticated submitter of one of our command
-// objects into the CommandAuthorStore and always allows. It is pure observation with a
-// single side effect (a Redis upsert); it never rejects, so a user's command never
-// depends on it succeeding — a missed capture degrades to a committer-authored commit
-// (see docs/design/commitrequest-admission-authorship.md §2, §4).
-type InternalCommandsHandler struct {
+// ValidateOperatorTypesHandler is the admission handler for our operator CRDs. Today it
+// does one thing: for a command kind (a CommitRequest) it captures the authenticated
+// submitter into the CommandAuthorStore and always allows — pure observation with a
+// single side effect (a Redis upsert), never a rejection, so a user's command never
+// depends on it succeeding (a missed capture degrades to a committer-authored commit;
+// see docs/design/commitrequest-admission-authorship.md §2, §4). It dispatches on the
+// resource (isCommandKind today), so a future config-validation branch for non-command
+// kinds slots in alongside without disturbing this one.
+type ValidateOperatorTypesHandler struct {
 	Store CommandAuthorRecorder
 }
 
@@ -81,8 +87,8 @@ type InternalCommandsHandler struct {
 // persists (the authorship invariant, §2), then allows. Every early return still
 // allows: a non-command kind, a dry-run, a missing uid, or an unauthenticated request
 // simply records nothing and falls back to the committer downstream.
-func (h *InternalCommandsHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := logf.FromContext(ctx).WithName("internal-commands")
+func (h *ValidateOperatorTypesHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
+	log := logf.FromContext(ctx).WithName("validate-operator-types")
 
 	gr := metav1.GroupResource{Group: req.Resource.Group, Resource: req.Resource.Resource}
 	if !isCommandKind(gr) {

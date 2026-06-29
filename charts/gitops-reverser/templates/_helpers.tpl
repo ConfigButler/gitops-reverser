@@ -94,7 +94,7 @@ Default Secret name for the kube-apiserver audit client certificate.
 {{- end }}
 
 {{/*
-Default Secret name for the validating admission (internal-commands) serving certificate.
+Default Secret name for the validating admission (validate-operator-types) serving certificate.
 */}}
 {{- define "gitops-reverser.admissionServerSecretName" -}}
 {{- .Values.servers.admission.tls.secretNameOverride | default (printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .)) -}}

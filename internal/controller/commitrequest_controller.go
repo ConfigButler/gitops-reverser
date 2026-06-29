@@ -53,7 +53,7 @@ type CommitRequestFinalizer interface {
 }
 
 // CommandAuthorLookup resolves the author of a CommitRequest from the submitter
-// captured at admission by the internal-commands webhook, keyed by the persisted
+// captured at admission by the validate-operator-types webhook, keyed by the persisted
 // object's UID. *queue.CommandAuthorStore satisfies it without adaptation. The lookup
 // is present-or-never (docs/design/commitrequest-admission-authorship.md §2): a miss is
 // immediate and final — the webhook is not configured (or a best-effort write missed) —
@@ -114,7 +114,7 @@ type CommitRequestReconciler struct {
 
 	// Finalizer attaches the request to the author-bound open window and reports
 	// its outcome; AuthorLookup resolves the submitter captured at admission. When
-	// AuthorLookup is nil (the internal-commands webhook is disabled), requests
+	// AuthorLookup is nil (the validate-operator-types webhook is disabled), requests
 	// finalize as the configured committer — immediately, with AuthorAttributed=False.
 	Finalizer    CommitRequestFinalizer
 	AuthorLookup CommandAuthorLookup
@@ -198,7 +198,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 // attributeAuthor settles the commit author with a single synchronous lookup of the
 // submitter captured at admission (present-or-never, §2). It never waits: a nil
-// AuthorLookup (the internal-commands webhook is disabled) or a miss both resolve to
+// AuthorLookup (the validate-operator-types webhook is disabled) or a miss both resolve to
 // the configured committer immediately. The miss case is final — the record is written
 // before the object is visible, so there is no asynchronous arrival to wait for.
 //
@@ -211,7 +211,7 @@ func (r *CommitRequestReconciler) attributeAuthor(
 ) (queue.CommandAuthor, commitRequestAttribution) {
 	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 	if r.AuthorLookup == nil {
-		log.Info("command-author lookup disabled (internal-commands webhook off); committing as committer",
+		log.Info("command-author lookup disabled (validate-operator-types webhook off); committing as committer",
 			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
 		return queue.CommandAuthor{}, attributionCommitter
 	}

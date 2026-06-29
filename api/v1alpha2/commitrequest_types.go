@@ -72,7 +72,7 @@ type CommitRequestSpec struct {
 //   - AuthorAttributed (domain): binary and settled immediately. True
 //     (AttributedFromAdmission) when the submitter captured at admission named the
 //     commit author; False (CommitterFallback) when no admission record exists — the
-//     internal-commands webhook is not configured — and the commit is authored by the
+//     validate-operator-types webhook is not configured — and the commit is authored by the
 //     configured committer. False is not a failure and does not affect Ready.
 //   - Pushed (domain): True once the commit is in the remote repository.
 type CommitRequestStatus struct {

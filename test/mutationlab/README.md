@@ -52,7 +52,7 @@ design notes.
 ## How it integrates: swap the image, reuse the wiring
 
 The lab serves the **same** webhook URLs as the product —
-`/validate-admission-webhook`, `/audit-webhook`, and the proxy-enrichment
+`/validate-all`, `/audit-webhook`, and the proxy-enrichment
 `/audit-webhook-additional` — on the same ports and TLS cert mounts. So making a
 cluster capture with the lab is just swapping the controller image: no new audit
 policy, webhook config, or certificates. `task lab-e2e` does this on the

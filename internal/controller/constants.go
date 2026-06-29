@@ -59,7 +59,7 @@ const (
 	// ConditionTypeAuthorAttributed indicates whether a CommitRequest's commit author
 	// was named from the submitter captured at admission. It is binary and immediately
 	// settled (no Unknown, no timeout): True (AttributedFromAdmission) when the
-	// internal-commands webhook recorded the submitter, False (CommitterFallback) when
+	// validate-operator-types webhook recorded the submitter, False (CommitterFallback) when
 	// no admission record exists — the webhook is not configured — and the commit is
 	// authored by the configured committer. False is not a failure and does not affect
 	// Ready (docs/design/commitrequest-admission-authorship.md §5).

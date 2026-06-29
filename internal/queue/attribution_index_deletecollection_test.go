@@ -73,7 +73,7 @@ func deleteCollectionEvent(username string, items ...dcItem) auditv1.Event {
 }
 
 // resolveDC looks up a removal event for one collection member at a later deletion RV,
-// proving the join is by UID (the body item carried no RV at all) via the /last pointer.
+// proving the join is by UID (the body item carried no RV at all) via the :last pointer.
 // A collection removal is a known RV-mismatch event, so it is not exact-capable.
 func resolveDC(ctx context.Context, idx *AttributionIndex, _, uid string) AuthorResolution {
 	return idx.LookupAuthorResolution(ctx, coreConfigmapsGVR(), k8stypes.UID(uid), "9999", false)

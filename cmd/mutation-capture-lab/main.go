@@ -23,7 +23,7 @@ limitations under the License.
 // docs/design/mutation-capture-lab-design.md.
 //
 // It deliberately serves the SAME webhook URLs as the product
-// (/validate-admission-webhook, /audit-webhook, /audit-webhook-additional) so a
+// (/validate-all, /audit-webhook, /audit-webhook-additional) so a
 // lab deployment can swap the product image without reconfiguring the cluster's
 // admission/audit wiring. The /audit-webhook-additional endpoint is the
 // integration point the apiservice-audit-proxy posts enriched bodies to; the lab
@@ -75,7 +75,7 @@ type config struct {
 func parseFlags() config {
 	var cfg config
 	flag.StringVar(&cfg.admissionAddr, "admission-addr", ":9443",
-		"Address for the validating admission webhook HTTPS server (/validate-admission-webhook).")
+		"Address for the validating admission webhook HTTPS server (/validate-all).")
 	flag.StringVar(&cfg.admissionCert, "admission-cert-dir", "",
 		"Directory holding tls.crt/tls.key for the admission server. Empty serves plain HTTP (local only).")
 	flag.StringVar(&cfg.auditAddr, "audit-addr", ":8444",
@@ -136,7 +136,7 @@ func buildServers(
 	api *labserver.API,
 ) []server {
 	admissionMux := http.NewServeMux()
-	admissionMux.Handle("/validate-admission-webhook", admission)
+	admissionMux.Handle("/validate-all", admission)
 	// The CRD conversion webhook reuses the admission server's TLS cert and port,
 	// so M3 needs no new certificate — just this extra path (see the M3 design).
 	admissionMux.Handle("/convert", conversion)

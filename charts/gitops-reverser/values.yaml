@@ -95,7 +95,7 @@ servers:
       # Leave empty to use the chart-generated Secret name.
       secretNameOverride: ""
 
-  # Validating admission server hosting the internal-commands webhook, which captures
+  # Validating admission server hosting the validate-operator-types webhook, which captures
   # the submitter of each CommitRequest at admission and names them as the commit author
   # (read back by the controller with no wait). Independent of `attribution` below:
   # attribution governs *mirrored-resource* authorship (from audit), this governs

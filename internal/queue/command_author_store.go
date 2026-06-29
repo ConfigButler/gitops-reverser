@@ -53,7 +53,7 @@ type CommandAuthor struct {
 }
 
 // CommandAuthorStore records and reads command authorship. It shares RedisStore's
-// connection but is wired whenever the internal-commands webhook is enabled —
+// connection but is wired whenever the validate-operator-types webhook is enabled —
 // independent of --author-attribution, which only governs mirrored-resource attribution.
 type CommandAuthorStore struct {
 	client *redis.Client
@@ -74,7 +74,7 @@ func (s *CommandAuthorStore) RecordCommandAuthor(
 }
 
 // LookupCommandAuthor is the controller-side read, keyed by the persisted object's UID.
-// ok=false means no record was captured — the internal-commands webhook is not
+// ok=false means no record was captured — the validate-operator-types webhook is not
 // configured (or a best-effort write missed) — and the controller finalizes as the
 // committer, immediately.
 func (s *CommandAuthorStore) LookupCommandAuthor(

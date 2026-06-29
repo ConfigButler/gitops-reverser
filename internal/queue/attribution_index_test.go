@@ -113,8 +113,8 @@ func TestAttributionIndex_LookupByUIDWhenRVDiffers(t *testing.T) {
 
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("delete", "uid-1", "101", "alice")))
 
-	// Watch DELETE lands at a later RV; the uid-latest /last pointer still resolves the
-	// author (a delete is not exact-capable, so it may consult /last).
+	// Watch DELETE lands at a later RV; the uid-latest :last pointer still resolves the
+	// author (a delete is not exact-capable, so it may consult :last).
 	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "999", false)
 	require.True(t, ok)
 	require.Equal(t, "alice", fact.Author)
@@ -135,15 +135,15 @@ func TestAttributionIndex_ExactCapableDoesNotFallThroughToLast(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	// alice's write seeds both the exact key (uid-1/101) and the /last pointer.
+	// alice's write seeds both the exact key (uid-1:101) and the :last pointer.
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
 
 	// An exact-capable event at a different RV whose exact key is absent must NOT borrow
-	// the /last author — it is absent and ships as committer.
+	// the :last author — it is absent and ships as committer.
 	res := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "202", true)
 	require.Equal(t, AttributionAbsent, res.Result)
 
-	// The same miss for a known RV-mismatch event DOES consult /last.
+	// The same miss for a known RV-mismatch event DOES consult :last.
 	weak := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "202", false)
 	require.Equal(t, AttributionWeak, weak.Result)
 	require.Equal(t, "alice", weak.Fact.Author)
@@ -165,7 +165,7 @@ func TestAttributionIndex_BurstKeepsEachWritePrecise(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "bob", f2.Author)
 
-	// /last is last-writer-wins (bob), consulted only by an RV-mismatch event.
+	// :last is last-writer-wins (bob), consulted only by an RV-mismatch event.
 	fl, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "999", false)
 	require.True(t, ok)
 	require.Equal(t, "bob", fl.Author)
@@ -259,7 +259,7 @@ func TestAttributionIndex_FactLifecycleMetrics(t *testing.T) {
 		map[string]string{"op": "matched"})
 	require.True(t, ok)
 	require.Equal(t, int64(1), matched)
-	// One exact fact writes two keys: the immutable exact key and the /last pointer.
+	// One exact fact writes two keys: the immutable exact key and the :last pointer.
 	size, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_index_size", nil)
 	require.True(t, ok)
 	require.Equal(t, int64(2), size)
@@ -386,15 +386,15 @@ func TestGroupResourceKey(t *testing.T) {
 func TestAttributionIndex_FactKeyReadableFormat(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 
-	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:object:uid-1/101",
+	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:object:uid-1:101",
 		idx.factKeyExact("apps/deployments", "uid-1", "101"))
-	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:object:uid-1/last",
+	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:object:uid-1:last",
 		idx.factKeyLast("apps/deployments", "uid-1"))
 	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:rv:101",
 		idx.factKeyRV("apps/deployments", "101"))
 
 	// The core group drops the group segment.
-	require.Equal(t, "gitops-reverser:author:v1:audit:configmaps:object:uid-2/last",
+	require.Equal(t, "gitops-reverser:author:v1:audit:configmaps:object:uid-2:last",
 		idx.factKeyLast("configmaps", "uid-2"))
 }
 
@@ -402,12 +402,12 @@ func TestRedisStore_WatchCursorKeyReadableFormat(t *testing.T) {
 	store := newTestRedisStore(t)
 	gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 
-	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:apps/deployments:namespace/team-a/last-rv",
+	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:apps/deployments:namespace:team-a:last-rv",
 		store.watchCursorKey("gtuid-3", gvr, "team-a"))
 
 	// A cluster-wide watch (empty namespace) uses the cluster scope segment, and the GVR
 	// version is dropped.
-	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster/last-rv",
+	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
 		store.watchCursorKey("gtuid-3", coreConfigmapsGVR(), ""))
 }
 

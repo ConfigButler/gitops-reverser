@@ -260,7 +260,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)
 	}
-	// Command authorship is captured at admission by the internal-commands webhook and
+	// Command authorship is captured at admission by the validate-operator-types webhook and
 	// lives in its own Redis corner (author:v1:command), independent of
 	// --author-attribution (which governs mirrored-resource attribution). It is wired
 	// whenever the admission server is on; the controller reads the captured submitter
@@ -275,7 +275,7 @@ func main() {
 	if cfg.admissionWebhookEnabled {
 		commandAuthorStore = redisStore.CommandAuthorStore()
 		commandAuthorLookup = commandAuthorStore
-		setupLog.Info("internal-commands webhook enabled: command submitters are captured at admission " +
+		setupLog.Info("validate-operator-types webhook enabled: command submitters are captured at admission " +
 			"and named as the commit author")
 	}
 	if err := (&controller.CommitRequestReconciler{
@@ -867,16 +867,16 @@ func newManager(
 }
 
 // setupAdmissionWebhooks registers both handlers on the one admission server: the
-// always-allow observer (a future-policy extension point) and the internal-commands
+// always-allow observer (a future-policy extension point) and the validate-operator-types
 // handler that captures the submitter of our own command kinds into commandAuthorStore.
 func setupAdmissionWebhooks(mgr ctrl.Manager, commandAuthorStore *queue.CommandAuthorStore) {
 	mgr.GetWebhookServer().Register(
-		webhookhandler.ValidateAdmissionWebhookPath,
+		webhookhandler.ValidateAllPath,
 		&ctrladmission.Webhook{Handler: webhookhandler.AdmissionAllowHandler{}},
 	)
 	mgr.GetWebhookServer().Register(
-		webhookhandler.InternalCommandsPath,
-		&ctrladmission.Webhook{Handler: &webhookhandler.InternalCommandsHandler{Store: commandAuthorStore}},
+		webhookhandler.ValidateOperatorTypesPath,
+		&ctrladmission.Webhook{Handler: &webhookhandler.ValidateOperatorTypesHandler{Store: commandAuthorStore}},
 	)
 }
 

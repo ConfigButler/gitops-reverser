@@ -231,7 +231,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 
 	// generateName authorship is now captured at admission, not from the audit
 	// response body: the API server assigns metadata.name and metadata.uid before
-	// validating admission runs, so the internal-commands webhook records the
+	// validating admission runs, so the validate-operator-types webhook records the
 	// submitter keyed by uid with no response-body name recovery (the old audit
 	// generateName headache is gone, see
 	// docs/design/commitrequest-admission-authorship.md §8). This spec proves a
@@ -239,11 +239,6 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	// committer-only mode, where the edit's window is committer-authored and the
 	// named admission author would not match it end to end.
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
-		if committerOnlyModeEnabled() {
-			Skip("committer-only mode: the edit's window is committer-authored, so a named " +
-				"admission author has no matching window to finalize")
-		}
-
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
 		deployName := fmt.Sprintf("commit-request-gen-deploy-%d", seed)

@@ -61,7 +61,7 @@ func (f *fakeFinalizer) ServiceCommitRequest(
 }
 
 // fakeAuthorLookup is the command-author source stub: found=false models a miss
-// (the internal-commands webhook is not configured, or a best-effort write missed),
+// (the validate-operator-types webhook is not configured, or a best-effort write missed),
 // which the controller resolves to the committer immediately — present-or-never.
 type fakeAuthorLookup struct {
 	author queue.CommandAuthor
@@ -274,7 +274,7 @@ func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionFalse, "")
 }
 
-// A lookup miss (the internal-commands webhook recorded no author for this object)
+// A lookup miss (the validate-operator-types webhook recorded no author for this object)
 // resolves to the configured committer immediately — present-or-never, no wait. Even a
 // freshly created CommitRequest attaches at once with a blank author and records
 // AuthorAttributed=False (CommitterFallback).

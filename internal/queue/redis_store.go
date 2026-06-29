@@ -91,7 +91,7 @@ func (s *RedisStore) AttributionIndex(factTTL time.Duration) *AttributionIndex {
 }
 
 // CommandAuthorStore builds the command-authorship store on this connection. Wire it
-// when the internal-commands webhook is enabled; it does not depend on attribution. The
+// when the validate-operator-types webhook is enabled; it does not depend on attribution. The
 // record lives in the same top-level author domain as audit facts but in the separate
 // command subfamily, with its own fixed cleanup TTL.
 func (s *RedisStore) CommandAuthorStore() *CommandAuthorStore {
@@ -139,8 +139,8 @@ func (s *RedisStore) RecordWatchCursor(
 }
 
 // watchCursorKey builds a readable cursor key naming the store and leaf directly, e.g.
-// "gitops-reverser:watch:v1:target:<uid>:apps/deployments:namespace/team-a/last-rv" or
-// "…:configmaps:cluster/last-rv". The GitTarget UID is globally unique, so its
+// "gitops-reverser:watch:v1:target:<uid>:apps/deployments:namespace:team-a:last-rv" or
+// "…:configmaps:cluster:last-rv". The GitTarget UID is globally unique, so its
 // namespace/name would be redundant. The GVR version is dropped: a resourceVersion is a
 // per-resource counter shared across served versions, so it is redundant in a resume
 // cursor. The namespace scope stays, because the live data plane opens one raw watch per
@@ -152,8 +152,8 @@ func (s *RedisStore) watchCursorKey(
 ) string {
 	scope := "cluster"
 	if namespace != "" {
-		scope = "namespace/" + escapeKeyField(namespace)
+		scope = "namespace:" + escapeKeyField(namespace)
 	}
 	return keyPrefix + watchCursorKeySuffix + "target:" + escapeKeyField(gitTargetUID) + ":" +
-		groupResourceKey(gvr.Group, gvr.Resource) + ":" + scope + "/last-rv"
+		groupResourceKey(gvr.Group, gvr.Resource) + ":" + scope + ":last-rv"
 }

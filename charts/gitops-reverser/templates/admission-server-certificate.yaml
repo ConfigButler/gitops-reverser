@@ -1,6 +1,6 @@
 {{- if and .Values.servers.admission.enabled .Values.servers.admission.tls.certManager .Values.certManager.enabled }}
 ---
-# Serving certificate for the validating admission (internal-commands) webhook. It is
+# Serving certificate for the validating admission (validate-operator-types) webhook. It is
 # fronted by the controller Service, so its dnsNames are that Service's in-cluster names
 # (the same the apiserver dials). The webhook config's cert-manager.io/inject-ca-from
 # annotation injects this issuer's CA bundle into the webhook clientConfig automatically.

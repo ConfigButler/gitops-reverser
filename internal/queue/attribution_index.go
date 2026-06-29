@@ -52,7 +52,7 @@ const (
 	// top-level author domain, e.g. "gitops-reverser:author:v1:audit:<group/resource>:...".
 	attributionKeySuffix = ":author:v1:audit:"
 	// factObjectInfix groups every fact for one object under one prefix, so a SCAN of
-	// "<group/resource>:object:<uid>/*" shows the whole history-in-flight for that object.
+	// "<group/resource>:object:<uid>:*" shows the whole history-in-flight for that object.
 	factObjectInfix = ":object:"
 	// factRVInfix is the type-scoped rv-only escape hatch, a sibling of object: for a
 	// fact that has an RV but no UID (§5 of redis-key-schema-v3.md).
@@ -73,12 +73,12 @@ const (
 	AttributionExactUser AttributionResult = "exact_user"
 	// AttributionExactServiceAccount is an exact UID+resourceVersion match for a named service account.
 	AttributionExactServiceAccount AttributionResult = "exact_serviceaccount"
-	// AttributionWeak is a non-exact match: the uid-latest /last pointer or the rv-only
+	// AttributionWeak is a non-exact match: the uid-latest :last pointer or the rv-only
 	// escape hatch, used by known RV-mismatch events and no-UID facts respectively.
 	AttributionWeak AttributionResult = "weak"
 	// AttributionExactDeleteCollectionItem is a match to a fact expanded from a
 	// deletecollection response body — a precise per-object credit for one member of a
-	// collection delete, joined by UID via /last (the body item's RV is the pre-delete
+	// collection delete, joined by UID via :last (the body item's RV is the pre-delete
 	// RV and never matches the removal event's RV). The reason is driven by the value's
 	// verb, not by which key matched.
 	AttributionExactDeleteCollectionItem AttributionResult = "exact_deletecollection_item"
@@ -124,7 +124,7 @@ type AttributionIndex struct {
 }
 
 // RecordFact stores the attribution fact for one accepted, mutating audit event. A
-// UID-bearing fact writes the immutable exact key (uid+rv) and overwrites the /last
+// UID-bearing fact writes the immutable exact key (uid+rv) and overwrites the :last
 // pointer; a fact that has an RV but no UID writes the type-scoped rv-only key instead.
 // It is a no-op for events without an objectRef, a resolvable name, or a user — those
 // can never name an author. The caller (the audit handler) has already rejected reads,
@@ -194,7 +194,7 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, event auditv1.Event) 
 }
 
 // writeFactKeys persists a single-object fact under the keys it can compute: the
-// immutable exact key (uid+rv) plus the last-writer-wins /last pointer when a UID is
+// immutable exact key (uid+rv) plus the last-writer-wins :last pointer when a UID is
 // known, or the type-scoped rv-only escape hatch when the fact has an RV but no UID.
 // The exact key is written once per (uid, rv) and never contended, so there is no
 // conflict marking. It reports whether any key was written.
@@ -212,7 +212,7 @@ func (a *AttributionIndex) writeFactKeys(ctx context.Context, gr, uid, rv string
 		return true, nil
 	case rv != "":
 		// The §5 escape hatch: a UID-bearing fact's rv-only key would be dead (the watch
-		// side always carries a UID and resolves via object:<uid>/… first), so it is
+		// side always carries a UID and resolves via object:<uid>:… first), so it is
 		// written only when there is no UID.
 		if err := a.setFact(ctx, a.factKeyRV(gr, rv), raw); err != nil {
 			return false, fmt.Errorf("store rv-only attribution fact: %w", err)
@@ -224,12 +224,12 @@ func (a *AttributionIndex) writeFactKeys(ctx context.Context, gr, uid, rv string
 }
 
 // RecordDeleteCollectionFacts expands a deletecollection response body into one
-// uid-latest (/last) attribution fact per listed object, joined by UID against the
+// uid-latest (:last) attribution fact per listed object, joined by UID against the
 // per-object removal watch event. It is a no-op for any other verb, or when the body is
 // absent, hollow, or unparseable — an aggregated / metadata-only deletecollection then
 // degrades to a committer-authored removal.
 //
-// It writes ONLY the /last key: the body item's resourceVersion is the pre-delete RV,
+// It writes ONLY the :last key: the body item's resourceVersion is the pre-delete RV,
 // which no watch removal event ever presents, so the exact and rv-only keys would be
 // dead. Finalizer-pending items are NOT skipped — under the deletion-as-intent rule a
 // deletionTimestamp already removes the file, so the actor who ran the collection delete
@@ -262,7 +262,7 @@ func (a *AttributionIndex) RecordDeleteCollectionFacts(ctx context.Context, even
 	return a.storeDeleteCollectionFacts(ctx, event.ObjectRef.APIGroup, event.ObjectRef.Resource, items, base)
 }
 
-// storeDeleteCollectionFacts writes one /last fact per joinable item, carrying the
+// storeDeleteCollectionFacts writes one :last fact per joinable item, carrying the
 // per-item object identity in the value, and records the expander metrics when at least
 // one item was written.
 func (a *AttributionIndex) storeDeleteCollectionFacts(
@@ -355,11 +355,11 @@ func (a *AttributionIndex) LookupAuthor(
 // It is event-kind-aware:
 //
 //   - An exact-capable event (ADDED / MODIFIED) tries only the immutable exact key
-//     object:<uid>/<rv> and the rv-only escape hatch; it never falls through to the
-//     last-writer-wins /last pointer, because that pointer may name a different, older
+//     object:<uid>:<rv> and the rv-only escape hatch; it never falls through to the
+//     last-writer-wins :last pointer, because that pointer may name a different, older
 //     author than the create/update this event represents.
 //   - A known RV-mismatch event (DELETED, deletecollection-expanded removal) additionally
-//     consults object:<uid>/last, whose RV deliberately never matches.
+//     consults object:<uid>:last, whose RV deliberately never matches.
 //
 // A miss returns AttributionAbsent; there is no tombstone and so no expired outcome.
 func (a *AttributionIndex) LookupAuthorResolution(
@@ -389,7 +389,7 @@ func (a *AttributionIndex) LookupAuthorResolution(
 }
 
 // matchFactKey reads one candidate key and turns a present, author-bearing fact into a
-// resolution. weak marks a non-exact match (the /last or rv-only key).
+// resolution. weak marks a non-exact match (the :last or rv-only key).
 func (a *AttributionIndex) matchFactKey(ctx context.Context, key string, weak bool) (AuthorResolution, bool) {
 	raw, err := a.client.Get(ctx, key).Bytes()
 	if err != nil {
@@ -426,15 +426,15 @@ func (a *AttributionIndex) factKeyBase(gr string) string {
 }
 
 // factKeyExact is the immutable per-write fact key, e.g.
-// "gitops-reverser:author:v1:audit:apps/deployments:object:<uid>/101".
+// "gitops-reverser:author:v1:audit:apps/deployments:object:<uid>:101".
 func (a *AttributionIndex) factKeyExact(gr, uid, rv string) string {
-	return a.factKeyBase(gr) + factObjectInfix + escapeKeyField(uid) + "/" + escapeKeyField(rv)
+	return a.factKeyBase(gr) + factObjectInfix + escapeKeyField(uid) + ":" + escapeKeyField(rv)
 }
 
 // factKeyLast is the latest-writer-wins pointer for an object, e.g.
-// "gitops-reverser:author:v1:audit:apps/deployments:object:<uid>/last".
+// "gitops-reverser:author:v1:audit:apps/deployments:object:<uid>:last".
 func (a *AttributionIndex) factKeyLast(gr, uid string) string {
-	return a.factKeyBase(gr) + factObjectInfix + escapeKeyField(uid) + "/" + factLastLeaf
+	return a.factKeyBase(gr) + factObjectInfix + escapeKeyField(uid) + ":" + factLastLeaf
 }
 
 // factKeyRV is the type-scoped rv-only escape hatch, e.g.

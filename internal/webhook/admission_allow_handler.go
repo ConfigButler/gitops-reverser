@@ -25,10 +25,12 @@ import (
 )
 
 const (
-	// ValidateAdmissionWebhookPath is the validating admission webhook endpoint. It
-	// currently allows every request and exists as the stable extension point for
-	// future policy checks.
-	ValidateAdmissionWebhookPath = "/validate-admission-webhook"
+	// ValidateAllPath is the broad observe-all validating admission endpoint. It
+	// matches every resource and always allows — a test-only capture/observation
+	// surface today (the e2e SUT wires it; the Helm chart does not), kept as the
+	// stable extension point for a future cluster-wide policy. Per-our-type handling
+	// (authorship, config validation) lives on ValidateOperatorTypesPath instead.
+	ValidateAllPath = "/validate-all"
 )
 
 // AdmissionAllowHandler is a validating admission handler that always allows requests.

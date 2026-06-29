@@ -16,7 +16,7 @@ related:
 > **Thesis.** A `CommitRequest` is a **command** ("save now, as me"), not a piece of
 > mirrored state. Its author should be captured where the command is issued — a
 > **validating admission webhook** dedicated to our own command kinds (the
-> *internal-commands* webhook) — into its **own Redis corner**, and read back by the
+> *validate-operator-types* webhook) — into its **own Redis corner**, and read back by the
 > controller with **no wait**. This is the opposite of how we attribute mirrored
 > resources (audit facts joined to watch events), and deliberately so: the two have
 > different provenance and must not share a store. This design **replaces** the
@@ -92,7 +92,7 @@ This falls out of admission ordering:
 
 1. A client `CREATE`s a `CommitRequest`.
 2. The apiserver resolves `generateName → name`, assigns `metadata.uid`, runs
-   mutating admission, then runs **validating** admission — our internal-commands handler.
+   mutating admission, then runs **validating** admission — our validate-operator-types handler.
 3. Our handler **synchronously writes** `{uid → author}` to Redis and returns
    `Allowed`. The write completes *before* `Handle` returns.
 4. *Only then* does the apiserver persist the object to etcd and return to the client.
@@ -100,7 +100,7 @@ This falls out of admission ordering:
 
 Step 3 strictly precedes steps 4–5. So when the controller first sees the object, the
 record is **present-or-never**: present if the webhook ran, never if it did not (the
-internal-commands webhook is not configured, or a Redis write failed under
+validate-operator-types webhook is not configured, or a Redis write failed under
 `failurePolicy: Ignore`). **Waiting cannot help** — there is no asynchronous arrival
 to wait for, unlike an audit event that trickles in seconds after persist. This is the
 precise reason the 60 s `commitRequestAttributionTimeout` wait
@@ -160,7 +160,7 @@ type CommandAuthor struct {
 }
 
 // CommandAuthorStore records and reads command authorship. It shares RedisStore's
-// connection but is wired whenever the internal-commands webhook is enabled —
+// connection but is wired whenever the validate-operator-types webhook is enabled —
 // independent of --author-attribution, which only governs mirrored-resource attribution.
 type CommandAuthorStore struct {
 	client *redis.Client
@@ -181,7 +181,7 @@ func (s *CommandAuthorStore) RecordCommandAuthor(
 }
 
 // LookupCommandAuthor is the controller-side read, keyed by the persisted object's UID.
-// ok=false means no record was captured — the internal-commands webhook is not
+// ok=false means no record was captured — the validate-operator-types webhook is not
 // configured (or a best-effort write missed) — and the controller finalizes as the
 // committer, immediately, with AuthorAttributed=False (§5).
 func (s *CommandAuthorStore) LookupCommandAuthor(
@@ -209,7 +209,7 @@ And the builder on `RedisStore`, alongside `AttributionIndex(...)`:
 
 ```go
 // CommandAuthorStore builds the command-authorship store on this connection. Wire it
-// when the internal-commands webhook is enabled; it does not depend on attribution.
+// when the validate-operator-types webhook is enabled; it does not depend on attribution.
 func (s *RedisStore) CommandAuthorStore() *CommandAuthorStore {
 	return &CommandAuthorStore{client: s.client, ttl: commandAuthorRecordTTL}
 }
@@ -222,9 +222,9 @@ func (s *RedisStore) CommandAuthorStore() *CommandAuthorStore {
 
 ---
 
-## 4. The internal-commands admission handler
+## 4. The validate-operator-types admission handler
 
-One handler on its own path, `/internal-commands`, that recognizes **our own command
+One handler on its own path, `/validate-operator-types`, that recognizes **our own command
 kinds** and captures the submitter of each. It is not CommitRequest-specific by
 construction — it dispatches on a small registry of command resources, so a future
 command CRD is one table entry plus one webhook rule, not a new handler. It replaces
@@ -236,7 +236,7 @@ future policy extension point and stays as-is.
 ```go
 // internal/webhook/internal_commands_handler.go
 
-const InternalCommandsPath = "/internal-commands"
+const ValidateOperatorTypesPath = "/validate-operator-types"
 
 // commandKinds is the registry of our own command CRDs whose submitter we capture at
 // admission. Adding a command kind is one entry here plus one rule in the webhook
@@ -246,15 +246,15 @@ var commandKinds = map[metav1.GroupResource]struct{}{
 	// future: {Group: "configbutler.ai", Resource: "<next-command>"}: {},
 }
 
-// InternalCommandsHandler captures the authenticated submitter of one of our command
+// ValidateOperatorTypesHandler captures the authenticated submitter of one of our command
 // objects into the CommandAuthorStore and always allows. It is pure observation with a
 // single side effect (a Redis upsert); it never rejects.
-type InternalCommandsHandler struct {
+type ValidateOperatorTypesHandler struct {
 	Store   *queue.CommandAuthorStore
 	Decoder admission.Decoder
 }
 
-func (h *InternalCommandsHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
+func (h *ValidateOperatorTypesHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	gr := metav1.GroupResource{Group: req.Resource.Group, Resource: req.Resource.Resource}
 	if _, ok := commandKinds[gr]; !ok {
 		return admission.Allowed("not a command kind") // belt-and-suspenders; rules already scope us
@@ -299,9 +299,9 @@ in the Helm chart** (this is product behavior now, not the e2e-only `*` observer
 
 ```yaml
 webhooks:
-  - name: internal-commands.configbutler.ai
+  - name: validate-operator-types.configbutler.ai
     clientConfig:
-      service: { name: gitops-reverser-webhook, namespace: <ns>, path: /internal-commands, port: 9443 }
+      service: { name: gitops-reverser-webhook, namespace: <ns>, path: /validate-operator-types, port: 9443 }
     rules:
       - operations:  [CREATE]
         apiGroups:   [configbutler.ai]
@@ -356,7 +356,7 @@ Concretely, `attributeAuthor` collapses to:
 func (r *CommitRequestReconciler) attributeAuthor(
 	ctx context.Context, cr *configbutleraiv1alpha2.CommitRequest,
 ) (queue.CommandAuthor, commitRequestAttribution) {
-	if r.AuthorLookup == nil { // internal-commands webhook disabled → committer-only
+	if r.AuthorLookup == nil { // validate-operator-types webhook disabled → committer-only
 		return queue.CommandAuthor{}, attributionCommitter
 	}
 	if a, ok := r.AuthorLookup.LookupCommandAuthor(ctx, cr.UID); ok {
@@ -380,7 +380,7 @@ clean **binary, immediately-settled** meaning — no `Unknown`, no timeout state
 | `AuthorAttributed` | Reason | Meaning |
 |---|---|---|
 | `True` | `AttributedFromAdmission` | The submitter was captured at admission and named as the commit author. |
-| `False` | `CommitterFallback` | No admission author record — the internal-commands webhook is not configured (or did not record one) — so the commit is authored by the configured committer. |
+| `False` | `CommitterFallback` | No admission author record — the validate-operator-types webhook is not configured (or did not record one) — so the commit is authored by the configured committer. |
 
 `AuthorAttributed=False` is **not a failure** and does not affect `Ready`: the command
 still commits successfully, just as the committer. The pairing `Ready=True` +
@@ -404,7 +404,7 @@ alpha, so the status-contract change is acceptable.)
 
 ## 6. Wiring (`cmd/main.go`)
 
-Authorship capture is gated by the **internal-commands webhook**, not
+Authorship capture is gated by the **validate-operator-types webhook**, not
 `--author-attribution`:
 
 ```go
@@ -414,8 +414,8 @@ var commandAuthorStore *queue.CommandAuthorStore
 if cfg.internalCommandsWebhookEnabled {
 	commandAuthorStore = redisStore.CommandAuthorStore()
 	mgr.GetWebhookServer().Register(
-		webhookhandler.InternalCommandsPath,
-		&ctrladmission.Webhook{Handler: &webhookhandler.InternalCommandsHandler{
+		webhookhandler.ValidateOperatorTypesPath,
+		&ctrladmission.Webhook{Handler: &webhookhandler.ValidateOperatorTypesHandler{
 			Store:   commandAuthorStore,
 			Decoder: admission.NewDecoder(scheme),
 		}},
@@ -439,16 +439,16 @@ admission and finalize still finds the record.
 
 > **Flag naming.** The existing `--admission-webhook` flag and its `admission-webhook-*`
 > cert flags ([cmd/main.go](../../cmd/main.go)) gate the e2e `*` observer today. Decide
-> whether the internal-commands webhook rides the same admission server (one flag, one
+> whether the validate-operator-types webhook rides the same admission server (one flag, one
 > cert, one port — likely yes) or gets its own gate. Recommended: **one admission
 > server**, both handlers registered on it, gated by the existing `--admission-webhook`;
-> the internal-commands handler is always registered when that server is on.
+> the validate-operator-types handler is always registered when that server is on.
 
 ---
 
 ## 7. TLS — same story as the other certs
 
-The internal-commands webhook needs a serving cert exactly like the metrics endpoint
+The validate-operator-types webhook needs a serving cert exactly like the metrics endpoint
 and the audit webhook. Follow the **established pattern**: full configuration for those
 who need it, and a cert-manager easy-route shipped in the chart for everyone else.
 
@@ -552,6 +552,19 @@ Per the "don't keep the old audit ingestion around for this" directive:
 The audit webhook itself is **untouched and still required for mirrored-resource
 attribution** — this change is scoped to the command path only.
 
+### Breaking change (alpha)
+
+CommitRequest authorship now comes **only** from the admission webhook
+(`--admission-webhook` / the validate-operator-types webhook). An operator who ran
+**`--author-attribution=true` with `--admission-webhook=false`** and relied on
+audit-sourced CommitRequest attribution will, after this change, get
+`AuthorAttributed=False (CommitterFallback)` — the commit is authored by the configured
+committer. To keep CommitRequest authorship, enable the admission webhook. Mitigation:
+the `config/` SUT and the Helm chart (`servers.admission.enabled`) both default it **on**,
+so a fresh install is unaffected; only an audit-on/admission-off configuration regresses.
+Mirrored-resource attribution (normal edits) is unchanged. v1alpha2 is alpha, so the
+status-contract and behavior change are acceptable.
+
 ---
 
 ## 11. Resolved decisions & remaining open questions
@@ -560,7 +573,7 @@ attribution** — this change is scoped to the command path only.
 
 - **Record cleanup:** TTL, fixed internal constant (`commandAuthorRecordTTL`), **no
   flag** — the timing is deterministic, so there is nothing to tune (§3).
-- **Handler shape:** a dedicated, extensible **internal-commands** handler/path, not a
+- **Handler shape:** a dedicated, extensible **validate-operator-types** handler/path, not a
   CommitRequest-only one — future command kinds are a table entry plus a webhook rule (§4).
 - **Absent record:** fall back to committer and surface it as
   **`AuthorAttributed=False (CommitterFallback)`** (§5, §8).
@@ -569,16 +582,16 @@ attribution** — this change is scoped to the command path only.
 
 **Decided during implementation:**
 
-- **One admission server.** The internal-commands handler rides the existing
+- **One admission server.** The validate-operator-types handler rides the existing
   `--admission-webhook` server: when that flag is on, `cmd/main.go` builds the
   `CommandAuthorStore` and registers both the always-allow observer and the
-  internal-commands handler (`setupAdmissionWebhooks`). The controller's `AuthorLookup`
+  validate-operator-types handler (`setupAdmissionWebhooks`). The controller's `AuthorLookup`
   is that store (nil when the flag is off → committer-only, immediate).
 - **Chart value surface.** A new `internalCommands` block in `values.yaml`
   (`enabled`, `bindAddress`/`port`, `tls.*`, `certManager.enabled`, `timeoutSeconds`),
   defaulting `enabled: true` to mirror `attribution.enabled`. New templates
-  `internal-commands-webhook.yaml` (the `ValidatingWebhookConfiguration` with
-  `cert-manager.io/inject-ca-from`) and `internal-commands-certificates.yaml` (the
+  `validate-operator-types-webhook.yaml` (the `ValidatingWebhookConfiguration` with
+  `cert-manager.io/inject-ca-from`) and `validate-operator-types-certificates.yaml` (the
   serving cert), plus the admission flags/cert mount in `deployment.yaml` and a
   `webhook` port on the controller Service.
 - **Cleanup:** TTL alone (`commandAuthorRecordTTL`, 1h). No terminal-status delete.

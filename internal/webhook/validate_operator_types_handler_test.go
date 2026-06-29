@@ -76,9 +76,9 @@ func commandReview(
 	}
 }
 
-func TestInternalCommandsHandler_RecordsCommandAuthor(t *testing.T) {
+func TestValidateOperatorTypesHandler_RecordsCommandAuthor(t *testing.T) {
 	rec := &fakeCommandAuthorRecorder{}
-	h := &InternalCommandsHandler{Store: rec}
+	h := &ValidateOperatorTypesHandler{Store: rec}
 
 	user := authnv1.UserInfo{
 		Username: "alice",
@@ -100,9 +100,9 @@ func TestInternalCommandsHandler_RecordsCommandAuthor(t *testing.T) {
 	assert.NotEmpty(t, got.RequestedAt, "RequestedAt is stamped for lag/debug")
 }
 
-func TestInternalCommandsHandler_ServiceAccountSubmitter(t *testing.T) {
+func TestValidateOperatorTypesHandler_ServiceAccountSubmitter(t *testing.T) {
 	rec := &fakeCommandAuthorRecorder{}
-	h := &InternalCommandsHandler{Store: rec}
+	h := &ValidateOperatorTypesHandler{Store: rec}
 
 	user := authnv1.UserInfo{Username: "system:serviceaccount:team-a:deployer"}
 	resp := h.Handle(context.Background(),
@@ -113,9 +113,9 @@ func TestInternalCommandsHandler_ServiceAccountSubmitter(t *testing.T) {
 	assert.Equal(t, "system:serviceaccount:team-a:deployer", rec.calls[0].author.Author)
 }
 
-func TestInternalCommandsHandler_NonCommandKindIsNotRecorded(t *testing.T) {
+func TestValidateOperatorTypesHandler_NonCommandKindIsNotRecorded(t *testing.T) {
 	rec := &fakeCommandAuthorRecorder{}
-	h := &InternalCommandsHandler{Store: rec}
+	h := &ValidateOperatorTypesHandler{Store: rec}
 
 	configmaps := metav1.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
 	resp := h.Handle(context.Background(),
@@ -125,9 +125,9 @@ func TestInternalCommandsHandler_NonCommandKindIsNotRecorded(t *testing.T) {
 	assert.Empty(t, rec.calls, "a non-command kind is never recorded")
 }
 
-func TestInternalCommandsHandler_DryRunIsNotRecorded(t *testing.T) {
+func TestValidateOperatorTypesHandler_DryRunIsNotRecorded(t *testing.T) {
 	rec := &fakeCommandAuthorRecorder{}
-	h := &InternalCommandsHandler{Store: rec}
+	h := &ValidateOperatorTypesHandler{Store: rec}
 
 	dryRun := true
 	resp := h.Handle(
@@ -144,9 +144,9 @@ func TestInternalCommandsHandler_DryRunIsNotRecorded(t *testing.T) {
 	assert.Empty(t, rec.calls, "dry-run never persists, so nothing is recorded")
 }
 
-func TestInternalCommandsHandler_MissingUIDIsNotRecorded(t *testing.T) {
+func TestValidateOperatorTypesHandler_MissingUIDIsNotRecorded(t *testing.T) {
 	rec := &fakeCommandAuthorRecorder{}
-	h := &InternalCommandsHandler{Store: rec}
+	h := &ValidateOperatorTypesHandler{Store: rec}
 
 	resp := h.Handle(context.Background(),
 		commandReview(commitRequestResource(), `{"metadata":{}}`, authnv1.UserInfo{Username: "alice"}, nil))
@@ -155,9 +155,9 @@ func TestInternalCommandsHandler_MissingUIDIsNotRecorded(t *testing.T) {
 	assert.Empty(t, rec.calls, "without a uid the record cannot be keyed")
 }
 
-func TestInternalCommandsHandler_NoUserIsNotRecorded(t *testing.T) {
+func TestValidateOperatorTypesHandler_NoUserIsNotRecorded(t *testing.T) {
 	rec := &fakeCommandAuthorRecorder{}
-	h := &InternalCommandsHandler{Store: rec}
+	h := &ValidateOperatorTypesHandler{Store: rec}
 
 	resp := h.Handle(context.Background(),
 		commandReview(commitRequestResource(), `{"metadata":{"uid":"cr-uid"}}`, authnv1.UserInfo{}, nil))
@@ -168,9 +168,9 @@ func TestInternalCommandsHandler_NoUserIsNotRecorded(t *testing.T) {
 
 // A failed Redis write must never reject the command: the handler logs and still
 // allows, and the controller degrades to the committer.
-func TestInternalCommandsHandler_RecordErrorStillAllows(t *testing.T) {
+func TestValidateOperatorTypesHandler_RecordErrorStillAllows(t *testing.T) {
 	rec := &fakeCommandAuthorRecorder{err: errors.New("redis down")}
-	h := &InternalCommandsHandler{Store: rec}
+	h := &ValidateOperatorTypesHandler{Store: rec}
 
 	resp := h.Handle(
 		context.Background(),

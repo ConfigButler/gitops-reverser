@@ -11,14 +11,14 @@ metadata:
 # It carries two webhooks served by the one admission server (port 9443, gated behind
 # --admission-webhook):
 #
-#   1. all-events-test-only.configbutler.ai — the broad '*' observer below. E2E-ONLY:
+#   1. validate-all.configbutler.ai — the broad '*' observer below. E2E-ONLY:
 #      it is intentionally NOT packaged in the Helm chart. The handler always allows
 #      (pure observation, see internal/webhook/admission_allow_handler.go); when a real,
 #      rejecting policy becomes product behavior, the chart must gain matching packaging
 #      and this note must change.
-#   2. internal-commands.configbutler.ai — captures the submitter of our own command
+#   2. validate-operator-types.configbutler.ai — captures the submitter of our own command
 #      kinds (a CommitRequest today) at admission. This one IS product behavior and is
-#      packaged in the chart (charts/.../templates/internal-commands-webhook.yaml); the
+#      packaged in the chart (charts/.../templates/validate-operator-types-webhook.yaml); the
 #      entry here is the e2e SUT's copy. See
 #      docs/design/commitrequest-admission-authorship.md §4.
 #
@@ -31,7 +31,7 @@ webhooks:
     service:
       name: gitops-reverser-service
       namespace: sut
-      path: /validate-admission-webhook
+      path: /validate-all
       port: 9443
   # Ignore (not Fail) is mandatory while this matches '*': the webhook backend is
   # the gitops-reverser pod itself, so a Fail policy on core resources would
@@ -41,7 +41,7 @@ webhooks:
   # namespace.
   failurePolicy: Ignore
   matchPolicy: Equivalent
-  name: all-events-test-only.configbutler.ai
+  name: validate-all.configbutler.ai
   # Broad match for TESTING and as the future-policy extension point: observe
   # writes to all real (top-level) resources, mirroring the intent of the audit
   # capture policy (test/e2e/cluster/audit/policy.yaml). Two honest gaps vs that
@@ -75,7 +75,7 @@ webhooks:
     service:
       name: gitops-reverser-service
       namespace: sut
-      path: /internal-commands
+      path: /validate-operator-types
       port: 9443
   # Ignore, not Fail: a missed author capture must degrade to the committer, never
   # reject a user's CommitRequest. The handler also returns Allowed even when the Redis
@@ -83,7 +83,7 @@ webhooks:
   # Ignore only covers the webhook being entirely unreachable.
   failurePolicy: Ignore
   matchPolicy: Equivalent
-  name: internal-commands.configbutler.ai
+  name: validate-operator-types.configbutler.ai
   # Narrow: only our own command kinds (one rule per command kind). The submitter is
   # captured into the command-author Redis corner and read back by the CommitRequest
   # controller with no wait.

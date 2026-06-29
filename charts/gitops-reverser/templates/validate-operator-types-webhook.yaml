@@ -9,7 +9,7 @@
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-internal-commands
+  name: {{ include "gitops-reverser.fullname" . }}-validate-operator-types
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
   {{- if and .Values.servers.admission.tls.certManager .Values.certManager.enabled }}
@@ -17,14 +17,14 @@ metadata:
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gitops-reverser.admissionServerCertName" . }}
   {{- end }}
 webhooks:
-  - name: internal-commands.configbutler.ai
+  - name: validate-operator-types.configbutler.ai
     admissionReviewVersions:
       - v1
     clientConfig:
       service:
         name: {{ include "gitops-reverser.fullname" . }}
         namespace: {{ .Release.Namespace }}
-        path: /internal-commands
+        path: /validate-operator-types
         port: {{ .Values.servers.admission.port }}
     # Ignore, not Fail: a missed author capture must degrade to the committer, never
     # reject a user's CommitRequest.

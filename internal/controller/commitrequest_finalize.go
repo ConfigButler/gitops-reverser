@@ -67,10 +67,10 @@ type commitRequestAttribution int
 
 const (
 	// attributionFromAdmission means the submitter was captured at admission by the
-	// internal-commands webhook and named as the commit author.
+	// validate-operator-types webhook and named as the commit author.
 	attributionFromAdmission commitRequestAttribution = iota
 	// attributionCommitter means no admission author record exists — the
-	// internal-commands webhook is not configured (or did not record one) — so the
+	// validate-operator-types webhook is not configured (or did not record one) — so the
 	// commit is authored by the configured committer.
 	attributionCommitter
 )
@@ -129,7 +129,7 @@ func setCommitRequestAttributed(cr *configv1alpha2.CommitRequest, attribution co
 	case attributionCommitter:
 		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
 			crReasonCommitterFallback,
-			"no admission author record (the internal-commands webhook is not configured); "+
+			"no admission author record (the validate-operator-types webhook is not configured); "+
 				"committed as the configured committer")
 	}
 }

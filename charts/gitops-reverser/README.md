@@ -191,7 +191,7 @@ nodeSelector:
 | `service.ports.audit` | Service port for audit ingress | `9444` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `servers.healthProbe.bindAddress` | Liveness/readiness probe bind address (`--health-probe-bind-address`) | `:8081` |
-| `servers.admission.enabled` | Run the validating admission server hosting the internal-commands webhook (captures the CommitRequest submitter as the commit author) | `true` |
+| `servers.admission.enabled` | Run the validating admission server hosting the validate-operator-types webhook (captures the CommitRequest submitter as the commit author) | `true` |
 | `servers.admission.port` | Admission webhook container/Service port | `9443` |
 | `servers.admission.timeoutSeconds` | Admission webhook timeout (failurePolicy is Ignore) | `2` |
 | `servers.admission.tls.certManager` | Mint the admission serving cert via cert-manager (false = BYO via `secretNameOverride`) | `true` |

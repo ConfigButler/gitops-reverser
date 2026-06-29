@@ -10,7 +10,7 @@ The corpus is captured against **k8s v1.36.1+k3s1** (recorded in
 `test/mutationlab/corpus/CLUSTER.md`). **All seventeen** catalogued scenarios are captured today — see
 the [Difficult Cases Catalog](#difficult-cases-catalog).
 
-The lab reuses the product's webhook URLs (`/validate-admission-webhook`, `/audit-webhook`, and the
+The lab reuses the product's webhook URLs (`/validate-all`, `/audit-webhook`, and the
 proxy-enrichment `/audit-webhook-additional`) on the same ports and TLS mounts, so capturing is just
 an **image swap** on an already-prepared e2e cluster — no new audit policy, webhook config, or
 certificates. The binary lives under `cmd/mutation-capture-lab/`, the recorders/normalizer/store/
@@ -454,7 +454,7 @@ next has started. The lab **isolates** scenarios rather than trusting a clean sl
   averaged in.
 
 Endpoints: `POST /audit-webhook`, `POST /audit-webhook-additional` (the proxy-enrichment endpoint,
-recorded as its own source), `POST /validate-admission-webhook`, `POST /convert` (CRD conversion),
+recorded as its own source), `POST /validate-all`, `POST /convert` (CRD conversion),
 `POST /watch-probe` (targeted transport rows), `GET /records[?scenario=…]`, `DELETE /records`,
 `GET /healthz`, `GET /readyz`.
 
