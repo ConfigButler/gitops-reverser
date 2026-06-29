@@ -190,12 +190,21 @@ nodeSelector:
 | `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
 | `service.ports.audit` | Service port for audit ingress | `9444` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
-| `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
-| `certificates.audit.enabled` | Let the chart manage audit TLS Secrets via cert-manager | `true` |
-| `certificates.audit.rootCA.secretNameOverride` | Override Secret name for the audit root CA | `<release>-audit-root-ca` |
-| `certificates.audit.client.duration` | Lifetime of the kube-apiserver audit client cert; long by default to avoid repeated manual kube-apiserver reconfiguration | `87600h` |
-| `certificates.audit.client.renewBefore` | Renew the kube-apiserver audit client cert before expiry; shorter values increase control-plane maintenance frequency | `720h` |
-| `certificates.audit.client.secretNameOverride` | Override Secret name for the kube-apiserver audit client cert | `<release>-audit-client-cert` |
+| `servers.healthProbe.bindAddress` | Liveness/readiness probe bind address (`--health-probe-bind-address`) | `:8081` |
+| `servers.admission.enabled` | Run the validating admission server hosting the internal-commands webhook (captures the CommitRequest submitter as the commit author) | `true` |
+| `servers.admission.port` | Admission webhook container/Service port | `9443` |
+| `servers.admission.timeoutSeconds` | Admission webhook timeout (failurePolicy is Ignore) | `2` |
+| `servers.admission.tls.certManager` | Mint the admission serving cert via cert-manager (false = BYO via `secretNameOverride`) | `true` |
+| `servers.admission.tls.secretNameOverride` | Override Secret name for the admission serving cert | `<release>-admission-server-cert` |
+| `certManager.enabled` | Use cert-manager to mint the chart's serving/client certs | `true` |
+| `certManager.issuer.name` | Name of the (shared) cert-manager issuer | `selfsigned-issuer` |
+| `certManager.issuer.create` | Create the self-signed issuer (set false to reuse an existing one) | `true` |
+| `servers.metrics.tls.certManager` | Mint the metrics serving cert via cert-manager (used when `servers.metrics.tls.enabled`) | `true` |
+| `servers.audit.tls.certManager` | Let the chart mint audit TLS Secrets (server + kube-apiserver client) via cert-manager | `true` |
+| `servers.audit.tls.rootCA.secretNameOverride` | Override Secret name for the audit root CA | `<release>-audit-root-ca` |
+| `servers.audit.tls.client.duration` | Lifetime of the kube-apiserver audit client cert; long by default to avoid repeated manual kube-apiserver reconfiguration | `87600h` |
+| `servers.audit.tls.client.renewBefore` | Renew the kube-apiserver audit client cert before expiry; shorter values increase control-plane maintenance frequency | `720h` |
+| `servers.audit.tls.client.secretNameOverride` | Override Secret name for the kube-apiserver audit client cert | `<release>-audit-client-cert` |
 | `auditKubeconfig.insecureSkipTLSVerify` | Render Helm notes with `insecure-skip-tls-verify: true` for the generated audit kubeconfig example | `false` |
 | `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `true` |
 | `resources.requests.cpu` | CPU request | `10m` |
@@ -370,14 +379,13 @@ kubectl get events -n gitops-reverser --sort-by='.lastTimestamp'
 If not using cert-manager:
 
 ```yaml
-certificates:
-  certManager:
-    enabled: false
+certManager:
+  enabled: false
 ```
 
 Provide the audit TLS Secrets yourself. At minimum, the audit server certificate Secret must match
 `servers.audit.tls.secretNameOverride` (or the default `<release>-audit-server-cert`), and the
-audit root CA Secret must match `certificates.audit.rootCA.secretNameOverride` so the controller can
+audit root CA Secret must match `servers.audit.tls.rootCA.secretNameOverride` so the controller can
 verify kube-apiserver client certificates.
 
 Example server certificate Secret:

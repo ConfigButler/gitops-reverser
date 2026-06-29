@@ -20,6 +20,8 @@ package watch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -676,6 +678,16 @@ func (m *Manager) routeLiveTargetWatchEvent(
 			return rv, nil
 		}
 		event := targetWatchGitEvent(key.GVR, u, op)
+		// Drop a no-op UPDATE before it reaches the worker: a /status-only change
+		// sanitizes to identical git content but ships unattributed (its /status audit
+		// is dropped), so routing it would split an open commit window on the author
+		// flip. CREATE/DELETE always route and refresh/clear the dedup cache.
+		if m.skipUnchangedLiveUpdate(gitDest, key.GVR, u, &event, op) {
+			log.V(1).Info("target watch skipped unchanged update (no git content change)",
+				"gitDest", gitDest.String(), "gvr", key.GVR.String(),
+				"resource", event.Identifier.String())
+			return rv, nil
+		}
 		m.attachAuthor(ctx, &event, key.GVR, u)
 		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
 			log.V(1).Info("target watch route failed",
@@ -714,6 +726,67 @@ func (m *Manager) attachAuthor(
 	); ok {
 		event.UserInfo = userInfo
 	}
+}
+
+// skipUnchangedLiveUpdate reports whether a live event carries no git-writable change
+// from the last event routed for the same object, and maintains the dedup cache:
+//   - DELETE clears the entry and never skips (a removal always routes).
+//   - CREATE/UPDATE store the sanitized-content hash; an UPDATE whose hash equals the
+//     stored one is a no-op (e.g. a /status-only change) and is skipped.
+//
+// Only UPDATE is ever skipped — a CREATE always routes and seeds the cache, so a later
+// /status-only UPDATE dedups against it. When the content cannot be hashed the event is
+// routed and the cache is left untouched (fail open, never drop a real change).
+func (m *Manager) skipUnchangedLiveUpdate(
+	gitDest types.ResourceReference,
+	gvr schema.GroupVersionResource,
+	u *unstructured.Unstructured,
+	event *git.Event,
+	op string,
+) bool {
+	key := liveContentDedupKey(gitDest, gvr, u)
+	if op == string(configv1alpha2.OperationDelete) {
+		m.liveContentDedup.Delete(key)
+		return false
+	}
+	hash, ok := sanitizedContentHash(event)
+	if !ok {
+		return false
+	}
+	if op == string(configv1alpha2.OperationUpdate) {
+		if prev, loaded := m.liveContentDedup.Load(key); loaded {
+			if prevHash, isStr := prev.(string); isStr && prevHash == hash {
+				return true
+			}
+		}
+	}
+	m.liveContentDedup.Store(key, hash)
+	return false
+}
+
+// liveContentDedupKey identifies one object within one GitTarget stream. It includes
+// gitDest so the same object mirrored to two GitTargets dedups independently, and the
+// uid so a delete-and-recreate (new uid) is never deduped against its predecessor.
+func liveContentDedupKey(
+	gitDest types.ResourceReference, gvr schema.GroupVersionResource, u *unstructured.Unstructured,
+) string {
+	return gitDest.String() + "|" + gvr.String() + "|" + string(u.GetUID())
+}
+
+// sanitizedContentHash hashes an event's git-writable content so two events that
+// materialize identically (a spec write and a later /status update) compare equal.
+// ok=false means the content cannot be hashed (nil object or marshal error); the caller
+// then routes without deduping.
+func sanitizedContentHash(event *git.Event) (string, bool) {
+	if event.Object == nil {
+		return "", false
+	}
+	raw, err := json.Marshal(event.Object)
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256(raw)
+	return string(sum[:]), true
 }
 
 func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstructured, op string) git.Event {

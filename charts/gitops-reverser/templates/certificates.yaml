@@ -1,17 +1,17 @@
-{{- if .Values.certificates.certManager.enabled }}
-{{- if .Values.certificates.certManager.issuer.create }}
+{{- if .Values.certManager.enabled }}
+{{- if .Values.certManager.issuer.create }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-  name: {{ .Values.certificates.certManager.issuer.name }}
+  name: {{ .Values.certManager.issuer.name }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 spec:
   selfSigned: {}
 {{- end }}
-{{- if .Values.servers.metrics.tls.enabled }}
+{{- if and .Values.servers.metrics.tls.enabled .Values.servers.metrics.tls.certManager }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -25,8 +25,8 @@ spec:
     - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc
     - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
-    kind: {{ .Values.certificates.certManager.issuer.kind }}
-    name: {{ .Values.certificates.certManager.issuer.name }}
+    kind: {{ .Values.certManager.issuer.kind }}
+    name: {{ .Values.certManager.issuer.name }}
   secretName: {{ .Values.servers.metrics.tls.secretNameOverride | default (printf "%s-metrics-server-cert" (include "gitops-reverser.fullname" .)) }}
   usages:
     - digital signature

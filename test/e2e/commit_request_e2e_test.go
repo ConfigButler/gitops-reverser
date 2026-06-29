@@ -229,14 +229,19 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
 
-	// generateName creates surface the bug described in
-	// docs/tasks/generated-name-support.md: the audit objectRef.name is empty
-	// for collection POSTs, so the consumer must resolve the generated name
-	// from responseObject. Without the fix the CommitRequest never becomes Ready
-	// — its create audit event is never matched, so it stays Reconciling forever.
+	// generateName authorship is now captured at admission, not from the audit
+	// response body: the API server assigns metadata.name and metadata.uid before
+	// validating admission runs, so the internal-commands webhook records the
+	// submitter keyed by uid with no response-body name recovery (the old audit
+	// generateName headache is gone, see
+	// docs/design/commitrequest-admission-authorship.md §8). This spec proves a
+	// generateName CommitRequest still finalizes and becomes Ready. It is skipped in
+	// committer-only mode, where the edit's window is committer-authored and the
+	// named admission author would not match it end to end.
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
 		if committerOnlyModeEnabled() {
-			Skip("generateName attribution regression only applies to audit-backed CommitRequests")
+			Skip("committer-only mode: the edit's window is committer-authored, so a named " +
+				"admission author has no matching window to finalize")
 		}
 
 		basePath := "e2e/commit-request-test"
@@ -483,7 +488,12 @@ spec:
 }
 
 // applyCommitRequestWithGenerateName creates a CommitRequest using
-// metadata.generateName and returns the server-allocated name.
+// metadata.generateName and returns the server-allocated name. It sets a non-zero
+// closeDelaySeconds because the spec creates the Deployment and this CommitRequest
+// back-to-back: authorship is now settled synchronously at admission (no controller-side
+// wait), so a closeDelaySeconds=0 request would race the Deployment's watch event and
+// could resolve NoOpenWindow before the window opens. The collect window is the
+// documented mechanism for a CommitRequest issued concurrently with its work (UC2).
 func applyCommitRequestWithGenerateName(namespace, prefix, gitTargetName, message string) string {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha2
@@ -495,6 +505,7 @@ spec:
   targetRef:
     name: %s
   message: %q
+  closeDelaySeconds: 8
 `, prefix, namespace, gitTargetName, message)
 	out, err := kubectlRunWithStdin(namespace, manifest,
 		"create", "-f", "-", "-o", "jsonpath={.metadata.name}")

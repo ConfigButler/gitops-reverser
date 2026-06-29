@@ -40,6 +40,7 @@ import (
 
 	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
 
 // fakeFinalizer records the reconciler's attach calls and replies with a canned
@@ -59,22 +60,25 @@ func (f *fakeFinalizer) ServiceCommitRequest(
 	return f.result, f.resolved, f.err
 }
 
-// fakeAuthorLookup is the attribution source stub: found=false models the
-// CommitRequest's audit event still being in flight.
+// fakeAuthorLookup is the command-author source stub: found=false models a miss
+// (the internal-commands webhook is not configured, or a best-effort write missed),
+// which the controller resolves to the committer immediately — present-or-never.
 type fakeAuthorLookup struct {
-	author string
+	author queue.CommandAuthor
 	found  bool
 	calls  int
 }
 
-func (f *fakeAuthorLookup) LookupCommitRequestAuthor(
-	_ context.Context, _, _ string, _ types.UID,
-) (string, bool) {
+func (f *fakeAuthorLookup) LookupCommandAuthor(
+	_ context.Context, _ types.UID,
+) (queue.CommandAuthor, bool) {
 	f.calls++
 	return f.author, f.found
 }
 
-func attributedAlice() *fakeAuthorLookup { return &fakeAuthorLookup{author: "alice", found: true} }
+func attributedAlice() *fakeAuthorLookup {
+	return &fakeAuthorLookup{author: queue.CommandAuthor{Author: "alice"}, found: true}
+}
 
 func newCommitRequest(name string) *configv1alpha2.CommitRequest {
 	return &configv1alpha2.CommitRequest{
@@ -104,11 +108,11 @@ func withReadyCommitted(cr *configv1alpha2.CommitRequest) *configv1alpha2.Commit
 func withInProgress(cr *configv1alpha2.CommitRequest) *configv1alpha2.CommitRequest {
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
 		Type: ConditionTypeReady, Status: metav1.ConditionFalse,
-		Reason: crReasonWaitingForAuditEvent, Message: "in progress",
+		Reason: crReasonWaitingForCloseDelay, Message: "in progress",
 	})
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
 		Type: ConditionTypeReconciling, Status: metav1.ConditionTrue,
-		Reason: crReasonWaitingForAuditEvent, Message: "in progress",
+		Reason: crReasonWaitingForCloseDelay, Message: "in progress",
 	})
 	return cr
 }
@@ -176,7 +180,7 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 	got := fetchCommitRequest(t, c, "save-1")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
-	requireCondition(t, got, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributedFromAudit)
+	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
 	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionFalse, "")
 	requireCondition(t, got, ConditionTypeStalled, metav1.ConditionFalse, "")
 	assert.Equal(t, "abc123", got.Status.SHA)
@@ -185,7 +189,7 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 	require.Len(t, f.calls, 1)
 	call := f.calls[0]
 	assert.Equal(t, "alice", call.Author,
-		"the attach must carry the author attributed from the audit event")
+		"the attach must carry the author captured at admission")
 	assert.Equal(t, "team-a-config", call.GitTargetName)
 	assert.Equal(t, "default", call.GitTargetNamespace)
 	assert.Equal(t, "save: save-1", call.Message)
@@ -270,51 +274,32 @@ func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionFalse, "")
 }
 
-// A young CommitRequest whose audit event has not been ingested yet polls for
-// attribution instead of finalizing: the event is both the author source and
-// the ordering anchor (the author's earlier edits entered the audit path before it).
-func TestCommitRequestReconcile_AttributionPendingRetries(t *testing.T) {
+// A lookup miss (the internal-commands webhook recorded no author for this object)
+// resolves to the configured committer immediately — present-or-never, no wait. Even a
+// freshly created CommitRequest attaches at once with a blank author and records
+// AuthorAttributed=False (CommitterFallback).
+func TestCommitRequestReconcile_LookupMissFallsBackToCommitter(t *testing.T) {
 	cr := newCommitRequest("save-fresh")
-	cr.CreationTimestamp = metav1.Now()
-	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{}
-	lookup := &fakeAuthorLookup{found: false}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: lookup}
-
-	res := reconcileCommitRequest(t, r, "save-fresh")
-
-	assert.Equal(t, commitRequestAttributionRetryDelay, res.RequeueAfter,
-		"an unattributed young CommitRequest must poll for its audit event")
-	assert.Empty(t, f.calls, "no attach may run before attribution")
-	assert.Equal(t, 1, lookup.calls)
-
-	got := fetchCommitRequest(t, c, "save-fresh")
-	requireCondition(t, got, ConditionTypeReady, metav1.ConditionFalse, crReasonWaitingForAuditEvent)
-	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonWaitingForAuditEvent)
-	requireCondition(t, got, ConditionTypeAttributed, metav1.ConditionUnknown, crReasonWaitingForAuditEvent)
-}
-
-// Past the attribution bound the request finalizes as the configured committer
-// instead of failing solely because audit/Redis is absent. The Attributed
-// condition records that no end-user author was named.
-func TestCommitRequestReconcile_AttributionTimeoutFallsBackToCommitter(t *testing.T) {
-	// The zero CreationTimestamp puts the object far past the bound.
-	cr := newCommitRequest("save-unattributed")
+	cr.CreationTimestamp = metav1.Now() // fresh: the old path would have requeued here
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Branch: "main"},
 		resolved: true,
 	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: &fakeAuthorLookup{}}
+	lookup := &fakeAuthorLookup{found: false}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: lookup}
 
-	reconcileCommitRequest(t, r, "save-unattributed")
+	res := reconcileCommitRequest(t, r, "save-fresh")
 
-	got := fetchCommitRequest(t, c, "save-unattributed")
+	assert.Zero(t, res.RequeueAfter, "a miss is final; the request must not poll for an author")
+	assert.Equal(t, 1, lookup.calls, "the author is looked up exactly once, synchronously")
+	require.Len(t, f.calls, 1, "the attach is sent immediately on a miss")
+	assert.Empty(t, f.calls[0].Author, "a miss attaches with a blank author (the configured committer)")
+
+	got := fetchCommitRequest(t, c, "save-fresh")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
-	requireCondition(t, got, ConditionTypeAttributed, metav1.ConditionFalse, crReasonAuditEventNotObserved)
-	require.Len(t, f.calls, 1)
-	assert.Empty(t, f.calls[0].Author, "blank author means the worker commits as the configured committer")
+	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 }
 
 // The close-delay collect window is the worker's job now: the controller does not
@@ -339,9 +324,9 @@ func TestCommitRequestReconcile_NotResolvedRecordsCloseDelayWait(t *testing.T) {
 		"closeDelaySeconds is passed to the worker, not consumed here")
 
 	got := fetchCommitRequest(t, c, "save-linger")
-	// Author settled and attached: the request is in the WaitingForCloseDelay wait,
-	// not the WaitingForAuditEvent wait.
-	requireCondition(t, got, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributedFromAudit)
+	// Author settled from admission and attached: the request is in the
+	// WaitingForCloseDelay wait.
+	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
 	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonWaitingForCloseDelay)
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionFalse, crReasonWaitingForCloseDelay)
 	assert.False(t, commitRequestIsTerminal(&got), "an unresolved request is not terminal")
@@ -410,9 +395,9 @@ func TestCommitRequestReconcile_StaleCacheEchoDoesNotRefinalize(t *testing.T) {
 	assert.Empty(t, f.calls)
 }
 
-// Committer-only mode (no AuthorLookup) never waits for an audit event: a freshly
-// created CommitRequest attaches immediately with a blank author and commits as the
-// configured committer, recording Attributed=True (AttributionNotRequired).
+// Webhook-disabled mode (no AuthorLookup) never waits: a freshly created CommitRequest
+// attaches immediately with a blank author and commits as the configured committer,
+// recording AuthorAttributed=False (CommitterFallback).
 func TestCommitRequestReconcile_CommitterOnlyCommitsWithoutWaiting(t *testing.T) {
 	cr := newCommitRequest("save-committer-only")
 	cr.CreationTimestamp = metav1.Now() // fresh: a waiting path would requeue instead of commit
@@ -425,19 +410,19 @@ func TestCommitRequestReconcile_CommitterOnlyCommitsWithoutWaiting(t *testing.T)
 
 	res := reconcileCommitRequest(t, r, "save-committer-only")
 
-	assert.Zero(t, res.RequeueAfter, "committer-only must not requeue waiting for an audit event")
+	assert.Zero(t, res.RequeueAfter, "webhook-disabled mode must not requeue waiting for an author")
 	got := fetchCommitRequest(t, c, "save-committer-only")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
-	requireCondition(t, got, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributionNotRequired)
+	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 	assert.Equal(t, "c0ffee", got.Status.SHA)
 	require.Len(t, f.calls, 1, "the attach is sent immediately, with no attribution wait")
-	assert.Empty(t, f.calls[0].Author, "committer-only attaches with a blank author")
+	assert.Empty(t, f.calls[0].Author, "webhook-disabled mode attaches with a blank author")
 }
 
-// Committer-only mode reports Attributed=True immediately and never parks the
-// request in a "waiting for audit event" state: even while the attach is still
-// being polled, Attributed is AttributionNotRequired, not WaitingForAuditEvent.
+// Webhook-disabled mode settles AuthorAttributed=False (CommitterFallback) immediately
+// and never parks the request in a "waiting for the author" state: even while the
+// attach is still being polled, the request is in the WaitingForCloseDelay wait.
 func TestCommitRequestReconcile_CommitterOnlyAttributedImmediately(t *testing.T) {
 	cr := newCommitRequest("save-committer-poll")
 	cr.CreationTimestamp = metav1.Now()
@@ -452,7 +437,7 @@ func TestCommitRequestReconcile_CommitterOnlyAttributedImmediately(t *testing.T)
 	assert.Empty(t, f.calls[0].Author)
 
 	got := fetchCommitRequest(t, c, "save-committer-poll")
-	requireCondition(t, got, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributionNotRequired)
+	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonWaitingForCloseDelay)
 	assert.False(t, commitRequestIsTerminal(&got), "in the close-delay wait, not terminal")
 }
@@ -526,31 +511,39 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 func TestApplyFinalizeResultToStatus(t *testing.T) {
 	t.Run("committed", func(t *testing.T) {
 		var cr configv1alpha2.CommitRequest
-		applyFinalizeResultToStatus(&cr,
-			git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc", Branch: "main"}, nil, attributionResolved)
+		applyFinalizeResultToStatus(
+			&cr,
+			git.FinalizeResult{
+				Outcome: git.FinalizeCommitted,
+				SHA:     "abc",
+				Branch:  "main",
+			},
+			nil,
+			attributionFromAdmission,
+		)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
 		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
 		requireCondition(t, cr, ConditionTypeReconciling, metav1.ConditionFalse, "")
 		requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionFalse, "")
-		requireCondition(t, cr, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributedFromAudit)
+		requireCondition(t, cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue, crReasonAttributedFromAdmission)
 		assert.Equal(t, "abc", cr.Status.SHA)
 		assert.Equal(t, "main", cr.Status.Branch)
 	})
 
-	t.Run("no window in grace is a benign ready", func(t *testing.T) {
+	t.Run("no window in grace is a benign ready (committer fallback)", func(t *testing.T) {
 		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr,
-			git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}, nil, attributionNotRequired)
+			git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}, nil, attributionCommitter)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindowInGrace)
 		requireCondition(t, cr, ConditionTypePushed, metav1.ConditionFalse, crReasonNoWindowInGrace)
-		requireCondition(t, cr, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributionNotRequired)
+		requireCondition(t, cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
 		assert.Empty(t, cr.Status.SHA)
 	})
 
 	t.Run("window mismatch surfaces the reason", func(t *testing.T) {
 		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr,
-			git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"}, nil, attributionResolved)
+			git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"}, nil, attributionFromAdmission)
 		ready := requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonWindowMismatch)
 		assert.Equal(t, windowMismatchMessage, ready.Message)
 	})
@@ -558,7 +551,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	t.Run("already present is a benign ready", func(t *testing.T) {
 		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr,
-			git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"}, nil, attributionResolved)
+			git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"}, nil, attributionFromAdmission)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonAlreadyPresent)
 		assert.Empty(t, cr.Status.SHA)
 	})
@@ -567,7 +560,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		var cr configv1alpha2.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc"},
-			errors.New("boom"), attributionResolved)
+			errors.New("boom"), attributionFromAdmission)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionFalse, crReasonFinalizeFailed)
 		stalled := requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionTrue, crReasonFinalizeFailed)
 		assert.Equal(t, "boom", stalled.Message)
@@ -575,7 +568,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 
 	t.Run("unknown outcome stalls", func(t *testing.T) {
 		var cr configv1alpha2.CommitRequest
-		applyFinalizeResultToStatus(&cr, git.FinalizeResult{}, nil, attributionResolved)
+		applyFinalizeResultToStatus(&cr, git.FinalizeResult{}, nil, attributionFromAdmission)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionFalse, crReasonUnexpectedOutcome)
 		stalled := requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionTrue, crReasonUnexpectedOutcome)
 		assert.Contains(t, stalled.Message, "unexpected finalize outcome")

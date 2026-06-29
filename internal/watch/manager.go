@@ -96,6 +96,15 @@ type Manager struct {
 		opts metav1.ListOptions,
 	) (*unstructured.UnstructuredList, error)
 
+	// liveContentDedup caches, per (gitDest, object), the hash of the last sanitized
+	// content routed to a branch worker. A live UPDATE whose sanitized content is
+	// unchanged (the classic /status-only churn, which carries no git-writable change)
+	// is dropped before routing, so it cannot split an open commit window by arriving
+	// unattributed against a named window author. Keyed by gitDest+gvr+namespace+uid;
+	// entries are cleared on delete. Cross-session by design: a reconnect keeps deduping
+	// against what git already holds. See routeLiveTargetWatchEvent.
+	liveContentDedup sync.Map
+
 	// resourceCatalog is the shared discovery-backed API surface used by rule planning.
 	resourceCatalogMu sync.Mutex
 	resourceCatalog   *APIResourceCatalog

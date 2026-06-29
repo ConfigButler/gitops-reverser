@@ -41,7 +41,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - --health-probe-bind-address=:8081
+            - --health-probe-bind-address={{ .Values.servers.healthProbe.bindAddress }}
             - --metrics-bind-address={{ .Values.servers.metrics.bindAddress }}
             {{- if not .Values.servers.metrics.tls.enabled }}
             - --metrics-insecure
@@ -75,6 +75,13 @@ spec:
             - --author-attribution={{ .Values.attribution.enabled }}
             - --author-attribution-ttl={{ .Values.attribution.ttl }}
             - --author-attribution-grace={{ .Values.attribution.grace }}
+            {{- if .Values.servers.admission.enabled }}
+            - --admission-webhook
+            - --admission-webhook-bind-address={{ .Values.servers.admission.bindAddress }}
+            - --admission-webhook-cert-path={{ .Values.servers.admission.tls.certPath }}
+            - --admission-webhook-cert-name={{ .Values.servers.admission.tls.certName }}
+            - --admission-webhook-cert-key={{ .Values.servers.admission.tls.certKey }}
+            {{- end }}
             {{- with .Values.controllerManager.additionalSensitiveResources }}
             - {{ printf "--additional-sensitive-resources=%s" (join "," .) | quote }}
             {{- end }}
@@ -97,6 +104,11 @@ spec:
             - name: metrics
               containerPort: {{ .Values.servers.metrics.port }}
               protocol: TCP
+            {{- if .Values.servers.admission.enabled }}
+            - name: webhook
+              containerPort: {{ .Values.servers.admission.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
@@ -119,13 +131,13 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 8081
+              port: {{ .Values.servers.healthProbe.port }}
             initialDelaySeconds: 15
             periodSeconds: 20
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8081
+              port: {{ .Values.servers.healthProbe.port }}
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
@@ -144,6 +156,11 @@ spec:
               readOnly: true
             - name: audit-client-ca
               mountPath: {{ .Values.servers.audit.tls.clientCAPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.servers.admission.enabled }}
+            - name: admission-cert
+              mountPath: {{ .Values.servers.admission.tls.certPath }}
               readOnly: true
             {{- end }}
             {{- with .Values.volumeMounts }}
@@ -166,6 +183,12 @@ spec:
         - name: audit-client-ca
           secret:
             secretName: {{ include "gitops-reverser.auditRootCASecretName" . }}
+            defaultMode: 420
+        {{- end }}
+        {{- if .Values.servers.admission.enabled }}
+        - name: admission-cert
+          secret:
+            secretName: {{ include "gitops-reverser.admissionServerSecretName" . }}
             defaultMode: 420
         {{- end }}
         {{- with .Values.volumes }}

@@ -11,7 +11,7 @@ GitOps Reverser is installed in namespace `{{ .Release.Namespace }}`.
 What the chart did for you:
 - deployed the controller and audit receiver
 - created the audit Service (`{{ $auditServiceName }}`)
-{{- if and .Values.servers.audit.tls.enabled .Values.certificates.certManager.enabled .Values.certificates.audit.enabled }}
+{{- if and .Values.servers.audit.tls.enabled .Values.certManager.enabled .Values.servers.audit.tls.certManager }}
 - created the audit TLS materials
   - root CA Secret: `{{ $auditRootCASecret }}`
   - kube-apiserver client cert Secret: `{{ $auditClientSecret }}`

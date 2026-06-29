@@ -7,14 +7,23 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: gitops-reverser
   name: gitops-reverser-validating-webhook
-# E2E-ONLY. This ValidatingWebhookConfiguration is part of the kustomize SUT
-# overlay (config/) and is intentionally NOT packaged in the Helm chart
-# (charts/gitops-reverser). The admission server is gated behind
-# --admission-webhook, which defaults to false; the chart never enables
-# it and ships no webhook/cert templates. The handler always allows (pure
-# observation, see internal/webhook/admission_allow_handler.go); when a real,
-# rejecting policy becomes product behavior, the chart must gain matching
-# packaging and this comment must change.
+# This ValidatingWebhookConfiguration is part of the kustomize SUT overlay (config/).
+# It carries two webhooks served by the one admission server (port 9443, gated behind
+# --admission-webhook):
+#
+#   1. all-events-test-only.configbutler.ai — the broad '*' observer below. E2E-ONLY:
+#      it is intentionally NOT packaged in the Helm chart. The handler always allows
+#      (pure observation, see internal/webhook/admission_allow_handler.go); when a real,
+#      rejecting policy becomes product behavior, the chart must gain matching packaging
+#      and this note must change.
+#   2. internal-commands.configbutler.ai — captures the submitter of our own command
+#      kinds (a CommitRequest today) at admission. This one IS product behavior and is
+#      packaged in the chart (charts/.../templates/internal-commands-webhook.yaml); the
+#      entry here is the e2e SUT's copy. See
+#      docs/design/commitrequest-admission-authorship.md §4.
+#
+# The cert-manager.io/inject-ca-from annotation injects the admission server CA bundle
+# for every webhook in this configuration.
 webhooks:
 - admissionReviewVersions:
   - v1
@@ -60,3 +69,34 @@ webhooks:
   # unreachable backend the request is admitted anyway after the timeout — a
   # large value only adds latency to every cluster write, it buys no safety.
   timeoutSeconds: 1
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: gitops-reverser-service
+      namespace: sut
+      path: /internal-commands
+      port: 9443
+  # Ignore, not Fail: a missed author capture must degrade to the committer, never
+  # reject a user's CommitRequest. The handler also returns Allowed even when the Redis
+  # write errors, so the command's success never depends on this webhook at all —
+  # Ignore only covers the webhook being entirely unreachable.
+  failurePolicy: Ignore
+  matchPolicy: Equivalent
+  name: internal-commands.configbutler.ai
+  # Narrow: only our own command kinds (one rule per command kind). The submitter is
+  # captured into the command-author Redis corner and read back by the CommitRequest
+  # controller with no wait.
+  rules:
+  - apiGroups:
+    - configbutler.ai
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    resources:
+    - commitrequests
+    scope: Namespaced
+  # Redis write on real requests; nothing on dry-run (the handler honors NoneOnDryRun).
+  sideEffects: NoneOnDryRun
+  timeoutSeconds: 2

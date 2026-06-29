@@ -34,6 +34,7 @@ import (
 
 	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
 
 // CommitRequestFinalizer is the EventRouter seam the reconciler drives, using the
@@ -51,11 +52,14 @@ type CommitRequestFinalizer interface {
 	ServiceCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
 }
 
-// CommitRequestAuthorLookup resolves the author of a CommitRequest from the
-// create-audit attribution fact captured by audit ingestion.
-// queue.RedisByTypeStreamQueue satisfies it without adaptation.
-type CommitRequestAuthorLookup interface {
-	LookupCommitRequestAuthor(ctx context.Context, namespace, name string, uid types.UID) (string, bool)
+// CommandAuthorLookup resolves the author of a CommitRequest from the submitter
+// captured at admission by the internal-commands webhook, keyed by the persisted
+// object's UID. *queue.CommandAuthorStore satisfies it without adaptation. The lookup
+// is present-or-never (docs/design/commitrequest-admission-authorship.md §2): a miss is
+// immediate and final — the webhook is not configured (or a best-effort write missed) —
+// and the controller finalizes as the committer with no wait.
+type CommandAuthorLookup interface {
+	LookupCommandAuthor(ctx context.Context, uid types.UID) (queue.CommandAuthor, bool)
 }
 
 // windowMismatchMessage explains the author-bound refusal: an open window
@@ -63,50 +67,36 @@ type CommitRequestAuthorLookup interface {
 const windowMismatchMessage = "the open commit window belongs to a different author or GitTarget; " +
 	"nothing was committed for this request"
 
-// attributionFallbackMessage explains the optional attribution bound: a
-// CommitRequest whose own audit event never arrived is finalized as the
-// configured committer, not failed.
-const attributionFallbackMessage = "could not attribute the CommitRequest to an author: " +
-	"finalizing as the configured committer"
-
 // resolveTimeoutMessage explains the fail-closed resolve bound: the worker never
 // reported an outcome for the attached request within the safety window (e.g. the
 // branch worker vanished), so the request fails closed rather than poll forever.
 const resolveTimeoutMessage = "the CommitRequest finalize did not resolve within the safety window"
 
 const (
-	// commitRequestAttributionTimeout bounds the wait for the CommitRequest's
-	// own create audit event. The audit ingest path normally delivers within
-	// seconds; an event that has not arrived after this long indicates audit
-	// ingestion is broken for this object, and the request fails closed.
-	commitRequestAttributionTimeout = 60 * time.Second
-
-	// commitRequestAttributionRetryDelay is the requeue cadence while waiting
-	// for the audit event to be ingested.
-	commitRequestAttributionRetryDelay = 2 * time.Second
-
 	// commitRequestPollInterval is the requeue cadence while polling the worker
 	// for the attached request's outcome (attach-then-poll, §6.4.3).
 	commitRequestPollInterval = 2 * time.Second
 
 	// commitRequestResolveTimeout bounds the attach-then-poll wait, measured from
-	// object creation: it must cover attribution latency, the maximum collect-grace
-	// (delaySeconds ≤ 300s, anchored at attribution), and the push cooldown plus
-	// retries. Past it, a request the worker never resolved (e.g. a vanished worker)
-	// fails closed instead of polling forever.
-	commitRequestResolveTimeout = commitRequestAttributionTimeout + 300*time.Second + 120*time.Second
+	// object creation: it must cover the maximum collect-grace (delaySeconds ≤ 300s,
+	// anchored at attribution) and the push cooldown plus retries. Authorship is now
+	// settled synchronously at first sight (no attribution wait, §2), so the former
+	// +60s attribution component is gone. Past it, a request the worker never resolved
+	// (e.g. a vanished worker) fails closed instead of polling forever.
+	commitRequestResolveTimeout = 300*time.Second + 120*time.Second
 )
 
 // CommitRequestReconciler drives a CommitRequest through its state machine
-// (docs/design/stream/commitrequest-design.md §6.4):
+// (docs/design/stream/commitrequest-design.md §6.4 and
+// docs/design/commitrequest-admission-authorship.md §5):
 //
-//  1. ATTRIBUTE — wait until the CommitRequest's own create audit event appears
-//     in the audit-ingestion attribution store and take the author from it. This
-//     is independent of the demand-gated, RV-ordered per-type stream, so a
-//     CommitRequest remains attributable even when its full audit event is not
-//     currently mirrored. An event that never arrives fails the request (fail
-//     closed).
-//  2. ATTACH + POLL — the instant the author is known, send the attach to the
+//  1. ATTRIBUTE — a single synchronous read of the submitter captured at admission
+//     (present-or-never, §2). A hit names that submitter as the author
+//     (AuthorAttributed=True); a miss falls back to the configured committer
+//     immediately (AuthorAttributed=False). There is no wait and no requeue for the
+//     author: the record is written before the object is visible, so waiting cannot
+//     help.
+//  2. ATTACH + POLL — the instant the author is settled, send the attach to the
 //     GitTarget's worker (bind the message to the author's open window, finalize
 //     after the grace) and poll the outcome. The grace is anchored at attribution
 //     by the worker (finalizeAt = receipt + delaySeconds), so there is no
@@ -123,10 +113,11 @@ type CommitRequestReconciler struct {
 	APIReader client.Reader
 
 	// Finalizer attaches the request to the author-bound open window and reports
-	// its outcome; AuthorLookup optionally attributes the author from audit facts.
-	// When AuthorLookup is nil, requests finalize as the configured committer.
+	// its outcome; AuthorLookup resolves the submitter captured at admission. When
+	// AuthorLookup is nil (the internal-commands webhook is disabled), requests
+	// finalize as the configured committer — immediately, with AuthorAttributed=False.
 	Finalizer    CommitRequestFinalizer
-	AuthorLookup CommitRequestAuthorLookup
+	AuthorLookup CommandAuthorLookup
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests,verbs=get;list;watch
@@ -150,24 +141,20 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// 1. ATTRIBUTE: settle the commit author synchronously (present-or-never, §2).
+	// A hit names the admission submitter; a miss is the configured committer. Either
+	// way the decision is final — there is no wait and no requeue for the author.
+	author, attribution := r.attributeAuthor(ctx, commitRequest)
+
 	// First sight: stamp the still-running conditions so the object reports its
-	// progress (kstatus InProgress) and — in committer-only mode — Attributed=True
-	// immediately. A disabled controller returns above, so it never stamps.
+	// progress (kstatus InProgress) and AuthorAttributed is settled immediately. A
+	// disabled controller returns above, so it never stamps.
 	if conditionByType(commitRequest.Status.Conditions, ConditionTypeReady) == nil {
-		markCommitRequestInProgress(commitRequest, r.AuthorLookup != nil)
+		markCommitRequestWaitingForCloseDelay(commitRequest, attribution)
 		if err := r.Status().Update(ctx, commitRequest); err != nil {
 			return ctrl.Result{}, err
 		}
 		log.V(1).Info("Stamped CommitRequest in-progress conditions", "name", req.NamespacedName)
-	}
-
-	// 1. ATTRIBUTE: settle the commit author. Committer-only mode needs no audit
-	// event; attributed mode waits briefly for the create audit event and, past the
-	// bound, falls back to the configured committer (a missing event never fails the
-	// request).
-	author, attribution, waitForAudit := r.attributeAuthor(ctx, log, commitRequest)
-	if waitForAudit {
-		return ctrl.Result{RequeueAfter: commitRequestAttributionRetryDelay}, nil
 	}
 
 	// 2. ATTACH + POLL: register the attach idempotently the instant we attribute
@@ -177,7 +164,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Namespace:          commitRequest.Namespace,
 		Name:               commitRequest.Name,
 		UID:                string(commitRequest.UID),
-		Author:             author,
+		Author:             author.Author,
 		GitTargetName:      commitRequest.Spec.TargetRef.Name,
 		GitTargetNamespace: commitRequest.Namespace,
 		Message:            capCommitRequestMessage(commitRequest.Spec.Message),
@@ -209,34 +196,40 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-// attributeAuthor settles the commit author. It returns the author string, the
-// settled attribution decision, and waitForAudit=true when the request must keep
-// polling for its create audit event (attributed mode, within the bound).
+// attributeAuthor settles the commit author with a single synchronous lookup of the
+// submitter captured at admission (present-or-never, §2). It never waits: a nil
+// AuthorLookup (the internal-commands webhook is disabled) or a miss both resolve to
+// the configured committer immediately. The miss case is final — the record is written
+// before the object is visible, so there is no asynchronous arrival to wait for.
+//
+// The lookup result is logged at Info: it is the counterpart to the admission handler's
+// "recorded command author" line, so a hit/miss pair makes the whole capture→read path
+// legible (the first thing to check when a CommitRequest commits as the committer).
 func (r *CommitRequestReconciler) attributeAuthor(
 	ctx context.Context,
-	log logr.Logger,
 	commitRequest *configbutleraiv1alpha2.CommitRequest,
-) (string, commitRequestAttribution, bool) {
+) (queue.CommandAuthor, commitRequestAttribution) {
+	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 	if r.AuthorLookup == nil {
-		return "", attributionNotRequired, false
+		log.Info("command-author lookup disabled (internal-commands webhook off); committing as committer",
+			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
+		return queue.CommandAuthor{}, attributionCommitter
 	}
-	author, attributed := r.AuthorLookup.LookupCommitRequestAuthor(
-		ctx, commitRequest.Namespace, commitRequest.Name, commitRequest.UID)
-	if attributed {
-		return author, attributionResolved, false
+	if author, ok := r.AuthorLookup.LookupCommandAuthor(ctx, commitRequest.UID); ok {
+		log.Info("command author resolved from admission record",
+			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID, "author", author.Author)
+		return author, attributionFromAdmission
 	}
-	if time.Since(commitRequest.CreationTimestamp.Time) < commitRequestAttributionTimeout {
-		return "", attributionPending, true
-	}
-	log.Info(attributionFallbackMessage, "name", client.ObjectKeyFromObject(commitRequest))
-	return "", attributionTimedOut, false
+	log.Info("no admission command-author record found; committing as committer",
+		"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
+	return queue.CommandAuthor{}, attributionCommitter
 }
 
 // recordCloseDelayWait makes the post-attribution wait — the closeDelaySeconds
-// collect window followed by the commit and push — an observable state distinct from
-// the WaitingForAuditEvent wait. It writes once, at the transition, and is a no-op
-// once the request is already showing the WaitingForCloseDelay reason (so polling
-// does not re-write status every interval).
+// collect window followed by the commit and push. First sight already stamps this
+// state, so this is the post-restart re-stamp path: it writes once, at the transition,
+// and is a no-op once the request is already showing the WaitingForCloseDelay reason
+// (so polling does not re-write status every interval).
 func (r *CommitRequestReconciler) recordCloseDelayWait(
 	ctx context.Context,
 	commitRequest *configbutleraiv1alpha2.CommitRequest,
@@ -318,7 +311,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 				"ready", commitRequestConditionStatus(current, ConditionTypeReady),
 				"reason", readyReason,
 				"message", readyMessage,
-				"attributed", commitRequestConditionStatus(current, ConditionTypeAttributed),
+				"authorAttributed", commitRequestConditionStatus(current, ConditionTypeAuthorAttributed),
 				"pushed", commitRequestConditionStatus(current, ConditionTypePushed),
 				"branch", current.Status.Branch,
 				"sha", current.Status.SHA,

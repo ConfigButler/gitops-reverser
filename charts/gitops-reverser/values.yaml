@@ -50,27 +50,92 @@ securityContext:
   runAsNonRoot: true
   runAsUser: 65532
 
-# Controller manager configuration
+# Controller manager behaviour (the servers it runs are configured under `servers`).
 controllerManager:
-  # Health probe configuration
-  healthProbe:
-    bindAddress: :8081
-  # Enable HTTP/2 (disabled by default for security)
-  enableHTTP2: false
   # Extra Secret-shaped resources that must use the encrypted Git write path.
   # Entries are resource or group/resource, for example core.cozystack.io/tenantsecrets.
   additionalSensitiveResources: []
 
-# HTTPS servers
+# cert-manager issuer shared by every certificate the chart mints. One self-signed CA
+# backs them all, so the issuer is genuinely cross-cutting and lives here; each server
+# opts into a cert via servers.<name>.tls.certManager. (Deliberately NOT duplicated per
+# server — that one shared resource is the exception to the "servers as peers" rule.)
+certManager:
+  enabled: true
+  issuer:
+    name: selfsigned-issuer
+    kind: Issuer
+    create: true
+
+# Every HTTP(S) server the manager runs, as peers. Each has a bindAddress; those fronted
+# by a Service also have a port, and those serving TLS carry a tls block of the same
+# shape (enabled, certManager, cert paths, secretNameOverride). cert-manager mints a
+# serving cert for a server when certManager.enabled (above) and that server's
+# tls.certManager are both true.
 servers:
+  # Disable HTTP/2 on the TLS servers (mitigates the HTTP/2 Rapid-Reset CVE class).
+  enableHTTP2: false
+
+  # Liveness/readiness probe endpoint. Plain HTTP, no TLS, no Service.
+  healthProbe:
+    bindAddress: ":8081"
+    port: 8081
+
+  metrics:
+    bindAddress: ":8080"
+    port: 8080
+    tls:
+      # Serve metrics over HTTPS when true, HTTP when false.
+      enabled: false
+      # Mint the serving cert via cert-manager (only used when tls.enabled).
+      certManager: true
+      certPath: "/tmp/k8s-metrics-server/metrics-server-certs"
+      certName: "tls.crt"
+      certKey: "tls.key"
+      # Leave empty to use the chart-generated Secret name.
+      secretNameOverride: ""
+
+  # Validating admission server hosting the internal-commands webhook, which captures
+  # the submitter of each CommitRequest at admission and names them as the commit author
+  # (read back by the controller with no wait). Independent of `attribution` below:
+  # attribution governs *mirrored-resource* authorship (from audit), this governs
+  # *command* authorship (from admission). Off → CommitRequests commit as the configured
+  # committer and report AuthorAttributed=False. See
+  # docs/design/commitrequest-admission-authorship.md.
+  admission:
+    enabled: true
+    bindAddress: ":9443"
+    port: 9443
+    # Bounded per-request wait before the apiserver gives up on the webhook.
+    # failurePolicy is Ignore, so a slow/unreachable backend admits the command anyway.
+    timeoutSeconds: 2
+    tls:
+      # The admission server always serves TLS (the apiserver requires HTTPS); the only
+      # choice is who mints the cert. certManager=false means BYO via secretNameOverride
+      # (and patch the webhook caBundle out of band).
+      certManager: true
+      certPath: "/tmp/k8s-webhook-server/serving-certs"
+      certName: "tls.crt"
+      certKey: "tls.key"
+      # Leave empty to use the chart-generated Secret name.
+      secretNameOverride: ""
+
   audit:
     # host:port the audit ingress server binds to (passed as --audit-bind-address).
-    bindAddress: 0.0.0.0:9444
+    bindAddress: "0.0.0.0:9444"
     # Container/Service port; must match the port in bindAddress above.
     port: 9444
+    timeouts:
+      read: "15s"
+      write: "30s"
+      idle: "60s"
+    maxRequestBodyBytes: 10485760
     tls:
       # Serve audit ingress over HTTPS when true, HTTP when false.
       enabled: true
+      # Mint the audit serving cert (and the kube-apiserver client cert below) via
+      # cert-manager. Set false to provide those Secrets yourself.
+      certManager: true
       certPath: "/tmp/k8s-audit-server/audit-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
@@ -78,23 +143,22 @@ servers:
       clientCAName: "tls.crt"
       # Leave empty to use the chart-generated Secret name.
       secretNameOverride: ""
-    timeouts:
-      read: "15s"
-      write: "30s"
-      idle: "60s"
-    maxRequestBodyBytes: 10485760
-
-  metrics:
-    bindAddress: :8080
-    port: 8080
-    tls:
-      # Serve metrics over HTTPS when true, HTTP when false.
-      enabled: false
-      certPath: "/tmp/k8s-metrics-server/metrics-server-certs"
-      certName: "tls.crt"
-      certKey: "tls.key"
-      # Leave empty to use the chart-generated Secret name.
-      secretNameOverride: ""
+      # Audit alone also needs a CA that signs the kube-apiserver client cert (mTLS), so
+      # the root CA and that client cert are configured here, under audit.
+      rootCA:
+        # Leave empty to use the chart-generated Secret name.
+        secretNameOverride: ""
+      client:
+        # Keep the kube-apiserver client cert long-lived by default so cluster admins are
+        # protected from frequent manual audit-webhook kubeconfig updates and kube-apiserver
+        # reconfiguration. cert-manager durations use Go-style units, so years must be
+        # expressed in hours (10y = 87600h).
+        duration: "87600h"
+        # Renew 30 days before expiry. Shortening this increases control-plane maintenance
+        # because kube-apiserver embeds this client credential in its audit webhook kubeconfig.
+        renewBefore: "720h"
+        # Leave empty to use the chart-generated Secret name.
+        secretNameOverride: ""
 
 # Redis/Valkey is a required dependency: it holds each GitTarget's watch resume cursors (so work is
 # re-picked up after a restart/reconnect) and, when attribution is enabled, the audit attribution facts.
@@ -125,36 +189,6 @@ attribution:
   # Bounded per-event wait for a matching audit fact before a watch event ships as the committer.
   # Larger values raise attribution hit-rate at the cost of commit latency.
   grace: "3s"
-
-# TLS certificate management (Kubernetes requires this for API server callbacks)
-certificates:
-  name:
-  certManager:
-    enabled: true
-    issuer:
-      name: selfsigned-issuer
-      kind: Issuer
-      create: true
-  audit:
-    # When true, the chart creates audit root CA, audit server cert, and
-    # kube-apiserver client cert resources via cert-manager. Set to false if
-    # you want to provide those Secrets yourself.
-    enabled: true
-    rootCA:
-      # Leave empty to use the chart-generated Secret name.
-      secretNameOverride: ""
-    client:
-      # Keep the kube-apiserver client cert long-lived by default so cluster admins
-      # are protected from frequent manual audit-webhook kubeconfig updates and
-      # kube-apiserver reconfiguration. cert-manager durations use Go-style units,
-      # so years must be expressed in hours (10y = 87600h).
-      duration: "87600h"
-      # Renew 30 days before expiry. Shortening this cadence increases control-plane
-      # maintenance because kube-apiserver embeds this client credential in its
-      # node-local audit webhook kubeconfig.
-      renewBefore: "720h"
-      # Leave empty to use the chart-generated Secret name.
-      secretNameOverride: ""
 
 # RBAC configuration
 rbac:

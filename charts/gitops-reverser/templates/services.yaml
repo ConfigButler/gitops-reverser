@@ -19,6 +19,12 @@ spec:
       port: {{ .Values.service.ports.metrics }}
       targetPort: {{ .Values.servers.metrics.port }}
       protocol: TCP
+    {{- if .Values.servers.admission.enabled }}
+    - name: webhook
+      port: {{ .Values.servers.admission.port }}
+      targetPort: {{ .Values.servers.admission.port }}
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
     control-plane: gitops-reverser

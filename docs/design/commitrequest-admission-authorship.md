@@ -1,6 +1,6 @@
 ---
 title: CommitRequest authorship from admission — a command, captured at the source
-status: design (forward-facing)
+status: implemented (investigate branch)
 date: 2026-06-29
 related:
   - ../finished/design-commit-request-api.md
@@ -567,14 +567,32 @@ attribution** — this change is scoped to the command path only.
 - **TLS:** the established pattern — full BYO-cert configuration plus cert-manager
   resources shipped in the chart/`config` for the easy route (§7).
 
-**Still open:**
+**Decided during implementation:**
 
-- **Cleanup nicety:** rely on TTL alone (chosen) or also delete the record on terminal
-  status? TTL is sufficient; deletion is optional polish.
-- **Capture-lag metric:** record `now − RequestedAt` at lookup as an
-  admission→finalize latency gauge, and a `command_author_lookup{result}` counter to
-  catch write-misses (§8)?
-- **One admission server or two webhooks:** ride the existing `--admission-webhook`
-  server (recommended, §6) vs. a separate gate.
-- **Chart value surface:** the exact value names for enabling the webhook and choosing
-  cert-manager vs. BYO certs (§7).
+- **One admission server.** The internal-commands handler rides the existing
+  `--admission-webhook` server: when that flag is on, `cmd/main.go` builds the
+  `CommandAuthorStore` and registers both the always-allow observer and the
+  internal-commands handler (`setupAdmissionWebhooks`). The controller's `AuthorLookup`
+  is that store (nil when the flag is off → committer-only, immediate).
+- **Chart value surface.** A new `internalCommands` block in `values.yaml`
+  (`enabled`, `bindAddress`/`port`, `tls.*`, `certManager.enabled`, `timeoutSeconds`),
+  defaulting `enabled: true` to mirror `attribution.enabled`. New templates
+  `internal-commands-webhook.yaml` (the `ValidatingWebhookConfiguration` with
+  `cert-manager.io/inject-ca-from`) and `internal-commands-certificates.yaml` (the
+  serving cert), plus the admission flags/cert mount in `deployment.yaml` and a
+  `webhook` port on the controller Service.
+- **Cleanup:** TTL alone (`commandAuthorRecordTTL`, 1h). No terminal-status delete.
+
+**Still open (deferred, not blocking):**
+
+- **Capture-lag / `command_author_lookup{result}` metric (§8).** Not yet wired — the
+  `AuthorAttributed=False` condition already gives per-object observability of the
+  fallback; the aggregate counter/gauge is a follow-up.
+- **Window-match coupling.** Command authorship is admission-sourced, but the attach
+  still matches the open window *by author string* (`openWindow.Author`, set from the
+  edit's audit attribution). So a named admission author only finalizes a window that
+  was *also* attributed to the same user — i.e. with audit on. In committer-only mode
+  the window author is empty and a named command author would not match; the
+  CommitRequest e2e specs that assert a named author therefore still skip
+  committer-only mode. Worth a follow-up if command authorship should stand fully
+  alone.

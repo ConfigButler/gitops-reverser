@@ -127,10 +127,10 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	// A non-nil AuthorLookup selects attributed mode and a Finalizer that never
-	// resolves keeps requests in their in-progress conditions. Neither the lookup
-	// nor the finalizer ever completes, so these specs cover only the initial
-	// in-progress stamp and the terminal short-circuit.
+	// A non-nil AuthorLookup that misses (no admission record) resolves to the
+	// committer immediately, and a Finalizer that never resolves keeps requests in the
+	// WaitingForCloseDelay wait. Neither ever completes, so these specs cover only the
+	// initial in-progress stamp and the terminal short-circuit.
 	err = (&CommitRequestReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),

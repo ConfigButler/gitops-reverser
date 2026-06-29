@@ -56,11 +56,14 @@ const (
 	ConditionTypeGitTargetReady = "GitTargetReady"
 	// ConditionTypeStreamsReady is a source-compatibility alias for StreamsRunning.
 	ConditionTypeStreamsReady = ConditionTypeStreamsRunning
-	// ConditionTypeAttributed indicates whether a CommitRequest's commit author is
-	// settled: immediately True when attribution is not required (committer-only),
-	// True when resolved from the create audit event, and False when the audit event
-	// never arrived and the commit was authored by the configured committer.
-	ConditionTypeAttributed = "Attributed"
+	// ConditionTypeAuthorAttributed indicates whether a CommitRequest's commit author
+	// was named from the submitter captured at admission. It is binary and immediately
+	// settled (no Unknown, no timeout): True (AttributedFromAdmission) when the
+	// internal-commands webhook recorded the submitter, False (CommitterFallback) when
+	// no admission record exists — the webhook is not configured — and the commit is
+	// authored by the configured committer. False is not a failure and does not affect
+	// Ready (docs/design/commitrequest-admission-authorship.md §5).
+	ConditionTypeAuthorAttributed = "AuthorAttributed"
 	// ConditionTypePushed indicates whether a CommitRequest's commit reached the
 	// remote repository.
 	ConditionTypePushed = "Pushed"

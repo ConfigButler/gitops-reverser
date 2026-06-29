@@ -33,7 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
@@ -86,10 +85,6 @@ const (
 	// AttributionAbsent means no usable author fact matched before the grace elapsed.
 	AttributionAbsent AttributionResult = "absent"
 )
-
-// commitRequestResource is the plural resource name of the CommitRequest CRD; the
-// controller resolves its submitter through this index by uid.
-const commitRequestResource = "commitrequests"
 
 // AuthorFact is the minimal attribution fact stored per accepted, mutating audit
 // event and read back by the watch-event resolver. It names an author candidate and
@@ -422,23 +417,6 @@ func attributionResultForFact(fact AuthorFact, weak bool) AttributionResult {
 		return AttributionExactServiceAccount
 	}
 	return AttributionExactUser
-}
-
-// LookupCommitRequestAuthor reads the CommitRequest create-author captured at audit
-// ingestion, keyed by uid. ok=false means the create event has not been observed yet
-// (the webhook may still be ingesting it) or a transient miss; the controller retries on
-// its own cadence and finalizes as committer past its bound. The lookup is by uid alone
-// (globally unique), so namespace/name are accepted for interface compatibility but no
-// longer build the key (v3 carries them in the value, not the key).
-func (a *AttributionIndex) LookupCommitRequestAuthor(
-	ctx context.Context, _, _ string, uid types.UID,
-) (string, bool) {
-	gvr := schema.GroupVersionResource{Group: configv1alpha2.GroupVersion.Group, Resource: commitRequestResource}
-	fact, ok := a.LookupAuthor(ctx, gvr, uid, "", false)
-	if !ok {
-		return "", false
-	}
-	return fact.Author, fact.Author != ""
 }
 
 // factKeyBase is the per-type prefix shared by every fact key, e.g.

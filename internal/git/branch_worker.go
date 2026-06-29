@@ -731,6 +731,18 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 
 	for _, event := range item.Request.Events {
 		if l.openWindow != nil && !l.openWindow.canAppend(event) {
+			// Log the identity that broke the window so an unexpected split is
+			// diagnosable: the common cause is an incoming event whose author is empty
+			// (an unattributed update, e.g. a /status change that carries no audit fact)
+			// arriving against a non-empty window author, which forces a finalize and
+			// can split a CommitRequest collect window. windowAuthor vs eventAuthor makes
+			// that visible at a glance.
+			l.w.Log.Info("Window identity change forces finalize before appending event",
+				"windowAuthor", l.openWindow.Author,
+				"eventAuthor", event.UserInfo.Username,
+				"operation", event.Operation,
+				"resource", event.Identifier.String(),
+				"eventTarget", event.GitTargetNamespace+"/"+event.GitTargetName)
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonIdentityChange)
 			l.maybeSchedulePush()
 			// The window just closed and a new one for this event has not opened yet: an idle

@@ -33,7 +33,6 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
@@ -415,36 +414,4 @@ func TestRedisStore_WatchCursorKeyReadableFormat(t *testing.T) {
 func TestNewRedisStore_RequiresAddr(t *testing.T) {
 	_, err := NewRedisStore(RedisStoreConfig{})
 	require.Error(t, err)
-}
-
-func TestAttributionIndex_LookupCommitRequestAuthor(t *testing.T) {
-	idx := newTestAttributionIndex(t)
-	ctx := context.Background()
-
-	body := `{"apiVersion":"configbutler.ai/v1alpha2","kind":"CommitRequest",` +
-		`"metadata":{"name":"save-1","namespace":"team-a","uid":"cr-uid","resourceVersion":"7"}}`
-	ev := auditv1.Event{
-		AuditID: "cr-create",
-		Verb:    "create",
-		Stage:   auditv1.StageResponseComplete,
-		User:    authnv1.UserInfo{Username: "alice"},
-		ObjectRef: &auditv1.ObjectReference{
-			APIGroup:   configv1alpha2.GroupVersion.Group,
-			APIVersion: configv1alpha2.GroupVersion.Version,
-			Resource:   commitRequestResource,
-			Namespace:  "team-a",
-			Name:       "save-1",
-			UID:        "cr-uid",
-		},
-		ResponseObject: &runtime.Unknown{Raw: []byte(body)},
-	}
-	require.NoError(t, idx.RecordFact(ctx, ev))
-
-	author, ok := idx.LookupCommitRequestAuthor(ctx, "team-a", "save-1", "cr-uid")
-	require.True(t, ok)
-	require.Equal(t, "alice", author)
-
-	// v3 keys the lookup by uid alone, so an unknown uid misses even at the same name.
-	_, ok = idx.LookupCommitRequestAuthor(ctx, "team-a", "save-1", "absent-uid")
-	require.False(t, ok)
 }

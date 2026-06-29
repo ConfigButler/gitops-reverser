@@ -1,0 +1,46 @@
+{{- if .Values.servers.admission.enabled }}
+---
+# Captures the authenticated submitter of our own command kinds (a CommitRequest today)
+# at admission, into the command-author Redis corner the controller reads back with no
+# wait. Narrow by construction: one rule per command kind. failurePolicy is Ignore and
+# the handler always allows, so a user's CommitRequest never depends on this webhook —
+# a miss degrades to a committer-authored commit (AuthorAttributed=False).
+# See docs/design/commitrequest-admission-authorship.md §4.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-internal-commands
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+  {{- if and .Values.servers.admission.tls.certManager .Values.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gitops-reverser.admissionServerCertName" . }}
+  {{- end }}
+webhooks:
+  - name: internal-commands.configbutler.ai
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "gitops-reverser.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /internal-commands
+        port: {{ .Values.servers.admission.port }}
+    # Ignore, not Fail: a missed author capture must degrade to the committer, never
+    # reject a user's CommitRequest.
+    failurePolicy: Ignore
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups:
+          - configbutler.ai
+        apiVersions:
+          - v1alpha2
+        operations:
+          - CREATE
+        resources:
+          - commitrequests
+        scope: Namespaced
+    # Redis write on real requests; nothing on dry-run (the handler honors this).
+    sideEffects: NoneOnDryRun
+    timeoutSeconds: {{ .Values.servers.admission.timeoutSeconds }}
+{{- end }}

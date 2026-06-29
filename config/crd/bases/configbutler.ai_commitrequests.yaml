@@ -21,8 +21,8 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Attributed")].status
-      name: Attributed
+    - jsonPath: .status.conditions[?(@.type=="AuthorAttributed")].status
+      name: AuthorAttributed
       type: string
     - jsonPath: .status.conditions[?(@.type=="Pushed")].status
       name: Pushed
@@ -131,7 +131,7 @@ spec:
                 description: |-
                   Conditions report the request's progress and terminal outcome: the Ready
                   summary, the kstatus Reconciling/Stalled pair, and the domain conditions
-                  Attributed and Pushed.
+                  AuthorAttributed and Pushed.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

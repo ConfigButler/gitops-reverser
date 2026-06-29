@@ -38,23 +38,24 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 		wantMsg    string
 	}{
 		{
-			name: "committer-only in the close-delay wait (attributed immediately)",
+			name: "committer fallback in the close-delay wait (AuthorAttributed=False is not a failure)",
 			conds: []map[string]interface{}{
 				conditionMap(ConditionTypeReady, "False", crReasonWaitingForCloseDelay, closeDelayMessage),
 				conditionMap(ConditionTypeReconciling, "True", crReasonWaitingForCloseDelay, closeDelayMessage),
 				conditionMap(ConditionTypeStalled, "False", crReasonWaitingForCloseDelay, notStalledMessage),
-				conditionMap(ConditionTypeAttributed, "True", crReasonAttributionNotRequired, "attribution disabled"),
+				conditionMap(ConditionTypeAuthorAttributed, "False", crReasonCommitterFallback, "no admission record"),
 				conditionMap(ConditionTypePushed, "Unknown", crReasonWaitingForCloseDelay, pushPendingMessage),
 			},
 			wantStatus: kstatus.InProgressStatus,
 		},
 		{
-			name: "attributed mode waiting for the audit event",
+			name: "admission-attributed in the close-delay wait",
 			conds: []map[string]interface{}{
-				conditionMap(ConditionTypeReady, "False", crReasonWaitingForAuditEvent, "waiting for audit event"),
-				conditionMap(ConditionTypeReconciling, "True", crReasonWaitingForAuditEvent, "waiting for audit event"),
-				conditionMap(ConditionTypeStalled, "False", crReasonWaitingForAuditEvent, notStalledMessage),
-				conditionMap(ConditionTypeAttributed, "Unknown", crReasonWaitingForAuditEvent, "waiting"),
+				conditionMap(ConditionTypeReady, "False", crReasonWaitingForCloseDelay, closeDelayMessage),
+				conditionMap(ConditionTypeReconciling, "True", crReasonWaitingForCloseDelay, closeDelayMessage),
+				conditionMap(ConditionTypeStalled, "False", crReasonWaitingForCloseDelay, notStalledMessage),
+				conditionMap(ConditionTypeAuthorAttributed, "True", crReasonAttributedFromAdmission, "from admission"),
+				conditionMap(ConditionTypePushed, "Unknown", crReasonWaitingForCloseDelay, pushPendingMessage),
 			},
 			wantStatus: kstatus.InProgressStatus,
 		},
@@ -64,7 +65,7 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 				conditionMap(ConditionTypeReady, "True", crReasonCommitted, "closed, committed, and pushed"),
 				conditionMap(ConditionTypeReconciling, "False", crReasonCommitted, "closed, committed, and pushed"),
 				conditionMap(ConditionTypeStalled, "False", crReasonCommitted, notStalledMessage),
-				conditionMap(ConditionTypeAttributed, "True", crReasonAttributedFromAudit, "from audit event"),
+				conditionMap(ConditionTypeAuthorAttributed, "True", crReasonAttributedFromAdmission, "from admission"),
 				conditionMap(ConditionTypePushed, "True", crReasonPushed, "pushed"),
 			},
 			wantStatus: kstatus.CurrentStatus,

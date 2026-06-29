@@ -76,7 +76,7 @@ Create the name of the audit service.
 Default Secret name for the audit root CA.
 */}}
 {{- define "gitops-reverser.auditRootCASecretName" -}}
-{{- .Values.certificates.audit.rootCA.secretNameOverride | default (printf "%s-audit-root-ca" (include "gitops-reverser.fullname" .)) -}}
+{{- .Values.servers.audit.tls.rootCA.secretNameOverride | default (printf "%s-audit-root-ca" (include "gitops-reverser.fullname" .)) -}}
 {{- end }}
 
 {{/*
@@ -90,5 +90,20 @@ Default Secret name for the audit server certificate.
 Default Secret name for the kube-apiserver audit client certificate.
 */}}
 {{- define "gitops-reverser.auditClientSecretName" -}}
-{{- .Values.certificates.audit.client.secretNameOverride | default (printf "%s-audit-client-cert" (include "gitops-reverser.fullname" .)) -}}
+{{- .Values.servers.audit.tls.client.secretNameOverride | default (printf "%s-audit-client-cert" (include "gitops-reverser.fullname" .)) -}}
+{{- end }}
+
+{{/*
+Default Secret name for the validating admission (internal-commands) serving certificate.
+*/}}
+{{- define "gitops-reverser.admissionServerSecretName" -}}
+{{- .Values.servers.admission.tls.secretNameOverride | default (printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .)) -}}
+{{- end }}
+
+{{/*
+Name of the cert-manager Certificate that mints the admission serving cert. Used both
+as the Certificate name and in the webhook's cert-manager.io/inject-ca-from annotation.
+*/}}
+{{- define "gitops-reverser.admissionServerCertName" -}}
+{{- printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .) -}}
 {{- end }}

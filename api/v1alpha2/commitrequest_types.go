@@ -69,10 +69,11 @@ type CommitRequestSpec struct {
 //     present, or a foreign open window). False while in progress or when it failed.
 //   - Reconciling / Stalled: the kstatus progress / blocked pair. Reconciling=True
 //     while finalizing; Stalled=True when the finalize failed and needs attention.
-//   - Attributed (domain): True once the author is settled — immediately True when
-//     attribution is not required (committer-only), True when resolved from the
-//     create audit event, and False if the audit event never arrived and the commit
-//     was authored by the configured committer.
+//   - AuthorAttributed (domain): binary and settled immediately. True
+//     (AttributedFromAdmission) when the submitter captured at admission named the
+//     commit author; False (CommitterFallback) when no admission record exists — the
+//     internal-commands webhook is not configured — and the commit is authored by the
+//     configured committer. False is not a failure and does not affect Ready.
 //   - Pushed (domain): True once the commit is in the remote repository.
 type CommitRequestStatus struct {
 	// ObservedGeneration is the most recent generation observed by the controller.
@@ -81,7 +82,7 @@ type CommitRequestStatus struct {
 
 	// Conditions report the request's progress and terminal outcome: the Ready
 	// summary, the kstatus Reconciling/Stalled pair, and the domain conditions
-	// Attributed and Pushed.
+	// AuthorAttributed and Pushed.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -103,7 +104,7 @@ type CommitRequestStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.targetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Attributed",type=string,JSONPath=`.status.conditions[?(@.type=="Attributed")].status`
+// +kubebuilder:printcolumn:name="AuthorAttributed",type=string,JSONPath=`.status.conditions[?(@.type=="AuthorAttributed")].status`
 // +kubebuilder:printcolumn:name="Pushed",type=string,JSONPath=`.status.conditions[?(@.type=="Pushed")].status`
 // +kubebuilder:printcolumn:name="SHA",type=string,JSONPath=`.status.sha`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`

@@ -35,18 +35,16 @@ const commitRequestMessageMaxBytes = 1024
 
 // CommitRequest condition reasons (CamelCase tokens surfaced on status.conditions).
 const (
-	crReasonWaitingForAuditEvent   = "WaitingForAuditEvent"
-	crReasonWaitingForCloseDelay   = "WaitingForCloseDelay"
-	crReasonCommitted              = "Committed"
-	crReasonNoWindowInGrace        = "NoWindowInGrace"
-	crReasonWindowMismatch         = "WindowMismatch"
-	crReasonAlreadyPresent         = "AlreadyPresent"
-	crReasonFinalizeFailed         = "FinalizeFailed"
-	crReasonUnexpectedOutcome      = "UnexpectedOutcome"
-	crReasonAttributionNotRequired = "AttributionNotRequired"
-	crReasonAttributedFromAudit    = "AttributedFromAuditEvent"
-	crReasonAuditEventNotObserved  = "AuditEventNotObserved"
-	crReasonPushed                 = "Pushed"
+	crReasonWaitingForCloseDelay    = "WaitingForCloseDelay"
+	crReasonCommitted               = "Committed"
+	crReasonNoWindowInGrace         = "NoWindowInGrace"
+	crReasonWindowMismatch          = "WindowMismatch"
+	crReasonAlreadyPresent          = "AlreadyPresent"
+	crReasonFinalizeFailed          = "FinalizeFailed"
+	crReasonUnexpectedOutcome       = "UnexpectedOutcome"
+	crReasonAttributedFromAdmission = "AttributedFromAdmission"
+	crReasonCommitterFallback       = "CommitterFallback"
+	crReasonPushed                  = "Pushed"
 )
 
 // noWindowInGraceMessage is the prose for a NoWindowInGrace outcome: the grace
@@ -62,22 +60,19 @@ const alreadyPresentMessage = "the change already matches the remote, so no comm
 const notStalledMessage = "the CommitRequest is not stalled"
 
 // commitRequestAttribution is the settled author decision threaded from the
-// attribute step into the terminal status write so the Attributed condition can
-// record how (and whether) the commit author was named.
+// attribute step into the terminal status write so the AuthorAttributed condition can
+// record whether the commit author was named. It is binary and always settled at
+// first sight (present-or-never, §2) — there is no pending or timed-out state.
 type commitRequestAttribution int
 
 const (
-	// attributionPending means the attribution decision is not settled yet
-	// (attributed mode, still waiting for the create audit event).
-	attributionPending commitRequestAttribution = iota
-	// attributionNotRequired means attribution is disabled (committer-only); the
-	// author is settled immediately as the configured committer.
-	attributionNotRequired
-	// attributionResolved means the author was named from the create audit event.
-	attributionResolved
-	// attributionTimedOut means the audit event never arrived within the bound, so
-	// the commit is authored by the configured committer.
-	attributionTimedOut
+	// attributionFromAdmission means the submitter was captured at admission by the
+	// internal-commands webhook and named as the commit author.
+	attributionFromAdmission commitRequestAttribution = iota
+	// attributionCommitter means no admission author record exists — the
+	// internal-commands webhook is not configured (or did not record one) — so the
+	// commit is authored by the configured committer.
+	attributionCommitter
 )
 
 // setCommitRequestCondition upserts a condition keyed by type, stamping it with
@@ -91,13 +86,12 @@ func setCommitRequestCondition(
 	cr.Status.Conditions = upsertCondition(cr.Status.Conditions, conditionType, status, reason, message, cr.Generation)
 }
 
-// Progress-condition messages. A CommitRequest passes through two distinct,
-// observable waits before it terminates: WaitingForAuditEvent (waiting to learn the
-// author) and WaitingForCloseDelay (author settled, attached to the worker, waiting
-// out the close delay before the window closes and the commit is made and pushed).
+// Progress-condition messages. The author is settled synchronously at first sight
+// (present-or-never, §2), so a CommitRequest has a single observable wait before it
+// terminates: WaitingForCloseDelay — author settled, attached to the worker, waiting
+// out the close delay before the window closes and the commit is made and pushed.
 const (
-	waitingForAuditMessage = "waiting for the CommitRequest's create audit event to attribute the author"
-	closeDelayMessage      = "attached to the open commit window; waiting out the close delay " +
+	closeDelayMessage = "attached to the open commit window; waiting out the close delay " +
 		"before the commit is made and pushed"
 	pushPendingMessage = "the commit has not been pushed yet"
 )
@@ -112,48 +106,31 @@ func setCommitRequestProgress(cr *configv1alpha2.CommitRequest, reason, message 
 	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionUnknown, reason, pushPendingMessage)
 }
 
-// markCommitRequestInProgress stamps the first-sight, still-running conditions.
-// attributionRequired is false in committer-only mode, where the author is settled
-// immediately (Attributed=True) and the request enters the WaitingForCloseDelay wait
-// at once; otherwise it starts in the WaitingForAuditEvent wait (Attributed=Unknown)
-// until its create audit event arrives.
-func markCommitRequestInProgress(cr *configv1alpha2.CommitRequest, attributionRequired bool) {
-	cr.Status.ObservedGeneration = cr.Generation
-	if attributionRequired {
-		setCommitRequestProgress(cr, crReasonWaitingForAuditEvent, waitingForAuditMessage)
-		setCommitRequestCondition(cr, ConditionTypeAttributed, metav1.ConditionUnknown,
-			crReasonWaitingForAuditEvent, "waiting for the create audit event that names the author")
-		return
-	}
-	// Committer-only: no audit wait — settle the author and enter the close-delay wait.
-	setCommitRequestAttributed(cr, attributionNotRequired)
-	setCommitRequestProgress(cr, crReasonWaitingForCloseDelay, closeDelayMessage)
-}
-
-// markCommitRequestWaitingForCloseDelay records the post-attribution wait — the
-// second of the two progress waits — as its own observable state: the author is
-// settled (Attributed), and the request is attached to the worker, waiting out the
-// close delay before the window closes and the commit is made and pushed
-// (Reconciling=True, reason WaitingForCloseDelay).
+// markCommitRequestWaitingForCloseDelay records the single still-running state. The
+// author is settled synchronously at first sight (present-or-never, §2), so there is no
+// prior "waiting for the author" phase: the request is attributed and attached to the
+// worker, waiting out the close delay before the window closes and the commit is made
+// and pushed (Reconciling=True, reason WaitingForCloseDelay).
 func markCommitRequestWaitingForCloseDelay(cr *configv1alpha2.CommitRequest, attribution commitRequestAttribution) {
 	cr.Status.ObservedGeneration = cr.Generation
 	setCommitRequestAttributed(cr, attribution)
 	setCommitRequestProgress(cr, crReasonWaitingForCloseDelay, closeDelayMessage)
 }
 
-// setCommitRequestAttributed records the settled author decision on the Attributed
-// condition. attributionPending is left to the in-progress stamp and never reaches here.
+// setCommitRequestAttributed records the settled, binary author decision on the
+// AuthorAttributed condition. False (CommitterFallback) is not a failure and does not
+// affect Ready — it is the honest signal that no admission author record was found.
 func setCommitRequestAttributed(cr *configv1alpha2.CommitRequest, attribution commitRequestAttribution) {
 	switch attribution {
-	case attributionResolved:
-		setCommitRequestCondition(cr, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributedFromAudit,
-			"the author was attributed from the CommitRequest's create audit event")
-	case attributionTimedOut:
-		setCommitRequestCondition(cr, ConditionTypeAttributed, metav1.ConditionFalse, crReasonAuditEventNotObserved,
-			"the create audit event was not observed within the bound; committed as the configured committer")
-	case attributionNotRequired, attributionPending:
-		setCommitRequestCondition(cr, ConditionTypeAttributed, metav1.ConditionTrue, crReasonAttributionNotRequired,
-			"attribution is disabled; committing as the configured committer")
+	case attributionFromAdmission:
+		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue,
+			crReasonAttributedFromAdmission,
+			"the submitter was captured at admission and named as the commit author")
+	case attributionCommitter:
+		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
+			crReasonCommitterFallback,
+			"no admission author record (the internal-commands webhook is not configured); "+
+				"committed as the configured committer")
 	}
 }
 

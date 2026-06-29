@@ -1,4 +1,4 @@
-{{- if and .Values.certificates.certManager.enabled .Values.certificates.audit.enabled .Values.servers.audit.tls.enabled }}
+{{- if and .Values.certManager.enabled .Values.servers.audit.tls.certManager .Values.servers.audit.tls.enabled }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -12,8 +12,8 @@ spec:
   duration: 87600h
   isCA: true
   issuerRef:
-    kind: {{ .Values.certificates.certManager.issuer.kind }}
-    name: {{ .Values.certificates.certManager.issuer.name }}
+    kind: {{ .Values.certManager.issuer.kind }}
+    name: {{ .Values.certManager.issuer.name }}
   privateKey:
     algorithm: ECDSA
     rotationPolicy: Always
@@ -64,11 +64,11 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 spec:
   commonName: kube-apiserver
-  duration: {{ .Values.certificates.audit.client.duration | quote }}
+  duration: {{ .Values.servers.audit.tls.client.duration | quote }}
   issuerRef:
     kind: Issuer
     name: {{ include "gitops-reverser.fullname" . }}-audit-ca-issuer
-  renewBefore: {{ .Values.certificates.audit.client.renewBefore | quote }}
+  renewBefore: {{ .Values.servers.audit.tls.client.renewBefore | quote }}
   secretName: {{ include "gitops-reverser.auditClientSecretName" . }}
   usages:
     - digital signature

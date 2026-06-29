@@ -260,26 +260,36 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)
 	}
-	// AuthorLookup is the optional attribution index. It must be a nil interface — not a
-	// non-nil interface wrapping a nil *AttributionIndex — when attribution is off, so the
-	// controller's nil check selects finalize-as-committer instead of waiting for facts that
-	// will never arrive.
-	var commitRequestAuthorLookup controller.CommitRequestAuthorLookup
-	if cfg.authorAttribution {
-		commitRequestAuthorLookup = attributionIndex
+	// Command authorship is captured at admission by the internal-commands webhook and
+	// lives in its own Redis corner (author:v1:command), independent of
+	// --author-attribution (which governs mirrored-resource attribution). It is wired
+	// whenever the admission server is on; the controller reads the captured submitter
+	// back with no wait (docs/design/commitrequest-admission-authorship.md §2, §6).
+	//
+	// AuthorLookup must be a nil interface — not a non-nil interface wrapping a nil
+	// *CommandAuthorStore — when the webhook is off, so the controller's nil check
+	// selects finalize-as-committer immediately (AuthorAttributed=False) instead of
+	// dereferencing a nil store.
+	var commandAuthorStore *queue.CommandAuthorStore
+	var commandAuthorLookup controller.CommandAuthorLookup
+	if cfg.admissionWebhookEnabled {
+		commandAuthorStore = redisStore.CommandAuthorStore()
+		commandAuthorLookup = commandAuthorStore
+		setupLog.Info("internal-commands webhook enabled: command submitters are captured at admission " +
+			"and named as the commit author")
 	}
 	if err := (&controller.CommitRequestReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
 		APIReader:    mgr.GetAPIReader(),
 		Finalizer:    eventRouter,
-		AuthorLookup: commitRequestAuthorLookup,
+		AuthorLookup: commandAuthorLookup,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
 		os.Exit(1)
 	}
 	if cfg.admissionWebhookEnabled {
-		setupAdmissionWebhooks(mgr)
+		setupAdmissionWebhooks(mgr, commandAuthorStore)
 	}
 	// +kubebuilder:scaffold:builder
 
@@ -856,10 +866,17 @@ func newManager(
 	return mgr
 }
 
-func setupAdmissionWebhooks(mgr ctrl.Manager) {
+// setupAdmissionWebhooks registers both handlers on the one admission server: the
+// always-allow observer (a future-policy extension point) and the internal-commands
+// handler that captures the submitter of our own command kinds into commandAuthorStore.
+func setupAdmissionWebhooks(mgr ctrl.Manager, commandAuthorStore *queue.CommandAuthorStore) {
 	mgr.GetWebhookServer().Register(
 		webhookhandler.ValidateAdmissionWebhookPath,
 		&ctrladmission.Webhook{Handler: webhookhandler.AdmissionAllowHandler{}},
+	)
+	mgr.GetWebhookServer().Register(
+		webhookhandler.InternalCommandsPath,
+		&ctrladmission.Webhook{Handler: &webhookhandler.InternalCommandsHandler{Store: commandAuthorStore}},
 	)
 }
 
