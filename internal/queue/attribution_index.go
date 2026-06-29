@@ -40,20 +40,28 @@ import (
 
 // DefaultAttributionFactTTL is how long an attribution fact is retained in Redis
 // waiting for the matching watch event to join it. Facts are never object state, so
-// they expire on their own — nothing deletes them. Configurable via --author-attribution-ttl.
-const DefaultAttributionFactTTL = 10 * time.Minute
+// they expire on their own — nothing deletes them. After it elapses a miss is simply
+// "absent": the v3 schema keeps no tombstone, so an aged-out fact is indistinguishable
+// from one that never arrived. Configurable via --author-attribution-ttl.
+const DefaultAttributionFactTTL = 15 * time.Minute
 
 // keyPrefix is the fixed root namespace for every Redis key (cursors and facts alike).
 const keyPrefix = "gitops-reverser"
 
 const (
-	attributionKeySuffix         = ":attr:v2:"
-	attributionVariantExact      = "e" // (group, resource, namespace, name, uid, rv)
-	attributionVariantUID        = "u" // (group, resource, namespace, name, uid)
-	attributionVariantRV         = "r" // (group, resource, namespace, name, rv)
-	factTombstoneSuffix          = ":seen"
-	factMissSuffix               = ":miss"
-	factTombstoneTTLMultiplier   = 2
+	// attributionKeySuffix namespaces audit-sourced resource author facts under the
+	// top-level author domain, e.g. "gitops-reverser:author:v1:audit:<group/resource>:...".
+	attributionKeySuffix = ":author:v1:audit:"
+	// factObjectInfix groups every fact for one object under one prefix, so a SCAN of
+	// "<group/resource>:object:<uid>/*" shows the whole history-in-flight for that object.
+	factObjectInfix = ":object:"
+	// factRVInfix is the type-scoped rv-only escape hatch, a sibling of object: for a
+	// fact that has an RV but no UID (§5 of redis-key-schema-v3.md).
+	factRVInfix = ":rv:"
+	// factLastLeaf is the latest-writer-wins pointer for an object, written on every
+	// update and consulted only when the immutable exact key misses.
+	factLastLeaf = "last"
+
 	attributionFactScanBatchSize = 100
 	serviceAccountUserPrefix     = "system:serviceaccount:"
 )
@@ -66,29 +74,33 @@ const (
 	AttributionExactUser AttributionResult = "exact_user"
 	// AttributionExactServiceAccount is an exact UID+resourceVersion match for a named service account.
 	AttributionExactServiceAccount AttributionResult = "exact_serviceaccount"
-	// AttributionWeak is a non-exact match, such as UID-only or RV-only.
+	// AttributionWeak is a non-exact match: the uid-latest /last pointer or the rv-only
+	// escape hatch, used by known RV-mismatch events and no-UID facts respectively.
 	AttributionWeak AttributionResult = "weak"
-	// AttributionExactDeleteCollectionItem is a UID match to a fact expanded from a
-	// deletecollection response body — a precise per-object credit for one member of
-	// a collection delete, joined by UID (the body item's RV is the pre-delete RV and
-	// never matches the removal event's RV, so UID is the only stable join key).
+	// AttributionExactDeleteCollectionItem is a match to a fact expanded from a
+	// deletecollection response body — a precise per-object credit for one member of a
+	// collection delete, joined by UID via /last (the body item's RV is the pre-delete
+	// RV and never matches the removal event's RV). The reason is driven by the value's
+	// verb, not by which key matched.
 	AttributionExactDeleteCollectionItem AttributionResult = "exact_deletecollection_item"
-	// AttributionConflict means multiple authors wrote facts for the selected join key.
-	AttributionConflict AttributionResult = "conflict"
-	// AttributionExpired means a fact key existed, but only its tombstone remains.
-	AttributionExpired AttributionResult = "expired"
-	// AttributionAbsent means no fact or tombstone matched.
+	// AttributionAbsent means no usable author fact matched before the grace elapsed.
 	AttributionAbsent AttributionResult = "absent"
 )
 
 // commitRequestResource is the plural resource name of the CommitRequest CRD; the
-// controller resolves its submitter through this index by (namespace, name, uid).
+// controller resolves its submitter through this index by uid.
 const commitRequestResource = "commitrequests"
 
 // AuthorFact is the minimal attribution fact stored per accepted, mutating audit
-// event and read back by the watch-event resolver. It names an author candidate
-// and carries the evidence needed to decide confidence; it is never object state.
+// event and read back by the watch-event resolver. It names an author candidate and
+// carries the evidence needed to decide confidence; it is never object state. v3 moves
+// the object identity (group-resource, namespace, name, uid) off the key and into the
+// value, so the fact is self-describing.
 type AuthorFact struct {
+	GroupResource    string `json:"groupResource,omitempty"`
+	Namespace        string `json:"namespace,omitempty"`
+	Name             string `json:"name,omitempty"`
+	UID              string `json:"uid,omitempty"`
 	Author           string `json:"author"`
 	DisplayName      string `json:"displayName,omitempty"`
 	Email            string `json:"email,omitempty"`
@@ -98,7 +110,6 @@ type AuthorFact struct {
 	ResourceVersion  string `json:"resourceVersion,omitempty"`
 	StageTimestamp   string `json:"stageTimestamp,omitempty"`
 	IsServiceAccount bool   `json:"isServiceAccount,omitempty"`
-	Conflict         bool   `json:"conflict,omitempty"`
 }
 
 // AuthorResolution is the structured result of an attribution lookup.
@@ -117,11 +128,12 @@ type AttributionIndex struct {
 	factTTL time.Duration
 }
 
-// RecordFact stores the attribution fact for one accepted, mutating audit event
-// under every join key it can compute (exact, uid, rv), each with a bounded TTL.
-// It is a no-op for events without an objectRef, a resolvable name, or a user —
-// those can never name an author. The caller (the audit handler) has already
-// rejected reads, failures, dry-runs, and non-ResponseComplete stages.
+// RecordFact stores the attribution fact for one accepted, mutating audit event. A
+// UID-bearing fact writes the immutable exact key (uid+rv) and overwrites the /last
+// pointer; a fact that has an RV but no UID writes the type-scoped rv-only key instead.
+// It is a no-op for events without an objectRef, a resolvable name, or a user — those
+// can never name an author. The caller (the audit handler) has already rejected reads,
+// failures, dry-runs, and non-ResponseComplete stages.
 func (a *AttributionIndex) RecordFact(ctx context.Context, event auditv1.Event) error {
 	if event.ObjectRef == nil {
 		return nil
@@ -149,14 +161,21 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, event auditv1.Event) 
 		return nil
 	}
 
+	gr := groupResourceKey(group, resource)
+	rv := resourceVersionFromEvent(event)
+	uid := string(identity.UID)
 	fact := AuthorFact{
+		GroupResource:    gr,
+		Namespace:        identity.Namespace,
+		Name:             identity.Name,
+		UID:              uid,
 		Author:           user.Username,
 		DisplayName:      user.DisplayName,
 		Email:            user.Email,
 		Verb:             event.Verb,
 		Subresource:      event.ObjectRef.Subresource,
 		AuditID:          string(event.AuditID),
-		ResourceVersion:  resourceVersionFromEvent(event),
+		ResourceVersion:  rv,
 		IsServiceAccount: strings.HasPrefix(user.Username, serviceAccountUserPrefix),
 	}
 	if !event.StageTimestamp.IsZero() {
@@ -168,40 +187,59 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, event auditv1.Event) 
 		return fmt.Errorf("marshal attribution fact: %w", err)
 	}
 
-	keys := a.factKeyVariants(group, resource, identity.Namespace, identity.Name, identity.UID, fact.ResourceVersion)
-	if len(keys) == 0 {
-		return nil
+	wrote, err := a.writeFactKeys(ctx, gr, uid, rv, raw)
+	if err != nil {
+		return err
 	}
-	late := false
-	for _, key := range keys {
-		if a.client.Exists(ctx, a.factMissKey(key)).Val() > 0 {
-			late = true
-		}
-		if err := a.storeFactKey(ctx, key, raw, fact.Author); err != nil {
-			return fmt.Errorf("store attribution fact %q: %w", key, err)
-		}
+	if wrote {
+		a.recordFactEvent(ctx, "written")
+		a.recordFactIndexSize(ctx)
 	}
-	a.recordFactEvent(ctx, "written")
-	if late {
-		a.recordFactEvent(ctx, "late")
-	}
-	a.recordFactIndexSize(ctx)
 	return nil
 }
 
+// writeFactKeys persists a single-object fact under the keys it can compute: the
+// immutable exact key (uid+rv) plus the last-writer-wins /last pointer when a UID is
+// known, or the type-scoped rv-only escape hatch when the fact has an RV but no UID.
+// The exact key is written once per (uid, rv) and never contended, so there is no
+// conflict marking. It reports whether any key was written.
+func (a *AttributionIndex) writeFactKeys(ctx context.Context, gr, uid, rv string, raw []byte) (bool, error) {
+	switch {
+	case uid != "":
+		if rv != "" {
+			if err := a.setFact(ctx, a.factKeyExact(gr, uid, rv), raw); err != nil {
+				return false, fmt.Errorf("store exact attribution fact: %w", err)
+			}
+		}
+		if err := a.setFact(ctx, a.factKeyLast(gr, uid), raw); err != nil {
+			return false, fmt.Errorf("store last attribution fact: %w", err)
+		}
+		return true, nil
+	case rv != "":
+		// The §5 escape hatch: a UID-bearing fact's rv-only key would be dead (the watch
+		// side always carries a UID and resolves via object:<uid>/… first), so it is
+		// written only when there is no UID.
+		if err := a.setFact(ctx, a.factKeyRV(gr, rv), raw); err != nil {
+			return false, fmt.Errorf("store rv-only attribution fact: %w", err)
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
 // RecordDeleteCollectionFacts expands a deletecollection response body into one
-// uid-only attribution fact per listed object, joined by UID against the per-object
-// removal watch event. It is a no-op for any other verb, or when the body is absent,
-// hollow, or unparseable — an aggregated / metadata-only deletecollection then
+// uid-latest (/last) attribution fact per listed object, joined by UID against the
+// per-object removal watch event. It is a no-op for any other verb, or when the body is
+// absent, hollow, or unparseable — an aggregated / metadata-only deletecollection then
 // degrades to a committer-authored removal.
 //
-// It writes ONLY the uid-only key: the body item's resourceVersion is the pre-delete
-// RV, which no watch removal event ever presents, so the exact and rv-only variants
-// would be dead keys. Finalizer-pending items are NOT skipped — under the
-// deletion-as-intent rule a deletionTimestamp already removes the file, so the actor
-// who ran the collection delete is credited with that removal even while Kubernetes
-// finalization is still in flight. See
-// docs/design/deletecollection-attribution-expander.md.
+// It writes ONLY the /last key: the body item's resourceVersion is the pre-delete RV,
+// which no watch removal event ever presents, so the exact and rv-only keys would be
+// dead. Finalizer-pending items are NOT skipped — under the deletion-as-intent rule a
+// deletionTimestamp already removes the file, so the actor who ran the collection delete
+// is credited with that removal even while Kubernetes finalization is still in flight.
+// See docs/design/deletecollection-attribution-expander.md.
 func (a *AttributionIndex) RecordDeleteCollectionFacts(ctx context.Context, event auditv1.Event) error {
 	if !strings.EqualFold(event.Verb, "deletecollection") || event.ObjectRef == nil || event.ObjectRef.Resource == "" {
 		return nil
@@ -215,7 +253,7 @@ func (a *AttributionIndex) RecordDeleteCollectionFacts(ctx context.Context, even
 		return nil
 	}
 
-	fact := AuthorFact{
+	base := AuthorFact{
 		Author:           user.Username,
 		DisplayName:      user.DisplayName,
 		Email:            user.Email,
@@ -224,41 +262,37 @@ func (a *AttributionIndex) RecordDeleteCollectionFacts(ctx context.Context, even
 		IsServiceAccount: strings.HasPrefix(user.Username, serviceAccountUserPrefix),
 	}
 	if !event.StageTimestamp.IsZero() {
-		fact.StageTimestamp = event.StageTimestamp.UTC().Format(time.RFC3339Nano)
+		base.StageTimestamp = event.StageTimestamp.UTC().Format(time.RFC3339Nano)
 	}
-	raw, err := json.Marshal(fact)
-	if err != nil {
-		return fmt.Errorf("marshal deletecollection fact: %w", err)
-	}
-	return a.storeDeleteCollectionFacts(
-		ctx,
-		event.ObjectRef.APIGroup,
-		event.ObjectRef.Resource,
-		items,
-		raw,
-		fact.Author,
-	)
+	return a.storeDeleteCollectionFacts(ctx, event.ObjectRef.APIGroup, event.ObjectRef.Resource, items, base)
 }
 
-// storeDeleteCollectionFacts writes one uid-only fact per joinable item and records
-// the expander metrics when at least one item was written. rv="" makes
-// factKeyVariants yield exactly the uid-only key.
+// storeDeleteCollectionFacts writes one /last fact per joinable item, carrying the
+// per-item object identity in the value, and records the expander metrics when at least
+// one item was written.
 func (a *AttributionIndex) storeDeleteCollectionFacts(
 	ctx context.Context,
 	group, resource string,
 	items []deleteCollectionItem,
-	raw []byte,
-	author string,
+	base AuthorFact,
 ) error {
+	gr := groupResourceKey(group, resource)
+	base.GroupResource = gr
 	expanded := false
 	for _, item := range items {
 		if item.Name == "" || item.UID == "" {
 			continue
 		}
-		for _, key := range a.factKeyVariants(group, resource, item.Namespace, item.Name, item.UID, "") {
-			if err := a.storeFactKey(ctx, key, raw, author); err != nil {
-				return fmt.Errorf("store deletecollection fact %q: %w", key, err)
-			}
+		fact := base
+		fact.Namespace = item.Namespace
+		fact.Name = item.Name
+		fact.UID = string(item.UID)
+		raw, err := json.Marshal(fact)
+		if err != nil {
+			return fmt.Errorf("marshal deletecollection fact: %w", err)
+		}
+		if err := a.setFact(ctx, a.factKeyLast(gr, string(item.UID)), raw); err != nil {
+			return fmt.Errorf("store deletecollection fact %q: %w", item.Name, err)
 		}
 		expanded = true
 	}
@@ -308,83 +342,80 @@ func deleteCollectionItems(obj *runtime.Unknown) []deleteCollectionItem {
 	return items
 }
 
-// LookupAuthor finds the strongest attribution fact for a watch event, trying the
-// exact (uid+rv), uid-only, then rv-only join keys in that order. ok=false means no
-// fact matched (yet) — the caller ships as committer.
+// LookupAuthor finds the strongest attribution fact for a watch event. ok=false means
+// no fact matched (yet) — the caller ships as committer. exactCapable selects the join
+// policy: see LookupAuthorResolution.
 func (a *AttributionIndex) LookupAuthor(
 	ctx context.Context,
 	gvr schema.GroupVersionResource,
-	namespace, name string,
 	uid types.UID,
 	rv string,
+	exactCapable bool,
 ) (AuthorFact, bool) {
-	resolution := a.LookupAuthorResolution(ctx, gvr, namespace, name, uid, rv)
-	return resolution.Fact, resolution.Result != AttributionAbsent &&
-		resolution.Result != AttributionExpired && resolution.Result != AttributionConflict
+	resolution := a.LookupAuthorResolution(ctx, gvr, uid, rv, exactCapable)
+	return resolution.Fact, resolution.Result != AttributionAbsent
 }
 
-// LookupAuthorResolution finds the strongest attribution fact and explains misses.
+// LookupAuthorResolution finds the strongest attribution fact and classifies the match.
+// It is event-kind-aware:
+//
+//   - An exact-capable event (ADDED / MODIFIED) tries only the immutable exact key
+//     object:<uid>/<rv> and the rv-only escape hatch; it never falls through to the
+//     last-writer-wins /last pointer, because that pointer may name a different, older
+//     author than the create/update this event represents.
+//   - A known RV-mismatch event (DELETED, deletecollection-expanded removal) additionally
+//     consults object:<uid>/last, whose RV deliberately never matches.
+//
+// A miss returns AttributionAbsent; there is no tombstone and so no expired outcome.
 func (a *AttributionIndex) LookupAuthorResolution(
 	ctx context.Context,
 	gvr schema.GroupVersionResource,
-	namespace, name string,
 	uid types.UID,
 	rv string,
+	exactCapable bool,
 ) AuthorResolution {
-	keys := a.factKeyVariants(gvr.Group, gvr.Resource, namespace, name, uid, rv)
-	expired := false
-	for i, key := range keys {
-		resolution, matched, keyExpired := a.lookupAuthorResolutionKey(ctx, key, i, uid, rv)
-		if matched {
-			return resolution
-		}
-		if keyExpired {
-			expired = true
+	gr := groupResourceKey(gvr.Group, gvr.Resource)
+	if uid != "" && rv != "" {
+		if res, ok := a.matchFactKey(ctx, a.factKeyExact(gr, string(uid), rv), false); ok {
+			return res
 		}
 	}
-	if expired {
-		a.recordFactEvent(ctx, "expired_unmatched")
-		return AuthorResolution{Result: AttributionExpired}
+	if !exactCapable && uid != "" {
+		if res, ok := a.matchFactKey(ctx, a.factKeyLast(gr, string(uid)), true); ok {
+			return res
+		}
+	}
+	if rv != "" {
+		if res, ok := a.matchFactKey(ctx, a.factKeyRV(gr, rv), true); ok {
+			return res
+		}
 	}
 	return AuthorResolution{Result: AttributionAbsent}
 }
 
-func (a *AttributionIndex) lookupAuthorResolutionKey(
-	ctx context.Context,
-	key string,
-	variantIndex int,
-	uid types.UID,
-	rv string,
-) (AuthorResolution, bool, bool) {
+// matchFactKey reads one candidate key and turns a present, author-bearing fact into a
+// resolution. weak marks a non-exact match (the /last or rv-only key).
+func (a *AttributionIndex) matchFactKey(ctx context.Context, key string, weak bool) (AuthorResolution, bool) {
 	raw, err := a.client.Get(ctx, key).Bytes()
 	if err != nil {
-		keyExpired := a.client.Exists(ctx, a.factTombstoneKey(key)).Val() > 0
-		return AuthorResolution{}, false, keyExpired
+		return AuthorResolution{}, false
 	}
 	var fact AuthorFact
-	if err := json.Unmarshal(raw, &fact); err != nil {
-		return AuthorResolution{}, false, false
-	}
-	if fact.Conflict {
-		a.recordFactEvent(ctx, "matched")
-		return AuthorResolution{Result: AttributionConflict}, true, false
-	}
-	if fact.Author == "" {
-		return AuthorResolution{}, false, false
+	if err := json.Unmarshal(raw, &fact); err != nil || fact.Author == "" {
+		return AuthorResolution{}, false
 	}
 	a.recordFactEvent(ctx, "matched")
-	result := attributionResultForMatch(variantIndex, uid, rv, fact)
-	return AuthorResolution{Fact: fact, Result: result}, true, false
+	return AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, weak)}, true
 }
 
-func attributionResultForMatch(variantIndex int, uid types.UID, rv string, fact AuthorFact) AttributionResult {
+// attributionResultForFact derives the reason from the matched fact and whether the
+// match was weak. A deletecollection fact is precise per-object credit regardless of
+// which key matched, so its verb (read from the value) wins.
+func attributionResultForFact(fact AuthorFact, weak bool) AttributionResult {
 	if strings.EqualFold(fact.Verb, "deletecollection") {
-		// A deletecollection fact is expanded per object and joined by UID; the body
-		// item's RV never matches the removal event's RV, so this is the precise
-		// credit despite not being an exact uid+rv match.
 		return AttributionExactDeleteCollectionItem
 	}
-	if variantIndex != 0 || uid == "" || rv == "" {
+	if weak {
 		return AttributionWeak
 	}
 	if fact.IsServiceAccount {
@@ -393,95 +424,52 @@ func attributionResultForMatch(variantIndex int, uid types.UID, rv string, fact 
 	return AttributionExactUser
 }
 
-// RecordAuthorMiss marks the join keys for a watch event that shipped without an
-// author, so a later RecordFact can report op="late".
-func (a *AttributionIndex) RecordAuthorMiss(
-	ctx context.Context,
-	gvr schema.GroupVersionResource,
-	namespace, name string,
-	uid types.UID,
-	rv string,
-) {
-	for _, key := range a.factKeyVariants(gvr.Group, gvr.Resource, namespace, name, uid, rv) {
-		_ = a.client.Set(ctx, a.factMissKey(key), "1", a.factTombstoneTTL()).Err()
-	}
-}
-
 // LookupCommitRequestAuthor reads the CommitRequest create-author captured at audit
-// ingestion, keyed by (namespace, name, uid). ok=false means the create event has
-// not been observed yet (the webhook may still be ingesting it) or a transient miss;
-// the controller retries on its own cadence and finalizes as committer past its bound.
+// ingestion, keyed by uid. ok=false means the create event has not been observed yet
+// (the webhook may still be ingesting it) or a transient miss; the controller retries on
+// its own cadence and finalizes as committer past its bound. The lookup is by uid alone
+// (globally unique), so namespace/name are accepted for interface compatibility but no
+// longer build the key (v3 carries them in the value, not the key).
 func (a *AttributionIndex) LookupCommitRequestAuthor(
-	ctx context.Context, namespace, name string, uid types.UID,
+	ctx context.Context, _, _ string, uid types.UID,
 ) (string, bool) {
 	gvr := schema.GroupVersionResource{Group: configv1alpha2.GroupVersion.Group, Resource: commitRequestResource}
-	fact, ok := a.LookupAuthor(ctx, gvr, namespace, name, uid, "")
+	fact, ok := a.LookupAuthor(ctx, gvr, uid, "", false)
 	if !ok {
 		return "", false
 	}
 	return fact.Author, fact.Author != ""
 }
 
-// factKeyVariants returns the join keys for an event/lookup, strongest first. A
-// variant is only emitted when its inputs are present, so a record writes (and a
-// lookup reads) exactly the keys that are computable. Writes and reads share this
-// function so they can never drift.
-func (a *AttributionIndex) factKeyVariants(group, resource, namespace, name string, uid types.UID, rv string) []string {
-	// At most three variants: exact (uid+rv), uid-only, rv-only.
-	const maxFactKeyVariants = 3
-	keys := make([]string, 0, maxFactKeyVariants)
-	if uid != "" && rv != "" {
-		keys = append(keys, a.factKey(attributionVariantExact,
-			group, resource, namespace, name, string(uid), rv))
-	}
-	if uid != "" {
-		keys = append(keys, a.factKey(attributionVariantUID,
-			group, resource, namespace, name, string(uid)))
-	}
-	if rv != "" {
-		keys = append(keys, a.factKey(attributionVariantRV,
-			group, resource, namespace, name, rv))
-	}
-	return keys
+// factKeyBase is the per-type prefix shared by every fact key, e.g.
+// "gitops-reverser:author:v1:audit:apps/deployments".
+func (a *AttributionIndex) factKeyBase(gr string) string {
+	return keyPrefix + attributionKeySuffix + gr
 }
 
-// factKey builds a readable, colon-joined key from a fact's parts, e.g.
-// "gitops-reverser:attr:v2:e:apps:deployments:team-a:web:uid-1:101". Each part is
-// escaped so a value that itself contains the ":" delimiter (notably RBAC names like
-// "system:node-proxier") cannot blur field boundaries and collide with another object.
-// Keys are only ever matched exactly, never parsed back, so escaping is one-way.
-func (a *AttributionIndex) factKey(variant string, parts ...string) string {
-	return keyPrefix + attributionKeySuffix + variant + ":" + joinKeyFields(parts)
+// factKeyExact is the immutable per-write fact key, e.g.
+// "gitops-reverser:author:v1:audit:apps/deployments:object:<uid>/101".
+func (a *AttributionIndex) factKeyExact(gr, uid, rv string) string {
+	return a.factKeyBase(gr) + factObjectInfix + escapeKeyField(uid) + "/" + escapeKeyField(rv)
 }
 
-func (a *AttributionIndex) storeFactKey(ctx context.Context, key string, raw []byte, author string) error {
-	existingRaw, err := a.client.Get(ctx, key).Bytes()
-	if err == nil {
-		var existing AuthorFact
-		if json.Unmarshal(existingRaw, &existing) == nil && (existing.Conflict ||
-			(existing.Author != "" && existing.Author != author)) {
-			raw, err = json.Marshal(AuthorFact{Conflict: true})
-			if err != nil {
-				return fmt.Errorf("marshal conflict marker: %w", err)
-			}
-		}
-	}
-	if err := a.client.Set(ctx, key, raw, a.factTTL).Err(); err != nil {
-		return err
-	}
-	return a.client.Set(ctx, a.factTombstoneKey(key), "1", a.factTombstoneTTL()).Err()
+// factKeyLast is the latest-writer-wins pointer for an object, e.g.
+// "gitops-reverser:author:v1:audit:apps/deployments:object:<uid>/last".
+func (a *AttributionIndex) factKeyLast(gr, uid string) string {
+	return a.factKeyBase(gr) + factObjectInfix + escapeKeyField(uid) + "/" + factLastLeaf
 }
 
-func (a *AttributionIndex) factTombstoneKey(key string) string {
-	return key + factTombstoneSuffix
+// factKeyRV is the type-scoped rv-only escape hatch, e.g.
+// "gitops-reverser:author:v1:audit:apps/deployments:rv:101". RV is opaque per the
+// Kubernetes API contract and not globally unique, so this key always includes the type.
+func (a *AttributionIndex) factKeyRV(gr, rv string) string {
+	return a.factKeyBase(gr) + factRVInfix + escapeKeyField(rv)
 }
 
-func (a *AttributionIndex) factMissKey(key string) string {
-	return key + factMissSuffix
-}
-
-func (a *AttributionIndex) factTombstoneTTL() time.Duration {
-	return factTombstoneTTLMultiplier * a.factTTL
+// setFact writes one fact value under its key with the bounded fact TTL. No sibling
+// keys: v3 keeps no :seen tombstone and no :miss marker.
+func (a *AttributionIndex) setFact(ctx context.Context, key string, raw []byte) error {
+	return a.client.Set(ctx, key, raw, a.factTTL).Err()
 }
 
 func (a *AttributionIndex) recordFactEvent(ctx context.Context, op string) {
@@ -503,12 +491,7 @@ func (a *AttributionIndex) recordFactIndexSize(ctx context.Context) {
 		if err != nil {
 			return
 		}
-		for _, key := range keys {
-			if strings.HasSuffix(key, factTombstoneSuffix) || strings.HasSuffix(key, factMissSuffix) {
-				continue
-			}
-			count++
-		}
+		count += int64(len(keys))
 		cursor = next
 		if cursor == 0 {
 			break
@@ -517,20 +500,23 @@ func (a *AttributionIndex) recordFactIndexSize(ctx context.Context) {
 	telemetry.AttributionFactIndexSize.Record(ctx, count)
 }
 
-// joinKeyFields escapes each field and joins them with ":". Escaping only the
-// delimiter and the escape character keeps the common case (numeric RVs, plain
-// names) fully readable while making the encoding injective: distinct field tuples
-// always map to distinct keys.
-func joinKeyFields(parts []string) string {
-	escaped := make([]string, len(parts))
-	for i, p := range parts {
-		escaped[i] = escapeKeyField(p)
+// groupResourceKey renders a GroupResource as an API-path-style segment: "configmaps"
+// for the core group, "apps/deployments" otherwise. Write side and read side share it so
+// the key never drifts. "/" never appears in a group or resource name, so the form stays
+// unambiguously splittable — unlike schema.GroupResource.String()'s reversed dot form
+// ("deployments.apps"), whose dot also collides with dotted group names.
+func groupResourceKey(group, resource string) string {
+	if group == "" {
+		return resource
 	}
-	return strings.Join(escaped, ":")
+	return group + "/" + resource
 }
 
 // escapeKeyField neutralizes the ":" delimiter and the "%" escape character within a
-// single key field. Everything else passes through unchanged for readability.
+// single key field. Group/resource and a UUID never contain either, so this is defensive
+// for the uid/rv/namespace fields against a stray delimiter; everything else passes
+// through unchanged for readability. Keys are only ever matched exactly, never parsed
+// back, so escaping is one-way.
 func escapeKeyField(s string) string {
 	if !strings.ContainsAny(s, "%:") {
 		return s

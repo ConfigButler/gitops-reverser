@@ -37,8 +37,10 @@ import (
 // of the key, so a recreated target never inherits a stale predecessor's cursor.
 const watchCursorTTL = time.Hour
 
-// watchCursorKeySuffix namespaces the resume-cursor keys this store owns.
-const watchCursorKeySuffix = ":watch-cursor:v2:"
+// watchCursorKeySuffix namespaces the resume-cursor keys this store owns. The cursor is
+// not an author record, so it lives in its own watch domain rather than under author; the
+// durable thing it holds is a watch shard's last processed RV.
+const watchCursorKeySuffix = ":watch:v1:"
 
 // RedisStoreConfig configures the Redis/Valkey connection that backs the required
 // watch-resume cursor store.
@@ -88,6 +90,14 @@ func (s *RedisStore) AttributionIndex(factTTL time.Duration) *AttributionIndex {
 	return &AttributionIndex{client: s.client, factTTL: factTTL}
 }
 
+// CommandAuthorStore builds the command-authorship store on this connection. Wire it
+// when the internal-commands webhook is enabled; it does not depend on attribution. The
+// record lives in the same top-level author domain as audit facts but in the separate
+// command subfamily, with its own fixed cleanup TTL.
+func (s *RedisStore) CommandAuthorStore() *CommandAuthorStore {
+	return &CommandAuthorStore{client: s.client, ttl: commandAuthorRecordTTL}
+}
+
 // Ping checks liveness of the underlying Redis/Valkey connection. The readiness gate
 // uses it so the pod does not report ready before its resume-cursor store is reachable.
 func (s *RedisStore) Ping(ctx context.Context) error {
@@ -128,19 +138,22 @@ func (s *RedisStore) RecordWatchCursor(
 	return nil
 }
 
-// watchCursorKey builds a readable cursor key identifying the GitTarget by its UID
-// alone, e.g. "gitops-reverser:watch-cursor:v2:<uid>:apps:v1:deployments:team-a". The
-// UID is globally unique, so the GitTarget's namespace/name would be redundant.
+// watchCursorKey builds a readable cursor key naming the store and leaf directly, e.g.
+// "gitops-reverser:watch:v1:target:<uid>:apps/deployments:namespace/team-a/last-rv" or
+// "…:configmaps:cluster/last-rv". The GitTarget UID is globally unique, so its
+// namespace/name would be redundant. The GVR version is dropped: a resourceVersion is a
+// per-resource counter shared across served versions, so it is redundant in a resume
+// cursor. The namespace scope stays, because the live data plane opens one raw watch per
+// (GitTarget, GVR, scope) and a namespaced watch must not resume a cluster-wide one.
 func (s *RedisStore) watchCursorKey(
 	gitTargetUID string,
 	gvr schema.GroupVersionResource,
 	namespace string,
 ) string {
-	return keyPrefix + watchCursorKeySuffix + joinKeyFields([]string{
-		gitTargetUID,
-		gvr.Group,
-		gvr.Version,
-		gvr.Resource,
-		namespace,
-	})
+	scope := "cluster"
+	if namespace != "" {
+		scope = "namespace/" + escapeKeyField(namespace)
+	}
+	return keyPrefix + watchCursorKeySuffix + "target:" + escapeKeyField(gitTargetUID) + ":" +
+		groupResourceKey(gvr.Group, gvr.Resource) + ":" + scope + "/last-rv"
 }

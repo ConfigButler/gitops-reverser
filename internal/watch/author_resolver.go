@@ -46,20 +46,17 @@ const attributionPollInterval = 150 * time.Millisecond
 // AttributionLookup is the read side of the optional audit attribution index. The
 // Redis-backed queue.AttributionIndex satisfies it; nil means committer-only.
 type AttributionLookup interface {
+	// LookupAuthorResolution resolves the strongest author fact for a watch event.
+	// exactCapable is true for ADDED/MODIFIED events (try only the immutable exact key
+	// and the rv-only hatch) and false for known RV-mismatch events such as DELETED
+	// (also consult the last-writer-wins /last pointer).
 	LookupAuthorResolution(
 		ctx context.Context,
 		gvr schema.GroupVersionResource,
-		namespace, name string,
 		uid k8stypes.UID,
 		rv string,
+		exactCapable bool,
 	) queue.AuthorResolution
-	RecordAuthorMiss(
-		ctx context.Context,
-		gvr schema.GroupVersionResource,
-		namespace, name string,
-		uid k8stypes.UID,
-		rv string,
-	)
 }
 
 // CursorStore persists the last processed resourceVersion for each (GitTarget UID,
@@ -87,13 +84,14 @@ type AuthorResolver interface {
 	// ResolveAuthor returns the author UserInfo for a watch event, or ok=false to
 	// commit as the configured committer. It may wait up to the grace window for a
 	// matching fact; it never blocks indefinitely and never returns an error path —
-	// an absent fact is a committer commit, not a failure.
+	// an absent fact is a committer commit, not a failure. exactCapable distinguishes
+	// ADDED/MODIFIED events (true) from known RV-mismatch removals (false).
 	ResolveAuthor(
 		ctx context.Context,
 		gvr schema.GroupVersionResource,
-		namespace, name string,
 		uid k8stypes.UID,
 		rv string,
+		exactCapable bool,
 	) (git.UserInfo, bool)
 }
 
@@ -118,9 +116,9 @@ func NewAuthorResolver(
 func (r *attributionResolver) ResolveAuthor(
 	ctx context.Context,
 	gvr schema.GroupVersionResource,
-	namespace, name string,
 	uid k8stypes.UID,
 	rv string,
+	exactCapable bool,
 ) (git.UserInfo, bool) {
 	start := time.Now()
 	if r.lookup == nil {
@@ -129,19 +127,17 @@ func (r *attributionResolver) ResolveAuthor(
 	}
 	deadline := time.Now().Add(r.grace)
 	for {
-		resolution := r.lookup.LookupAuthorResolution(ctx, gvr, namespace, name, uid, rv)
+		resolution := r.lookup.LookupAuthorResolution(ctx, gvr, uid, rv, exactCapable)
 		if resolution.Result != queue.AttributionAbsent {
 			ui, ok, result := r.userInfoForResolution(resolution)
 			recordAttributionResolution(ctx, gvr, result, time.Since(start))
 			return ui, ok
 		}
 		if !time.Now().Before(deadline) {
-			r.lookup.RecordAuthorMiss(ctx, gvr, namespace, name, uid, rv)
 			recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
 			return git.UserInfo{}, false
 		}
 		if !sleepOrDone(ctx, attributionPollInterval) {
-			r.lookup.RecordAuthorMiss(ctx, gvr, namespace, name, uid, rv)
 			recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
 			return git.UserInfo{}, false
 		}

@@ -73,9 +73,10 @@ func deleteCollectionEvent(username string, items ...dcItem) auditv1.Event {
 }
 
 // resolveDC looks up a removal event for one collection member at a later deletion RV,
-// proving the join is by UID (the body item carried no RV at all).
-func resolveDC(ctx context.Context, idx *AttributionIndex, name, uid string) AuthorResolution {
-	return idx.LookupAuthorResolution(ctx, coreConfigmapsGVR(), "team-a", name, k8stypes.UID(uid), "9999")
+// proving the join is by UID (the body item carried no RV at all) via the /last pointer.
+// A collection removal is a known RV-mismatch event, so it is not exact-capable.
+func resolveDC(ctx context.Context, idx *AttributionIndex, _, uid string) AuthorResolution {
+	return idx.LookupAuthorResolution(ctx, coreConfigmapsGVR(), k8stypes.UID(uid), "9999", false)
 }
 
 func TestRecordDeleteCollectionFacts_ExpandsListToPerObjectFacts(t *testing.T) {
@@ -193,5 +194,5 @@ func TestRecordDeleteCollectionFacts_NonDeleteCollectionVerbIsNoOp(t *testing.T)
 
 	require.NoError(t, idx.RecordDeleteCollectionFacts(ctx, mutationEvent("delete", "uid-1", "101", "alice")))
 	require.Equal(t, AttributionAbsent,
-		idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101").Result)
+		idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "101", true).Result)
 }

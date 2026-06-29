@@ -704,8 +704,13 @@ func (m *Manager) attachAuthor(
 	if m.AuthorResolver == nil {
 		return
 	}
+	// A removal (a DELETED event, or a deletion-as-intent UPDATE carrying a
+	// deletionTimestamp, both mapped to OperationDelete) has an RV that never matches the
+	// author fact's post-write RV, so it may consult the /last pointer; a create/update is
+	// exact-capable and must not fall through to /last.
+	exactCapable := event.Operation != string(configv1alpha2.OperationDelete)
 	if userInfo, ok := m.AuthorResolver.ResolveAuthor(
-		ctx, gvr, u.GetNamespace(), u.GetName(), u.GetUID(), u.GetResourceVersion(),
+		ctx, gvr, u.GetUID(), u.GetResourceVersion(), exactCapable,
 	); ok {
 		event.UserInfo = userInfo
 	}

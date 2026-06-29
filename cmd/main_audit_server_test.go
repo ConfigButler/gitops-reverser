@@ -57,7 +57,7 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, "valkey:6379", cfg.redisAddr)
 	assert.False(t, cfg.redisInsecure)
 	assert.True(t, cfg.authorAttribution)
-	assert.Equal(t, 10*time.Minute, cfg.attributionFactTTL)
+	assert.Equal(t, 15*time.Minute, cfg.attributionFactTTL)
 	assert.Equal(t, 3*time.Second, cfg.attributionGrace)
 	assert.False(t, cfg.zapOpts.Development)
 	assert.Equal(t, []string{"secrets"}, cfg.sensitiveResources.Entries())

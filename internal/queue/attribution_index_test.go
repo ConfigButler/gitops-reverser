@@ -97,10 +97,14 @@ func TestAttributionIndex_RecordAndLookupExact(t *testing.T) {
 
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
 
-	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
+	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "101", true)
 	require.True(t, ok)
 	require.Equal(t, "alice", fact.Author)
 	require.Equal(t, "101", fact.ResourceVersion)
+	require.Equal(t, "apps/deployments", fact.GroupResource)
+	require.Equal(t, "team-a", fact.Namespace)
+	require.Equal(t, "web", fact.Name)
+	require.Equal(t, "uid-1", fact.UID)
 	require.False(t, fact.IsServiceAccount)
 }
 
@@ -110,8 +114,9 @@ func TestAttributionIndex_LookupByUIDWhenRVDiffers(t *testing.T) {
 
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("delete", "uid-1", "101", "alice")))
 
-	// Watch DELETE lands at a later RV; the uid join still resolves the author.
-	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "999")
+	// Watch DELETE lands at a later RV; the uid-latest /last pointer still resolves the
+	// author (a delete is not exact-capable, so it may consult /last).
+	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "999", false)
 	require.True(t, ok)
 	require.Equal(t, "alice", fact.Author)
 }
@@ -122,20 +127,78 @@ func TestAttributionIndex_LookupResolutionWeakWhenExactMisses(t *testing.T) {
 
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("delete", "uid-1", "101", "alice")))
 
-	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "999")
+	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "999", false)
 	require.Equal(t, AttributionWeak, resolution.Result)
 	require.Equal(t, "alice", resolution.Fact.Author)
 }
 
-func TestAttributionIndex_LookupByRVWhenUIDAbsent(t *testing.T) {
+func TestAttributionIndex_ExactCapableDoesNotFallThroughToLast(t *testing.T) {
 	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	// alice's write seeds both the exact key (uid-1/101) and the /last pointer.
+	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
+
+	// An exact-capable event at a different RV whose exact key is absent must NOT borrow
+	// the /last author — it is absent and ships as committer.
+	res := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "202", true)
+	require.Equal(t, AttributionAbsent, res.Result)
+
+	// The same miss for a known RV-mismatch event DOES consult /last.
+	weak := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "202", false)
+	require.Equal(t, AttributionWeak, weak.Result)
+	require.Equal(t, "alice", weak.Fact.Author)
+}
+
+func TestAttributionIndex_BurstKeepsEachWritePrecise(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	// Two authors write the same object in a burst at distinct RVs.
+	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "1", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "2", "bob")))
+
+	// Each watch event hits its own immutable exact key → both precise, no conflict.
+	f1, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "1", true)
+	require.True(t, ok)
+	require.Equal(t, "alice", f1.Author)
+	f2, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "2", true)
+	require.True(t, ok)
+	require.Equal(t, "bob", f2.Author)
+
+	// /last is last-writer-wins (bob), consulted only by an RV-mismatch event.
+	fl, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "999", false)
+	require.True(t, ok)
+	require.Equal(t, "bob", fl.Author)
+}
+
+func TestAttributionIndex_NoUIDFactWritesRVKeyOnly(t *testing.T) {
+	idx, mr := newTestAttributionIndexWithRedis(t)
 	ctx := context.Background()
 
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "", "202", "alice")))
 
-	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "team-a", "web", "", "202")
-	require.True(t, ok)
-	require.Equal(t, "alice", fact.Author)
+	// The §5 escape hatch: a no-UID fact writes the type-scoped rv-only key and no
+	// object keys.
+	require.True(t, mr.Exists(idx.factKeyRV("apps/deployments", "202")))
+	require.False(t, mr.Exists(idx.factKeyLast("apps/deployments", "")))
+
+	// An exact-capable watch event (which carries a UID) joins it via the rv-only fallback.
+	res := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-live", "202", true)
+	require.Equal(t, AttributionWeak, res.Result)
+	require.Equal(t, "alice", res.Fact.Author)
+}
+
+func TestAttributionIndex_UIDFactWritesNoDeadRVKey(t *testing.T) {
+	idx, mr := newTestAttributionIndexWithRedis(t)
+	ctx := context.Background()
+
+	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "303", "alice")))
+
+	require.True(t, mr.Exists(idx.factKeyExact("apps/deployments", "uid-1", "303")))
+	require.True(t, mr.Exists(idx.factKeyLast("apps/deployments", "uid-1")))
+	require.False(t, mr.Exists(idx.factKeyRV("apps/deployments", "303")),
+		"a UID-bearing fact's rv-only key would be dead, so it is not written")
 }
 
 func TestAttributionIndex_ServiceAccountFlagged(t *testing.T) {
@@ -145,7 +208,7 @@ func TestAttributionIndex_ServiceAccountFlagged(t *testing.T) {
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "303",
 		"system:serviceaccount:flux-system:kustomize-controller")))
 
-	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "303")
+	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "303", true)
 	require.True(t, ok)
 	require.True(t, fact.IsServiceAccount)
 }
@@ -156,29 +219,17 @@ func TestAttributionIndex_NoUserIsNoOp(t *testing.T) {
 
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "")))
 
-	_, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
+	_, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "101", true)
 	require.False(t, ok)
 }
 
 func TestAttributionIndex_LookupMiss(t *testing.T) {
 	idx := newTestAttributionIndex(t)
-	_, ok := idx.LookupAuthor(context.Background(), appsDeploymentGVR(), "team-a", "absent", "uid-x", "1")
+	_, ok := idx.LookupAuthor(context.Background(), appsDeploymentGVR(), "uid-x", "1", true)
 	require.False(t, ok)
 }
 
-func TestAttributionIndex_LookupResolutionConflict(t *testing.T) {
-	idx := newTestAttributionIndex(t)
-	ctx := context.Background()
-
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "bob")))
-
-	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
-	require.Equal(t, AttributionConflict, resolution.Result)
-	require.Empty(t, resolution.Fact.Author)
-}
-
-func TestAttributionIndex_LookupResolutionExpired(t *testing.T) {
+func TestAttributionIndex_AgedOutFactIsAbsent(t *testing.T) {
 	store, mr := newTestRedisStoreWithRedis(t)
 	idx := store.AttributionIndex(time.Minute)
 
@@ -187,8 +238,9 @@ func TestAttributionIndex_LookupResolutionExpired(t *testing.T) {
 
 	mr.FastForward(time.Minute + time.Second)
 
-	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
-	require.Equal(t, AttributionExpired, resolution.Result)
+	// No tombstone: an aged-out fact is indistinguishable from one that never arrived.
+	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "101", true)
+	require.Equal(t, AttributionAbsent, resolution.Result)
 }
 
 func TestAttributionIndex_FactLifecycleMetrics(t *testing.T) {
@@ -197,25 +249,21 @@ func TestAttributionIndex_FactLifecycleMetrics(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	idx.RecordAuthorMiss(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
-	_ = idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "team-a", "web", "uid-1", "101")
+	_ = idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "101", true)
 
 	written, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_events_total",
 		map[string]string{"op": "written"})
 	require.True(t, ok)
 	require.Equal(t, int64(1), written)
-	late, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_events_total",
-		map[string]string{"op": "late"})
-	require.True(t, ok)
-	require.Equal(t, int64(1), late)
 	matched, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_events_total",
 		map[string]string{"op": "matched"})
 	require.True(t, ok)
 	require.Equal(t, int64(1), matched)
+	// One exact fact writes two keys: the immutable exact key and the /last pointer.
 	size, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_index_size", nil)
 	require.True(t, ok)
-	require.Equal(t, int64(3), size)
+	require.Equal(t, int64(2), size)
 }
 
 func TestAttributionIndex_RecordFactNoOpCases(t *testing.T) {
@@ -298,9 +346,10 @@ func TestAttributionIndex_FactTTLConfigurable(t *testing.T) {
 
 	require.NoError(t, idx.RecordFact(context.Background(), mutationEvent("update", "uid-1", "101", "alice")))
 
-	keys := idx.factKeyVariants("apps", "deployments", "team-a", "web", "uid-1", "101")
-	require.NotEmpty(t, keys)
-	for _, key := range keys {
+	for _, key := range []string{
+		idx.factKeyExact("apps/deployments", "uid-1", "101"),
+		idx.factKeyLast("apps/deployments", "uid-1"),
+	} {
 		require.Equal(t, 5*time.Minute, mr.TTL(key), "fact key %q", key)
 	}
 }
@@ -311,9 +360,7 @@ func TestAttributionIndex_FactTTLDefaultsWhenUnset(t *testing.T) {
 
 	require.NoError(t, idx.RecordFact(context.Background(), mutationEvent("update", "uid-1", "101", "alice")))
 
-	keys := idx.factKeyVariants("apps", "deployments", "team-a", "web", "uid-1", "101")
-	require.NotEmpty(t, keys)
-	require.Equal(t, DefaultAttributionFactTTL, mr.TTL(keys[0]))
+	require.Equal(t, DefaultAttributionFactTTL, mr.TTL(idx.factKeyExact("apps/deployments", "uid-1", "101")))
 }
 
 func TestEscapeKeyField(t *testing.T) {
@@ -331,36 +378,38 @@ func TestEscapeKeyField(t *testing.T) {
 	}
 }
 
-func TestJoinKeyFields_NoDelimiterCollision(t *testing.T) {
-	// Two field tuples that would collide under a naive ":" join produce distinct
-	// keys once each field is escaped.
-	require.NotEqual(t,
-		joinKeyFields([]string{"system", "node:proxier"}),
-		joinKeyFields([]string{"system:node", "proxier"}),
-	)
+func TestGroupResourceKey(t *testing.T) {
+	require.Equal(t, "configmaps", groupResourceKey("", "configmaps"))
+	require.Equal(t, "apps/deployments", groupResourceKey("apps", "deployments"))
+	require.Equal(t, "rbac.authorization.k8s.io/roles", groupResourceKey("rbac.authorization.k8s.io", "roles"))
 }
 
 func TestAttributionIndex_FactKeyReadableFormat(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 
-	require.Equal(t, []string{
-		"gitops-reverser:attr:v2:e:apps:deployments:team-a:web:uid-1:101",
-		"gitops-reverser:attr:v2:u:apps:deployments:team-a:web:uid-1",
-		"gitops-reverser:attr:v2:r:apps:deployments:team-a:web:101",
-	}, idx.factKeyVariants("apps", "deployments", "team-a", "web", "uid-1", "101"))
+	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:object:uid-1/101",
+		idx.factKeyExact("apps/deployments", "uid-1", "101"))
+	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:object:uid-1/last",
+		idx.factKeyLast("apps/deployments", "uid-1"))
+	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:rv:101",
+		idx.factKeyRV("apps/deployments", "101"))
 
-	// An RBAC-style colon-bearing name is escaped in place, not left raw.
-	require.Equal(t,
-		[]string{"gitops-reverser:attr:v2:u:rbac.authorization.k8s.io:clusterroles::system%3Anode-proxier:uid-9"},
-		idx.factKeyVariants("rbac.authorization.k8s.io", "clusterroles", "", "system:node-proxier", "uid-9", ""),
-	)
+	// The core group drops the group segment.
+	require.Equal(t, "gitops-reverser:author:v1:audit:configmaps:object:uid-2/last",
+		idx.factKeyLast("configmaps", "uid-2"))
 }
 
 func TestRedisStore_WatchCursorKeyReadableFormat(t *testing.T) {
 	store := newTestRedisStore(t)
-	key := store.watchCursorKey("gtuid-3",
-		schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "team-a")
-	require.Equal(t, "gitops-reverser:watch-cursor:v2:gtuid-3:apps:v1:deployments:team-a", key)
+	gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+
+	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:apps/deployments:namespace/team-a/last-rv",
+		store.watchCursorKey("gtuid-3", gvr, "team-a"))
+
+	// A cluster-wide watch (empty namespace) uses the cluster scope segment, and the GVR
+	// version is dropped.
+	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster/last-rv",
+		store.watchCursorKey("gtuid-3", coreConfigmapsGVR(), ""))
 }
 
 func TestNewRedisStore_RequiresAddr(t *testing.T) {
@@ -395,6 +444,7 @@ func TestAttributionIndex_LookupCommitRequestAuthor(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "alice", author)
 
-	_, ok = idx.LookupCommitRequestAuthor(ctx, "team-a", "absent", "cr-uid")
+	// v3 keys the lookup by uid alone, so an unknown uid misses even at the same name.
+	_, ok = idx.LookupCommitRequestAuthor(ctx, "team-a", "save-1", "absent-uid")
 	require.False(t, ok)
 }
