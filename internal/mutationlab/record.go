@@ -59,7 +59,7 @@ type Record struct {
 	Source     Source          `json:"source"`
 	Scenario   string          `json:"scenario,omitempty"`
 	ObservedAt time.Time       `json:"observedAt"`
-	Key        ObjectKey       `json:"key,omitempty"`
+	Key        ObjectKey       `json:"key"`
 	Summary    RecordSummary   `json:"summary"`
 	Raw        json.RawMessage `json:"raw"`
 }

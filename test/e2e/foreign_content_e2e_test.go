@@ -52,7 +52,7 @@ var _ = Describe("Manager Foreign Content Refusal", Label("manager", "foreign-co
 	BeforeAll(func() {
 		By("creating the foreign-content test namespace")
 		testNs = testNamespaceFor("manager-foreign-content")
-		_, _ = kubectlRun("create", "namespace", testNs)
+		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
 
 		By("setting up Gitea repo and credentials")
 		repo = SetupRepo(resolveE2EContext(), testNs, fmt.Sprintf("%s-%d", repoName, GinkgoRandomSeed()))

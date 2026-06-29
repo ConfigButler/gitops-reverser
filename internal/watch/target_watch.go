@@ -847,11 +847,22 @@ func (m *Manager) rememberGitTargetUID(gitDest types.ResourceReference) {
 	m.gitTargetUIDs[gitDest.Key()] = gitDest.UID
 }
 
-// forgetGitTargetUID drops the remembered UID when a GitTarget is deleted.
+// forgetGitTargetUID drops the remembered UID for a deleted GitTarget, but only when the stored
+// UID still matches gitDest.UID. The delete path reacts to a NotFound and so passes a UID-less
+// gitDest (see cleanupDeletedGitTarget), which makes this a deliberate no-op: a GitTarget deleted
+// and recreated under the same namespace/name must keep the fresh UID that DeclareForGitTarget
+// stored. An unconditional delete here could race behind the new Declare and wipe that fresh UID,
+// forcing the recreate to replay from a fresh cursor. The stale entry for a permanently-deleted
+// name is overwritten on any reuse and is otherwise a negligible map entry.
 func (m *Manager) forgetGitTargetUID(gitDest types.ResourceReference) {
+	if gitDest.UID == "" {
+		return
+	}
 	m.gitTargetUIDsMu.Lock()
 	defer m.gitTargetUIDsMu.Unlock()
-	delete(m.gitTargetUIDs, gitDest.Key())
+	if m.gitTargetUIDs[gitDest.Key()] == gitDest.UID {
+		delete(m.gitTargetUIDs, gitDest.Key())
+	}
 }
 
 // resolveGitTargetUID returns the GitTarget UID for a cursor operation, preferring the

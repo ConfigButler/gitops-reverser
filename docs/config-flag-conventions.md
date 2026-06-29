@@ -99,11 +99,18 @@ name with a sensible default over a negative one wherever you can.
 > opt-out, not the secure opt-in. So `--redis-insecure` (default off), never
 > `--redis-tls` (default off). Disabling transport security is an opt-out of the
 > right way to do things, and an opt-out of *security* in particular deserves to be
-> loud and explicit — the flag should carry the word `insecure` and the default
-> should be secure. This is also the Flux way (`--insecure-allow-http`,
-> `--insecure-allow-missing-known-hosts`); it is the one place we deliberately
-> reach for a negative name. See *The two `insecure` shapes* below for the
-> suffix-vs-prefix split.
+> loud and explicit — the flag carries the word `insecure` and the default stays
+> secure. This is the Flux way (`--insecure-allow-http`,
+> `--insecure-allow-missing-known-hosts`); it is the one place to deliberately reach
+> for a negative name.
+>
+> There are two `insecure` shapes. A per-component transport toggle takes the
+> `-insecure` *suffix* so it groups under its component (rule 5) —
+> `--metrics-insecure`, `--audit-insecure`, `--redis-insecure`, each secure by
+> default. A genuinely dangerous, dev-only escape hatch takes the loud `insecure-`
+> *prefix* — `--insecure-allow-missing-known-hosts`. Same safe-by-default
+> principle; suffix vs prefix signals "this component's transport" vs "scary
+> one-off".
 
 ### 7. Validate early; fail with an actionable hint
 
@@ -187,7 +194,8 @@ There are two honest ways to take a size, and the *name must not lie about which
   "Kubernetes resource quantity" in the help.
 
 `8Mi` accepted by a flag named `--…-bytes` is a contradiction the reader has to
-decode — see the open item below.
+decode, so a quantity flag is named `-size` (e.g. `--branch-buffer-max-size`) and a
+true byte count keeps `-bytes` (e.g. `--audit-max-request-body-bytes`, `Int64`).
 
 ### 11. Pair bounds with `min-`/`max-`; fold a port into its address
 
@@ -195,8 +203,8 @@ A floor and a ceiling on the same quantity share the stem under a `min-`/`max-`
 prefix — `--min-retry-delay` / `--max-retry-delay` — not `-floor`/`-ceiling` or
 `-low`/`-high`. And a port is half of an address: Flux exposes one
 `--metrics-bind-address` (`host:port`), not `--metrics-host` plus
-`--metrics-port`. Model "where to listen" once. (This is why the open items below
-fold `--audit-port` into `--audit-bind-address`.)
+`--metrics-port`. Model "where to listen" once, per server: one
+`--audit-bind-address`, not a separate `--audit-port`.
 
 ### 12. State the unit, the range, and what the extremes mean
 
@@ -217,42 +225,3 @@ explicit that `0` is special and that bounds exist:
 - [ ] Paired bounds use `min-`/`max-`; a port is folded into a `host:port` `-bind-address`.
 - [ ] Help text states the unit/format, the default, and what `0` (or any sentinel) means; out-of-range values are rejected early (rule 7).
 - [ ] The default is written in human units in code (`35*time.Second`, `8Mi`), not a raw literal.
-
-## Applying this to gitops-reverser
-
-Landed in this pass — the surface now follows the rules above:
-
-| Was | Now | Rule |
-| --- | --- | --- |
-| `--audit-attribution-enabled` | `--author-attribution` | 1+2 — name the goal (the real **author**), not the means (audit). Matches the internal `AuthorResolver`/`AuthorLookup` vocabulary; bare-noun shape like Flux's `--token-auth`. Default `true` (on). |
-| `--attribution-ttl`, `--attribution-grace` | `--author-attribution-ttl`, `--author-attribution-grace` | 5 — the whole author-attribution group shares one prefix. |
-| `--audit-redis-*` | `--redis-*` | 1 — Redis is required in **every** mode (cursors), not just audit. The password env var was already `REDIS_PASSWORD`, not `AUDIT_REDIS_PASSWORD` — the name already leaked the truth. |
-| `--admission-webhook-enabled` | `--admission-webhook` | 2 — drop the `-enabled` suffix; bare-noun shape like `--author-attribution`. |
-| `--audit-listen-address` + `--audit-port` | `--audit-bind-address` (host:port) | 5/11 — one model for "where to listen", matching `--metrics-bind-address`. Two flags became one; the chart keeps `servers.audit.port` for the containerPort, exactly as the metrics block already does. |
-| `--admission-webhook-port` | `--admission-webhook-bind-address` (host:port) | 11 — symmetry across all three ingress servers (metrics, audit, webhook). Split back to `Host`+`Port` for controller-runtime's webhook server. |
-| `--branch-buffer-max-bytes` (+ env `BRANCH_BUFFER_MAX_BYTES`) | `--branch-buffer-max-size` (+ env `BRANCH_BUFFER_MAX_SIZE`) | 10 — it accepts a Kubernetes resource quantity (`8Mi`, `1Gi`), not a raw byte count, so `-bytes` misnamed it. Contrast `--audit-max-request-body-bytes`, which really is `Int64` bytes and keeps its name. |
-| `--redis-tls` (default off) | `--redis-insecure` (default off) | 4/6 — TLS is the safe baseline, so the flag should name the *insecure* deviation, not the secure opt-in. This is the Flux way (`--insecure-allow-http` & friends default secure). It also makes all three transport toggles one shape: `--metrics-insecure`, `--audit-insecure`, `--redis-insecure`, each secure-by-default. **Behavioural:** the bare-binary default flips from plaintext to TLS; the chart (`queue.redis.tls.enabled: false`) and `config/` manifests pass `--redis-insecure` so default deployments are unchanged. |
-
-Also in this pass: a help-text polish (rules 3 and 12) — the booleans now state
-both ends and the default, and the numeric/duration flags state their unit and
-default (e.g. *"(duration string; default 15s)"*, *"in bytes (default 10485760,
-i.e. 10Mi)"*).
-
-Still open:
-
-| Current | Recommended | Why |
-| --- | --- | --- |
-| `--enable-http2` | keep (or `--http2`) | Rule 2 exception — Kubebuilder/controller-runtime standard. |
-
-**The two `insecure` shapes.** Transport TLS toggles use the `-insecure` *suffix*
-so each groups under its component (rule 5) — `--metrics-insecure`,
-`--audit-insecure`, `--redis-insecure`. All three default to *secure* and name the
-insecure escape, the way Flux defaults secure and exposes `--insecure-allow-http`.
-Separately, `--insecure-allow-missing-known-hosts` uses Flux's loud `insecure-`
-*prefix* to mark a genuinely dangerous, dev-only escape hatch. Same safe-by-default
-principle; the prefix vs suffix signals "scary one-off" vs "this component's
-transport".
-
-None of these were behavioural changes — just names, help text, and how a couple
-of address/size values are expressed. With no production users yet, this was the
-cheap moment to land them.

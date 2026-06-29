@@ -172,9 +172,17 @@ func run(ctx context.Context, logger *slog.Logger, cfg config, servers []server)
 	logger.InfoContext(ctx, "shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
+	// Shut the servers down concurrently: with a shared shutdownCtx, a sequential loop
+	// lets one slow server consume the whole timeout and leave the rest no time to drain.
+	var shutdownWg sync.WaitGroup
 	for _, s := range servers {
-		_ = s.srv.Shutdown(shutdownCtx)
+		shutdownWg.Add(1)
+		go func() {
+			defer shutdownWg.Done()
+			_ = s.srv.Shutdown(shutdownCtx)
+		}()
 	}
+	shutdownWg.Wait()
 	wg.Wait()
 }
 

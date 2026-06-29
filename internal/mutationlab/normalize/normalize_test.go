@@ -215,6 +215,24 @@ func TestNormalize_PodIPsAndContainerID(t *testing.T) {
 	}
 }
 
+func TestNormalize_ImageID(t *testing.T) {
+	// status.containerStatuses[].imageID is the digest the node resolved a mutable
+	// tag to. It drifts when the tag is republished, so it normalizes relationally:
+	// equal digests collapse to one placeholder while the stable image tag passes
+	// through verbatim, and a distinct image's digest stays distinct.
+	got := normJSON(t, `{"status":{"containerStatuses":[`+
+		`{"image":"busybox:1.36","imageID":"docker.io/library/busybox@sha256:aaa"},`+
+		`{"image":"busybox:1.36","imageID":"docker.io/library/busybox@sha256:aaa"},`+
+		`{"image":"nginx:1.27","imageID":"docker.io/library/nginx@sha256:bbb"}]}}`)
+	want := `{"status":{"containerStatuses":[` +
+		`{"image":"busybox:1.36","imageID":"<imageID-1>"},` +
+		`{"image":"busybox:1.36","imageID":"<imageID-1>"},` +
+		`{"image":"nginx:1.27","imageID":"<imageID-2>"}]}}`
+	if got[0] != want {
+		t.Errorf("\n got %s\nwant %s", got[0], want)
+	}
+}
+
 func TestNormalize_ManagedFieldsAssociationKeyIP(t *testing.T) {
 	// A pod's managedFields embeds the volatile podIP inside a fieldsV1
 	// association key (k:{"ip":"..."}); it must collapse to the same <ip-N> the

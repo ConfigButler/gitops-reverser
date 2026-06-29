@@ -94,8 +94,8 @@ func isTimestampKey(key string) bool {
 // deterministic YAML marshaling.
 //
 // Indexing rules, per the design:
-//   - uid / auditID / ip / containerID / nodeName / generateName-suffix: by first
-//     appearance;
+//   - uid / auditID / ip / containerID / imageID / nodeName / generateName-suffix: by
+//     first appearance;
 //   - resourceVersion: numeric order when every observed RV in the scenario is an
 //     integer (the stream is then provably orderable), otherwise first appearance;
 //   - timestamps: collapsed to a single non-relational token (see tsPlaceholder).
@@ -166,6 +166,7 @@ type collector struct {
 	auditID *ordered
 	ip      *ordered
 	cid     *ordered
+	img     *ordered
 	node    *ordered
 	cred    *ordered
 	rnd     *ordered
@@ -179,6 +180,7 @@ func newCollector() *collector {
 		auditID: newOrdered(),
 		ip:      newOrdered(),
 		cid:     newOrdered(),
+		img:     newOrdered(),
 		node:    newOrdered(),
 		cred:    newOrdered(),
 		rnd:     newOrdered(),
@@ -275,6 +277,12 @@ func (c *collector) orderedFor(key string) *ordered {
 		return c.ip
 	case key == "containerID":
 		return c.cid
+	case key == "imageID":
+		// status.containerStatuses[].imageID is the digest the node resolved a mutable
+		// tag to (e.g. busybox:1.36 -> ...@sha256:...). It changes whenever the tag is
+		// republished, so the corpus would churn even though control-plane behavior did
+		// not; normalize it relationally like containerID.
+		return c.img
 	case key == "nodeName":
 		return c.node
 	default:
@@ -301,6 +309,7 @@ type indices struct {
 	auditID map[string]string
 	ip      map[string]string
 	cid     map[string]string
+	img     map[string]string
 	node    map[string]string
 	cred    map[string]string
 	rnd     map[string]string
@@ -322,6 +331,7 @@ func (c *collector) buildIndices() *indices {
 		auditID: byFirstAppearance(c.auditID, "auditID"),
 		ip:      byFirstAppearance(c.ip, "ip"),
 		cid:     byFirstAppearance(c.cid, "containerID"),
+		img:     byFirstAppearance(c.img, "imageID"),
 		node:    byFirstAppearance(c.node, "node"),
 		cred:    byFirstAppearance(c.cred, "credential"),
 		rnd:     byFirstAppearance(c.rnd, "rand"),
@@ -472,6 +482,8 @@ func (idx *indices) mapForKey(key string) map[string]string {
 		return idx.ip
 	case key == "containerID":
 		return idx.cid
+	case key == "imageID":
+		return idx.img
 	case key == "nodeName":
 		return idx.node
 	default:

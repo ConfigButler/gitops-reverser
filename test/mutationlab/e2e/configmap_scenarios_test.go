@@ -202,6 +202,8 @@ func TestDryRunCreate(t *testing.T) {
 	}
 	if _, err := h.kube.CoreV1().ConfigMaps(s.ns).Get(ctx, "cm-dry", metav1.GetOptions{}); err == nil {
 		t.Error("dry-run create persisted an object; want none")
+	} else if !apierrors.IsNotFound(err) {
+		t.Fatalf("dry-run create lookup failed with %v; want NotFound", err)
 	}
 	h.syncCorpus(t, "configmap/dry-run-create", records)
 }

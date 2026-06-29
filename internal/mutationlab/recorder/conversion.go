@@ -19,6 +19,7 @@ limitations under the License.
 package recorder
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -99,7 +100,12 @@ func (c *Conversion) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // webhook never drops an object.
 func convertWidget(raw json.RawMessage, desiredAPIVersion string) json.RawMessage {
 	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
+	// UseNumber so spec.sizeBytes survives as a json.Number: the default decode into
+	// map[string]any would coerce it to float64 and lose precision above 2^53 before
+	// widgetSize ever sees it (and its json.Number branch would be dead).
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&obj); err != nil {
 		return raw
 	}
 	obj["apiVersion"] = desiredAPIVersion

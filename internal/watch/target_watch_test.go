@@ -682,8 +682,17 @@ func TestManager_GitTargetUIDLifecycle(t *testing.T) {
 	assert.Equal(t, "uid-1", m.resolveGitTargetUID(gitDest), "the data-plane gitDest resolves via the remembered map")
 	assert.Equal(t, "uid-9", m.resolveGitTargetUID(gitDest.WithUID("uid-9")), "an explicit UID on gitDest wins")
 
+	// A UID-less forget (the delete path's NotFound reaction) is a no-op: it must not wipe the
+	// stored UID, or a delete racing behind a same-name recreate would drop the fresh cursor.
 	m.forgetGitTargetUID(gitDest)
-	assert.Empty(t, m.resolveGitTargetUID(gitDest))
+	assert.Equal(t, "uid-1", m.resolveGitTargetUID(gitDest), "UID-less forget leaves the stored UID intact")
+
+	// A forget carrying a stale UID is likewise ignored; only a matching UID clears the entry.
+	m.forgetGitTargetUID(gitDest.WithUID("uid-9"))
+	assert.Equal(t, "uid-1", m.resolveGitTargetUID(gitDest), "a non-matching UID does not evict the entry")
+
+	m.forgetGitTargetUID(gitDest.WithUID("uid-1"))
+	assert.Empty(t, m.resolveGitTargetUID(gitDest), "the matching UID clears the entry")
 }
 
 func receiveOpenedWatch(t *testing.T, opened <-chan openedWatch) openedWatch {
