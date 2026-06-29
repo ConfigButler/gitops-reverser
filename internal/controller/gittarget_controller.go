@@ -41,6 +41,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -965,7 +966,7 @@ func (r *GitTargetReconciler) updateStatusWithRetry(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha2.GitTarget{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.encryptionSecretToGitTargets)).
 		// GenerationChangedPredicate keeps this watch reacting to a freshly
@@ -992,8 +993,20 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.clusterWatchRuleToGitTarget),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		Named("gittarget").
-		Complete(r)
+		Named("gittarget")
+
+	// React to a data-plane GitPath acceptance TRANSITION (refused/recovered) so GitPathAccepted
+	// is re-projected within one reconcile instead of lagging up to RequeueLongInterval (10m).
+	// The watch manager records acceptance asynchronously and pushes a GenericEvent here. See
+	// docs/design/manifest/gitpathaccepted-projection-race-and-external-drift.md.
+	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
+		b = b.WatchesRawSource(source.Channel(
+			r.EventRouter.WatchManager.GitPathEvents(),
+			&handler.EnqueueRequestForObject{},
+		))
+	}
+
+	return b.Complete(r)
 }
 
 // watchRuleToGitTarget enqueues the GitTarget a WatchRule targets (a WatchRule targets a GitTarget

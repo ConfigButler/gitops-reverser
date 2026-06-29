@@ -37,6 +37,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -130,6 +131,15 @@ type Manager struct {
 	// targetGitPathAcceptance is the target-side acceptance surface. It is keyed by
 	// GitTarget and projected into GitTarget status as GitPathAccepted.
 	targetGitPathAcceptance map[string]GitPathAcceptanceStatus
+
+	// gitPathEventsCh carries a GenericEvent for a GitTarget whenever its GitPath acceptance
+	// state TRANSITIONS, so the GitTarget controller re-projects GitPathAccepted promptly
+	// instead of waiting up to RequeueLongInterval (10m) for its next periodic reconcile. The
+	// data plane records acceptance asynchronously; without this edge the status lags. See
+	// docs/design/manifest/gitpathaccepted-projection-race-and-external-drift.md. Lazily
+	// created by GitPathEvents() and guarded by gitPathEventsMu.
+	gitPathEventsMu sync.Mutex
+	gitPathEventsCh chan event.GenericEvent
 
 	// gitTargetUIDs maps a GitTarget's namespace/name key to its object UID, captured
 	// from the controller on Declare. The watch data plane keys resume cursors by this

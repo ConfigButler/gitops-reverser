@@ -28,30 +28,44 @@ import (
 // acceptance gate. The refusal is target-wide, not stream-specific.
 func (m *Manager) MarkTargetGitPathRefused(gitDest types.ResourceReference, reason, message string) {
 	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
 	if m.targetGitPathAcceptance == nil {
 		m.targetGitPathAcceptance = map[string]GitPathAcceptanceStatus{}
 	}
+	prev, had := m.targetGitPathAcceptance[gitDest.Key()]
 	m.targetGitPathAcceptance[gitDest.Key()] = GitPathAcceptanceStatus{
 		Accepted: false,
 		Reason:   reason,
 		Message:  message,
 		At:       metav1.Now(),
 	}
+	// Emit only on a real transition (newly refused, or the refusal reason changed) so the
+	// happy-path resync stream does not enqueue a reconcile per event.
+	changed := !had || prev.Accepted || prev.Reason != reason
+	m.targetWatchesMu.Unlock()
+	if changed {
+		m.enqueueGitPathChange(gitDest)
+	}
 }
 
 // MarkTargetGitPathAccepted clears any prior refusal for the GitTarget path.
 func (m *Manager) MarkTargetGitPathAccepted(gitDest types.ResourceReference) {
 	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
 	if m.targetGitPathAcceptance == nil {
 		m.targetGitPathAcceptance = map[string]GitPathAcceptanceStatus{}
 	}
+	prev, had := m.targetGitPathAcceptance[gitDest.Key()]
 	m.targetGitPathAcceptance[gitDest.Key()] = GitPathAcceptanceStatus{
 		Accepted: true,
 		Reason:   "GitPathAccepted",
 		Message:  "GitTarget path accepted",
 		At:       metav1.Now(),
+	}
+	// Emit only when clearing a prior refusal (recovery). The steady-state resync calls this
+	// on every successful apply; without the transition guard that would be a reconcile storm.
+	changed := had && !prev.Accepted
+	m.targetWatchesMu.Unlock()
+	if changed {
+		m.enqueueGitPathChange(gitDest)
 	}
 }
 
