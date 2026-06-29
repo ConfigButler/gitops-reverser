@@ -212,11 +212,16 @@ func (r *GitProviderReconciler) getAuthFromSecret(
 	}
 
 	log.V(1).Info("Successfully extracted credentials", "hasAuth", auth != nil)
-	r.firsts.credentialsLoaded.Do(func() {
-		log.Info("GitProvider credentials loaded from secret",
-			"secretName", gitProvider.Spec.SecretRef.Name,
-			"namespace", gitProvider.Namespace)
-	})
+	// secret is nil on the anonymous-access path (no secretRef); in that case
+	// there is no secret to report and gitProvider.Spec.SecretRef is nil, so
+	// guard the dereference below.
+	if secret != nil {
+		r.firsts.credentialsLoaded.Do(func() {
+			log.Info("GitProvider credentials loaded from secret",
+				"secretName", gitProvider.Spec.SecretRef.Name,
+				"namespace", gitProvider.Namespace)
+		})
+	}
 	return auth, ctrl.Result{}, false
 }
 
