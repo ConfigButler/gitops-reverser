@@ -38,8 +38,8 @@ The vision shift is real and, in this reviewer's read, a net improvement:
 | Mode-B `sendInitialEvents` replay + mark-and-sweep | ✅ done | `target_watch.go` replay accumulation → `EnqueueResync` with `ScopeGVR`; sweep in `git/resync_flush.go` |
 | Bookmark handling (`initial-events-end`, RV advance) | ✅ done | `target_watch.go` bookmark/`InitialEventsAnnotationKey` handling |
 | Sanitize on the hot path | ✅ done | `sanitize.Sanitize` before diff in `target_watch.go` |
-| Optional **attribution** (audit off → committer-authored) | ✅ done | `cmd/main.go` `--audit-attribution-enabled`; nil author-lookup all the way down |
-| Redis **required**; resume cursors decoupled from audit | ✅ **done in this pass** — see §5 | `cmd/main.go` builds the index + wires `WatchCursorStore` unconditionally; audit gated by `--audit-attribution-enabled` |
+| Optional **attribution** (audit off → committer-authored) | ✅ done | `cmd/main.go` `--author-attribution`; nil author-lookup all the way down |
+| Redis **required**; resume cursors decoupled from audit | ✅ **done in this pass** — see §5 | `cmd/main.go` builds the index + wires `WatchCursorStore` unconditionally; audit gated by `--author-attribution` |
 | Conservative resolver + bounded grace window | ✅ done + tested | `internal/watch/author_resolver.go` (`DefaultAttributionGraceWindow`), `author_resolver_test.go` |
 | CommitRequest: fail-closed → finalize-as-committer | ✅ done | `internal/controller/commitrequest_controller.go` |
 | Refuse unsupported folder + GitTarget status | ✅ done + e2e | `manifestanalyzer/acceptance*`, `test/e2e/unsupported_folder_e2e_test.go` |
@@ -84,7 +84,7 @@ GitProvider-readiness notes in the watchrule/clusterwatchrule controllers.
 5. **Attribution reason-code granularity.** Reason codes implemented today: `exact_user`,
    `exact_serviceaccount`, `weak`, `exact_deletecollection_item` (✅ landed with the expander — §4),
    `conflict`, `expired`, `absent`. The remaining finer codes (`weak-no-rv`, `conflict-multi-user`,
-   `absent-no-redis`, `absent-policy-dropped`) are still not distinct. Not blocking; fast-follows that improve
+   `absent-attribution-disabled`, `absent-policy-dropped`) are still not distinct. Not blocking; fast-follows that improve
    attribution fidelity and observability. (Note: the SA naming policy / `serviceaccount_collapsed` result was
    removed — a matched service account is always named by its own username.)
 
@@ -118,10 +118,10 @@ optional.** Everything below states it that way; never call Redis optional.
 
 - **Redis required; resume cursors decoupled from attribution.** `cmd/main.go` now builds the Redis
   index and wires `watchMgr.WatchCursorStore` **unconditionally**; `validateAuditConfig` **requires** a
-  non-empty `--audit-redis-addr`; a new `--audit-attribution-enabled` flag (default `true`, chart
+  non-empty `--redis-addr`; a new `--author-attribution` flag (default `true`, chart
   `attribution.enabled`) gates **only** the audit webhook ingress + resolver + CommitRequest lookup. So
   "committer-only" now means *attribution off, Redis still on*. `cmd/main_audit_server_test.go` updated
-  (empty `--audit-redis-addr` is now an error; committer-only is the attribution toggle).
+  (empty `--redis-addr` is now an error; committer-only is the attribution toggle).
 - **Dead-code removal.** Deleted the last materialization-phase-machine residue in `internal/watch`
   (`NudgeTypeResyncForLateEvent` → `claimedGVRForGroupResource` → `materializerInstance` + the backing
   `lateNudge*`/`materializer*` fields and `lateNudgeMinInterval` const), zero-external-caller verified;
@@ -138,10 +138,11 @@ optional.** Everything below states it that way; never call Redis optional.
 - `charts/gitops-reverser/README.md`: Valkey/Redis listed as **required**; **only** audit delivery listed
   as optional; feature bullets reworded; K8s 1.35 → 1.36.
 - `charts/gitops-reverser/values.yaml` (new `attribution.enabled`, reworded Redis comments) and
-  `deployment.yaml` (passes `--audit-attribution-enabled`); `NOTES.txt` left at its Redis-present framing.
+  `deployment.yaml` (passes `--author-attribution`); `NOTES.txt` left at its Redis-present framing.
 - `docs/configuration.md` and `docs/architecture.md` now state Redis as required with attribution as the
   only optional capability (including the startup flowchart and the incidental "no Redis" phrasings); the
-  design-record `watch-first-ingestion-architecture.md` carries a correction banner.
+  design-record `watch-first-ingestion-architecture.md` was rewritten so its body states Redis-required
+  throughout (the earlier correction banner is folded in, not bolted on top).
 
 ## 6. Merge recommendation
 

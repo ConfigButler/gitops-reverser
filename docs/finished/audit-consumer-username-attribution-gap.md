@@ -75,7 +75,7 @@ storage in the e2e cluster).
    time XREADGROUP runs, the group is gone.
 
 4. **Is the audit handler actually writing to the same Valkey instance?**
-   The producer (audit handler) and consumer use the same `--audit-redis-addr`. Check
+   The producer (audit handler) and consumer use the same `--redis-addr`. Check
    that the `config/deployment.yaml` address (`valkey.valkey-e2e.svc.cluster.local:6379`)
    resolves to the same pod that `XINFO` is run against.
 

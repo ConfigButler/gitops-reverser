@@ -158,7 +158,8 @@ nodeSelector:
 |-----------|-------------|---------|
 | `replicaCount` | Number of controller replicas (can't be higher than 1 for now, sorry) | `1` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
-| `servers.audit.port` | Audit container port | `9444` |
+| `servers.audit.bindAddress` | host:port the audit ingress server binds to (`--audit-bind-address`) | `0.0.0.0:9444` |
+| `servers.audit.port` | Audit container/Service port; must match the port in `bindAddress` | `9444` |
 | `servers.audit.tls.enabled` | Serve audit ingress with TLS | `true` |
 | `servers.audit.maxRequestBodyBytes` | Max accepted audit request size | `10485760` |
 | `servers.audit.timeouts.read` | Audit-server read timeout | `15s` |

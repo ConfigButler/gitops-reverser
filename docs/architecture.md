@@ -39,7 +39,7 @@ grace window. A missing, late, or absent fact never blocks state capture; it onl
 **Redis/Valkey is required.** It stores each GitTarget's per-watch resume cursors, so the operator
 resumes exactly where it left off after a restart or reconnect instead of re-listing from scratch; when
 attribution is enabled it also stores the audit facts. Running **committer-only**
-(`--audit-attribution-enabled=false`) disables the audit webhook and author attribution — every commit
+(`--author-attribution=false`) disables the audit webhook and author attribution — every commit
 is authored by the configured committer — but still requires Redis. Redis is further the substrate for
 **high availability** (multi-pod needs durable cross-pod state: branch-shard leases and durable write
 queues); see [Operational Boundaries](#operational-boundaries) and the
@@ -272,7 +272,7 @@ Following the ConfigMap edit:
    checked for followability, and diffed against current Git content. A no-op (e.g. a `*/status` bump
    whose desired-state projection is unchanged) is dropped here.
 3. **Resolve the author.** When Redis is present, the resolver waits a bounded grace window
-   (`--attribution-grace`, default `3s`) for a matching audit fact in the attribution index, joining by
+   (`--author-attribution-grace`, default `3s`) for a matching audit fact in the attribution index, joining by
    resourceVersion/UID. On a strong match the real user or named service account becomes the author;
    otherwise (attribution off, no match, or expiry) the commit is authored by the configured committer. This
    wait is per-event and never reorders a watch — see [Watch Event Ordering](#watch-event-ordering).
@@ -422,7 +422,7 @@ old facts are never needed for correctness because watch owns state.
 
 ### The resolver and its grace window
 
-A watch event waits a **bounded grace window** (`--attribution-grace`, default `3s`) for a matching fact
+A watch event waits a **bounded grace window** (`--author-attribution-grace`, default `3s`) for a matching fact
 to arrive, then ships regardless. On a strong match the actor becomes the author — a human or a service
 account alike, always named by its own username (e.g.
 `system:serviceaccount:flux-system:kustomize-controller`). A weak, conflicting, missing, or expired fact
@@ -591,7 +591,7 @@ pair at a time:
 * repeated writes to the same Git path inside a window use last write wins.
 
 The window finalizes when `spec.push.commitWindow` passes with no new matching event, the retained buffer
-reaches `--branch-buffer-max-bytes` (default `8Mi`), a `CommitRequest` finalize deadline matches the open
+reaches `--branch-buffer-max-size` (default `8Mi`), a `CommitRequest` finalize deadline matches the open
 author and GitTarget, or a resync request that is not a heal or shutdown arrives. Successful local commits
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during
 bursts. Heal resyncs that arrive during a window are deferred and drained at the next idle boundary.
@@ -709,10 +709,10 @@ flowchart TD
     D --> E[Create WorkerManager + register Runnable]
     E --> F[Create Watch Manager + EventRouter; inject TypeRegistry]
     F --> G[Register WatchRule + ClusterWatchRule controllers]
-    G --> H[Create Redis attribution/cursor index + wire WatchCursorStore - required]
-    H --> Hq{audit-attribution-enabled?}
-    Hq -->|yes| I[Add audit fact extractor + audit HTTP server + resolver]
-    Hq -->|no| J[Committer-only: skip audit webhook + attribution]
+    G --> H[Create Redis cursor store + wire WatchCursorStore + readiness gate - required]
+    H --> Hq{author-attribution?}
+    Hq -->|yes| I[Build attribution index + audit fact extractor + audit HTTP server + resolver]
+    Hq -->|no| J[Committer-only: no attribution index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
     K --> L[Register GitProvider + GitTarget + CommitRequest controllers]
@@ -720,11 +720,13 @@ flowchart TD
     M --> N[mgr.Start]
 ```
 
-When `--audit-redis-addr` is set the audit HTTP handler is wired with the attribution fact extractor and
-the Redis attribution index, the watch manager gets the author resolver, the CommitRequest controller gets
-the index as its `AuthorLookup`, and a Redis readiness gate plus the audit ingress are added to `/readyz`.
-With `--audit-redis-addr` empty the audit webhook and attribution are skipped entirely and every commit is
-committer-authored. This is graceful degradation on the absence of Redis, not a separate mode flag.
+Redis is required: the cursor store is wired unconditionally and a Redis readiness gate keeps the pod
+not-ready until Redis is reachable. With `--author-attribution` on (the default), the attribution index is
+built on the Redis connection, the audit HTTP handler is wired with the fact extractor, the watch manager
+gets the author resolver, the CommitRequest controller gets the index as its `AuthorLookup`, and the audit
+ingress is added to `/readyz`. With `--author-attribution=false` (committer-only) no attribution index is
+built and the audit webhook is skipped entirely; every commit is committer-authored. Redis stays required
+either way.
 
 ***
 

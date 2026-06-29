@@ -34,7 +34,7 @@ cp dist/install.yaml "${tmpdir}/install.yaml"
 
 # Patch Redis address
 sed -i \
-	"s|--audit-redis-addr=${DEFAULT_AUDIT_REDIS_ADDR}|--audit-redis-addr=${E2E_AUDIT_REDIS_ADDR}|" \
+	"s|--redis-addr=${DEFAULT_AUDIT_REDIS_ADDR}|--redis-addr=${E2E_AUDIT_REDIS_ADDR}|" \
 	"${tmpdir}/install.yaml"
 
 # Inject fixed ClusterIP for the controller Service

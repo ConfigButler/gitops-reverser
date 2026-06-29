@@ -10,7 +10,7 @@ metadata:
 # E2E-ONLY. This ValidatingWebhookConfiguration is part of the kustomize SUT
 # overlay (config/) and is intentionally NOT packaged in the Helm chart
 # (charts/gitops-reverser). The admission server is gated behind
-# --admission-webhook-enabled, which defaults to false; the chart never enables
+# --admission-webhook, which defaults to false; the chart never enables
 # it and ships no webhook/cert templates. The handler always allows (pure
 # observation, see internal/webhook/admission_allow_handler.go); when a real,
 # rejecting policy becomes product behavior, the chart must gain matching

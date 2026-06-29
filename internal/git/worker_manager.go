@@ -33,7 +33,7 @@ import (
 
 // DefaultBranchBufferMaxBytes is the default cap on a worker's combined event
 // buffer + unpushed-events memory. Operators override this via
-// --branch-buffer-max-bytes (8Mi by default).
+// --branch-buffer-max-size (8Mi by default).
 const DefaultBranchBufferMaxBytes int64 = 8 * 1024 * 1024
 
 // WorkerManager manages BranchWorkers.

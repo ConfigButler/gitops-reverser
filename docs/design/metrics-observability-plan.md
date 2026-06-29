@@ -106,7 +106,7 @@ metric at the smallest honest boundary.
 | `audit_events_total` *(have)* | counter | `outcome`, `category`, `group`, `version`, `resource`, `verb` | every audit event by fate (`queued` = attribution fact written) |
 | `audit_eventlists_total` / `_eventlist_events_total` / `_eventlist_duration_seconds` *(have)* | counter/hist | `outcome` | the `/audit-webhook` request boundary |
 | `attribution_resolutions_total` | counter | `result` (`exact_user`/`exact_serviceaccount`/`weak`/`conflict`/`absent`/`expired`), `group`, `version`, `resource` | **does attribution actually land, per type** |
-| `attribution_resolution_wait_seconds` | histogram | `result` | grace-window latency cost (`--attribution-grace` tuning) |
+| `attribution_resolution_wait_seconds` | histogram | `result` | grace-window latency cost (`--author-attribution-grace` tuning) |
 | `attribution_fact_events_total` | counter | `op` (`written`/`matched`/`expired_unmatched`/`late`) | fact-index lifecycle — written vs joined vs wasted |
 | `attribution_fact_index_size` | gauge | — | facts currently parked in Redis awaiting a join |
 | `commits_total` *(have, + intentional label change)* | counter | `provider_*`, `branch`, **`author_kind`** (`user`/`serviceaccount`/`committer`) | **what fraction of commits carry a real name** |
@@ -133,7 +133,7 @@ This is the subsystem you want glass-box. The model
 ```
 kube-apiserver --POST--> /audit-webhook --gate--> write attribution fact (Redis, TTL)
                                                           |
-watch event ---------> resolver waits up to --attribution-grace --> join by RV/UID
+watch event ---------> resolver waits up to --author-attribution-grace --> join by RV/UID
                                                           |
                                   strong match -> user/sa author ; else -> committer
 ```
@@ -205,7 +205,7 @@ panel is copy-pasteable.
 - *Audit outcome mix* (stacked): `sum by (category,outcome)(rate(gitopsreverser_audit_events_total[5m]))`
 - *Attribution match coverage by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m])) / sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total[5m]))`
 - *Commit author mix* (pie/stacked): `sum by (author_kind)(rate(gitopsreverser_commits_total[15m]))`
-- *Grace-window wait p95 by result* (timeseries) with an `--attribution-grace` threshold line: `histogram_quantile(0.95, sum by (le,result)(rate(gitopsreverser_attribution_resolution_wait_seconds_bucket[5m])))`
+- *Grace-window wait p95 by result* (timeseries) with an `--author-attribution-grace` threshold line: `histogram_quantile(0.95, sum by (le,result)(rate(gitopsreverser_attribution_resolution_wait_seconds_bucket[5m])))`
 - *Fact-index health* (timeseries): `sum by (op)(rate(gitopsreverser_attribution_fact_events_total[5m]))` + `gitopsreverser_attribution_fact_index_size`
 - *Top dropped audit outcomes* (table): `topk(10, sum by (resource,verb,outcome)(rate(gitopsreverser_audit_events_total{category="dropped"}[5m])))`
 - *EventList ingress + decode errors* (timeseries): `sum by (outcome)(rate(gitopsreverser_audit_eventlists_total[5m]))`
@@ -245,7 +245,7 @@ panel is copy-pasteable.
 |---|---|---|
 | Audit fact-store errors | `rate(audit_events_total{outcome="write_error"}[10m]) > 0` | Redis fact writes failing |
 | Attribution match coverage drop | match coverage `< 0.5` for 30m while audit flowing | facts stopped matching watch events |
-| Grace window saturating | `attribution_resolution_wait_seconds{result=~"absent|expired"}` p95 → `--attribution-grace` | misses are waiting the full grace; raise grace or skip never-attributed types |
+| Grace window saturating | `attribution_resolution_wait_seconds{result=~"absent|expired"}` p95 → `--author-attribution-grace` | misses are waiting the full grace; raise grace or skip never-attributed types |
 | Watch restart storm | `rate(watch_restarts_total{reason="410_gone"}[15m])` spike | RV churn / compaction pressure |
 | List fallback in use | `rate(watch_recovery_total{mode="list_fallback"}[1h]) > 0` | an aggregated API isn't honoring streaming list |
 | Worker backing up | `branch_worker_queue_depth` rising, not draining | stalled remote |

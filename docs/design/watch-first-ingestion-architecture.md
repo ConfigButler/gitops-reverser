@@ -3,20 +3,6 @@
 > Status: **accepted direction — big-bang rewrite**
 > Date: 2026-06-25
 >
-> **Correction (2026-06-28): Redis/Valkey is REQUIRED, not optional.** This document's Decision 2 and
-> several passages below call Redis optional and describe a "no Redis → committer-only" mode. That framing
-> is superseded: Redis holds each GitTarget's watch **resume cursors** (state continuity / work
-> re-pickup) and is the substrate for HA and the planned durable branch-worker queue, so it is a hard
-> dependency in every mode. The **only** optional capability is **audit attribution** (the audit webhook),
-> toggled by `--audit-attribution-enabled` (chart `attribution.enabled`). "Committer-only" now means
-> *attribution off, Redis still on*. Wherever the text below says "no Redis," read "attribution disabled."
->
-> **Correction (2026-06-28): no service-account naming policy.** The "name / bot / label" SA-naming knob
-> floated below (the "Two knobs" passage, the confidence table's `collapse-to-bot`, and the Stage-2
-> "SA-naming policy" note) was **not** shipped. A matched actor — human **or** service account — is always
-> named by its own username; there is no option to collapse service accounts to the committer. The
-> `serviceaccount_collapsed` reason code does not exist.
-> See [architecture.md](../architecture.md) and [watch-first-merge-readiness.md](watch-first-merge-readiness.md).
 > Related:
 > [Current architecture](../architecture.md),
 > [Mutation Capture Lab](mutation-capture-lab-design.md),
@@ -45,11 +31,15 @@ Three decisions frame this rewrite:
    mark-and-sweep bound to a single Git tree, which is what makes them simple (see the dedup note under
    [HA](#per-gittarget-ownership-and-ha)). Sharing watches across GitTargets is an explicit future
    enhancement, not the first cut.
-2. **Redis is optional, and it is the toggle for attribution.** With no Redis reachable, the product
-   runs in **committer-only** mode: it mirrors cluster state to Git, authored by the configured bot/
-   committer identity, and needs neither Redis nor the audit webhook. With Redis present (and the audit
-   webhook configured to post to it), the product additionally resolves the **author** from audit facts
-   when the evidence is strong. No Redis → committer. Redis → committer **and** author.
+2. **Redis is required; audit attribution is the optional layer on top.** Redis/Valkey holds each
+   GitTarget's watch **resume cursors** (state continuity / work re-pickup) and is the substrate for HA
+   and the planned durable branch-worker queue, so it is a hard dependency in every mode. What is
+   optional is **audit attribution**, toggled by `--author-attribution` (chart
+   `attribution.enabled`). With attribution off the product runs **committer-only**: it mirrors cluster
+   state to Git, authored by the configured committer identity, and Redis still backs the resume cursors.
+   With attribution on (and the audit webhook configured to post to it), the product additionally
+   resolves the **author** from audit facts when the evidence is strong. Attribution off → committer.
+   Attribution on → committer **and** author.
 3. **Big-bang.** The audit-as-correctness pipeline is removed, not kept behind a flag. The current
    design is not perfect and is not worth preserving in parallel; the simplification is large enough
    that a clean replacement is cheaper to reason about than a dual-mode coexistence.
@@ -93,7 +83,7 @@ which is exactly what we rely on). See [State ingestion](#state-ingestion-raw-wa
 | Question | Source |
 |---|---|
 | **What changed?** | WATCH (with `sendInitialEvents` replay) over claimed, followable types. The only correctness path. |
-| **Who caused it?** | Optionally, audit facts in Redis — only on strong evidence, only when Redis is present. |
+| **Who caused it?** | Optionally, audit facts in Redis — only on strong evidence, only when audit attribution is enabled. |
 
 A missing, late, shallow, conflicting, failed, dry-run, or simply absent audit fact never blocks or
 alters state capture. It can only change the commit *author* from the bot to a named user/service
@@ -116,7 +106,7 @@ flowchart TD
         WORKER["BranchWorker → writer → push"]
     end
 
-    subgraph ATTR["Attribution (only when Redis present)"]
+    subgraph ATTR["Attribution (only when enabled)"]
         AFACTS["Audit fact extractor"]
         AINDEX[("Redis attribution index\n(TTL, keyed for join)")]
         RESOLVE["Conservative resolver\n(bounded grace window)"]
@@ -145,8 +135,8 @@ In this shape:
 - The **relevance filter** — owned by product code — discards the controller noise the cluster's audit
   policy used to discard for free (status churn, runtime-owned subresources, no-op diffs).
 - Every Git write derives from persisted state observed by watch (live, or via the `sendInitialEvents` replay).
-- The **resolver** attaches an author only when Redis is present *and* an audit fact matches strongly;
-  otherwise the commit is authored by the configured committer.
+- The **resolver** attaches an author only when audit attribution is enabled *and* an audit fact matches
+  strongly; otherwise the commit is authored by the configured committer.
 - Audit events never create object changes and never repair object bodies.
 
 This is still "watch + replay," not "watch from nothing": a reliable watch needs an initial replay of
@@ -193,7 +183,7 @@ replay. If the apiserver still holds that RV in its watch cache, it streams ever
 case for short gaps, and it is the efficient path: we pick up exactly where we left off.
 
 **Mode B — replay with mark-and-sweep (the correctness fallback).** If the exact RV is gone (compacted
-→ `410 Gone`, no cursor, no Redis, or a cold start), a delta is untrustworthy — objects may have been
+→ `410 Gone`, no cursor yet, or a cold start), a delta is untrustworthy — objects may have been
 deleted while we were away and a delta from an unknown point would never reveal it. So we open with
 `sendInitialEvents=true` and run a **mark-and-sweep** over the replay:
 
@@ -259,12 +249,14 @@ the HA story almost for free:
   lease per GitTarget). A replica runs the watch sets for the GitTargets it owns. There is no shared
   per-type pipeline to coordinate, no per-type handoff to lose.
 - **Failover resumes from the cursor.** A replica taking over a GitTarget re-opens each watch with
-  `sendInitialEvents=true`, floored at the `(GVR, scope) → RV` cursor in Redis when present, or from
-  current state when not. Either way the replay-as-ADD reconstructs state idempotently against Git; no
-  durable object checkpoint is needed.
-- **Correctness needs no Redis.** Without Redis the HA path still works — each failover just replays
-  from current state instead of resuming from a cursor. Redis, when present, stores two small things:
-  the resume cursors and the attribution facts. Neither is a correctness input.
+  `sendInitialEvents=true`, floored at the `(GVR, scope) → RV` cursor in Redis when one exists, or from
+  current state when the type has no cursor yet. Either way the replay-as-ADD reconstructs state
+  idempotently against Git; no durable object checkpoint is needed.
+- **Correctness rests on replay, not on Redis durability.** Redis is a required dependency, but it
+  stores only two small things — the resume cursors and the attribution facts — and neither is a
+  *correctness* input. A missing or stale cursor never produces wrong state: the failover just degrades
+  to a full Mode-B replay (replay-as-ADD + mark-and-sweep) instead of an exact-RV delta resume. This is
+  what lets a GitTarget move between replicas freely.
 
 **The dedup tradeoff — accepted, and why.** Per-GitTarget watches mean that if two GitTargets both
 claim `ConfigMaps` in the same scope, two ConfigMap watches run — duplicate API watch load and a
@@ -285,8 +277,8 @@ bookkeeping. Deferred until measured.
 
 ## Attribution: an optional lookup table with slack
 
-Audit ingestion becomes an optional fact extractor that runs **only when Redis is configured**. It
-stores the smallest facts needed to name an author, not an authoritative object log.
+Audit ingestion becomes an optional fact extractor that runs **only when audit attribution is enabled**.
+It stores the smallest facts needed to name an author, not an authoritative object log.
 
 Fact shape (minimized):
 
@@ -331,7 +323,7 @@ attribution, not "unknown." Naming `system:serviceaccount:flux-system:kustomize-
 | Terminal delete (finalizer / cascade) | finalizer-removal or owner-ref cascade: the watch `DELETED` lands at a later RV and the actor that removed the object is a controller (corpus Rows 8/10) | committer, unless an *exact* match to the removing actor's audit fact exists (then that named SA) |
 | Weak | same GVR/name/time only, missing RV/body, or multiple candidates | committer |
 | Conflict | failure, dry-run, mismatched UID/RV, multiple users, stale | committer, with metric |
-| Absent | no Redis, no audit, policy dropped the write, or no match | committer |
+| Absent | attribution disabled, no audit fact, policy dropped the write, or no match | committer |
 
 `deletecollection` is the one delete case strong enough to attribute: implement it as a fact *expander*
 — one collection fact becomes N per-object candidates keyed by GVR/namespace/name/UID — and join each
@@ -346,9 +338,10 @@ event at an earlier RV); a controller removed the finalizer and caused the actua
 author is worse than no author," that commits as committer unless we match the finalizer-removing patch
 exactly — which usually names a service account, not the human.
 
-Two knobs the product exposes: the **service-account naming policy** (name / bot / label), and a
-machine-readable **reason code** on every outcome (`exact-user`, `exact-sa`, `exact-deletecollection-item`,
-`weak-no-rv`, `conflict-multi-user`, `absent-no-redis`, `absent-policy-dropped`, `expired`) so unknown
+A matched actor — human **or** service account — is always named by its own username; there is no knob
+to collapse a service account to the committer. The one thing the product exposes is a machine-readable
+**reason code** on every outcome (`exact-user`, `exact-sa`, `exact-deletecollection-item`, `weak-no-rv`,
+`conflict-multi-user`, `absent-attribution-disabled`, `absent-policy-dropped`, `expired`) so unknown
 rates are explainable, not mysterious.
 
 ## Commit windows and authors
@@ -372,15 +365,15 @@ sometimes *fewer* when bursts/downtime collapse to current state. Both are accep
 
 `CommitRequest` currently **fails closed** if it cannot attribute the requester
 ([commitrequest_controller.go](../../internal/controller/commitrequest_controller.go),
-`attributionFailedMessage`). That does not fit a no-Redis install.
+`attributionFailedMessage`). That does not fit a committer-only install.
 
 New behavior:
 
 - the controller-runtime watch on the `CommitRequest` object still triggers finalization;
-- attribution is optional: with Redis + a matching fact, the requester is named; otherwise the request
-  **finalizes as committer** with a status note that finalization happened without end-user
+- attribution is optional: with attribution enabled + a matching fact, the requester is named; otherwise
+  the request **finalizes as committer** with a status note that finalization happened without end-user
   attribution;
-- the request must never fail solely because Redis/audit is absent.
+- the request must never fail solely because attribution is disabled or no audit fact matched.
 
 If preserving the CommitRequest submitter matters without audit, that needs an explicit user field or a
 signed request — Kubernetes object state alone does not identify the human who created it.
@@ -389,7 +382,7 @@ signed request — Kubernetes object state alone does not identify the human who
 
 | Mode | State source | Redis / audit | Author fidelity | Use |
 |---|---|---|---|---|
-| **Committer-only** | watch | neither | committer identity | simplest install, state mirror |
+| **Committer-only** | watch | Redis only (no audit webhook) | committer identity | simplest install, state mirror |
 | **Attributed** | watch | Redis + audit webhook | named user/SA on strong match; committer otherwise | recommended target |
 
 The product must not imply committer-only equals attributed mode, nor that attributed mode recovers
@@ -435,10 +428,10 @@ tail + splice as the desired-set source. *Net: new code is small; it plugs into 
 `type_objects_mirror.go` already does the `sendInitialEvents` watch.*
 
 **Stage 2 — Optional attribution.**
-When Redis is configured: extract minimal audit facts in the (shrunk) audit handler → Redis index with
-TTL; add the conservative resolver with the bounded grace window and SA-naming policy. When Redis is
-absent: skip the audit handler and index entirely; commits are committer-authored. Flip
-`CommitRequest` to finalize-as-committer without attribution.
+When attribution is enabled: extract minimal audit facts in the (shrunk) audit handler → Redis index
+with TTL; add the conservative resolver with the bounded grace window. When attribution is disabled:
+skip the audit handler and the attribution index entirely (Redis still backs the resume cursors);
+commits are committer-authored. Flip `CommitRequest` to finalize-as-committer without attribution.
 
 **Stage 3 — Demolition.**
 Delete the audit-as-correctness machinery now that nothing imports it: `internal/queue` (minus the
@@ -447,15 +440,20 @@ moved attribution bits), `internal/gate`, `webhook/audit_joiner.go`, the materia
 the late-lane/divert/nudge code. Shrink `audit_handler.go` to fact extraction.
 
 **Stage 4 — Config, wiring, docs.**
-Make Redis and the audit webhook optional in `cmd/main.go` (no `--audit-redis-addr` reachable → boot in
-committer-only mode rather than failing). Remove the dead audit-stream flags
+Keep Redis **required** in `cmd/main.go` (a missing `--redis-addr` is a startup error, and the
+readiness gate holds the pod not-ready until Redis is reachable); make only the audit webhook /
+attribution optional via `--author-attribution=false` (committer-only — the audit ingress is not
+started, but Redis still backs the resume cursors). Remove the dead audit-stream flags
 (`--audit-redis-max-len`, `--audit-bytype-*`, `--watch-state-stream`, body TTL/wait, etc.). Update the
-Helm chart and `config/` so the audit webhook and Redis are opt-in. Rewrite `docs/architecture.md` to
-the watch-first model and document the two operating modes and the history-granularity guarantee.
+Helm chart and `config/` so the audit webhook is opt-out while Redis stays a hard dependency. Rewrite
+`docs/architecture.md` to the watch-first model and document the two operating modes and the
+history-granularity guarantee.
 
 ## Reliability rules (non-negotiable)
 
-1. Audit/Redis must never be required for object correctness.
+1. Audit attribution must never be required for object correctness, and Redis durability must never be
+   a correctness input — a missing or stale resume cursor degrades to a full Mode-B replay, never to
+   wrong state. (Redis is still a required dependency; it just isn't what guarantees correctness.)
 2. A watch event with no confident audit match must still write state (as committer).
 3. A failed, rejected, or dry-run audit fact must never create state.
 4. Conflicting attribution facts produce committer, not "first wins."
@@ -484,7 +482,7 @@ the watch-first model and document the two operating modes and the history-granu
 |---|---|
 | Source of object state? | WATCH with `sendInitialEvents` replay, per GitTarget. No separate LIST/checkpoint. |
 | Is audit ever required for committing state? | No. It only changes the author. |
-| Is Redis required? | No. Without it: committer-only + replay-from-current on every restart. With it: committer + author + RV resume cursor. |
+| Is Redis required? | Yes — a hard dependency in every mode. It holds each GitTarget's RV resume cursors (and, with attribution on, the audit facts) and underpins HA / the durable branch-worker queue. It is not a *correctness* input: a missing cursor just forces a full Mode-B replay. |
 | Watch ownership granularity? | Per GitTarget. HA = assign GitTargets to replicas; failover resumes from the Redis RV cursor (or replays). |
 | Periodic LIST / drift sweep? | No *timer* sweep. Deletes are reconciled by the Mode-A delta resume (exact RV) or a **mark-and-sweep on replay** (Mode B); the sweep fires on watch re-establishment, never hourly. |
 | Dedup watches across GitTargets? | No — one watch per `(GitTarget, GVR, scope)`, because resume cursors and mark-and-sweep are per-GitTarget. Sharing the transport is an explicit future enhancement, deferred. |
@@ -497,9 +495,9 @@ the watch-first model and document the two operating modes and the history-granu
 
 Watch is the better source for persisted object state, and the audit-as-correctness pipeline carries
 the most incidental complexity (ordering, late-lane, demand-gating, the materialization phase machine).
-Making watch the only state source per GitTarget deletes that complexity, makes Redis and the audit
-webhook optional, and turns shallow/aggregated audit events from correctness problems into attribution
-limitations.
+Making watch the only state source per GitTarget deletes that complexity, makes the audit webhook
+optional (Redis stays required for resume cursors), and turns shallow/aggregated audit events from
+correctness problems into attribution limitations.
 
 Two prices are accepted in exchange: the audit *policy's* relevance filtering moves into product code
 on the hot path, and authorship becomes probabilistic with per-observation (not per-mutation) history

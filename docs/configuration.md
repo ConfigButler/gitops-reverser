@@ -516,7 +516,7 @@ watch from the last processed resourceVersion when the apiserver can still serve
 Redis/Valkey is **required**: it stores each GitTarget's watch resume cursors (state continuity, so a
 restart or reconnect resumes where it left off), and when attribution is enabled it also stores the audit
 facts. To run **committer-only** — the audit webhook unused and every commit authored by the configured
-committer — set `--audit-attribution-enabled=false` (chart `attribution.enabled: false`); Redis stays
+committer — set `--author-attribution=false` (chart `attribution.enabled: false`); Redis stays
 required either way.
 
 ```yaml
@@ -530,9 +530,9 @@ queue:
 
 The attribution flags tune the join:
 
-- `--attribution-ttl` (default `10m`): how long an attribution fact is retained waiting for the
+- `--author-attribution-ttl` (default `10m`): how long an attribution fact is retained waiting for the
   matching watch event to join it.
-- `--attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
+- `--author-attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
   watch event ships authored by the committer.
 
 A matched actor is always named by its own username — humans and service accounts alike (e.g.

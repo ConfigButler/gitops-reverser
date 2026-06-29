@@ -64,7 +64,9 @@ controllerManager:
 # HTTPS servers
 servers:
   audit:
-    listenAddress: 0.0.0.0
+    # host:port the audit ingress server binds to (passed as --audit-bind-address).
+    bindAddress: 0.0.0.0:9444
+    # Container/Service port; must match the port in bindAddress above.
     port: 9444
     tls:
       # Serve audit ingress over HTTPS when true, HTTP when false.

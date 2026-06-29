@@ -27,11 +27,13 @@ spec:
         - --metrics-bind-address=:8443
         - --metrics-insecure
         - --health-probe-bind-address=:8081
-        - --admission-webhook-enabled
+        - --admission-webhook
         - --admission-webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
         - --audit-cert-path=/tmp/k8s-audit-server/audit-server-certs
         - --audit-client-ca-path=/tmp/k8s-audit-server/audit-client-ca
-        - --audit-redis-addr=valkey.valkey-e2e.svc.cluster.local:6379
+        - --redis-addr=valkey.valkey-e2e.svc.cluster.local:6379
+        # The e2e Valkey serves plain TCP, so opt out of the now-default Redis TLS.
+        - --redis-insecure
         # Dev/e2e only: the in-cluster Gitea SSH host key is not pinned, so permit SSH
         # when no known_hosts source exists. Never set this in production.
         - --insecure-allow-missing-known-hosts

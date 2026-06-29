@@ -45,19 +45,18 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 
 	assert.False(t, cfg.metricsInsecure)
 	assert.False(t, cfg.admissionWebhookEnabled)
-	assert.Equal(t, 9443, cfg.admissionWebhookPort)
+	assert.Equal(t, ":9443", cfg.admissionWebhookBindAddress)
 	assert.False(t, cfg.auditInsecure)
-	assert.Equal(t, "0.0.0.0", cfg.auditListenAddress)
-	assert.Equal(t, 9444, cfg.auditPort)
+	assert.Equal(t, "0.0.0.0:9444", cfg.auditBindAddress)
 	assert.Equal(t, "/tmp/k8s-audit-server/audit-client-ca", cfg.auditClientCAPath)
 	assert.Equal(t, "tls.crt", cfg.auditClientCAName)
 	assert.Equal(t, int64(10485760), cfg.auditMaxRequestBodyBytes)
 	assert.Equal(t, 15*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
-	assert.Equal(t, "valkey:6379", cfg.auditRedisAddr)
-	assert.False(t, cfg.auditRedisTLS)
-	assert.True(t, cfg.auditAttributionEnabled)
+	assert.Equal(t, "valkey:6379", cfg.redisAddr)
+	assert.False(t, cfg.redisInsecure)
+	assert.True(t, cfg.authorAttribution)
 	assert.Equal(t, 10*time.Minute, cfg.attributionFactTTL)
 	assert.Equal(t, 3*time.Second, cfg.attributionGrace)
 	assert.False(t, cfg.zapOpts.Development)
@@ -67,8 +66,8 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 func TestParseFlagsWithArgs_AdmissionWebhookValues(t *testing.T) {
 	fs := flag.NewFlagSet("test-admission-webhook", flag.ContinueOnError)
 	args := []string{
-		"--admission-webhook-enabled",
-		"--admission-webhook-port=9445",
+		"--admission-webhook",
+		"--admission-webhook-bind-address=:9445",
 		"--admission-webhook-cert-path=/tmp/admission-certs",
 		"--admission-webhook-cert-name=cert.pem",
 		"--admission-webhook-cert-key=key.pem",
@@ -78,7 +77,7 @@ func TestParseFlagsWithArgs_AdmissionWebhookValues(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, cfg.admissionWebhookEnabled)
-	assert.Equal(t, 9445, cfg.admissionWebhookPort)
+	assert.Equal(t, ":9445", cfg.admissionWebhookBindAddress)
 	assert.Equal(t, "/tmp/admission-certs", cfg.admissionWebhookCertPath)
 	assert.Equal(t, "cert.pem", cfg.admissionWebhookCertName)
 	assert.Equal(t, "key.pem", cfg.admissionWebhookCertKey)
@@ -98,8 +97,7 @@ func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
 func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	fs := flag.NewFlagSet("test-custom", flag.ContinueOnError)
 	args := []string{
-		"--audit-listen-address=127.0.0.1",
-		"--audit-port=9555",
+		"--audit-bind-address=127.0.0.1:9555",
 		"--audit-cert-path=/tmp/audit-certs",
 		"--audit-cert-name=cert.pem",
 		"--audit-cert-key=key.pem",
@@ -109,20 +107,19 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-read-timeout=5s",
 		"--audit-write-timeout=8s",
 		"--audit-idle-timeout=13s",
-		"--audit-redis-addr=127.0.0.1:6379",
-		"--audit-redis-username=user",
-		"--audit-redis-password=pass",
-		"--audit-redis-db=2",
-		"--audit-redis-tls",
-		"--attribution-ttl=20m",
-		"--attribution-grace=750ms",
+		"--redis-addr=127.0.0.1:6379",
+		"--redis-username=user",
+		"--redis-password=pass",
+		"--redis-db=2",
+		"--redis-insecure",
+		"--author-attribution-ttl=20m",
+		"--author-attribution-grace=750ms",
 	}
 
 	cfg, err := parseFlagsWithArgs(fs, args)
 	require.NoError(t, err)
 
-	assert.Equal(t, "127.0.0.1", cfg.auditListenAddress)
-	assert.Equal(t, 9555, cfg.auditPort)
+	assert.Equal(t, "127.0.0.1:9555", cfg.auditBindAddress)
 	assert.Equal(t, "/tmp/audit-certs", cfg.auditCertPath)
 	assert.Equal(t, "cert.pem", cfg.auditCertName)
 	assert.Equal(t, "key.pem", cfg.auditCertKey)
@@ -132,22 +129,22 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, 5*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 8*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 13*time.Second, cfg.auditIdleTimeout)
-	assert.Equal(t, "127.0.0.1:6379", cfg.auditRedisAddr)
-	assert.Equal(t, "user", cfg.auditRedisUsername)
-	assert.Equal(t, "pass", cfg.auditRedisPassword)
-	assert.Equal(t, 2, cfg.auditRedisDB)
-	assert.True(t, cfg.auditRedisTLS)
+	assert.Equal(t, "127.0.0.1:6379", cfg.redisAddr)
+	assert.Equal(t, "user", cfg.redisUsername)
+	assert.Equal(t, "pass", cfg.redisPassword)
+	assert.Equal(t, 2, cfg.redisDB)
+	assert.True(t, cfg.redisInsecure)
 	assert.Equal(t, 20*time.Minute, cfg.attributionFactTTL)
 	assert.Equal(t, 750*time.Millisecond, cfg.attributionGrace)
 }
 
 func TestParseFlagsWithArgs_RedisAddrRequired(t *testing.T) {
 	fs := flag.NewFlagSet("test-redis-required", flag.ContinueOnError)
-	// Redis/Valkey holds each GitTarget's watch resume cursors, so an empty audit-redis-addr is a
+	// Redis/Valkey holds each GitTarget's watch resume cursors, so an empty redis-addr is a
 	// hard error in every mode — committer-only disables attribution, it does not drop Redis.
-	_, err := parseFlagsWithArgs(fs, []string{"--audit-redis-addr="})
+	_, err := parseFlagsWithArgs(fs, []string{"--redis-addr="})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "audit-redis-addr is required")
+	assert.Contains(t, err.Error(), "redis-addr is required")
 }
 
 func TestParseFlagsWithArgs_CommitterOnlyDisablesAttribution(t *testing.T) {
@@ -155,12 +152,12 @@ func TestParseFlagsWithArgs_CommitterOnlyDisablesAttribution(t *testing.T) {
 	// Committer-only = attribution off, Redis still required (default addr). The audit ingress server
 	// is not started, so its TLS / client-CA settings need not be configured.
 	cfg, err := parseFlagsWithArgs(fs, []string{
-		"--audit-attribution-enabled=false",
+		"--author-attribution=false",
 		"--audit-client-ca-path=",
 	})
 	require.NoError(t, err)
-	assert.False(t, cfg.auditAttributionEnabled)
-	assert.Equal(t, "valkey:6379", cfg.auditRedisAddr)
+	assert.False(t, cfg.authorAttribution)
+	assert.Equal(t, "valkey:6379", cfg.redisAddr)
 }
 
 func TestParseFlagsWithArgs_AdditionalSensitiveResources(t *testing.T) {
@@ -184,8 +181,12 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		args []string
 	}{
 		{
-			name: "invalid port",
-			args: []string{"--audit-port=0"},
+			name: "invalid audit bind address port",
+			args: []string{"--audit-bind-address=:0"},
+		},
+		{
+			name: "malformed audit bind address",
+			args: []string{"--audit-bind-address=not-an-address"},
 		},
 		{
 			name: "invalid body size",
@@ -201,31 +202,31 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		},
 		{
 			name: "invalid redis db",
-			args: []string{"--audit-redis-db=-1"},
+			args: []string{"--redis-db=-1"},
 		},
 		{
 			name: "negative attribution grace",
-			args: []string{"--attribution-grace=-1s"},
+			args: []string{"--author-attribution-grace=-1s"},
 		},
 		{
 			name: "zero attribution ttl",
-			args: []string{"--attribution-ttl=0s"},
+			args: []string{"--author-attribution-ttl=0s"},
 		},
 		{
 			name: "negative attribution ttl",
-			args: []string{"--attribution-ttl=-1m"},
+			args: []string{"--author-attribution-ttl=-1m"},
 		},
 		{
 			name: "invalid sensitive resource",
 			args: []string{"--additional-sensitive-resources=example.io/v1/credentials"},
 		},
 		{
-			name: "invalid admission webhook port",
-			args: []string{"--admission-webhook-enabled", "--admission-webhook-port=0"},
+			name: "invalid admission webhook bind address port",
+			args: []string{"--admission-webhook", "--admission-webhook-bind-address=:0"},
 		},
 		{
 			name: "missing admission webhook cert path",
-			args: []string{"--admission-webhook-enabled", "--admission-webhook-cert-path="},
+			args: []string{"--admission-webhook", "--admission-webhook-cert-path="},
 		},
 	}
 
@@ -277,9 +278,23 @@ func TestBuildAuditServeMux_DelegatesAuditPathsToHandler(t *testing.T) {
 	}
 }
 
-func TestBuildAuditServerAddress(t *testing.T) {
-	assert.Equal(t, "0.0.0.0:9444", buildAuditServerAddress("0.0.0.0", 9444))
-	assert.Equal(t, ":9444", buildAuditServerAddress("", 9444))
+func TestSplitBindAddress(t *testing.T) {
+	host, port, err := splitBindAddress("0.0.0.0:9444")
+	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0", host)
+	assert.Equal(t, 9444, port)
+
+	// An empty host binds all interfaces.
+	host, port, err = splitBindAddress(":9444")
+	require.NoError(t, err)
+	assert.Empty(t, host)
+	assert.Equal(t, 9444, port)
+
+	_, _, err = splitBindAddress("not-an-address")
+	require.Error(t, err)
+
+	_, _, err = splitBindAddress(":0")
+	require.Error(t, err)
 }
 
 func TestBuildAuditServerTLSConfig_RequiresClientCertificates(t *testing.T) {

@@ -37,6 +37,20 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
+func newTestRedisStore(t *testing.T) *RedisStore {
+	t.Helper()
+	store, _ := newTestRedisStoreWithRedis(t)
+	return store
+}
+
+func newTestRedisStoreWithRedis(t *testing.T) (*RedisStore, *miniredis.Miniredis) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	store, err := NewRedisStore(RedisStoreConfig{Addr: mr.Addr()})
+	require.NoError(t, err)
+	return store, mr
+}
+
 func newTestAttributionIndex(t *testing.T) *AttributionIndex {
 	t.Helper()
 	idx, _ := newTestAttributionIndexWithRedis(t)
@@ -45,10 +59,8 @@ func newTestAttributionIndex(t *testing.T) *AttributionIndex {
 
 func newTestAttributionIndexWithRedis(t *testing.T) (*AttributionIndex, *miniredis.Miniredis) {
 	t.Helper()
-	mr := miniredis.RunT(t)
-	idx, err := NewAttributionIndex(AttributionIndexConfig{Addr: mr.Addr()})
-	require.NoError(t, err)
-	return idx, mr
+	store, mr := newTestRedisStoreWithRedis(t)
+	return store.AttributionIndex(0), mr
 }
 
 // mutationEvent builds an apps/deployments event for team-a/web authored by username,
@@ -167,9 +179,8 @@ func TestAttributionIndex_LookupResolutionConflict(t *testing.T) {
 }
 
 func TestAttributionIndex_LookupResolutionExpired(t *testing.T) {
-	mr := miniredis.RunT(t)
-	idx, err := NewAttributionIndex(AttributionIndexConfig{Addr: mr.Addr(), FactTTL: time.Minute})
-	require.NoError(t, err)
+	store, mr := newTestRedisStoreWithRedis(t)
+	idx := store.AttributionIndex(time.Minute)
 
 	ctx := context.Background()
 	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
@@ -229,62 +240,61 @@ func TestAttributionIndex_RecordFactNoOpCases(t *testing.T) {
 	}))
 }
 
-func TestAttributionIndex_Ping(t *testing.T) {
-	idx := newTestAttributionIndex(t)
-	require.NoError(t, idx.Ping(context.Background()))
+func TestRedisStore_Ping(t *testing.T) {
+	store := newTestRedisStore(t)
+	require.NoError(t, store.Ping(context.Background()))
 }
 
-func TestAttributionIndex_WatchCursorRoundTrip(t *testing.T) {
-	idx, mr := newTestAttributionIndexWithRedis(t)
+func TestRedisStore_WatchCursorRoundTrip(t *testing.T) {
+	store, mr := newTestRedisStoreWithRedis(t)
 	ctx := context.Background()
 	gvr := appsDeploymentGVR()
 
-	_, ok := idx.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
+	_, ok := store.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
 	require.False(t, ok)
 
-	require.NoError(t, idx.RecordWatchCursor(ctx, "uid-1", gvr, "apps", "42"))
-	got, ok := idx.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
+	require.NoError(t, store.RecordWatchCursor(ctx, "uid-1", gvr, "apps", "42"))
+	got, ok := store.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
 	require.True(t, ok)
 	require.Equal(t, "42", got)
 
 	// The cursor carries watchCursorTTL and is never deleted explicitly; it expires
 	// once a watch has been gone longer than the TTL.
-	require.Equal(t, watchCursorTTL, mr.TTL(idx.watchCursorKey("uid-1", gvr, "apps")))
+	require.Equal(t, watchCursorTTL, mr.TTL(store.watchCursorKey("uid-1", gvr, "apps")))
 	mr.FastForward(watchCursorTTL + time.Second)
-	_, ok = idx.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
+	_, ok = store.LookupWatchCursor(ctx, "uid-1", gvr, "apps")
 	require.False(t, ok)
 }
 
-func TestAttributionIndex_WatchCursorIsolatedByGitTargetUID(t *testing.T) {
-	idx := newTestAttributionIndex(t)
+func TestRedisStore_WatchCursorIsolatedByGitTargetUID(t *testing.T) {
+	store := newTestRedisStore(t)
 	ctx := context.Background()
 	gvr := appsDeploymentGVR()
 
-	require.NoError(t, idx.RecordWatchCursor(ctx, "uid-old", gvr, "apps", "42"))
+	require.NoError(t, store.RecordWatchCursor(ctx, "uid-old", gvr, "apps", "42"))
 
 	// A GitTarget recreated under the same namespace/name but a new UID must not
 	// inherit its predecessor's cursor.
-	_, ok := idx.LookupWatchCursor(ctx, "uid-new", gvr, "apps")
+	_, ok := store.LookupWatchCursor(ctx, "uid-new", gvr, "apps")
 	require.False(t, ok)
 
-	got, ok := idx.LookupWatchCursor(ctx, "uid-old", gvr, "apps")
+	got, ok := store.LookupWatchCursor(ctx, "uid-old", gvr, "apps")
 	require.True(t, ok)
 	require.Equal(t, "42", got)
 }
 
-func TestAttributionIndex_WatchCursorIgnoresEmptyResourceVersion(t *testing.T) {
-	idx := newTestAttributionIndex(t)
+func TestRedisStore_WatchCursorIgnoresEmptyResourceVersion(t *testing.T) {
+	store := newTestRedisStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordWatchCursor(ctx, "uid-1", appsDeploymentGVR(), "apps", ""))
-	_, ok := idx.LookupWatchCursor(ctx, "uid-1", appsDeploymentGVR(), "apps")
+	require.NoError(t, store.RecordWatchCursor(ctx, "uid-1", appsDeploymentGVR(), "apps", ""))
+	_, ok := store.LookupWatchCursor(ctx, "uid-1", appsDeploymentGVR(), "apps")
 	require.False(t, ok)
 }
 
 func TestAttributionIndex_FactTTLConfigurable(t *testing.T) {
-	mr := miniredis.RunT(t)
-	idx, err := NewAttributionIndex(AttributionIndexConfig{Addr: mr.Addr(), FactTTL: 5 * time.Minute})
-	require.NoError(t, err)
+	store, mr := newTestRedisStoreWithRedis(t)
+	idx := store.AttributionIndex(5 * time.Minute)
 
 	require.NoError(t, idx.RecordFact(context.Background(), mutationEvent("update", "uid-1", "101", "alice")))
 
@@ -296,9 +306,8 @@ func TestAttributionIndex_FactTTLConfigurable(t *testing.T) {
 }
 
 func TestAttributionIndex_FactTTLDefaultsWhenUnset(t *testing.T) {
-	mr := miniredis.RunT(t)
-	idx, err := NewAttributionIndex(AttributionIndexConfig{Addr: mr.Addr()})
-	require.NoError(t, err)
+	store, mr := newTestRedisStoreWithRedis(t)
+	idx := store.AttributionIndex(0)
 
 	require.NoError(t, idx.RecordFact(context.Background(), mutationEvent("update", "uid-1", "101", "alice")))
 
@@ -347,15 +356,15 @@ func TestAttributionIndex_FactKeyReadableFormat(t *testing.T) {
 	)
 }
 
-func TestAttributionIndex_WatchCursorKeyReadableFormat(t *testing.T) {
-	idx := newTestAttributionIndex(t)
-	key := idx.watchCursorKey("gtuid-3",
+func TestRedisStore_WatchCursorKeyReadableFormat(t *testing.T) {
+	store := newTestRedisStore(t)
+	key := store.watchCursorKey("gtuid-3",
 		schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "team-a")
 	require.Equal(t, "gitops-reverser:watch-cursor:v2:gtuid-3:apps:v1:deployments:team-a", key)
 }
 
-func TestNewAttributionIndex_RequiresAddr(t *testing.T) {
-	_, err := NewAttributionIndex(AttributionIndexConfig{})
+func TestNewRedisStore_RequiresAddr(t *testing.T) {
+	_, err := NewRedisStore(RedisStoreConfig{})
 	require.Error(t, err)
 }
 

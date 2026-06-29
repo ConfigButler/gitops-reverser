@@ -11,7 +11,7 @@
 ## The question
 
 When a live watch event arrives, the resolver waits up to a bounded **grace window**
-(`--attribution-grace`, default `3s`) for a matching audit fact before the event ships. Does that wait
+(`--author-attribution-grace`, default `3s`) for a matching audit fact before the event ships. Does that wait
 **reorder** watch events relative to each other? Can the order of commits in Git end up different from
 the order the mutations happened in the cluster?
 

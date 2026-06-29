@@ -7,6 +7,30 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — Config flag naming pass (next minor; breaking)
+
+Controller command-line flags were renamed to follow
+[`config-flag-conventions.md`](config-flag-conventions.md). The Helm chart and the
+bundled `config/` manifests were updated in lockstep, so **chart/manifest users
+who don't override these flags need no action.** Direct-binary users and anyone
+templating their own manifests must adopt the new names:
+
+| Old flag | New flag |
+| --- | --- |
+| `--admission-webhook-enabled` | `--admission-webhook` |
+| `--admission-webhook-port=N` | `--admission-webhook-bind-address=:N` |
+| `--audit-listen-address=H` + `--audit-port=N` | `--audit-bind-address=H:N` |
+| `--branch-buffer-max-bytes` (env `BRANCH_BUFFER_MAX_BYTES`) | `--branch-buffer-max-size` (env `BRANCH_BUFFER_MAX_SIZE`) |
+| `--redis-tls` | `--redis-insecure` (see below) |
+
+**Behavioural change — Redis now defaults to TLS.** `--redis-tls` (opt *in* to
+TLS) became `--redis-insecure` (opt *out* of TLS), so the binary now connects to
+Redis/Valkey over TLS unless told otherwise. The Helm chart
+(`queue.redis.tls.enabled: false`) and the `config/` manifests pass
+`--redis-insecure` automatically, so default installs keep talking plaintext to an
+in-cluster Valkey. **If you run the controller directly against a plaintext Redis,
+add `--redis-insecure`** — otherwise startup fails on a TLS handshake.
+
 ## Unreleased — Git credentials interop (next minor; breaking)
 
 Two user-visible breaking changes land together. Both come from
