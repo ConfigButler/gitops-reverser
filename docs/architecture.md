@@ -147,9 +147,10 @@ instead of waiting for the silence timer. The **entire spec is immutable**. Key 
 * `spec.closeDelaySeconds`: optional `0–300s` delay before the window is closed, so the author's own
   in flight changes can join the window before it closes.
 * `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
-  terminal outcome that is not an error — a pushed commit, or a benign no-commit); **Reconciling**/**Stalled**
-  are the kstatus progress/blocked pair; **Attributed** reports whether the author is settled (immediately
-  True in committer-only mode); **Pushed** reports whether the commit reached the remote. The `Ready`
+  terminal outcome that is not an error — a pushed commit, or a benign no-commit);
+  **Reconciling**/**Stalled** are the kstatus progress/blocked pair; **AuthorAttributed** reports
+  whether the internal commands admission webhook named the submitter or the request fell back to the
+  configured committer; **Pushed** reports whether the commit reached the remote. The `Ready`
   condition's `reason` carries `Committed`, `NoWindowInGrace`, `WindowMismatch`, `AlreadyPresent`, or
   `FinalizeFailed`. A benign no-commit (e.g. `NoWindowInGrace`) is `Ready=True`, `Stalled=False` — a correct,
   non-error outcome — whereas a `FinalizeFailed` is `Ready=False`, `Stalled=True`.
@@ -652,17 +653,16 @@ location instead of recomputing placement.
 ## CommitRequest Finalize
 
 * **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
-* **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
+* **Admission author cache**:
+  [internal/webhook/command_author_store.go](../internal/webhook/command_author_store.go)
 
-A `CommitRequest` finalizes the open commit window for its GitTarget. With attribution enabled the request
-is attributed to its submitter from an audit fact; with attribution disabled it **finalizes as the
-committer** with a status note that finalization happened without end-user attribution — a missing audit
-fact never fails the request:
+A `CommitRequest` finalizes the open commit window for its GitTarget. The request author is resolved from
+the internal commands admission webhook when that record exists. If the admission record is missing, the
+request **finalizes as the configured committer** with `AuthorAttributed=False`; that fallback does not
+fail the request:
 
-1. The controller stamps the in-progress conditions (`Reconciling=True`). With attribution enabled it then
-   waits briefly for a matching audit fact (`Attributed` stays `Unknown`; bounded, and on timeout it
-   finalizes *as the committer*, not closed). With attribution disabled there is no audit event to wait
-   for, so `Attributed` is `True` (`AttributionNotRequired`) immediately and it proceeds as the committer.
+1. The controller stamps the in-progress conditions (`Reconciling=True`) and settles
+   `AuthorAttributed` synchronously from the admission author cache. There is no audit wait on this path.
 2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), anchoring the
    finalize at `receipt + closeDelaySeconds`. The worker binds it to an open window only when author and
    GitTarget match. It **never finalizes another author's window**; a window carries at most one request.

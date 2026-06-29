@@ -43,13 +43,16 @@ simpler for other teams.
 | Good fit | Poor fit |
 |---|---|
 | Clusters where you can grant watch/RBAC, run Valkey/Redis in-cluster, and write to Git | Production HA requirements today |
-| Self-managed clusters that can also configure kube-apiserver audit delivery (adds commit-author attribution) | Shared paths with two always-on writers fighting over the same resources |
+| Teams that want to try API-to-Git capture first, then add named author attribution later | Shared paths with two always-on writers fighting over the same resources |
 | API-first or hybrid teams that still want Git history; brownfield discovery, hotfix capture, migration toward GitOps | Workflows that need a guaranteed per-mutation change log rather than a state mirror |
 
 > **Author attribution** is the only optional capability: it needs kube-apiserver audit delivery, which
 > managed control planes (EKS/GKE/AKS) generally do not expose. Without it the operator still mirrors
 > state, with commits authored by the configured committer. **Valkey/Redis is required either way** — it
 > holds each GitTarget's watch resume state so work is re-picked up after a restart or reconnect.
+>
+> If exact per-user authorship matters but you do not want to own kube-apiserver audit delivery yourself,
+> I welcome conversations about a managed ConfigButler path.
 
 ## How it works
 
@@ -117,23 +120,21 @@ Directions we may revisit later live in [docs/TODO.md](docs/TODO.md) and [docs/f
 
 ## Quick start
 
-This quick start sets up **attributed mode** (named commit authors). **Author attribution is the only
-optional part** — to run **committer-only**, skip step 4 (audit delivery) and commits will be authored by
-the configured committer. Valkey/Redis (step 2) is **required in both modes**: it holds each GitTarget's
-watch resume state so the operator re-picks up where it left off.
+This quick start sets up **committer-only mode**: the operator mirrors watched Kubernetes state into Git,
+and commits are authored by the configured committer identity. That is the easiest way to prove the
+workflow works.
+
+Valkey/Redis is still required: it holds each GitTarget's watch resume state so the operator re-picks up
+where it left off after a restart or reconnect. Named commit authors can be added later with
+kube-apiserver audit delivery.
 
 **Prerequisites**
 
 - Kubernetes cluster with `kubectl` configured
 - cert-manager for TLS certificate management
-- *(attributed mode only)* Admin access to kube-apiserver configuration so you can enable the
-  [audit webhook backend](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend)
 
-Managed platforms such as EKS, GKE, and AKS generally do not expose that control-plane
-configuration, so they can run committer-only but not attributed mode.
-
-For networking and TLS tradeoffs around audit delivery, see
-[`docs/design/audit-webhook-api-server-connectivity.md`](docs/design/audit-webhook-api-server-connectivity.md).
+Managed platforms such as EKS, GKE, and AKS generally work for this committer-only flow because it does
+not require control-plane audit webhook configuration.
 
 **1. Install cert-manager**
 
@@ -167,18 +168,7 @@ helm install gitops-reverser \
   --create-namespace
 ```
 
-**4. Configure kube-apiserver audit delivery** *(attributed mode only — skip for committer-only)*
-
-Read the Helm post-install notes:
-
-```bash
-helm get notes gitops-reverser -n gitops-reverser
-```
-
-Those notes include the audit webhook URL, the client certificate Secret names, and the kubeconfig
-shape that kube-apiserver needs.
-
-**5. Create Git credentials**
+**4. Create Git credentials**
 
 SSH deploy key example:
 
@@ -197,7 +187,7 @@ CD Git credentials Secrets are accepted as-is (they just need **write** access).
 [`docs/configuration.md`](docs/configuration.md) for accepted Secret shapes and
 [`docs/github-setup-guide.md`](docs/github-setup-guide.md) for the GitHub path and HTTPS/PAT fallback.
 
-**6. Enable the starter configuration**
+**5. Enable the starter configuration**
 
 ![Config basics diagram showing the relationship between GitProvider, GitTarget, and WatchRule](docs/images/config-basics.excalidraw.svg)
 
@@ -229,7 +219,7 @@ kubectl get gitprovider,gittarget,watchrule -n default
 See [`docs/configuration.md`](docs/configuration.md) for how `GitProvider`, `GitTarget`, and
 `WatchRule` fit together after the starter install.
 
-**7. Test it**
+**6. Test it**
 
 ```bash
 kubectl create configmap test-config --from-literal=key=value -n default
@@ -243,6 +233,29 @@ If no commit appears, start with:
 kubectl logs -n gitops-reverser deploy/gitops-reverser
 kubectl describe gitprovider,gittarget,watchrule -n default
 ```
+
+### Add named authors later
+
+The quick start deliberately avoids kube-apiserver audit delivery. To make commits use the actual
+Kubernetes user or service account when a strong audit match exists, enable attribution and then follow
+the Helm notes:
+
+```bash
+helm upgrade gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser \
+  --reuse-values \
+  --set attribution.enabled=true
+
+helm get notes gitops-reverser -n gitops-reverser
+```
+
+Those notes include the audit webhook URL, the client certificate Secret names, and the kubeconfig shape
+that kube-apiserver needs. For networking and TLS tradeoffs around audit delivery, see
+[`docs/design/audit-webhook-api-server-connectivity.md`](docs/design/audit-webhook-api-server-connectivity.md).
+
+If you need exact edit authorship but do not want to operate this audit path yourself, I welcome
+conversations about a managed ConfigButler solution.
 
 ## Docs
 
@@ -262,9 +275,9 @@ If you are evaluating alternatives or deciding when another approach is a better
 
 ## Looking for early users
 
-If you run self-managed Kubernetes and this workflow matches a real problem, feedback is very
-welcome. The most useful reports are install attempts, audit delivery issues, Git output shape,
-CRD ergonomics, and security or operational concerns.
+If this workflow matches a real problem, feedback is very welcome. The most useful reports are install
+attempts, first-commit experience, audit delivery issues, Git output shape, CRD ergonomics, and security
+or operational concerns.
 
 ## Get in touch
 

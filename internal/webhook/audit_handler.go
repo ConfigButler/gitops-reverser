@@ -72,7 +72,7 @@ type AuditHandlerConfig struct {
 	MaxRequestBodyBytes int64
 	// FactRecorder persists the attribution fact for each accepted, mutating event.
 	// A write failure returns an audit-request error so the API server retries
-	// delivery — the CommitRequest controller waits on these facts.
+	// delivery; mirrored-resource author attribution depends on these facts.
 	FactRecorder AuditFactRecorder
 }
 

@@ -1,7 +1,7 @@
 # CommitRequest is a one-shot "save" signal. Creating one finalizes the open
 # commit window for the referenced GitTarget immediately, instead of waiting
 # for the rolling silence timer. The resulting commit SHA is reported in
-# .status once the object's own audit event has been processed.
+# .status when the finalize has pushed.
 #
 # Frontends typically use metadata.generateName so each "save" is a fresh
 # object. The referenced GitTarget must live in the same namespace.

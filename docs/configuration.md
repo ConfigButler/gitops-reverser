@@ -14,21 +14,9 @@ The short version:
 The chart's optional `quickstart` values are just a convenience layer that creates starter
 instances of those same resources.
 
-## Additional sensitive resources
-
-Core Kubernetes `Secret` resources always use the encrypted Git write path. For a Secret-shaped
-custom resource such as CozyStack `tenantsecrets`, add the resource type to the controller startup
-values:
-
-```yaml
-controllerManager:
-  additionalSensitiveResources:
-    - core.cozystack.io/tenantsecrets
-```
-
-Entries are `resource` for the core API group or `group/resource` for grouped APIs. The match ignores
-API version, so a served CRD version change does not change the sensitive classification. The custom
-resource still needs a `GitTarget` with `spec.encryption` configured before Git writes can succeed.
+For a first trial, use the root README quick start. It runs committer-only: Git writes work without
+kube-apiserver audit delivery, and every commit uses the configured committer identity. Add audit
+attribution later only when you need named Kubernetes users or service accounts in Git history.
 
 ## How the objects fit together
 
@@ -150,8 +138,9 @@ These are different on purpose:
 - **Author**: who made the cluster change
 - **Committer**: who wrote the Git commit object
 
-For per-event commits, the author comes from the Kubernetes audit event. For batch-style snapshot
-commits, the operator is effectively both the author and the committer.
+For mirrored-resource commits, the author comes from the configured committer identity unless
+`attribution.enabled=true` and a matching kube-apiserver audit event names the Kubernetes user or
+service account. Snapshot/reconcile commits are operator-authored.
 
 That distinction is useful in practice:
 
@@ -377,6 +366,22 @@ The most useful status fields are:
 
 Use conditions for automation.
 
+### Additional sensitive resources
+
+Core Kubernetes `Secret` resources always use the encrypted Git write path. For a Secret-shaped
+custom resource such as CozyStack `tenantsecrets`, add the resource type to the controller startup
+values:
+
+```yaml
+controllerManager:
+  additionalSensitiveResources:
+    - core.cozystack.io/tenantsecrets
+```
+
+Entries are `resource` for the core API group or `group/resource` for grouped APIs. The match ignores
+API version, so a served CRD version change does not change the sensitive classification. The custom
+resource still needs a `GitTarget` with `spec.encryption` configured before Git writes can succeed.
+
 ## `WatchRule`
 
 `WatchRule` is the normal namespaced watcher. It only watches resources in its own namespace and
@@ -439,7 +444,7 @@ Example:
 apiVersion: configbutler.ai/v1alpha2
 kind: ClusterWatchRule
 metadata:
-  name: cluster-audit
+  name: cluster-rbac
 spec:
   targetRef:
     name: example-target
@@ -466,7 +471,7 @@ The important fields are:
 - `spec.targetRef.name`: target whose open window should be finalized
 - `spec.message`: optional verbatim commit message
 - `spec.closeDelaySeconds`: optional 0-300 second delay before the open window is closed, after the
-  request is attributed — an extra collect window
+  request author is known — an extra collect window
 
 Example:
 
@@ -486,21 +491,20 @@ spec:
 The entire spec is immutable. Create a new `CommitRequest` for each save attempt.
 
 Progress and outcome are reported through kstatus-compatible **conditions** (no `phase` string).
-`kubectl get commitrequest` surfaces `Ready`, `Attributed`, and `Pushed`; `kubectl wait
+`kubectl get commitrequest` surfaces `Ready`, `AuthorAttributed`, and `Pushed`; `kubectl wait
 --for=condition=Ready` blocks until the request settles:
 
 - **Ready** (summary): `True` once the request reached a non-error terminal outcome. The `Ready`
   condition's `reason` says which: `Committed` (a commit was pushed; `status.branch`/`status.sha` set),
   or a benign no-commit — `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`. A failed finalize is
   `Ready=False` with reason `FinalizeFailed`.
-- **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` through both
-  progress waits, told apart by its `reason`: `WaitingForAuditEvent` while learning the author, then
-  `WaitingForCloseDelay` once attached (the `closeDelaySeconds` collect window, then commit and push).
-  `Stalled=True` when the finalize failed and needs attention (kstatus reports the object Failed).
-- **Attributed**: `True` once the author is settled — immediately in committer-only mode
-  (`AttributionNotRequired`), when resolved from the create audit event (`AttributedFromAuditEvent`), and
-  `False` (`AuditEventNotObserved`) when the audit event never arrived and the commit was authored by the
-  configured committer.
+- **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` while the
+  request is finalizing or waiting through `closeDelaySeconds`; `Stalled=True` when the finalize failed
+  and needs attention (kstatus reports the object Failed).
+- **AuthorAttributed**: `True` with reason `AttributedFromAdmission` when the internal commands
+  admission webhook captured the request submitter. `False` with reason `CommitterFallback` when no
+  admission record exists; that is not a failure, and the command still commits as the configured
+  committer.
 - **Pushed**: `True` once the commit is in the remote repository.
 
 ## Audit ingestion settings
@@ -515,9 +519,9 @@ watch from the last processed resourceVersion when the apiserver can still serve
 
 Redis/Valkey is **required**: it stores each GitTarget's watch resume cursors (state continuity, so a
 restart or reconnect resumes where it left off), and when attribution is enabled it also stores the audit
-facts. To run **committer-only** — the audit webhook unused and every commit authored by the configured
-committer — set `--author-attribution=false` (chart `attribution.enabled: false`); Redis stays
-required either way.
+facts. The Helm chart defaults to **committer-only** (`attribution.enabled: false`): the audit webhook is
+unused and every mirrored-resource commit is authored by the configured committer. Redis stays required
+either way.
 
 ```yaml
 queue:
@@ -528,7 +532,7 @@ queue:
       existingSecretKey: "password"
 ```
 
-The attribution flags tune the join:
+When attribution is enabled, these flags tune the join:
 
 - `--author-attribution-ttl` (default `10m`): how long an attribution fact is retained waiting for the
   matching watch event to join it.
@@ -547,9 +551,8 @@ attribution:
 
 ## Quickstart vs hand-managed resources
 
-Keep using the [root README quickstart](../README.md#quick-start) when you want the fastest install
-path. The chart's `quickstart` values create a starter `GitProvider`, `GitTarget`, and `WatchRule`
-for you.
+Keep using the [root README quickstart](../README.md#quick-start) when you want the fastest first commit.
+The chart's `quickstart` values create a starter `GitProvider`, `GitTarget`, and `WatchRule` for you.
 
 The starter `GitTarget` writes under `live-cluster` by default. Override
 `quickstart.gitTarget.path=.` only when you want the starter target to own the repository root.
@@ -558,7 +561,7 @@ Move to hand-managed resources when you want:
 
 - more than one `GitTarget`
 - more than one watch rule
-- cluster-scoped auditing with `ClusterWatchRule`
+- cluster-scoped watching with `ClusterWatchRule`
 - ad hoc save requests with `CommitRequest`
 - direct control over `GitProvider.spec.commit`
 - direct control over encryption settings

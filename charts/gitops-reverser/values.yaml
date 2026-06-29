@@ -178,12 +178,14 @@ queue:
     tls:
       enabled: false
 
-# Commit-author attribution from audit facts. This is the only optional capability — with it off, the
-# operator runs committer-only (still requires Redis), and every commit uses the configured committer.
+# Commit-author attribution from audit facts. Off by default so first-time installs can prove the
+# Kubernetes-to-Git workflow without kube-apiserver audit webhook configuration. With it off, the
+# operator runs committer-only (still requires Redis), and every mirrored-resource commit uses the
+# configured committer.
 attribution:
   # When true, run the audit webhook ingress and name commit authors from matching audit facts. When
   # false, run committer-only (no audit ingress, commits authored by the committer); Redis stays required.
-  enabled: true
+  enabled: false
   # How long an attribution fact is retained waiting for the matching watch event to join it.
   ttl: "10m"
   # Bounded per-event wait for a matching audit fact before a watch event ships as the committer.

@@ -1,4 +1,4 @@
-{{- if and .Values.certManager.enabled .Values.servers.audit.tls.certManager .Values.servers.audit.tls.enabled }}
+{{- if and .Values.attribution.enabled .Values.certManager.enabled .Values.servers.audit.tls.certManager .Values.servers.audit.tls.enabled }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate

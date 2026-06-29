@@ -8,8 +8,9 @@ The official end-to-end quickstart lives in the repository root README:
 
 - [`README.md`](../../README.md)
 
-Use that guide for cert-manager, Valkey, Helm install, kube-apiserver audit configuration, Git credentials, starter
-`GitProvider`/`GitTarget`/`WatchRule` resources, and first-commit verification.
+Use that guide for cert-manager, Valkey, Helm install, Git credentials, starter
+`GitProvider`/`GitTarget`/`WatchRule` resources, and first-commit verification. Kube-apiserver audit
+delivery is optional and can be added later for named commit authors.
 
 This chart README stays focused on chart-specific installation, configuration, and operations.
 
@@ -88,7 +89,7 @@ The chart deploys 1 replica by default:
         │ Active      │
         └─────────────┘
                ▲
-               │ audit requests
+               │ optional audit requests
 ┌──────────────────────────────────────────┐
 │      gitops-reverser-audit (Service)     │
 │             Port: audit(9444)            │
@@ -97,7 +98,8 @@ The chart deploys 1 replica by default:
 
 **Key Features:**
 - **Single-pod operation**: minimal moving parts while HA work is deferred
-- **Split Service topology**: metrics stay in-cluster while audit ingress is exposed separately
+- **Split Service topology**: metrics stay in-cluster while audit ingress is exposed separately only
+  when `attribution.enabled=true`
 
 ## Configuration
 
@@ -181,6 +183,7 @@ nodeSelector:
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
+| `attribution.enabled` | Run audit ingress and name mirrored-resource commit authors from matching kube-apiserver audit facts | `false` |
 | `attribution.ttl` | How long an attribution fact is retained waiting for the matching watch event to join it | `10m` |
 | `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
@@ -188,7 +191,7 @@ nodeSelector:
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |
 | `servers.metrics.tls.secretNameOverride` | Override Secret name for metrics TLS cert/key | `<release>-metrics-server-cert` |
 | `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
-| `service.ports.audit` | Service port for audit ingress | `9444` |
+| `service.ports.audit` | Service port for audit ingress when `attribution.enabled=true` | `9444` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `servers.healthProbe.bindAddress` | Liveness/readiness probe bind address (`--health-probe-bind-address`) | `:8081` |
 | `servers.admission.enabled` | Run the validating admission server hosting the validate-operator-types webhook (captures the CommitRequest submitter as the commit author) | `true` |
@@ -200,7 +203,7 @@ nodeSelector:
 | `certManager.issuer.name` | Name of the (shared) cert-manager issuer | `selfsigned-issuer` |
 | `certManager.issuer.create` | Create the self-signed issuer (set false to reuse an existing one) | `true` |
 | `servers.metrics.tls.certManager` | Mint the metrics serving cert via cert-manager (used when `servers.metrics.tls.enabled`) | `true` |
-| `servers.audit.tls.certManager` | Let the chart mint audit TLS Secrets (server + kube-apiserver client) via cert-manager | `true` |
+| `servers.audit.tls.certManager` | Let the chart mint audit TLS Secrets (server + kube-apiserver client) via cert-manager when `attribution.enabled=true` | `true` |
 | `servers.audit.tls.rootCA.secretNameOverride` | Override Secret name for the audit root CA | `<release>-audit-root-ca` |
 | `servers.audit.tls.client.duration` | Lifetime of the kube-apiserver audit client cert; long by default to avoid repeated manual kube-apiserver reconfiguration | `87600h` |
 | `servers.audit.tls.client.renewBefore` | Renew the kube-apiserver audit client cert before expiry; shorter values increase control-plane maintenance frequency | `720h` |
@@ -208,25 +211,25 @@ nodeSelector:
 | `auditKubeconfig.insecureSkipTLSVerify` | Render Helm notes with `insecure-skip-tls-verify: true` for the generated audit kubeconfig example | `false` |
 | `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `true` |
 | `resources.requests.cpu` | CPU request | `10m` |
-| `resources.requests.memory` | Memory request | `64Mi` |
-| `resources.limits.cpu` | CPU limit | `500m` |
-| `resources.limits.memory` | Memory limit | `128Mi` |
+| `resources.requests.memory` | Memory request | `256Mi` |
+| `resources.limits.cpu` | CPU limit | `1000m` |
+| `resources.limits.memory` | Memory limit | `1Gi` |
 
 See [`values.yaml`](values.yaml) for complete configuration options.
 
 ### Audit Webhook URL Contract
 
-`https://<service>:9444/audit-webhook` receives audit events from kube-apiserver. The operator
-extracts a minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace,
-name, UID, status, timestamps) into the Redis attribution index (populated only when audit attribution is
-enabled). The same Redis endpoint also stores each GitTarget's watch resume cursors — that part is always
-needed — so reconnects resume a normal watch from the last processed resourceVersion when the apiserver
-can still serve that history. Object state itself comes from Kubernetes **watch**, not from audit; audit
-only names the commit author.
+When `attribution.enabled=true`, `https://<service>:9444/audit-webhook` receives audit events from
+kube-apiserver. The operator extracts a minimal attribution fact from each (auditID, user, verb,
+resourceVersion, GVR, namespace, name, UID, status, timestamps) into the Redis attribution index
+(populated only when audit attribution is enabled). The same Redis endpoint also stores each GitTarget's
+watch resume cursors — that part is always needed — so reconnects resume a normal watch from the last
+processed resourceVersion when the apiserver can still serve that history. Object state itself comes
+from Kubernetes **watch**, not from audit; audit only names the commit author.
 
-When `queue.redis.addr` is empty the audit webhook is not used at all and the product runs
-committer-only — every commit is authored by the configured committer and watch recovery uses replay/list
-snapshots instead of persisted resume cursors.
+When `attribution.enabled=false`, the audit webhook is not rendered or served and the product runs
+committer-only: mirrored-resource commits are authored by the configured committer. `queue.redis.addr`
+is still required because Redis/Valkey stores watch resume cursors.
 
 Cluster ID path segments are rejected.
 

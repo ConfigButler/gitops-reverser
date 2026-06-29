@@ -9,7 +9,9 @@
 GitOps Reverser is installed in namespace `{{ .Release.Namespace }}`.
 
 What the chart did for you:
-- deployed the controller and audit receiver
+- deployed the controller
+{{- if .Values.attribution.enabled }}
+- deployed the audit receiver
 - created the audit Service (`{{ $auditServiceName }}`)
 {{- if and .Values.servers.audit.tls.enabled .Values.certManager.enabled .Values.servers.audit.tls.certManager }}
 - created the audit TLS materials
@@ -22,6 +24,9 @@ What the chart did for you:
 {{- else }}
 - configured the audit listener without TLS (`servers.audit.tls.enabled=false`)
 {{- end }}
+{{- else }}
+- started in committer-only mode (`attribution.enabled=false`)
+{{- end }}
 {{- if .Values.quickstart.enabled }}
 - created quickstart resources in namespace `{{ .Values.quickstart.namespace }}`
   - GitProvider: `{{ .Values.quickstart.gitProvider.name }}`
@@ -30,12 +35,15 @@ What the chart did for you:
 {{- end }}
 
 What the chart did NOT do for you:
+- it did NOT create your Git credentials Secret
+- it did NOT install Valkey/Redis
+{{- if .Values.attribution.enabled }}
 - it did NOT write `/etc/kubernetes/...` files on your control-plane node(s)
 - it did NOT create your audit policy file
 - it did NOT edit kube-apiserver flags or manifests
 - it did NOT restart kube-apiserver
 
-Install GitOps Reverser first. After that, generate the kube-apiserver audit webhook kubeconfig, copy it to every
+Attribution is enabled. Generate the kube-apiserver audit webhook kubeconfig, copy it to every
 control-plane node, configure kube-apiserver, and restart or reload kube-apiserver once.
 
 Recommended kube-apiserver settings:
@@ -133,3 +141,28 @@ After generating the kubeconfig:
 Further guidance:
 - `https://github.com/ConfigButler/gitops-reverser/blob/main/docs/design/audit-webhook-api-server-connectivity.md`
 - `https://github.com/ConfigButler/gitops-reverser/blob/main/docs/design/audit-webhook-tls-design.md`
+{{- else }}
+
+Next steps:
+1. Create a Git credentials Secret with write access.
+2. Enable quickstart resources, or create your own GitProvider, GitTarget, and WatchRule.
+3. Create a test ConfigMap in the watched namespace and check for a Git commit.
+
+The root README has the first-run flow:
+- `https://github.com/ConfigButler/gitops-reverser#quick-start`
+
+To add named Kubernetes users or service accounts as Git commit authors later, upgrade with:
+
+```bash
+helm upgrade {{ .Release.Name }} oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace {{ .Release.Namespace }} \
+  --reuse-values \
+  --set attribution.enabled=true
+```
+
+Then re-run:
+
+```bash
+helm get notes {{ .Release.Name }} -n {{ .Release.Namespace }}
+```
+{{- end }}

@@ -28,6 +28,7 @@ spec:
   selector:
     {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
     control-plane: gitops-reverser
+{{- if .Values.attribution.enabled }}
 ---
 apiVersion: v1
 kind: Service
@@ -53,3 +54,4 @@ spec:
   selector:
     {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
     control-plane: gitops-reverser
+{{- end }}

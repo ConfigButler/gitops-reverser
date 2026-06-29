@@ -46,7 +46,7 @@ import (
 //
 // There is no watermark barrier (§6.3): UC1 is covered by the human gap between the
 // edit and the save, UC2 by the collect-grace. The grace is anchored at attribution
-// — the worker stamps finalizeAt = receipt + delaySeconds (§6.4.4) — so the
+// — the worker stamps finalizeAt = receipt + closeDelaySeconds (§6.4.4) — so the
 // controller no longer holds the finalize itself.
 type CommitRequestFinalizer interface {
 	ServiceCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
@@ -78,7 +78,7 @@ const (
 	commitRequestPollInterval = 2 * time.Second
 
 	// commitRequestResolveTimeout bounds the attach-then-poll wait, measured from
-	// object creation: it must cover the maximum collect-grace (delaySeconds ≤ 300s,
+	// object creation: it must cover the maximum collect-grace (closeDelaySeconds ≤ 300s,
 	// anchored at attribution) and the push cooldown plus retries. Authorship is now
 	// settled synchronously at first sight (no attribution wait, §2), so the former
 	// +60s attribution component is gone. Past it, a request the worker never resolved
@@ -99,7 +99,7 @@ const (
 //  2. ATTACH + POLL — the instant the author is settled, send the attach to the
 //     GitTarget's worker (bind the message to the author's open window, finalize
 //     after the grace) and poll the outcome. The grace is anchored at attribution
-//     by the worker (finalizeAt = receipt + delaySeconds), so there is no
+//     by the worker (finalizeAt = receipt + closeDelaySeconds), so there is no
 //     controller-side delay. A window belonging to someone else (or no window)
 //     resolves NoOpenWindow; the foreign window stays open.
 type CommitRequestReconciler struct {
@@ -361,8 +361,8 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 //
 // Restart recovery is best-effort by design (commitrequest-design.md §6.6): the
 // message is durable in spec.message, so on restart any non-terminal request is
-// re-reconciled — re-attributed from its durable audit event and re-attached —
-// which heals the common cases. The one knowingly-accepted gap is a request whose
+// re-reconciled — author-resolved from the admission cache when present and
+// re-attached — which heals the common cases. The one knowingly-accepted gap is a request whose
 // commit was already pushed but whose terminal status was not yet written: the
 // in-memory outcome is gone, the re-driven attach finds the work already mirrored,
 // and it resolves Rejected/AlreadyPresent. We do not build a durable record to

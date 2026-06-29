@@ -50,6 +50,7 @@ spec:
             - --metrics-cert-name={{ .Values.servers.metrics.tls.certName }}
             - --metrics-cert-key={{ .Values.servers.metrics.tls.certKey }}
             {{- end }}
+            {{- if .Values.attribution.enabled }}
             {{- if .Values.servers.audit.tls.enabled }}
             - --audit-cert-path={{ .Values.servers.audit.tls.certPath }}
             - --audit-cert-name={{ .Values.servers.audit.tls.certName }}
@@ -64,6 +65,7 @@ spec:
             - --audit-read-timeout={{ .Values.servers.audit.timeouts.read }}
             - --audit-write-timeout={{ .Values.servers.audit.timeouts.write }}
             - --audit-idle-timeout={{ .Values.servers.audit.timeouts.idle }}
+            {{- end }}
             - --redis-addr={{ .Values.queue.redis.addr }}
             {{- with .Values.queue.redis.auth.username }}
             - --redis-username={{ . | quote }}
@@ -98,9 +100,11 @@ spec:
             - --zap-stacktrace-level={{ .Values.logging.stacktraceLevel }}
             {{- end }}
           ports:
+            {{- if .Values.attribution.enabled }}
             - name: audit
               containerPort: {{ .Values.servers.audit.port }}
               protocol: TCP
+            {{- end }}
             - name: metrics
               containerPort: {{ .Values.servers.metrics.port }}
               protocol: TCP
@@ -150,7 +154,7 @@ spec:
               mountPath: {{ .Values.servers.metrics.tls.certPath }}
               readOnly: true
             {{- end }}
-            {{- if .Values.servers.audit.tls.enabled }}
+            {{- if and .Values.attribution.enabled .Values.servers.audit.tls.enabled }}
             - name: audit-cert
               mountPath: {{ .Values.servers.audit.tls.certPath }}
               readOnly: true
@@ -175,7 +179,7 @@ spec:
             secretName: {{ .Values.servers.metrics.tls.secretNameOverride | default (printf "%s-metrics-server-cert" (include "gitops-reverser.fullname" .)) }}
             defaultMode: 420
         {{- end }}
-        {{- if .Values.servers.audit.tls.enabled }}
+        {{- if and .Values.attribution.enabled .Values.servers.audit.tls.enabled }}
         - name: audit-cert
           secret:
             secretName: {{ include "gitops-reverser.auditServerSecretName" . }}

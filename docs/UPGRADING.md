@@ -7,6 +7,109 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — first-run and status surface cleanup (next minor; breaking)
+
+This branch changes the default install to be easier to try, and it tightens the v1alpha2 status
+surface around conditions. Existing installs should check the items below before upgrading.
+
+### 1. Helm installs now start committer-only by default
+
+The chart default for `attribution.enabled` changed from `true` to `false`. A default install no longer
+renders the audit receiver Service or audit TLS Secrets, and mirrored-resource commits are authored by
+the configured committer identity.
+
+Redis/Valkey is still required. It stores each `GitTarget`'s watch resume cursors in both modes.
+
+**Migration**
+
+- If you want the easier committer-only install, no chart value is needed.
+- If you currently rely on kube-apiserver audit delivery for named commit authors, set:
+
+  ```yaml
+  attribution:
+    enabled: true
+  ```
+
+  Then re-run `helm get notes <release> -n <namespace>` and verify your kube-apiserver audit webhook
+  kubeconfig still points at the rendered audit Service.
+
+### 2. `CommitRequest.spec.delaySeconds` became `closeDelaySeconds`
+
+`CommitRequest.spec.delaySeconds` was renamed to `spec.closeDelaySeconds` to describe what the field
+does: after the request author is known, the worker waits this long before closing the matching open
+commit window.
+
+**Migration**
+
+Before:
+
+```yaml
+spec:
+  targetRef:
+    name: example-target
+  delaySeconds: 2
+```
+
+After:
+
+```yaml
+spec:
+  targetRef:
+    name: example-target
+  closeDelaySeconds: 2
+```
+
+Because the old field is no longer in the CRD schema, server-side validation rejects it when strict
+field validation is enabled. Update manifests, UI payloads, and tests that create `CommitRequest`
+objects.
+
+### 3. `CommitRequest.status.phase` moved to conditions
+
+`CommitRequest.status.phase`, `reason`, `message`, and `observedTime` were removed. Automation should
+read conditions instead.
+
+The common replacements are:
+
+| Old check | New check |
+| --- | --- |
+| `.status.phase == "Committed"` | `Ready=True` with reason `Committed`; `Pushed=True`; read `status.sha` |
+| `.status.phase` benign no-commit values | `Ready=True` with reason `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent` |
+| failed finalize phase/reason | `Ready=False` with reason `FinalizeFailed`; `Stalled=True` |
+| old `Attributed` condition | `AuthorAttributed` condition |
+
+Use:
+
+```bash
+kubectl wait --for=condition=Ready commitrequest/<name> -n <namespace> --timeout=120s
+kubectl get commitrequest/<name> -n <namespace> -o jsonpath='{.status.sha}'
+```
+
+`AuthorAttributed=True` with reason `AttributedFromAdmission` means the internal commands admission
+webhook captured the submitter. `AuthorAttributed=False` with reason `CommitterFallback` is a valid
+fallback, not a failed request.
+
+### 4. `GitTarget.status.phase` and materialization rollups moved to stream conditions
+
+`GitTarget.status.phase` and the old materialization status fields were replaced by condition-first
+status plus a bounded `status.streams` summary.
+
+The main automation replacements are:
+
+| Old check | New check |
+| --- | --- |
+| target phase/current-style checks | `Ready=True` |
+| materialization or source-liveness checks | `StreamsRunning=True` and `status.streams` |
+| human-fixable blocks | `Stalled=True`, with domain conditions such as `GitPathAccepted=False` |
+
+For workflows that must wait until live watch events are flowing, use:
+
+```bash
+kubectl wait --for=condition=StreamsRunning=true gittarget/<name> -n <namespace> --timeout=120s
+```
+
+`WatchRule` and `ClusterWatchRule` use the same condition vocabulary for source readiness
+(`StreamsRunning`) and referenced target readiness (`GitTargetReady`).
+
 ## Unreleased — Config flag naming pass (next minor; breaking)
 
 Controller command-line flags were renamed to follow
