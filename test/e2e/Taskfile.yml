@@ -100,6 +100,10 @@ vars:
   FLUX_OPERATOR_DIR: '{{.FLUX_OPERATOR_DIR | default "test/e2e/setup/flux-operator"}}'
   FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "500s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "120s"}}'
+  # Preflight (see _ghcr-preflight): the registry artifact `_flux-installed` pulls,
+  # and how long a successful reachability check stays valid before we re-probe.
+  GHCR_PREFLIGHT_REF: '{{.GHCR_PREFLIGHT_REF | default "ghcr.io/controlplaneio-fluxcd/flux-operator-manifests:latest"}}'
+  GHCR_PREFLIGHT_MAX_AGE_MIN: '{{.GHCR_PREFLIGHT_MAX_AGE_MIN | default "5"}}'
   E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "15m"}}'
   ALLURE_RESULTS_DIR: '{{.ALLURE_RESULTS_DIR | default ".stamps/allure-results"}}'
   ALLURE_REPORT_DIR: '{{.ALLURE_REPORT_DIR | default ".stamps/allure-report"}}'
@@ -638,8 +642,37 @@ tasks:
         {{.K3D}} cluster delete "{{.CLUSTER_NAME}}"
       - rm -rf "{{.CS}}"
 
+  _ghcr-preflight:
+    # Fail fast — BEFORE we spend ~30s creating a k3d cluster — when ghcr.io cannot
+    # serve the Flux operator manifests that _flux-installed pulls. Otherwise an
+    # unreachable/denied registry only surfaces deep in the Ginkgo
+    # SynchronizedBeforeSuite as an opaque "DENIED: denied" that aborts all specs
+    # (0 run). check-ghcr-pull.sh tells two causes apart: (1) a ghcr.io outage /
+    # throttling (denied for everyone), and (2) a STALE ghcr.io credential handed
+    # out by the dev-container Docker credsStore (an expired GitHub token → 403 on
+    # the authenticated pull even though anonymous would succeed). Fix for (2):
+    # `docker logout ghcr.io`.
+    #
+    # Leaf (no deps): wiring it ahead of _cluster-ready does NOT re-create the
+    # cluster — go-task evaluates each task's own up-to-date status independently,
+    # so a warm _cluster-ready stays up to date while this still re-probes when its
+    # stamp goes stale.
+    status:
+      # Up to date (skip the probe) only while a prior success is younger than the
+      # max age. `find -mmin +N` prints the stamp once it is older than N minutes,
+      # so a non-empty result flips the task back to out-of-date.
+      - test -f "{{.CS}}/ghcr-preflight.ok"
+      - test -z "$(find "{{.CS}}/ghcr-preflight.ok" -mmin "+{{.GHCR_PREFLIGHT_MAX_AGE_MIN}}" 2>/dev/null)"
+    cmds:
+      - mkdir -p "{{.CS}}"
+      - GHCR_PREFLIGHT_REF="{{.GHCR_PREFLIGHT_REF}}" bash hack/e2e/check-ghcr-pull.sh
+      - touch "{{.CS}}/ghcr-preflight.ok"
+
   _cluster-ready:
     method: timestamp
+    deps:
+      # Probe ghcr.io reachability before building the cluster (see _ghcr-preflight).
+      - _ghcr-preflight
     sources:
       - test/e2e/cluster/start-cluster.sh
       - '{{.AUDIT_POLICY_SOURCE}}'
