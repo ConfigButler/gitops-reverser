@@ -112,6 +112,35 @@ wait_cluster_healthy() {
     kubectl --context "${context_name}" get nodes -o wide >&2 || true
     return 1
 }
+
+wait_discovery_healthy() {
+    # Nodes being Ready is not enough: `flux-operator install` (and most
+    # controllers) begin by doing a FULL API discovery (client-go ServerGroups).
+    # On a freshly-created k3s cluster the built-in metrics-server registers the
+    # aggregated APIService v1alpha1/v1beta1.metrics.k8s.io before its backend
+    # pod is serving, so for the first few seconds a full discovery returns
+    # "the server is currently unable to handle the request" and aborts the whole
+    # e2e bring-up (seen as _flux-installed failing immediately after this script
+    # prints "Cluster setup complete!"). `kubectl api-resources` performs that
+    # same full discovery, so gate readiness on it completing cleanly — i.e. no
+    # aggregated group left unavailable. This is general: it also covers any
+    # future aggregated APIService, not just metrics-server.
+    local context_name attempt out
+    context_name="$(cluster_context_name)"
+
+    for attempt in $(seq 1 90); do
+        if out="$(kubectl --context "${context_name}" --request-timeout=15s api-resources -o name 2>&1)" \
+            && ! printf '%s' "${out}" | grep -qiE 'unable to|currently unable to handle'; then
+            return 0
+        fi
+        sleep 2
+    done
+
+    echo "❌ API discovery did not become healthy in time for context ${context_name}:" >&2
+    kubectl --context "${context_name}" api-resources -o name >&2 2>&1 || true
+    kubectl --context "${context_name}" get apiservices >&2 2>&1 || true
+    return 1
+}
 ensure_k3d_stat_compat_path() {
     local host_project_path="$1"
     local can_sudo=false
@@ -313,6 +342,14 @@ main() {
     fi
 
     kubectl --context "$(cluster_context_name)" --request-timeout=30s get ns >/dev/null
+
+    echo "⏳ Waiting for full API discovery to be healthy (aggregated APIServices ready)..."
+    if ! wait_discovery_healthy; then
+        echo "❌ Cluster '${CLUSTER_NAME}' came up but API discovery is not whole." >&2
+        echo "An aggregated APIService (e.g. metrics-server) is registered but not serving;" >&2
+        echo "controllers that discover server groups (flux-operator install) would fail here." >&2
+        exit 1
+    fi
 
     echo "✅ Cluster setup complete!"
     echo "Try:"
