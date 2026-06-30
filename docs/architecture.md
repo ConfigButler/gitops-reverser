@@ -5,8 +5,8 @@ desired object state to Git. It reverses the traditional GitOps direction: inste
 cluster, the Kubernetes API drives Git. The repository becomes a continuously updated mirror of live
 cluster state.
 
-This document describes how the operator works **today**. Read the [Ground Rules](#ground-rules) and
-[Mental Model](#mental-model) for the shape of the system, then the
+This document describes how the operator works **today**. Read the [Ground Rules](#ground-rules),
+[Mental Model](#mental-model), and [Data Sources](#data-sources) for the shape of the system, then the
 [Configuration Model](#configuration-model) and [A Change, End to End](#a-change-end-to-end) for how you
 drive it. The later sections give the reference detail behind each piece. If a detail here ever
 disagrees with the source, the source wins; deeper design records live under [docs/design/](design/).
@@ -22,6 +22,14 @@ API. State is ingested by **watch**; these paths never treat Git as authority. W
 with a newer remote commit, the operator fetches the new remote state, resets its local clone, and
 replays its retained writes from the API.
 
+**Redis is a hard dependency — treat it as always available.** A healthy GitOps Reverser relies on a
+healthy Redis (we bundle **Valkey**, which speaks the Redis protocol). The operator wires it
+unconditionally and a readiness gate holds the pod not-ready until it is reachable, so the rest of this
+document assumes Redis is present. It stores per-watch resume cursors (resume instead of re-listing),
+audit facts and command-author records when those features are on, and the branch-shard leases and durable
+write queues that [high availability](future/ha-gittarget-distribution-plan.md) needs. Committer-only mode
+(`--author-attribution=false`) drops the audit facts but still requires Redis.
+
 **Watch is the only object-state source.** Each `GitTarget` opens one Kubernetes watch per claimed
 `(GVR, scope)` with `sendInitialEvents=true`. Every Git write derives from persisted state the watch
 observed. Audit never defines *what* changed — it only, optionally, explains *who* caused it.
@@ -35,15 +43,6 @@ events to `/audit-webhook`; the operator extracts a minimal attribution fact (au
 resourceVersion, GVR/namespace/name/UID, status, timestamps) into a Redis attribution index keyed for a
 join, and a resolver attaches the commit author to a watch event by matching a fact within a bounded
 grace window. A missing, late, or absent fact never blocks state capture; it only changes the author.
-
-**Redis/Valkey is required.** It stores each GitTarget's per-watch resume cursors, so the operator
-resumes exactly where it left off after a restart or reconnect instead of re-listing from scratch; when
-attribution is enabled it also stores the audit facts. Running **committer-only**
-(`--author-attribution=false`) disables the audit webhook and author attribution — every commit
-is authored by the configured committer — but still requires Redis. Redis is further the substrate for
-**high availability** (multi-pod needs durable cross-pod state: branch-shard leases and durable write
-queues); see [Operational Boundaries](#operational-boundaries) and the
-[HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md).
 
 ***
 
@@ -80,6 +79,62 @@ The solution, in the vocabulary used throughout this document:
 * **One `BranchWorker` per Git branch serializes all writes.** Every write to a branch funnels through a
   single worker and a single commit window, which keeps concurrent GitTargets and authors from racing
   each other into a corrupt tree.
+
+***
+
+## Data Sources
+
+GitOps Reverser reads Kubernetes through four mechanisms. Two are required to function; the other two are
+optional and only add *who* did something:
+
+| Source | Answers | Required | What it carries |
+|---|---|---|---|
+| **Discovery** (CRD/APIService) | *what types exist* | yes | the API surface — served GVRs, scope, preferred version, subresources; rules resolve against it |
+| **Watch** (per claimed `(GVR, scope)`) | *what changed* | yes | the object body, ordered per type; the only object-state source, with deletes reconciled via `sendInitialEvents` replay + mark-and-sweep |
+| **Audit webhook** (`/audit-webhook`) | *who changed mirrored state* | no | a post-persist attribution fact, joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
+| **Validating admission webhook** (`/validate-operator-types`) | *who issued a command* | no | the submitter of a `CommitRequest`, captured at admission and keyed 1:1 by UID ([CommitRequest Finalize](#commitrequest-finalize)) |
+
+With both optional sources off, the product still mirrors state correctly — every commit is simply authored
+by the committer.
+
+### Why audit, not admission, attributes a mirrored change
+
+For a mirrored change, taking the author from a validating admission webhook is tempting — the request
+already carries `userInfo`. We tried it; the edge cases are not fixable, because **admission runs *before*
+the write reaches etcd**:
+
+* **Admission sees attempts, not persistence.** A request that passes our webhook can still be rejected by
+  a later webhook or fail an optimistic-concurrency conflict at storage, so the change never becomes state —
+  yet we would already have recorded an author for it (a dry-run is the same shape: admission fires, nothing
+  persists).
+* **There is nothing to join on yet.** Mirrored attribution matches an author to a *persisted* watch event
+  by identity **+ resourceVersion**; at admission the resourceVersion does not exist, and for a
+  `generateName` create even the final name/UID is unassigned — so an admission record cannot be coupled to
+  the watch or audit stream.
+
+Audit avoids both: kube-apiserver posts a `ResponseComplete` event *after* the write persisted, carrying
+the resourceVersion that joins it to the watch event.
+
+The one place admission *is* the right source is the `CommitRequest`, and only for its **command** meaning
+— *who issued the save* — not for mirroring the object. That holds because it is **our own type with a
+memory model we control**: the controller reconciles off its own watch, which only delivers persisted
+objects, so the author is captured at admission and read back 1:1 by UID — no resourceVersion join, no
+persistence proof from audit needed. (We still can't guarantee a create is never blocked, but it holds
+across our edge cases.) If a `WatchRule` also selects CommitRequests, that *mirroring* runs through the
+normal pipeline and is audit-attributed like any other resource. See
+[CommitRequest Finalize](#commitrequest-finalize).
+
+### Proving it on new Kubernetes versions
+
+How Kubernetes actually emits these structures is not something to guess at. A separate, standalone
+project — the **mutation-capture lab** ([design](design/mutation-capture-lab-design.md),
+[cmd/mutation-capture-lab/](../cmd/mutation-capture-lab/)) — records the exact watch, audit, and admission
+output a real apiserver produces for each interesting scenario and commits it as normalized example YAML (a
+versioned *corpus*). It doubles as a regression harness: point it at a new Kubernetes release, regenerate,
+and any change in verb naming, event ordering, body presence, or deletecollection fan-out surfaces as a
+reviewable corpus diff before it can surprise the operator. The "admission sees attempts, not persistence"
+claim above is read straight out of that corpus — its dry-run, record-and-reject, and conflict scenarios
+capture audit and admission with **no** resulting watch event.
 
 ***
 
@@ -149,8 +204,8 @@ instead of waiting for the silence timer. The **entire spec is immutable**. Key 
 * `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
   terminal outcome that is not an error — a pushed commit, or a benign no-commit);
   **Reconciling**/**Stalled** are the kstatus progress/blocked pair; **AuthorAttributed** reports
-  whether the internal commands admission webhook named the submitter or the request fell back to the
-  configured committer; **Pushed** reports whether the commit reached the remote. The `Ready`
+  whether the `/validate-operator-types` validating admission webhook named the submitter or the request
+  fell back to the configured committer; **Pushed** reports whether the commit reached the remote. The `Ready`
   condition's `reason` carries `Committed`, `NoWindowInGrace`, `WindowMismatch`, `AlreadyPresent`, or
   `FinalizeFailed`. A benign no-commit (e.g. `NoWindowInGrace`) is `Ready=True`, `Stalled=False` — a correct,
   non-error outcome — whereas a `FinalizeFailed` is `Ready=False`, `Stalled=True`.
@@ -238,7 +293,7 @@ flowchart TD
         GTES[GitTargetEventStream]
     end
 
-    subgraph ATTR["Attribution (only when Redis present): internal/webhook"]
+    subgraph ATTR["Attribution (only when attribution enabled): internal/webhook"]
         AFACTS["Audit fact extractor"]
         AINDEX[("Redis attribution index<br/>(TTL, keyed for join)")]
     end
@@ -272,7 +327,7 @@ Following the ConfigMap edit:
 2. **Relevance filter.** The event is sanitized (status, managedFields, and volatile metadata stripped),
    checked for followability, and diffed against current Git content. A no-op (e.g. a `*/status` bump
    whose desired-state projection is unchanged) is dropped here.
-3. **Resolve the author.** When Redis is present, the resolver waits a bounded grace window
+3. **Resolve the author.** When attribution is enabled, the resolver waits a bounded grace window
    (`--author-attribution-grace`, default `3s`) for a matching audit fact in the attribution index, joining by
    resourceVersion/UID. On a strong match the real user or named service account becomes the author;
    otherwise (attribution off, no match, or expiry) the commit is authored by the configured committer. This
@@ -286,7 +341,7 @@ Following the ConfigMap edit:
    and pushes via [PushAtomic](../internal/git/git_atomic_push.go) (retrying with fetch/reset/replay if
    the remote moved).
 
-Separately, the audit path (only when Redis is configured): kube-apiserver POSTs audit events to
+Separately, the audit path (only when attribution is enabled): kube-apiserver POSTs audit events to
 `/audit-webhook`; [AuditHandler](../internal/webhook/audit_handler.go) extracts a minimal attribution
 fact and writes it to the Redis attribution index with a short TTL. That index is read only by the
 resolver in step 3; it never creates or repairs object state.
@@ -389,7 +444,8 @@ per-mutation change log.
 * **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
 * **Resolver (grace window join)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
 
-Attribution runs **only when Redis is configured**. The Kubernetes API server POSTs audit `EventList`
+Attribution runs **only when attribution is enabled** (`--author-attribution`, the default); Redis — always
+required — is its state store. The Kubernetes API server POSTs audit `EventList`
 payloads to a **single** HTTP endpoint, `/audit-webhook`; there is no supplementary body endpoint and no
 body joiner, because watch — not audit — carries the object body. The handler applies an intrinsic accept
 gate (StageResponseComplete, a mutating verb, success, non-dry-run, a changed resourceVersion, and the
@@ -401,6 +457,27 @@ index with a short TTL.
 | `/audit-webhook` | Audit source (kube-apiserver) for the optional attribution index |
 
 Cluster ID path segments are rejected; multi cluster routing is not modeled yet.
+
+### Optional, but never casual
+
+Attribution being optional does **not** make it casual or take-it-or-leave-it. When it is enabled the
+operator does everything it can to name the real actor — but it values **high certainty over a plausible
+guess**. Attaching a name to a change is a consequential, sometimes politically charged claim ("*this*
+person did *that*"), so it must not be made lightly. The design therefore fails toward honesty: a weak,
+conflicting, late, or absent fact resolves to the committer rather than to a guessed author. **It is better
+to clearly record that the operator made a change than to assert an actor we are not sure of.**
+
+Two engineering choices follow directly from that stance:
+
+* **mTLS on the audit ingress is on by default.** An attribution fact names a human or a service account,
+  so the channel that delivers it must be trustworthy. The audit server requires and verifies a client
+  certificate (`tls.RequireAndVerifyClientCert` against a configured CA; `--audit-insecure` defaults to
+  `false`), so nothing can **impersonate the kube-apiserver** and inject forged facts. Disabling
+  verification is an explicit, deliberate opt-out.
+* **Tests pin the behavior.** Because a misattribution is a real harm, the attribution and resolver paths
+  carry unit and e2e tests that prove the concrete cases — strong match, weak/last-key match, deletes whose
+  audit RV differs from the watch RV, missing/late/expired facts, service-account vs human actor,
+  impersonation, and the committer fallback — so these certainty guarantees cannot silently regress.
 
 ### Attribution fact shape
 
@@ -430,8 +507,57 @@ account alike, always named by its own username (e.g.
 resolves to the committer. A late fact that arrives after a commit has shipped **never rewrites it**.
 With attribution disabled the resolver is absent and every commit is committer-authored.
 
-The CommitRequest controller reads the same index by `(namespace, name, uid)` to attribute a request to
-its submitter (see [CommitRequest Finalize](#commitrequest-finalize)).
+The CommitRequest controller does **not** read this audit index. A CommitRequest's submitter is named by
+the `/validate-operator-types` validating admission webhook instead — captured synchronously at admission,
+never joined from an audit fact (see [CommitRequest Finalize](#commitrequest-finalize)).
+
+### Author and committer identity in Git
+
+Git natively carries **two** identities on every commit — the *committer* (who created the commit object)
+and the *author* (who wrote the change) — and GitOps Reverser uses both on purpose
+([commit.go](../internal/git/commit.go)):
+
+* The **committer is always the operator** — the configured `GitProvider.spec.commit.committer`, defaulting
+  to `GitOps Reverser <noreply@configbutler.ai>`. Every commit, attributed or not, is committed by the
+  operator, because the operator is what actually wrote it to Git.
+* The **author is the real actor — but only when we are sure.** On a strong attribution match the author is
+  set to that actor; with no confident match the author falls back to the committer. So a commit whose
+  author differs from the operator is a positive statement that the operator is confident who made the
+  change.
+
+The author identity is never invented — it is taken from the authenticated request. The name and email come
+from the **OIDC claims** when the apiserver maps them (display-name and email claims); otherwise they come
+from the actor's own **Kubernetes identity** — the username, which for a controller is its service account
+(`system:serviceaccount:<namespace>:<name>`), with a stable derived `…@noreply.cluster.local` email.
+
+A confidently attributed commit therefore shows distinct author and committer lines, which `git` surfaces
+natively:
+
+```console
+$ git show --no-patch --format=fuller HEAD
+commit 1f3c2ab9e4d5c6f7a8b9c0d1e2f3a4b5c6d7e8f9
+Author:     alice <alice@example.com>
+AuthorDate: Mon Jun 30 12:00:05 2026 +0000
+Commit:     GitOps Reverser <noreply@configbutler.ai>
+CommitDate: Mon Jun 30 12:00:05 2026 +0000
+
+    alice on team-a-config: 1 resource(s)
+```
+
+A service-account actor is named by its own identity, with the operator still the committer:
+
+```console
+$ git show --no-patch --format='%an <%ae> | %cn <%ce>' HEAD
+system:serviceaccount:flux-system:kustomize-controller <...@noreply.cluster.local> | GitOps Reverser <noreply@configbutler.ai>
+```
+
+When attribution is off, or no fact matched, the same commit collapses to the operator on both lines —
+the honest "we don't know who, so we don't claim one":
+
+```console
+$ git show --no-patch --format='%an <%ae> | %cn <%ce>' HEAD
+GitOps Reverser <noreply@configbutler.ai> | GitOps Reverser <noreply@configbutler.ai>
+```
 
 ***
 
@@ -446,8 +572,13 @@ FIFO. So:
   lets it overtake), so an older mutation can never overwrite a newer one.
 * **The cost is throughput, not ordering.** A long wait stalls its own watch up to the grace window.
 * **Unrelated objects on different types** (separate concurrent watches) may interleave or be grouped
-  into commits differently than wall-clock — but they are different files, so the materialized state is
-  unaffected, and `resourceVersion` is not comparable across types anyway.
+  into commits differently than wall-clock, and `resourceVersion` is not comparable across types anyway.
+  They are usually different files, but they *can* share one — different documents of a multi-document YAML,
+  e.g. when a human or kustomize placed them together — so "different files" is not guaranteed. It still
+  does not affect the materialized state: every write carries its object's current state, all writes to a
+  branch funnel through one BranchWorker, and the editor patches each document in place without disturbing
+  its siblings. Only *which* commit each lands in and *when* can differ, and only within the commit window —
+  a few seconds at most.
 
 The full analysis, worked examples, and the future non-blocking option are in
 [Watch event ordering under the attribution grace window](design/watch-event-ordering-and-attribution-grace.md).
@@ -599,11 +730,34 @@ bursts. Heal resyncs that arrive during a window are deferred and drained at the
 
 ### Local Clones and Conflict Retry
 
-Local clones live under `/tmp/gitops-reverser-workers/{namespace}/{provider}/{branch}/repos/{hash}`.
-[PushAtomic](../internal/git/git_atomic_push.go) checks the remote ref before pushing. If the remote
-diverged it smart fetches the latest tip, hard resets the local clone, replays the retained pending writes
-against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
+Local clones live under
+`/tmp/gitops-reverser-workers/{provider namespace}/{provider}/{branch}/repos/{url-digest}` — the leading
+segments are exactly the `(provider namespace, provider, branch)` tuple that identifies the
+[BranchWorker](../internal/git/branch_worker.go), and the final `{url-digest}` segment is a short digest
+of `GitProvider.spec.url` (a truncated SHA-256 of the remote URL,
+[`repoCacheKey`](../internal/git/branch_worker.go)), **not** a commit hash. It only disambiguates distinct
+remote URLs under the same branch and is stable across commits, so the worker reuses one clone for the life
+of the branch. [PushAtomic](../internal/git/git_atomic_push.go) checks the remote ref before pushing. If the
+remote diverged it smart fetches the latest tip, hard resets the local clone, replays the retained pending
+writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
 because every pending write is rebuilt from sanitized API state; nothing depends on locally edited files.
+
+### Durability of the Write Queue (planned)
+
+A BranchWorker's queue — the open commit window's retained writes plus any local commits not yet pushed —
+lives **only in process memory today**. It is about to be **materialized into Redis**, for two reasons:
+
+* **High availability.** Multi-pod HA needs a durable, cross-pod write queue so a branch's
+  accepted-but-unpushed work survives a failover: the pod that takes the branch-shard lease resumes that
+  queue instead of starting from an empty buffer. This is part of the
+  [HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md).
+* **Crash safety that watch replay cannot guarantee.** A crash drops the in-memory queue, and those writes
+  cannot be reliably re-derived by replaying the watch, because **Kubernetes does not guarantee it can
+  replay events from every `resourceVersion`.** The apiserver compacts old versions, so resuming from a
+  stored cursor can return `410 Gone`; recovery then falls back to a full `sendInitialEvents` replay plus
+  mark-and-sweep, which rebuilds *current* state but collapses the intermediate versions (see
+  [History granularity](#history-granularity)). Persisting the queue lets accepted-but-unpushed writes
+  survive a restart on their own, independent of whether the watch can resume from where it left off.
 
 ### Manifest Aware Writer
 
@@ -653,13 +807,16 @@ location instead of recomputing placement.
 ## CommitRequest Finalize
 
 * **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
+* **Admission handler**:
+  [internal/webhook/validate_operator_types_handler.go](../internal/webhook/validate_operator_types_handler.go)
 * **Admission author cache**:
-  [internal/webhook/command_author_store.go](../internal/webhook/command_author_store.go)
+  [internal/queue/command_author_store.go](../internal/queue/command_author_store.go)
 
 A `CommitRequest` finalizes the open commit window for its GitTarget. The request author is resolved from
-the internal commands admission webhook when that record exists. If the admission record is missing, the
-request **finalizes as the configured committer** with `AuthorAttributed=False`; that fallback does not
-fail the request:
+the `/validate-operator-types` validating admission webhook, which captures the authenticated submitter at
+admission (keyed by the object's UID) before the object is visible. The lookup is **present-or-never**: if
+the record is missing, the request **finalizes as the configured committer** with `AuthorAttributed=False`,
+and that fallback does not fail the request:
 
 1. The controller stamps the in-progress conditions (`Reconciling=True`) and settles
    `AuthorAttributed` synchronously from the admission author cache. There is no audit wait on this path.
@@ -673,8 +830,9 @@ fail the request:
    `Pushed=True` with `branch`/`sha`; a benign no-commit sets `Ready=True` with the reason on `Ready` and
    `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message.
 
-The CommitRequest submitter is not recoverable from object state alone, so without an audit fact the
-finalize is committer-authored.
+The CommitRequest submitter is not recoverable from object state alone, so without an admission record the
+finalize is committer-authored. There is no audit-fact join on this path: the submitter is captured at
+admission by the validating webhook, not derived from the audit attribution index.
 
 ***
 
@@ -689,7 +847,9 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   RuleStore, and trigger the rule-change reconcile.
 * `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
 * `CommitRequestReconciler` runs with `MaxConcurrentReconciles=1` and attributes/attaches as above; its
-  optional `AuthorLookup` is the Redis attribution index (nil in committer-only mode).
+  optional `AuthorLookup` is the command-author cache populated by the `/validate-operator-types` webhook
+  (wired whenever the admission webhook is enabled — independent of `--author-attribution` — and nil
+  otherwise, so the request finalizes as the committer).
 
 Dependency watches use generation change predicates to avoid queueing again on status only heartbeats.
 `GitProvider`, `GitTarget`, and `CommitRequest` carry immutability constraints where a spec change would
@@ -759,10 +919,10 @@ Current limitations:
   object-state work runs on one elected pod; multi-pod HA is not finished. The target design is the
   [HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md), which needs Redis for
   resume cursors, branch-shard leases, and durable write queues.
-* **Resume cursors are best-effort.** With Redis configured, each watch shard stores the last processed
-  resourceVersion and short reconnects resume a normal watch from that cursor. If the apiserver expires
-  the cursor, or Redis is not configured, recovery falls back to `sendInitialEvents` replay or LIST +
-  mark-and-sweep.
+* **Resume cursors are best-effort.** Each watch shard stores its last processed resourceVersion in Redis,
+  so short reconnects resume a normal watch from that cursor. Kubernetes does not guarantee replay from an
+  arbitrary resourceVersion, so if the apiserver has expired the cursor (`410 Gone`) recovery falls back to
+  `sendInitialEvents` replay or LIST + mark-and-sweep.
 * **Per-watch and per-attribution metrics are not yet emitted** (see [Observability](#observability)).
 * **No pull request creation;** the operator writes directly to branches.
 * **No multi cluster routing;** cluster ID path segments on `/audit-webhook` are rejected.
