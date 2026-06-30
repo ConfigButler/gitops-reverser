@@ -239,6 +239,25 @@ var _ = Describe("WatchRule Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, watchRule)).Should(Succeed())
 
+			By("Waiting for the GitTarget controller to publish its not-yet-Ready status")
+			// The WatchRule mirrors the referenced GitTarget's Ready condition. Without this
+			// wait the direct reconcile below races the async GitTargetReconciler: if the
+			// GitTarget has not published any condition yet, gitTargetReadyCondition falls back
+			// to Unknown instead of the expected False/Progressing, which flaked in CI. Block
+			// until the GitTarget settles on its deterministic Ready=False/Progressing state
+			// (no streams run in envtest) so the WatchRule reconcile observes a stable dependency.
+			Eventually(func(g Gomega) {
+				fetched := &configbutleraiv1alpha2.GitTarget{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name:      "local-target",
+					Namespace: "default",
+				}, fetched)).To(Succeed())
+				ready := conditionByType(fetched.Status.Conditions, ConditionTypeReady)
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(ready.Reason).To(Equal(ReasonProgressing))
+			}).Should(Succeed())
+
 			By("Reconciling the WatchRule directly")
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
