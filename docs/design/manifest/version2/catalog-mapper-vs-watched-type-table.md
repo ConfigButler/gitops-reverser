@@ -322,7 +322,6 @@ always clean.
 ## References
 
 - [gvk-gvr-mapping-layer.md](../../../finished/gvk-gvr-mapping-layer.md)
-- [per-type-reconcile-and-streaming-tail.md](per-type-reconcile-and-streaming-tail.md)
 - [`internal/mapping/mapper.go`](../../../../internal/mapping/mapper.go)
 - [`internal/watch/catalog_mapper.go`](../../../../internal/watch/catalog_mapper.go)
 - [`internal/watch/watched_type_table.go`](../../../../internal/watch/watched_type_table.go)

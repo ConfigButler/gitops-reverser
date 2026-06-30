@@ -14,15 +14,15 @@
 > per-type checkpoint+log **splice** (correctness) and the per-type **audit tail**
 > (freshness) are the **sole** path. This file is kept as the cutover record; **for the
 > current single-path architecture read
-> [architecture-and-bootstrap.md](../design/stream/architecture-and-bootstrap.md).**
+> `architecture-and-bootstrap.md`.**
 >
 > Original status: **explainer / snapshot after R1 + R2 landed** (commit `3d249e3`). Companion
 > to the three design docs; this one is the "you are here" map, not a spec.
 > Captured: 2026-06-10
 > Related:
 > [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) (the plan + §5.1 demolition list),
-> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (the per-type log producer),
-> [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) (the checkpoint demand layer).
+> `audit-log-ingestion-and-ordering.md` (the per-type log producer),
+> `demand-driven-type-materialization-lifecycle.md` (the checkpoint demand layer).
 
 ## 1. One paragraph
 

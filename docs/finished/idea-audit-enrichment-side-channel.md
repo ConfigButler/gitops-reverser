@@ -4,7 +4,7 @@
 > See the [Audit Ingestion Pipeline section](../architecture.md#audit-ingestion-pipeline) in
 > the architecture document for the shipped design. This doc is kept as historical context for
 > the design exploration only.
-> Related to but not blocking [design-commit-context-api.md](design-commit-context-api.md).
+> Related to but not blocking `design-commit-context-api.md`.
 > Date: 2026-05-07
 
 ## Why this idea exists
@@ -20,14 +20,14 @@ the same `AuditHandler`. For a request that passes through the proxy, two events
 one enriched synthetic event from the proxy.
 
 This works but couples the two channels and forces every consumer to reason about the
-duplicate. The [CommitContext design](design-commit-context-api.md) notes this as the reason
+duplicate. The `CommitContext design` notes this as the reason
 for an idempotency-marker mechanism in its consumer logic. A cleaner alternative is to give
 the proxy its own ingestion endpoint that does *not* feed the canonical stream, and instead
 populates a side-cache the consumer reads when processing the canonical event.
 
 This is best treated as **pipeline cleanup, not a `CommitContext` prerequisite.**
 `CommitContext` v1 should ship with the local stash plus idempotency marker described in
-[design-commit-context-api.md](design-commit-context-api.md); the side-channel is the
+`design-commit-context-api.md`; the side-channel is the
 follow-up that removes the marker workaround once the broader pipeline is reshaped.
 Treating it as a prerequisite would block `CommitContext` behind a refactor that does not
 need to be in the critical path.
@@ -319,7 +319,7 @@ The refinement is not free. Concrete things that can go wrong:
 This refinement is non-breaking with respect to `CommitContext` v1alpha1:
 
 - If the refinement lands first, the idempotency-marker case in
-  [design-commit-context-api.md](design-commit-context-api.md)'s failure-modes list
+  `design-commit-context-api.md`'s failure-modes list
   disappears — only one event per `auditID` reaches the consumer, so there is no
   double-attach to defend against.
 - If `CommitContext` ships first, the marker mechanism handles the dual-event case until
@@ -633,7 +633,7 @@ The honest read:
 
 - **The side-channel is pipeline cleanup, not a `CommitContext` prerequisite.**
   `CommitContext` v1 should ship with the local stash + idempotency marker described in
-  [design-commit-context-api.md](design-commit-context-api.md). That is enough to get the
+  `design-commit-context-api.md`. That is enough to get the
   feature working under the current single-endpoint shape. The side-channel comes
   afterwards as the follow-up that removes the marker, removes consumer-side reasoning
   about duplicate `auditID`s, and stops every future audit-driven feature from inheriting
@@ -731,4 +731,4 @@ should compose with what enterprises already run.
 - Native audit gap context:
   [external-sources/apiservice-audit-proxy/README.md](../../external-sources/apiservice-audit-proxy/README.md)
 - Related design that surfaces this trade-off:
-  [design-commit-context-api.md](design-commit-context-api.md)
+  `design-commit-context-api.md`

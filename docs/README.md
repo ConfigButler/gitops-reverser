@@ -39,8 +39,6 @@ docs surface:
 These root-level files are also working notes rather than polished user docs:
 
 - [`TODO.md`](TODO.md)
-- [`merge-readiness-inventory.md`](merge-readiness-inventory.md)
-- [`markdown-triage-inventory.md`](markdown-triage-inventory.md)
 - `*plan*.md`
 - `*analysis*.md`
 

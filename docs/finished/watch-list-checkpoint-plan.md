@@ -11,7 +11,7 @@
 > Related:
 > [materialization-tail-and-live-readiness-review.md](./materialization-tail-and-live-readiness-review.md)
 > Rec 6,
-> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md),
+> `audit-log-ingestion-and-ordering.md`,
 > [../upgrade-finding.md](../design/upgrade-finding.md).
 
 ## Goal

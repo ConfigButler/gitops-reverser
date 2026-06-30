@@ -131,7 +131,7 @@ change the recommendation.
 - **Not the same spec as the two immediately-prior CI reds.** Runs `27723359433` (06-17) and
   `27736294243` (06-18) both failed in `[SynchronizedAfterSuite]`
   ([e2e_suite_test.go:117](../../test/e2e/e2e_suite_test.go#L117)) — the "late lane must be empty"
-  invariant (the [late-lane invariant flake investigation](../design/stream/late-lane-e2e-2026-06-16-investigation.md)). Same audit-ordering **root family**, a
+  invariant (the `late-lane invariant flake investigation`). Same audit-ordering **root family**, a
   different surface.
 
 ---
@@ -392,5 +392,5 @@ recorded the moment the event arrived. That is the reliability the path needs.
 
 - Confirmed prior design (the fix): [internal-audit-type-demand.md](internal-audit-type-demand.md) §5, §5.1, §7
 - Ordering invariant the divert protects: [api-source-of-truth-reconcile.md](../finished/api-source-of-truth-reconcile.md) (R8 / DEC-3)
-- Late-lane / divert investigation lineage: [late-lane-e2e-2026-06-16-investigation.md](../design/stream/late-lane-e2e-2026-06-16-investigation.md), [residual-e2e-flakes-2026-06-19.md](../design/stream/residual-e2e-flakes-2026-06-19.md)
+- Late-lane / divert investigation lineage: `late-lane-e2e-2026-06-16-investigation.md`, [residual-e2e-flakes-2026-06-19.md](../design/stream/residual-e2e-flakes-2026-06-19.md)
 - Code: [commitrequest_author.go](../../internal/queue/commitrequest_author.go), [redis_bytype_queue.go](../../internal/queue/redis_bytype_queue.go), [commitrequest_controller.go](../../internal/controller/commitrequest_controller.go), [commitrequest_finalize.go](../../internal/controller/commitrequest_finalize.go)

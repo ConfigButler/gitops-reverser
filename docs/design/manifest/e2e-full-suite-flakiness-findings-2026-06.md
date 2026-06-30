@@ -5,7 +5,6 @@ date: 2026-06-09
 related:
   - e2e-watchrule-cross-spec-interference.md
   - e2e-full-suite-shared-state-investigation.md
-  - manifest/version2/per-type-reconcile-and-streaming-tail.md
 ---
 
 # e2e full-suite flakiness — forensic findings
@@ -225,10 +224,9 @@ signals — and, properly, by the already-designed M10 work.
    `e2e-watchrule-cross-spec-interference.md`) decouples them by construction.
 4. **Per-type reconcile (the proper, larger fix).** So a single bootstrapping type
    that is slow/unhealthy does not block the whole GitTarget's readiness — the one
-   real product-side contributor (§2.2–2.3). Already designed as M10 in
-   [per-type-reconcile-and-streaming-tail.md](manifest/version2/per-type-reconcile-and-streaming-tail.md);
-   it requires a **type-scoped** sweep, which is exactly why it is not a safe sliver
-   on top of today's global mark-and-sweep.
+   real product-side contributor (§2.2–2.3). It requires a **type-scoped** sweep,
+   which is exactly why it is not a safe sliver on top of today's global
+   mark-and-sweep.
 5. **Do not** add a ghost-WatchRule drain or a preservation-cascade fix — both are
    already handled in current code (§3). Verify before reviving an old root cause.
 

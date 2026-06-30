@@ -6,8 +6,6 @@
 > Related:
 > [Current architecture](../architecture.md),
 > [Mutation Capture Lab](mutation-capture-lab-design.md),
-> [HA improvements](stream/ha-improvements.md),
-> [Demand-driven materialization lifecycle](../finished/demand-driven-type-materialization-lifecycle.md),
 > [API-source-of-truth reconcile](../finished/api-source-of-truth-reconcile.md),
 > [Mutation lab corpus](../../test/mutationlab/corpus/),
 > [Mutation lab README](../../test/mutationlab/README.md)

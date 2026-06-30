@@ -19,8 +19,8 @@
 > Related:
 > [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) (R2/R3, §5.1 demolition),
 > [current-flows-and-cutover.md](current-flows-and-cutover.md) (the dual-path "you are here" map),
-> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (the per-type log producer; IR1/§5.4 updated here),
-> [architecture-and-bootstrap.md](../design/stream/architecture-and-bootstrap.md) (the runtime map; the `CONS` node + §6 row this retires),
+> `audit-log-ingestion-and-ordering.md` (the per-type log producer; IR1/§5.4 updated here),
+> `architecture-and-bootstrap.md` (the runtime map; the `CONS` node + §6 row this retires),
 > [../manifest/version2/subresource-scope-reduction.md](../design/manifest/version2/subresource-scope-reduction.md) (the scale-only subresource scope).
 
 ## 1. One paragraph
@@ -121,7 +121,7 @@ it only routes the scale event onto the parent key. The scale→replicas interpr
 GVR knowledge already are (the consumer side), so the webhook never imports `manifestedit`. A scale
 on a CRD/aggregated parent with no known replica path is dropped at translation, unchanged.
 
-*Doc impact:* this revises [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md)
+*Doc impact:* this revises `audit-log-ingestion-and-ordering.md`
 **IR1/§5.4** for `/scale` specifically — scale no longer keys onto its own `…scale` segment; it is a
 parent-stream entry tagged `subresource=scale`. (Other subresources never reach Redis —
 [`shouldForwardSubresource`](../../internal/webhook/audit_handler.go#L697) drops them — so scale
@@ -271,7 +271,7 @@ is written to the *single* canonical stream once, even across retries and the tw
   decode to the same object → identical `desired`. The **freshness tail** upserts it twice → the
   second is an `EditNoChange` at the commit boundary. So a duplicate costs one redundant stream
   entry and **zero** Git effect — precisely the "no-op write amplification" the ingestion doc already
-  measured as benign ([audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) §8.2).
+  measured as benign (`audit-log-ingestion-and-ordering.md` §8.2).
 
 So **drop** `claim`/`commit`/`release` and the decision key entirely. The Joiner reduces to:
 
@@ -370,7 +370,7 @@ that falls back to a plain finalize (degrade to "commit what's there," never han
 barrier guarantees every pre-C mutation *already delivered to its stream* is applied. It cannot
 include a pre-C mutation whose audit event is still in flight (webhook hasn't mirrored it) or
 arrived out of order into the **late lane** (measured ~3.2%,
-[audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) §7). The canonical
+`audit-log-ingestion-and-ordering.md` §7). The canonical
 design had the same in-flight gap, but its *trigger* rode the same ingest path as the mutations
 (the CR's own audit event), which roughly equalized the delays. A controller watch event arrives
 **faster** than audit ingest, and the first C-B2 e2e run proved it immediately (the generateName
@@ -427,5 +427,5 @@ replaces is deleted** (the same discipline R2→R3 used).
   retiring the decision key is safe (the R7 analogue measurement).
 - **HA (R10, deferred).** The canonical consumer was the one leader-elected audit reader; the
   per-type tails + driver run under the watch.Manager. Multi-replica fan-out and per-type cursor
-  ownership stay in [ha-improvements.md](../design/stream/ha-improvements.md); this change must not preclude them,
+  ownership stay in `ha-improvements.md`; this change must not preclude them,
   and the controller-driven finalize already rides controller-runtime leader election.

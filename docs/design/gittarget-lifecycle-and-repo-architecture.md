@@ -8,7 +8,7 @@
 > **Materializer phase** (`Dormant → Requested → Syncing → Synced`), surfaced in
 > `GitTargetStatus.Materialization`. The repo-creation, SOPS-age-Secret, and bootstrap-template
 > sections below remain accurate. For the current readiness + bootstrap model read
-> [stream/architecture-and-bootstrap.md](stream/architecture-and-bootstrap.md).
+> [architecture.md](../architecture.md).
 
 ## Purpose
 
