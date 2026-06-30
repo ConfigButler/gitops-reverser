@@ -385,7 +385,9 @@ func metadataResourceVersion(object *runtime.Unknown) string {
 // resource events always pass. A subresource event passes only when it is a mutating
 // /scale — the single subresource whose author is worth attributing to the parent
 // (the parent watch event lands at the scale response RV); status, exec, log, and
-// every other subresource is dropped before recording.
+// every other subresource is dropped before recording. Object state itself comes from
+// watch, so /scale is forwarded only to name who scaled the parent, never to capture
+// the replica count.
 func shouldForwardSubresource(event *auditv1.Event) bool {
 	if event.ObjectRef == nil || event.ObjectRef.Subresource == "" {
 		return true
@@ -393,7 +395,7 @@ func shouldForwardSubresource(event *auditv1.Event) bool {
 	if _, ok := auditutil.VerbToOperation(event.Verb); !ok {
 		return false
 	}
-	return auditutil.IsScaleSubresource(event.ObjectRef.Subresource)
+	return event.ObjectRef.Subresource == "scale"
 }
 
 func effectiveAuditUsername(event auditv1.Event) string {
