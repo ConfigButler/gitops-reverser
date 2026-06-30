@@ -62,7 +62,7 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     FLUX_VERSION=2.8.8 \
     FLUX_OPERATOR_VERSION=0.50.0 \
     TASK_VERSION=v3.51.1 \
-    TILT_VERSION=v0.37.3 \
+    TILT_VERSION=v0.37.4 \
     ACTIONLINT_VERSION=1.7.12 \
     VALKEY_VERSION=9.1.0
 

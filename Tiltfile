@@ -183,26 +183,26 @@ local_resource(
 )
 
 local_resource(
-    'create-random-configmap',
-    cmd="""bash -ceu '
-ns="${TILT_CONFIGMAP_NAMESPACE:-}"
-if [ -z "$ns" ]; then
-  ns="$(kubectl get watchrules -A -o jsonpath="{range .items[*]}{.metadata.namespace}{\"\\t\"}{.spec.rules[*].resources}{\"\\n\"}{end}" 2>/dev/null | awk '\''$0 ~ /configmaps|\\*/ { print $1; exit }'\'')"
-fi
-if [ -z "$ns" ]; then
-  ns="default"
-  echo "No WatchRule mentioning configmaps found; falling back to namespace: $ns"
-fi
-name="tilt-smoke-$(date +%%s)-$RANDOM"
-value="tilt-$(date -u +%%Y%%m%%dT%%H%%M%%SZ)-$RANDOM"
-kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-kubectl -n "$ns" create configmap "$name" \
-  --from-literal=key="$value" \
-  --from-literal=createdBy=tilt \
-  --from-literal=createdAt="$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)"
-echo "Created ConfigMap: ${ns}/${name}"
-echo "Value: ${value}"
-'""",
+    'apply-random-cm',
+    cmd=['bash', 'hack/tilt-apply-random-cm.sh'],
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['gitops-reverser'],
+    labels=['ops', 'playground'],
+)
+
+local_resource(
+    'apply-10-cms',
+    cmd='kubectl -n "${TILT_CONFIGMAP_NAMESPACE:-tilt-playground}" apply -f test/playground-examples',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['gitops-reverser'],
+    labels=['ops', 'playground'],
+)
+
+local_resource(
+    'delete-10-cms',
+    cmd='kubectl -n "${TILT_CONFIGMAP_NAMESPACE:-tilt-playground}" delete -f test/playground-examples --ignore-not-found',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['gitops-reverser'],
