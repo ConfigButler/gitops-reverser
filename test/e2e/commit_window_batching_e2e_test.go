@@ -74,17 +74,15 @@ var _ = Describe("Commit Window Batching",
 			watchRuleName = fmt.Sprintf("commit-window-watchrule-%d", seed)
 
 			By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
-			createGitProviderWithCommitWindow(
+			createReadyGitProviderWithCommitWindow(
 				gitProvName,
 				testNs,
 				repo.GitSecretHTTP,
 				repo.RepoURLHTTP,
 				commitWindow,
 			)
-			verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
 
-			createGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-window-test", "main")
-			verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
+			createValidatedGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-window-test")
 
 			watchRuleData := struct {
 				Name            string
@@ -104,9 +102,7 @@ var _ = Describe("Commit Window Batching",
 		})
 
 		AfterAll(func() {
-			cleanupWatchRule(watchRuleName, testNs)
-			cleanupGitTarget(gitTargetName, testNs)
-			cleanupNamespacedResource(testNs, "gitprovider", gitProvName)
+			cleanupPipeline(testNs, gitProvName, gitTargetName, watchRuleName)
 			cleanupNamespace(testNs)
 		})
 

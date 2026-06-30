@@ -74,11 +74,9 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		watchRuleName = fmt.Sprintf("commit-request-watchrule-%d", seed)
 
 		By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
-		createGitProviderWithCommitWindow(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP, commitWindow)
-		verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
+		createReadyGitProviderWithCommitWindow(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP, commitWindow)
 
-		createGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-request-test", "main")
-		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-request-test")
 
 		// Watch Deployments, not ConfigMaps: a fresh namespace contains NO Deployments, whereas every
 		// namespace is pre-populated with a kube-root-ca.crt ConfigMap that a configmaps WatchRule
@@ -97,9 +95,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	})
 
 	AfterAll(func() {
-		cleanupWatchRule(watchRuleName, testNs)
-		cleanupGitTarget(gitTargetName, testNs)
-		cleanupNamespacedResource(testNs, "gitprovider", gitProvName)
+		cleanupPipeline(testNs, gitProvName, gitTargetName, watchRuleName)
 		cleanupNamespace(testNs)
 	})
 
@@ -329,11 +325,9 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		watchRuleName = fmt.Sprintf("commit-request-bundle-watchrule-%d", seed)
 
 		By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
-		createGitProviderWithCommitWindow(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP, commitWindow)
-		verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
+		createReadyGitProviderWithCommitWindow(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP, commitWindow)
 
-		createGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-request-bundle", "main")
-		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-request-bundle")
 
 		// Deployments only (no ConfigMaps): a fresh namespace has no Deployments, so
 		// main stays absent until the bundle is finalized — unlike a ConfigMap rule,
@@ -351,9 +345,7 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 	})
 
 	AfterAll(func() {
-		cleanupWatchRule(watchRuleName, testNs)
-		cleanupGitTarget(gitTargetName, testNs)
-		cleanupNamespacedResource(testNs, "gitprovider", gitProvName)
+		cleanupPipeline(testNs, gitProvName, gitTargetName, watchRuleName)
 		cleanupNamespace(testNs)
 	})
 

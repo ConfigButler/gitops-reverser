@@ -200,8 +200,9 @@ var _ = Describe("WatchRule Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
-
-			// TODO: Wait for GitProvider to be ready (if we implement status update for it)
+			// No wait on GitProvider readiness: reconcileWatchRuleViaTarget only requires the
+			// GitProvider to exist (it is resolved by name), not to be Ready. The GitTarget
+			// readiness wait below is the dependency gate this spec actually needs.
 
 			By("Creating GitTarget in same namespace referencing the GitProvider")
 			target := &configbutleraiv1alpha2.GitTarget{
@@ -246,17 +247,16 @@ var _ = Describe("WatchRule Controller", func() {
 			// to Unknown instead of the expected False/Progressing, which flaked in CI. Block
 			// until the GitTarget settles on its deterministic Ready=False/Progressing state
 			// (no streams run in envtest) so the WatchRule reconcile observes a stable dependency.
-			Eventually(func(g Gomega) {
-				fetched := &configbutleraiv1alpha2.GitTarget{}
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{
-					Name:      "local-target",
-					Namespace: "default",
-				}, fetched)).To(Succeed())
-				ready := conditionByType(fetched.Status.Conditions, ConditionTypeReady)
-				g.Expect(ready).NotTo(BeNil())
-				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-				g.Expect(ready.Reason).To(Equal(ReasonProgressing))
-			}).Should(Succeed())
+			gitTarget := &configbutleraiv1alpha2.GitTarget{}
+			ready := eventuallyConditionStatus(
+				ctx,
+				types.NamespacedName{Name: "local-target", Namespace: "default"},
+				gitTarget,
+				func() []metav1.Condition { return gitTarget.Status.Conditions },
+				ConditionTypeReady,
+				metav1.ConditionFalse,
+			)
+			Expect(ready.Reason).To(Equal(ReasonProgressing))
 
 			By("Reconciling the WatchRule directly")
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{

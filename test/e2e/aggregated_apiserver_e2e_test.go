@@ -66,11 +66,8 @@ var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func
 		applySOPSAgeKeyToNamespace(testNs)
 
 		By("creating GitProvider and GitTarget for aggregated-api scenarios")
-		createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
-
-		createGitTarget(targetName, testNs, providerName, aggregatedPath, "main")
-		verifyResourceCondition("gittarget", targetName, testNs, "Validated", "True", "OK", "")
+		createReadyGitProvider(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
+		createValidatedGitTarget(targetName, testNs, providerName, aggregatedPath)
 	})
 
 	ensureFlunderWatchRuleReady := func() {
@@ -98,9 +95,7 @@ var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func
 	}
 
 	AfterAll(func() {
-		cleanupWatchRule(watchRuleName, testNs)
-		cleanupGitTarget(targetName, testNs)
-		cleanupNamespacedResource(testNs, "gitprovider", providerName)
+		cleanupPipeline(testNs, providerName, targetName, watchRuleName)
 		cleanupNamespace(testNs)
 	})
 

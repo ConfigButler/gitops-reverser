@@ -617,8 +617,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("creating ClusterWatchRule with Cluster scope for CRDs")
 		destName := clusterWatchRuleName + "-dest"
-		createGitTarget(destName, testNs, gitProviderName, "e2e/crd-delete-test", "main")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(destName, testNs, gitProviderName, "e2e/crd-delete-test")
 
 		clusterWatchRuleData := struct {
 			Name            string

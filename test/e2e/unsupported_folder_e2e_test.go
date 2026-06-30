@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -154,31 +153,12 @@ func writeUnsupportedKustomizeFolder(namespace string) string {
 func waitForGitTargetGitPathRefused(name, namespace, expectedReason string) {
 	GinkgoHelper()
 
-	Eventually(func(g Gomega) {
-		gitPathStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
-			"-o", "jsonpath={.status.conditions[?(@.type=='GitPathAccepted')].status}")
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(gitPathStatus)).To(Equal("False"),
-			"GitPathAccepted must be False for an unsupported path")
-
-		gitPathReason, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
-			"-o", "jsonpath={.status.conditions[?(@.type=='GitPathAccepted')].reason}")
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(gitPathReason)).To(Equal(expectedReason),
-			"GitPathAccepted reason must name the unsupported content")
-
-		readyStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
-			"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(readyStatus)).To(Equal("False"),
-			"Ready must be False for a refused path")
-
-		stalledStatus, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
-			"-o", "jsonpath={.status.conditions[?(@.type=='Stalled')].status}")
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(stalledStatus)).To(Equal("True"),
-			"Stalled must be True for a refused path")
-	}, 150*time.Second, 3*time.Second).Should(Succeed())
+	// The refusal is computed during data-plane materialization (a worker git op), which is
+	// slower than a plain reconcile — hence the 150s budget on the gating condition. Ready and
+	// Stalled flip in the same reconcile, so they settle by the time GitPathAccepted is False.
+	verifyResourceCondition("gittarget", name, namespace, "GitPathAccepted", "False", expectedReason, "", "150s")
+	verifyResourceCondition("gittarget", name, namespace, "Ready", "False", "", "", "150s")
+	verifyResourceCondition("gittarget", name, namespace, "Stalled", "True", "", "", "150s")
 }
 
 func waitForRuleBlockedByGitPath(resourceType, name, namespace, expectedReason string) {

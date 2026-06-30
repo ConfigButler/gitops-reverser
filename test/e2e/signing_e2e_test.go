@@ -154,8 +154,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			)).To(Succeed())
 
 			By("creating GitTarget and WatchRule")
-			createGitTarget(destName, testNs, providerName, commitPath, "main")
-			verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+			createValidatedGitTarget(destName, testNs, providerName, commitPath)
 
 			watchRuleData := struct {
 				Name            string
@@ -278,8 +277,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			"GitProvider.status.signingPublicKey should mirror the BYOK public key")
 
 		By("creating GitTarget and WatchRule")
-		createGitTarget(destName, testNs, providerName, commitPath, "main")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(destName, testNs, providerName, commitPath)
 
 		watchRuleData := struct {
 			Name            string
@@ -360,8 +358,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		Expect(applyFromTemplate("test/e2e/templates/gitprovider-signing.tmpl", data, testNs)).To(Succeed())
 		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
 
-		createGitTarget(destName, testNs, providerName, commitPath, "main")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(destName, testNs, providerName, commitPath)
 
 		watchRuleData := struct {
 			Name            string
@@ -466,8 +463,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		Expect(applyFromTemplate("test/e2e/templates/gitprovider-signing.tmpl", data, testNs)).To(Succeed())
 		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
 
-		createGitTarget(destName, testNs, providerName, commitPath, "main")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(destName, testNs, providerName, commitPath)
 
 		watchRuleData := struct {
 			Name            string
@@ -479,8 +475,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 
 		By("recreating the GitTarget now that the WatchRule is active to force a fresh reconcile batch")
 		cleanupGitTarget(destName, testNs)
-		createGitTarget(destName, testNs, providerName, commitPath, "main")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(destName, testNs, providerName, commitPath)
 
 		By("waiting for the batch commit and verifying its message uses the batch template")
 		Eventually(func(g Gomega) {
@@ -582,8 +577,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
 
 		By("creating target A and its WatchRule, then waiting for A to reconcile the seed band")
-		createGitTarget(destNameA, testNs, providerName, commitPathA, "main")
-		verifyResourceCondition("gittarget", destNameA, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(destNameA, testNs, providerName, commitPathA)
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", struct {
 			Name, Namespace, DestinationName string
 		}{watchRuleNameA, testNs, destNameA}, testNs)).To(Succeed())

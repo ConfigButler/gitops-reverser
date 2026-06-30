@@ -53,11 +53,9 @@ var _ = Describe("Deployment scale subresource", Label("manager", "subresource")
 		defer cleanupNamespace(testNs)
 
 		By("creating GitProvider, GitTarget and a Deployment WatchRule")
-		createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-		createGitTarget(targetName, testNs, providerName, targetPath, "main")
+		createReadyGitProvider(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
+		createValidatedGitTarget(targetName, testNs, providerName, targetPath)
 		applyDeploymentWatchRule(testNs, watchRuleName, targetName)
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
-		verifyResourceCondition("gittarget", targetName, testNs, "Validated", "True", "OK", "")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 
 		By("creating a Deployment with replicas=1")

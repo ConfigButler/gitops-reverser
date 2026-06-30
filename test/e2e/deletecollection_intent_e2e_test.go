@@ -95,11 +95,9 @@ var _ = Describe("DeleteCollection intent & attribution", Label("manager"), Orde
 		gitTargetName = fmt.Sprintf("dc-intent-gittarget-%d", seed)
 		watchRuleName = fmt.Sprintf("dc-intent-watchrule-%d", seed)
 
-		createGitProviderWithURLInNamespace(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-		verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
+		createReadyGitProvider(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
 
-		createGitTarget(gitTargetName, testNs, gitProvName, dcIntentBasePath, "main")
-		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(gitTargetName, testNs, gitProvName, dcIntentBasePath)
 
 		data := struct {
 			Name            string
@@ -126,9 +124,7 @@ var _ = Describe("DeleteCollection intent & attribution", Label("manager"), Orde
 	AfterAll(func() {
 		// Clear any lingering finalizers so the namespace can be torn down.
 		forceClearConfigMapFinalizers(cleanupBot, testNs)
-		cleanupWatchRule(watchRuleName, testNs)
-		cleanupGitTarget(gitTargetName, testNs)
-		cleanupNamespacedResource(testNs, "gitprovider", gitProvName)
+		cleanupPipeline(testNs, gitProvName, gitTargetName, watchRuleName)
 		cleanupNamespace(testNs)
 	})
 

@@ -886,40 +886,9 @@ func (r biDirectionalRun) waitForOrderSpec(name, container, flavor, topping stri
 }
 
 func (r biDirectionalRun) waitForGitTargetReady() {
-	Eventually(func(g Gomega) {
-		output, err := kubectlRunInNamespace(
-			r.testNs,
-			"get",
-			"gittarget",
-			r.gitTargetName,
-			"-o",
-			"json",
-		)
-		g.Expect(err).NotTo(HaveOccurred())
-
-		var obj unstructured.Unstructured
-		g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
-
-		conditions, found, condErr := unstructured.NestedSlice(obj.Object, "status", "conditions")
-		g.Expect(condErr).NotTo(HaveOccurred())
-		g.Expect(found).To(BeTrue(), "status.conditions not found")
-
-		var readyStatus, readyReason string
-		for _, cond := range conditions {
-			condMap, ok := cond.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if condMap["type"] == "Ready" {
-				readyStatus, _ = condMap["status"].(string)
-				readyReason, _ = condMap["reason"].(string)
-				break
-			}
-		}
-
-		g.Expect(readyStatus).To(Equal("True"))
-		g.Expect([]string{"Ready", "OK"}).To(ContainElement(readyReason))
-	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
+	GinkgoHelper()
+	// The gittarget Ready special-case in verifyResourceCondition accepts reason "Ready" or "OK".
+	verifyResourceStatus("gittarget", r.gitTargetName, r.testNs, "True", "Ready", "")
 }
 
 func (r biDirectionalRun) waitForControllerEncryptionSecret() {

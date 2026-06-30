@@ -165,6 +165,25 @@ func discoverControllerPodName(ns string) (string, error) {
 	return podName, nil
 }
 
+const (
+	// defaultResourceConditionTimeout / resourceConditionPollInterval back the shared
+	// condition-wait helpers below. 90s (vs Gomega's 30s default) absorbs slow-CI and
+	// parallel load: after a fresh CRD install the controller's discovery cache can lag
+	// tens of seconds before it serves the new GVR and a dependent rule can be planned
+	// and reach Ready. The happy path still returns as soon as the condition matches.
+	defaultResourceConditionTimeout = "90s"
+	resourceConditionPollInterval   = "2s"
+)
+
+// resourceConditionTimeout returns the caller-supplied override, or the shared default
+// when none (or an empty string) is given.
+func resourceConditionTimeout(override []string) string {
+	if len(override) > 0 && override[0] != "" {
+		return override[0]
+	}
+	return defaultResourceConditionTimeout
+}
+
 // verifyResourceStatus verifies a resource's status conditions match expected values.
 // For cluster-scoped resources, provide an empty namespace.
 func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason, expectedMessageContains string) {
@@ -179,8 +198,14 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 	)
 }
 
+// verifyResourceCondition blocks until the named resource publishes conditionType with the
+// expected status (and, when non-empty, reason and message substring). It is the single
+// canonical "wait for a CRD status condition" primitive — an empty expectedReason skips the
+// reason check (status-only gate), mirroring expectedMessageContains. Pass an optional timeout
+// string (e.g. "150s") to override the shared default for slower transitions.
 func verifyResourceCondition(
 	resourceType, name, ns, conditionType, expectedStatus, expectedReason, expectedMessageContains string,
+	timeout ...string,
 ) {
 	By(
 		fmt.Sprintf(
@@ -223,37 +248,67 @@ func verifyResourceCondition(
 		}
 
 		g.Expect(conditionStatus).To(Equal(expectedStatus))
-		if resourceType == "gittarget" && conditionType == "Ready" && expectedReason == "Ready" {
+		switch {
+		case expectedReason == "":
+			// Status-only gate: caller does not assert a reason.
+		case resourceType == "gittarget" && conditionType == "Ready" && expectedReason == "Ready":
 			g.Expect([]string{"Ready", "OK"}).To(ContainElement(conditionReason))
-		} else {
+		default:
 			g.Expect(conditionReason).To(Equal(expectedReason))
 		}
 		if expectedMessageContains != "" {
 			g.Expect(conditionMessage).To(ContainSubstring(expectedMessageContains))
 		}
 	}
-	// 90s (vs the 30s default) absorbs slow-CI and parallel load: in particular,
-	// after a fresh CRD install the controller's discovery cache can lag tens of
-	// seconds before it serves the new GVR and a dependent WatchRule can be
-	// planned and reach Ready. The happy path still returns as soon as Ready.
-	Eventually(verifyStatus, "90s", "2s").Should(Succeed())
+	Eventually(verifyStatus, resourceConditionTimeout(timeout), resourceConditionPollInterval).Should(Succeed())
 }
 
 // waitForStreamsRunning blocks until the GitTarget reports StreamsRunning=True. Specs that assert
 // live per-event behavior, authorship, or ordering must create asserted resources only after this
 // point so the relevant watches are past their replay watermark.
 func waitForStreamsRunning(name, ns string) {
-	By(fmt.Sprintf("waiting for gittarget '%s' in ns '%s' to report StreamsRunning=True", name, ns))
-	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=StreamsRunning=true",
-		"gittarget/"+name, "--timeout=120s")
-	Expect(err).NotTo(HaveOccurred(), "gittarget %s/%s did not reach StreamsRunning=True", ns, name)
+	GinkgoHelper()
+	verifyResourceCondition("gittarget", name, ns, "StreamsRunning", "True", "", "", "120s")
 }
 
 func waitForWatchRuleStreamsRunning(name, ns string) { //nolint:unused // Helper for specs that need a rule-scoped gate.
-	By(fmt.Sprintf("waiting for watchrule '%s' in ns '%s' to report StreamsRunning=True", name, ns))
-	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=StreamsRunning=true",
-		"watchrule/"+name, "--timeout=120s")
-	Expect(err).NotTo(HaveOccurred(), "watchrule %s/%s did not reach StreamsRunning=True", ns, name)
+	GinkgoHelper()
+	verifyResourceCondition("watchrule", name, ns, "StreamsRunning", "True", "", "", "120s")
+}
+
+// createReadyGitProvider creates a GitProvider (branch "main", no commit window) and blocks until
+// it validates repo connectivity (Ready=True). It folds the create+verify pair most specs repeat.
+func createReadyGitProvider(name, ns, secretName, repoURL string) {
+	GinkgoHelper()
+	createGitProviderWithURLInNamespace(name, ns, secretName, repoURL)
+	verifyResourceStatus("gitprovider", name, ns, "True", "Ready", "")
+}
+
+// createReadyGitProviderWithCommitWindow is createReadyGitProvider with an explicit commit window.
+func createReadyGitProviderWithCommitWindow(name, ns, secretName, repoURL, commitWindow string) {
+	GinkgoHelper()
+	createGitProviderWithCommitWindow(name, ns, secretName, repoURL, commitWindow)
+	verifyResourceStatus("gitprovider", name, ns, "True", "Ready", "")
+}
+
+// createValidatedGitTarget creates a GitTarget on the "main" branch and blocks until it accepts
+// its config (Validated=True). A GitTarget only reaches Ready once a WatchRule wires watches and
+// their streams finish replay, so Validated is the meaningful "config accepted" gate at creation
+// time; callers gate on the live data plane separately via waitForStreamsRunning.
+func createValidatedGitTarget(name, ns, providerName, path string) {
+	GinkgoHelper()
+	createGitTarget(name, ns, providerName, path, "main")
+	verifyResourceCondition("gittarget", name, ns, "Validated", "True", "OK", "")
+}
+
+// cleanupPipeline deletes the three namespaced pipeline resources in dependency order (rule, then
+// target, then provider) so finalizers settle before the namespace is removed. Callers delete the
+// namespace separately (see cleanupNamespace).
+func cleanupPipeline(ns, provider, target, watchRule string) {
+	GinkgoHelper()
+	cleanupWatchRule(watchRule, ns)
+	cleanupGitTarget(target, ns)
+	cleanupNamespacedResource(ns, "gitprovider", provider)
 }
 
 // showControllerLogs displays the current controller logs to help with debugging during test execution.

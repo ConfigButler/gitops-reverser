@@ -81,13 +81,11 @@ var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() 
 		gitTargetName = fmt.Sprintf("commit-author-gittarget-%d", seed)
 		watchRuleName = fmt.Sprintf("commit-author-watchrule-%d", seed)
 
-		// createGitProviderWithURLInNamespace uses a 0s commit window, so each
+		// createReadyGitProvider uses a 0s commit window, so each
 		// event commits immediately and never coalesces with another's.
-		createGitProviderWithURLInNamespace(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-		verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
+		createReadyGitProvider(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
 
-		createGitTarget(gitTargetName, testNs, gitProvName, basePath, "main")
-		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
+		createValidatedGitTarget(gitTargetName, testNs, gitProvName, basePath)
 
 		data := struct {
 			Name            string
@@ -110,9 +108,7 @@ var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() 
 	})
 
 	AfterAll(func() {
-		cleanupWatchRule(watchRuleName, testNs)
-		cleanupGitTarget(gitTargetName, testNs)
-		cleanupNamespacedResource(testNs, "gitprovider", gitProvName)
+		cleanupPipeline(testNs, gitProvName, gitTargetName, watchRuleName)
 		cleanupNamespace(testNs)
 	})
 
