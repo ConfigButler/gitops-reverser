@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha2
+package v1alpha3
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,22 +36,26 @@ const (
 
 type NamespacedTargetReference struct {
 	// API Group of the referent.
-	// Kind of the referrer.
 	// +kubebuilder:validation:Enum=configbutler.ai
 	// +kubebuilder:default=configbutler.ai
 	Group string `json:"group,omitempty"`
 
-	// Kind of the referrer.
+	// Kind of the referent.
 	// Optional because this reference currently only supports a single kind (GitTarget).
 	// Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
 	// +optional
 	// +kubebuilder:validation:Enum=GitTarget
 	// +kubebuilder:default=GitTarget
 	Kind string `json:"kind,omitempty"`
+
+	// Name of the referent.
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
 	// Required because ClusterWatchRule has no namespace.
 	// +required
+	// +kubebuilder:validation:MinLength=1
 	Namespace string `json:"namespace"`
 }
 
@@ -116,6 +120,7 @@ type ClusterResourceRule struct {
 	// "*" wildcard for broad matching.
 	// +required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 
@@ -136,6 +141,8 @@ type ClusterWatchRuleStatus struct {
 
 	// Conditions represent the latest available observations of the ClusterWatchRule's state.
 	// +optional
+	// +listType=map
+	// +listMapKey=type
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
@@ -150,12 +157,10 @@ type ClusterWatchRuleStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.targetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Reconciling",type=string,JSONPath=`.status.conditions[?(@.type=="Reconciling")].status`
-// +kubebuilder:printcolumn:name="Stalled",type=string,JSONPath=`.status.conditions[?(@.type=="Stalled")].status`
-// +kubebuilder:printcolumn:name="GitTargetReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitTargetReady")].status`
-// +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`
-// +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
+// +kubebuilder:printcolumn:name="GitTargetReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitTargetReady")].status`,priority=1
+// +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ClusterWatchRule watches resources across the entire cluster.

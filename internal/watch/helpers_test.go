@@ -21,7 +21,7 @@ package watch
 import (
 	"testing"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 func TestNormalizeResource(t *testing.T) {
@@ -33,15 +33,15 @@ func TestNormalizeResource(t *testing.T) {
 
 func TestMatchesScope(t *testing.T) {
 	// namespaced true matches namespaced scope
-	if !matchesScope(true, configv1alpha2.ResourceScopeNamespaced) {
+	if !matchesScope(true, configv1alpha3.ResourceScopeNamespaced) {
 		t.Fatalf("expected namespaced=true to match Namespaced scope")
 	}
 	// namespaced false matches cluster scope
-	if !matchesScope(false, configv1alpha2.ResourceScopeCluster) {
+	if !matchesScope(false, configv1alpha3.ResourceScopeCluster) {
 		t.Fatalf("expected namespaced=false to match Cluster scope")
 	}
 	// namespaced true should not match Cluster scope
-	if matchesScope(true, configv1alpha2.ResourceScopeCluster) {
+	if matchesScope(true, configv1alpha3.ResourceScopeCluster) {
 		t.Fatalf("did not expect namespaced=true to match Cluster scope")
 	}
 }

@@ -38,7 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
@@ -80,22 +80,22 @@ func attributedAlice() *fakeAuthorLookup {
 	return &fakeAuthorLookup{author: queue.CommandAuthor{Author: "alice"}, found: true}
 }
 
-func newCommitRequest(name string) *configv1alpha2.CommitRequest {
-	return &configv1alpha2.CommitRequest{
+func newCommitRequest(name string) *configv1alpha3.CommitRequest {
+	return &configv1alpha3.CommitRequest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
 			UID:       types.UID("uid-" + name),
 		},
-		Spec: configv1alpha2.CommitRequestSpec{
-			TargetRef: configv1alpha2.LocalTargetReference{Name: "team-a-config"},
+		Spec: configv1alpha3.CommitRequestSpec{
+			TargetRef: configv1alpha3.LocalTargetReference{Name: "team-a-config"},
 			Message:   "save: " + name,
 		},
 	}
 }
 
 // withReadyCommitted stamps a terminal Committed CommitRequest (Ready=True).
-func withReadyCommitted(cr *configv1alpha2.CommitRequest) *configv1alpha2.CommitRequest {
+func withReadyCommitted(cr *configv1alpha3.CommitRequest) *configv1alpha3.CommitRequest {
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
 		Type: ConditionTypeReady, Status: metav1.ConditionTrue,
 		Reason: crReasonCommitted, Message: "committed",
@@ -105,7 +105,7 @@ func withReadyCommitted(cr *configv1alpha2.CommitRequest) *configv1alpha2.Commit
 
 // withInProgress stamps the still-running conditions a post-restart redelivery
 // would already carry (Ready=False, Reconciling=True), which is non-terminal.
-func withInProgress(cr *configv1alpha2.CommitRequest) *configv1alpha2.CommitRequest {
+func withInProgress(cr *configv1alpha3.CommitRequest) *configv1alpha3.CommitRequest {
 	apimeta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
 		Type: ConditionTypeReady, Status: metav1.ConditionFalse,
 		Reason: crReasonWaitingForCloseDelay, Message: "in progress",
@@ -120,11 +120,11 @@ func withInProgress(cr *configv1alpha2.CommitRequest) *configv1alpha2.CommitRequ
 func newCommitRequestClient(t *testing.T, fns *interceptor.Funcs, objects ...client.Object) client.WithWatch {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	require.NoError(t, configv1alpha2.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	builder := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objects...).
-		WithStatusSubresource(&configv1alpha2.CommitRequest{})
+		WithStatusSubresource(&configv1alpha3.CommitRequest{})
 	if fns != nil {
 		builder = builder.WithInterceptorFuncs(*fns)
 	}
@@ -140,9 +140,9 @@ func reconcileCommitRequest(t *testing.T, r *CommitRequestReconciler, name strin
 	return res
 }
 
-func fetchCommitRequest(t *testing.T, c client.Client, name string) configv1alpha2.CommitRequest {
+func fetchCommitRequest(t *testing.T, c client.Client, name string) configv1alpha3.CommitRequest {
 	t.Helper()
-	var cr configv1alpha2.CommitRequest
+	var cr configv1alpha3.CommitRequest
 	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: name}, &cr))
 	return cr
 }
@@ -151,7 +151,7 @@ func fetchCommitRequest(t *testing.T, c client.Client, name string) configv1alph
 // returns it for further assertions.
 func requireCondition(
 	t *testing.T,
-	cr configv1alpha2.CommitRequest,
+	cr configv1alpha3.CommitRequest,
 	condType string,
 	status metav1.ConditionStatus,
 	reason string,
@@ -510,7 +510,7 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 
 func TestApplyFinalizeResultToStatus(t *testing.T) {
 	t.Run("committed", func(t *testing.T) {
-		var cr configv1alpha2.CommitRequest
+		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(
 			&cr,
 			git.FinalizeResult{
@@ -531,7 +531,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	})
 
 	t.Run("no window in grace is a benign ready (committer fallback)", func(t *testing.T) {
-		var cr configv1alpha2.CommitRequest
+		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}, nil, attributionCommitter)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonNoWindowInGrace)
@@ -541,7 +541,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	})
 
 	t.Run("window mismatch surfaces the reason", func(t *testing.T) {
-		var cr configv1alpha2.CommitRequest
+		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"}, nil, attributionFromAdmission)
 		ready := requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonWindowMismatch)
@@ -549,7 +549,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	})
 
 	t.Run("already present is a benign ready", func(t *testing.T) {
-		var cr configv1alpha2.CommitRequest
+		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"}, nil, attributionFromAdmission)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, crReasonAlreadyPresent)
@@ -557,7 +557,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	})
 
 	t.Run("finalize error stalls", func(t *testing.T) {
-		var cr configv1alpha2.CommitRequest
+		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc"},
 			errors.New("boom"), attributionFromAdmission)
@@ -567,7 +567,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	})
 
 	t.Run("unknown outcome stalls", func(t *testing.T) {
-		var cr configv1alpha2.CommitRequest
+		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr, git.FinalizeResult{}, nil, attributionFromAdmission)
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionFalse, crReasonUnexpectedOutcome)
 		stalled := requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionTrue, crReasonUnexpectedOutcome)

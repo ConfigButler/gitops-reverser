@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha2
+package v1alpha3
 
 // PushStrategy defines how events are coalesced into commits before pushing.
 type PushStrategy struct {

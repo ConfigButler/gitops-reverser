@@ -1,6 +1,6 @@
 {{- if .Values.quickstart.enabled }}
 ---
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitProvider
 metadata:
   name: {{ .Values.quickstart.gitProvider.name }}
@@ -17,7 +17,7 @@ spec:
   push:
     commitWindow: {{ .Values.quickstart.gitProvider.push.commitWindow | quote }}
 ---
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: {{ .Values.quickstart.gitTarget.name }}
@@ -40,7 +40,7 @@ spec:
     secretRef:
       name: {{ .Values.quickstart.gitTarget.encryption.secretRef.name }}
 ---
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
   name: {{ .Values.quickstart.watchRule.name }}

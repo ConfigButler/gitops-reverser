@@ -430,7 +430,7 @@ semantics rather than reinventing glob handling.
 
 - **Blast radius — this refuses folders accepted yesterday.** Any GitTarget path with a stray `LICENSE` a
   user added, a hand-written `deploy.sh`, or loose notes will flip to `Stalled=True` on the next resync.
-  This is the *intended* tightening, but it is real. Mitigations: (a) ship it on `v1alpha2` while the API is
+  This is the *intended* tightening, but it is real. Mitigations: (a) ship it on `v1alpha3` while the API is
   still pre-stable and the author is "updating wildly" — now is the cheapest this change will ever be;
   (b) the refusal message already names the offending file, so the fix is obvious — `git rm` it, or add one
   line to `.gittargetignore`; (c) the bootstrapped `.gittargetignore` ships the common-benign patterns as

@@ -28,7 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
@@ -148,10 +148,10 @@ func TestAPIResourceCatalog_PartialRefreshPreservesFailedGroupVersion(t *testing
 // request a concrete informer for a resource trusted discovery does not serve.
 func TestNotServedResourceProducesNoGVR(t *testing.T) {
 	store := rulestore.NewStore()
-	store.AddOrUpdateWatchRule(configv1alpha2.WatchRule{
+	store.AddOrUpdateWatchRule(configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "missing-gvr-rule", Namespace: "default"},
-		Spec: configv1alpha2.WatchRuleSpec{
-			Rules: []configv1alpha2.ResourceRule{{
+		Spec: configv1alpha3.WatchRuleSpec{
+			Rules: []configv1alpha3.ResourceRule{{
 				APIGroups:   []string{"custom.example.com"},
 				APIVersions: []string{"v1alpha1"},
 				Resources:   []string{"customresources"},

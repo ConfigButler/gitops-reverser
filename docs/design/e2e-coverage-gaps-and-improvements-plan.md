@@ -133,7 +133,7 @@ an empty allowlist and never calls `Accept()`/`Scan()`:
 - Only callers of `Scan()` (which runs `Accept`): [scan.go:52](../../internal/manifestanalyzer/scan.go#L52)
   and the CLI [cmd/manifest-analyzer/main.go](../../cmd/manifest-analyzer/main.go).
 - There is **no GitTarget status condition or reason** for "unsupported content in path"
-  ([api/v1alpha2/gittarget_types.go](../../api/v1alpha2/gittarget_types.go) has no such reason).
+  ([api/v1alpha3/gittarget_types.go](../../api/v1alpha3/gittarget_types.go) has no such reason).
 
 Net effect today: a hard-Kustomize folder is **detected but not refused** — namespace resolution
 degrades and the operator keeps writing. The design intent (`docs/finished/current-manifest-support-review.md`)

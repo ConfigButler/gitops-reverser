@@ -15,7 +15,7 @@ differ in what they can do.
 main kube-apiserver:
 
 ```text
-/apis/configbutler.ai/v1alpha2/namespaces/default/gittargets/example
+/apis/configbutler.ai/v1alpha3/namespaces/default/gittargets/example
 ```
 
 A CRD supports exactly two built-in subresources, and no others:
@@ -186,7 +186,7 @@ Every `configbutler.ai` CRD enables `/status`: `GitProvider`, `GitTarget`,
 `WatchRule`, `ClusterWatchRule`, and `CommitRequest`. A real `GitTarget`:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: platform
@@ -199,11 +199,10 @@ spec:
 status:
   observedGeneration: 4
   lastReconcileTime: "2026-06-08T10:00:00Z"
-  lastCommit: abc123def
   conditions:
     - type: Ready
       status: "True"
-      reason: CommitPushed
+      reason: OK
 ```
 
 The user owns `spec`; the controller owns `status`. `observedGeneration` is what
@@ -423,7 +422,7 @@ a `CommitRequest` object finalizes the open commit window for the referenced
 `GitTarget` and reports the result back in status:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
   name: save-now

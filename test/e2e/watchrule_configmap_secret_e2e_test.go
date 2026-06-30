@@ -148,7 +148,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 
 		By("creating a GitTarget and WatchRule with wildcard group, version and resource selectors")
 		createGitTarget(destName, testNs, gitProviderName, gitTargetPath, "main")
-		watchRuleManifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha2
+		watchRuleManifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
   name: %s

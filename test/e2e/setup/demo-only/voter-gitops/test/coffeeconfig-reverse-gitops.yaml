@@ -1,4 +1,4 @@
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitProvider
 metadata:
   name: demo-coffeeconfig
@@ -12,7 +12,7 @@ spec:
   secretRef:
     name: git-creds-demo
 ---
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: demo-coffeeconfig
@@ -23,7 +23,7 @@ spec:
   branch: demo-test
   path: voter-coffee
 ---
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
   name: demo-coffeeconfig

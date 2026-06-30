@@ -23,7 +23,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -35,13 +35,13 @@ type OperationSet map[string]struct{}
 
 // add folds a rule's operation slice into the set, normalising an empty slice and
 // the explicit OperationAll to the "*" sentinel.
-func (s OperationSet) add(ops []configv1alpha2.OperationType) {
+func (s OperationSet) add(ops []configv1alpha3.OperationType) {
 	if len(ops) == 0 {
 		s["*"] = struct{}{}
 		return
 	}
 	for _, op := range ops {
-		if op == configv1alpha2.OperationAll {
+		if op == configv1alpha3.OperationAll {
 			s["*"] = struct{}{}
 			continue
 		}
@@ -72,7 +72,7 @@ type WatchedType struct {
 	GVK           schema.GroupVersionKind
 	GVR           schema.GroupVersionResource
 	Namespaced    bool
-	Scope         configv1alpha2.ResourceScope
+	Scope         configv1alpha3.ResourceScope
 	ServedVersion string
 	Preferred     bool
 
@@ -127,7 +127,7 @@ type WatchedTypeTable struct {
 type watchSelection struct {
 	record    typeset.TypeRecord
 	namespace string
-	ops       []configv1alpha2.OperationType
+	ops       []configv1alpha3.OperationType
 }
 
 // watchedTypeAccum accumulates one followable record's namespace/operation scope while
@@ -186,11 +186,11 @@ func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceOps map[string]Opera
 
 // resourceScopeFor maps a typeset scope onto the API's ResourceScope. A followable
 // record always carries a concrete scope, so Unknown never reaches the table.
-func resourceScopeFor(scope typeset.Scope) configv1alpha2.ResourceScope {
+func resourceScopeFor(scope typeset.Scope) configv1alpha3.ResourceScope {
 	if scope == typeset.ScopeCluster {
-		return configv1alpha2.ResourceScopeCluster
+		return configv1alpha3.ResourceScopeCluster
 	}
-	return configv1alpha2.ResourceScopeNamespaced
+	return configv1alpha3.ResourceScopeNamespaced
 }
 
 func sortWatchedTypes(watched []WatchedType) {

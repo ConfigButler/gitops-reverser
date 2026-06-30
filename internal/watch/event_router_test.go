@@ -32,7 +32,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
@@ -43,7 +43,7 @@ func eventRouterScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha2.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	return scheme
 }
 
@@ -100,10 +100,10 @@ func TestGitTargetEventStreamRegistry(t *testing.T) {
 
 func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	scheme := eventRouterScheme(t)
-	gitTarget := &configv1alpha2.GitTarget{
+	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
-		Spec: configv1alpha2.GitTargetSpec{
-			ProviderRef: configv1alpha2.GitProviderReference{Name: "team-a-provider"},
+		Spec: configv1alpha3.GitTargetSpec{
+			ProviderRef: configv1alpha3.GitProviderReference{Name: "team-a-provider"},
 			Branch:      "main",
 		},
 	}
@@ -208,10 +208,10 @@ func TestGitPathRefusalReason(t *testing.T) {
 
 func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 	scheme := eventRouterScheme(t)
-	gitTarget := &configv1alpha2.GitTarget{
+	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
-		Spec: configv1alpha2.GitTargetSpec{
-			ProviderRef: configv1alpha2.GitProviderReference{Name: "team-a-provider"},
+		Spec: configv1alpha3.GitTargetSpec{
+			ProviderRef: configv1alpha3.GitProviderReference{Name: "team-a-provider"},
 			Branch:      "main",
 		},
 	}
@@ -229,14 +229,14 @@ func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 
 func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T) {
 	scheme := eventRouterScheme(t)
-	provider := &configv1alpha2.GitProvider{
+	provider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-provider", Namespace: "team-a"},
-		Spec:       configv1alpha2.GitProviderSpec{URL: "file:///tmp/does-not-need-to-exist"},
+		Spec:       configv1alpha3.GitProviderSpec{URL: "file:///tmp/does-not-need-to-exist"},
 	}
-	gitTarget := &configv1alpha2.GitTarget{
+	gitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
-		Spec: configv1alpha2.GitTargetSpec{
-			ProviderRef: configv1alpha2.GitProviderReference{Name: "team-a-provider"},
+		Spec: configv1alpha3.GitTargetSpec{
+			ProviderRef: configv1alpha3.GitProviderReference{Name: "team-a-provider"},
 			Branch:      "main",
 		},
 	}

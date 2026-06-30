@@ -10,9 +10,9 @@ reconcile and CRD discovery.
 
 1. Audit ingress already supports a path contract with cluster identity:
 `/audit-webhook/<cluster-id>` (`internal/webhook/audit_handler.go:231`, `charts/gitops-reverser/README.md:225`).
-2. `WatchRule` is namespaced and scoped to resources in its own namespace (`api/v1alpha2/watchrule_types.go:57`).
+2. `WatchRule` is namespaced and scoped to resources in its own namespace (`api/v1alpha3/watchrule_types.go:57`).
 3. `ClusterWatchRule` is cluster-scoped and can target both cluster-scoped and namespaced resources via `scope`
-(`api/v1alpha2/clusterwatchrule_types.go:59`, `api/v1alpha2/clusterwatchrule_types.go:113`).
+(`api/v1alpha3/clusterwatchrule_types.go:59`, `api/v1alpha3/clusterwatchrule_types.go:113`).
 4. There is no first-class CRD yet for remote kube-apiserver connectivity (needed for seed reconcile and dynamic GVR
 planning per source cluster).
 
@@ -98,7 +98,7 @@ team-owned cross-cluster policies.
 Current namespaced rule:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
   name: configmaps-team-a
@@ -116,7 +116,7 @@ spec:
 Multi-cluster equivalent:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: ClusterWatchRule
 metadata:
   name: configmaps-team-a-multi-cluster
@@ -164,7 +164,7 @@ for:
 Introduce a dedicated cluster onboarding CRD, e.g. `SourceCluster`:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: SourceCluster
 metadata:
   name: prod-eu-1

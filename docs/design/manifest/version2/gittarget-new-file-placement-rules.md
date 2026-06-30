@@ -55,7 +55,7 @@ This keeps the useful part of the older `newFilePath` proposal, but makes the
 per-type policy explicit:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 spec:
   providerRef:
@@ -95,7 +95,7 @@ escape hatch if users later need scope-wide or metadata-aware placement.
 
 The current `GitTargetSpec` has `providerRef`, `branch`, `path`, and optional
 `encryption`; it has no placement policy yet
-([api/v1alpha2/gittarget_types.go](../../../../api/v1alpha2/gittarget_types.go)).
+([api/v1alpha3/gittarget_types.go](../../../../api/v1alpha3/gittarget_types.go)).
 
 The writer already uses the materialized-model direction described in
 [current-manifest-support-review.md](../../../finished/current-manifest-support-review.md):

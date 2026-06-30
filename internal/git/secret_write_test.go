@@ -37,7 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -77,26 +77,26 @@ func secretTargetObjects(t *testing.T, providerName, branch, path string) []clie
 				"identity.agekey": []byte(identity.String()),
 			},
 		},
-		&configv1alpha2.GitTarget{
+		&configv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "secret-target",
 				Namespace: "default",
 			},
-			Spec: configv1alpha2.GitTargetSpec{
-				ProviderRef: configv1alpha2.GitProviderReference{
+			Spec: configv1alpha3.GitTargetSpec{
+				ProviderRef: configv1alpha3.GitProviderReference{
 					Name: providerName,
 				},
 				Branch: branch,
 				Path:   path,
-				Encryption: &configv1alpha2.EncryptionSpec{
+				Encryption: &configv1alpha3.EncryptionSpec{
 					Provider: "sops",
-					Age: &configv1alpha2.AgeEncryptionSpec{
+					Age: &configv1alpha3.AgeEncryptionSpec{
 						Enabled: true,
-						Recipients: configv1alpha2.AgeRecipientsSpec{
+						Recipients: configv1alpha3.AgeRecipientsSpec{
 							ExtractFromSecret: true,
 						},
 					},
-					SecretRef: configv1alpha2.LocalSecretReference{
+					SecretRef: configv1alpha3.LocalSecretReference{
 						Name: "sops-age-key",
 					},
 				},

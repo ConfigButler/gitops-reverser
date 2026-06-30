@@ -181,7 +181,7 @@ func waitForRuleBlockedByGitPath(resourceType, name, namespace, expectedReason s
 func applyUnsupportedPathClusterWatchRule(name, targetNamespace, targetName string) {
 	GinkgoHelper()
 
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha2
+	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: ClusterWatchRule
 metadata:
   name: %s

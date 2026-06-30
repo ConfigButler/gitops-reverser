@@ -653,7 +653,7 @@ The kustomize image tag makes this a one-line change when k3s is upgraded.
 ### `templates/aggregated-api/watchrule-flunder.tmpl`
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
   name: {{ .Name }}
@@ -684,7 +684,7 @@ spec:
 ### `templates/aggregated-api/clusterwatchrule-fischer.tmpl`
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: ClusterWatchRule
 metadata:
   name: {{ .Name }}

@@ -26,7 +26,7 @@ import (
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -223,7 +223,7 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	// Get all GitTargets
-	var targetList configv1alpha2.GitTargetList
+	var targetList configv1alpha3.GitTargetList
 	if err := m.Client.List(ctx, &targetList); err != nil {
 		return fmt.Errorf("failed to list GitTargets: %w", err)
 	}

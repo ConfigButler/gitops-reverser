@@ -22,7 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -53,7 +53,7 @@ func (m *Manager) enqueueGitPathChange(gitDest types.ResourceReference) {
 	if ch == nil {
 		return
 	}
-	evt := event.GenericEvent{Object: &configv1alpha2.GitTarget{
+	evt := event.GenericEvent{Object: &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: gitDest.Name, Namespace: gitDest.Namespace},
 	}}
 	select {

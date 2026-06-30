@@ -42,7 +42,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -86,13 +86,13 @@ func configMapTargetEvent(name, username, target string) Event {
 func createPlainGitTarget(t *testing.T, worker *BranchWorker, name, path string) {
 	t.Helper()
 
-	require.NoError(t, worker.Client.Create(worker.ctx, &configv1alpha2.GitTarget{
+	require.NoError(t, worker.Client.Create(worker.ctx, &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "default",
 		},
-		Spec: configv1alpha2.GitTargetSpec{
-			ProviderRef: configv1alpha2.GitProviderReference{
+		Spec: configv1alpha3.GitTargetSpec{
+			ProviderRef: configv1alpha3.GitProviderReference{
 				Name: worker.GitProviderRef,
 			},
 			Branch: worker.Branch,
@@ -145,11 +145,11 @@ func setupCommitPushSplitWorker(t *testing.T) (*BranchWorker, *git.Repository, s
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha2.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{URL: remoteURL},
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{URL: remoteURL},
 	}
 	provider.Name = "test-repo"
 	provider.Namespace = "default"
@@ -447,7 +447,7 @@ func TestBranchWorker_Replay_UsesResolvedMetadata_GitTargetDeletedMidBurst(t *te
 	require.NotNil(t, targetMetadata.EncryptionConfig, "resolved encryption must be retained on the pending write")
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	require.NoError(t, worker.Client.Delete(worker.ctx, &configv1alpha2.GitTarget{
+	require.NoError(t, worker.Client.Delete(worker.ctx, &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "secret-target", Namespace: "default"},
 	}))
 	require.NoError(t, worker.Client.Delete(worker.ctx, &corev1.Secret{

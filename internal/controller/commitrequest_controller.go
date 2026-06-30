@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
@@ -207,7 +207,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // legible (the first thing to check when a CommitRequest commits as the committer).
 func (r *CommitRequestReconciler) attributeAuthor(
 	ctx context.Context,
-	commitRequest *configbutleraiv1alpha2.CommitRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
 ) (queue.CommandAuthor, commitRequestAttribution) {
 	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 	if r.AuthorLookup == nil {
@@ -232,7 +232,7 @@ func (r *CommitRequestReconciler) attributeAuthor(
 // (so polling does not re-write status every interval).
 func (r *CommitRequestReconciler) recordCloseDelayWait(
 	ctx context.Context,
-	commitRequest *configbutleraiv1alpha2.CommitRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	attribution commitRequestAttribution,
 ) error {
 	if c := conditionByType(commitRequest.Status.Conditions, ConditionTypeReconciling); c != nil &&
@@ -252,8 +252,8 @@ func (r *CommitRequestReconciler) recordCloseDelayWait(
 func (r *CommitRequestReconciler) loadActionableCommitRequest(
 	ctx context.Context,
 	req ctrl.Request,
-) (*configbutleraiv1alpha2.CommitRequest, bool, error) {
-	var commitRequest configbutleraiv1alpha2.CommitRequest
+) (*configbutleraiv1alpha3.CommitRequest, bool, error) {
+	var commitRequest configbutleraiv1alpha3.CommitRequest
 	if err := r.Get(ctx, req.NamespacedName, &commitRequest); err != nil {
 		return nil, true, client.IgnoreNotFound(err)
 	}
@@ -284,7 +284,7 @@ const commitRequestStatusUpdateAttempts = 3
 func (r *CommitRequestReconciler) writeTerminalStatus(
 	ctx context.Context,
 	log logr.Logger,
-	commitRequest *configbutleraiv1alpha2.CommitRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
 	attribution commitRequestAttribution,
@@ -327,7 +327,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 		}
 
 		log.V(1).Info("Conflict writing CommitRequest status; retrying", "attempt", attempt)
-		var fresh configbutleraiv1alpha2.CommitRequest
+		var fresh configbutleraiv1alpha3.CommitRequest
 		if getErr := reader.Get(ctx, client.ObjectKeyFromObject(commitRequest), &fresh); getErr != nil {
 			if apierrors.IsNotFound(getErr) {
 				log.Info("CommitRequest deleted before status could be written; skipping")
@@ -369,7 +369,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 // close that.
 func (r *CommitRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha2.CommitRequest{}).
+		For(&configbutleraiv1alpha3.CommitRequest{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Named("commitrequest").
 		Complete(r)

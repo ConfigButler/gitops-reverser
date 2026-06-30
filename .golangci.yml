@@ -342,7 +342,7 @@ linters:
       # Allow global variables in specific patterns (Kubernetes operator patterns)
       - text: "(scheme|setupLog|GroupVersion|SchemeBuilder|AddToScheme) is a global variable"
         linters: [gochecknoglobals]
-      - path: 'api/v1alpha2/.*\.go'
+      - path: 'api/v1alpha3/.*\.go'
         linters: [gochecknoglobals, gochecknoinits]
       - path: 'cmd/main\.go'
         linters: [gochecknoglobals, cyclop, gochecknoinits, gocognit, funlen]
@@ -375,7 +375,7 @@ linters:
         linters: [staticcheck]
       # Kubernetes controller-runtime still uses this pattern in API packages.
       - text: "SA1019: scheme.Builder is deprecated"
-        path: 'api/v1alpha2/groupversion_info\.go'
+        path: 'api/v1alpha3/groupversion_info\.go'
         linters: [staticcheck]
       # Allow fmt.Print* in test/e2e (debugging outputs)
       - path: 'test/e2e/.*\.go'

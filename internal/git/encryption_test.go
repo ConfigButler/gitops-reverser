@@ -34,17 +34,17 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 func TestResolveTargetEncryption(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, v1alpha2.AddToScheme(scheme))
+	require.NoError(t, v1alpha3.AddToScheme(scheme))
 
 	t.Run("returns nil when encryption is not configured", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
 		}
 
@@ -55,10 +55,10 @@ func TestResolveTargetEncryption(t *testing.T) {
 
 	t.Run("returns nil when age is disabled", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha2.GitTargetSpec{
-				Encryption: &v1alpha2.EncryptionSpec{
+			Spec: v1alpha3.GitTargetSpec{
+				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: EncryptionProviderSOPS,
 				},
 			},
@@ -71,12 +71,12 @@ func TestResolveTargetEncryption(t *testing.T) {
 
 	t.Run("fails when provider is unsupported", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha2.GitTargetSpec{
-				Encryption: &v1alpha2.EncryptionSpec{
+			Spec: v1alpha3.GitTargetSpec{
+				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: "kms",
-					Age: &v1alpha2.AgeEncryptionSpec{
+					Age: &v1alpha3.AgeEncryptionSpec{
 						Enabled: true,
 					},
 				},
@@ -90,14 +90,14 @@ func TestResolveTargetEncryption(t *testing.T) {
 
 	t.Run("fails when public key is invalid", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha2.GitTargetSpec{
-				Encryption: &v1alpha2.EncryptionSpec{
+			Spec: v1alpha3.GitTargetSpec{
+				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: EncryptionProviderSOPS,
-					Age: &v1alpha2.AgeEncryptionSpec{
+					Age: &v1alpha3.AgeEncryptionSpec{
 						Enabled: true,
-						Recipients: v1alpha2.AgeRecipientsSpec{
+						Recipients: v1alpha3.AgeRecipientsSpec{
 							PublicKeys: []string{"invalid-recipient"},
 						},
 					},
@@ -112,12 +112,12 @@ func TestResolveTargetEncryption(t *testing.T) {
 
 	t.Run("fails when no recipient resolves", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha2.GitTargetSpec{
-				Encryption: &v1alpha2.EncryptionSpec{
+			Spec: v1alpha3.GitTargetSpec{
+				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: EncryptionProviderSOPS,
-					Age: &v1alpha2.AgeEncryptionSpec{
+					Age: &v1alpha3.AgeEncryptionSpec{
 						Enabled: true,
 					},
 				},
@@ -133,14 +133,14 @@ func TestResolveTargetEncryption(t *testing.T) {
 		identity, err := age.GenerateX25519Identity()
 		require.NoError(t, err)
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha2.GitTargetSpec{
-				Encryption: &v1alpha2.EncryptionSpec{
+			Spec: v1alpha3.GitTargetSpec{
+				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: EncryptionProviderSOPS,
-					Age: &v1alpha2.AgeEncryptionSpec{
+					Age: &v1alpha3.AgeEncryptionSpec{
 						Enabled: true,
-						Recipients: v1alpha2.AgeRecipientsSpec{
+						Recipients: v1alpha3.AgeRecipientsSpec{
 							PublicKeys: []string{identity.Recipient().String()},
 						},
 					},
@@ -157,14 +157,14 @@ func TestResolveTargetEncryption(t *testing.T) {
 
 	t.Run("fails when extractFromSecret is enabled and secret name is empty", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha2.GitTargetSpec{
-				Encryption: &v1alpha2.EncryptionSpec{
+			Spec: v1alpha3.GitTargetSpec{
+				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: EncryptionProviderSOPS,
-					Age: &v1alpha2.AgeEncryptionSpec{
+					Age: &v1alpha3.AgeEncryptionSpec{
 						Enabled: true,
-						Recipients: v1alpha2.AgeRecipientsSpec{
+						Recipients: v1alpha3.AgeRecipientsSpec{
 							ExtractFromSecret: true,
 						},
 					},
@@ -179,17 +179,17 @@ func TestResolveTargetEncryption(t *testing.T) {
 
 	t.Run("fails when extracted secret is missing", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha2.GitTargetSpec{
-				Encryption: &v1alpha2.EncryptionSpec{
+			Spec: v1alpha3.GitTargetSpec{
+				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: EncryptionProviderSOPS,
-					SecretRef: v1alpha2.LocalSecretReference{
+					SecretRef: v1alpha3.LocalSecretReference{
 						Name: "enc-secret",
 					},
-					Age: &v1alpha2.AgeEncryptionSpec{
+					Age: &v1alpha3.AgeEncryptionSpec{
 						Enabled: true,
-						Recipients: v1alpha2.AgeRecipientsSpec{
+						Recipients: v1alpha3.AgeRecipientsSpec{
 							ExtractFromSecret: true,
 						},
 					},
@@ -209,17 +209,17 @@ func TestResolveTargetEncryption(t *testing.T) {
 				"identity.agekey": []byte("invalid"),
 			},
 		}).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha2.GitTargetSpec{
-				Encryption: &v1alpha2.EncryptionSpec{
+			Spec: v1alpha3.GitTargetSpec{
+				Encryption: &v1alpha3.EncryptionSpec{
 					Provider: EncryptionProviderSOPS,
-					SecretRef: v1alpha2.LocalSecretReference{
+					SecretRef: v1alpha3.LocalSecretReference{
 						Name: "enc-secret",
 					},
-					Age: &v1alpha2.AgeEncryptionSpec{
+					Age: &v1alpha3.AgeEncryptionSpec{
 						Enabled: true,
-						Recipients: v1alpha2.AgeRecipientsSpec{
+						Recipients: v1alpha3.AgeRecipientsSpec{
 							ExtractFromSecret: true,
 						},
 					},
@@ -248,16 +248,16 @@ func TestResolveTargetEncryption(t *testing.T) {
 				"SOPS_KMS_ARN":    []byte("kms-arn"),
 			},
 		}).Build()
-		target := &v1alpha2.GitTarget{
+		target := &v1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha2.GitTargetSpec{
-				Encryption: &v1alpha2.EncryptionSpec{
-					SecretRef: v1alpha2.LocalSecretReference{
+			Spec: v1alpha3.GitTargetSpec{
+				Encryption: &v1alpha3.EncryptionSpec{
+					SecretRef: v1alpha3.LocalSecretReference{
 						Name: "enc-secret",
 					},
-					Age: &v1alpha2.AgeEncryptionSpec{
+					Age: &v1alpha3.AgeEncryptionSpec{
 						Enabled: true,
-						Recipients: v1alpha2.AgeRecipientsSpec{
+						Recipients: v1alpha3.AgeRecipientsSpec{
 							PublicKeys: []string{
 								thirdIdentity.Recipient().String(),
 								firstIdentity.Recipient().String(),

@@ -21,34 +21,38 @@ spec:
     - jsonPath: .spec.branch
       name: Branch
       type: string
+    - jsonPath: .spec.path
+      name: Path
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Reconciling")].status
-      name: Reconciling
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Stalled")].status
-      name: Stalled
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="GitPathAccepted")].status
-      name: GitPathAccepted
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
-      name: StreamsRunning
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
       type: string
     - jsonPath: .status.streams.summary
       name: Streams
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Stalled")].reason
-      name: Reason
+    - jsonPath: .status.conditions[?(@.type=="GitPathAccepted")].status
+      name: GitPathAccepted
+      priority: 1
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Stalled")].message
+    - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
+      name: StreamsRunning
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Status
+      priority: 1
+      type: string
+    - jsonPath: .spec.encryption.provider
+      name: Encryption
+      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha2
+    name: v1alpha3
     schema:
       openAPIV3Schema:
         description: GitTarget is the Schema for the gittargets API.
@@ -78,6 +82,7 @@ spec:
                   Branch to use for this target.
                   Must be one of the allowed branches in the provider.
                   Immutable: delete and recreate the GitTarget to change its destination.
+                minLength: 1
                 type: string
               encryption:
                 description: Encryption defines encryption settings for Secret resource
@@ -110,6 +115,7 @@ spec:
                             description: PublicKeys is a static list of age recipients
                               (age1...).
                             items:
+                              minLength: 1
                               type: string
                             type: array
                         type: object
@@ -164,6 +170,8 @@ spec:
                   group:
                     default: configbutler.ai
                     description: API Group of the referent.
+                    enum:
+                    - configbutler.ai
                     type: string
                   kind:
                     default: GitProvider
@@ -176,6 +184,7 @@ spec:
                     type: string
                   name:
                     description: Name of the referent.
+                    minLength: 1
                     type: string
                 required:
                 - name
@@ -256,9 +265,9 @@ spec:
                   - type
                   type: object
                 type: array
-              lastCommit:
-                description: LastCommit is the SHA of the last commit processed.
-                type: string
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               lastPushTime:
                 description: LastPushTime is the timestamp of the last successful
                   push.

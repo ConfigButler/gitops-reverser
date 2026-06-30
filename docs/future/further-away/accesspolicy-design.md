@@ -27,7 +27,7 @@ The AccessPolicy field enables GitRepoConfig to control which WatchRules and Clu
 
 **Solution**:
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitRepoConfig
 metadata:
   name: company-audit
@@ -49,7 +49,7 @@ spec:
 
 **Solution**:
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitRepoConfig
 metadata:
   name: platform-audit
@@ -74,7 +74,7 @@ spec:
 
 **Solution**:
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitRepoConfig
 metadata:
   name: dev-audit
@@ -211,7 +211,7 @@ if namespacedRules.Mode == AccessPolicyModeFromSelector {
 ### File: `internal/webhook/v1alpha1/gitrepoconfig_webhook.go`
 
 ```go
-package v1alpha2
+package v1alpha3
 
 import (
     "fmt"
@@ -223,7 +223,7 @@ import (
     logf "sigs.k8s.io/controller-runtime/pkg/log"
     "sigs.k8s.io/controller-runtime/pkg/webhook"
     
-    configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+    configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 var gitrepoconfiglog = logf.Log.WithName("gitrepoconfig-webhook")
@@ -409,7 +409,7 @@ accessPolicy:
 ### Example 1: Minimal Configuration (Default)
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitRepoConfig
 metadata:
   name: team-repo
@@ -430,7 +430,7 @@ spec:
 ### Example 2: Allow All Namespaces
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitRepoConfig
 metadata:
   name: central-audit
@@ -452,7 +452,7 @@ spec:
 ### Example 3: Selector-Based Access
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitRepoConfig
 metadata:
   name: platform-audit
@@ -482,7 +482,7 @@ spec:
 ### Example 4: Full Access (Cluster + All Namespaces)
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitRepoConfig
 metadata:
   name: global-audit
@@ -507,7 +507,7 @@ spec:
 
 ```yaml
 # ❌ This will be REJECTED by CEL validation
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitRepoConfig
 metadata:
   name: invalid-config

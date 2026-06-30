@@ -21,7 +21,7 @@ package controller
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
@@ -39,12 +39,12 @@ func noResolvedStreamsSummary() watch.StreamSummary {
 	}
 }
 
-func watchRuleStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha2.WatchRuleStreamsStatus {
+func watchRuleStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha3.WatchRuleStreamsStatus {
 	observed := streams.ObservedTime
 	if observed.IsZero() {
 		observed = metav1.Now()
 	}
-	return &configbutleraiv1alpha2.WatchRuleStreamsStatus{
+	return &configbutleraiv1alpha3.WatchRuleStreamsStatus{
 		Summary:       streams.Summary(),
 		Total:         clampIntToInt32(streams.Total),
 		Ready:         clampIntToInt32(streams.Ready),

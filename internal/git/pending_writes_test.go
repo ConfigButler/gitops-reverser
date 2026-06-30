@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 type countingClient struct {
@@ -52,7 +52,7 @@ func (c *countingClient) Get(
 ) error {
 	c.mu.Lock()
 	switch obj.(type) {
-	case *configv1alpha2.GitTarget:
+	case *configv1alpha3.GitTarget:
 		c.gitTargetGets++
 	case *corev1.Secret:
 		c.secretGets++
@@ -71,17 +71,17 @@ func (c *countingClient) counts() (int, int) {
 func TestPendingWrites_ResolvesEncryptionOncePerUniqueTarget(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha2.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 
 	providerName := "test-repo"
 	objects := append(
 		[]client.Object{
-			&configv1alpha2.GitProvider{
+			&configv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      providerName,
 					Namespace: "default",
 				},
-				Spec: configv1alpha2.GitProviderSpec{
+				Spec: configv1alpha3.GitProviderSpec{
 					URL: "file:///tmp/test-repo.git",
 				},
 			},

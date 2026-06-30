@@ -43,7 +43,7 @@ import (
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -123,7 +123,7 @@ type GitTargetReconciler struct {
 func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("GitTargetReconciler")
 
-	var target configbutleraiv1alpha2.GitTarget
+	var target configbutleraiv1alpha3.GitTarget
 	if err := r.Get(ctx, req.NamespacedName, &target); err != nil {
 		return r.handleFetchError(err, log, req.NamespacedName)
 	}
@@ -241,7 +241,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 func (r *GitTargetReconciler) evaluateValidatedGate(
 	ctx context.Context,
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 ) (bool, string, *ctrl.Result, error) {
 	validated, message, reason, result, err := r.validateProviderAndBranch(ctx, target, providerNS)
@@ -274,7 +274,7 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 
 func (r *GitTargetReconciler) evaluateEncryptionGate(
 	ctx context.Context,
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	log logr.Logger,
 ) (bool, string, time.Duration) {
 	if !isTargetAgeEncryptionEnabled(target) {
@@ -323,7 +323,7 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 // internal plumbing rather than a status condition of its own: rare failures fold into Ready
 // with reason WorkerUnavailable. A nil EventRouter (test/standalone) is trivially wired.
 func (r *GitTargetReconciler) evaluateWorkerWiringGate(
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 	log logr.Logger,
 ) (bool, string) {
@@ -341,7 +341,7 @@ func (r *GitTargetReconciler) evaluateWorkerWiringGate(
 
 // setBlockedDataPlane marks stream readiness as not-yet-evaluated when a control-plane gate
 // blocked the reconcile before watches could be declared.
-func (r *GitTargetReconciler) setBlockedDataPlane(target *configbutleraiv1alpha2.GitTarget) {
+func (r *GitTargetReconciler) setBlockedDataPlane(target *configbutleraiv1alpha3.GitTarget) {
 	r.setCondition(
 		target,
 		GitTargetConditionStreamsRunning,
@@ -352,7 +352,7 @@ func (r *GitTargetReconciler) setBlockedDataPlane(target *configbutleraiv1alpha2
 }
 
 func (r *GitTargetReconciler) setGitPathAcceptedUnknown(
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	message string,
 ) {
 	r.setCondition(
@@ -365,7 +365,7 @@ func (r *GitTargetReconciler) setGitPathAcceptedUnknown(
 }
 
 func (r *GitTargetReconciler) setStalledConditions(
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	reason, message string,
 ) {
 	r.setCondition(target, GitTargetConditionReady, metav1.ConditionFalse, reason, message)
@@ -374,7 +374,7 @@ func (r *GitTargetReconciler) setStalledConditions(
 }
 
 func (r *GitTargetReconciler) applyDataPlaneConditions(
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	streams watch.StreamSummary,
 	gitPath watch.GitPathAcceptanceStatus,
 ) {
@@ -509,7 +509,7 @@ func deriveGitTargetDataPlaneStatus(
 }
 
 func (r *GitTargetReconciler) ensureEventStream(
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 	log logr.Logger,
 ) (*reconcile.GitTargetEventStream, error) {
@@ -571,7 +571,7 @@ func isConditionTrue(conditions []metav1.Condition, conditionType string) bool {
 }
 
 func (r *GitTargetReconciler) setCondition(
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	conditionType string,
 	status metav1.ConditionStatus,
 	reason, message string,
@@ -588,10 +588,10 @@ func (r *GitTargetReconciler) setCondition(
 
 func (r *GitTargetReconciler) validateProviderAndBranch(
 	ctx context.Context,
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 ) (bool, string, string, *ctrl.Result, error) {
-	var gp configbutleraiv1alpha2.GitProvider
+	var gp configbutleraiv1alpha3.GitProvider
 	gpKey := k8stypes.NamespacedName{Name: target.Spec.ProviderRef.Name, Namespace: providerNS}
 	if err := r.Get(ctx, gpKey, &gp); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -614,7 +614,6 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 		}
 	}
 	if !branchAllowed {
-		target.Status.LastCommit = ""
 		target.Status.LastPushTime = nil
 		msg := fmt.Sprintf(
 			"Branch '%s' does not match any pattern in allowedBranches list %v of GitProvider '%s/%s'",
@@ -632,7 +631,7 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 
 func (r *GitTargetReconciler) checkForConflicts(
 	ctx context.Context,
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 ) (bool, string, string, ctrl.Result, error) {
 	// A path the writer would reject (absolute, backslashes, ".." traversal) owns
@@ -642,7 +641,7 @@ func (r *GitTargetReconciler) checkForConflicts(
 		return false, "", "", ctrl.Result{}, nil
 	}
 
-	var allTargets configbutleraiv1alpha2.GitTargetList
+	var allTargets configbutleraiv1alpha3.GitTargetList
 	if err := r.List(ctx, &allTargets); err != nil {
 		return false, "", "", ctrl.Result{}, fmt.Errorf("list GitTargets for conflict validation: %w", err)
 	}
@@ -699,7 +698,7 @@ func (r *GitTargetReconciler) checkForConflicts(
 
 func (r *GitTargetReconciler) ensureEncryptionSecret(
 	ctx context.Context,
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 	log logr.Logger,
 ) error {
 	if !shouldGenerateAgeKey(target) {
@@ -787,11 +786,11 @@ func (r *GitTargetReconciler) createGeneratedEncryptionSecret(
 	return nil
 }
 
-func shouldGenerateAgeKey(target *configbutleraiv1alpha2.GitTarget) bool {
+func shouldGenerateAgeKey(target *configbutleraiv1alpha3.GitTarget) bool {
 	return isTargetAgeEncryptionEnabled(target) && target.Spec.Encryption.Age.Recipients.GenerateWhenMissing
 }
 
-func secretKeyForGeneratedEncryption(target *configbutleraiv1alpha2.GitTarget) (k8stypes.NamespacedName, error) {
+func secretKeyForGeneratedEncryption(target *configbutleraiv1alpha3.GitTarget) (k8stypes.NamespacedName, error) {
 	if !target.Spec.Encryption.Age.Recipients.ExtractFromSecret {
 		return k8stypes.NamespacedName{},
 			errors.New("encryption.age.recipients.generateWhenMissing=true requires extractFromSecret=true")
@@ -842,7 +841,7 @@ func logEncryptionBackupWarning(log logr.Logger, secretKey k8stypes.NamespacedNa
 		"annotation", encryptionSecretBackupWarningAnno)
 }
 
-func isTargetAgeEncryptionEnabled(target *configbutleraiv1alpha2.GitTarget) bool {
+func isTargetAgeEncryptionEnabled(target *configbutleraiv1alpha3.GitTarget) bool {
 	if target == nil || target.Spec.Encryption == nil {
 		return false
 	}
@@ -914,12 +913,12 @@ func clampIntToInt32(value int) int32 {
 	return int32(value)
 }
 
-func gitTargetStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha2.GitTargetStreamsStatus {
+func gitTargetStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha3.GitTargetStreamsStatus {
 	observed := streams.ObservedTime
 	if observed.IsZero() {
 		observed = metav1.Now()
 	}
-	return &configbutleraiv1alpha2.GitTargetStreamsStatus{
+	return &configbutleraiv1alpha3.GitTargetStreamsStatus{
 		Summary:      streams.Summary(),
 		Total:        clampIntToInt32(streams.Total),
 		Ready:        clampIntToInt32(streams.Ready),
@@ -932,7 +931,7 @@ func gitTargetStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha2
 // updateStatusWithRetry updates the status with retry logic to handle race conditions.
 func (r *GitTargetReconciler) updateStatusWithRetry(
 	ctx context.Context,
-	target *configbutleraiv1alpha2.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget,
 ) error {
 	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
 
@@ -942,7 +941,7 @@ func (r *GitTargetReconciler) updateStatusWithRetry(
 		Jitter:   RetryBackoffJitter,
 		Steps:    RetryMaxSteps,
 	}, func() (bool, error) {
-		latest := &configbutleraiv1alpha2.GitTarget{}
+		latest := &configbutleraiv1alpha3.GitTarget{}
 		key := client.ObjectKeyFromObject(target)
 		if err := r.Get(ctx, key, latest); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -967,14 +966,14 @@ func (r *GitTargetReconciler) updateStatusWithRetry(
 // SetupWithManager sets up the controller with the Manager.
 func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha2.GitTarget{}).
+		For(&configbutleraiv1alpha3.GitTarget{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.encryptionSecretToGitTargets)).
 		// GenerationChangedPredicate keeps this watch reacting to a freshly
 		// applied or spec-changed GitProvider while ignoring the status-only
 		// updates the controllers write themselves — without it every provider
 		// heartbeat would re-list and re-enqueue all dependent GitTargets.
 		Watches(
-			&configbutleraiv1alpha2.GitProvider{},
+			&configbutleraiv1alpha3.GitProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToGitTargets),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
@@ -984,12 +983,12 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// claimed — and so never materialised/mirrored — until the next ~10m periodic reconcile.
 		// GenerationChangedPredicate ignores the status-only updates the rule controllers write.
 		Watches(
-			&configbutleraiv1alpha2.WatchRule{},
+			&configbutleraiv1alpha3.WatchRule{},
 			handler.EnqueueRequestsFromMapFunc(r.watchRuleToGitTarget),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Watches(
-			&configbutleraiv1alpha2.ClusterWatchRule{},
+			&configbutleraiv1alpha3.ClusterWatchRule{},
 			handler.EnqueueRequestsFromMapFunc(r.clusterWatchRuleToGitTarget),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
@@ -1012,7 +1011,7 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // watchRuleToGitTarget enqueues the GitTarget a WatchRule targets (a WatchRule targets a GitTarget
 // in its own namespace), so the GitTarget re-Declares its watched-type set when a rule changes.
 func (r *GitTargetReconciler) watchRuleToGitTarget(_ context.Context, obj client.Object) []ctrlreconcile.Request {
-	wr, ok := obj.(*configbutleraiv1alpha2.WatchRule)
+	wr, ok := obj.(*configbutleraiv1alpha3.WatchRule)
 	if !ok || wr.Spec.TargetRef.Name == "" {
 		return nil
 	}
@@ -1026,7 +1025,7 @@ func (r *GitTargetReconciler) watchRuleToGitTarget(_ context.Context, obj client
 func (r *GitTargetReconciler) clusterWatchRuleToGitTarget(
 	_ context.Context, obj client.Object,
 ) []ctrlreconcile.Request {
-	cwr, ok := obj.(*configbutleraiv1alpha2.ClusterWatchRule)
+	cwr, ok := obj.(*configbutleraiv1alpha3.ClusterWatchRule)
 	if !ok || cwr.Spec.TargetRef.Name == "" {
 		return nil
 	}
@@ -1041,7 +1040,7 @@ func (r *GitTargetReconciler) encryptionSecretToGitTargets(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
-	var targets configbutleraiv1alpha2.GitTargetList
+	var targets configbutleraiv1alpha3.GitTargetList
 	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
 		return nil
 	}
@@ -1069,7 +1068,7 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
-	var targets configbutleraiv1alpha2.GitTargetList
+	var targets configbutleraiv1alpha3.GitTargetList
 	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil

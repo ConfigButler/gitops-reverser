@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	v1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -477,7 +477,7 @@ type GroupedCommitMessageData struct {
 }
 
 // ResolveCommitConfig resolves API commit settings into runtime defaults.
-func ResolveCommitConfig(spec *v1alpha2.CommitSpec) CommitConfig {
+func ResolveCommitConfig(spec *v1alpha3.CommitSpec) CommitConfig {
 	config := CommitConfig{
 		Committer: CommitterConfig{
 			Name:  DefaultCommitterName,

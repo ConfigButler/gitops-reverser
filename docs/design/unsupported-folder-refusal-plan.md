@@ -133,7 +133,7 @@ This directly fixes both critiques:
 > the first snapshot), so `StreamsRunning=True` ⟺ initial sync complete and live. (*StreamsStarted* was
 > considered and rejected — "started" is too weak; a stream can be started but still mid-download.) The
 > rename touches GitTarget, WatchRule, and ClusterWatchRule (shared condition + printer columns) and the
-> `internal/watch` `StreamSummary` — mechanical, and safe while on `v1alpha2`.
+> `internal/watch` `StreamSummary` — mechanical, and safe while on `v1alpha3`.
 
 ### 3.3 The model kstatus pushes us to: two layers
 
@@ -587,7 +587,7 @@ stand-in. Log the deferral so coverage intent is explicit.
   is reconciled, the repo holds two contradictory stories about what `Ready` means. The D2 decision must be
   written back into the guide, not just here.
 - **Naming / contract churn.** Adding `GitPathAccepted`/`Reconciling`/`Stalled` and redefining `Ready` as
-  the kstatus aggregate changes the public status contract. It is safe **now** (`v1alpha2`), but it is a
+  the kstatus aggregate changes the public status contract. It is safe **now** (`v1alpha3`), but it is a
   breaking semantic change for any client gating on `Ready`'s old control-plane meaning — land it before
   stabilizing the API.
 - **kstatus mis-mapping (flapping).** If `Reconciling` toggles on every live event, `Ready` oscillates and

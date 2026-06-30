@@ -196,8 +196,8 @@ Will need updates in:
 - `internal/git/branch_worker.go` (new synchronous bootstrap service method)
 - `internal/git/encryption.go` (resolve from `GitTarget` instead of `GitProvider`)
 - `internal/controller/gittarget_controller.go` and related flows (pass/resolve target encryption context)
-- `api/v1alpha2/gittarget_types.go` + CRDs (add `spec.encryption`, add `status.bootstrappedPaths`)
-- `api/v1alpha2/gitprovider_types.go` + CRDs (remove/deprecate encryption there in this direction)
+- `api/v1alpha3/gittarget_types.go` + CRDs (add `spec.encryption`, add `status.bootstrappedPaths`)
+- `api/v1alpha3/gitprovider_types.go` + CRDs (remove/deprecate encryption there in this direction)
 - `internal/controller/gittarget_controller.go` (ensure registration/bootstrap is triggered at the right lifecycle point and rehydrated at startup)
 - tests in `internal/git/*_test.go`, controller tests, and e2e tests
 

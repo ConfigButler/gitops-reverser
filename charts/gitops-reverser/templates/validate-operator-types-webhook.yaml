@@ -34,7 +34,7 @@ webhooks:
       - apiGroups:
           - configbutler.ai
         apiVersions:
-          - v1alpha2
+          - v1alpha3
         operations:
           - CREATE
         resources:

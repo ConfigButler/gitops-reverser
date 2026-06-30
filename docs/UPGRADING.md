@@ -7,9 +7,28 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — API group version bumped `v1alpha2` → `v1alpha3` (next minor; breaking)
+
+The served API version moved from `configbutler.ai/v1alpha2` to `configbutler.ai/v1alpha3` to
+reflect the accumulated schema and status changes on this branch. `v1alpha2` is **removed**, not
+co-served — there is no conversion webhook, so the old version stops being recognized once the new
+CRDs are applied.
+
+**Migration**
+
+- Update every manifest, GitOps source, and client to `apiVersion: configbutler.ai/v1alpha3`
+  (`GitProvider`, `GitTarget`, `WatchRule`, `ClusterWatchRule`, `CommitRequest`). The kinds, field
+  names, and semantics are otherwise unchanged from `v1alpha2` except where noted in the entries
+  below.
+- Re-apply the CRDs (or upgrade the Helm chart), then re-apply your objects under the new
+  `apiVersion`. Because the group version changed, existing `v1alpha2` objects are not converted in
+  place; recreate them as `v1alpha3`.
+- `kubectl` commands that pin the version (`kubectl get gittargets.v1alpha2.configbutler.ai`) must
+  switch to `v1alpha3`. Unqualified short names (`kubectl get gittargets`) need no change.
+
 ## Unreleased — first-run and status surface cleanup (next minor; breaking)
 
-This branch changes the default install to be easier to try, and it tightens the v1alpha2 status
+This branch changes the default install to be easier to try, and it tightens the v1alpha3 status
 surface around conditions. Existing installs should check the items below before upgrading.
 
 ### 1. Helm installs now start committer-only by default

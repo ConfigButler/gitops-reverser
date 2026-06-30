@@ -38,7 +38,7 @@ Everything in this section is taken from the run logs and the code, not inferred
 | Field | Value |
 |---|---|
 | Run | [27873681498](https://github.com/ConfigButler/gitops-reverser/actions/runs/27873681498) (PR #167) |
-| Branch / sha | `poc/redis-copy` / `a7c4dcd` (*feat(api)!: rename API group version v1alpha1 → v1alpha2*) |
+| Branch / sha | `poc/redis-copy` / `a7c4dcd` (*feat(api)!: rename API group version v1alpha1 → v1alpha3*) |
 | Result | `Ran 48 of 56 Specs` — **47 Passed | 1 Failed | 0 Pending | 8 Skipped** |
 | Jobs | Build, Unit tests, Lint, Helm, devcontainer, **E2E (quickstart)** all green; only **E2E (full)** failed (`exit code 201`) |
 
@@ -122,7 +122,7 @@ change the recommendation.
 
 ### 1.5 What it is NOT
 
-- **Not the last commit (the v1alpha1→v1alpha2 rename).** The rename is mechanically inert for this
+- **Not the last commit (the v1alpha1→v1alpha3 rename).** The rename is mechanically inert for this
   path: `AlwaysAllow` keys on the **group** `configbutler.ai` (unchanged — only the *version* moved)
   ([cmd/main.go:280-281](../../cmd/main.go#L280-L281)); the `auditutil` changes are pure
   import-alias + `OperationType` package renames with unchanged enum *values*; the sibling

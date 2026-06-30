@@ -84,7 +84,7 @@ var _ = Describe("Deployment scale subresource", Label("manager", "subresource")
 })
 
 func applyDeploymentWatchRule(namespace, name, targetName string) {
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha2
+	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
   name: %s

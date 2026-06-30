@@ -10,7 +10,7 @@
 > (2) The spec field `delaySeconds` is now **`closeDelaySeconds`** (it delays closing the open window).
 > Read every `delaySeconds` below as `closeDelaySeconds`. See
 > [status-conditions-guide.md](../status-conditions-guide.md) §CommitRequest and
-> `api/v1alpha2/commitrequest_types.go` for the contract.
+> `api/v1alpha3/commitrequest_types.go` for the contract.
 
 > Status: living design note, 2026-06-12.
 > Supersedes the speculative redesign in
@@ -121,7 +121,7 @@ The design's job is to **bound and report** them, not to pretend they don't exis
 
 ### 5.1 The CRD
 
-`CommitRequestSpec` ([api/v1alpha2/commitrequest_types.go](../../../api/v1alpha2/commitrequest_types.go)):
+`CommitRequestSpec` ([api/v1alpha3/commitrequest_types.go](../../../api/v1alpha3/commitrequest_types.go)):
 
 - `gitTargetRef.name` — the GitTarget whose window to finalize (same namespace).
 - `message` — optional verbatim commit message (1–1024 chars, no control chars).

@@ -54,7 +54,7 @@ func (f *fakeCommandAuthorRecorder) RecordCommandAuthor(
 }
 
 func commitRequestResource() metav1.GroupVersionResource {
-	return metav1.GroupVersionResource{Group: "configbutler.ai", Version: "v1alpha2", Resource: "commitrequests"}
+	return metav1.GroupVersionResource{Group: "configbutler.ai", Version: "v1alpha3", Resource: "commitrequests"}
 }
 
 // commandReview builds an admission.Request for a command CREATE with the given raw

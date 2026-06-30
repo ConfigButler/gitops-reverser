@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 // TestIsConditionTrue covers the condition helper the status pipeline uses.
@@ -106,10 +106,10 @@ func TestIsConditionTrue(t *testing.T) {
 func TestCheckForConflicts_ListErrorFailsClosed(t *testing.T) {
 	client := newGitTargetListErrorClient(t)
 	reconciler := &GitTargetReconciler{Client: client}
-	target := &configbutleraiv1alpha2.GitTarget{
+	target := &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: "default"},
-		Spec: configbutleraiv1alpha2.GitTargetSpec{
-			ProviderRef: configbutleraiv1alpha2.GitProviderReference{Name: "provider-a"},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "provider-a"},
 			Branch:      "main",
 			Path:        "apps",
 		},
@@ -127,7 +127,7 @@ func newGitTargetListErrorClient(t *testing.T) ctrlclient.Client {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configbutleraiv1alpha2.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 
 	return fake.NewClientBuilder().
 		WithScheme(scheme).

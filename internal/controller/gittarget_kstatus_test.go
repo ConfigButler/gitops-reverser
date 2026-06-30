@@ -98,7 +98,7 @@ func TestGitTargetKstatusContract(t *testing.T) {
 
 func gitTargetStatusObject(conditions []map[string]interface{}) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "configbutler.ai/v1alpha2",
+		"apiVersion": "configbutler.ai/v1alpha3",
 		"kind":       "GitTarget",
 		"metadata": map[string]interface{}{
 			"name":       "target-a",

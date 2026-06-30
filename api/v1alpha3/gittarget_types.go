@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha2
+package v1alpha3
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,6 +30,7 @@ import (
 type GitProviderReference struct {
 	// API Group of the referent.
 	// +kubebuilder:default=configbutler.ai
+	// +kubebuilder:validation:Enum=configbutler.ai
 	Group string `json:"group,omitempty"`
 
 	// Kind of the referent.
@@ -42,6 +43,7 @@ type GitProviderReference struct {
 
 	// Name of the referent.
 	// +required
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 }
 
@@ -69,6 +71,7 @@ type GitTargetSpec struct {
 	// Must be one of the allowed branches in the provider.
 	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +required
+	// +kubebuilder:validation:MinLength=1
 	Branch string `json:"branch"`
 
 	// Path within the repository to write resources to, relative to the repository
@@ -96,6 +99,8 @@ type GitTargetStatus struct {
 
 	// Conditions represent the latest available observations of an object's state
 	// +optional
+	// +listType=map
+	// +listMapKey=type
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
@@ -103,10 +108,6 @@ type GitTargetStatus struct {
 	// LastReconcileTime is the timestamp of the most recent reconcile attempt.
 	// +optional
 	LastReconcileTime metav1.Time `json:"lastReconcileTime,omitempty"`
-
-	// LastCommit is the SHA of the last commit processed.
-	// +optional
-	LastCommit string `json:"lastCommit,omitempty"`
 
 	// LastPushTime is the timestamp of the last successful push.
 	// +optional
@@ -146,14 +147,14 @@ type GitTargetStreamsStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.providerRef.name`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`
+// +kubebuilder:printcolumn:name="Path",type=string,JSONPath=`.spec.path`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Reconciling",type=string,JSONPath=`.status.conditions[?(@.type=="Reconciling")].status`
-// +kubebuilder:printcolumn:name="Stalled",type=string,JSONPath=`.status.conditions[?(@.type=="Stalled")].status`
-// +kubebuilder:printcolumn:name="GitPathAccepted",type=string,JSONPath=`.status.conditions[?(@.type=="GitPathAccepted")].status`
-// +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
-// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Stalled")].reason`
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Stalled")].message`
+// +kubebuilder:printcolumn:name="GitPathAccepted",type=string,JSONPath=`.status.conditions[?(@.type=="GitPathAccepted")].status`,priority=1
+// +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
+// +kubebuilder:printcolumn:name="Encryption",type=string,JSONPath=`.spec.encryption.provider`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitTarget is the Schema for the gittargets API.

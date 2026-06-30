@@ -167,7 +167,6 @@ The new Markdown set is useful, but it is not yet tidy enough to ignore during m
 - Improve output layout control and multi-resource-per-file support.
 - Preserve more user-facing file structure, including comments and ordering.
 - Handle manifests whose GVK cannot be resolved against the live cluster.
-- Resolve the unused `GitTarget.status.lastCommit` field.
 - Re-enable `goconst` with path-scoped exclusions.
 - Continue improving queue and worker observability under load.
 - HA/multi-replica ownership and failover hardening.

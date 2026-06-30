@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha2
+package v1alpha3
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,6 +40,7 @@ const (
 type LocalTargetReference struct {
 	// API Group of the referent.
 	// +kubebuilder:default=configbutler.ai
+	// +kubebuilder:validation:Enum=configbutler.ai
 	Group string `json:"group,omitempty"`
 
 	// Kind of the referent.
@@ -49,6 +50,10 @@ type LocalTargetReference struct {
 	// +kubebuilder:validation:Enum=GitTarget
 	// +kubebuilder:default=GitTarget
 	Kind string `json:"kind,omitempty"`
+
+	// Name of the referent.
+	// +required
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 }
 
@@ -118,6 +123,7 @@ type ResourceRule struct {
 	// "*" wildcard for broad matching.
 	// +required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 }
@@ -130,6 +136,8 @@ type WatchRuleStatus struct {
 
 	// Conditions represent the latest available observations of an object's state
 	// +optional
+	// +listType=map
+	// +listMapKey=type
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
@@ -173,12 +181,10 @@ type WatchRuleStreamsStatus struct {
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.targetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Reconciling",type=string,JSONPath=`.status.conditions[?(@.type=="Reconciling")].status`
-// +kubebuilder:printcolumn:name="Stalled",type=string,JSONPath=`.status.conditions[?(@.type=="Stalled")].status`
-// +kubebuilder:printcolumn:name="GitTargetReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitTargetReady")].status`
-// +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`
-// +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
+// +kubebuilder:printcolumn:name="GitTargetReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitTargetReady")].status`,priority=1
+// +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // WatchRule watches namespaced resources within its own namespace.

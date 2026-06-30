@@ -32,37 +32,37 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
 func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha2.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 
-	existingWatchRule := &configv1alpha2.WatchRule{
+	existingWatchRule := &configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "playground-watchrule", Namespace: "tilt-playground"},
-		Spec: configv1alpha2.WatchRuleSpec{
-			TargetRef: configv1alpha2.LocalTargetReference{Name: "playground-target"},
-			Rules: []configv1alpha2.ResourceRule{{
+		Spec: configv1alpha3.WatchRuleSpec{
+			TargetRef: configv1alpha3.LocalTargetReference{Name: "playground-target"},
+			Rules: []configv1alpha3.ResourceRule{{
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
 				Resources:   []string{"services"},
 			}},
 		},
 	}
-	existingGitTarget := &configv1alpha2.GitTarget{
+	existingGitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "playground-target", Namespace: "tilt-playground"},
-		Spec: configv1alpha2.GitTargetSpec{
-			ProviderRef: configv1alpha2.GitProviderReference{Name: "playground-provider"},
+		Spec: configv1alpha3.GitTargetSpec{
+			ProviderRef: configv1alpha3.GitProviderReference{Name: "playground-provider"},
 			Branch:      "main",
 			Path:        "live-cluster",
 		},
 	}
-	existingGitProvider := &configv1alpha2.GitProvider{
+	existingGitProvider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "playground-provider", Namespace: "tilt-playground"},
-		Spec: configv1alpha2.GitProviderSpec{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL:             "https://example.invalid/playground.git",
 			AllowedBranches: []string{"main"},
 		},
@@ -78,7 +78,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 		).
 		Build()
 
-	var watchRules configv1alpha2.WatchRuleList
+	var watchRules configv1alpha3.WatchRuleList
 	require.NoError(t, fakeClient.List(context.Background(), &watchRules))
 	require.Len(t, watchRules.Items, 1)
 
@@ -106,31 +106,31 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configv1alpha2.AddToScheme(scheme))
+	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 
-	existingClusterWatchRule := &configv1alpha2.ClusterWatchRule{
+	existingClusterWatchRule := &configv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster-services"},
-		Spec: configv1alpha2.ClusterWatchRuleSpec{
-			TargetRef: configv1alpha2.NamespacedTargetReference{Name: "ops-target", Namespace: "ops"},
-			Rules: []configv1alpha2.ClusterResourceRule{{
-				Scope:       configv1alpha2.ResourceScopeNamespaced,
+		Spec: configv1alpha3.ClusterWatchRuleSpec{
+			TargetRef: configv1alpha3.NamespacedTargetReference{Name: "ops-target", Namespace: "ops"},
+			Rules: []configv1alpha3.ClusterResourceRule{{
+				Scope:       configv1alpha3.ResourceScopeNamespaced,
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
 				Resources:   []string{"services"},
 			}},
 		},
 	}
-	existingGitTarget := &configv1alpha2.GitTarget{
+	existingGitTarget := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "ops-target", Namespace: "ops"},
-		Spec: configv1alpha2.GitTargetSpec{
-			ProviderRef: configv1alpha2.GitProviderReference{Name: "ops-provider"},
+		Spec: configv1alpha3.GitTargetSpec{
+			ProviderRef: configv1alpha3.GitProviderReference{Name: "ops-provider"},
 			Branch:      "main",
 			Path:        "cluster-state",
 		},
 	}
-	existingGitProvider := &configv1alpha2.GitProvider{
+	existingGitProvider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "ops-provider", Namespace: "ops"},
-		Spec: configv1alpha2.GitProviderSpec{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL:             "https://example.invalid/ops.git",
 			AllowedBranches: []string{"main"},
 		},

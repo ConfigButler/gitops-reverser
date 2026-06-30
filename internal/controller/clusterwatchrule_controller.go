@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
@@ -75,7 +75,7 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	log.Info("Starting reconciliation", "name", req.Name)
 
 	// Fetch the ClusterWatchRule instance
-	var clusterRule configbutleraiv1alpha2.ClusterWatchRule
+	var clusterRule configbutleraiv1alpha3.ClusterWatchRule
 	//nolint:nestif // Deletion handling requires nested error checks
 	if err := r.Get(ctx, req.NamespacedName, &clusterRule); err != nil {
 		if client.IgnoreNotFound(err) == nil {
@@ -135,7 +135,7 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // reconcileClusterWatchRuleViaTarget validates and stores a ClusterWatchRule that references a GitTarget.
 func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	ctx context.Context,
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("reconcileClusterWatchRuleViaTarget")
 
@@ -173,7 +173,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	}
 
 	// Fetch GitTarget
-	var target configbutleraiv1alpha2.GitTarget
+	var target configbutleraiv1alpha3.GitTarget
 	targetKey := types.NamespacedName{Name: clusterRule.Spec.TargetRef.Name, Namespace: targetNS}
 	if err := r.Get(ctx, targetKey, &target); err != nil {
 		log.Error(err, "Failed to get referenced GitTarget",
@@ -188,7 +188,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	providerName := target.Spec.ProviderRef.Name
 	providerNS := target.Namespace // Same as GitTarget
 
-	var provider configbutleraiv1alpha2.GitProvider
+	var provider configbutleraiv1alpha3.GitProvider
 	providerKey := types.NamespacedName{Name: providerName, Namespace: providerNS}
 	if err := r.Get(ctx, providerKey, &provider); err != nil {
 		log.Error(err, "Failed to resolve GitProvider from GitTarget",
@@ -242,7 +242,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 // setReadyAndUpdateStatusWithTarget sets Ready with target message and updates status with retry.
 func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	ctx context.Context,
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 ) (ctrl.Result, error) {
 	msg := fmt.Sprintf(
 		"ClusterWatchRule is ready and monitoring resources via GitTarget '%s/%s'",
@@ -267,7 +267,7 @@ func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 
 // setCondition sets or updates the Ready condition.
 func (r *ClusterWatchRuleReconciler) setCondition(
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	status metav1.ConditionStatus,
 	reason, message string,
 ) {
@@ -275,7 +275,7 @@ func (r *ClusterWatchRuleReconciler) setCondition(
 }
 
 func (r *ClusterWatchRuleReconciler) setGitTargetNotFound(
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	targetNS string,
 	err error,
 ) {
@@ -296,8 +296,8 @@ func (r *ClusterWatchRuleReconciler) setGitTargetNotFound(
 }
 
 func (r *ClusterWatchRuleReconciler) setGitTargetReadyCondition(
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
-	target configbutleraiv1alpha2.GitTarget,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
+	target configbutleraiv1alpha3.GitTarget,
 ) {
 	ready := gitTargetReadyCondition(target)
 	r.setTypedCondition(clusterRule, ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
@@ -305,7 +305,7 @@ func (r *ClusterWatchRuleReconciler) setGitTargetReadyCondition(
 
 func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
 	ctx context.Context,
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 ) {
 	resolved, message := r.WatchManager.ResolveClusterWatchRuleResources(ctx, *clusterRule)
 	status := metav1.ConditionFalse
@@ -318,7 +318,7 @@ func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
 }
 
 func (r *ClusterWatchRuleReconciler) setStreamsReadyCondition(
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	streams watch.StreamSummary,
 ) {
 	clusterRule.Status.Streams = watchRuleStreamsStatus(streams)
@@ -332,7 +332,7 @@ func (r *ClusterWatchRuleReconciler) setStreamsReadyCondition(
 }
 
 func (r *ClusterWatchRuleReconciler) setRuleStalled(
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	reason string,
 	message string,
 ) {
@@ -348,7 +348,7 @@ func (r *ClusterWatchRuleReconciler) setRuleStalled(
 }
 
 func (r *ClusterWatchRuleReconciler) setRuleKstatus(
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	readyMessage string,
 ) {
 	applyRuleKstatus(
@@ -366,7 +366,7 @@ func (r *ClusterWatchRuleReconciler) setRuleKstatus(
 }
 
 func (r *ClusterWatchRuleReconciler) setTypedCondition(
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	conditionType string,
 	status metav1.ConditionStatus,
 	reason string,
@@ -385,7 +385,7 @@ func (r *ClusterWatchRuleReconciler) setTypedCondition(
 // updateStatusAndRequeue updates the status and returns requeue result.
 func (r *ClusterWatchRuleReconciler) updateStatusAndRequeue(
 	ctx context.Context,
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 ) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, clusterRule); err != nil {
 		return ctrl.Result{}, err
@@ -398,7 +398,7 @@ func (r *ClusterWatchRuleReconciler) updateStatusAndRequeue(
 //nolint:dupl // Similar retry logic pattern used across controllers
 func (r *ClusterWatchRuleReconciler) updateStatusWithRetry(
 	ctx context.Context,
-	clusterRule *configbutleraiv1alpha2.ClusterWatchRule,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 ) error {
 	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
 
@@ -415,7 +415,7 @@ func (r *ClusterWatchRuleReconciler) updateStatusWithRetry(
 		log.Info("Attempting status update")
 
 		// Get the latest version of the resource
-		latest := &configbutleraiv1alpha2.ClusterWatchRule{}
+		latest := &configbutleraiv1alpha3.ClusterWatchRule{}
 		key := client.ObjectKeyFromObject(clusterRule)
 		if err := r.Get(ctx, key, latest); err != nil {
 			if k8serrors.IsNotFound(err) {
@@ -454,19 +454,19 @@ func (r *ClusterWatchRuleReconciler) updateStatusWithRetry(
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha2.ClusterWatchRule{}).
+		For(&configbutleraiv1alpha3.ClusterWatchRule{}).
 		// GenerationChangedPredicate keeps these watches reacting to a freshly
 		// applied or spec-changed dependency while ignoring the status-only
 		// updates the controllers write themselves — without it every GitTarget
 		// or GitProvider heartbeat would re-list and re-enqueue all
 		// ClusterWatchRules.
 		Watches(
-			&configbutleraiv1alpha2.GitTarget{},
+			&configbutleraiv1alpha3.GitTarget{},
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Watches(
-			&configbutleraiv1alpha2.GitProvider{},
+			&configbutleraiv1alpha3.GitProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToClusterWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
@@ -481,7 +481,7 @@ func (r *ClusterWatchRuleReconciler) gitTargetToClusterWatchRules(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
-	var rules configbutleraiv1alpha2.ClusterWatchRuleList
+	var rules configbutleraiv1alpha3.ClusterWatchRuleList
 	if err := r.List(ctx, &rules); err != nil {
 		logDependencyListError(ctx, err, "ClusterWatchRules", obj)
 		return nil
@@ -512,7 +512,7 @@ func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrlreconcile.Request {
-	var targets configbutleraiv1alpha2.GitTargetList
+	var targets configbutleraiv1alpha3.GitTargetList
 	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
 		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
@@ -529,7 +529,7 @@ func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
 		return nil
 	}
 
-	var rules configbutleraiv1alpha2.ClusterWatchRuleList
+	var rules configbutleraiv1alpha3.ClusterWatchRuleList
 	if err := r.List(ctx, &rules); err != nil {
 		logDependencyListError(ctx, err, "ClusterWatchRules", obj)
 		return nil

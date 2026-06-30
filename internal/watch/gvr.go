@@ -21,7 +21,7 @@ package watch
 import (
 	"strings"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 // GVR represents a concrete Group/Version/Resource target with a scope.
@@ -30,7 +30,7 @@ type GVR struct {
 	Group    string
 	Version  string
 	Resource string
-	Scope    configv1alpha2.ResourceScope
+	Scope    configv1alpha3.ResourceScope
 }
 
 // ComputeRequestedGVRs aggregates the watched GVRs from the active RuleStore: the union

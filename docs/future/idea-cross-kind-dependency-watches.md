@@ -110,7 +110,7 @@ can:
 To make this work we need to upgrade the convention beyond a free-text `message` field.
 Two options:
 
-- **Annotation-level**: dependents carry `configbutler.ai/unmet: configbutler.ai/v1alpha2/GitProvider/gitops-reverser/cozystack-example` while their dependency is missing; cleared on Ready.
+- **Annotation-level**: dependents carry `configbutler.ai/unmet: configbutler.ai/v1alpha3/GitProvider/gitops-reverser/cozystack-example` while their dependency is missing; cleared on Ready.
 - **Status-level** (preferred): a `status.unmetReferences []TypedObjectReference` field on every CRD that participates. Same idea, schema-validated, no annotation churn.
 
 This is the same shape as kstatus's reason taxonomy and Crossplane's composition references;

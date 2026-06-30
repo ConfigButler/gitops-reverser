@@ -23,7 +23,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 type gitTargetReadyStatus struct {
@@ -32,7 +32,7 @@ type gitTargetReadyStatus struct {
 	Message string
 }
 
-func gitTargetReadyCondition(target configbutleraiv1alpha2.GitTarget) gitTargetReadyStatus {
+func gitTargetReadyCondition(target configbutleraiv1alpha3.GitTarget) gitTargetReadyStatus {
 	if ready := conditionByType(target.Status.Conditions, GitTargetConditionReady); ready != nil {
 		if ready.Status == metav1.ConditionTrue {
 			return gitTargetReadyStatus{

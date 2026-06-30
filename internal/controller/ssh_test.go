@@ -33,7 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -99,7 +99,7 @@ var _ = Describe("SSH Authentication", func() {
 			It("should successfully create SSH authentication", func() {
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					validSSHSecret,
 				)
 
@@ -128,7 +128,7 @@ var _ = Describe("SSH Authentication", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secretWithoutKnownHosts,
 				)
 
@@ -153,7 +153,7 @@ var _ = Describe("SSH Authentication", func() {
 				reconciler.SSHHostKeys.AllowMissingKnownHosts = true
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 
@@ -178,7 +178,7 @@ var _ = Describe("SSH Authentication", func() {
 			It("should return error for malformed private key", func() {
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					invalidSSHSecret,
 				)
 
@@ -203,7 +203,7 @@ var _ = Describe("SSH Authentication", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					httpSecret,
 				)
 
@@ -216,7 +216,7 @@ var _ = Describe("SSH Authentication", func() {
 			It("should return nil auth for anonymous access", func() {
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					nil,
 				)
 
@@ -240,7 +240,7 @@ var _ = Describe("SSH Authentication", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					incompleteSecret,
 				)
 
@@ -262,7 +262,7 @@ var _ = Describe("SSH Authentication", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					emptySecret,
 				)
 
@@ -334,7 +334,7 @@ func TestSSHCredentials(t *testing.T) {
 			},
 		}
 
-		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha2.GitProvider{}, secret)
+		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha3.GitProvider{}, secret)
 		if err != nil {
 			t.Errorf("Expected no error, got: %v", err)
 		}
@@ -354,7 +354,7 @@ func TestSSHCredentials(t *testing.T) {
 			},
 		}
 
-		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha2.GitProvider{}, secret)
+		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha3.GitProvider{}, secret)
 		if err == nil {
 			t.Error("Expected error for invalid SSH key")
 		}
@@ -372,7 +372,7 @@ func TestSSHCredentials(t *testing.T) {
 			},
 		}
 
-		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha2.GitProvider{}, secret)
+		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha3.GitProvider{}, secret)
 		if err != nil {
 			t.Errorf("Expected no error, got: %v", err)
 		}
@@ -383,7 +383,7 @@ func TestSSHCredentials(t *testing.T) {
 
 	// Test with nil secret (anonymous access)
 	t.Run("Anonymous Access", func(t *testing.T) {
-		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha2.GitProvider{}, nil)
+		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha3.GitProvider{}, nil)
 		if err != nil {
 			t.Errorf("Expected no error, got: %v", err)
 		}
@@ -429,7 +429,7 @@ func TestGitProviderConditions(t *testing.T) {
 	reconciler := &GitProviderReconciler{}
 
 	// Mock GitProvider
-	gitProvider := &configbutleraiv1alpha2.GitProvider{}
+	gitProvider := &configbutleraiv1alpha3.GitProvider{}
 
 	// Test setting various conditions
 	testCases := []struct {
@@ -440,12 +440,12 @@ func TestGitProviderConditions(t *testing.T) {
 		{metav1.ConditionTrue, "Ready", "Repository connectivity validated"},
 		{metav1.ConditionFalse, ReasonConnectionFailed, "Failed to connect"},
 		{metav1.ConditionFalse, ReasonSecretNotFound, "Secret not found"},
-		{metav1.ConditionUnknown, ReasonChecking, "Checking repository"},
+		{metav1.ConditionFalse, ReasonChecking, "Checking repository"},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.reason, func(t *testing.T) {
-			reconciler.setCondition(gitProvider, tc.status, tc.reason, tc.message)
+			reconciler.setCondition(gitProvider, ConditionTypeReady, tc.status, tc.reason, tc.message)
 
 			if len(gitProvider.Status.Conditions) == 0 {
 				t.Error("Expected at least one condition")

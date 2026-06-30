@@ -36,7 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 // newDependencyWatchesTestClient builds a fake client preloaded with the given
@@ -47,7 +47,7 @@ func newDependencyWatchesTestClient(t *testing.T, objects ...ctrlclient.Object) 
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configbutleraiv1alpha2.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -70,36 +70,36 @@ func requestsToKeys(requests []ctrlreconcile.Request) []string {
 	return keys
 }
 
-func gitProvider(name, namespace string) *configbutleraiv1alpha2.GitProvider {
-	return &configbutleraiv1alpha2.GitProvider{
+func gitProvider(name, namespace string) *configbutleraiv1alpha3.GitProvider {
+	return &configbutleraiv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 	}
 }
 
-func gitTarget(name, namespace, providerName string) *configbutleraiv1alpha2.GitTarget {
-	return &configbutleraiv1alpha2.GitTarget{
+func gitTarget(name, namespace, providerName string) *configbutleraiv1alpha3.GitTarget {
+	return &configbutleraiv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: configbutleraiv1alpha2.GitTargetSpec{
-			ProviderRef: configbutleraiv1alpha2.GitProviderReference{Name: providerName},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: providerName},
 			Branch:      "main",
 		},
 	}
 }
 
-func watchRule(name, namespace, targetName string) *configbutleraiv1alpha2.WatchRule {
-	return &configbutleraiv1alpha2.WatchRule{
+func watchRule(name, namespace, targetName string) *configbutleraiv1alpha3.WatchRule {
+	return &configbutleraiv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: configbutleraiv1alpha2.WatchRuleSpec{
-			TargetRef: configbutleraiv1alpha2.LocalTargetReference{Name: targetName},
+		Spec: configbutleraiv1alpha3.WatchRuleSpec{
+			TargetRef: configbutleraiv1alpha3.LocalTargetReference{Name: targetName},
 		},
 	}
 }
 
-func clusterWatchRule(name, targetName, targetNamespace string) *configbutleraiv1alpha2.ClusterWatchRule {
-	return &configbutleraiv1alpha2.ClusterWatchRule{
+func clusterWatchRule(name, targetName, targetNamespace string) *configbutleraiv1alpha3.ClusterWatchRule {
+	return &configbutleraiv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: configbutleraiv1alpha2.ClusterWatchRuleSpec{
-			TargetRef: configbutleraiv1alpha2.NamespacedTargetReference{
+		Spec: configbutleraiv1alpha3.ClusterWatchRuleSpec{
+			TargetRef: configbutleraiv1alpha3.NamespacedTargetReference{
 				Name:      targetName,
 				Namespace: targetNamespace,
 			},
@@ -349,13 +349,13 @@ func TestGenerationChangedPredicateFiltersStatusUpdates(t *testing.T) {
 		"a freshly applied dependency must enqueue dependents")
 
 	assert.False(t, p.Update(event.UpdateEvent{
-		ObjectOld: &configbutleraiv1alpha2.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
-		ObjectNew: &configbutleraiv1alpha2.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
+		ObjectOld: &configbutleraiv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
+		ObjectNew: &configbutleraiv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
 	}), "a status-only update keeps the same generation and must be filtered out")
 
 	assert.True(t, p.Update(event.UpdateEvent{
-		ObjectOld: &configbutleraiv1alpha2.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
-		ObjectNew: &configbutleraiv1alpha2.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 8}},
+		ObjectOld: &configbutleraiv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
+		ObjectNew: &configbutleraiv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 8}},
 	}), "a spec change bumps generation and must enqueue dependents")
 }
 
@@ -367,7 +367,7 @@ func newDependencyWatchesListErrorClient(t *testing.T) ctrlclient.Client {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
-	require.NoError(t, configbutleraiv1alpha2.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
 
 	return fake.NewClientBuilder().
 		WithScheme(scheme).

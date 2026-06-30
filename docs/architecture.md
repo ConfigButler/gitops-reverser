@@ -86,7 +86,7 @@ The solution, in the vocabulary used throughout this document:
 ## Configuration Model
 
 You configure GitOps Reverser entirely through five CRDs (group `configbutler.ai`, version
-`v1alpha2`). `WatchRule` and `ClusterWatchRule` choose which Kubernetes resources enter the pipeline.
+`v1alpha3`). `WatchRule` and `ClusterWatchRule` choose which Kubernetes resources enter the pipeline.
 `CommitRequest` can ask for the current window to be saved. `GitTarget` chooses the branch and path.
 `GitProvider` supplies the repository, credentials, commit settings, and push policy.
 
@@ -114,8 +114,8 @@ graph LR
 
 ### WatchRule / ClusterWatchRule
 
-* **Sources**: [watchrule_types.go](../api/v1alpha2/watchrule_types.go),
-  [clusterwatchrule_types.go](../api/v1alpha2/clusterwatchrule_types.go)
+* **Sources**: [watchrule_types.go](../api/v1alpha3/watchrule_types.go),
+  [clusterwatchrule_types.go](../api/v1alpha3/clusterwatchrule_types.go)
 * **Controllers**: [watchrule_controller.go](../internal/controller/watchrule_controller.go),
   [clusterwatchrule_controller.go](../internal/controller/clusterwatchrule_controller.go)
 
@@ -136,7 +136,7 @@ Subresources are rejected in rule resources. Mirroring operates on top level res
 
 ### CommitRequest
 
-* **Source**: [api/v1alpha2/commitrequest_types.go](../api/v1alpha2/commitrequest_types.go)
+* **Source**: [api/v1alpha3/commitrequest_types.go](../api/v1alpha3/commitrequest_types.go)
 * **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
 
 A one shot "save now" signal that finalizes the open commit window for a same namespace `GitTarget`
@@ -161,7 +161,7 @@ How attribution and finalization interact is described under
 
 ### GitTarget
 
-* **Source**: [api/v1alpha2/gittarget_types.go](../api/v1alpha2/gittarget_types.go)
+* **Source**: [api/v1alpha3/gittarget_types.go](../api/v1alpha3/gittarget_types.go)
 * **Controller**: [internal/controller/gittarget_controller.go](../internal/controller/gittarget_controller.go)
 
 One materialization destination: `(provider, branch, path)`. Key fields:
@@ -195,7 +195,7 @@ the source selector. `GitTargetReady` mirrors the referenced GitTarget's write r
 
 ### GitProvider
 
-* **Source**: [api/v1alpha2/gitprovider_types.go](../api/v1alpha2/gitprovider_types.go)
+* **Source**: [api/v1alpha3/gitprovider_types.go](../api/v1alpha3/gitprovider_types.go)
 * **Controller**: [internal/controller/gitprovider_controller.go](../internal/controller/gitprovider_controller.go)
 
 Represents a Git repository and the credentials/configuration used to write it. Key fields:
@@ -776,7 +776,7 @@ Current limitations:
 
 | Package | Role |
 |---|---|
-| [api/v1alpha2/](../api/v1alpha2/) | CRD types |
+| [api/v1alpha3/](../api/v1alpha3/) | CRD types |
 | [cmd/](../cmd/) | operator entry point and server setup |
 | [internal/auditutil/](../internal/auditutil/) | audit identity, objectRef, and subresource helpers feeding attribution facts |
 | [internal/controller/](../internal/controller/) | Kubernetes reconcilers |

@@ -27,7 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 // A GitProvider's repository URL is the destination identity its GitTargets materialize
@@ -44,9 +44,9 @@ var _ = Describe("GitProvider URL Immutability", func() {
 		ctx := context.Background()
 		key := types.NamespacedName{Name: "immutable-provider", Namespace: "default"}
 
-		provider := &configbutleraiv1alpha2.GitProvider{
+		provider := &configbutleraiv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
-			Spec: configbutleraiv1alpha2.GitProviderSpec{
+			Spec: configbutleraiv1alpha3.GitProviderSpec{
 				URL:             "https://example.com/repo.git",
 				AllowedBranches: []string{"main"},
 			},
@@ -56,7 +56,7 @@ var _ = Describe("GitProvider URL Immutability", func() {
 
 		// allowedBranches is operational and mutable: widening the set succeeds.
 		Eventually(func(g Gomega) {
-			current := &configbutleraiv1alpha2.GitProvider{}
+			current := &configbutleraiv1alpha3.GitProvider{}
 			g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
 			current.Spec.AllowedBranches = []string{"main", "develop"}
 			g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
@@ -64,7 +64,7 @@ var _ = Describe("GitProvider URL Immutability", func() {
 
 		// The URL is the destination identity and is immutable.
 		Eventually(func(g Gomega) {
-			current := &configbutleraiv1alpha2.GitProvider{}
+			current := &configbutleraiv1alpha3.GitProvider{}
 			g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
 			current.Spec.URL = "https://example.com/other.git"
 			err := k8sClient.Update(ctx, current)

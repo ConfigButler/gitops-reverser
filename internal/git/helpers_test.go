@@ -42,7 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -210,18 +210,18 @@ func newTestBranchWorker(
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
-	if err := configv1alpha2.AddToScheme(scheme); err != nil {
+	if err := configv1alpha3.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
 
 	objects := make([]client.Object, 0, len(extraObjects)+1)
 	objects = append(objects, extraObjects...)
-	objects = append(objects, &configv1alpha2.GitProvider{
+	objects = append(objects, &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      providerName,
 			Namespace: "default",
 		},
-		Spec: configv1alpha2.GitProviderSpec{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	})

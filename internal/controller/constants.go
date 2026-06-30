@@ -23,7 +23,7 @@ import (
 	"context"
 	"time"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
@@ -32,11 +32,11 @@ import (
 // This allows for easier testing by enabling mock implementations.
 type WatchManagerInterface interface {
 	ReconcileForRuleChange(ctx context.Context) error
-	ResolveWatchRuleResources(ctx context.Context, rule configv1alpha2.WatchRule) (bool, string)
-	ResolveClusterWatchRuleResources(ctx context.Context, rule configv1alpha2.ClusterWatchRule) (bool, string)
+	ResolveWatchRuleResources(ctx context.Context, rule configv1alpha3.WatchRule) (bool, string)
+	ResolveClusterWatchRuleResources(ctx context.Context, rule configv1alpha3.ClusterWatchRule) (bool, string)
 	StreamSummaryForGitTarget(gitDest types.ResourceReference) watch.StreamSummary
-	StreamSummaryForWatchRule(rule configv1alpha2.WatchRule) watch.StreamSummary
-	StreamSummaryForClusterWatchRule(rule configv1alpha2.ClusterWatchRule) watch.StreamSummary
+	StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) watch.StreamSummary
+	StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) watch.StreamSummary
 }
 
 const (

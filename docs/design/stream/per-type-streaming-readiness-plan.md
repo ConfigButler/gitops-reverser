@@ -76,7 +76,7 @@ Why this split (and why not a per-type list on the GitTarget):
 - The codebase **already made this call** for the checkpoint roll-up:
   `GitTargetMaterializationStatus` is deliberately "a summary (counts), not a per-type
   list, so it stays bounded regardless of how many types are watched"
-  ([gittarget_types.go:128-159](../../../api/v1alpha2/gittarget_types.go#L128-L159)).
+  ([gittarget_types.go:128-159](../../../api/v1alpha3/gittarget_types.go#L128-L159)).
   A GitTarget fans in from multiple WatchRules and wildcard expansions, so a per-type
   list there is unbounded by construction.
 - The WatchRule is the bounded, user-scoped place. **Caveat:** a wildcard

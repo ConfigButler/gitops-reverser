@@ -41,7 +41,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -80,7 +80,7 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	log.V(1).Info("Starting reconciliation", "namespacedName", req.NamespacedName)
 
 	// Fetch the GitProvider instance
-	var gitProvider configbutleraiv1alpha2.GitProvider
+	var gitProvider configbutleraiv1alpha3.GitProvider
 	if err := r.Get(ctx, req.NamespacedName, &gitProvider); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("GitProvider not found, was likely deleted", "namespacedName", req.NamespacedName)
@@ -97,7 +97,7 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *GitProviderReconciler) reconcileGitProvider(
 	ctx context.Context,
 	log logr.Logger,
-	gitProvider *configbutleraiv1alpha2.GitProvider,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
 ) (ctrl.Result, error) {
 	log.V(1).Info("Starting GitProvider validation",
 		"name", gitProvider.Name,
@@ -107,9 +107,9 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"generation", gitProvider.Generation,
 		"resourceVersion", gitProvider.ResourceVersion)
 
-	r.setCondition(gitProvider, metav1.ConditionUnknown, ReasonChecking, "Validating repository connectivity...")
+	r.setProgressingConditions(gitProvider, ReasonChecking, "Validating repository connectivity...")
 	if err := r.validateCommitConfiguration(gitProvider); err != nil {
-		r.setCondition(gitProvider, metav1.ConditionFalse, ReasonCommitConfigInvalid, err.Error())
+		r.setStalledConditions(gitProvider, ReasonCommitConfigInvalid, err.Error())
 		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueLongInterval)
 		return result, nil
 	}
@@ -124,7 +124,7 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 			reason = ReasonSecretNotFound
 		}
 
-		r.setCondition(gitProvider, metav1.ConditionFalse, reason, err.Error())
+		r.setStalledConditions(gitProvider, reason, err.Error())
 		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueMediumInterval)
 		return result, nil
 	}
@@ -151,7 +151,7 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 func (r *GitProviderReconciler) fetchAndValidateSecret(
 	ctx context.Context,
 	log logr.Logger,
-	gitProvider *configbutleraiv1alpha2.GitProvider,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
 ) (*corev1.Secret, bool) {
 	if gitProvider.Spec.SecretRef == nil {
 		log.V(1).Info("No secret specified, using anonymous access")
@@ -174,9 +174,8 @@ func (r *GitProviderReconciler) fetchAndValidateSecret(
 		log.Error(err, "Failed to fetch secret",
 			"secretName", gitProvider.Spec.SecretRef.Name,
 			"namespace", gitProvider.Namespace)
-		r.setCondition(
+		r.setStalledConditions(
 			gitProvider,
-			metav1.ConditionFalse,
 			ReasonSecretNotFound,
 			fmt.Sprintf(
 				"Secret '%s' not found in namespace '%s': %v",
@@ -197,7 +196,7 @@ func (r *GitProviderReconciler) fetchAndValidateSecret(
 func (r *GitProviderReconciler) getAuthFromSecret(
 	ctx context.Context,
 	log logr.Logger,
-	gitProvider *configbutleraiv1alpha2.GitProvider,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
 	secret *corev1.Secret,
 ) (transport.AuthMethod, ctrl.Result, bool) {
 	log.V(1).Info("Extracting credentials from secret")
@@ -205,7 +204,7 @@ func (r *GitProviderReconciler) getAuthFromSecret(
 	if err != nil {
 		log.Error(err, "Failed to extract credentials from secret")
 		secretName := gitProvider.Spec.SecretRef.Name
-		r.setCondition(gitProvider, metav1.ConditionFalse, ReasonSecretMalformed,
+		r.setStalledConditions(gitProvider, ReasonSecretMalformed,
 			fmt.Sprintf("Secret '%s' malformed: %v", secretName, err))
 		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueShortInterval)
 		return nil, result, true
@@ -229,7 +228,7 @@ func (r *GitProviderReconciler) getAuthFromSecret(
 func (r *GitProviderReconciler) validateAndUpdateStatus(
 	ctx context.Context,
 	log logr.Logger,
-	gitProvider *configbutleraiv1alpha2.GitProvider,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
 	auth transport.AuthMethod,
 ) (ctrl.Result, error) {
 	log.V(1).Info("Validating repository connectivity",
@@ -240,14 +239,14 @@ func (r *GitProviderReconciler) validateAndUpdateStatus(
 	if err != nil {
 		log.Error(err, "Repository connectivity check failed",
 			"url", gitProvider.Spec.URL)
-		r.setCondition(gitProvider, metav1.ConditionFalse, ReasonConnectionFailed,
+		r.setStalledConditions(gitProvider, ReasonConnectionFailed,
 			fmt.Sprintf("Failed to connect to repository: %v", err))
 		return r.updateStatusAndRequeue(ctx, gitProvider, RequeueShortInterval)
 	}
 
 	log.V(1).Info("Repository connectivity validated successfully", "branchCount", branchCount)
 	message := fmt.Sprintf("Repository connectivity validated for %s", gitProvider.Spec.URL)
-	r.setCondition(gitProvider, metav1.ConditionTrue, "Ready", message)
+	r.setReadyConditions(gitProvider, message)
 
 	log.V(1).Info("GitProvider validation successful", "name", gitProvider.Name)
 	log.V(1).Info("Updating status with success condition")
@@ -290,7 +289,7 @@ func (r *GitProviderReconciler) fetchSecret(
 // default ConfigMap.
 func (r *GitProviderReconciler) extractCredentials(
 	ctx context.Context,
-	gitProvider *configbutleraiv1alpha2.GitProvider,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
 	secret *corev1.Secret,
 ) (transport.AuthMethod, error) {
 	return gitpkg.AuthFromSecretData(ctx, r.Client, gitProvider, secret, r.SSHHostKeys)
@@ -316,7 +315,7 @@ func (r *GitProviderReconciler) checkRemoteConnectivity(
 }
 
 func (r *GitProviderReconciler) validateCommitConfiguration(
-	gitProvider *configbutleraiv1alpha2.GitProvider,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
 ) error {
 	gitProvider.Status.SigningPublicKey = ""
 
@@ -336,32 +335,76 @@ func (r *GitProviderReconciler) validateCommitConfiguration(
 	return nil
 }
 
-// setCondition sets or updates the Ready condition.
+func (r *GitProviderReconciler) setReadyConditions(
+	gitProvider *configbutleraiv1alpha3.GitProvider,
+	message string,
+) {
+	r.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionTrue, ConditionTypeReady, message)
+	r.setCondition(
+		gitProvider,
+		ConditionTypeReconciling,
+		metav1.ConditionFalse,
+		ConditionTypeReady,
+		"Reconciliation complete",
+	)
+	r.setCondition(
+		gitProvider,
+		ConditionTypeStalled,
+		metav1.ConditionFalse,
+		ConditionTypeReady,
+		"GitProvider is not stalled",
+	)
+}
+
+func (r *GitProviderReconciler) setProgressingConditions(
+	gitProvider *configbutleraiv1alpha3.GitProvider,
+	reason string,
+	message string,
+) {
+	r.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionFalse, reason, message)
+	r.setCondition(gitProvider, ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
+	r.setCondition(
+		gitProvider,
+		ConditionTypeStalled,
+		metav1.ConditionFalse,
+		reason,
+		"Reconciliation is making progress",
+	)
+}
+
+func (r *GitProviderReconciler) setStalledConditions(
+	gitProvider *configbutleraiv1alpha3.GitProvider,
+	reason string,
+	message string,
+) {
+	r.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionFalse, reason, message)
+	r.setCondition(gitProvider, ConditionTypeReconciling, metav1.ConditionFalse, reason, "Reconciliation is stalled")
+	r.setCondition(gitProvider, ConditionTypeStalled, metav1.ConditionTrue, reason, message)
+}
+
+// setCondition sets or updates one condition by type.
 func (r *GitProviderReconciler) setCondition(
-	gitProvider *configbutleraiv1alpha2.GitProvider, status metav1.ConditionStatus, reason, message string) {
-	condition := metav1.Condition{
-		Type:               ConditionTypeReady,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	}
-
-	// Update existing condition or add new one
-	for i, existingCondition := range gitProvider.Status.Conditions {
-		if existingCondition.Type == ConditionTypeReady {
-			gitProvider.Status.Conditions[i] = condition
-			return
-		}
-	}
-
-	gitProvider.Status.Conditions = append(gitProvider.Status.Conditions, condition)
+	gitProvider *configbutleraiv1alpha3.GitProvider,
+	conditionType string,
+	status metav1.ConditionStatus,
+	reason,
+	message string,
+) {
+	gitProvider.Status.ObservedGeneration = gitProvider.Generation
+	gitProvider.Status.Conditions = upsertCondition(
+		gitProvider.Status.Conditions,
+		conditionType,
+		status,
+		reason,
+		message,
+		gitProvider.Generation,
+	)
 }
 
 // updateStatusAndRequeue updates the status and returns requeue result.
 func (r *GitProviderReconciler) updateStatusAndRequeue(
 	ctx context.Context,
-	gitProvider *configbutleraiv1alpha2.GitProvider,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
 	requeueAfter time.Duration,
 ) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, gitProvider); err != nil {
@@ -375,7 +418,7 @@ func (r *GitProviderReconciler) updateStatusAndRequeue(
 
 func (r *GitProviderReconciler) updateStatusWithRetry(
 	ctx context.Context,
-	gitProvider *configbutleraiv1alpha2.GitProvider,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
 ) error {
 	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
 
@@ -393,7 +436,7 @@ func (r *GitProviderReconciler) updateStatusWithRetry(
 		log.V(1).Info("Attempting status update")
 
 		// Get the latest version of the resource
-		latest := &configbutleraiv1alpha2.GitProvider{}
+		latest := &configbutleraiv1alpha3.GitProvider{}
 		key := client.ObjectKeyFromObject(gitProvider)
 		if err := r.Get(ctx, key, latest); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -433,7 +476,7 @@ func (r *GitProviderReconciler) updateStatusWithRetry(
 func (r *GitProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(
-			&configbutleraiv1alpha2.GitProvider{},
+			&configbutleraiv1alpha3.GitProvider{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Named("gitprovider").

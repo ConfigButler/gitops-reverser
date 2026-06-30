@@ -25,7 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 // AuditObjectIdentity is the (namespace, name, uid) of the object referenced by
@@ -54,7 +54,7 @@ type AuditObjectIdentity struct {
 //
 // A malformed body is ignored: the helper never panics and never overwrites a
 // value that was already present on objectRef.
-func IdentityFromAuditEvent(event auditv1.Event, op configv1alpha2.OperationType) AuditObjectIdentity {
+func IdentityFromAuditEvent(event auditv1.Event, op configv1alpha3.OperationType) AuditObjectIdentity {
 	var id AuditObjectIdentity
 	if event.ObjectRef != nil {
 		id.Namespace = event.ObjectRef.Namespace
@@ -71,8 +71,8 @@ func IdentityFromAuditEvent(event auditv1.Event, op configv1alpha2.OperationType
 // bodyPriority returns the (preferred, fallback) audit bodies for op. For
 // non-delete ops the response body carries the authoritative post-write state;
 // for deletes the request body carries the authoritative pre-delete state.
-func bodyPriority(event auditv1.Event, op configv1alpha2.OperationType) (*runtime.Unknown, *runtime.Unknown) {
-	if op == configv1alpha2.OperationDelete {
+func bodyPriority(event auditv1.Event, op configv1alpha3.OperationType) (*runtime.Unknown, *runtime.Unknown) {
+	if op == configv1alpha3.OperationDelete {
 		return event.RequestObject, event.ResponseObject
 	}
 	return event.ResponseObject, event.RequestObject

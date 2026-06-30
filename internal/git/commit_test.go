@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	v1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -42,12 +42,12 @@ func TestResolveCommitConfig_Defaults(t *testing.T) {
 }
 
 func TestResolveCommitConfig_CustomValues(t *testing.T) {
-	config := ResolveCommitConfig(&v1alpha2.CommitSpec{
-		Committer: &v1alpha2.CommitterSpec{
+	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
+		Committer: &v1alpha3.CommitterSpec{
 			Name:  "Audit Bot",
 			Email: "audit@example.com",
 		},
-		Message: &v1alpha2.CommitMessageSpec{
+		Message: &v1alpha3.CommitMessageSpec{
 			EventTemplate:     "audit: {{.Operation}} {{.Name}}",
 			ReconcileTemplate: "reconcile: {{.Count}} {{.GitTarget}}",
 			GroupTemplate:     "grouped: {{.Author}} {{.Count}}",
@@ -62,8 +62,8 @@ func TestResolveCommitConfig_CustomValues(t *testing.T) {
 }
 
 func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
-	config := ResolveCommitConfig(&v1alpha2.CommitSpec{
-		Message: &v1alpha2.CommitMessageSpec{
+	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
+		Message: &v1alpha3.CommitMessageSpec{
 			EventTemplate: "{{.Operation",
 		},
 	})
@@ -74,8 +74,8 @@ func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
 }
 
 func TestValidateCommitConfig_InvalidGroupTemplate(t *testing.T) {
-	config := ResolveCommitConfig(&v1alpha2.CommitSpec{
-		Message: &v1alpha2.CommitMessageSpec{
+	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
+		Message: &v1alpha3.CommitMessageSpec{
 			GroupTemplate: "{{.Author",
 		},
 	})
@@ -99,8 +99,8 @@ func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
 		GitTargetName: "platform",
 	}
 
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(&v1alpha2.CommitSpec{
-		Message: &v1alpha2.CommitMessageSpec{
+	message, err := renderEventCommitMessage(event, ResolveCommitConfig(&v1alpha3.CommitSpec{
+		Message: &v1alpha3.CommitMessageSpec{
 			EventTemplate: "audit({{.GitTarget}}): {{.Username}} {{.Operation}} {{.Namespace}}/{{.Name}}",
 		},
 	}))
@@ -180,8 +180,8 @@ func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t 
 		"signing-snapshot-dest",
 		&gvr,
 		"1331",
-		ResolveCommitConfig(&v1alpha2.CommitSpec{
-			Message: &v1alpha2.CommitMessageSpec{
+		ResolveCommitConfig(&v1alpha3.CommitSpec{
+			Message: &v1alpha3.CommitMessageSpec{
 				ReconcileTemplate: "e2e-snapshot: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
 					"@{{.Revision}} to {{.GitTarget}}",
 			},
@@ -192,8 +192,8 @@ func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t 
 }
 
 func TestValidateCommitConfig_CustomReconcileTemplateReferencingTypeAndRevision(t *testing.T) {
-	config := ResolveCommitConfig(&v1alpha2.CommitSpec{
-		Message: &v1alpha2.CommitMessageSpec{
+	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
+		Message: &v1alpha3.CommitMessageSpec{
 			ReconcileTemplate: "reconcile: {{.Count}} {{.APIVersion}}/{{.Resource}}@{{.Revision}} on {{.GitTarget}}",
 		},
 	})
@@ -202,8 +202,8 @@ func TestValidateCommitConfig_CustomReconcileTemplateReferencingTypeAndRevision(
 }
 
 func TestValidateCommitConfig_InvalidReconcileTemplate(t *testing.T) {
-	config := ResolveCommitConfig(&v1alpha2.CommitSpec{
-		Message: &v1alpha2.CommitMessageSpec{
+	config := ResolveCommitConfig(&v1alpha3.CommitSpec{
+		Message: &v1alpha3.CommitMessageSpec{
 			ReconcileTemplate: "{{.Resource",
 		},
 	})
@@ -237,8 +237,8 @@ func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
 				Namespace: "default",
 			},
 		},
-	}, ResolveCommitConfig(&v1alpha2.CommitSpec{
-		Message: &v1alpha2.CommitMessageSpec{
+	}, ResolveCommitConfig(&v1alpha3.CommitSpec{
+		Message: &v1alpha3.CommitMessageSpec{
 			GroupTemplate: "grouped({{.GitTarget}}): {{.Author}} changed {{.Count}} resource(s)",
 		},
 	}))

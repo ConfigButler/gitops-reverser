@@ -108,7 +108,7 @@ Top-level:
 - `conditions: []metav1.Condition` (kept)
 - `phase: string` (NEW — small derived enum; informational only)
 - `lastReconcileTime: metav1.Time` (kept)
-- `lastCommit`, `lastPushTime` (kept)
+- `lastPushTime` (kept)
 - `materialization: {...}` (kept; counts recomputed on the serviceability basis below)
 - ~~`snapshot: {...}`~~ (REMOVE — vestigial)
 

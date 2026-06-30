@@ -5,7 +5,7 @@
 #
 # Frontends typically use metadata.generateName so each "save" is a fresh
 # object. The referenced GitTarget must live in the same namespace.
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
   generateName: save-

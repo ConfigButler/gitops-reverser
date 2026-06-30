@@ -27,7 +27,7 @@ The previous snapshot did not include the latest six commits:
 
 ```text
 91cc317 chore: let's do commit attribution simpler (should prevent flakes)
-a7c4dcd feat(api)!: rename API group version v1alpha1 -> v1alpha2
+a7c4dcd feat(api)!: rename API group version v1alpha1 -> v1alpha3
 90a1e7e docs: reconcile residual-flake findings across the stream design docs
 2bd5303 chore: instrument late-join/divert path for residual e2e flake B; correct analysis
 153a0f2 test: last-5-commits diagnostic for commit-request/signing asserts + residual-flake analysis
@@ -40,7 +40,7 @@ Markdown impact from those commits:
 - Added `docs/finished/commitrequest-attribution-divert-reliability.md`.
 - Moved `docs/design/stream/internal-audit-type-demand.md` to
   `docs/finished/internal-audit-type-demand.md`.
-- Touched 28 Markdown paths in total, mostly to align API references with `v1alpha2` and reconcile
+- Touched 28 Markdown paths in total, mostly to align API references with `v1alpha3` and reconcile
   the residual e2e flake findings across stream design docs.
 
 ## Triage legend

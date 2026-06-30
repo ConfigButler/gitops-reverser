@@ -21,13 +21,17 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Status
+      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha2
+    name: v1alpha3
     schema:
       openAPIV3Schema:
         description: GitProvider is the Schema for the gitproviders API.
@@ -56,7 +60,9 @@ spec:
                 description: AllowedBranches restricts which branches can be written
                   to.
                 items:
+                  minLength: 1
                   type: string
+                minItems: 1
                 type: array
               commit:
                 description: Commit configures commit identity, message formatting,
@@ -203,6 +209,7 @@ spec:
                 description: |-
                   URL of the repository (HTTP/SSH).
                   Immutable: delete and recreate the GitProvider to point at a different repository.
+                minLength: 1
                 type: string
             required:
             - allowedBranches
@@ -217,15 +224,8 @@ spec:
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the GitProvider resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                  Conditions report repository validation and commit configuration readiness:
+                  the Ready summary plus the kstatus Reconciling/Stalled pair.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -284,6 +284,11 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by the controller.
+                format: int64
+                type: integer
               signingPublicKey:
                 description: |-
                   SigningPublicKey is the operator's SSH signing public key in authorized_keys format.

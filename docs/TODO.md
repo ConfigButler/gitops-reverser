@@ -17,6 +17,16 @@ This file is meant to track the smaller current backlog, not historical notes.
 - [ ] Improve queue and worker observability.
   Better metrics, queue visibility, and more high-load test coverage would help.
 
+- [ ] Make the `BranchWorker` queue durable and move watch cursor advancement behind a durable
+  worker acknowledgment.
+  The current Redis watch cursor only remembers the last resourceVersion handed to the in-memory
+  worker queue. That detects queue-full drops, but a controller crash after cursor advancement and
+  before the queued write lands in Git can still skip work on restart. The intended direction is a
+  durable worker queue/journal so replay, live events, and resyncs are acknowledged only after the
+  write is recoverable. This is also the realistic boundary for Kubernetes watch history: the API
+  server does not guarantee every old revision remains available long enough for us to rebuild from
+  resourceVersion alone.
+
 - [ ] Fix recurring full e2e flakiness around WatchRule/snapshot convergence.
   This has shown up more than once as timeout-based failures in manager SOPS bootstrap and
   signing snapshot-message specs, then passed on rerun. Capture and mitigation notes live in
@@ -31,10 +41,6 @@ This file is meant to track the smaller current backlog, not historical notes.
 - [ ] Filter more cluster-generated noise.
   Examples include Kubernetes-generated ConfigMaps such as `kube-root-ca.crt` and similar
   cluster-specific resources that do not belong in a portable Git view by default.
-
-- [ ] Reduce sensitive data persisted in the audit queue.
-  Redacting or minimizing `payload_json` before it lands in Valkey would shrink the blast radius,
-  especially for Secret-bearing audit events.
 
 - [ ] Decide how SOPS rules should cover sensitive custom resources that are not Secret-shaped.
   The current bootstrapped `.sops.yaml` encrypts `data` and `stringData`, which fits Kubernetes
@@ -62,36 +68,17 @@ This file is meant to track the smaller current backlog, not historical notes.
   work in [docs/design/manifest/manifest-inventory-file-agnostic-placement.md](design/manifest/manifest-inventory-file-agnostic-placement.md):
   indexing must record the manifest identity and defer rather than fail the whole scan.
 
-- [ ] Resolve the unused `GitTarget.status.lastCommit` field.
-  It is documented as "the SHA of the last commit processed" but is never populated — the only
-  writer blanks it in [gittarget_controller.go](../internal/controller/gittarget_controller.go),
-  and the GitTarget tests assert it stays empty. Either wire it up from the branch worker (and add
-  a printer column, matching the `SHA` column `CommitRequest` now has) or drop the dead field.
 
 ## Future directions worth revisiting
 
 - [ ] Simpler setup flows, including more Git provider bootstrap automation.
 
-- [x] Resolved: we do **not** consume a Flux `GitRepository` as a `providerRef`. The portable
-  artifact is the credentials Secret, not the repo object, so `providerRef` is now a name-only
-  reference to a `GitProvider` and the credentials reader instead interoperates with Flux/Argo CD
-  Secret shapes. See [design/git-credentials-interop.md](design/git-credentials-interop.md).
-
-- [ ] A mode that commits changes without end-user author attribution, using the watch/reconcile
-  path instead of kube-apiserver audit integration.
-  This should stay explicitly framed as a simpler but lower-fidelity mode, not as equivalent to the
-  audit-backed path.
 
 - [ ] Constrained reverse actions for simple, known Kustomize-style mutations.
 
 - [ ] Better branching and promotion strategies.
 
 - [ ] Bi-directional GitOps alignment with controllers such as Flux and Argo CD.
-
-- [ ] End-user supplied commit messages for UI-driven workflows.
-  Prototype audit-carried options such as `user.extra` enrichment and transient metadata stripped by
-  admission before committing to an aggregated API or CRD. Notes in
-  [docs/future/idea-end-user-commit-messages.md](future/idea-end-user-commit-messages.md).
 
 Research work:
 

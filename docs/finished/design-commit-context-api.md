@@ -148,7 +148,7 @@ initial implementation.
   (e.g., a Jira link, a Slack thread URL).
 
 The discriminator pattern keeps these additive. A v1alpha1 client that sends `setMessage` keeps
-working when v1alpha2 adds `proposeAsPullRequest`.
+working when v1alpha3 adds `proposeAsPullRequest`.
 
 ## End-to-end flow
 

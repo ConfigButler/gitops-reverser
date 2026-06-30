@@ -21,22 +21,28 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - jsonPath: .status.conditions[?(@.type=="AuthorAttributed")].status
-      name: AuthorAttributed
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Pushed")].status
-      name: Pushed
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
       type: string
     - jsonPath: .status.sha
       name: SHA
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
-      name: Reason
+    - jsonPath: .status.conditions[?(@.type=="AuthorAttributed")].status
+      name: AuthorAttributed
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Pushed")].status
+      name: Pushed
+      priority: 1
+      type: string
+    - jsonPath: .status.branch
+      name: Branch
+      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha2
+    name: v1alpha3
     schema:
       openAPIV3Schema:
         description: |-
@@ -98,6 +104,8 @@ spec:
                   group:
                     default: configbutler.ai
                     description: API Group of the referent.
+                    enum:
+                    - configbutler.ai
                     type: string
                   kind:
                     default: GitTarget
@@ -109,6 +117,8 @@ spec:
                     - GitTarget
                     type: string
                   name:
+                    description: Name of the referent.
+                    minLength: 1
                     type: string
                 required:
                 - name

@@ -31,7 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
@@ -121,7 +121,7 @@ func (r *EventRouter) ServiceCommitRequest(
 	ctx context.Context,
 	attach git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
-	var gitTarget configv1alpha2.GitTarget
+	var gitTarget configv1alpha3.GitTarget
 	if err := r.Client.Get(ctx, client.ObjectKey{
 		Name:      attach.GitTargetName,
 		Namespace: attach.GitTargetNamespace,
@@ -171,7 +171,7 @@ func (r *EventRouter) resolveWorkerForGitDest(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 ) (*git.BranchWorker, error) {
-	var gitTarget configv1alpha2.GitTarget
+	var gitTarget configv1alpha3.GitTarget
 	if err := r.Client.Get(ctx, client.ObjectKey{
 		Name:      gitDest.Name,
 		Namespace: gitDest.Namespace,

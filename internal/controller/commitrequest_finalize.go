@@ -24,7 +24,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -78,7 +78,7 @@ const (
 // setCommitRequestCondition upserts a condition keyed by type, stamping it with
 // the request's generation so kstatus can tell a current status from a stale one.
 func setCommitRequestCondition(
-	cr *configv1alpha2.CommitRequest,
+	cr *configv1alpha3.CommitRequest,
 	conditionType string,
 	status metav1.ConditionStatus,
 	reason, message string,
@@ -99,7 +99,7 @@ const (
 // setCommitRequestProgress stamps the four progress conditions (Ready=False,
 // Reconciling=True, Stalled=False, Pushed=Unknown) with one unifying reason, so a
 // single wait reads consistently across them.
-func setCommitRequestProgress(cr *configv1alpha2.CommitRequest, reason, message string) {
+func setCommitRequestProgress(cr *configv1alpha3.CommitRequest, reason, message string) {
 	setCommitRequestCondition(cr, ConditionTypeReady, metav1.ConditionFalse, reason, message)
 	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
 	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
@@ -111,7 +111,7 @@ func setCommitRequestProgress(cr *configv1alpha2.CommitRequest, reason, message 
 // prior "waiting for the author" phase: the request is attributed and attached to the
 // worker, waiting out the close delay before the window closes and the commit is made
 // and pushed (Reconciling=True, reason WaitingForCloseDelay).
-func markCommitRequestWaitingForCloseDelay(cr *configv1alpha2.CommitRequest, attribution commitRequestAttribution) {
+func markCommitRequestWaitingForCloseDelay(cr *configv1alpha3.CommitRequest, attribution commitRequestAttribution) {
 	cr.Status.ObservedGeneration = cr.Generation
 	setCommitRequestAttributed(cr, attribution)
 	setCommitRequestProgress(cr, crReasonWaitingForCloseDelay, closeDelayMessage)
@@ -120,7 +120,7 @@ func markCommitRequestWaitingForCloseDelay(cr *configv1alpha2.CommitRequest, att
 // setCommitRequestAttributed records the settled, binary author decision on the
 // AuthorAttributed condition. False (CommitterFallback) is not a failure and does not
 // affect Ready — it is the honest signal that no admission author record was found.
-func setCommitRequestAttributed(cr *configv1alpha2.CommitRequest, attribution commitRequestAttribution) {
+func setCommitRequestAttributed(cr *configv1alpha3.CommitRequest, attribution commitRequestAttribution) {
 	switch attribution {
 	case attributionFromAdmission:
 		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue,
@@ -139,7 +139,7 @@ func setCommitRequestAttributed(cr *configv1alpha2.CommitRequest, attribution co
 // summary; Reconciling/Stalled carry kstatus; Attributed records the author
 // decision; Pushed records whether a commit reached the remote.
 func applyFinalizeResultToStatus(
-	cr *configv1alpha2.CommitRequest,
+	cr *configv1alpha3.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
 	attribution commitRequestAttribution,
@@ -182,7 +182,7 @@ func applyFinalizeResultToStatus(
 // rejectCommitRequest records a benign terminal outcome that produced no commit:
 // Ready=True (the request was serviced correctly, with the specific reason),
 // Pushed=False, and Stalled=False — kstatus Current, not Failed.
-func rejectCommitRequest(cr *configv1alpha2.CommitRequest, reason, message string) {
+func rejectCommitRequest(cr *configv1alpha3.CommitRequest, reason, message string) {
 	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionFalse, reason, message)
 	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionFalse, reason, notStalledMessage)
 	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionFalse, reason, message)
@@ -191,7 +191,7 @@ func rejectCommitRequest(cr *configv1alpha2.CommitRequest, reason, message strin
 
 // failCommitRequest records a hard terminal failure: Ready=False, Pushed=False, and
 // Stalled=True — kstatus Failed, a human-fixable block.
-func failCommitRequest(cr *configv1alpha2.CommitRequest, reason, message string) {
+func failCommitRequest(cr *configv1alpha3.CommitRequest, reason, message string) {
 	setCommitRequestCondition(cr, ConditionTypeReconciling, metav1.ConditionFalse, reason, message)
 	setCommitRequestCondition(cr, ConditionTypePushed, metav1.ConditionFalse, reason, "no commit was pushed")
 	setCommitRequestCondition(cr, ConditionTypeStalled, metav1.ConditionTrue, reason, message)
@@ -200,14 +200,14 @@ func failCommitRequest(cr *configv1alpha2.CommitRequest, reason, message string)
 
 // commitRequestIsTerminal reports whether the request has reached a terminal
 // outcome: Ready=True (committed or benignly rejected) or Stalled=True (failed).
-func commitRequestIsTerminal(cr *configv1alpha2.CommitRequest) bool {
+func commitRequestIsTerminal(cr *configv1alpha3.CommitRequest) bool {
 	return conditionIsTrue(cr.Status.Conditions, ConditionTypeReady) ||
 		conditionIsTrue(cr.Status.Conditions, ConditionTypeStalled)
 }
 
 // commitRequestConditionStatus returns the status of one condition as a loggable
 // string, or "" when the condition is absent.
-func commitRequestConditionStatus(cr *configv1alpha2.CommitRequest, conditionType string) string {
+func commitRequestConditionStatus(cr *configv1alpha3.CommitRequest, conditionType string) string {
 	if c := apimeta.FindStatusCondition(cr.Status.Conditions, conditionType); c != nil {
 		return string(c.Status)
 	}
@@ -216,7 +216,7 @@ func commitRequestConditionStatus(cr *configv1alpha2.CommitRequest, conditionTyp
 
 // commitRequestReadyReason returns the Ready condition's reason and message for
 // logging (both empty when the condition is absent).
-func commitRequestReadyReason(cr *configv1alpha2.CommitRequest) (string, string) {
+func commitRequestReadyReason(cr *configv1alpha3.CommitRequest) (string, string) {
 	if c := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady); c != nil {
 		return c.Reason, c.Message
 	}

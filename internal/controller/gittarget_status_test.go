@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
@@ -117,7 +117,7 @@ func TestDeriveGitTargetDataPlaneStatus(t *testing.T) {
 
 func TestApplyDataPlaneConditions_SetsKstatusTrio(t *testing.T) {
 	r := &GitTargetReconciler{}
-	target := &configbutleraiv1alpha2.GitTarget{}
+	target := &configbutleraiv1alpha3.GitTarget{}
 
 	r.applyDataPlaneConditions(target, watch.StreamSummary{
 		Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
@@ -132,7 +132,7 @@ func TestApplyDataPlaneConditions_SetsKstatusTrio(t *testing.T) {
 
 func TestSetBlockedDataPlane_MarksUnknownAndPending(t *testing.T) {
 	r := &GitTargetReconciler{}
-	target := &configbutleraiv1alpha2.GitTarget{}
+	target := &configbutleraiv1alpha3.GitTarget{}
 
 	r.setBlockedDataPlane(target)
 

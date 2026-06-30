@@ -49,7 +49,7 @@ The important fields are:
 Example:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitProvider
 metadata:
   name: example-provider
@@ -264,7 +264,7 @@ The operator publishes the effective public key in `.status.signingPublicKey`.
 Let the operator generate the signing key:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitProvider
 metadata:
   name: example-provider
@@ -328,7 +328,7 @@ The important fields are:
 Example:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: example-target
@@ -411,7 +411,7 @@ top-level resources; selected subresource effects are handled separately by the 
 Example:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
   name: example-watchrule
@@ -441,7 +441,7 @@ Because it is cluster-scoped, its `targetRef` must include the namespace of the 
 Example:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: ClusterWatchRule
 metadata:
   name: cluster-rbac
@@ -476,7 +476,7 @@ The important fields are:
 Example:
 
 ```yaml
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
   name: save-now

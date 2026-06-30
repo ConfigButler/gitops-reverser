@@ -41,7 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -72,14 +72,14 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 	// Create a BranchWorker for this empty repository
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	logger := logr.Discard()
 	worker := NewBranchWorker(client, logger, "test-repo", "default", "main", nil, 0)
 
 	// Create a GitProvider in the fake client pointing to our empty repo
-	repoConfig := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	repoConfig := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: "file://" + repoPath,
 		},
 	}
@@ -103,7 +103,7 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 func TestBranchWorker_IdentityFields(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
@@ -129,11 +129,11 @@ func TestBranchWorker_EnsurePathBootstrapped_EmptyPathCreatesTemplate(t *testing
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -178,11 +178,11 @@ func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathBootstrapsMissingFiles(
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -217,11 +217,11 @@ func TestBranchWorker_EnsurePathBootstrapped_NoEncryptionSkipsSOPSConfig(t *test
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -260,11 +260,11 @@ func TestBranchWorker_EnsurePathBootstrapped_ExistingFileNotOverwritten(t *testi
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -293,11 +293,11 @@ func TestBranchWorker_EnsurePathBootstrapped_EnableEncryptionLaterAddsSOPSConfig
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -335,11 +335,11 @@ func TestBranchWorker_EnsurePathBootstrapped_InvalidEncryptionSecretSkipsSOPSCon
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -380,11 +380,11 @@ func TestBranchWorker_EnsurePathBootstrapped_MissingSOPSKeySkipsSOPSConfig(t *te
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -432,11 +432,11 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -453,22 +453,22 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 	}
 	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
 
-	target := &configv1alpha2.GitTarget{}
+	target := &configv1alpha3.GitTarget{}
 	target.Name = "bootstrap-target"
 	target.Namespace = "default"
-	target.Spec.ProviderRef = configv1alpha2.GitProviderReference{
+	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{
 		Name: "test-repo",
 	}
 	target.Spec.Branch = "main"
 	target.Spec.Path = "clusters/dev"
-	target.Spec.Encryption = &configv1alpha2.EncryptionSpec{
+	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
-		SecretRef: configv1alpha2.LocalSecretReference{
+		SecretRef: configv1alpha3.LocalSecretReference{
 			Name: encryptionSecret.Name,
 		},
-		Age: &configv1alpha2.AgeEncryptionSpec{
+		Age: &configv1alpha3.AgeEncryptionSpec{
 			Enabled: true,
-			Recipients: configv1alpha2.AgeRecipientsSpec{
+			Recipients: configv1alpha3.AgeRecipientsSpec{
 				PublicKeys: []string{
 					publicOnlyIdentity.Recipient().String(),
 				},
@@ -513,11 +513,11 @@ func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t 
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -608,11 +608,11 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
 		},
 	}
@@ -728,18 +728,18 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *te
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
-			Commit: &configv1alpha2.CommitSpec{
-				Committer: &configv1alpha2.CommitterSpec{
+			Commit: &configv1alpha3.CommitSpec{
+				Committer: &configv1alpha3.CommitterSpec{
 					Name:  "Audit Bot",
 					Email: "audit@example.com",
 				},
-				Message: &configv1alpha2.CommitMessageSpec{
+				Message: &configv1alpha3.CommitMessageSpec{
 					EventTemplate: "audit: {{.Username}} {{.Operation}} {{.APIVersion}}/{{.Resource}}/{{.Name}}",
 				},
 			},
@@ -814,14 +814,14 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	provider := &configv1alpha2.GitProvider{
-		Spec: configv1alpha2.GitProviderSpec{
+	provider := &configv1alpha3.GitProvider{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
-			Commit: &configv1alpha2.CommitSpec{
-				Message: &configv1alpha2.CommitMessageSpec{
+			Commit: &configv1alpha3.CommitSpec{
+				Message: &configv1alpha3.CommitMessageSpec{
 					ReconcileTemplate: "reconcile({{.GitTarget}}): {{.Count}} resources",
 				},
 			},
@@ -923,7 +923,7 @@ func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	signingSecret := &corev1.Secret{
@@ -937,16 +937,16 @@ func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.
 	}
 	require.NoError(t, k8sClient.Create(ctx, signingSecret))
 
-	provider := &configv1alpha2.GitProvider{
+	provider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-repo",
 			Namespace: "default",
 		},
-		Spec: configv1alpha2.GitProviderSpec{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
-			Commit: &configv1alpha2.CommitSpec{
-				Signing: &configv1alpha2.CommitSigningSpec{
-					SecretRef: configv1alpha2.LocalSecretReference{Name: "signing-secret"},
+			Commit: &configv1alpha3.CommitSpec{
+				Signing: &configv1alpha3.CommitSigningSpec{
+					SecretRef: configv1alpha3.LocalSecretReference{Name: "signing-secret"},
 				},
 			},
 		},
@@ -1020,7 +1020,7 @@ func TestBranchWorker_CommitAndPushRequest_SkipsWriteWhenSigningSecretIsInvalid(
 
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha2.AddToScheme(scheme)
+	_ = configv1alpha3.AddToScheme(scheme)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	signingSecret := &corev1.Secret{
@@ -1034,16 +1034,16 @@ func TestBranchWorker_CommitAndPushRequest_SkipsWriteWhenSigningSecretIsInvalid(
 	}
 	require.NoError(t, k8sClient.Create(ctx, signingSecret))
 
-	provider := &configv1alpha2.GitProvider{
+	provider := &configv1alpha3.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-repo",
 			Namespace: "default",
 		},
-		Spec: configv1alpha2.GitProviderSpec{
+		Spec: configv1alpha3.GitProviderSpec{
 			URL: remoteURL,
-			Commit: &configv1alpha2.CommitSpec{
-				Signing: &configv1alpha2.CommitSigningSpec{
-					SecretRef: configv1alpha2.LocalSecretReference{Name: "signing-secret"},
+			Commit: &configv1alpha3.CommitSpec{
+				Signing: &configv1alpha3.CommitSigningSpec{
+					SecretRef: configv1alpha3.LocalSecretReference{Name: "signing-secret"},
 				},
 			},
 		},
@@ -1106,22 +1106,22 @@ func createTargetWithEncryption(
 	}
 	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
 
-	target := &configv1alpha2.GitTarget{}
+	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.ProviderRef = configv1alpha2.GitProviderReference{
+	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
 	target.Spec.Path = path
-	target.Spec.Encryption = &configv1alpha2.EncryptionSpec{
+	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
-		SecretRef: configv1alpha2.LocalSecretReference{
+		SecretRef: configv1alpha3.LocalSecretReference{
 			Name: "sops-age-key",
 		},
-		Age: &configv1alpha2.AgeEncryptionSpec{
+		Age: &configv1alpha3.AgeEncryptionSpec{
 			Enabled: true,
-			Recipients: configv1alpha2.AgeRecipientsSpec{
+			Recipients: configv1alpha3.AgeRecipientsSpec{
 				ExtractFromSecret: true,
 			},
 		},
@@ -1136,10 +1136,10 @@ func createTargetWithoutEncryption(
 	name, namespace, providerName, branch, path string,
 ) {
 	t.Helper()
-	target := &configv1alpha2.GitTarget{}
+	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.ProviderRef = configv1alpha2.GitProviderReference{
+	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
@@ -1162,22 +1162,22 @@ func createTargetWithEncryptionSecretData(
 	encryptionSecret.Data = secretData
 	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
 
-	target := &configv1alpha2.GitTarget{}
+	target := &configv1alpha3.GitTarget{}
 	target.Name = name
 	target.Namespace = namespace
-	target.Spec.ProviderRef = configv1alpha2.GitProviderReference{
+	target.Spec.ProviderRef = configv1alpha3.GitProviderReference{
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
 	target.Spec.Path = path
-	target.Spec.Encryption = &configv1alpha2.EncryptionSpec{
+	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
-		SecretRef: configv1alpha2.LocalSecretReference{
+		SecretRef: configv1alpha3.LocalSecretReference{
 			Name: encryptionSecret.Name,
 		},
-		Age: &configv1alpha2.AgeEncryptionSpec{
+		Age: &configv1alpha3.AgeEncryptionSpec{
 			Enabled: true,
-			Recipients: configv1alpha2.AgeRecipientsSpec{
+			Recipients: configv1alpha3.AgeRecipientsSpec{
 				ExtractFromSecret: true,
 			},
 		},
@@ -1203,16 +1203,16 @@ func attachEncryptionToTarget(
 	}
 	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
 
-	target := &configv1alpha2.GitTarget{}
+	target := &configv1alpha3.GitTarget{}
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKey{Name: targetName, Namespace: targetNamespace}, target))
-	target.Spec.Encryption = &configv1alpha2.EncryptionSpec{
+	target.Spec.Encryption = &configv1alpha3.EncryptionSpec{
 		Provider: "sops",
-		SecretRef: configv1alpha2.LocalSecretReference{
+		SecretRef: configv1alpha3.LocalSecretReference{
 			Name: encryptionSecret.Name,
 		},
-		Age: &configv1alpha2.AgeEncryptionSpec{
+		Age: &configv1alpha3.AgeEncryptionSpec{
 			Enabled: true,
-			Recipients: configv1alpha2.AgeRecipientsSpec{
+			Recipients: configv1alpha3.AgeRecipientsSpec{
 				ExtractFromSecret: true,
 			},
 		},

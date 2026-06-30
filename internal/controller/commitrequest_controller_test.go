@@ -27,7 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 var _ = Describe("CommitRequest controller", func() {
@@ -39,13 +39,13 @@ var _ = Describe("CommitRequest controller", func() {
 	// attribute → attach → terminal flow and the committer-only path are covered by
 	// the unit tests in commitrequest_controller_unit_test.go.
 	It("stamps a freshly created CommitRequest with in-progress conditions", func() {
-		commitRequest := &configbutleraiv1alpha2.CommitRequest{
+		commitRequest := &configbutleraiv1alpha3.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "save-",
 				Namespace:    namespace,
 			},
-			Spec: configbutleraiv1alpha2.CommitRequestSpec{
-				TargetRef: configbutleraiv1alpha2.LocalTargetReference{
+			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+				TargetRef: configbutleraiv1alpha3.LocalTargetReference{
 					Name: "team-a-config",
 				},
 				Message: "increase checkout API memory",
@@ -55,7 +55,7 @@ var _ = Describe("CommitRequest controller", func() {
 		key := client.ObjectKeyFromObject(commitRequest)
 
 		Eventually(func(g Gomega) {
-			var fetched configbutleraiv1alpha2.CommitRequest
+			var fetched configbutleraiv1alpha3.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 			reconciling := apimeta.FindStatusCondition(fetched.Status.Conditions, ConditionTypeReconciling)
 			g.Expect(reconciling).NotTo(BeNil())
@@ -67,13 +67,13 @@ var _ = Describe("CommitRequest controller", func() {
 	})
 
 	It("does not overwrite a terminal outcome that is already recorded", func() {
-		commitRequest := &configbutleraiv1alpha2.CommitRequest{
+		commitRequest := &configbutleraiv1alpha3.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "save-",
 				Namespace:    namespace,
 			},
-			Spec: configbutleraiv1alpha2.CommitRequestSpec{
-				TargetRef: configbutleraiv1alpha2.LocalTargetReference{
+			Spec: configbutleraiv1alpha3.CommitRequestSpec{
+				TargetRef: configbutleraiv1alpha3.LocalTargetReference{
 					Name: "team-a-config",
 				},
 			},
@@ -83,7 +83,7 @@ var _ = Describe("CommitRequest controller", func() {
 
 		// Wait for the initial in-progress stamp.
 		Eventually(func(g Gomega) {
-			var fetched configbutleraiv1alpha2.CommitRequest
+			var fetched configbutleraiv1alpha3.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 			ready := apimeta.FindStatusCondition(fetched.Status.Conditions, ConditionTypeReady)
 			g.Expect(ready).NotTo(BeNil())
@@ -91,7 +91,7 @@ var _ = Describe("CommitRequest controller", func() {
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 
 		// Simulate a finalize having recorded the terminal outcome (Ready=True).
-		var fetched configbutleraiv1alpha2.CommitRequest
+		var fetched configbutleraiv1alpha3.CommitRequest
 		Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 		apimeta.SetStatusCondition(&fetched.Status.Conditions, metav1.Condition{
 			Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: crReasonCommitted, Message: "committed",
@@ -105,7 +105,7 @@ var _ = Describe("CommitRequest controller", func() {
 
 		// The controller must leave the terminal outcome intact.
 		Consistently(func(g Gomega) {
-			var checked configbutleraiv1alpha2.CommitRequest
+			var checked configbutleraiv1alpha3.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &checked)).To(Succeed())
 			ready := apimeta.FindStatusCondition(checked.Status.Conditions, ConditionTypeReady)
 			g.Expect(ready).NotTo(BeNil())

@@ -112,7 +112,7 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 
 func commitRequestStatusObject(conditions []map[string]interface{}) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "configbutler.ai/v1alpha2",
+		"apiVersion": "configbutler.ai/v1alpha3",
 		"kind":       "CommitRequest",
 		"metadata": map[string]interface{}{
 			"name":       "save-a",

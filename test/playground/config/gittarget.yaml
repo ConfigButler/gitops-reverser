@@ -1,4 +1,4 @@
-apiVersion: configbutler.ai/v1alpha2
+apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
   name: playground-target

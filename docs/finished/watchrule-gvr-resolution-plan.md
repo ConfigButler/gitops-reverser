@@ -346,7 +346,7 @@ printcolumn if plain `kubectl get watchrule` should expose resolution health.
 | `internal/watch/manager.go` | Resolve snapshot and namespace planning from the shared resolver |
 | `internal/controller/watchrule_controller.go` | Resource resolution condition and warning feedback |
 | `internal/controller/clusterwatchrule_controller.go` | Same for ClusterWatchRule |
-| `api/v1alpha2/watchrule_types.go`, `clusterwatchrule_types.go` | Document omitted-group semantics; optional structured unresolved-resource status |
+| `api/v1alpha3/watchrule_types.go`, `clusterwatchrule_types.go` | Document omitted-group semantics; optional structured unresolved-resource status |
 | `internal/watch/*_test.go`, `internal/controller/*_test.go`, `test/e2e/*` | Coverage above |
 
 ## Sequencing

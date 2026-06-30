@@ -36,7 +36,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 
-	configbutleraiv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -67,7 +67,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -91,7 +91,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -107,7 +107,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				_, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).To(HaveOccurred())
@@ -127,7 +127,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -146,7 +146,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				auth, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -166,7 +166,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				_, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).To(HaveOccurred())
@@ -182,7 +182,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				_, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).To(HaveOccurred())
@@ -200,7 +200,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 				_, err := reconciler.extractCredentials(
 					context.Background(),
-					&configbutleraiv1alpha2.GitProvider{},
+					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).To(HaveOccurred())
@@ -213,41 +213,53 @@ var _ = Describe("GitProvider Controller", func() {
 
 	Context("Status Condition Management", func() {
 		var reconciler *GitProviderReconciler
-		var gitProvider *configbutleraiv1alpha2.GitProvider
+		var gitProvider *configbutleraiv1alpha3.GitProvider
 
 		BeforeEach(func() {
 			reconciler = &GitProviderReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			gitProvider = &configbutleraiv1alpha2.GitProvider{
+			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider",
 					Namespace: "default",
 				},
-				Status: configbutleraiv1alpha2.GitProviderStatus{
+				Status: configbutleraiv1alpha3.GitProviderStatus{
 					Conditions: []metav1.Condition{},
 				},
 			}
 		})
 
 		It("should set initial checking condition", func() {
-			reconciler.setCondition(gitProvider, metav1.ConditionUnknown, ReasonChecking, "Validating...")
+			reconciler.setCondition(
+				gitProvider,
+				ConditionTypeReady,
+				metav1.ConditionFalse,
+				ReasonChecking,
+				"Validating...",
+			)
 
 			Expect(gitProvider.Status.Conditions).To(HaveLen(1))
 			condition := gitProvider.Status.Conditions[0]
 			Expect(condition.Type).To(Equal("Ready"))
-			Expect(condition.Status).To(Equal(metav1.ConditionUnknown))
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonChecking))
 			Expect(condition.Message).To(Equal("Validating..."))
 		})
 
 		It("should update existing condition", func() {
 			// Set initial condition
-			reconciler.setCondition(gitProvider, metav1.ConditionUnknown, ReasonChecking, "Checking...")
+			reconciler.setCondition(
+				gitProvider,
+				ConditionTypeReady,
+				metav1.ConditionFalse,
+				ReasonChecking,
+				"Checking...",
+			)
 
 			// Update condition
-			reconciler.setCondition(gitProvider, metav1.ConditionTrue, "Ready", "Success!")
+			reconciler.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionTrue, "Ready", "Success!")
 
 			Expect(gitProvider.Status.Conditions).To(HaveLen(1))
 			condition := gitProvider.Status.Conditions[0]
@@ -267,7 +279,7 @@ var _ = Describe("GitProvider Controller", func() {
 			}
 
 			for _, tc := range testCases {
-				reconciler.setCondition(gitProvider, metav1.ConditionFalse, tc.reason, tc.message)
+				reconciler.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionFalse, tc.reason, tc.message)
 
 				Expect(gitProvider.Status.Conditions).To(HaveLen(1))
 				condition := gitProvider.Status.Conditions[0]
@@ -282,7 +294,7 @@ var _ = Describe("GitProvider Controller", func() {
 		var (
 			ctx         context.Context
 			reconciler  *GitProviderReconciler
-			gitProvider *configbutleraiv1alpha2.GitProvider
+			gitProvider *configbutleraiv1alpha3.GitProvider
 			testSecret  *corev1.Secret
 		)
 
@@ -320,15 +332,15 @@ var _ = Describe("GitProvider Controller", func() {
 		})
 
 		It("should fail when secret is not found", func() {
-			gitProvider = &configbutleraiv1alpha2.GitProvider{
+			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-missing-secret",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha2.GitProviderSpec{
+				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
 						Name: "nonexistent-secret",
 					},
 				},
@@ -346,7 +358,7 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(time.Minute * 5))
 
 			// Verify the resource was updated with failure condition
-			updatedProvider := &configbutleraiv1alpha2.GitProvider{}
+			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
@@ -354,12 +366,17 @@ var _ = Describe("GitProvider Controller", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedProvider.Status.Conditions).To(HaveLen(1))
-			condition := updatedProvider.Status.Conditions[0]
+			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
+			condition := conditionByType(updatedProvider.Status.Conditions, ConditionTypeReady)
+			Expect(condition).NotTo(BeNil())
 			Expect(condition.Type).To(Equal("Ready"))
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonSecretNotFound))
 			Expect(condition.Message).To(ContainSubstring("Secret 'nonexistent-secret' not found"))
+			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeReconciling).Status).
+				To(Equal(metav1.ConditionFalse))
+			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
+				To(Equal(metav1.ConditionTrue))
 		})
 
 		It("should fail when secret is malformed", func() {
@@ -376,15 +393,15 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(k8sClient.Create(ctx, malformedSecret)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, malformedSecret) }()
 
-			gitProvider = &configbutleraiv1alpha2.GitProvider{
+			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-malformed",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha2.GitProviderSpec{
+				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha2.LocalSecretReference{
+					SecretRef: &configbutleraiv1alpha3.LocalSecretReference{
 						Name: "malformed-secret",
 					},
 				},
@@ -402,7 +419,7 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(time.Minute * 2))
 
 			// Verify the resource was updated with failure condition
-			updatedProvider := &configbutleraiv1alpha2.GitProvider{}
+			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
@@ -410,11 +427,14 @@ var _ = Describe("GitProvider Controller", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedProvider.Status.Conditions).To(HaveLen(1))
-			condition := updatedProvider.Status.Conditions[0]
+			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
+			condition := conditionByType(updatedProvider.Status.Conditions, ConditionTypeReady)
+			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonSecretMalformed))
 			Expect(condition.Message).To(ContainSubstring("Secret 'malformed-secret' malformed"))
+			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
+				To(Equal(metav1.ConditionTrue))
 		})
 
 		It("should handle resource deletion gracefully", func() {
@@ -431,16 +451,16 @@ var _ = Describe("GitProvider Controller", func() {
 		})
 
 		It("should fail when commit templates are invalid", func() {
-			gitProvider = &configbutleraiv1alpha2.GitProvider{
+			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-invalid-commit-template",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha2.GitProviderSpec{
+				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					Commit: &configbutleraiv1alpha2.CommitSpec{
-						Message: &configbutleraiv1alpha2.CommitMessageSpec{
+					Commit: &configbutleraiv1alpha3.CommitSpec{
+						Message: &configbutleraiv1alpha3.CommitMessageSpec{
 							EventTemplate: "{{.Operation",
 						},
 					},
@@ -458,7 +478,7 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(time.Minute * 10))
 
-			updatedProvider := &configbutleraiv1alpha2.GitProvider{}
+			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
@@ -466,26 +486,29 @@ var _ = Describe("GitProvider Controller", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedProvider.Status.Conditions).To(HaveLen(1))
-			condition := updatedProvider.Status.Conditions[0]
+			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
+			condition := conditionByType(updatedProvider.Status.Conditions, ConditionTypeReady)
+			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonCommitConfigInvalid))
 			Expect(condition.Message).To(ContainSubstring("invalid commit configuration"))
+			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
+				To(Equal(metav1.ConditionTrue))
 			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
 		})
 
 		It("should fail when commit signing is configured but the signing secret is missing", func() {
-			gitProvider = &configbutleraiv1alpha2.GitProvider{
+			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider-signing-secret-missing",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha2.GitProviderSpec{
+				Spec: configbutleraiv1alpha3.GitProviderSpec{
 					URL:             "git@github.com:test/repo.git",
 					AllowedBranches: []string{"main"},
-					Commit: &configbutleraiv1alpha2.CommitSpec{
-						Signing: &configbutleraiv1alpha2.CommitSigningSpec{
-							SecretRef: configbutleraiv1alpha2.LocalSecretReference{
+					Commit: &configbutleraiv1alpha3.CommitSpec{
+						Signing: &configbutleraiv1alpha3.CommitSigningSpec{
+							SecretRef: configbutleraiv1alpha3.LocalSecretReference{
 								Name: "signing-secret",
 							},
 						},
@@ -504,7 +527,7 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(time.Minute * 5))
 
-			updatedProvider := &configbutleraiv1alpha2.GitProvider{}
+			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
 				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
@@ -512,11 +535,14 @@ var _ = Describe("GitProvider Controller", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedProvider.Status.Conditions).To(HaveLen(1))
-			condition := updatedProvider.Status.Conditions[0]
+			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
+			condition := conditionByType(updatedProvider.Status.Conditions, ConditionTypeReady)
+			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonSecretNotFound))
 			Expect(condition.Message).To(ContainSubstring("signing secret"))
+			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
+				To(Equal(metav1.ConditionTrue))
 			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
 		})
 	})

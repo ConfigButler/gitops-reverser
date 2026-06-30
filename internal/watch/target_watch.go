@@ -37,7 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/utils/ptr"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
@@ -720,7 +720,7 @@ func (m *Manager) attachAuthor(
 	// deletionTimestamp, both mapped to OperationDelete) has an RV that never matches the
 	// author fact's post-write RV, so it may consult the /last pointer; a create/update is
 	// exact-capable and must not fall through to /last.
-	exactCapable := event.Operation != string(configv1alpha2.OperationDelete)
+	exactCapable := event.Operation != string(configv1alpha3.OperationDelete)
 	if userInfo, ok := m.AuthorResolver.ResolveAuthor(
 		ctx, gvr, u.GetUID(), u.GetResourceVersion(), exactCapable,
 	); ok {
@@ -745,7 +745,7 @@ func (m *Manager) skipUnchangedLiveUpdate(
 	op string,
 ) bool {
 	key := liveContentDedupKey(gitDest, gvr, u)
-	if op == string(configv1alpha2.OperationDelete) {
+	if op == string(configv1alpha3.OperationDelete) {
 		m.liveContentDedup.Delete(key)
 		return false
 	}
@@ -753,7 +753,7 @@ func (m *Manager) skipUnchangedLiveUpdate(
 	if !ok {
 		return false
 	}
-	if op == string(configv1alpha2.OperationUpdate) {
+	if op == string(configv1alpha3.OperationUpdate) {
 		if prev, loaded := m.liveContentDedup.Load(key); loaded {
 			if prevHash, isStr := prev.(string); isStr && prevHash == hash {
 				return true
@@ -794,7 +794,7 @@ func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstru
 		Identifier: types.NewResourceIdentifier(gvr.Group, gvr.Version, gvr.Resource, u.GetNamespace(), u.GetName()),
 		Operation:  op,
 	}
-	if op != string(configv1alpha2.OperationDelete) {
+	if op != string(configv1alpha3.OperationDelete) {
 		event.Object = sanitize.Sanitize(u)
 	}
 	return event
@@ -803,11 +803,11 @@ func targetWatchGitEvent(gvr schema.GroupVersionResource, u *unstructured.Unstru
 func operationForWatchEvent(eventType watch.EventType) string {
 	switch eventType {
 	case watch.Added:
-		return string(configv1alpha2.OperationCreate)
+		return string(configv1alpha3.OperationCreate)
 	case watch.Modified:
-		return string(configv1alpha2.OperationUpdate)
+		return string(configv1alpha3.OperationUpdate)
 	case watch.Deleted:
-		return string(configv1alpha2.OperationDelete)
+		return string(configv1alpha3.OperationDelete)
 	case watch.Bookmark, watch.Error:
 		return ""
 	default:
@@ -827,7 +827,7 @@ func operationForWatchEvent(eventType watch.EventType) string {
 // holds. See docs/design/deletecollection-attribution-expander.md §2.
 func operationForLiveTargetWatchEvent(eventType watch.EventType, u *unstructured.Unstructured) string {
 	if u != nil && u.GetDeletionTimestamp() != nil {
-		return string(configv1alpha2.OperationDelete)
+		return string(configv1alpha3.OperationDelete)
 	}
 	return operationForWatchEvent(eventType)
 }

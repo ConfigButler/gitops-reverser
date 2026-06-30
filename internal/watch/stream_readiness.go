@@ -27,7 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	configv1alpha2 "github.com/ConfigButler/gitops-reverser/api/v1alpha2"
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -145,14 +145,14 @@ func (m *Manager) StreamSummaryForGitTarget(gitDest types.ResourceReference) Str
 }
 
 // StreamSummaryForWatchRule reports stream readiness for one namespaced WatchRule.
-func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha2.WatchRule) StreamSummary {
+func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) StreamSummary {
 	m.refreshTypeRegistry()
 	records := m.typeRegistryInstance().Followable()
 	var keys []targetWatchKey
 	names := map[schema.GroupVersionResource]string{}
 	for _, rr := range rule.Spec.Rules {
 		matched := matchFollowableRecords(
-			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha2.ResourceScopeNamespaced)
+			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
 		for _, rec := range matched {
 			key := targetWatchKey{GVR: rec.Identity.GVR, Namespace: rule.Namespace}
 			keys = append(keys, key)
@@ -167,7 +167,7 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha2.WatchRule) Strea
 }
 
 // StreamSummaryForClusterWatchRule reports stream readiness for one ClusterWatchRule.
-func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha2.ClusterWatchRule) StreamSummary {
+func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) StreamSummary {
 	m.refreshTypeRegistry()
 	records := m.typeRegistryInstance().Followable()
 	var keys []targetWatchKey

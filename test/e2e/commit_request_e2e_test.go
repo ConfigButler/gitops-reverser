@@ -436,7 +436,7 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 // message and closeDelaySeconds (the close-delay collect window). It is used to build
 // multi-document `kubectl apply` bundles where the CommitRequest is the first document.
 func commitRequestManifest(namespace, name, gitTargetName, message string, closeDelaySeconds int) string {
-	return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha2
+	return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
   name: %s
@@ -483,7 +483,7 @@ spec:
 // documented mechanism for a CommitRequest issued concurrently with its work (UC2).
 func applyCommitRequestWithGenerateName(namespace, prefix, gitTargetName, message string) string {
 	GinkgoHelper()
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha2
+	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
   generateName: %s
@@ -508,7 +508,7 @@ spec:
 // GitTarget with an optional commit message.
 func applyCommitRequest(namespace, name, gitTargetName, message string) {
 	GinkgoHelper()
-	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha2
+	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
 metadata:
   name: %s

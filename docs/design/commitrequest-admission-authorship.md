@@ -305,7 +305,7 @@ webhooks:
     rules:
       - operations:  [CREATE]
         apiGroups:   [configbutler.ai]
-        apiVersions: [v1alpha2]
+        apiVersions: [v1alpha3]
         resources:   [commitrequests]   # one line per command kind
     failurePolicy:    Ignore            # authorship is best-effort; never block the command
     sideEffects:      NoneOnDryRun       # Redis write on real requests; nothing on dry-run
@@ -354,7 +354,7 @@ Concretely, `attributeAuthor` collapses to:
 
 ```go
 func (r *CommitRequestReconciler) attributeAuthor(
-	ctx context.Context, cr *configbutleraiv1alpha2.CommitRequest,
+	ctx context.Context, cr *configbutleraiv1alpha3.CommitRequest,
 ) (queue.CommandAuthor, commitRequestAttribution) {
 	if r.AuthorLookup == nil { // validate-operator-types webhook disabled → committer-only
 		return queue.CommandAuthor{}, attributionCommitter
@@ -397,7 +397,7 @@ Removed reasons from
 `AttributionNotRequired` (→ `CommitterFallback`). The `commitRequestAttribution` enum
 drops `attributionPending`/`attributionTimedOut`, keeping `attributionFromAdmission`
 and `attributionCommitter`. e2e specs asserting the old reasons or the
-`WaitingForAuditEvent` phase must be updated — call this out in the PR. (v1alpha2 is
+`WaitingForAuditEvent` phase must be updated — call this out in the PR. (v1alpha3 is
 alpha, so the status-contract change is acceptable.)
 
 ---
@@ -562,7 +562,7 @@ audit-sourced CommitRequest attribution will, after this change, get
 committer. To keep CommitRequest authorship, enable the admission webhook. Mitigation:
 the `config/` SUT and the Helm chart (`servers.admission.enabled`) both default it **on**,
 so a fresh install is unaffected; only an audit-on/admission-off configuration regresses.
-Mirrored-resource attribution (normal edits) is unchanged. v1alpha2 is alpha, so the
+Mirrored-resource attribution (normal edits) is unchanged. v1alpha3 is alpha, so the
 status-contract and behavior change are acceptable.
 
 ---

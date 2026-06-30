@@ -16,7 +16,6 @@ This document supersedes the earlier bootstrap-only assessment and aligns with `
 
 - `GitTarget.status` currently has:
   - `conditions []metav1.Condition`
-  - `lastCommit string`
   - `lastPushTime *metav1.Time`
 - `GitProvider`, `WatchRule`, `ClusterWatchRule` status currently use condition-driven readiness and do not expose `phase`.
 - Across controllers, the dominant pattern is a single `Ready` condition with reason/message updates.
@@ -41,14 +40,15 @@ Bootstrap and startup synchronization exist, but they are implicit side effects 
 
 ## Naming Alignment With Current CRDs
 
-Use current schema names from `api/v1alpha2`:
+Use current schema names from `api/v1alpha3`:
 
 - `spec.providerRef` (not `destinationRef`, not `gitRepoConfigRef`)
 - `spec.encryption.provider`
 - `spec.encryption.secretRef.name`
 - `spec.encryption.generateWhenMissing`
 
-Status additions should extend `GitTargetStatus` while preserving existing fields (`lastCommit`, `lastPushTime`) for compatibility.
+Status additions should extend `GitTargetStatus` while preserving existing fields such as `lastPushTime`
+for compatibility.
 
 ## Proposed GitTarget Status Contract
 
@@ -60,7 +60,6 @@ Status additions should extend `GitTargetStatus` while preserving existing field
 
 Keep existing:
 
-- `lastCommit string`
 - `lastPushTime *metav1.Time`
 
 ## Optional detail blocks (recommended)
@@ -240,7 +239,6 @@ status:
 status:
   observedGeneration: 9
   lastReconcileTime: "2026-02-19T10:18:02Z"
-  lastCommit: "3f95c85f53e7862d9d124d67f22e8de2919759b8"
   conditions:
     - type: Validated
       status: "True"
@@ -336,7 +334,6 @@ status:
 status:
   observedGeneration: 10
   lastReconcileTime: "2026-02-19T10:22:01Z"
-  lastCommit: "a12f67b7c744eeb5ee0a6d7b0d5ea32b5159cf3f"
   lastPushTime: "2026-02-19T10:21:58Z"
   conditions:
     - type: Validated

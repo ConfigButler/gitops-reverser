@@ -512,7 +512,7 @@ per-type reconcile lands. Three surfaces, in increasing cost:
    ([`internal/telemetry`](../../../../internal/telemetry), e.g. `ObjectsScannedTotal`,
    `APICatalogGeneration`).
 2. **Bounded status summary.** Extend `GitTargetStatus`
-   ([gittarget_types.go:116](../../../../api/v1alpha2/gittarget_types.go#L116), which
+   ([gittarget_types.go:116](../../../../api/v1alpha3/gittarget_types.go#L116), which
    already has `Snapshot`/`Stats`) with a **capped** per-type roll-up: total types,
    how many synced, the slowest/failing types, last sync time. Status carries the
    *summary and the exceptions*; metrics carry the *full table*. Status must stay

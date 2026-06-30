@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha2
+package v1alpha3
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +37,7 @@ import (
 type GitProviderSpec struct {
 	// URL of the repository (HTTP/SSH).
 	// Immutable: delete and recreate the GitProvider to point at a different repository.
+	// +kubebuilder:validation:MinLength=1
 	URL string `json:"url"`
 
 	// SecretRef for authentication credentials (may be nil for public repos)
@@ -53,6 +54,8 @@ type GitProviderSpec struct {
 
 	// AllowedBranches restricts which branches can be written to.
 	// +required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:MinLength=1
 	AllowedBranches []string `json:"allowedBranches"`
 
 	// Push controls how events are coalesced into commits before pushing.
@@ -131,6 +134,7 @@ type AgeEncryptionSpec struct {
 type AgeRecipientsSpec struct {
 	// PublicKeys is a static list of age recipients (age1...).
 	// +optional
+	// +kubebuilder:validation:items:MinLength=1
 	PublicKeys []string `json:"publicKeys,omitempty"`
 
 	// ExtractFromSecret derives recipients from all *.agekey entries in encryption.secretRef.
@@ -146,18 +150,15 @@ type AgeRecipientsSpec struct {
 
 // GitProviderStatus defines the observed state of GitProvider.
 type GitProviderStatus struct {
-	// conditions represent the current state of the GitProvider resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// ObservedGeneration is the latest generation observed by the controller.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions report repository validation and commit configuration readiness:
+	// the Ready summary plus the kstatus Reconciling/Stalled pair.
+	// +optional
 	// +listType=map
 	// +listMapKey=type
-	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
@@ -243,7 +244,8 @@ type CommitSigningSpec struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.spec.url`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitProvider is the Schema for the gitproviders API.

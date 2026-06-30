@@ -21,28 +21,24 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Reconciling")].status
-      name: Reconciling
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="Stalled")].status
-      name: Stalled
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="GitTargetReady")].status
-      name: GitTargetReady
-      type: string
-    - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
-      name: StreamsRunning
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
       type: string
     - jsonPath: .status.streams.summary
       name: Streams
       type: string
-    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
-      name: Reason
+    - jsonPath: .status.conditions[?(@.type=="GitTargetReady")].status
+      name: GitTargetReady
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
+      name: StreamsRunning
+      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha2
+    name: v1alpha3
     schema:
       openAPIV3Schema:
         description: |-
@@ -148,6 +144,7 @@ spec:
                         like "pod*" or "*.example.com" are NOT supported. Use exact matches or the
                         "*" wildcard for broad matching.
                       items:
+                        minLength: 1
                         pattern: ^[^/]*$
                         type: string
                       minItems: 1
@@ -179,25 +176,26 @@ spec:
                 properties:
                   group:
                     default: configbutler.ai
-                    description: |-
-                      API Group of the referent.
-                      Kind of the referrer.
+                    description: API Group of the referent.
                     enum:
                     - configbutler.ai
                     type: string
                   kind:
                     default: GitTarget
                     description: |-
-                      Kind of the referrer.
+                      Kind of the referent.
                       Optional because this reference currently only supports a single kind (GitTarget).
                       Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
                     enum:
                     - GitTarget
                     type: string
                   name:
+                    description: Name of the referent.
+                    minLength: 1
                     type: string
                   namespace:
                     description: Required because ClusterWatchRule has no namespace.
+                    minLength: 1
                     type: string
                 required:
                 - name
@@ -268,6 +266,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.

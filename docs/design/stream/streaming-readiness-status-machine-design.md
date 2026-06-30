@@ -125,7 +125,7 @@ Aggregate `StreamsReady` condition reason (strongest cause wins, in this order):
 // GitTargetStatus (additions; removals in §6)
 type GitTargetStatus struct {
     // ...existing: observedGeneration, conditions, phase (informational only),
-    // lastReconcileTime, lastCommit, lastPushTime...
+    // lastReconcileTime, lastPushTime...
 
     // Streams is the bounded data-plane roll-up over this GitTarget's tracked types.
     // Counts, never a per-type list, so it stays bounded however many types are watched.
@@ -336,7 +336,7 @@ now:**
 - `GitTargetMaterializationSummary`'s `Failing` / `NotFollowable` /
   `FailingNoCheckpoint` fields and the 5-count `GitTargetMaterializationStatus`
   ([materialization.go:114-141](../../../internal/watch/materialization.go#L114-L141),
-  [gittarget_types.go:128-159](../../../api/v1alpha2/gittarget_types.go#L128-L159))
+  [gittarget_types.go:128-159](../../../api/v1alpha3/gittarget_types.go#L128-L159))
   — under watch-first `MaterializationSummaryForGitTarget` already computes
   `Claimed == Synced == len(types)`; the rest is dead. Replace with `streams` (§3.1).
 - The `Synced` condition, the `Initializing`/`Synced` phases, and the §3.2
