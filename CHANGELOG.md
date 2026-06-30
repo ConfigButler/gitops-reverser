@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.28.0...gitops-reverser-v0.29.0) (2026-06-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* bumping crd versions and last edits
+* validating webhook is required (even is audit has been configured).
+
+### Features
+
+* --author-attribution={true|false} is now allowing you to enable or disable the need for kube-api configuration (at the cost of loosing the real author). ([7860294](https://github.com/ConfigButler/gitops-reverser/commit/7860294b237ac9e944e1dac8561d6e7a2111b3cd))
+* bumping crd versions and last edits ([4fcffa3](https://github.com/ConfigButler/gitops-reverser/commit/4fcffa319f5b9406f8d4921a34cd53ba7f670794))
+* CommitRequest can be attributed by validating webhook handler since it's an internal command ([58dd37a](https://github.com/ConfigButler/gitops-reverser/commit/58dd37a8b2d3e408bff555f71d841a3b0cb17152))
+* let's get all testing to Kubernetes 1.36 ([905ff29](https://github.com/ConfigButler/gitops-reverser/commit/905ff29fd5bec5a3cf4cbc2c29409337bdf82fe3))
+* **manifestanalyzer,git:** refuse unsupported GitTarget folder content in the writer ([6264d5d](https://github.com/ConfigButler/gitops-reverser/commit/6264d5d72426a476aa798f2ce4f4d6c599394d92))
+* refuse weird files in GitTarget path, but do allow .gittargetignore ([1bf3820](https://github.com/ConfigButler/gitops-reverser/commit/1bf3820fdba20d919075189d6c0813f16587d919))
+* reworking metrics to new architecture ([b502afe](https://github.com/ConfigButler/gitops-reverser/commit/b502afe512501345df5795899a40484103d87b7c))
+* validating webhook is required (even is audit has been configured). ([96ec390](https://github.com/ConfigButler/gitops-reverser/commit/96ec39066741b434887ec08115b7748813a7dba1))
+* watch-first ingestion ([28389c9](https://github.com/ConfigButler/gitops-reverser/commit/28389c99848035073fcd4aac367dd80c4c674560))
+* **watch:** diff watch-derived vs audit-derived desired sets (Phase 1 payoff) ([c8ba472](https://github.com/ConfigButler/gitops-reverser/commit/c8ba472bd1d0c20391c1185ebb31ccf492dd3995))
+* **watch:** parallel watch-state stream behind --watch-state-stream ([097230b](https://github.com/ConfigButler/gitops-reverser/commit/097230b8c600b997f20e7e3f0c172ef253ec9b0b))
+* **watch:** surface a refused GitTarget folder as a Blocked stream ([5bdc43d](https://github.com/ConfigButler/gitops-reverser/commit/5bdc43dbab861c7eef1d9c20a511837aeb087399))
+
+
+### Bug Fixes
+
+* Allow GitTarget to respond quickly to changes in the tracked GitFolder ([591d310](https://github.com/ConfigButler/gitops-reverser/commit/591d3100efa59745b59d332e48979febf68f539d))
+* **e2e:** gate cluster readiness on healthy API discovery ([5b81718](https://github.com/ConfigButler/gitops-reverser/commit/5b81718b88a34b043cc42d39fe8d5d4448641010))
+* green CI — guard anonymous-access nil deref and skip audit webhook TLS for committer-only e2e ([1e23e16](https://github.com/ConfigButler/gitops-reverser/commit/1e23e16f2a2d7ef20ed084fcdf8d0d2bd799c914))
+* wainting for the right status to return ([cc701d6](https://github.com/ConfigButler/gitops-reverser/commit/cc701d645a2e4318e9af2f90459a0cd5bae5cf43))
+
+
+### Documentation
+
+* adding skills and working on status design ([e55b63a](https://github.com/ConfigButler/gitops-reverser/commit/e55b63a1d5d3a835be5e39400e12a2bffe34d25e))
+* created new plan, and hopefully found why the tests are so flaky ([9e610e6](https://github.com/ConfigButler/gitops-reverser/commit/9e610e68e04a748a9ef1cb12b6f5a2c6cd5cb0a6))
+* designing gittargetignore ([19ffc7e](https://github.com/ConfigButler/gitops-reverser/commit/19ffc7e6e04e8646c886ee0ed92bf8e6de9b8e78))
+* final review on architecture.md ([046b538](https://github.com/ConfigButler/gitops-reverser/commit/046b53804a3344b210565b821d9bc0dd6950a3d2))
+* moving architecture along with the rewrite ([6e1193a](https://github.com/ConfigButler/gitops-reverser/commit/6e1193a444f81bd402bee257f9c85888b4b7b51f))
+
 ## [0.28.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.27.1...gitops-reverser-v0.28.0) (2026-06-24)
 
 
