@@ -170,7 +170,7 @@ every event already commits immediately, so the signal simply finds no open wind
 
 The parent exploration ([idea-end-user-commit-messages.md](../future/idea-end-user-commit-messages.md)) and
 the superseded aggregated-API design
-([design-commit-context-api.md](design-commit-context-api.md)) weighed several transports. They
+(`design-commit-context-api.md`) weighed several transports. They
 are summarized here so the choice is not relitigated.
 
 - **Aggregated API `CommitContext`.** A request-only aggregated API kind, nothing persisted. The
@@ -179,7 +179,7 @@ are summarized here so the choice is not relitigated.
   Valkey "request stash" keyed by `Audit-ID`. A plain CRD is served by kube-apiserver directly, so
   **its audit events are complete**. That single fact removes the stash, the `APIService`
   registration, and the requestheader-CA / TLS plumbing. The full deep-dive on the aggregated-API
-  audit gap is kept in [design-commit-context-api.md](design-commit-context-api.md).
+  audit gap is kept in `design-commit-context-api.md`.
 - **Audit `user.extra` enrichment.** Put the reason in `userInfo.extra` and read it from the same
   audit event as the mutation. Cheap for gitops-reverser and naturally per-event — but ordinary
   clients cannot set `extra`. It needs an authentication webhook on the hot path, OIDC claim
@@ -215,7 +215,7 @@ object-lifecycle question front and center — in
 
 - Deferred / phase-2 work: [design-commit-request-phase-2.md](../future/design-commit-request-phase-2.md)
 - Superseded aggregated-API design, kept for the audit-gap deep-dive:
-  [design-commit-context-api.md](design-commit-context-api.md)
+  `design-commit-context-api.md`
 - Parent exploration — transport options and the audit-stream-as-source-of-truth principle:
   [idea-end-user-commit-messages.md](../future/idea-end-user-commit-messages.md)
 - Audit ingestion pipeline this design rides on:

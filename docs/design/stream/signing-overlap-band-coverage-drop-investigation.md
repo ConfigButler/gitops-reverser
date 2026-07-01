@@ -297,7 +297,7 @@ spec to dump the stream, late lane, idstate, and ingest log at failure time, so 
 
 Tracking against this doc's "capture first" plan (§6.1). Cross-references: this is **Flake B** in
 [`residual-e2e-flakes-2026-06-19.md`](residual-e2e-flakes-2026-06-19.md); it surfaced alongside the
-first-event-loss fix ([`first-event-loss-on-reclaim-plan.md`](../../finished/first-event-loss-on-reclaim-plan.md),
+first-event-loss fix (`first-event-loss-on-reclaim-plan.md`,
 landed `5d85e7d`), which is a *separate* bug (a freshly-claimed type's first event, not a late-join
 gap) and does not affect the conclusions here.
 

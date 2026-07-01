@@ -236,7 +236,7 @@ jobs:
           "
 
   lint-helm:
-    name: Lint and build Helm Chart (and generate single-file installer)
+    name: Build Helm chart and installer bundle
     runs-on: ubuntu-latest
     needs: ci-container
     permissions:
@@ -332,7 +332,28 @@ jobs:
               set -e
               git config --global --add safe.directory "$PWD"
               task lint
-              task lint-actions
+              cache_log="$(mktemp)"
+              task --dry --verbose lint 2>&1 | tee "${cache_log}"
+
+              for task_name in \
+                generate \
+                manifests \
+                helm-sync \
+                lint-golang \
+                lint-dockerfiles \
+                lint-actions \
+                lint-helm
+              do
+                if ! grep -Fq "Task \"${task_name}\" is up to date" "${cache_log}"; then
+                  echo "Expected ${task_name} to be cached after task lint" >&2
+                  exit 1
+                fi
+              done
+
+              if grep -Eq "^task: \[[^]]+\]" "${cache_log}"; then
+                echo "Expected second task lint dry-run to be fully cached, but a command would run" >&2
+                exit 1
+              fi
             '
 
   test:

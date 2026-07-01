@@ -2,7 +2,7 @@
 
 > Status: PROPOSAL — 2026-06-26. **Architecture-led**: [architecture.md](../architecture.md) is the
 > spine; every metric below maps to a stage in
-> [A Change, End to End](../architecture.md#a-change-end-to-end). The live baseline and the
+> [Common Flows](../architecture.md#common-flows). The live baseline and the
 > documentation bar come from [interpreting-metrics.md](../interpreting-metrics.md). This doc is the
 > single canonical metrics plan — it supersedes the per-feature metric notes now in `finished/`.
 
@@ -32,7 +32,7 @@ serious, honest metrics to show, and the audit subsystem is glass-box.
 ## 2. Principles
 
 1. **Architecture is the spine.** Every metric maps to a named stage of
-   [A Change, End to End](../architecture.md#a-change-end-to-end). No metric exists without a stage.
+   [Common Flows](../architecture.md#common-flows). No metric exists without a stage.
 2. **Watch is the source of truth → instrument it first.** It currently has the least coverage and
    the most risk.
 3. **Audit is optional attribution, never correctness.** Metrics measure attribution *coverage and
@@ -175,13 +175,9 @@ Redis side: facts written vs actually matched vs `expired_unmatched` (wasted wri
 after the commit shipped — never rewrites, per the invariant, but worth seeing). A high
 `expired_unmatched` rate with low coverage is the signature of an audit/watch RV mismatch.
 
-**Live firehose for investigation** — for "watch what's happening right now," metrics aggregate; the
-**opt-in `diag_all` stream** from
-[audit-diagnostic-streams-plan.md](stream/audit-diagnostic-streams-plan.md) is the complement: a
-bounded, default-off Redis stream holding annotated records for queue-reaching audit events, enabled
-only while investigating. Keep/finish it as the deep-dive tool behind the dashboard — metrics tell you
-*that* attribution dropped; `diag_all` tells you *which event and why* for events it captures, while
-pre-queue drops stay covered by `audit_events_total` and the existing raw debug stream.
+**Live investigation** — for "watch what's happening right now," metrics aggregate by design. Keep the
+per-outcome labels specific enough that an operator can move from the dashboard to the raw audit/debug
+logs without needing a second metrics taxonomy.
 
 **Adaptive payoff** — once `attribution_resolutions_total{result="absent",group,version,resource}` and
 a per-type last-seen signal exist, the resolver can **skip the grace wait for types audit never
@@ -292,10 +288,8 @@ rows → dashboard panels → alerts, validated per [AGENTS.md](../../AGENTS.md)
 
 ## References
 
-- [architecture.md](../architecture.md) — leading source of truth (esp. *A Change, End to End*,
+- [architecture.md](../architecture.md) — leading source of truth (esp. *Common Flows*,
   *Optional Attribution*, *State Ingestion*, *Observability*).
 - [interpreting-metrics.md](../interpreting-metrics.md) — the live baseline + the per-metric doc bar.
 - [watch-first-ingestion-architecture.md](watch-first-ingestion-architecture.md) — the watch-first
   ingestion design and the earlier metric sketch this plan modernizes.
-- [audit-diagnostic-streams-plan.md](stream/audit-diagnostic-streams-plan.md) — the `audit_events_total`
-  outcome census and the opt-in `diag_all` firehose.

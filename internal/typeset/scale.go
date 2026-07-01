@@ -18,11 +18,7 @@ limitations under the License.
 
 package typeset
 
-import (
-	"strings"
-
-	"k8s.io/apimachinery/pkg/runtime/schema"
-)
+import "k8s.io/apimachinery/pkg/runtime/schema"
 
 // ScaleSourceBuiltinRegistry labels a ScaleBinding resolved from the built-in
 // registry below, so it reads identically to a CRD-sourced binding for the writer.
@@ -74,16 +70,4 @@ func BuiltinScale(group, resource string) (ScaleBinding, bool) {
 		SpecReplicasPath: builtinSpecReplicasPath,
 		Usable:           true,
 	}, true
-}
-
-// SplitFieldPath turns a dotted JSONPath like ".spec.replicas" (or "spec.replicas")
-// into the segment slice the manifest writer applies. An empty or whitespace-only
-// path yields nil so a caller can tell "no path" from a real one. This is the
-// bridge from a ScaleBinding's string path to the writer's []string assignment.
-func SplitFieldPath(path string) []string {
-	trimmed := strings.TrimPrefix(strings.TrimSpace(path), ".")
-	if trimmed == "" {
-		return nil
-	}
-	return strings.Split(trimmed, ".")
 }

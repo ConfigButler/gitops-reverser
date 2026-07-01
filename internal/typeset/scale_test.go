@@ -18,10 +18,7 @@ limitations under the License.
 
 package typeset
 
-import (
-	"reflect"
-	"testing"
-)
+import "testing"
 
 func TestBuiltinScale_Scalable(t *testing.T) {
 	scalable := []struct{ group, resource string }{
@@ -72,28 +69,6 @@ func TestBuiltinScale_NotScalable(t *testing.T) {
 			}
 			if binding != (ScaleBinding{}) {
 				t.Errorf("non-scalable should return zero binding, got %+v", binding)
-			}
-		})
-	}
-}
-
-func TestSplitFieldPath(t *testing.T) {
-	tests := []struct {
-		path string
-		want []string
-	}{
-		{".spec.replicas", []string{"spec", "replicas"}},
-		{"spec.replicas", []string{"spec", "replicas"}},
-		{"  .spec.replicas  ", []string{"spec", "replicas"}},
-		{".status.replicas", []string{"status", "replicas"}},
-		{"", nil},
-		{"   ", nil},
-		{".", nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			if got := SplitFieldPath(tt.path); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("SplitFieldPath(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
 	}

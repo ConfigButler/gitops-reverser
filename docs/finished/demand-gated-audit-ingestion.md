@@ -33,15 +33,14 @@ a clean cluster**.
   (2) RV-less-before-high-water deletes still hit the late lane — fixed with the empty-stream guard.
 
 Author note: this grew out of the late-lane diagnostics work
-([`late-lane-e2e-2026-06-16-investigation.md`](../design/stream/late-lane-e2e-2026-06-16-investigation.md)
+(`late-lane-e2e-2026-06-16-investigation.md`
 and the 2026-06-16 fresh-run follow-up). Chasing "why is anything in the late lane" surfaced a
 bigger, dumber problem underneath it, described in §2.
 
 **Reading order:** §3 (principles — "over-capture is free, under-capture is rare and self-healed")
 and §5–§7 (what "wanted" means + coverage model + the shared-list / ping-stream mechanism); §12 is
 the as-built code map.
-Background: the demand lifecycle
-([`demand-driven-type-materialization-lifecycle.md`](demand-driven-type-materialization-lifecycle.md))
+Background: the demand lifecycle (`demand-driven-type-materialization-lifecycle.md`)
 and the reconcile model ([`api-source-of-truth-reconcile.md`](api-source-of-truth-reconcile.md)),
 whose **checkpoint is the correctness authority this design leans on** (§6).
 
@@ -52,8 +51,7 @@ once its checkpoint sync had begun. That is **materialize-first**, and it loses 
 type's **first events**: between a GitTarget claiming a type and its first LIST completing, live events
 were gated `not_needed` and dropped, with nothing to heal them (a state snapshot captures *what exists*,
 not *what happened* — authorship, a create-then-delete, the very first event before any LIST). This was
-diagnosed and fixed as a real loss bug — see
-[`first-event-loss-on-reclaim-plan.md`](first-event-loss-on-reclaim-plan.md).
+diagnosed and fixed as a real loss bug — see `first-event-loss-on-reclaim-plan.md`.
 
 **Principle (capture before baseline):** the demand gate is now opened the moment a type is **claimed**
 — synchronously, in `DeclareForGitTarget`, independent of and before any checkpoint sync — and closed
@@ -168,7 +166,7 @@ the guard cleans the *residual*.
   because `Released` also fires on a followability wobble while the claim survives, and a still-claimed
   type must keep being mirrored. So the gate tracks the **claim** (`Required ⟺ claimed`), the keyspace
   cleanup tracks the **checkpoint**. (Originally both were on `Released`; see
-  [`first-event-loss-on-reclaim-plan.md` §6.2](first-event-loss-on-reclaim-plan.md).)
+  `first-event-loss-on-reclaim-plan.md` §6.2.)
   `Released`/`Unclaimed` are **grace-protected upstream** (§5), so by the time they fire the type has
   been cold for the grace — no inactivity scan needed.
 - **DG3 (membership ⊆ checkpoint demand).** A type is only ever in `__required__` while it is
@@ -361,13 +359,13 @@ the open questions are *who writes* `__required__` and how a restart recovers.
 - **Writers are single per type.** Each type's membership is written by that type's materialization
   owner. In single-pod that is trivially the one pod; in multi-pod it rides the **per-type
   single-writer ownership** that HA needs anyway for the LIST/trim
-  ([`ha-improvements.md` §5](../design/stream/ha-improvements.md), genuinely deferred). One owner per type means no
+  (`ha-improvements.md` §5, genuinely deferred). One owner per type means no
   `SADD`/`SREM` fights. The ping stream and the `__required__` set themselves are plain shared
   structures — no per-entry TTL/lease — because a single writer per type is the simpler liveness
   story than N self-expiring leases.
 - **Failover rebuilds membership from durable state.** On a new owner taking over (or any boot), it
   reconstructs the set of required types it owns from the durable claim + checkpoint state
-  (`:objects:state`, the demand records — [`ha-improvements.md` §3](../design/stream/ha-improvements.md#L86)) and
+  (`:objects:state`, the demand records — `ha-improvements.md` §3) and
   re-asserts `Require` for each. A type that is no longer wanted then releases through the normal
   `Released` path at the next sweep (which deletes its keys); a thin **demand-reconcile** backstop
   (delete keys whose base is absent from `__required__`) covers the rare orphan from a release that
@@ -486,7 +484,7 @@ This is the order it was built in (all steps done):
 
 ## 14. Alternatives rejected (for the record — do not re-propose without new reasons)
 
-- **Per-type ZSET+TTL leases as the gate signal** ([`ha-improvements.md` §2](../design/stream/ha-improvements.md#L33)
+- **Per-type ZSET+TTL leases as the gate signal** (`ha-improvements.md` §2
   for the *claim* layer). Rejected for the gate: N self-expiring leases are more moving parts than one
   shared set + a single writer-per-type, and the TTL's only real benefit (auto-cleanup on writer
   death) is covered here by the `Released` event + failover-rebuild. (The claim layer may still use leases; that is

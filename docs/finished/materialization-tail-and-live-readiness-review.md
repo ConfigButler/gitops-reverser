@@ -19,9 +19,9 @@ It is the companion to:
 
 - [api-source-of-truth-reconcile.md](./api-source-of-truth-reconcile.md) — the R-stage
   splice/tail architecture.
-- [demand-driven-type-materialization-lifecycle.md](./demand-driven-type-materialization-lifecycle.md)
+- `demand-driven-type-materialization-lifecycle.md`
   — the demand axis (claims, phases) this builds on.
-- [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) — the
+- `audit-log-ingestion-and-ordering.md` — the
   per-type RV-ordered stream and the late lane.
 
 ---

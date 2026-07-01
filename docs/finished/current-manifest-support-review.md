@@ -2,7 +2,7 @@
 
 > Status: architecture review, captured 2026-06-04
 > Related:
-> [implementation-plan.md](implementation-plan.md),
+> `implementation-plan.md`,
 > [reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md),
 > [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
 > [current-manifest-support-review-feedback.md](current-manifest-support-review-feedback.md),
@@ -1166,7 +1166,7 @@ real consumer to keep it honest.
 ## Suggested Phases
 
 > The concrete, PR-sized ordering — with dependencies, file targets, and
-> "done when" criteria — lives in [implementation-plan.md](implementation-plan.md).
+> "done when" criteria — lives in `implementation-plan.md`.
 > The phases below are the rationale; that document is the execution order.
 
 The current baseline is a runtime-independent analyzer library and CLI that can

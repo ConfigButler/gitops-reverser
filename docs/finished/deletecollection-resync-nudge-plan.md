@@ -58,7 +58,7 @@ attribution) when it is not. We never make the body the *correctness* source —
   FIRST event.** See
   [demand-gated-audit-ingestion.md](demand-gated-audit-ingestion.md) (esp.
   its §0 capture-before-baseline correction) and
-  [first-event-loss-on-reclaim-plan.md](first-event-loss-on-reclaim-plan.md): the gate now
+  `first-event-loss-on-reclaim-plan.md`: the gate now
   opens the moment a GitTarget **claims** a type — synchronously, **before** its checkpoint
   syncs — so a claimed type's `deletecollection` is mirrored from the start, not skipped
   while it materializes. (The earlier "skip pre-materialization types" behaviour was the

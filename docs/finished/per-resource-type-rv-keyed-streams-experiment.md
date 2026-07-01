@@ -150,7 +150,7 @@ ordered history (RV is an etcd-global revision, not per-apiVersion).
 > **Superseded.** The shipped ingestion re-keys the main stream to `<resourceVersion>-<subseq>`
 > (RV-first), not millisecond-first, and routes strictly-older events to `:audit:late` instead
 > of falling back to a looser ID. The millisecond is kept as the `stage_millis` field only. See
-> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) §5/§9 for the
+> `audit-log-ingestion-and-ordering.md` §5/§9 for the
 > current design; the rest of this subsection records the original experiment.
 
 `event.StageTimestamp` is a `metav1.MicroTime`; use
@@ -493,7 +493,7 @@ re-applying identical content). Per-object check of every bi-directional `core:s
 the object at an **equal-or-higher** RV — so the splice consumer loses no freshness, and the
 writer's no-op detection would drop them anyway. Event-time skew was 0–10s and delivery latency
 ~0.01s (the reorder is a tight concurrent burst, not slow delivery). Two consequences for the
-pre-sorter, detailed in **ingestion [§8.2](../design/stream/audit-log-ingestion-and-ordering.md)**: a ≤30s window
+pre-sorter, detailed in **ingestion `§8.2`**: a ≤30s window
 *would* catch mechanism B but would suppress a signal that costs the consumer nothing; and
 **you must never make a time field the sort key** — a no-op patch carries a *fresh* timestamp
 with a *stale* body RV, so time-ordering would let stale state overwrite fresh (RV is the only

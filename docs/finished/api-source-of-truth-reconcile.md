@@ -15,13 +15,13 @@
 > `resolveSnapshotGVRForType`, `snapshotGVRsFromTable`, …) were **moved** to
 > `internal/watch/scope_resolve.go`, not deleted (only the live *gather* was deleted).
 > **For the current runtime picture + the bootstrap walk-through, read
-> [architecture-and-bootstrap.md](../design/stream/architecture-and-bootstrap.md).** The original agreed-direction
+> `architecture-and-bootstrap.md`.** The original agreed-direction
 > status (for history) follows.
 >
 > Status: **agreed direction — the demand substrate is COMPLETE; the pivot + demolition are
 > next.** The capture substrate is real and finished on the demand side: the write-only
 > per-type keyspace (R0) and the **entire** demand lifecycle
-> ([demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md),
+> (`demand-driven-type-materialization-lifecycle.md`,
 > steps **L-1→L-6** — all landed) are in. So today only the types a GitTarget *claims* are
 > filled into the checkpoint; the checkpoint is durable (`:objects:state` + boot rebuild) and
 > observable (metrics + a bounded GitTarget status roll-up). That already delivers parts of R1
@@ -31,17 +31,17 @@
 > gather, the RECONCILING handover, and content hashing all go. This is a bold **cutover**, not
 > a parallel path left to linger. Supersedes the always-open "merged streaming tail" (M13)
 > sketch in
-> [../manifest/version2/per-type-reconcile-and-streaming-tail.md](../design/manifest/version2/per-type-reconcile-and-streaming-tail.md)
+> `../manifest/version2/per-type-reconcile-and-streaming-tail.md`
 > with a watch-free, periodic-reconcile model built on the per-type Redis keyspace.
 > Captured: 2026-06-10 · Updated: 2026-06-10
 > Owner: Simon
 > Related:
-> [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) (**which** types get a checkpoint and the Dormant→Syncing→Synced lifecycle that governs it — the demand layer beneath this doc),
-> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (the log producer / ordering / late-lane detail this doc leaves out),
+> `demand-driven-type-materialization-lifecycle.md` (**which** types get a checkpoint and the Dormant→Syncing→Synced lifecycle that governs it — the demand layer beneath this doc),
+> `audit-log-ingestion-and-ordering.md` (the log producer / ordering / late-lane detail this doc leaves out),
 > [per-resource-type-rv-keyed-streams-experiment.md](per-resource-type-rv-keyed-streams-experiment.md) (the write-only prototype this consumes),
 > [../manifest/version2/dream.md](../design/manifest/version2/dream.md) (the origin),
 > [../manifest/reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md) (the plan/sweep machinery, reused),
-> [../manifest/version2/per-type-reconcile-and-streaming-tail.md](../design/manifest/version2/per-type-reconcile-and-streaming-tail.md) (M10–M12 it builds on).
+> `../manifest/version2/per-type-reconcile-and-streaming-tail.md` (M10–M12 it builds on).
 
 ## 1. One paragraph
 
@@ -52,7 +52,7 @@ GitTarget re-derives the API for itself — a per-reconcile streaming-list gathe
 a second always-open informer feed. This design replaces both with a single, standing,
 **type-keyed materialization of the API in Redis** and makes GitTarget reconcile a
 **consumer** of it. The API is captured **once per type** — and only for the types a GitTarget
-actually follows ([demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md))
+actually follows (`demand-driven-type-materialization-lifecycle.md`)
 — by two decoupled writers — an
 always-on audit-webhook **log** and a periodic LIST **checkpoint** — and every GitTarget
 reconciles by **splicing the checkpoint with the log**, per type, into one commit. No
@@ -168,7 +168,7 @@ content hashing.
 The encoding (`<rv>-*` with Valkey-allocated subsequence), the RV-comparison rules, the
 diagnostic **late lane** for out-of-order arrivals, RV-less placement, and the deferred
 Lua / pre-sorter improvements all live in the dedicated producer design:
-**[audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md)**. The
+**`audit-log-ingestion-and-ordering.md`**. The
 load-bearing invariant that doc establishes, and that this reconcile relies on: **the main
 stream is strictly RV-ordered — we never knowingly insert an out-of-order event** — so the
 splice in §6 can fold by stream position.
@@ -181,7 +181,7 @@ deliberate type-set change (a claim that adds the type, or a catalog generation 
 CRD installed/upgraded). The phase machine that governs this — `Dormant → Requested → Syncing
 → Synced ⇄ Resyncing`, the claim/lease demand model, and the single periodic pass that both
 re-anchors the still-wanted and releases the no-longer-wanted — is specified in
-**[demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md)**.
+**`demand-driven-type-materialization-lifecycle.md`**.
 This doc assumes a `Synced` checkpoint exists for the type being reconciled.
 
 ### DEC-5 — RV-less events: best-effort in the log, correctness from the next checkpoint  *(satisfies R11, R13)*
@@ -191,7 +191,7 @@ events (some deletes, collection verbs) get a best-effort placement in the log f
 **freshness**; their **correctness** is guaranteed by the next checkpoint — the LIST will
 simply not contain a deleted object, and the type-scoped mark-and-sweep removes it. We do
 not over-engineer the RV-less path; the checkpoint backstops it. The placement mechanics
-are in [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (IR5).
+are in `audit-log-ingestion-and-ordering.md` (IR5).
 
 ### DEC-6 — Drop content hashing  *(satisfies R7)*
 
@@ -315,7 +315,7 @@ stateDiagram-v2
   unobservable surface is never a trusted absence — the same guard as M12's degraded-
   catalog hold. (The `Syncing`/`Synced`/`Resyncing`/`Failing` phase vocabulary and its own
   first-sync-hold vs fail-closed-re-anchor handling live in
-  [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) §7.)
+  `demand-driven-type-materialization-lifecycle.md` §7.)
 - **Log trimmed past a cursor → wait for / force the next checkpoint** and reconcile from
   it. Bounded by the checkpoint interval, so rare by construction.
 - **A type whose checkpoint LIST fails holds itself**; siblings keep reconciling (R9).
@@ -330,7 +330,7 @@ until the splice is proven the sole live truth** — build forward (R1→R2), pr
 demolish (R3).
 
 **Landed already.** R0 (the write-only per-type keyspace) and the **entire demand layer** —
-[demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md)
+`demand-driven-type-materialization-lifecycle.md`
 **L-1→L-6, all shipped**: a `typeset.Materializer` owns per-`(GitTarget, type)` demand (claims
 as self-renewing leases), the GitTarget reconcile `Declare`s its watched-type set, a periodic
 **Sweep** re-anchors the still-claimed and ages out withdrawn demand, and a checkpoint
@@ -353,7 +353,7 @@ Make the log replay-exact and the checkpoint durable enough to resume from.
   `Synced` types without re-filling (the HA seam, R10).
 - ⬜ **Remaining — RV-ordered log + trim.** Re-key `:audit:stream` from `<stage_millis>-<rv>` to
   **RV-first** and add the diagnostic late lane — full producer spec in
-  [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (the concrete change
+  `audit-log-ingestion-and-ordering.md` (the concrete change
   is to [`RedisByTypeStreamQueue`](../../internal/queue/redis_bytype_queue.go)). On each
   re-anchor, **trim** `:audit:stream` to the trim cursor (the oldest serving checkpoint rv — the
   model is pinned in §6).
@@ -412,7 +412,7 @@ top of the BranchWorker's existing window, not new machinery (DEC-8).
 
 **Status:** the **demand-layer** questions (claim key, release grace, `Declare` transport,
 renewal cadence, `Orphaned` phase) are all **settled** — see
-[demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) §9.
+`demand-driven-type-materialization-lifecycle.md` §9.
 The questions below are **this doc's**, and three are still genuinely open because they depend on
 the splice (R2), which is not built yet — they are intentionally not answered now.
 
@@ -431,4 +431,4 @@ the splice (R2), which is not built yet — they are intentionally not answered 
 
 > Ordering / late-lane / ingestion open questions (the pre-sorter and Lua triggers, the
 > non-numeric-RV policy, the §7 investigation) live in
-> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md), not here.
+> `audit-log-ingestion-and-ordering.md`, not here.

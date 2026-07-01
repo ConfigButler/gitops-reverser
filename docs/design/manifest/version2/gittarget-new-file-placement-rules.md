@@ -9,7 +9,6 @@
 > [current-manifest-support-review.md](../../../finished/current-manifest-support-review.md),
 > [manifestedit-new-file-placement-spike.md](../../../finished/manifestedit-new-file-placement-spike.md),
 > [reconcile-via-watchlist-mark-and-sweep.md](../reconcile-via-watchlist-mark-and-sweep.md),
-> [per-type-reconcile-and-streaming-tail.md](per-type-reconcile-and-streaming-tail.md),
 > [gitpath-foreign-content-stringency.md](../../gitpath-foreign-content-stringency.md)
 
 ## Summary

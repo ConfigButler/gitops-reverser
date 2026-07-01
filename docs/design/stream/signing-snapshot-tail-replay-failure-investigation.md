@@ -11,8 +11,7 @@
 > Related:
 > [materialization-tail-and-live-readiness-review.md](../../finished/materialization-tail-and-live-readiness-review.md)
 > (Gap 2 / Rec 2),
-> [github-e2e-per-type-tail-failure-investigation.md](github-e2e-per-type-tail-failure-investigation.md),
-> [audit-log-ingestion-and-ordering.md](./audit-log-ingestion-and-ordering.md).
+> [github-e2e-per-type-tail-failure-investigation.md](github-e2e-per-type-tail-failure-investigation.md).
 >
 > Scope: why a reconcile-only signing path can still receive per-event commits,
 > and how the per-target coverage watermark should close that gap.

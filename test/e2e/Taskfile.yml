@@ -100,9 +100,21 @@ vars:
   FLUX_OPERATOR_DIR: '{{.FLUX_OPERATOR_DIR | default "test/e2e/setup/flux-operator"}}'
   FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "500s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "120s"}}'
+  # In-cluster Flux versions are pinned (no moving `:latest` / patch range) and
+  # come straight from the FLUX_VERSION / FLUX_OPERATOR_VERSION env vars baked into
+  # the CI + dev container by .devcontainer/Dockerfile — the single source of
+  # truth, so a bump there is the only edit needed. e2e always runs inside that
+  # container (local dev and every ci.yml e2e step), so these are always set. The
+  # distribution version is consumed as ${FLUX_VERSION} directly when
+  # _flux-installed renders the FluxInstance with envsubst.
+  #
+  # Operator manifests OCI artifact tag = the operator version with a 'v' prefix
+  # (ghcr publishes v0.53.0, not 0.53.0).
+  FLUX_OPERATOR_MANIFESTS_VERSION: 'v{{.FLUX_OPERATOR_VERSION}}'
   # Preflight (see _ghcr-preflight): the registry artifact `_flux-installed` pulls,
   # and how long a successful reachability check stays valid before we re-probe.
-  GHCR_PREFLIGHT_REF: '{{.GHCR_PREFLIGHT_REF | default "ghcr.io/controlplaneio-fluxcd/flux-operator-manifests:latest"}}'
+  # Probe the exact pinned artifact (not `:latest`) so the check matches the pull.
+  GHCR_PREFLIGHT_REF: '{{.GHCR_PREFLIGHT_REF | default (printf "ghcr.io/controlplaneio-fluxcd/flux-operator-manifests:%s" .FLUX_OPERATOR_MANIFESTS_VERSION)}}'
   GHCR_PREFLIGHT_MAX_AGE_MIN: '{{.GHCR_PREFLIGHT_MAX_AGE_MIN | default "5"}}'
   E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "15m"}}'
   ALLURE_RESULTS_DIR: '{{.ALLURE_RESULTS_DIR | default ".stamps/allure-results"}}'
@@ -642,6 +654,30 @@ tasks:
         {{.K3D}} cluster delete "{{.CLUSTER_NAME}}"
       - rm -rf "{{.CS}}"
 
+  cleanup-stamp-repos:
+    desc: Delete accumulated per-spec Git checkouts under .stamps/repos (reclaim disk)
+    cmds:
+      # Every e2e spec clones its Gitea repo into .stamps/repos/<name> and keeps it
+      # on purpose: the checkout has a working remote + credentials, so you can push,
+      # pull, or read the reversed Git history of a past run to investigate. Nothing
+      # ever prunes them, so across many runs this grows without bound (multiple GB).
+      # This task reclaims that space; the checkout helper re-creates .stamps/repos
+      # (mkdir -p) on the next run, so deleting it wholesale is safe. The paired
+      # generated GitProvider Secret manifests in .stamps/e2e-repo-artifacts belong
+      # to those same repos, so they are cleared in the same sweep.
+      - |
+        for dir in .stamps/repos .stamps/e2e-repo-artifacts; do
+          if [ -d "${dir}" ]; then
+            count="$(find "${dir}" -maxdepth 1 -mindepth 1 | wc -l | tr -d ' ')"
+            size="$(du -sh "${dir}" 2>/dev/null | cut -f1)"
+            echo "Removing ${dir} (${count} entries, ${size})"
+            rm -rf "${dir}"
+          else
+            echo "${dir} already clean"
+          fi
+        done
+        echo "Done."
+
   _ghcr-preflight:
     # Fail fast — BEFORE we spend ~30s creating a k3d cluster — when ghcr.io cannot
     # serve the Flux operator manifests that _flux-installed pulls. Otherwise an
@@ -714,12 +750,25 @@ tasks:
           get fluxinstance "{{.FLUX_INSTANCE_NAME}}" >/dev/null
     cmds:
       - |
+        # The FluxInstance pins its controller distribution to ${FLUX_VERSION}
+        # (the flux version from the container env — see the vars block). Render
+        # the operator dir through envsubst — only ${FLUX_VERSION} is substituted,
+        # every other line is copied verbatim — into the cluster stamp dir
+        # (cleaned with the cluster), then install/apply the rendered copies. The
+        # raw file holds a placeholder and must not be applied directly.
+        rendered="{{.CS}}/flux-operator"
+        mkdir -p "$rendered"
+        for f in "{{.FLUX_OPERATOR_DIR}}"/*.yaml; do
+          envsubst '${FLUX_VERSION}' <"$f" >"$rendered/$(basename "$f")"
+        done
         {{.FLUX_OPERATOR}} install \
           --kube-context "{{.CTX}}" \
           --namespace "{{.FLUX_NAMESPACE}}" \
           --timeout "{{.FLUX_WAIT_TIMEOUT}}" \
-          -f "{{.FLUX_INSTANCE_FILE}}"
-        kubectl --context "{{.CTX}}" apply -f "{{.FLUX_OPERATOR_DIR}}"
+          --instance-distribution-artifact "oci://ghcr.io/controlplaneio-fluxcd/flux-operator-manifests:{{.FLUX_OPERATOR_MANIFESTS_VERSION}}" \
+          --auto-update=false \
+          -f "$rendered/$(basename "{{.FLUX_INSTANCE_FILE}}")"
+        kubectl --context "{{.CTX}}" apply -f "$rendered"
         {{.FLUX_OPERATOR}} \
           --kube-context "{{.CTX}}" \
           -n "{{.FLUX_NAMESPACE}}" \

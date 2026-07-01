@@ -10,7 +10,7 @@
 > shared `Manager.typeWobbling` predicate. The per-type path is gated on `SnapshotSynced`,
 > so bootstrap is unchanged; `Unknown` granularity and bootstrap-decoupling remain open.
 > Origin: the per-type reconcile track ([dream.md](../design/manifest/version2/dream.md),
-> [per-type-reconcile-and-streaming-tail.md](../design/manifest/version2/per-type-reconcile-and-streaming-tail.md))
+> `per-type-reconcile-and-streaming-tail.md`)
 > and the [e2e flakiness findings](../design/manifest/e2e-full-suite-flakiness-findings-2026-06.md).
 > Related:
 > [discovery-catalog-typeset-boundary.md](../design/manifest/version2/discovery-catalog-typeset-boundary.md),

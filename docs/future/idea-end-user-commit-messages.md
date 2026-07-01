@@ -422,7 +422,8 @@ this comparison underweighted on the first pass. The aggregated API is also futu
 future temporary actions (`commitNow`, "propose as PR") fit the same shape with no new
 transports, and the close-off pattern is a clean fit for parallel-write frontends.
 
-The detailed design lives in [design-commit-context-api.md](../finished/design-commit-context-api.md).
+The previous detailed CommitContext sketch was removed with the superseded design notes; revisit the
+transport from the current CommitRequest and attribution model if this work resumes.
 
 The audit-carried transports remain valuable as a fallback for clusters that already have the
 infrastructure in place (impersonation in regular use, or OIDC `AuthenticationConfiguration`

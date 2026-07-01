@@ -19,7 +19,7 @@ two demand sources, and they are lopsided:
 - **GitTarget claims** → the materialization layer calls `gate.Require(gvr)` synchronously the moment
   a type is **claimed** (`DeclareForGitTarget`), and `Unrequire` on the `Unclaimed` event (the sweep's
   GC of the last claim) — capture-before-baseline, see
-  [first-event-loss-on-reclaim-plan.md](first-event-loss-on-reclaim-plan.md). This is dynamic,
+  `first-event-loss-on-reclaim-plan.md`. This is dynamic,
   Redis-backed, multi-pod, and releasable ([gate.go `Require`/`Unrequire`](../../internal/gate/gate.go),
   [materialization.go](../../internal/watch/materialization.go)).
 - **Internal consumers** → a **static `AlwaysAllow` list hardcoded in `cmd`**
@@ -53,7 +53,7 @@ shape at all.
 - **Investigation tie-in (the risk is broader than divert).** Two failure modes for audit-scan
   attribution are now evidenced:
   1. **Divert.** Since the late lane was removed
-     ([audit-diagnostic-streams-plan.md](../design/stream/audit-diagnostic-streams-plan.md)),
+     (`audit-diagnostic-streams-plan.md`),
      `LookupCommitRequestAuthor` scans **only the main ordered stream**, so a `create` whose audit
      event is *diverted* (RV below the high-water) is rejected from the main stream and never
      attributable → fail closed.
@@ -61,7 +61,7 @@ shape at all.
      demonstrably **`queued` to the correct main stream and present for the whole 60s window** was
      still missed by ~30 successive scans → fail closed. Ingestion lag, the 512 scan bound, the UID
      guard, MaxLen trimming, and a restart were all ruled out; the root cause is still open. See
-     [e2e-flakes-2026-06-18-investigation.md §2](e2e-flakes-2026-06-18-investigation.md).
+     `e2e-flakes-2026-06-18-investigation.md §2`.
   The upshot: **scanning the shared, ordered audit stream for attribution is fragile in ways we
   cannot even fully diagnose** — which is the strongest possible argument for not doing it.
   - **Update (2026-06-19): this bit CI.** Run `27830248680` on `5d85e7d` failed `E2E (full)` on
@@ -149,7 +149,7 @@ exactly Option B made **always-on and demand-free**, and it is the right shape:
   is immune to *both* evidenced failure modes (divert **and** the unexplained scan miss) — there is
   no scan and no dependency on the event landing in the ordered stream. This also avoids re-creating
   the throughput cost of an in-lock second write
-  ([e2e-flakes-2026-06-18-investigation.md §6](e2e-flakes-2026-06-18-investigation.md)).
+  (`e2e-flakes-2026-06-18-investigation.md §6`).
 - **Store the attribution _fact_, not the full event.** We only need
   `{ns,name,uid}→{author,auditID,ts}` (a tiny keyed record), not a mirror of every CommitRequest
   body. "Full store of all events" would re-introduce the per-type stream we are trying to delete;
@@ -211,7 +211,7 @@ store the fact at ingestion; do not demand the ordered stream and scan it.**
 
 Option B is the HA-friendly shape because it follows the existing HA design's
 capture-decoupled-from-consume seam
-([ha-improvements.md §1](../design/stream/ha-improvements.md)): audit intake runs on whichever
+(`ha-improvements.md §1`): audit intake runs on whichever
 ready pod receives the Service traffic, writes the attribution fact to shared Redis, and the
 leader-only CommitRequest finalizer reads that fact later. A new leader after failover needs no
 handoff; it reads the same Redis keyspace.
@@ -227,7 +227,7 @@ The implementation carries four HA constraints:
   converges.
 - **No single-writer ownership is needed.** Attribution is a keyed fact, not a checkpoint LIST or
   trim cursor. It does not need the single-writer machinery deferred in
-  [ha-improvements.md §5](../design/stream/ha-improvements.md).
+  `ha-improvements.md §5`.
 - **Redis HA can cause transient read misses.** If a future Redis topology reads from a lagging
   replica immediately after a write, the existing retry-to-deadline loop absorbs it. If that ever
   becomes visible, pin attribution reads to the primary; do not reintroduce stream scanning.

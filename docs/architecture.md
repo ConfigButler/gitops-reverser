@@ -5,11 +5,13 @@ desired object state to Git. It reverses the traditional GitOps direction: inste
 cluster, the Kubernetes API drives Git. The repository becomes a continuously updated mirror of live
 cluster state.
 
-This document describes how the operator works **today**. Read the [Ground Rules](#ground-rules),
+This document describes how the operator works **today**. If you are reading it for the first time, keep
+one sentence in mind: **Kubernetes watch supplies state, Git stores the mirror, and Redis keeps the
+operator's short-lived coordination state.** Read the [Ground Rules](#ground-rules),
 [Mental Model](#mental-model), and [Data Sources](#data-sources) for the shape of the system, then the
-[Configuration Model](#configuration-model) and [A Change, End to End](#a-change-end-to-end) for how you
-drive it. The later sections give the reference detail behind each piece. If a detail here ever
-disagrees with the source, the source wins; deeper design records live under [docs/design/](design/).
+[Configuration Model](#configuration-model) and [Common Flows](#common-flows) for how the pieces move
+together. The later sections give the reference detail behind each piece. If a detail here ever disagrees
+with the source, the source wins; deeper design records live under [docs/design/](design/).
 
 ***
 
@@ -22,27 +24,32 @@ API. State is ingested by **watch**; these paths never treat Git as authority. W
 with a newer remote commit, the operator fetches the new remote state, resets its local clone, and
 replays its retained writes from the API.
 
-**Redis is a hard dependency — treat it as always available.** A healthy GitOps Reverser relies on a
-healthy Redis (we bundle **Valkey**, which speaks the Redis protocol). The operator wires it
-unconditionally and a readiness gate holds the pod not-ready until it is reachable, so the rest of this
-document assumes Redis is present. It stores per-watch resume cursors (resume instead of re-listing),
-audit facts and command-author records when those features are on, and the branch-shard leases and durable
-write queues that [high availability](future/ha-gittarget-distribution-plan.md) needs. Committer-only mode
-(`--author-attribution=false`) drops the audit facts but still requires Redis.
-
 **Watch is the only object-state source.** Each `GitTarget` opens one Kubernetes watch per claimed
 `(GVR, scope)` with `sendInitialEvents=true`. Every Git write derives from persisted state the watch
 observed. Audit never defines *what* changed — it only, optionally, explains *who* caused it.
 
+**Sensitive resources are never written in plaintext.** Core Secrets and configured sensitive resource
+types must be encrypted before they touch the Git worktree. If encryption cannot be configured, the write
+fails; there is no plaintext opt-out.
+
 **Writes are serialized per Git branch.** One [BranchWorker](../internal/git/branch_worker.go) owns each
 `(GitProvider namespace, GitProvider name, branch)` tuple. Multiple `GitTarget`s may share one branch.
 Every write to that branch goes through the worker's single event loop and commit window.
+
+**Redis is a hard dependency — treat it as always available.** The operator wires Valkey/Redis
+unconditionally and stays not-ready until it is reachable. Redis stores watch resume cursors and the small
+coordination records used by attribution, CommitRequest authorship, and HA work; committer-only mode still
+requires Redis.
 
 **Audit is an optional attribution lookup.** When attribution is enabled, kube-apiserver posts audit
 events to `/audit-webhook`; the operator extracts a minimal attribution fact (auditID, user, verb,
 resourceVersion, GVR/namespace/name/UID, status, timestamps) into a Redis attribution index keyed for a
 join, and a resolver attaches the commit author to a watch event by matching a fact within a bounded
 grace window. A missing, late, or absent fact never blocks state capture; it only changes the author.
+
+**Behavior is deterministic and proven by tests.** Given the same observed Kubernetes state, configuration,
+and Git base, the operator makes the same materialization decisions. Ordering, attribution fallbacks,
+conflict replay, path refusal, encryption behavior, and commit semantics are pinned by unit and e2e tests.
 
 ***
 
@@ -273,7 +280,7 @@ Kubernetes native, Flux, and Argo CD Secret key dialects (see
 
 ***
 
-## A Change, End to End
+## Common Flows
 
 Say a `GitTarget` in namespace `team-a` watches ConfigMaps, and a user runs `kubectl apply` to edit the
 ConfigMap `team-a/app-config`. Here is the path that change takes.
@@ -350,6 +357,66 @@ resolver in step 3; it never creates or repairs object state.
 the next watch (re)connect: the `sendInitialEvents` replay plus **mark-and-sweep** removes any Git file
 whose object no longer exists — see [State Ingestion and Not Losing Deletes](#state-ingestion-and-not-losing-deletes).
 No path silently drops a delete.
+
+### Normal commit flow
+
+Most writes are closed by the commit window timer. A `CommitRequest` is the explicit "save now" path: it
+does not create new state, and it does not bypass watch. It only asks the branch worker to close a matching
+open window early.
+
+```mermaid
+flowchart TD
+    CHANGE[Persisted Kubernetes change] --> WATCH[Per-GitTarget watch event]
+    WATCH --> FILTER[Sanitize + relevance filter]
+    FILTER --> AUTHOR{Attribution enabled?}
+    AUTHOR -->|yes| AUDIT[Wait bounded grace for audit fact]
+    AUTHOR -->|no| COMMITTER[Use configured committer as author]
+    AUDIT --> RESOLVED[Resolved author or committer fallback]
+    COMMITTER --> RESOLVED
+    RESOLVED --> WINDOW[BranchWorker open window<br/>one author + one GitTarget]
+
+    WINDOW --> TIMER{Close trigger}
+    TIMER -->|silence timer| FLUSH[Plan YAML edits + commit]
+    TIMER -->|buffer limit or resync boundary| FLUSH
+
+    CR[CommitRequest persisted] --> ADMISSION[Admission author cache lookup<br/>present or committer fallback]
+    ADMISSION --> ATTACH[Attach to matching open window]
+    ATTACH -->|same author + GitTarget| FLUSH
+    ATTACH -->|no matching window| BENIGN[Ready=True, Pushed=False]
+
+    FLUSH --> PUSH[PushAtomic]
+    PUSH --> DONE[Remote branch updated]
+```
+
+The important boundary is the open window: it accepts only the same author and `GitTarget`. A
+`CommitRequest` from another author never closes someone else's window; it resolves as a benign no-commit
+instead.
+
+### Remote moved while we were writing
+
+If someone else pushes to the same remote branch before GitOps Reverser's push lands, the operator does
+not treat its local clone as authoritative. It keeps the finalized pending writes, fetches the new remote
+tip, resets the local clone, replays those writes, and pushes again.
+
+```mermaid
+flowchart TD
+    LOCAL[Window finalized<br/>pending write retained] --> CHECK[PushAtomic checks remote ref]
+    CHECK --> MATCH{Remote still at expected SHA?}
+    MATCH -->|yes| ACCEPT[Push accepted]
+    ACCEPT --> CLEAR[Clear retained pending writes]
+
+    MATCH -->|no| FETCH[Fetch latest remote tip]
+    FETCH --> RESET[Hard reset local clone to remote]
+    RESET --> REPLAY[Replay retained pending writes<br/>from sanitized API state]
+    REPLAY --> REFRESH[Create fresh commit hashes]
+    REFRESH --> CHECK
+
+    CHECK -->|attempts exhausted or fetch fails| RETAIN[Keep pending writes for later retry]
+```
+
+For a `CommitRequest`, success is reported only after the push reaches the remote. If the push had to
+replay on top of someone else's commit, `status.sha` is the refreshed post-replay commit SHA, not the stale
+local SHA from before the retry.
 
 ***
 
@@ -521,43 +588,103 @@ and the *author* (who wrote the change) — and GitOps Reverser uses both on pur
   to `GitOps Reverser <noreply@configbutler.ai>`. Every commit, attributed or not, is committed by the
   operator, because the operator is what actually wrote it to Git.
 * The **author is the real actor — but only when we are sure.** On a strong attribution match the author is
-  set to that actor; with no confident match the author falls back to the committer. So a commit whose
-  author differs from the operator is a positive statement that the operator is confident who made the
-  change.
+  set to that actor; with no confident match the author is set to the operator too. Git always carries an
+  author, so it is **never left blank** — when we are not sure it is simply the operator (identical to the
+  committer), never a guessed person. A commit whose author differs from the committer is therefore a
+  positive statement that the operator is confident who made the change.
 
 The author identity is never invented — it is taken from the authenticated request. The name and email come
-from the **OIDC claims** when the apiserver maps them (display-name and email claims); otherwise they come
-from the actor's own **Kubernetes identity** — the username, which for a controller is its service account
-(`system:serviceaccount:<namespace>:<name>`), with a stable derived `…@noreply.cluster.local` email.
+from the **OIDC claims** when the apiserver maps them; otherwise they come from the actor's own
+**Kubernetes identity** — the username, which for a controller is its service account
+(`system:serviceaccount:<namespace>:<name>`), with a stable derived email under `noreply.cluster.local`.
+The two `user.extra` keys the operator reads for the OIDC name and email, and the apiserver config that
+fills them, are in [Wiring OIDC author claims](#wiring-oidc-author-claims).
 
-A confidently attributed commit therefore shows distinct author and committer lines, which `git` surfaces
-natively:
+A confidently attributed commit shows distinct author and committer lines, which `git` surfaces with
+`--format=fuller`. A human carries the OIDC display name and email:
 
 ```console
 $ git show --no-patch --format=fuller HEAD
-commit 1f3c2ab9e4d5c6f7a8b9c0d1e2f3a4b5c6d7e8f9
 Author:     alice <alice@example.com>
 AuthorDate: Mon Jun 30 12:00:05 2026 +0000
 Commit:     GitOps Reverser <noreply@configbutler.ai>
 CommitDate: Mon Jun 30 12:00:05 2026 +0000
-
-    alice on team-a-config: 1 resource(s)
 ```
 
-A service-account actor is named by its own identity, with the operator still the committer:
+A service-account actor (no OIDC claims) is named by its own Kubernetes identity, with a complete derived
+email and the operator still the committer:
 
 ```console
-$ git show --no-patch --format='%an <%ae> | %cn <%ce>' HEAD
-system:serviceaccount:flux-system:kustomize-controller <...@noreply.cluster.local> | GitOps Reverser <noreply@configbutler.ai>
+$ git show --no-patch --format=fuller HEAD
+Author:     system:serviceaccount:flux-system:kustomize-controller <systemserviceaccountflux-systemkustomize-controller@noreply.cluster.local>
+AuthorDate: Mon Jun 30 12:00:05 2026 +0000
+Commit:     GitOps Reverser <noreply@configbutler.ai>
+CommitDate: Mon Jun 30 12:00:05 2026 +0000
 ```
 
-When attribution is off, or no fact matched, the same commit collapses to the operator on both lines —
-the honest "we don't know who, so we don't claim one":
+When attribution is off, or no fact matched, the author is set to the operator as well, so both lines are
+identical. A Git UI will show this as a single "author". Effectively we say "we
+don't know who, so we don't claim":
 
 ```console
-$ git show --no-patch --format='%an <%ae> | %cn <%ce>' HEAD
-GitOps Reverser <noreply@configbutler.ai> | GitOps Reverser <noreply@configbutler.ai>
+$ git show --no-patch --format=fuller HEAD
+Author:     GitOps Reverser <noreply@configbutler.ai>
+AuthorDate: Mon Jun 30 12:00:05 2026 +0000
+Commit:     GitOps Reverser <noreply@configbutler.ai>
+CommitDate: Mon Jun 30 12:00:05 2026 +0000
 ```
+
+### Wiring OIDC author claims
+
+* **Audit-path extractor**: [internal/queue/audit_event_parsing.go](../internal/queue/audit_event_parsing.go)
+* **Admission-path extractor**:
+  [internal/webhook/validate_operator_types_handler.go](../internal/webhook/validate_operator_types_handler.go)
+* **Signature construction**: [internal/git/commit.go](../internal/git/commit.go) (`authorName` / `authorEmail`)
+
+The operator never talks to the identity provider. It reads two fixed keys from the request's `user.extra`
+map — the audit attribution path and the CommitRequest admission path resolve the **same** two keys:
+
+| `user.extra` key | OIDC claim it carries | Used for |
+|---|---|---|
+| `configbutler.ai/claims/display-name` | `name` | git author `Name` |
+| `configbutler.ai/claims/email` | `email` | git author `Email` |
+
+So the ID token the provider issues must carry the standard `name` and `email` claims:
+
+```json
+{
+  "iss": "https://idp.example.com",
+  "sub": "248289761001",
+  "name": "alice",
+  "email": "alice@example.com",
+  "aud": "kubernetes",
+  "exp": 1751284805
+}
+```
+
+The cluster operator maps those claims into the two keys with a structured
+[`AuthenticationConfiguration`](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-authentication-configuration)
+(`apiserver.config.k8s.io`, beta from Kubernetes 1.30):
+
+```yaml
+apiVersion: apiserver.config.k8s.io/v1beta1
+kind: AuthenticationConfiguration
+jwt:
+  - issuer:
+      url: https://idp.example.com
+      audiences: [kubernetes]
+    claimMappings:
+      username:
+        claim: email          # the Kubernetes username; `sub` also works
+      extra:
+        - key: "configbutler.ai/claims/display-name"
+          valueExpression: "claims.name"
+        - key: "configbutler.ai/claims/email"
+          valueExpression: "claims.email"
+```
+
+Both mappings are optional: a missing or unusable `name` falls back to the username, and a missing or
+invalid `email` falls back to a derived address under `noreply.cluster.local`.
 
 ***
 
