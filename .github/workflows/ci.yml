@@ -191,6 +191,7 @@ jobs:
     name: Validate Dev Container
     runs-on: ubuntu-latest
     needs: ci-container
+    if: ${{ !cancelled() && needs.ci-container.result == 'success' }}
     permissions:
       contents: read
       packages: read
@@ -239,6 +240,7 @@ jobs:
     name: Build Helm chart and installer bundle
     runs-on: ubuntu-latest
     needs: ci-container
+    if: ${{ !cancelled() && needs.ci-container.result == 'success' }}
     permissions:
       contents: read
       packages: read
@@ -297,6 +299,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     needs: ci-container
+    if: ${{ !cancelled() && needs.ci-container.result == 'success' }}
     permissions:
       contents: read
       packages: read
@@ -360,6 +363,7 @@ jobs:
     name: Unit tests
     runs-on: ubuntu-latest
     needs: ci-container
+    if: ${{ !cancelled() && needs.ci-container.result == 'success' }}
     permissions:
       contents: read
       packages: read
@@ -541,6 +545,13 @@ jobs:
     name: E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [ci-container, project-image, lint-helm]
+    if: >-
+      ${{
+        !cancelled()
+        && needs.ci-container.result == 'success'
+        && needs.project-image.result == 'success'
+        && needs.lint-helm.result == 'success'
+      }}
     permissions:
       contents: read
       packages: read
