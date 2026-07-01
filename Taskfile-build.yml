@@ -39,7 +39,7 @@ tasks:
     cmds:
       - |
         set -e
-        mkdir -p config/crd/bases config/rbac config/webhook
+        mkdir -p config/crd/bases config/rbac
         # Write CRDs straight into the bases dir, overwriting in place. The
         # marker predates the run, so afterwards any base controller-gen did
         # not (re)write — i.e. a renamed/removed type — is older than it and
@@ -50,11 +50,9 @@ tasks:
         {{.CONTROLLER_GEN}} \
           rbac:roleName=gitops-reverser \
           crd \
-          webhook \
           paths=./api/... \
           paths=./internal/controller/... \
           paths=./internal/watch/... \
-          paths=./internal/webhook/... \
           paths=./cmd/... \
           output:crd:artifacts:config=config/crd/bases
         find config/crd/bases -maxdepth 1 -name '*.yaml' ! -newer "$marker" -delete
