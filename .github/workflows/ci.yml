@@ -199,6 +199,9 @@ jobs:
         run: task lint
 
       - name: task lint cache check
+        # Container jobs default to `sh`, which rejects `set -o pipefail` below
+        # ("Illegal option -o pipefail"). Force bash for this bashism-using step.
+        shell: bash
         run: |
           set -euo pipefail
           cache_log="$(mktemp)"
