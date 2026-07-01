@@ -147,4 +147,33 @@ Repo-specific guidance for AI coding assistants lives in [AGENTS.md](AGENTS.md).
 2. Make changes, follow the validation steps above
 3. Open a PR against `main` — CI runs automatically
 
+### Pull requests from forks
+
+External contributions come from a fork, and GitHub gives fork PRs a **read-only**
+`GITHUB_TOKEN` — it can pull images from `ghcr.io` but cannot push to the org's
+packages, and it has no access to repository secrets. CI adapts automatically so
+that fork PRs still run the **full** pipeline (lint, unit, e2e) without needing any
+write access:
+
+- **Images are built but not pushed.** The project image and CI base container are
+  built locally in the PR run. Nothing is published to `ghcr.io` from a fork.
+- **Images move between jobs as artifacts, not via the registry.** The project image
+  is `docker save`d, uploaded, and the e2e job loads it straight into the k3d cluster
+  (`IMAGE_DELIVERY_MODE=load`) instead of pulling it.
+- **Container-based jobs reuse the published CI image.** `lint`, `test`, and the Helm
+  job run inside the last published `ghcr.io/configbutler/gitops-reverser-ci:latest`
+  rather than a fresh per-commit build. If your PR changes `.devcontainer/Dockerfile`,
+  the toolchain build itself is still validated (the container is built and its tools
+  are checked), but those jobs run against the previously published toolchain — a
+  maintainer will rebuild/republish the base image when toolchain changes merge.
+
+Nothing is published from a PR regardless of origin: image and chart publishing only
+happen on push to `main` (via release-please). Trusted (same-repo) branches keep
+pushing per-commit CI images to the registry as before.
+
+Maintainers: this requires the `gitops-reverser-ci` package to be **public** so fork
+runs can pull `:latest` without credentials (the project image is already public).
+Set it under *Org → Packages → gitops-reverser-ci → Package settings → Change
+visibility → Public*.
+
 Thank you for contributing!

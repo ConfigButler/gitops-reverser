@@ -17,20 +17,90 @@ env:
   CI_WORKDIR: /workspaces/${{ github.event.repository.name }}
 
 permissions:
-  contents: write
-  pull-requests: write
-  packages: write
+  contents: read
+  packages: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-ci-container:
-    name: Build CI Base Container
+  build-ci-container-pr:
+    name: Build CI Base Container (PR)
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     outputs:
       image: ${{ steps.image.outputs.name }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Set image name
+        id: image
+        run: |
+          IMAGE="${REGISTRY}/configbutler/gitops-reverser-ci:${{ github.sha }}"
+          echo "PR: building CI base container ${IMAGE}"
+          echo "name=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Build CI base container
+        # PR tokens must not publish packages. The image is still built and
+        # loaded locally so this job validates the candidate CI container.
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: .devcontainer/Dockerfile
+          target: ci
+          push: false
+          load: true # So that we can run the next step without pulling
+          tags: |
+            ${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:${{ github.sha }}
+            ${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:latest
+          cache-from: type=gha,scope=ci-container
+
+      - name: Validate CI container tools
+        run: |
+          docker run --rm ${{ steps.image.outputs.name }} bash -lc "
+            set -e
+            echo '=== Validating CI Container Tools ==='
+            go version
+            kubectl version --client
+            kustomize version
+            helm version
+            flux-operator version --client
+            golangci-lint version
+            actionlint --version
+            controller-gen --version
+            k3d version
+            docker --version
+            echo '✅ All CI container tools verified'
+          "
+
+      - name: Save CI container image
+        run: docker save "${{ steps.image.outputs.name }}" -o ci-container-image.tar
+
+      - name: Upload CI container image artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-container-image
+          path: ci-container-image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  build-ci-container-trusted:
+    name: Build CI Base Container (trusted)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -48,9 +118,9 @@ jobs:
       - name: Set image name
         id: image
         run: |
-          IMAGE="${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:${{ github.sha }}"
-          echo "name=${IMAGE}" >> $GITHUB_OUTPUT
+          IMAGE="${REGISTRY}/configbutler/gitops-reverser-ci:${{ github.sha }}"
           echo "Building CI base container: ${IMAGE}"
+          echo "name=${IMAGE}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push CI base container
         uses: docker/build-push-action@v7
@@ -68,7 +138,7 @@ jobs:
 
       - name: Validate CI container tools
         run: |
-          docker run --rm ${{ steps.image.outputs.name }} bash -c "
+          docker run --rm ${{ steps.image.outputs.name }} bash -lc "
             set -e
             echo '=== Validating CI Container Tools ==='
             go version
@@ -77,29 +147,60 @@ jobs:
             helm version
             flux-operator version --client
             golangci-lint version
+            actionlint --version
             controller-gen --version
             k3d version
             docker --version
             echo '✅ All CI container tools verified'
           "
 
+  ci-container:
+    name: Select CI Base Container
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [build-ci-container-pr, build-ci-container-trusted]
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Select image
+        id: image
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ needs.build-ci-container-pr.result }}" != "success" ]; then
+              echo "PR CI container build did not succeed: ${{ needs.build-ci-container-pr.result }}" >&2
+              exit 1
+            fi
+            IMAGE="${{ needs.build-ci-container-pr.outputs.image }}"
+          else
+            if [ "${{ needs.build-ci-container-trusted.result }}" != "success" ]; then
+              echo "Trusted CI container build did not succeed: ${{ needs.build-ci-container-trusted.result }}" >&2
+              exit 1
+            fi
+            IMAGE="${{ needs.build-ci-container-trusted.outputs.image }}"
+          fi
+          if [ -z "${IMAGE}" ]; then
+            echo "No CI container image was selected" >&2
+            exit 1
+          fi
+          echo "name=${IMAGE}" >> "$GITHUB_OUTPUT"
+
   validate-devcontainer:
     name: Validate Dev Container
     runs-on: ubuntu-latest
-    needs: build-ci-container
+    needs: ci-container
+    if: ${{ !cancelled() && needs.ci-container.result == 'success' }}
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build dev container (validation only)
         uses: docker/build-push-action@v7
@@ -111,7 +212,7 @@ jobs:
           load: true
           tags: gitops-reverser-devcontainer:test
           cache-from: type=gha,scope=devcontainer
-          cache-to: type=gha,scope=devcontainer,mode=max
+          cache-to: ${{ github.event_name == 'pull_request' && '' || 'type=gha,scope=devcontainer,mode=max' }}
           build-args: |
             BUILDKIT_CONTEXT_KEEP_GIT_DIR=1
 
@@ -127,6 +228,7 @@ jobs:
             helm version
             flux-operator version --client
             golangci-lint version
+            actionlint --version
             k3d version
             task --version
             bash -ic 'complete -p task >/dev/null'
@@ -137,36 +239,52 @@ jobs:
   lint-helm:
     name: Build Helm chart and installer bundle
     runs-on: ubuntu-latest
-    needs: build-ci-container
-    container:
-      image: ${{ needs.build-ci-container.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    needs: ci-container
+    if: ${{ !cancelled() && needs.ci-container.result == 'success' }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      CI_CONTAINER: ${{ needs.ci-container.outputs.image }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Configure Git safe directory
-        run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
-
-      - name: Copy generated things from /config
-        run: task helm-sync
-
-      - name: Helm template (dry-run)
+      - name: Login to Docker registry
+        if: github.event_name != 'pull_request'
         run: |
-          helm template gitops-reverser charts/gitops-reverser \
-            --namespace gitops-reverser-system \
-            --set image.repository=test/image \
-            --set image.tag=test
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
-      - name: Generate install.yaml from Helm chart
-        run: task dist-install
+      - name: Download CI container image (PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-container-image
+          path: .
 
-      - name: Package Helm chart
+      - name: Load CI container image (PR)
+        if: github.event_name == 'pull_request'
+        run: docker load -i ci-container-image.tar
+
+      - name: Lint and package Helm chart
         run: |
-          helm package charts/gitops-reverser --destination .
-          mv gitops-reverser-*.tgz gitops-reverser.tgz
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -w "${{ env.CI_WORKDIR }}" \
+            "${CI_CONTAINER}" \
+            bash -lc '
+              set -e
+              git config --global --add safe.directory "$PWD"
+              task helm-sync
+              helm lint charts/gitops-reverser
+              helm template gitops-reverser charts/gitops-reverser \
+                --namespace gitops-reverser-system \
+                --set image.repository=test/image \
+                --set image.tag=test
+              task dist-install
+              helm package charts/gitops-reverser --destination .
+              mv gitops-reverser-*.tgz gitops-reverser.tgz
+            '
 
       - name: Upload release bundle artifact
         uses: actions/upload-artifact@v7
@@ -180,75 +298,113 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    needs: build-ci-container
-    container:
-      image: ${{ needs.build-ci-container.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+    needs: ci-container
+    if: ${{ !cancelled() && needs.ci-container.result == 'success' }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      CI_CONTAINER: ${{ needs.ci-container.outputs.image }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Configure Git safe directory (for now needed as workarround https://github.com/actions/checkout/issues/2031)
-        run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
-
-      # Runs golangci-lint, hadolint, actionlint, and helm lint (see `task lint`).
-      # No PR annotations (unlike golangci-lint-action) -- run `task lint` locally.
-      - name: task lint
-        run: task lint
-
-      - name: task lint cache check
-        # Container jobs default to `sh`, which rejects `set -o pipefail` below
-        # ("Illegal option -o pipefail"). Force bash for this bashism-using step.
-        shell: bash
+      - name: Login to Docker registry
+        if: github.event_name != 'pull_request'
         run: |
-          set -euo pipefail
-          cache_log="$(mktemp)"
-          task --dry --verbose lint 2>&1 | tee "${cache_log}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
-          for task_name in \
-            generate \
-            manifests \
-            helm-sync \
-            lint-golang \
-            lint-dockerfiles \
-            lint-actions \
-            lint-helm
-          do
-            if ! grep -Fq "Task \"${task_name}\" is up to date" "${cache_log}"; then
-              echo "Expected ${task_name} to be cached after task lint" >&2
-              exit 1
-            fi
-          done
+      - name: Download CI container image (PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-container-image
+          path: .
 
-          if grep -Eq '^task: \[[^]]+\]' "${cache_log}"; then
-            echo "Expected second task lint dry-run to be fully cached, but a command would run" >&2
-            exit 1
-          fi
+      - name: Load CI container image (PR)
+        if: github.event_name == 'pull_request'
+        run: docker load -i ci-container-image.tar
+
+      - name: Run lint tasks
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -w "${{ env.CI_WORKDIR }}" \
+            "${CI_CONTAINER}" \
+            bash -lc '
+              set -e
+              git config --global --add safe.directory "$PWD"
+              task lint
+              cache_log="$(mktemp)"
+              task --dry --verbose lint 2>&1 | tee "${cache_log}"
+
+              for task_name in \
+                generate \
+                manifests \
+                helm-sync \
+                lint-golang \
+                lint-dockerfiles \
+                lint-actions \
+                lint-helm
+              do
+                if ! grep -Fq "Task \"${task_name}\" is up to date" "${cache_log}"; then
+                  echo "Expected ${task_name} to be cached after task lint" >&2
+                  exit 1
+                fi
+              done
+
+              if grep -Eq "^task: \[[^]]+\]" "${cache_log}"; then
+                echo "Expected second task lint dry-run to be fully cached, but a command would run" >&2
+                exit 1
+              fi
+            '
 
   test:
     name: Unit tests
     runs-on: ubuntu-latest
-    needs: build-ci-container
+    needs: ci-container
+    if: ${{ !cancelled() && needs.ci-container.result == 'success' }}
     permissions:
-      contents: read # checkout
-      packages: read # pull the CI base container from GHCR
-      id-token: write # OIDC token for tokenless Codecov uploads (public repo)
-    container:
-      image: ${{ needs.build-ci-container.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      contents: read
+      packages: read
+      id-token: write
+    env:
+      CI_CONTAINER: ${{ needs.ci-container.outputs.image }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Configure Git safe directory
-        run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
+      - name: Login to Docker registry
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+      - name: Download CI container image (PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-container-image
+          path: .
+
+      - name: Load CI container image (PR)
+        if: github.event_name == 'pull_request'
+        run: docker load -i ci-container-image.tar
 
       - name: Run tests
-        run: task test
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -w "${{ env.CI_WORKDIR }}" \
+            "${CI_CONTAINER}" \
+            bash -lc '
+              set -e
+              git config --global --add safe.directory "$PWD"
+              task test
+            '
+
+      - name: Make test artifacts readable by the runner
+        if: always()
+        run: sudo chmod -R a+rX cover.out .coverage-baseline config/crd/bases config/rbac config/webhook 2>/dev/null || true
 
       - name: Upload unit coverage to Codecov
         uses: codecov/codecov-action@v7
@@ -258,11 +414,70 @@ jobs:
           use_oidc: true
           fail_ci_if_error: false
 
-  docker-build:
-    name: Build
+  docker-build-pr:
+    name: Build (PR)
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     outputs:
       image: ${{ steps.image.outputs.name }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set full image name and build metadata
+        id: image
+        run: |
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          echo "name=${FULL_IMAGE}" >> $GITHUB_OUTPUT
+          echo "git_commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "Building image: ${FULL_IMAGE}"
+
+      - name: Build Docker image
+        # PRs cannot publish to the org registry. Build and load locally, then
+        # hand the image to e2e as an artifact.
+        uses: ./.github/actions/docker-build
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          login: false
+          platforms: linux/amd64
+          tags: ${{ steps.image.outputs.name }}
+          push: false
+          load: true
+          cache-scope: build-linux/amd64
+          build-args: |
+            VERSION=${{ env.IMAGE_TAG }}
+            GIT_COMMIT=${{ steps.image.outputs.git_commit }}
+            GIT_DIRTY=0
+            BUILD_DATE=${{ steps.image.outputs.build_date }}
+            GOCOVER=1
+
+      - name: Save project image
+        # PR builds aren't pushed, so persist the locally-loaded image as an
+        # artifact; e2e loads it and imports it into k3d.
+        run: docker save "${{ steps.image.outputs.name }}" -o project-image.tar
+
+      - name: Upload project image artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: project-image
+          path: project-image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-build-trusted:
+    name: Build (trusted)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -286,6 +501,7 @@ jobs:
           tags: ${{ steps.image.outputs.name }}
           outputs: type=image,push=true
           cache-scope: build-linux/amd64
+          cache-to: type=gha,mode=max,scope=build-linux/amd64
           build-args: |
             VERSION=${{ env.IMAGE_TAG }}
             GIT_COMMIT=${{ steps.image.outputs.git_commit }}
@@ -293,14 +509,53 @@ jobs:
             BUILD_DATE=${{ steps.image.outputs.build_date }}
             GOCOVER=1
 
+  project-image:
+    name: Select Project Image
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [docker-build-pr, docker-build-trusted]
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+    permissions:
+      contents: read
+    steps:
+      - name: Select image
+        id: image
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ needs.docker-build-pr.result }}" != "success" ]; then
+              echo "PR project image build did not succeed: ${{ needs.docker-build-pr.result }}" >&2
+              exit 1
+            fi
+            IMAGE="${{ needs.docker-build-pr.outputs.image }}"
+          else
+            if [ "${{ needs.docker-build-trusted.result }}" != "success" ]; then
+              echo "Trusted project image build did not succeed: ${{ needs.docker-build-trusted.result }}" >&2
+              exit 1
+            fi
+            IMAGE="${{ needs.docker-build-trusted.outputs.image }}"
+          fi
+          if [ -z "${IMAGE}" ]; then
+            echo "No project image was selected" >&2
+            exit 1
+          fi
+          echo "name=${IMAGE}" >> "$GITHUB_OUTPUT"
+
   e2e:
     name: E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
-    needs: [build-ci-container, docker-build, lint-helm]
+    needs: [ci-container, project-image, lint-helm]
+    if: >-
+      ${{
+        !cancelled()
+        && needs.ci-container.result == 'success'
+        && needs.project-image.result == 'success'
+        && needs.lint-helm.result == 'success'
+      }}
     permissions:
-      contents: read # checkout
-      packages: read # pull the CI container + project image from GHCR
-      id-token: write # OIDC token for tokenless Codecov uploads (public repo)
+      contents: read
+      packages: read
+      id-token: write
     strategy:
       matrix:
         include:
@@ -329,9 +584,12 @@ jobs:
             e2e_ginkgo_procs: "4"
             k3d_agent_count: "0"
     env:
-      PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
-      CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
-      IMAGE_DELIVERY_MODE: pull
+      PROJECT_IMAGE: ${{ needs.project-image.outputs.image }}
+      CI_CONTAINER: ${{ needs.ci-container.outputs.image }}
+      # PRs never push the project image, so it can't be pulled from the
+      # registry. Deliver it via `load` instead: the artifact is docker-loaded
+      # below and imported into k3d. Trusted pushes keep pulling from GHCR.
+      IMAGE_DELIVERY_MODE: ${{ github.event_name == 'pull_request' && 'load' || 'pull' }}
 
     steps:
       - name: Checkout code
@@ -344,9 +602,35 @@ jobs:
           name: release-bundle
           path: .
 
+      - name: Download CI container image (PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-container-image
+          path: .
+
+      - name: Load CI container image (PR)
+        if: github.event_name == 'pull_request'
+        run: docker load -i ci-container-image.tar
+
       - name: Login to Docker registry
+        if: github.event_name != 'pull_request'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+      - name: Download project image (PR)
+        # PR builds weren't pushed; pull the tarball built by docker-build-pr.
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v8
+        with:
+          name: project-image
+          path: .
+
+      - name: Load project image into Docker (PR)
+        # Make PROJECT_IMAGE available in the runner's Docker daemon so the k3d
+        # image import (load delivery) finds it locally instead of pulling.
+        if: github.event_name == 'pull_request'
+        run: docker load -i project-image.tar
 
       - name: Start disk usage sampler
         run: |
@@ -492,6 +776,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [lint-helm, lint, test, e2e, validate-devcontainer]
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -511,6 +798,9 @@ jobs:
     runs-on: ${{ matrix.runs_on }}
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         include:
@@ -550,6 +840,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true
           cache-scope: build-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=build-${{ matrix.platform }}
           build-args: |
             VERSION=${{ needs.release-please.outputs.version }}
             GIT_COMMIT=${{ steps.buildmeta.outputs.git_commit }}
@@ -575,6 +866,9 @@ jobs:
     name: Publish Multi-Arch Manifest
     runs-on: ubuntu-latest
     needs: [release-please, publish]
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Download digests
         uses: actions/download-artifact@v8
@@ -643,10 +937,13 @@ jobs:
   publish-helm:
     name: Publish Helm Chart
     runs-on: ubuntu-latest
-    needs: [build-ci-container, e2e, release-please]
+    needs: [ci-container, e2e, release-please]
     if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: write
+      packages: write
     container:
-      image: ${{ needs.build-ci-container.outputs.image }}
+      image: ${{ needs.ci-container.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
