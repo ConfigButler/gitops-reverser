@@ -642,6 +642,30 @@ tasks:
         {{.K3D}} cluster delete "{{.CLUSTER_NAME}}"
       - rm -rf "{{.CS}}"
 
+  cleanup-stamp-repos:
+    desc: Delete accumulated per-spec Git checkouts under .stamps/repos (reclaim disk)
+    cmds:
+      # Every e2e spec clones its Gitea repo into .stamps/repos/<name> and keeps it
+      # on purpose: the checkout has a working remote + credentials, so you can push,
+      # pull, or read the reversed Git history of a past run to investigate. Nothing
+      # ever prunes them, so across many runs this grows without bound (multiple GB).
+      # This task reclaims that space; the checkout helper re-creates .stamps/repos
+      # (mkdir -p) on the next run, so deleting it wholesale is safe. The paired
+      # generated GitProvider Secret manifests in .stamps/e2e-repo-artifacts belong
+      # to those same repos, so they are cleared in the same sweep.
+      - |
+        for dir in .stamps/repos .stamps/e2e-repo-artifacts; do
+          if [ -d "${dir}" ]; then
+            count="$(find "${dir}" -maxdepth 1 -mindepth 1 | wc -l | tr -d ' ')"
+            size="$(du -sh "${dir}" 2>/dev/null | cut -f1)"
+            echo "Removing ${dir} (${count} entries, ${size})"
+            rm -rf "${dir}"
+          else
+            echo "${dir} already clean"
+          fi
+        done
+        echo "Done."
+
   _ghcr-preflight:
     # Fail fast — BEFORE we spend ~30s creating a k3d cluster — when ghcr.io cannot
     # serve the Flux operator manifests that _flux-installed pulls. Otherwise an
