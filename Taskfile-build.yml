@@ -20,7 +20,7 @@ vars:
 
 tasks:
   manifests:
-    desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects
+    desc: Generate ClusterRole and CustomResourceDefinition objects
     deps:
       - generate
     sources:
@@ -36,7 +36,6 @@ tasks:
     generates:
       - config/crd/bases/configbutler.ai*.yaml
       - config/rbac/role.yaml
-      - config/webhook/manifests.yaml
     cmds:
       - |
         set -e
@@ -161,7 +160,7 @@ tasks:
         fi
 
   lint:
-    desc: Run all linters (Go, Dockerfiles, workflows, Helm chart); deps run in parallel and each self-skips when unchanged
+    desc: Run all linters (Go, Dockerfiles, workflows, Helm chart); deps run in parallel where safe
     deps:
       - lint-golang
       - lint-dockerfiles
@@ -170,6 +169,10 @@ tasks:
 
   lint-golang:
     desc: Run golangci-lint
+    deps:
+      # The Helm lint branch also reaches manifests -> generate via helm-sync.
+      # Wait for generated Go/CRD files to settle before golangci-lint scans api/**/*.go.
+      - manifests
     # golangci-lint's real inputs: the module's Go sources (including tests, which it
     # lints), the lint config, and the dependency graph. The external-sources/* trees
     # are separate modules and are not linted, so they are deliberately not listed.

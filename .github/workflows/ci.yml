@@ -20,7 +20,6 @@ permissions:
   contents: write
   pull-requests: write
   packages: write
-  id-token: write # OIDC token for tokenless Codecov uploads (public repo)
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -203,6 +202,10 @@ jobs:
     name: Unit tests
     runs-on: ubuntu-latest
     needs: build-ci-container
+    permissions:
+      contents: read # checkout
+      packages: read # pull the CI base container from GHCR
+      id-token: write # OIDC token for tokenless Codecov uploads (public repo)
     container:
       image: ${{ needs.build-ci-container.outputs.image }}
       credentials:
@@ -224,7 +227,7 @@ jobs:
           files: cover.out
           flags: unit
           use_oidc: true
-          fail_ci_if_error: true
+          fail_ci_if_error: false
 
   docker-build:
     name: Build
@@ -265,6 +268,10 @@ jobs:
     name: E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [build-ci-container, docker-build, lint-helm]
+    permissions:
+      contents: read # checkout
+      packages: read # pull the CI container + project image from GHCR
+      id-token: write # OIDC token for tokenless Codecov uploads (public repo)
     strategy:
       matrix:
         include:
@@ -399,7 +406,7 @@ jobs:
           files: e2e-cover.out
           flags: e2e
           use_oidc: true
-          fail_ci_if_error: true
+          fail_ci_if_error: false
 
       - name: Report disk usage (peak + final)
         if: always()
