@@ -194,6 +194,10 @@ RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
 # script; build-time expansion must NOT happen, so single quotes are intended.
 # hadolint ignore=SC2016
 RUN printf '%s\n' \
+    'export PATH="/go/bin:/usr/local/go/bin:${PATH}"' \
+    > /etc/profile.d/go-toolchain-path.sh \
+    && chmod 0644 /etc/profile.d/go-toolchain-path.sh \
+    && printf '%s\n' \
     '# Silently load the optional repo-root .env into login shells.' \
     'workspace_dir="${PROJECT_PATH:-}"' \
     'if [ -n "${workspace_dir}" ] && [ -f "${workspace_dir}/.env" ]; then' \

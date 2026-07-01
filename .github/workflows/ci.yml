@@ -65,7 +65,7 @@ jobs:
 
       - name: Validate CI container tools
         run: |
-          docker run --rm ${{ steps.image.outputs.name }} bash -c "
+          docker run --rm ${{ steps.image.outputs.name }} bash -lc "
             set -e
             echo '=== Validating CI Container Tools ==='
             go version
@@ -138,7 +138,7 @@ jobs:
 
       - name: Validate CI container tools
         run: |
-          docker run --rm ${{ steps.image.outputs.name }} bash -c "
+          docker run --rm ${{ steps.image.outputs.name }} bash -lc "
             set -e
             echo '=== Validating CI Container Tools ==='
             go version
