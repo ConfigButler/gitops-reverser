@@ -1,0 +1,20 @@
+# hadolint configuration - https://github.com/hadolint/hadolint#configure
+#
+# Rules disabled below are deliberate patterns in this repo's tooling/build
+# Dockerfiles (.devcontainer/Dockerfile and ./Dockerfile), not defects. Every
+# other check stays active. Lint locally with `task lint-dockerfiles`.
+ignored:
+  # Distro package versions are intentionally unpinned in tooling/build images;
+  # we pin the tool versions we care about via ENV blocks instead.
+  - DL3008 # apt-get install without a pinned version
+  - DL3018 # apk add without a pinned version
+  # Installers `cd` into an ephemeral `mktemp -d` and remove it in the same
+  # RUN; WORKDIR would persist a path that no longer exists.
+  - DL3003 # use WORKDIR instead of `cd`
+
+# SC2016 (single-quoted lines that intentionally aren't expanded) is suppressed
+# inline with `# hadolint ignore=SC2016` at the two profile-script RUN blocks.
+
+# Fail the build on warnings and errors, but let info/style suggestions through
+# so they surface without blocking `task lint`.
+failure-threshold: warning

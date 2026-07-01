@@ -5,6 +5,11 @@ FROM golang:1.26.4-bookworm AS ci
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Run RUN steps under bash with pipefail so a failure anywhere in a
+# `curl ... | tar` download pipeline aborts the build instead of silently
+# installing a truncated or empty binary.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Install essential packages + Docker CLI (for DooD via socket mount in CI)
 RUN apt-get update \
     && apt-get -y install --no-install-recommends \
@@ -48,26 +53,23 @@ RUN apt-get update \
 # FLUX_VERSION -> https://github.com/fluxcd/flux2
 # FLUX_OPERATOR_VERSION -> https://github.com/controlplaneio-fluxcd/flux-operator
 # TASK_VERSION -> https://github.com/go-task/task/releases
-# TILT_VERSION -> https://github.com/tilt-dev/tilt/releases
 # ACTIONLINT_VERSION -> https://github.com/rhysd/actionlint/releases
+# HADOLINT_VERSION -> https://github.com/hadolint/hadolint/releases
 # VALKEY_VERSION -> https://github.com/valkey-io/valkey/releases
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
-    KUBECTL_VERSION=v1.36.1 \
+    KUBECTL_VERSION=v1.36.2 \
     KUSTOMIZE_VERSION=5.8.1 \
-    KUBEBUILDER_VERSION=4.14.1 \
+    KUBEBUILDER_VERSION=4.15.0 \
     GOLANGCI_LINT_VERSION=v2.12.2 \
     HELM_VERSION=v4.2.0 \
     K3D_VERSION=v5.9.0 \
-    FLUX_VERSION=2.8.8 \
-    FLUX_OPERATOR_VERSION=0.50.0 \
+    FLUX_VERSION=2.9.0 \
+    FLUX_OPERATOR_VERSION=0.53.0 \
     TASK_VERSION=v3.51.1 \
-    TILT_VERSION=v0.37.4 \
     ACTIONLINT_VERSION=1.7.12 \
+    HADOLINT_VERSION=2.14.0 \
     VALKEY_VERSION=9.1.0
-
-# https://github.com/fluxcd/flux2/releases
-# https://fluxoperator.dev/
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -135,6 +137,17 @@ RUN asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
     && install -m 0755 actionlint /usr/local/bin/actionlint \
     && rm -rf "${tmpdir}"
 
+# Install hadolint (static linter for Dockerfiles)
+RUN asset="hadolint-linux-x86_64" \
+    && base="https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}" \
+    && tmpdir="$(mktemp -d)" \
+    && curl -fsSL "${base}/${asset}" -o "${tmpdir}/${asset}" \
+    && curl -fsSL "${base}/${asset}.sha256" -o "${tmpdir}/${asset}.sha256" \
+    && cd "${tmpdir}" \
+    && sha256sum -c "${asset}.sha256" \
+    && install -m 0755 "${asset}" /usr/local/bin/hadolint \
+    && rm -rf "${tmpdir}"
+
 # Install valkey-cli
 # Valkey only ships prebuilt binaries for Ubuntu jammy/noble; the jammy build
 # (glibc 2.35) is compatible with this bookworm image (glibc 2.36). Extract only
@@ -170,13 +183,16 @@ RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
 # This downloads linter dependencies without needing source code
 RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
     && go mod init example.com/init \
-    && echo 'package main\n\nfunc main() {}' > main.go \
+    && printf 'package main\n\nfunc main() {}\n' > main.go \
     && golangci-lint run --timeout=5m || true \
     && cd / && rm -rf /tmp/golangci-init
 
 # Pre-download Go modules for caching - placed AFTER tool installation
 # This layer will be cached and only rebuilt when go.mod/go.sum changes
 # Moving this down prevents tool reinstallation when dependencies change
+# The single-quoted lines below are shell written verbatim into the profile
+# script; build-time expansion must NOT happen, so single quotes are intended.
+# hadolint ignore=SC2016
 RUN printf '%s\n' \
     '# Silently load the optional repo-root .env into login shells.' \
     'workspace_dir="${PROJECT_PATH:-}"' \
@@ -197,13 +213,32 @@ ENV DEBIAN_FRONTEND=dialog
 # Default command
 CMD ["/bin/bash"]
 
-# Stage 2: Development container with Kind and debugging tools
+# Stage 2: Development container, used for local development (https://github.com/devcontainers/spec)
 FROM ci AS dev
 
 USER root
 
 # Switch to noninteractive for package installation
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Same pipefail hardening as the ci stage (SHELL is not inherited across stages).
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Dev-only tool versions - centralized for easy updates.
+# These tools are only used inside the devcontainer (local development, IDE
+# tooling, debugging), never in CI, so they live in the dev stage.
+#
+# Finding the latest versions:
+# NODE_MAJOR -> https://github.com/nodejs/node/releases (track a current LTS line)
+# TILT_VERSION -> https://github.com/tilt-dev/tilt/releases
+# DLV_VERSION -> https://github.com/go-delve/delve/releases
+# GOPLS_VERSION -> https://github.com/golang/tools/releases
+# STATICCHECK_VERSION -> https://github.com/dominikh/go-tools/releases
+ENV NODE_MAJOR=22 \
+    TILT_VERSION=v0.37.4 \
+    DLV_VERSION=v1.27.0 \
+    GOPLS_VERSION=v0.22.0 \
+    STATICCHECK_VERSION=v0.7.0
 
 # Kind is already installed in the ci stage above.
 RUN apt-get update \
@@ -213,6 +248,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Enable bash completion and auto-load Task completions for interactive shells in the dev image only.
+# Single-quoted lines are written verbatim into bash.bashrc; no build-time expansion intended.
+# hadolint ignore=SC2016
 RUN printf '%s\n' \
     '' \
     '# Enable bash completion and Task completions in interactive shells.' \
@@ -229,12 +266,10 @@ RUN printf '%s\n' \
     >> /etc/bash.bashrc
 
 # Install Node.js (provides npm + npx, e.g. for installing Claude Code skills).
-# Dev stage only; CI does not need a JS runtime.
-# NODE_MAJOR -> https://github.com/nodejs/node/releases (track a current LTS line)
 RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
     && chmod a+r /etc/apt/keyrings/nodesource.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
        > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update \
     && apt-get -y install --no-install-recommends nodejs \
@@ -259,11 +294,15 @@ RUN arch="$(dpkg --print-architecture)" && \
 
 # Install Delve debugger for Go debugging in VSCode
 # ACLs from CI stage should be preserved, so no need to re-apply
-RUN go install github.com/go-delve/delve/cmd/dlv@v1.26.1
+RUN go install github.com/go-delve/delve/cmd/dlv@${DLV_VERSION}
 
-# Install VSCode Go extension tools (gopls and staticcheck)
-RUN go install golang.org/x/tools/gopls@v0.21.1 \
-    && go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+# Install VSCode Go extension tools (gopls and staticcheck). Both are editor-only:
+# gopls is the language server, and this standalone staticcheck powers the editor's
+# live (as-you-type) diagnostics. Neither is a lint step -- `task lint` already runs
+# staticcheck's analyzers via golangci-lint's bundled staticcheck linter (configured in
+# .golangci.yml), so this binary is for the IDE, not a second lint pass.
+RUN go install golang.org/x/tools/gopls@${GOPLS_VERSION} \
+    && go install honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}
 
 # Create vscode user for non-root development and add to godev group
 RUN groupadd --gid 1000 vscode \

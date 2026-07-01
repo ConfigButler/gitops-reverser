@@ -20,7 +20,7 @@ vars:
 
 tasks:
   manifests:
-    desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects
+    desc: Generate ClusterRole and CustomResourceDefinition objects
     deps:
       - generate
     sources:
@@ -36,11 +36,10 @@ tasks:
     generates:
       - config/crd/bases/configbutler.ai*.yaml
       - config/rbac/role.yaml
-      - config/webhook/manifests.yaml
     cmds:
       - |
         set -e
-        mkdir -p config/crd/bases config/rbac config/webhook
+        mkdir -p config/crd/bases config/rbac
         # Write CRDs straight into the bases dir, overwriting in place. The
         # marker predates the run, so afterwards any base controller-gen did
         # not (re)write — i.e. a renamed/removed type — is older than it and
@@ -51,11 +50,9 @@ tasks:
         {{.CONTROLLER_GEN}} \
           rbac:roleName=gitops-reverser \
           crd \
-          webhook \
           paths=./api/... \
           paths=./internal/controller/... \
           paths=./internal/watch/... \
-          paths=./internal/webhook/... \
           paths=./cmd/... \
           output:crd:artifacts:config=config/crd/bases
         find config/crd/bases -maxdepth 1 -name '*.yaml' ! -newer "$marker" -delete
@@ -161,14 +158,71 @@ tasks:
         fi
 
   lint:
+    desc: Run all linters (Go, Dockerfiles, workflows, Helm chart); deps run in parallel where safe
+    deps:
+      - lint-golang
+      - lint-dockerfiles
+      - lint-actions
+      - lint-helm
+
+  lint-golang:
     desc: Run golangci-lint
+    deps:
+      # The Helm lint branch also reaches manifests -> generate via helm-sync.
+      # Wait for generated Go/CRD files to settle before golangci-lint scans api/**/*.go.
+      - manifests
+    # golangci-lint's real inputs: the module's Go sources (including tests, which it
+    # lints), the lint config, and the dependency graph. The external-sources/* trees
+    # are separate modules and are not linted, so they are deliberately not listed.
+    sources:
+      - api/**/*.go
+      - cmd/**/*.go
+      - internal/**/*.go
+      - test/**/*.go
+      - .golangci.yml
+      - go.mod
+      - go.sum
     cmds:
       - '{{.GOLANGCI_LINT}} run'
 
   lint-actions:
     desc: Lint GitHub Actions workflows with actionlint
+    # Re-lint whenever any workflow changes (glob covers new pipelines too).
+    sources:
+      - .github/workflows/*.yml
+      - .github/workflows/*.yaml
+    # No path arg: actionlint auto-discovers every workflow under
+    # .github/workflows/, so newly added pipelines are checked automatically.
     cmds:
-      - actionlint .github/workflows/ci.yml
+      - actionlint
+
+  lint-dockerfiles:
+    desc: Lint the project Dockerfiles with hadolint
+    # Only re-lint when a Dockerfile or the hadolint config changes; Task
+    # fingerprints these (checksum) under .task/ and skips the run otherwise.
+    sources:
+      - .devcontainer/Dockerfile
+      - Dockerfile
+      - .hadolint.yaml
+    cmds:
+      - hadolint .devcontainer/Dockerfile Dockerfile
+
+  lint-helm:
+    desc: Lint the Helm chart with helm lint
+    # Depends on helm-sync so the chart's generated CRDs/role are present and current
+    # before linting -- a complete check that also works on a fresh checkout (e.g. CI),
+    # where those files are gitignored and absent. This pulls in manifests/controller-gen,
+    # which re-runs on every invocation, so `task lint` is not a strict no-op; that is an
+    # accepted trade for a complete check. The generated CRDs are gitignored, so the
+    # resync never produces a stray git diff. Fingerprint every chart YAML/template so an
+    # edit to a template *or* a regenerated CRD re-triggers the lint.
+    deps:
+      - helm-sync
+    sources:
+      - charts/gitops-reverser/**/*.yaml
+      - charts/gitops-reverser/**/*.tpl
+    cmds:
+      - helm lint charts/gitops-reverser
 
   lint-fix:
     desc: Run golangci-lint and perform fixes

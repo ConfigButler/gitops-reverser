@@ -390,11 +390,3 @@ linters:
       # Relax godot for test helpers and utility functions
       - path: '(test/|helpers\.go)'
         linters: [godot, godoclint]
-      # Allow utils package name (standard pattern)
-      - text: "var-naming: avoid meaningless package names"
-        path: 'test/utils/.*\.go'
-        linters: [revive]
-      # Allow types package name (common Go pattern for shared types)
-      - text: "var-naming: avoid meaningless package names"
-        path: 'internal/types/.*\.go'
-        linters: [revive]
