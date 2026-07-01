@@ -24,9 +24,11 @@ task test      # Must pass all unit tests + the coverage ratchet (see TESTING RE
 task test-e2e  # Must pass end-to-end tests
 ```
 
-If you change a GitHub Actions workflow, also run `task lint-actions`, which lints
-`.github/workflows/ci.yml` with `actionlint`. Both `actionlint` and `golangci-lint`
-ship in the devcontainer image.
+`task lint` also runs `actionlint` on every workflow under `.github/workflows/` (via the
+`lint-actions` task) and `hadolint` on the Dockerfiles (via `lint-dockerfiles`), so a
+workflow or Dockerfile change is covered by the normal lint gate; you can also run
+`task lint-actions` or `task lint-dockerfiles` directly. `actionlint`, `hadolint`, and
+`golangci-lint` all ship in the devcontainer image.
 
 ## PRE-IMPLEMENTATION BEHAVIOR
 

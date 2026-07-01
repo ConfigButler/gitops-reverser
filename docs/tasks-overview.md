@@ -41,7 +41,7 @@ Run `task` (or `task help`) to list everything.
 | Task | What it does | When to run it |
 | --- | --- | --- |
 | `task test` | Regenerates manifests + deepcopy, runs `go fmt`/`go vet`, sets up envtest, runs all non-e2e packages, then the coverage ratchet (`cover-check`). | Before every commit. |
-| `task lint` | `golangci-lint run`. | Before every commit. |
+| `task lint` | Aggregates `lint-golang` (golangci-lint), `lint-dockerfiles` (hadolint), `lint-actions` (actionlint), and `lint-helm` (helm lint) as parallel `deps:`; each self-skips when its inputs are unchanged. | Before every commit. |
 | **`task test-e2e`** | Builds the controller image, brings up k3d + Flux + services, installs and deploys the controller, then runs the Ginkgo suite against it. The suite's before-hook invokes `task prepare-e2e`, so this one command walks the entire DAG below. | Before every commit that changes behavior. Needs Docker running. |
 | `task prepare-e2e` | Runs the bring-up/deploy half of the DAG, without specs. | Rarely by hand; it's what Tilt and the suite call. |
 | **`task clean-cluster`** | Deletes the k3d cluster and removes its stamps (`.stamps/cluster/<ctx>/`). Forces the entire cluster subtree to rebuild cold (~5–6 min) next run. | **Only when your cluster is broken**, or when you deliberately want a cold, slow, from-scratch run. Not part of the normal loop. |
@@ -142,6 +142,48 @@ graph TD
   manifests --> HELM["helm-sync"] --> DIST["dist-install"]
   manifests --> build
 ```
+
+Linting sits in its own small graph, rooted at non-Go inputs and wired into `task lint`:
+
+```mermaid
+graph TD
+  classDef src fill:#e8ecff,stroke:#5566aa,color:#000;
+  GO["api / cmd / internal / test *.go<br/>+ .golangci.yml + go.mod"]:::src
+  DOCKER["Dockerfile, .devcontainer/Dockerfile<br/>+ .hadolint.yaml"]:::src
+  WF[".github/workflows/*.yml"]:::src
+  HELM["charts/gitops-reverser/**<br/>(templates, values, CRDs)"]:::src
+
+  LINT["lint<br/>(aggregator: deps only)"]
+  LINT --> LGO["lint-golang<br/>(golangci-lint)"]
+  LINT --> DLINT["lint-dockerfiles<br/>(hadolint)"]
+  LINT --> ALINT["lint-actions<br/>(actionlint)"]
+  LINT --> HLINT["lint-helm<br/>(helm lint)"]
+  HLINT --> SYNC["helm-sync<br/>(regens chart CRDs)"]
+  GO --> LGO
+  DOCKER --> DLINT
+  WF --> ALINT
+  HELM --> HLINT
+```
+
+`task lint` is a pure aggregator: it lists `lint-golang`, `lint-dockerfiles`, `lint-actions`, and
+`lint-helm` as `deps:`, so the four run **in parallel**. `lint-golang`, `lint-dockerfiles`, and
+`lint-actions` each declare `sources:` and self-skip when their inputs are unchanged. CI runs this
+same `task lint` (in the `lint` job), so the local gate and the CI gate are identical — the four
+linters can't drift apart. Each sub-task's `sources:` is what makes the skip precise: `lint-golang`
+fingerprints the module's Go files (`api`, `cmd`, `internal`, `test`), `.golangci.yml`, and
+`go.mod`/`go.sum`; `lint-dockerfiles` the two Dockerfiles plus `.hadolint.yaml`; `lint-actions` the
+`.github/workflows/*` glob (it runs `actionlint` with no path argument, so new workflows are
+auto-discovered); `lint-helm` the chart's YAML and templates. Each fingerprint includes that tool's
+config, so changing a lint rule re-triggers just that linter.
+
+`lint-helm` is the one that isn't a pure skip: it depends on `helm-sync` so the chart's generated
+CRDs/role are present and current before `helm lint` runs — a complete check that also works on a
+fresh CI checkout, where those files are gitignored and absent. `helm-sync` chains into
+`manifests`/`controller-gen`, which re-runs on every invocation, so a `task lint` with nothing
+changed still does that codegen (the generated CRDs are gitignored, so it never leaves a stray git
+diff). That is the accepted cost of a complete Helm check; drop the `helm-sync` dep from
+`lint-helm` to get the pure no-op back. `rm -rf .task` forces a clean re-lint of the fingerprinted
+tasks if ever needed.
 
 ## Why the DAG pays off: only what changed re-runs
 

@@ -20,6 +20,7 @@ permissions:
   contents: write
   pull-requests: write
   packages: write
+  id-token: write # OIDC token for tokenless Codecov uploads (public repo)
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -135,7 +136,7 @@ jobs:
           "
 
   lint-helm:
-    name: Lint and build Helm Chart (and generate single-file installer)
+    name: Build Helm chart and installer bundle
     runs-on: ubuntu-latest
     needs: build-ci-container
     container:
@@ -152,9 +153,6 @@ jobs:
 
       - name: Copy generated things from /config
         run: task helm-sync
-
-      - name: Helm lint
-        run: helm lint charts/gitops-reverser
 
       - name: Helm template (dry-run)
         run: |
@@ -181,7 +179,7 @@ jobs:
           if-no-files-found: error
 
   lint:
-    name: Lint Go Code
+    name: Lint
     runs-on: ubuntu-latest
     needs: build-ci-container
     container:
@@ -196,14 +194,10 @@ jobs:
       - name: Configure Git safe directory (for now needed as workarround https://github.com/actions/checkout/issues/2031)
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          install-mode: none
-          skip-cache: false
-          skip-save-cache: false
-          only-new-issues: ${{ github.event_name == 'pull_request' }}
-          args: --timeout=5m --concurrency=4
+      # Runs golangci-lint, hadolint, actionlint, and helm lint (see `task lint`).
+      # No PR annotations (unlike golangci-lint-action) -- run `task lint` locally.
+      - name: task lint
+        run: task lint
 
   test:
     name: Unit tests
@@ -229,8 +223,8 @@ jobs:
         with:
           files: cover.out
           flags: unit
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+          use_oidc: true
+          fail_ci_if_error: true
 
   docker-build:
     name: Build
@@ -404,8 +398,8 @@ jobs:
         with:
           files: e2e-cover.out
           flags: e2e
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+          use_oidc: true
+          fail_ci_if_error: true
 
       - name: Report disk usage (peak + final)
         if: always()
