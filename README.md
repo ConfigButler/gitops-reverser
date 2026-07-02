@@ -1,4 +1,5 @@
-[![CI](https://github.com/ConfigButler/gitops-reverser/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ConfigButler/gitops-reverser/actions/workflows/ci.yml)
+[![CI](https://github.com/ConfigButler/gitops-reverser/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/ConfigButler/gitops-reverser/actions/workflows/release.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ConfigButler/gitops-reverser/badge)](https://scorecard.dev/viewer/?uri=github.com/ConfigButler/gitops-reverser)
 [![Release](https://img.shields.io/github/v/release/ConfigButler/gitops-reverser?sort=semver)](https://github.com/ConfigButler/gitops-reverser/releases)
 [![License](https://img.shields.io/github/license/ConfigButler/gitops-reverser)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Go](https://img.shields.io/badge/go-1.26-blue?logo=go)](go.mod)

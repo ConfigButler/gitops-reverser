@@ -134,6 +134,12 @@ var _ = Describe("image refresh dependency chain", Label("image-refresh"), Seria
 				"they validate the local build → k3d load → rollout restart chain, " +
 				"which does not apply when the cluster pulls a pre-built image from a registry")
 		}
+		if img := os.Getenv("PROJECT_IMAGE"); img != "" {
+			Skip(fmt.Sprintf("image-refresh tests require a locally built controller image; "+
+				"PROJECT_IMAGE=%s is externally provided, so a source change cannot rebuild it "+
+				"and there is no local build → k3d load chain to validate (unset PROJECT_IMAGE "+
+				"to run them, as CI's quickstart lane does)", img))
+		}
 
 		savedContent = map[string][]byte{}
 

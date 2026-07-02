@@ -1,5 +1,7 @@
 # Build the manager binary
-FROM golang:1.26.4 AS builder
+# Base images are pinned by digest (Scorecard "pinned dependencies");
+# Dependabot's docker ecosystem keeps version + digest current together.
+FROM golang:1.26.4@sha256:f96cc555eb8db430159a3aa6797cd5bae561945b7b0fe7d0e284c63a3b291609 AS builder
 
 # Automatic platform arguments provided by Docker BuildKit
 ARG TARGETOS
@@ -35,7 +37,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT} -X main.gitDirty=${GIT_DIRTY} -X main.buildDate=${BUILD_DATE}" \
     -o manager ./cmd
 
-FROM alpine:3.24 AS sops-downloader
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS sops-downloader
 ARG TARGETARCH
 ARG SOPS_VERSION=v3.11.0
 RUN apk add --no-cache curl
@@ -49,7 +51,7 @@ RUN case "${TARGETARCH}" in \
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:debug
+FROM gcr.io/distroless/static:debug@sha256:85554049bdfa232b64a328412dd8909cc3baad08474cf97b2e5cc0a74e23fc5e
 WORKDIR /
 COPY --from=builder /workspaces/manager .
 COPY --from=sops-downloader /usr/local/bin/sops /usr/local/bin/sops

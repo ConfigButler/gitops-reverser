@@ -1,6 +1,8 @@
 # Multi-stage Dockerfile for GitOps Reverser
 # Stage 1: CI base image with essential build tools
-FROM golang:1.26.4-bookworm AS ci
+# Pinned by digest (Scorecard "pinned dependencies"); Dependabot's docker
+# ecosystem keeps version + digest current together.
+FROM golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS ci
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
