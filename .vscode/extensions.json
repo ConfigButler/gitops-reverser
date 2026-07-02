@@ -1,0 +1,16 @@
+{
+  // Host-side recommendations (shown before "Reopen in Container").
+  // Keep in line with customizations.vscode.extensions in
+  // .devcontainer/devcontainer.json, plus remote-containers itself so the
+  // one-click devcontainer start works from a fresh clone.
+  "recommendations": [
+    "ms-vscode-remote.remote-containers",
+    "golang.go",
+    "ms-kubernetes-tools.vscode-kubernetes-tools",
+    "ms-azuretools.vscode-docker",
+    "openai.chatgpt",
+    "anthropic.claude-code",
+    "redhat.vscode-yaml",
+    "mermaidchart.vscode-mermaid-chart"
+  ]
+}
