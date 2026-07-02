@@ -19,7 +19,11 @@ updates:
           - "*"
 
   - package-ecosystem: "docker"
-    directory: "/"
+    # Covers the project Dockerfile and the devcontainer/CI base image, so
+    # digest-pinned FROM lines keep moving with upstream.
+    directories:
+      - "/"
+      - "/.devcontainer"
     schedule:
       interval: "weekly"
     groups:

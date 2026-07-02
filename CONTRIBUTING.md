@@ -147,4 +147,30 @@ Repo-specific guidance for AI coding assistants lives in [AGENTS.md](AGENTS.md).
 2. Make changes, follow the validation steps above
 3. Open a PR against `main` — CI runs automatically
 
+### Pull requests from forks
+
+External contributions come from a fork, and GitHub gives fork PRs a **read-only**
+`GITHUB_TOKEN` — it cannot push to the org's packages and has no access to repository
+secrets. CI adapts automatically so that fork PRs still run the **full** pipeline
+(lint, unit, e2e, image scan) without needing any write access:
+
+- **Images are built but never pushed.** The CI base container and the project image
+  are built from your PR's own code in the PR run — a PR that changes
+  `.devcontainer/Dockerfile` is validated against its own toolchain.
+- **Images move between jobs as artifacts, not via the registry.** They are
+  `docker save`d, uploaded, and later jobs `docker load` them; the e2e job imports the
+  project image straight into k3d (`IMAGE_DELIVERY_MODE=load`) instead of pulling it.
+- **Same checks as maintainers.** PRs and pushes to `main` run the same jobs from the
+  same workflow file ([ci.yml](.github/workflows/ci.yml)); only the image delivery
+  differs.
+
+Nothing is published from a PR regardless of origin: image and chart publishing only
+happen on push to `main` via [release.yml](.github/workflows/release.yml), after the
+full pipeline passed. If this is your first contribution, a maintainer needs to
+approve the workflow run before it starts — that's a GitHub safety default, not a
+distrust of your patch.
+
+The full design (trust zones, signing, verification) is described in
+[docs/ci-overview.md](docs/ci-overview.md).
+
 Thank you for contributing!

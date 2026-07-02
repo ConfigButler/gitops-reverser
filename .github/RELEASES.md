@@ -59,10 +59,11 @@ Push to main
 
 **On every push to `main`:**
 
-1. **CI Tests Run** (`.github/workflows/ci.yml`):
-   - Lint: `make lint` with golangci-lint
-   - Unit tests: `make test` (>90% coverage required)
-   - E2E tests: `make test-e2e` in Kind cluster
+1. **CI Tests Run** (`.github/workflows/release.yml` calls the reusable
+   `.github/workflows/ci.yml` — the same jobs every PR runs):
+   - Lint: `task lint` (golangci-lint, hadolint, actionlint, helm lint)
+   - Unit tests: `task test` (with the coverage ratchet)
+   - E2E tests: the Ginkgo suite in a k3d cluster, plus the project image scan
 
 2. **Release Analysis** (if tests pass):
    - release-please analyzes commits since last release
@@ -278,7 +279,10 @@ These are automatically updated by release-please:
 
 Don't modify these without understanding the impact:
 - `release-please-config.json` - Semantic versioning rules
-- `.github/workflows/ci.yml` - Unified CI and release workflow
+- `.github/workflows/ci.yml` - Validation pipeline (PRs + reused on main)
+- `.github/workflows/release.yml` - Release/publish pipeline (push to main)
+
+See [docs/ci-overview.md](../docs/ci-overview.md) for the full CI/CD design.
 
 ---
 
