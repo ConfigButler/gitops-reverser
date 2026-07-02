@@ -165,21 +165,33 @@ runtime_image_id_in_node() {
 import_image() {
 	local ref="$1"
 	local attempt node_name pinned
-	# k3d's tools-node import path can transiently lose the tarball between the
-	# save and the per-node `ctr image import` ("ctr: open /k3d/images/<tar>:
-	# no such file or directory") — and k3d still exits 0, logging "Successfully
-	# imported". The pin step below is what actually detects the miss, so on a
-	# failed pin re-run the whole import instead of giving up.
+	# Deliver with `-m direct` (docker save streamed straight into each node's
+	# `ctr image import` stdin) rather than the default tools-node mode. The
+	# tools-node path has a race: k3d's exec poll can misread the save-image
+	# exec as finished before the tarball hits the shared volume, the node
+	# import then fails ("ctr: open /k3d/images/<tar>: no such file or
+	# directory") — and k3d logs the error but still exits 0. Direct mode has
+	# no tarball/volume window and DOES propagate node import failures.
+	# Caveat: direct + ctr's --all-platforms chokes on multi-arch images saved
+	# by a containerd-store docker (foreign-platform blobs absent from the
+	# stream); PROJECT_IMAGE is always the single-arch controller image.
+	#
+	# Trust nothing either way: the pin step below verifies the image really
+	# landed in every node, and any failed attempt (loud or silent) is retried.
 	for attempt in 1 2 3; do
 		echo "Importing ${PROJECT_IMAGE} into k3d cluster ${CLUSTER_NAME} (attempt ${attempt}/3)"
-		"${K3D}" image import -c "${CLUSTER_NAME}" "${PROJECT_IMAGE}"
 		pinned=1
-		while IFS= read -r node_name; do
-			if ! pin_imported_image "${node_name}" "${ref}" "${PROJECT_IMAGE}" "${IMAGE_REPO}" "${IMAGE_TAG}"; then
-				pinned=0
-				break
-			fi
-		done < <(cluster_node_names)
+		if "${K3D}" image import -m direct -c "${CLUSTER_NAME}" "${PROJECT_IMAGE}"; then
+			while IFS= read -r node_name; do
+				if ! pin_imported_image "${node_name}" "${ref}" "${PROJECT_IMAGE}" "${IMAGE_REPO}" "${IMAGE_TAG}"; then
+					pinned=0
+					break
+				fi
+			done < <(cluster_node_names)
+		else
+			echo "WARN: k3d image import exited nonzero on attempt ${attempt}" >&2
+			pinned=0
+		fi
 		if [[ "${pinned}" == "1" ]]; then
 			return 0
 		fi
