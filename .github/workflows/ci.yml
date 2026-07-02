@@ -553,6 +553,19 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Free runner disk
+        # The e2e stack (CI container, project image, k3d node volumes, local
+        # rebuilds) needs tens of GB; runners have been observed dipping below
+        # the k3d node's kubelet eviction threshold mid-run (28624646437).
+        # Drop the biggest preinstalled toolchains we never use.
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/share/dotnet &
+          RM_PID=$!
+          docker system prune -f >/dev/null 2>&1 || true
+          wait "${RM_PID}"
+          df -h / | tail -1
+
       - name: Download release bundle artifact
         if: matrix.needs_artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
