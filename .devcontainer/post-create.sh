@@ -14,29 +14,29 @@ fail() {
 workspace_dir="${1:-${containerWorkspaceFolder:-${WORKSPACE_FOLDER:-$(pwd)}}}"
 log "Using workspace directory: ${workspace_dir}"
 
-# Resolve Git identity from effective config first, then fallback env vars.
+# Resolve Git identity from effective config first, then fallback to mounted host file.
 git_name="$(git config --get user.name || true)"
 git_email="$(git config --get user.email || true)"
 
-if [ -z "${git_name}" ] && [ -n "${GIT_USER_NAME:-}" ]; then
-  git_name="${GIT_USER_NAME}"
-fi
+if [ -n "$git_name" ] && [ -n "$git_email" ]; then
+  git config --global user.name "$git_name"
+  git config --global user.email "$git_email"
+else
+  HOST_GIT_CONFIG="/home/vscode/.gitconfig-host"
 
-if [ -z "${git_email}" ] && [ -n "${GIT_USER_EMAIL:-}" ]; then
-  git_email="${GIT_USER_EMAIL}"
-fi
+  if [ -f "$HOST_GIT_CONFIG" ]; then
+    git_name=$(git config -f "$HOST_GIT_CONFIG" user.name || true)
+    git_email=$(git config -f "$HOST_GIT_CONFIG" user.email || true)
 
-if [ -z "${git_name}" ] || [ -z "${git_email}" ]; then
-  fail "Missing Git identity. Set user.name and user.email in Git, or provide GIT_USER_NAME and GIT_USER_EMAIL to the devcontainer environment."
-fi
-
-# Persist identity globally in the container if it is not already configured there.
-if ! git config --global --get user.name >/dev/null 2>&1; then
-  git config --global user.name "${git_name}"
-fi
-
-if ! git config --global --get user.email >/dev/null 2>&1; then
-  git config --global user.email "${git_email}"
+    if [ -n "$git_name" ] && [ -n "$git_email" ]; then
+      git config --global user.name "$git_name"
+      git config --global user.email "$git_email"
+    else
+      fail "user.name/user.email not found in host .gitconfig. Set them before rebuilding."
+    fi
+  else
+    fail "Host .gitconfig not mounted. Git identity not configured in container."
+  fi
 fi
 
 log "Refreshing Git SSH signing configuration"

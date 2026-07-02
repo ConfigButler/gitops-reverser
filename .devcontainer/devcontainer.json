@@ -91,12 +91,12 @@
     "source=codexconfig,target=/home/vscode/.codex,type=volume",
     "source=claudeconfig,target=/home/vscode/.claude,type=volume",
     "source=dotkube,target=/home/vscode/.kube,type=volume",
-    "source=persisted-home,target=/home/vscode/persisted-home,type=volume"
+    "source=persisted-home,target=/home/vscode/persisted-home,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/home/vscode/.gitconfig-host,type=bind,consistency=cached"
+
   ],
   "containerEnv": {
     "HOST_PROJECT_PATH": "${localWorkspaceFolder}",
-    "PROJECT_PATH": "/workspaces/${localWorkspaceFolderBasename}",
-    "GIT_USER_NAME": "${localEnv:GIT_USER_NAME}",
-    "GIT_USER_EMAIL": "${localEnv:GIT_USER_EMAIL}"
+    "PROJECT_PATH": "/workspaces/${localWorkspaceFolderBasename}"
   }
 }

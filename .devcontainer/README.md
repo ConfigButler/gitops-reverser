@@ -8,14 +8,7 @@ interactive debugging inside the devcontainer.
 
 ## Quick Start
 
-### VS Code
-
-1. Install the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
-2. Open the project in VS Code: `code .`
-3. Press `F1` and run `Dev Containers: Reopen in Container`
-4. Wait for the initial build to finish
-
-### Before Reopening In Container
+### Prerequisites (Before Reopening In Container)
 
 This repo expects SSH agent forwarding for commit signing.
 
@@ -30,6 +23,14 @@ git config --global user.email "you@example.com"
 ```
 
 If `ssh-add -L` shows no keys, commit signing inside the devcontainer will fail.
+
+
+### VS Code
+
+1. Install the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+2. Open the project in VS Code: `code .`
+3. Press `F1` and run `Dev Containers: Reopen in Container`
+4. Wait for the initial build to finish
 
 ### Verify
 
