@@ -497,9 +497,16 @@ jobs:
             # image: unset PROJECT_IMAGE (the CI-built image doesn't rebuild
             # from source) and force load delivery. Fork-safe: the chain never
             # touches a registry.
+            #
+            # cleanup-installs.sh between the two: the helm quickstart just
+            # installed with the *provided* image ref, and install stamps do
+            # not invalidate on an image-ref change — without the reset the
+            # refresh suite would keep restarting a deployment that still
+            # points at the provided tag and never runs the local rebuilds.
             script: >-
               export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz
               && task test-e2e-quickstart-helm
+              && bash hack/cleanup-installs.sh k3d-gitops-reverser-test-e2e
               && env -u PROJECT_IMAGE IMAGE_DELIVERY_MODE=load task test-image-refresh
               && export INSTALL_MODE=plain-manifests-file
               && task test-e2e-quickstart-manifest
