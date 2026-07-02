@@ -164,12 +164,31 @@ runtime_image_id_in_node() {
 
 import_image() {
 	local ref="$1"
-	echo "Importing ${PROJECT_IMAGE} into k3d cluster ${CLUSTER_NAME}"
-	"${K3D}" image import -c "${CLUSTER_NAME}" "${PROJECT_IMAGE}"
-	local node_name
-	while IFS= read -r node_name; do
-		pin_imported_image "${node_name}" "${ref}" "${PROJECT_IMAGE}" "${IMAGE_REPO}" "${IMAGE_TAG}"
-	done < <(cluster_node_names)
+	local attempt node_name pinned
+	# k3d's tools-node import path can transiently lose the tarball between the
+	# save and the per-node `ctr image import` ("ctr: open /k3d/images/<tar>:
+	# no such file or directory") — and k3d still exits 0, logging "Successfully
+	# imported". The pin step below is what actually detects the miss, so on a
+	# failed pin re-run the whole import instead of giving up.
+	for attempt in 1 2 3; do
+		echo "Importing ${PROJECT_IMAGE} into k3d cluster ${CLUSTER_NAME} (attempt ${attempt}/3)"
+		"${K3D}" image import -c "${CLUSTER_NAME}" "${PROJECT_IMAGE}"
+		pinned=1
+		while IFS= read -r node_name; do
+			if ! pin_imported_image "${node_name}" "${ref}" "${PROJECT_IMAGE}" "${IMAGE_REPO}" "${IMAGE_TAG}"; then
+				pinned=0
+				break
+			fi
+		done < <(cluster_node_names)
+		if [[ "${pinned}" == "1" ]]; then
+			return 0
+		fi
+		if [[ "${attempt}" -lt 3 ]]; then
+			echo "WARN: ${PROJECT_IMAGE} missing from cluster nodes after import attempt ${attempt}; retrying" >&2
+		fi
+	done
+	echo "ERROR: k3d image import failed to deliver ${PROJECT_IMAGE} after 3 attempts" >&2
+	return 1
 }
 
 if [[ "${IMAGE_DELIVERY_MODE}" == "pull" ]]; then
