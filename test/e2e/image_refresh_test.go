@@ -21,6 +21,7 @@ package e2e
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -278,7 +279,7 @@ var _ = Describe("image refresh dependency chain", Label("image-refresh"), Seria
 			"expected a new pod after Dockerfile change")
 	})
 
-	It("S6: stamp content matches the digest of the running pod", func() {
+	It("S6: the running pod uses the currently imported image", func() {
 		By("reading stamp content")
 		deployed := readStamp(deployedStamp)
 		loaded := readStamp(imageLoadedStamp)
@@ -290,6 +291,14 @@ var _ = Describe("image refresh dependency chain", Label("image-refresh"), Seria
 		Expect(deployed).To(MatchRegexp(`^.+@sha256:[a-f0-9]+$`),
 			"controller.deployed should contain an image reference and a sha256 digest")
 
+		By("waiting for the controller rollout from S5 to settle")
+		_, err := kubectlRunInNamespace(namespace,
+			"rollout", "status", "deployment",
+			"-l", controllerPodLabelSelector,
+			"--timeout=180s",
+		)
+		Expect(err).NotTo(HaveOccurred())
+
 		By("reading the running pod's imageID from the cluster")
 		podImageID, err := kubectlRunInNamespace(namespace,
 			"get", "pods",
@@ -299,9 +308,108 @@ var _ = Describe("image refresh dependency chain", Label("image-refresh"), Seria
 		)
 		Expect(err).NotTo(HaveOccurred())
 
-		By("asserting the pod's imageID contains the digest recorded in the stamp")
-		deployedDigest := deployed[strings.LastIndex(deployed, "@")+1:]
-		Expect(podImageID).To(ContainSubstring(deployedDigest),
-			"the running pod should use the image whose digest is recorded in controller.deployed")
+		// The pod's imageID is containerd's identity for the image and its
+		// shape varies by environment (config digest, manifest digest, or
+		// repo@digest), while the stamp records Docker's view at import time —
+		// the two are not directly comparable everywhere. The environment-
+		// independent truth is the node's own image table: the pod must run an
+		// image record that shares the manifest digest of the tag imported by
+		// S5's rebuild.
+		By("asserting the pod's image is the record currently imported for the tag on the node")
+		podDigest := shaSuffix(podImageID)
+		Expect(podDigest).NotTo(BeEmpty(),
+			"pod imageID %q should contain a sha256 digest", podImageID)
+		Eventually(func(g Gomega) {
+			digests, err := nodeDigestsForImportedTag()
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(digests).To(ContainElement(podDigest),
+				"the running pod's image %s should be among the node's records for the imported tag", podImageID)
+		}).WithTimeout(60 * time.Second).WithPolling(5 * time.Second).Should(Succeed())
 	})
 })
+
+// shaSuffix extracts the trailing sha256:<hex> component of an image
+// reference or imageID, whatever prefix it carries.
+func shaSuffix(ref string) string {
+	idx := strings.LastIndex(ref, "sha256:")
+	if idx == -1 {
+		return ""
+	}
+	return strings.TrimSpace(ref[idx:])
+}
+
+// localImageRefs returns the locally imported controller tag both as written
+// and as containerd normalizes it (single-component repos gain the
+// docker.io/library/ prefix).
+func localImageRefs() (string, string) {
+	raw := os.Getenv("E2E_LOCAL_IMAGE")
+	if raw == "" {
+		raw = "gitops-reverser:e2e-local"
+	}
+	normalized := raw
+	if !strings.Contains(strings.SplitN(raw, "/", 2)[0], ".") {
+		if strings.Contains(raw, "/") {
+			normalized = "docker.io/" + raw
+		} else {
+			normalized = "docker.io/library/" + raw
+		}
+	}
+	return raw, normalized
+}
+
+// firstK3dNode returns the first server/agent node container of the e2e cluster.
+func firstK3dNode() (string, error) {
+	cluster := strings.TrimPrefix(resolveE2EContext(), "k3d-")
+	psOut, err := utils.Run(exec.Command("docker", "ps", "--format", "{{.Names}}"))
+	if err != nil {
+		return "", fmt.Errorf("listing k3d nodes: %w", err)
+	}
+	for _, name := range utils.GetNonEmptyLines(psOut) {
+		if strings.HasPrefix(name, "k3d-"+cluster+"-server-") ||
+			strings.HasPrefix(name, "k3d-"+cluster+"-agent-") {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("no k3d node container found for cluster %q", cluster)
+}
+
+// nodeDigestsForImportedTag lists every digest the first k3d node's containerd
+// associates with the locally imported controller tag: the tag's manifest
+// digest plus all alias records (e.g. the sha256:<id> names CRI creates when a
+// pod uses the image) that point at the same manifest. Mirrors the node
+// introspection in hack/e2e/load-image.sh.
+func nodeDigestsForImportedTag() ([]string, error) {
+	raw, normalized := localImageRefs()
+	node, err := firstK3dNode()
+	if err != nil {
+		return nil, err
+	}
+
+	table, err := utils.Run(exec.Command("docker", "exec", node, "ctr", "-n", "k8s.io", "images", "ls"))
+	if err != nil {
+		return nil, fmt.Errorf("listing images in node %s: %w", node, err)
+	}
+
+	// Table columns: REF TYPE DIGEST SIZE PLATFORMS LABELS.
+	rows := utils.GetNonEmptyLines(table)
+	var manifestDigest string
+	for _, row := range rows {
+		fields := strings.Fields(row)
+		if len(fields) >= 3 && (fields[0] == normalized || fields[0] == raw) {
+			manifestDigest = fields[2]
+			break
+		}
+	}
+	if manifestDigest == "" {
+		return nil, fmt.Errorf("tag %q not found in node %s image table", normalized, node)
+	}
+
+	digests := []string{manifestDigest}
+	for _, row := range rows {
+		fields := strings.Fields(row)
+		if len(fields) >= 3 && fields[2] == manifestDigest && strings.HasPrefix(fields[0], "sha256:") {
+			digests = append(digests, fields[0])
+		}
+	}
+	return digests, nil
+}
