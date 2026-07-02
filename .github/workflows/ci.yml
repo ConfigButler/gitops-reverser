@@ -263,7 +263,10 @@ jobs:
 
       - name: Load CI container image (PR)
         if: github.event_name == 'pull_request'
-        run: docker load -i ci-container-image.tar
+        # rm after load: the multi-GB tarball otherwise stays on disk for the whole
+        # job — e2e runners have been observed within 1.5GB of the kubelet eviction
+        # threshold (run 28623232380).
+        run: docker load -i ci-container-image.tar && rm -f ci-container-image.tar
 
       - name: Lint and package Helm chart
         run: |
@@ -324,7 +327,10 @@ jobs:
 
       - name: Load CI container image (PR)
         if: github.event_name == 'pull_request'
-        run: docker load -i ci-container-image.tar
+        # rm after load: the multi-GB tarball otherwise stays on disk for the whole
+        # job — e2e runners have been observed within 1.5GB of the kubelet eviction
+        # threshold (run 28623232380).
+        run: docker load -i ci-container-image.tar && rm -f ci-container-image.tar
 
       - name: Run lint tasks
         run: |
@@ -391,7 +397,10 @@ jobs:
 
       - name: Load CI container image (PR)
         if: github.event_name == 'pull_request'
-        run: docker load -i ci-container-image.tar
+        # rm after load: the multi-GB tarball otherwise stays on disk for the whole
+        # job — e2e runners have been observed within 1.5GB of the kubelet eviction
+        # threshold (run 28623232380).
+        run: docker load -i ci-container-image.tar && rm -f ci-container-image.tar
 
       - name: Run tests
         run: |
@@ -445,7 +454,7 @@ jobs:
 
       - name: Load project image (PR)
         if: github.event_name == 'pull_request'
-        run: docker load -i project-image.tar
+        run: docker load -i project-image.tar && rm -f project-image.tar
 
       - name: Pull project image (trusted)
         if: github.event_name != 'pull_request'
@@ -489,6 +498,9 @@ jobs:
       packages: read
       id-token: write
     strategy:
+      # Don't let one lane's flake cancel the other mid-run — a cancelled lane
+      # loses its signal *and* fails its report upload with "No files found".
+      fail-fast: false
       matrix:
         include:
           - name: quickstart
@@ -557,7 +569,10 @@ jobs:
 
       - name: Load CI container image (PR)
         if: github.event_name == 'pull_request'
-        run: docker load -i ci-container-image.tar
+        # rm after load: the multi-GB tarball otherwise stays on disk for the whole
+        # job — e2e runners have been observed within 1.5GB of the kubelet eviction
+        # threshold (run 28623232380).
+        run: docker load -i ci-container-image.tar && rm -f ci-container-image.tar
 
       - name: Login to Docker registry
         if: github.event_name != 'pull_request'
@@ -576,7 +591,7 @@ jobs:
         # Make PROJECT_IMAGE available in the runner's Docker daemon so the k3d
         # image import (load delivery) finds it locally instead of pulling.
         if: github.event_name == 'pull_request'
-        run: docker load -i project-image.tar
+        run: docker load -i project-image.tar && rm -f project-image.tar
 
       - name: Start disk usage sampler
         run: |
