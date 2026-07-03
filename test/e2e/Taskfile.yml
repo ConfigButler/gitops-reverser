@@ -218,10 +218,15 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        # E2E_LABEL_FILTER lets CI shard the suite across runners (e.g.
+        # 'manager' vs '!manager && !image-refresh'); it defaults to the whole
+        # non-image-refresh suite so a plain `task test-e2e` still runs it all.
+        # E2E_REPORT_NAME keeps each shard's Ginkgo JSON report distinct.
         go run github.com/onsi/ginkgo/v2/ginkgo \
           --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
-          --label-filter='!image-refresh' \
-          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-full.json \
+          --label-filter='{{.E2E_LABEL_FILTER | default "!image-refresh"}}' \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" \
+          --json-report=ginkgo-report-{{.E2E_REPORT_NAME | default "full"}}.json \
           ./test/e2e/
 
   e2e-coverage-collect:
