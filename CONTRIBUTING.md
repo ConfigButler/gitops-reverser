@@ -67,6 +67,26 @@ go test ./internal/controller -v
 go test ./internal/git -run TestName -v
 ```
 
+## Dynamic analysis (fuzzing)
+
+The project fuzzes the code that parses untrusted or semi-structured input — manifest
+editing (`internal/git/manifestedit`) and audit/admission request decoding
+(`internal/webhook`) — so hostile input can never crash the controller. `task test`
+already replays every fuzz seed and committed crash reproducer as ordinary regression
+cases, so you get that coverage for free on every run.
+
+Before a major production release, run a longer discovery pass:
+
+```bash
+task fuzz          # release-time discovery run, per target, under the race detector
+task fuzz-smoke    # short active-fuzz smoke of each target
+```
+
+If fuzzing finds a crash, Go writes the reproducer under
+`<package>/testdata/fuzz/<Target>/`. Commit it: it fixes the input as a permanent
+regression case, replayed by `task test` thereafter. See
+[`docs/design/dynamic-analysis-fuzzing-plan.md`](docs/design/dynamic-analysis-fuzzing-plan.md).
+
 ## E2E tests
 
 ```bash
