@@ -1,28 +1,85 @@
 # Plan: build release images once on main, retag at release
 
-Status: **PR 1 (§8 core) implemented** — `build-release-amd64`/`-arm64` +
-`image-scan-release` in `ci.yml`, `publish` rebuild job deleted and
-`publish-manifest` retags the CI digests (gated on `release_created`),
-instrumented image is artifact-only everywhere. PRs 2–5 (quickstart→release
-digest, per-commit signing, guarded e2e skip, release-PR dispatch) remain
-follow-ups. Revised after review: scan both
-arches, tighter `build-release` gate, signing targets the per-arch release
-digests (never `ci-<sha>`), phased rollout (§8).
-Rev 3: the instrumented image becomes **artifact-only on every run** — the
-`ci-<sha>` registry push is retired; e2e uses load delivery everywhere.
-Rev 4 (second review): explicit release gate on `publish-manifest`, scans
-split into paired jobs (no `always()` anywhere in PR 1), "promotable"
-narrowed to pullable/testable.
-Rev 5: landscape of alternative release models (§13); §7 settled — skip the
-`full` lane only, quickstart stays on the bump commit.
-Constraint from review: **e2e coverage (`GOCOVER=1`) on main stays.**
+Status: **PR 1 (§8 core) MERGED to `main`** — squash-merged 2026-07-03 as
+[#190], commit `2b3a949`. PRs 2–5 remain unstarted follow-ups. No real
+release has exercised the retag path yet as of this writing (an open
+release-please PR exists; nothing has been cut since #190).
 
-## 1. What happens today
+> **Release-blocker in flight ([#191]):** #190's first `main` run exposed a
+> 100% failure — `image-scan-release (arm64)` dies with `no child with
+> platform linux/amd64 in index` because each `push-by-digest` build is an OCI
+> index and Trivy defaulted to the runner's platform. That reds `ci`, which
+> `release-please` needs, so **a release cannot be cut until #191 lands** (fix:
+> pin `TRIVY_PLATFORM=linux/<arch>` per scan leg; see §4). Fails safe — no tag,
+> no half-release.
+
+[#191]: https://github.com/ConfigButler/gitops-reverser/pull/191
+
+### What is live on `main` now
+
+Verify against the tree — these are the anchors, not a substitute for reading
+`ci.yml`/`release.yml`:
+
+- **`ci.yml` `build` job — instrumented image is artifact-only.** `push:
+  false`; `docker save` → `project-image.tar` artifact (`retention-days: 7`).
+  No `ci-<sha>` registry tag exists anymore. e2e delivers via
+  `IMAGE_DELIVERY_MODE: load` on every run (PR and main share one path).
+- **`ci.yml` `build-release-amd64` (`ubuntu-latest`) + `build-release-arm64`
+  (`ubuntu-24.04-arm`)** — two named jobs (not a matrix), each gated
+  `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`,
+  `VERSION` read from `.release-please-manifest.json`, built
+  `push-by-digest=true`, exposing `outputs.digest` and uploading a
+  `digests-<arch>` artifact.
+- **`ci.yml` scans are paired.** `image-scan` kept for the PR path (scans the
+  artifact image, gated `pull_request`); new `image-scan-release` is a matrix
+  over both digests with `needs: [build-release-amd64, build-release-arm64]`,
+  so it skips transitively on PRs/dispatch — no `always()` anywhere.
+- **`release.yml` `publish` rebuild job deleted.** `publish-manifest` now
+  `needs: [ci, release-please]`, gated
+  `if: needs.release-please.outputs.release_created == 'true'`, downloads the
+  `digests-*` artifacts from the same run, `imagetools create` → tags
+  semver+latest → cosign sign → attest provenance + SBOM. Zero builds at
+  release.
+- **Docs updated:** `docs/ci-overview.md`, `.github/RELEASES.md`.
+
+### What remains (exact current-tree state for the next context)
+
+- **PR 2 — point the e2e `quickstart` lane at the release-grade amd64
+  digest on main.** *Current tree:* `e2e` still
+  `needs: [ci-container, build, lint-helm]` with `IMAGE_DELIVERY_MODE: load`;
+  no `build-release-amd64` in `needs`, no GHCR pull. This PR adds the plan's
+  *single* skip-tolerant `always()` gate (§4). Not started.
+- **PR 3 — per-commit signing** of the two per-arch release digests: a new
+  `sign-images` job in `release.yml`, `needs: ci`, on every main push (§5).
+  No such job exists. Wait for one real release first (§8).
+- **PR 4 (optional, decide later) — guarded skip of the *full* e2e lane** on
+  the release-bump commit via a `bump-check` job (§7). No `bump-check` /
+  `skip_e2e` wiring exists. Shape is settled: skip `full` only, keep
+  `quickstart`.
+- **PR 5 — auto-dispatch quick checks onto the release-please PR** (§12):
+  needs a `workflow_dispatch` `mode: quick` input on `ci.yml` (only a bare
+  `workflow_dispatch:` trigger exists today) plus the `ci-container` push-gate
+  tightening (§9). Not started.
+
+Design rationale below is unchanged and remains the reference for PRs 2–5.
+Settled decisions folded in from review: scan **both** arches; the
+`build-release` gate is `push` + `refs/heads/main` (never `!= pull_request`,
+which also fires on `workflow_dispatch`); signing targets the per-arch release
+digests, **never** `ci-<sha>`; §7 skips the `full` lane only (quickstart stays
+on the bump commit); **e2e coverage (`GOCOVER=1`) on main stays.**
+
+[#190]: https://github.com/ConfigButler/gitops-reverser/pull/190
+
+## 1. What happened before PR 1 (the motivation)
+
+> **Note:** this section describes the pre-#190 baseline that motivated the
+> plan. PR 1 has since replaced it (see the status header). It is kept because
+> the problem framing still justifies PRs 2–5.
 
 On every push to main, `release.yml` calls `ci.yml` (reusable). The `build` job
-builds **one** image — linux/amd64, coverage-instrumented (`GOCOVER=1`),
-`VERSION=ci-<sha>` — and pushes it as `ghcr.io/configbutler/gitops-reverser:ci-<sha>`.
-E2e and the Trivy scan run against that image.
+built **one** image — linux/amd64, coverage-instrumented (`GOCOVER=1`),
+`VERSION=ci-<sha>` — and pushed it as `ghcr.io/configbutler/gitops-reverser:ci-<sha>`.
+E2e and the Trivy scan ran against that image.
 
 When release-please cuts a release, the `publish` job **rebuilds from scratch,
 twice** (amd64 + arm64) with different build args (`VERSION=x.y.z`, no
@@ -85,7 +142,7 @@ PR runs are completely untouched (local amd64 build, artifact handoff,
 
 ### Order of things
 
-**Today:**
+**Before PR 1 (historical):**
 
 ```mermaid
 flowchart TD
@@ -107,7 +164,7 @@ flowchart TD
   RP -- yes --> H["publish-helm:<br/>push chart from CI artifact"]:::rel
 ```
 
-**Proposed** (blue = new, orange = changed, green = unchanged; the rebuild jobs are gone):
+**Target** — PR 1 is live (blue = new, orange = changed, green = unchanged; the rebuild jobs are gone). The dashed phase-2 quickstart edge and the phase-3 `SIGN` node are **not yet built** (PRs 2–3):
 
 ```mermaid
 flowchart TD
@@ -234,8 +291,15 @@ sequenceDiagram
      every main push); give the instrumented build its own scope so the two
      variants stop invalidating each other.
    - Scan both release-grade digests — the release ships amd64 *and* arm64,
-     so scanning only amd64 would still leave shipped bytes unscanned (Trivy
-     scans cross-arch fine; it pulls by digest and analyzes the filesystem).
+     so scanning only amd64 would still leave shipped bytes unscanned. Trivy
+     scans cross-arch, but the platform must be pinned: `push-by-digest`
+     builds carry a buildx provenance attestation, so each digest is an **OCI
+     index**, and Trivy otherwise selects the child matching the *runner's*
+     platform — failing the arm64 leg on an amd64 runner with `no child with
+     platform linux/amd64 in index`. Each scan step sets
+     `TRIVY_PLATFORM=linux/<arch>` to pick the right child (fixed in PR #191;
+     the original PR-1 wording wrongly assumed a digest ref carries no
+     platform-selection step).
      **Structure it as paired jobs so PR 1 needs no skip-tolerant `if:`
      wiring at all:** the existing `image-scan` keeps scanning the artifact
      image, gated `if: github.event_name == 'pull_request'`; a new
@@ -444,17 +508,19 @@ piece is independent of §3 and can land separately, but the two compound.
 Ship the core retag path alone and let it prove itself on one real release
 before adding anything conditional or clever:
 
-| Phase | Contents | Depends on |
+| Phase | Contents | Status |
 | --- | --- | --- |
-| **PR 1 — core (do now)** | `build-release-amd64`/`-arm64` jobs, paired `image-scan-release` job (matrix over both digests), gate `publish-manifest` on `release_created`, delete the `publish` rebuild jobs, retire the instrumented-image push (artifact/load delivery everywhere), docs updates | — |
-| **PR 2** | Point the e2e `quickstart` lane at the release-grade amd64 digest on main runs | PR 1 |
-| **PR 3** | Per-commit signing of the per-arch release digests (§5) | PR 1 released once |
-| **PR 4 — optional, decide later** | Guarded skip of the *full* e2e lane on the release-bump commit; quickstart stays (§7) | independent, but land last |
-| **PR 5** | Auto-dispatch quick checks onto the release-please PR (§12) | PR 1 + `ci-container` gate tightening |
+| **PR 1 — core** | `build-release-amd64`/`-arm64` jobs, paired `image-scan-release` job (matrix over both digests), gate `publish-manifest` on `release_created`, delete the `publish` rebuild jobs, retire the instrumented-image push (artifact/load delivery everywhere), docs updates | ✅ **MERGED #190 (`2b3a949`, 2026-07-03)** |
+| **PR 2** | Point the e2e `quickstart` lane at the release-grade amd64 digest on main runs | Not started — depends on PR 1 (done) |
+| **PR 3** | Per-commit signing of the per-arch release digests (§5) | Not started — wait for PR 1 to be released once |
+| **PR 4 — optional, decide later** | Guarded skip of the *full* e2e lane on the release-bump commit; quickstart stays (§7) | Not started — independent, but land last |
+| **PR 5** | Auto-dispatch quick checks onto the release-please PR (§12) | Not started — needs PR 1 (done) + `ci-container` gate tightening |
 
-PR 1 changes nothing for pull requests and nothing about what e2e tests —
-it only adds two parallel build jobs on main and swaps a rebuild for a retag
-at release. If a release misbehaves, the diff to reason about is small.
+PR 1 changed nothing for pull requests and nothing about what e2e tests —
+it only added two parallel build jobs on main and swapped a rebuild for a
+retag at release. Its retag path has not yet run through a real release; the
+first release-please release after #190 is the one to watch, and PR 3
+deliberately waits for it.
 
 ## 9. Risks / open points
 
