@@ -215,6 +215,17 @@ create_cluster() {
       "--kube-apiserver-arg=audit-webhook-batch-max-size=10@server:0"
       "--kube-apiserver-arg=max-requests-inflight=${KUBE_APISERVER_MAX_REQUESTS_INFLIGHT}@server:0"
       "--kube-apiserver-arg=max-mutating-requests-inflight=${KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT}@server:0"
+      # k3s defaults kubelet eviction to nodefs.available<5% — on a CI runner's
+      # ~72GB disk that is ~3.6GB, so the node reports DiskPressure and evicts
+      # the controller while gigabytes are still free (CI run 28624646437). The
+      # k3d node shares the host filesystem, so percentage thresholds don't
+      # express "actually almost full"; use absolute ones, and drop the
+      # pressure condition quickly (default transition period is 5m) so a
+      # recovered node schedules pods again within the rollout wait.
+      "--kubelet-arg=eviction-hard=nodefs.available<1Gi,imagefs.available<1Gi@server:*"
+      "--kubelet-arg=eviction-hard=nodefs.available<1Gi,imagefs.available<1Gi@agent:*"
+      "--kubelet-arg=eviction-pressure-transition-period=30s@server:*"
+      "--kubelet-arg=eviction-pressure-transition-period=30s@agent:*"
     )
 
     echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with audit webhook support..."

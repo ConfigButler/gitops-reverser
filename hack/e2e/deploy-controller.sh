@@ -75,5 +75,21 @@ else
 	kubectl --context "${CTX}" -n "${NAMESPACE}" \
 		rollout restart "deployment/${deploy}"
 fi
-kubectl --context "${CTX}" -n "${NAMESPACE}" \
-	rollout status "deployment/${deploy}" --timeout=180s
+# 300s: a fresh-namespace install waits on cert-manager issuing the admission
+# cert before the pod can mount it, and CI runners near their disk-eviction
+# threshold start pods slowly; 180s was too tight in the tail (CI run
+# 28623232380). On timeout, dump the state that explains *why* the pod never
+# became ready — node conditions expose DiskPressure, describe/events expose
+# mount and scheduling problems — so a recurrence is diagnosable from the log.
+if ! kubectl --context "${CTX}" -n "${NAMESPACE}" \
+	rollout status "deployment/${deploy}" --timeout=300s; then
+	echo "=== rollout timed out; dumping diagnostics ===" >&2
+	kubectl --context "${CTX}" get nodes \
+		-o custom-columns='NAME:.metadata.name,CONDITIONS:.status.conditions[?(@.status=="True")].type' >&2 || true
+	kubectl --context "${CTX}" -n "${NAMESPACE}" get deploy,rs,pods -o wide >&2 || true
+	kubectl --context "${CTX}" -n "${NAMESPACE}" describe pods \
+		-l "${CONTROLLER_DEPLOY_SELECTOR}" >&2 || true
+	kubectl --context "${CTX}" -n "${NAMESPACE}" get events \
+		--sort-by=.metadata.creationTimestamp >&2 || true
+	exit 1
+fi
