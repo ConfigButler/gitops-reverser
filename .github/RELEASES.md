@@ -52,7 +52,7 @@ Push to main
     ↓ (human reviews & merges)
 [Create GitHub Release + Tag]
     ↓
-[Build & Push Docker Images]
+[Retag CI-built images to semver + latest, sign, attest]
 ```
 
 ### What Happens When You Push
@@ -77,8 +77,9 @@ Push to main
 
 4. **When Release PR is Merged**:
    - GitHub Release created with tag (e.g., `v0.2.0`)
-   - Docker images built for linux/amd64 and linux/arm64
-   - Images pushed to `ghcr.io` with tags: `0.2.0`, `0.2`, `0`, `latest`
+   - The linux/amd64 + linux/arm64 image digests already built and scanned by that
+     commit's CI run are **retagged** (not rebuilt) as `0.2.0`, `0.2`, `0`, `latest` on
+     `ghcr.io`, then cosign-signed with SLSA provenance + SPDX SBOM attestations
 
 ---
 

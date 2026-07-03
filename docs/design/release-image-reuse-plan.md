@@ -1,6 +1,11 @@
 # Plan: build release images once on main, retag at release
 
-Status: proposal — nothing implemented yet. Revised after review: scan both
+Status: **PR 1 (§8 core) implemented** — `build-release-amd64`/`-arm64` +
+`image-scan-release` in `ci.yml`, `publish` rebuild job deleted and
+`publish-manifest` retags the CI digests (gated on `release_created`),
+instrumented image is artifact-only everywhere. PRs 2–5 (quickstart→release
+digest, per-commit signing, guarded e2e skip, release-PR dispatch) remain
+follow-ups. Revised after review: scan both
 arches, tighter `build-release` gate, signing targets the per-arch release
 digests (never `ci-<sha>`), phased rollout (§8).
 Rev 3: the instrumented image becomes **artifact-only on every run** — the
