@@ -15,8 +15,8 @@ so local and CI results cannot drift apart.
 | Zone | Workflow | Trigger | Secrets | Writes | Purpose |
 | --- | --- | --- | --- | --- | --- |
 | Untrusted validation | [ci.yml](../.github/workflows/ci.yml) | `pull_request` | none | none | Full contributor validation: containers, lint, unit, e2e, image scan |
-| Trusted validation | [release.yml](../.github/workflows/release.yml) → calls `ci.yml` | `push` to `main` | `GITHUB_TOKEN` | `packages` (CI images) | The *same* jobs, now allowed to publish per-commit CI images |
-| Release & publish | [release.yml](../.github/workflows/release.yml) tail jobs | after trusted validation is green | `GITHUB_TOKEN` + OIDC | packages, releases, attestations | Version (release-please), publish multi-arch images + chart, sign, attest |
+| Trusted validation | [release.yml](../.github/workflows/release.yml) → calls `ci.yml` | `push` to `main` | `GITHUB_TOKEN` | `packages` (CI base container + release-grade image digests) | The *same* jobs, plus building the release-grade multi-arch digests (per-arch, by digest) the release tail retags. The instrumented test image stays artifact-only. |
+| Release & publish | [release.yml](../.github/workflows/release.yml) tail jobs | after trusted validation is green | `GITHUB_TOKEN` + OIDC | packages, releases, attestations | Version (release-please), **retag** the CI-built multi-arch digests to semver + `latest` (zero rebuilds), publish chart, sign, attest |
 | Hygiene | [scorecard.yml](../.github/workflows/scorecard.yml) | weekly + `main` | none | security-events | OpenSSF Scorecard supply-chain checks |
 
 Two properties are worth calling out:
@@ -26,37 +26,44 @@ Two properties are worth calling out:
   for pushes to `main`. PR runs and main runs execute the *same jobs from the same file* —
   there is no `pr.yml`/`main.yml` pair that can drift apart.
 - **Release only after everything passed.** `release.yml` chains
-  `ci → release-please → publish` with `needs:`. This is deliberate: tags created by
-  release-please with `GITHUB_TOKEN` never trigger other workflows (GitHub's recursion
+  `ci → release-please → publish-manifest` with `needs:`. This is deliberate: tags created
+  by release-please with `GITHUB_TOKEN` never trigger other workflows (GitHub's recursion
   guard), so a separate tag-triggered release workflow would either silently not run or
   need a PAT. Chaining in one run keeps the guarantee *structural*: nothing can be
-  published from a commit that did not pass the full pipeline first.
+  published from a commit that did not pass the full pipeline first. The release tail
+  builds nothing — the multi-arch image digests it publishes were built and scanned by the
+  `ci` run of the same commit; the release only retags, signs, and attests them.
 
 ## How fork PRs work
 
 GitHub gives fork PRs a read-only `GITHUB_TOKEN` and no secrets. The pipeline adapts by
-changing the *delivery* of images, never the *checks*:
+changing the *delivery* of images, never the *checks*. The instrumented project (test)
+image now travels the fork-safe artifact path on **every** run — PR and `main` alike — so
+the battle-tested path is the only path. Only the CI base container and the release-grade
+digests are pushed, and only on `main`:
 
 ```mermaid
 flowchart LR
   classDef pr fill:#e8ecff,stroke:#5566aa,color:#000;
   classDef trusted fill:#e6f7e6,stroke:#33aa33,color:#000;
 
-  subgraph PR["pull_request (untrusted)"]
-    B1["build image locally<br/>push: false"]:::pr --> A1["docker save → artifact"]:::pr
+  subgraph BOTH["instrumented test image — PR and main alike"]
+    B1["build locally<br/>GOCOVER=1, push: false"]:::pr --> A1["docker save → artifact"]:::pr
     A1 --> C1["later jobs docker load<br/>e2e imports into k3d"]:::pr
   end
 
-  subgraph MAIN["push to main (trusted)"]
-    B2["build image<br/>push: true"]:::trusted --> R2["ghcr.io :ci-SHA"]:::trusted
-    R2 --> C2["later jobs docker pull"]:::trusted
+  subgraph MAIN["push to main only (trusted)"]
+    B2["build-release amd64 + arm64<br/>clean, semver, push by digest"]:::trusted --> R2["ghcr.io candidate digests"]:::trusted
+    R2 --> S2["Trivy-scanned;<br/>retagged at release"]:::trusted
   end
 ```
 
 - The CI base container and the project image are built from the PR's own code, so a PR
   that changes the toolchain is validated against *its own* toolchain.
-- Images travel between jobs as **artifacts** (`docker save`/`docker load`), and e2e
-  imports them into k3d with `IMAGE_DELIVERY_MODE=load` instead of pulling.
+- The instrumented image travels between jobs as an **artifact** (`docker save`/`docker
+  load`) on every run, and e2e imports it into k3d with `IMAGE_DELIVERY_MODE=load` instead
+  of pulling. It is never pushed, so no instrumented digest can be mistaken for a
+  promotable release candidate.
 - Nothing is published from a PR, regardless of origin. Same-repo PRs follow the exact
   same path so the two flavors can't diverge.
 - The `image-refresh` e2e lane validates the local build → k3d load → rollout chain with
@@ -68,7 +75,10 @@ abuse, not something the workflow files control.
 
 ## Release artifacts and how to verify them
 
-On a release (release-please PR merged to `main`), `release.yml` publishes:
+On a release (release-please PR merged to `main`), `release.yml` publishes. The image
+bytes are not rebuilt at release time: `build-release-amd64`/`-arm64` in the `ci` run built
+and pushed the per-arch digests (and `image-scan-release` scanned them), and the release
+step merges those exact digests into a multi-arch manifest tagged with the semver:
 
 | Artifact | Where | Integrity |
 | --- | --- | --- |
@@ -100,8 +110,10 @@ GitHub's OIDC identity and logged in the public Rekor transparency log.
   [Dockerfile](../Dockerfile), `golang-bookworm` in
   [.devcontainer/Dockerfile](../.devcontainer/Dockerfile)); Dependabot's `docker`
   ecosystem keeps the digests moving.
-- **Trivy scans the built project image** in every run (`image-scan` job): full report
-  to the job log (and code scanning on trusted runs), and the job fails on CRITICAL
+- **Trivy scans images** in every run: on PRs, `image-scan` scans the built project image
+  (report to the job log); on `main`, `image-scan-release` scans **both** shipped arches
+  (`amd64` + `arm64`) by digest and uploads SARIF to code scanning — so the exact bytes a
+  release retags are scanned *before* the release. Either way the job fails on CRITICAL
   vulnerabilities that have a fix available.
 - **Minimal token permissions** per job; the workflow default is `contents: read`.
 - **OpenSSF Scorecard** runs weekly and on every push to `main`.

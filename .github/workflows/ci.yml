@@ -125,14 +125,14 @@ jobs:
           retention-days: 1
 
   build:
-    name: Project image
+    name: Project image (instrumented, artifact-only)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
       image: ${{ steps.image.outputs.name }}
     permissions:
+      # No push on any run: this image is never published, so no write token.
       contents: read
-      packages: write # trusted runs only; see ci-container note
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -149,18 +149,27 @@ jobs:
           echo "Building image: ${FULL_IMAGE}"
 
       - name: Build Docker image
+        # Coverage-instrumented (GOCOVER=1), amd64-only. Never pushed on any
+        # run: delivered to later jobs (e2e) as a docker-save artifact and
+        # imported into k3d via IMAGE_DELIVERY_MODE=load — the fork-safe path
+        # every PR already exercises, now the only path. The registry-served
+        # bytes are the release-grade build-release-* images, so no
+        # instrumented digest can ever be mistaken for promotable. Keeps the
+        # ci-<sha> tag name only as a local Docker/k3d reference.
         uses: ./.github/actions/docker-build
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          login: ${{ github.event_name != 'pull_request' }}
+          login: false
           platforms: linux/amd64
           tags: ${{ steps.image.outputs.name }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
           load: true
-          cache-scope: build-linux/amd64
-          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=build-linux/amd64' || '' }}
+          # Own cache scope so the instrumented build and the release-grade
+          # build-linux/amd64 scope no longer invalidate each other.
+          cache-scope: build-instrumented-linux/amd64
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=build-instrumented-linux/amd64' || '' }}
           build-args: |
             VERSION=${{ env.IMAGE_TAG }}
             GIT_COMMIT=${{ steps.image.outputs.git_commit }}
@@ -168,18 +177,161 @@ jobs:
             BUILD_DATE=${{ steps.image.outputs.build_date }}
             GOCOVER=1
 
-      - name: Save project image (PR)
-        # PR builds aren't pushed, so persist the locally-loaded image as an
-        # artifact; e2e loads it and imports it into k3d.
-        if: github.event_name == 'pull_request'
+      - name: Save project image
+        # Delivered as an artifact on every run (PR and main): e2e loads it and
+        # imports it into k3d.
         run: docker save "${{ steps.image.outputs.name }}" -o project-image.tar
 
-      - name: Upload project image artifact (PR)
-        if: github.event_name == 'pull_request'
+      - name: Upload project image artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: project-image
           path: project-image.tar
+          if-no-files-found: error
+          # ~7 days (was 1): a failed main e2e can still be reproduced from the
+          # exact instrumented image that ran, now that it is never pushed.
+          retention-days: 7
+
+  # Release-grade images: clean (no coverage), semver-stamped, pushed by digest
+  # on every push to main so the release tail can retag instead of rebuild.
+  # Two named jobs, not a matrix: publish-manifest needs each per-arch digest
+  # individually, and matrix jobs share one output set (last writer wins).
+  #
+  # Gated on `push` + `refs/heads/main` (not `!= 'pull_request'`, which would
+  # also fire release builds from a workflow_dispatch on any branch). Note:
+  # gating on `event_name == 'workflow_call'` would never match — inside a
+  # called workflow the github context belongs to the *caller*, so a release.yml
+  # push shows up here as event_name == 'push'.
+  build-release-amd64:
+    name: Release image linux/amd64
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Compute release build metadata
+        id: meta
+        run: |
+          # On the release-bump commit this is the new semver — release-please
+          # bumped .release-please-manifest.json in the PR before merge. On
+          # ordinary main pushes it is the *previous* released version; that is
+          # fine because only the bump commit's digest is ever promoted to a
+          # semver tag, and GIT_COMMIT disambiguates never-promoted candidates.
+          VERSION="$(jq -r '."."' .release-please-manifest.json)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "git_commit=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Extract OCI labels
+        id: docker_meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push release image by digest
+        id: build
+        uses: ./.github/actions/docker-build
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          platforms: linux/amd64
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true
+          # Reuses the release cache scope: same build args at release time, so
+          # every main push keeps this cache warm.
+          cache-scope: build-linux/amd64
+          cache-to: type=gha,mode=max,scope=build-linux/amd64
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            GIT_COMMIT=${{ steps.meta.outputs.git_commit }}
+            GIT_DIRTY=0
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-amd64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  build-release-arm64:
+    name: Release image linux/arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Compute release build metadata
+        id: meta
+        run: |
+          # See build-release-amd64: previous version on non-bump commits is
+          # expected and harmless.
+          VERSION="$(jq -r '."."' .release-please-manifest.json)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "git_commit=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Extract OCI labels
+        id: docker_meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push release image by digest
+        id: build
+        uses: ./.github/actions/docker-build
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          platforms: linux/arm64
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true
+          cache-scope: build-linux/arm64
+          cache-to: type=gha,mode=max,scope=build-linux/arm64
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            GIT_COMMIT=${{ steps.meta.outputs.git_commit }}
+            GIT_DIRTY=0
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-arm64
+          path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
@@ -431,12 +583,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: build
+    # PRs only: scans the instrumented image the PR built (delivered as an
+    # artifact). On main the shipped bytes are the release-grade digests, which
+    # image-scan-release scans instead — so this scan reports to the job log
+    # and never needs a write token.
+    if: github.event_name == 'pull_request'
     permissions:
       contents: read
       packages: read
-      # SARIF upload on trusted runs; fork PR tokens are read-only, so the
-      # upload step is skipped for PRs and the scan reports to the job log.
-      security-events: write
     env:
       PROJECT_IMAGE: ${{ needs.build.outputs.image }}
     steps:
@@ -445,37 +599,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download project image (PR)
-        if: github.event_name == 'pull_request'
+      - name: Download project image
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: project-image
           path: .
 
-      - name: Load project image (PR)
-        if: github.event_name == 'pull_request'
+      - name: Load project image
         run: docker load -i project-image.tar && rm -f project-image.tar
-
-      - name: Pull project image (trusted)
-        if: github.event_name != 'pull_request'
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-          docker pull "${PROJECT_IMAGE}"
 
       - name: Scan image with Trivy (report)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.PROJECT_IMAGE }}
-          format: sarif
-          output: trivy-image.sarif
+          format: table
           severity: CRITICAL,HIGH,MEDIUM
           exit-code: "0"
-
-      - name: Upload scan results to GitHub code scanning
-        if: github.event_name != 'pull_request'
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
-        with:
-          sarif_file: trivy-image.sarif
 
       - name: Gate on critical fixable vulnerabilities
         # Fails the job only for CRITICAL vulnerabilities that have a fix
@@ -483,6 +622,64 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.PROJECT_IMAGE }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  image-scan-release:
+    name: Scan release image (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Rides its build jobs' gate: when build-release-* are skipped (PRs,
+    # dispatch) this skips transitively — no skip-tolerant `if:` needed. The
+    # release ships amd64 *and* arm64, so both digests are scanned; Trivy pulls
+    # each by digest and analyzes the filesystem cross-arch.
+    needs: [build-release-amd64, build-release-arm64]
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            digest: ${{ needs.build-release-amd64.outputs.digest }}
+          - arch: arm64
+            digest: ${{ needs.build-release-arm64.outputs.digest }}
+    steps:
+      - name: Log in to registry
+        # Trivy resolves the image by digest and pulls it itself, analyzing the
+        # filesystem — this works cross-arch (amd64 runner, arm64 digest) since
+        # a single-arch manifest digest carries no platform-selection step. The
+        # login just covers authenticated pulls; the package is public anyway.
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+      - name: Scan release image with Trivy (report)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ matrix.digest }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "0"
+
+      - name: Upload scan results to GitHub code scanning
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          sarif_file: trivy-image.sarif
+          # Distinct category so the amd64 and arm64 legs don't overwrite each
+          # other's code-scanning results.
+          category: trivy-release-${{ matrix.arch }}
+
+      - name: Gate on critical fixable vulnerabilities
+        # Fails the job only for CRITICAL vulnerabilities that have a fix
+        # available — actionable signal, not noise from unfixed CVEs.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ matrix.digest }}
           format: table
           severity: CRITICAL
           ignore-unfixed: true
@@ -542,10 +739,11 @@ jobs:
     env:
       PROJECT_IMAGE: ${{ needs.build.outputs.image }}
       CI_CONTAINER: ${{ needs.ci-container.outputs.image }}
-      # PRs never push the project image, so it can't be pulled from the
-      # registry. Deliver it via `load` instead: the artifact is docker-loaded
-      # below and imported into k3d. Trusted pushes keep pulling from GHCR.
-      IMAGE_DELIVERY_MODE: ${{ github.event_name == 'pull_request' && 'load' || 'pull' }}
+      # The instrumented project image is never pushed (PR *or* main), so it is
+      # always delivered via `load`: the artifact is docker-loaded below and
+      # imported into k3d. The CI container is still pulled from GHCR on main
+      # (publish-helm needs a registry ref), so that delivery stays branched.
+      IMAGE_DELIVERY_MODE: load
 
     steps:
       - name: Checkout code
@@ -592,18 +790,17 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
-      - name: Download project image (PR)
-        # PR builds weren't pushed; pull the tarball built by the build job.
-        if: github.event_name == 'pull_request'
+      - name: Download project image
+        # The project image is never pushed; pull the tarball built by the
+        # build job (on PR and main alike).
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: project-image
           path: .
 
-      - name: Load project image into Docker (PR)
+      - name: Load project image into Docker
         # Make PROJECT_IMAGE available in the runner's Docker daemon so the k3d
         # image import (load delivery) finds it locally instead of pulling.
-        if: github.event_name == 'pull_request'
         run: docker load -i project-image.tar && rm -f project-image.tar
 
       - name: Start disk usage sampler

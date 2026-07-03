@@ -17,6 +17,14 @@ vars:
       go list -m -f '{{"{{"}} .Version {{"}}"}}' k8s.io/api \
         | awk -F'[v.]' '{printf "1.%d", $3}'
   ENVTEST_STAMP: '.stamps/envtest-{{.ENVTEST_K8S_VERSION}}.ready'
+  # Fuzzing (dynamic analysis) targets, one "package:FuzzTarget" pair per line.
+  # `go test -fuzz` fuzzes exactly one target per invocation, so the fuzz tasks
+  # loop over these. See docs/design/dynamic-analysis-fuzzing-plan.md.
+  FUZZ_TARGETS: >-
+    ./internal/git/manifestedit:FuzzManifestEdit
+    ./internal/webhook:FuzzDecodeEventList
+  FUZZ_SMOKE_TIME: '{{.FUZZ_SMOKE_TIME | default "15s"}}'
+  FUZZ_TIME: '{{.FUZZ_TIME | default "2m"}}'
 
 tasks:
   manifests:
@@ -156,6 +164,31 @@ tasks:
         else
           printf "✅ unit coverage %s%% (baseline %s%%, tolerance %s%%)\n" "${total}" "${baseline}" "${tol}"
         fi
+
+  fuzz-smoke:
+    desc: Short fuzzing smoke — briefly active-fuzz each target under the race detector
+    cmds:
+      - |
+        set -eu
+        for entry in {{.FUZZ_TARGETS}}; do
+          pkg="${entry%%:*}"; target="${entry##*:}"
+          echo "==> fuzz-smoke ${target} (${pkg}) for {{.FUZZ_SMOKE_TIME}}"
+          go test "${pkg}" -run '^$' -fuzz="^${target}$" -fuzztime={{.FUZZ_SMOKE_TIME}} -race
+        done
+
+  fuzz:
+    desc: >-
+      Release-time dynamic analysis — longer fuzz discovery run per target under the race
+      detector. Crash reproducers land under <pkg>/testdata/fuzz/<Target>/ (commit them).
+      See docs/design/dynamic-analysis-fuzzing-plan.md.
+    cmds:
+      - |
+        set -eu
+        for entry in {{.FUZZ_TARGETS}}; do
+          pkg="${entry%%:*}"; target="${entry##*:}"
+          echo "==> fuzz ${target} (${pkg}) for {{.FUZZ_TIME}}"
+          go test "${pkg}" -run '^$' -fuzz="^${target}$" -fuzztime={{.FUZZ_TIME}} -race
+        done
 
   lint:
     desc: Run all linters (Go, Dockerfiles, workflows, Helm chart); deps run in parallel where safe

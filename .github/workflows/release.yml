@@ -61,85 +61,21 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # Build and push release images in parallel, one per platform, by digest.
-  publish:
-    name: Build ${{ matrix.platform }}
-    runs-on: ${{ matrix.runs_on }}
-    timeout-minutes: 30
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      matrix:
-        include:
-          - platform: linux/amd64
-            runs_on: ubuntu-latest
-          - platform: linux/arm64
-            runs_on: ubuntu-24.04-arm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.version }}
-            type=semver,pattern={{major}},value=${{ needs.release-please.outputs.version }}
-            type=raw,value=latest
-
-      - name: Compute build metadata
-        id: buildmeta
-        run: |
-          echo "git_commit=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
-          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push Docker image by digest
-        id: build
-        uses: ./.github/actions/docker-build
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-          platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true
-          cache-scope: build-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=build-${{ matrix.platform }}
-          build-args: |
-            VERSION=${{ needs.release-please.outputs.version }}
-            GIT_COMMIT=${{ steps.buildmeta.outputs.git_commit }}
-            GIT_DIRTY=0
-            BUILD_DATE=${{ steps.buildmeta.outputs.build_date }}
-
-      - name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: digests-${{ strategy.job-index }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  # Merge platform images into one multi-arch manifest, then sign it and
-  # attach SLSA build provenance and an SPDX SBOM as registry attestations.
+  # Merge the per-arch release-grade digests — already built and pushed by the
+  # `ci` run of *this* workflow (see build-release-* in ci.yml) — into one
+  # multi-arch manifest, then sign it and attach SLSA build provenance and an
+  # SPDX SBOM as registry attestations. ZERO builds happen here: the release
+  # tail retags the CI digests instead of rebuilding them.
   publish-manifest:
     name: Publish Multi-Arch Manifest
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [release-please, publish]
+    # Its own release gate: with the `publish` rebuild job deleted,
+    # publish-manifest no longer inherits the gate transitively. Without this an
+    # ungated run on every main push would move latest/semver tags onto
+    # non-release candidate digests.
+    needs: [ci, release-please]
+    if: needs.release-please.outputs.release_created == 'true'
     permissions:
       contents: write # append release notes + SBOM asset
       packages: write
@@ -147,11 +83,24 @@ jobs:
       attestations: write
     steps:
       - name: Download digests
+        # Same-run artifacts uploaded by the called ci.yml (build-release-*).
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: /tmp/digests
           pattern: digests-*
           merge-multiple: true
+
+      - name: Verify release digests are present
+        # Fail loudly if build-release-* produced nothing (e.g. a bad gate
+        # skipped them): a retag with no digests must never silently no-op.
+        working-directory: /tmp/digests
+        run: |
+          count="$(find . -type f | wc -l)"
+          if [ "${count}" -eq 0 ]; then
+            echo "No release-grade digests found — build-release-* did not publish" >&2
+            exit 1
+          fi
+          echo "Found ${count} release digest(s) to retag"
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
