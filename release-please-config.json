@@ -4,6 +4,7 @@
       "release-type": "simple",
       "package-name": "gitops-reverser",
       "bump-minor-pre-major": true,
+      "draft": true,
       "changelog-sections": [
         {
           "type": "feat",

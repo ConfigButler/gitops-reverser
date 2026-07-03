@@ -175,6 +175,11 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
+          # Keep the release a draft: GitHub's immutable-releases enforcement
+          # forbids adding assets once a release is published, so every asset
+          # must land while it is still a draft. The publish-release job flips
+          # it to published after all assets are attached.
+          draft: true
           append_body: true
           files: sbom.spdx.json
           body: |
@@ -260,6 +265,15 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      - name: Log in to registry for cosign
+        # `helm registry login` writes helm's own registry config; cosign reads
+        # ~/.docker/config.json, so it needs its own login or the signature
+        # upload fails with UNAUTHORIZED.
+        env:
+          COSIGN_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_USER: ${{ github.actor }}
+        run: cosign login "${REGISTRY}" --username "${COSIGN_USER}" --password "${COSIGN_TOKEN}"
+
       - name: Sign the Helm chart (cosign keyless)
         run: cosign sign --yes "${CHART_REGISTRY}/gitops-reverser@${{ steps.chart.outputs.digest }}"
 
@@ -267,6 +281,32 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
+          # Attach to the still-draft release; publish-release publishes it once
+          # every asset is in place (immutable releases reject post-publish
+          # uploads).
+          draft: true
           files: dist/install.yaml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish the release only after every asset is attached. release-please
+  # creates the GitHub release as a draft (see release-please-config.json);
+  # GitHub's immutable-releases enforcement freezes a release the moment it is
+  # published, so publish-manifest and publish-helm attach their assets to the
+  # draft and this job flips it to published at the very end. If either publish
+  # job fails, the release stays an unpublished draft instead of a
+  # half-populated immutable release.
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [release-please, publish-manifest, publish-helm]
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: write # publish the draft release (creates the tag)
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release edit "${TAG_NAME}" --draft=false --repo "${{ github.repository }}"
