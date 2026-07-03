@@ -650,15 +650,22 @@ jobs:
             digest: ${{ needs.build-release-arm64.outputs.digest }}
     steps:
       - name: Log in to registry
-        # Trivy resolves the image by digest and pulls it itself, analyzing the
-        # filesystem — this works cross-arch (amd64 runner, arm64 digest) since
-        # a single-arch manifest digest carries no platform-selection step. The
-        # login just covers authenticated pulls; the package is public anyway.
+        # Each build-release-* job pushes by digest, and buildx wraps the
+        # single-platform image in an OCI *index* (it attaches a provenance
+        # attestation manifest). Trivy resolves the digest remotely but, for an
+        # index ref, selects the child matching the *runner's* platform — so on
+        # this amd64 runner the arm64 leg fails with "no child with platform
+        # linux/amd64 in index". The Trivy steps below pin TRIVY_PLATFORM to the
+        # matrix arch to select the right child. The login just covers
+        # authenticated pulls; the package is public anyway.
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
       - name: Scan release image with Trivy (report)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # The pushed digest is an OCI index; pin the child to scan (see login step).
+          TRIVY_PLATFORM: linux/${{ matrix.arch }}
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ matrix.digest }}
           format: sarif
@@ -678,6 +685,9 @@ jobs:
         # Fails the job only for CRITICAL vulnerabilities that have a fix
         # available — actionable signal, not noise from unfixed CVEs.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # The pushed digest is an OCI index; pin the child to scan (see login step).
+          TRIVY_PLATFORM: linux/${{ matrix.arch }}
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ matrix.digest }}
           format: table
