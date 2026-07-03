@@ -710,41 +710,62 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: quickstart
-            # test-image-refresh validates the local build → k3d load →
-            # rollout restart chain, so it must run against a locally built
-            # image: unset PROJECT_IMAGE (the CI-built image doesn't rebuild
-            # from source) and force load delivery. Fork-safe: the chain never
-            # touches a registry.
-            #
-            # cleanup-installs.sh between the two: the helm quickstart just
-            # installed with the *provided* image ref, and install stamps do
-            # not invalidate on an image-ref change — without the reset the
-            # refresh suite would keep restarting a deployment that still
-            # points at the provided tag and never runs the local rebuilds.
-            script: >-
-              export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz
-              && task test-e2e-quickstart-helm
-              && bash hack/cleanup-installs.sh k3d-gitops-reverser-test-e2e
-              && env -u PROJECT_IMAGE IMAGE_DELIVERY_MODE=load task test-image-refresh
-              && export INSTALL_MODE=plain-manifests-file
-              && task test-e2e-quickstart-manifest
-            needs_artifact: true
-            e2e_ginkgo_procs: "2"
-            k3d_agent_count: "0"
-            # Helm/manifest installs don't carry the GOCOVERDIR overlay, so no
-            # coverage is collected here.
-            coverage: ""
-          - name: full
+          # Functional suite, sharded across two runners (was the single `full`
+          # lane). The two label filters are exact complements within the old
+          # `!image-refresh` filter — `manager` ∪ `!manager && !image-refresh`
+          # equals what `full` ran — so no spec is added or dropped, the work is
+          # just split across two clusters. The membership is a provisional
+          # first cut; rebalance from the e2e-ginkgo-reports-* per-spec timings
+          # (docs/design/e2e-ci-runner-sharding-plan.md, "balance from real data").
+          # Each shard runs config-dir installs (GOCOVERDIR overlay) and collects
+          # coverage; Codecov unions same-flag `e2e` uploads, so merged coverage
+          # is the union of both shards — the non-regression ratchet still holds.
+          - name: full-manager
             script: "task test-e2e"
+            e2e_label_filter: "manager"
+            e2e_report_name: "full-manager"
             needs_artifact: false
-            # config-dir install carries the GOCOVERDIR overlay; collect e2e coverage.
             coverage: "1"
             # Bumped 1 -> 4: the full suite was serialized to avoid the
             # cross-target rule-change snapshot coupling, now fixed (per-target
             # effective watch plan — docs/design/gittarget-isolation-on-rule-change.md).
-            # Validated locally at --procs=4; trialing the same in CI.
             e2e_ginkgo_procs: "4"
+            k3d_agent_count: "0"
+          - name: full-core
+            script: "task test-e2e"
+            e2e_label_filter: "!manager && !image-refresh"
+            e2e_report_name: "full-core"
+            needs_artifact: false
+            coverage: "1"
+            e2e_ginkgo_procs: "4"
+            k3d_agent_count: "0"
+          # Quickstart chain, sharded across two runners (was the single
+          # `quickstart` lane). quickstart-install runs the two install-mode
+          # validations on one cluster (cleanup-installs.sh resets the namespace
+          # between them, since install stamps don't invalidate on an image-ref
+          # change). image-refresh gets its own runner: it validates the local
+          # build → k3d load → rollout restart chain, so it must run against a
+          # locally built image — unset PROJECT_IMAGE and force load delivery.
+          # Fork-safe: neither leg pushes to a registry. Helm/manifest installs
+          # don't carry the GOCOVERDIR overlay, so these legs collect no coverage.
+          - name: quickstart-install
+            script: >-
+              export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz
+              && task test-e2e-quickstart-helm
+              && bash hack/cleanup-installs.sh k3d-gitops-reverser-test-e2e
+              && export INSTALL_MODE=plain-manifests-file
+              && task test-e2e-quickstart-manifest
+            needs_artifact: true
+            coverage: ""
+            e2e_ginkgo_procs: "2"
+            k3d_agent_count: "0"
+          - name: image-refresh
+            script: >-
+              export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz
+              && env -u PROJECT_IMAGE IMAGE_DELIVERY_MODE=load task test-image-refresh
+            needs_artifact: true
+            coverage: ""
+            e2e_ginkgo_procs: "2"
             k3d_agent_count: "0"
     env:
       PROJECT_IMAGE: ${{ needs.build.outputs.image }}
@@ -859,6 +880,14 @@ jobs:
             "
 
       - name: Run E2E tests in CI container
+        # E2E_LABEL_FILTER / E2E_REPORT_NAME are passed through by name (not
+        # value) so the shell never sees the filter's spaces or `&&` — GitHub
+        # sets them as process env vars and `docker run -e VAR` forwards them.
+        # They're only consumed by `task test-e2e` (the functional shards); the
+        # quickstart legs leave them empty and ignore them.
+        env:
+          E2E_LABEL_FILTER: ${{ matrix.e2e_label_filter }}
+          E2E_REPORT_NAME: ${{ matrix.e2e_report_name }}
         run: |
           docker run --rm \
             --network host \
@@ -868,6 +897,8 @@ jobs:
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
             -e IMAGE_DELIVERY_MODE=${{ env.IMAGE_DELIVERY_MODE }} \
             -e E2E_GINKGO_PROCS=${{ matrix.e2e_ginkgo_procs }} \
+            -e E2E_LABEL_FILTER \
+            -e E2E_REPORT_NAME \
             -e K3D_AGENT_COUNT=${{ matrix.k3d_agent_count }} \
             -e HOST_PROJECT_PATH=${{ github.workspace }} \
             -e KUBECONFIG=${{ env.CI_WORKDIR }}/.stamps/cluster/k3d-gitops-reverser-test-e2e/.kube/config \
