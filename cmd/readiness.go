@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0//
+// SPDX-License-Identifier: Apache-2.0
 
 // Liveness and readiness wiring for the controller. Liveness (/healthz) stays a bare process
 // ping; readiness (/readyz) reflects the audit-serving preconditions so the kube-apiserver — which
