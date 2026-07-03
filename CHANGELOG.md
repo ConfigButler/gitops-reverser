@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.29.0...gitops-reverser-v0.29.1) (2026-07-03)
+
+
+### Bug Fixes
+
+* **ci:** free runner disk after image loads; diagnose e2e rollout timeouts ([#187](https://github.com/ConfigButler/gitops-reverser/issues/187)) ([b89432f](https://github.com/ConfigButler/gitops-reverser/commit/b89432f4113d965f38926c1b744c938f345424bf))
+* **ci:** pin Trivy platform when scanning release digests ([#191](https://github.com/ConfigButler/gitops-reverser/issues/191)) ([08d557d](https://github.com/ConfigButler/gitops-reverser/commit/08d557dd7c386b4645916ad25ff0399177454c03))
+* **e2e:** deliver image via k3d direct mode, keep retry + pin verification ([#186](https://github.com/ConfigButler/gitops-reverser/issues/186)) ([31abd14](https://github.com/ConfigButler/gitops-reverser/commit/31abd1448a53cab8923e8553d052b37e0f94f178))
+* **e2e:** retry k3d image import when the tools-node tarball race drops the image ([#185](https://github.com/ConfigButler/gitops-reverser/issues/185)) ([e426206](https://github.com/ConfigButler/gitops-reverser/commit/e426206921899afb274aa8886f1c1a71c31502da))
+
+
+### Documentation
+
+* adding DAG overview of tasks ([#177](https://github.com/ConfigButler/gitops-reverser/issues/177)) ([f7a8b6a](https://github.com/ConfigButler/gitops-reverser/commit/f7a8b6a024423f4ceb8c1bdbd117a2428a354a1a))
+* reorder readme steps for devcontainer ([#178](https://github.com/ConfigButler/gitops-reverser/issues/178)) ([7856f69](https://github.com/ConfigButler/gitops-reverser/commit/7856f692a14e3d605c547174527e8ab1ee314b0a))
+
 ## [0.29.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.28.0...gitops-reverser-v0.29.0) (2026-06-30)
 
 
