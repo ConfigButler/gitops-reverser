@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.2](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.29.1...gitops-reverser-v0.29.2) (2026-07-05)
+
+
+### Performance Improvements
+
+* **build:** cache Go build + module dirs in Dockerfile builder ([#194](https://github.com/ConfigButler/gitops-reverser/issues/194)) ([55ed662](https://github.com/ConfigButler/gitops-reverser/commit/55ed662f92bf0c882f1f10a62ae1146258b563b2))
+
 ## [0.29.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.29.0...gitops-reverser-v0.29.1) (2026-07-03)
 
 
