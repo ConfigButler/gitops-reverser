@@ -22,8 +22,9 @@ WORKDIR /workspaces
 # Copy the Go Modules manifests
 COPY go.mod go.sum ./
 # cache deps before building and copying source so that we don't need to re-download as much
-# and so that source changes don't invalidate our downloaded layer
-RUN go mod download
+# and so that source changes don't invalidate our downloaded layer. The module
+# cache is a BuildKit cache mount so it also survives across builds.
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 # Copy the go source
 COPY cmd/ cmd/
@@ -32,7 +33,18 @@ COPY internal/ internal/
 
 # Build for the target platform. ${GOCOVER:+...} expands to the coverage flags
 # only when GOCOVER is non-empty, instrumenting every package in the module.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+#
+# The Go build and module caches are BuildKit cache mounts, so they persist
+# across builds instead of starting empty every time. A source change still
+# recompiles (only the changed packages + dependents), but a rebuild no longer
+# recompiles the whole module + all deps from scratch — the dominant cost of the
+# e2e image-refresh chain, which rebuilds the controller several times per run
+# (see docs/design/e2e-ci-runner-sharding-plan.md). Also speeds up local
+# `task test-e2e` rebuilds. The cache is content-addressed and keyed by
+# GOOS/GOARCH/flags, so cross-arch and coverage builds stay isolated.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     ${GOCOVER:+-cover -covermode=atomic -coverpkg=github.com/ConfigButler/gitops-reverser/...} \
     -ldflags "-X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT} -X main.gitDirty=${GIT_DIRTY} -X main.buildDate=${BUILD_DATE}" \
     -o manager ./cmd
