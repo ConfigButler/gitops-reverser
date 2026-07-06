@@ -545,12 +545,17 @@ remembered to list in a `sensitive:` block:
 
 The residual, deliberately accepted for v1: if an operator configures an
 *additional* sensitive type and a GitTarget uses a bundling `default` without an
-explicit `byType` entry for that type, resources of it are **skipped with a
-diagnostic** rather than co-mingled — fail-safe, but not written until the policy
-is fixed. Core Secrets never hit this because the static gate rejects the policy up
-front. Whether to teach the Validated gate about operator-configured sensitive
-types (so this becomes a fast, up-front rejection there too) is an open question
-below.
+explicit `byType` entry for that type, resources of it are **skipped fail-safe**
+rather than co-mingled — not written until the policy is fixed. As implemented, that
+skip is **logged per-resource at the skip site and counted in the resync summary as
+`placementSkipped`** (`ResyncStats.PlacementSkipped`); it is deliberately **not** a
+dedicated GitTarget status condition in v1. So the observability claim is bounded:
+the operator will not silently mirror the resource, and the skip is visible in logs
+and the resync roll-up, but a reader watching only GitTarget conditions will not see
+it. Core Secrets never hit this because the static gate rejects the policy up front.
+Whether to teach the Validated gate about operator-configured sensitive types (so
+this becomes a fast, up-front rejection there too), and whether to add a bounded
+status surface for placement skips, are open questions below.
 
 ## Option C: follow the existing layout (sibling inference)
 
@@ -902,36 +907,53 @@ Recommended variables:
 | `{name}` | metadata name |
 | `{sensitiveSuffix}` | Optional convention helper: `.sops.yaml` for sensitive writes, `.yaml` otherwise |
 
-With those variables, the built-in canonical normal layout is:
+With those variables, the built-in canonical layout is **namespace-first, no
+version segment** (as implemented in `ResourceIdentifier.ToGitPath`):
 
 ```text
-{groupPath}/{version}/{resource}/{namespace}/{name}{sensitiveSuffix}
+{namespaceOrCluster}/{groupPath}/{resource}/{name}{sensitiveSuffix}
 ```
 
-For a core `v1` ConfigMap named `app` in namespace `default`, empty path segments
-are removed, so the canonical result is:
+The scope leads (a real namespace, or the literal `cluster` for a cluster-scoped
+resource) so a repository browses namespace-first; the group is omitted for core
+resources, and the API version is deliberately left out — the operator writes one
+version per object, so a version segment only adds noise and would churn the path on
+a preferred-version bump. For a core `v1` ConfigMap named `app` in namespace
+`default`, empty segments are removed, so the canonical result is:
 
 ```text
-v1/configmaps/default/app.yaml
+default/configmaps/app.yaml
 ```
 
 For an `apps/v1` Deployment:
 
 ```text
-apps/v1/deployments/default/app.yaml
+default/apps/deployments/app.yaml
+```
+
+For a cluster-scoped resource the scope segment is the literal `cluster`, e.g. a
+ClusterRole `admin`:
+
+```text
+cluster/rbac.authorization.k8s.io/clusterroles/admin.yaml
 ```
 
 For a Secret under the suffix convention:
 
 ```text
-v1/secrets/default/app.sops.yaml
+default/secrets/app.sops.yaml
 ```
 
 The equally valid suffix-neutral form is:
 
 ```text
-v1/secrets/default/app.yaml
+default/secrets/app.yaml
 ```
+
+(An earlier revision seeded a REST-first `{groupPath}/{version}/{resource}/
+{namespace}/{name}` path; the namespace-first, version-less shape above replaced it
+before release. Because placement is match-first for existing files, the change only
+affects newly-created files and never moves one already in Git.)
 
 Optional future variables can expose selected object metadata:
 
@@ -1277,7 +1299,11 @@ catch-all layout.
    - write or append multi-document YAML only for accepted plaintext files.
 9. Add sensitive collision checks before rendering encrypted bytes; this is a
    runtime backstop behind the static identity-completeness validation.
-10. Feed placement errors into GitTarget status and the scan/dry-run output.
+10. Surface placement skips. **Implemented as:** each fail-safe skip is logged
+    per-resource at the skip site and counted in the resync summary
+    (`ResyncStats.PlacementSkipped`, distinct from the planner's `Skipped`). A
+    dedicated GitTarget status condition and a scan/dry-run "why here" trace remain
+    future work (see open questions).
 11. Update chart docs and examples after the API shape is settled.
 
 ## Tests

@@ -282,6 +282,46 @@ func TestResync_FoldsCreateUpdateDropTogether(t *testing.T) {
 	assert.NoError(t, freshErr, "the created resource lands beside its siblings under apps/")
 }
 
+// A fail-safe placement refusal during resync is counted in PlacementSkipped, not
+// silently swallowed between Created and the planner's Skipped view. Here a bundling
+// default routes both a Secret and a ConfigMap in the same namespace to one cold
+// "all.yaml"; the writer refuses to co-mingle encrypted and plaintext documents, so
+// one of the two is skipped fail-safe — and that skip must show up in the stats.
+func TestResync_UnsafePlacementCountsAsPlacementSkipped(t *testing.T) {
+	enc := &stubEncryptor{result: []byte(
+		"apiVersion: v1\nkind: Secret\nmetadata:\n  name: cred\n  namespace: app\n" +
+			"data:\n  k: ENC[AES256,data:x,iv:y,tag:z]\nsops:\n  version: 3.9.0\n")}
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	writer.setEncryptor(enc, "test-scope")
+	worktree := newWorktreeForTest(t)
+
+	policy := &manifestanalyzer.PlacementPolicy{Default: "all.yaml"}
+	desired := []manifestanalyzer.DesiredResource{
+		{
+			Resource: types.NewResourceIdentifier("", "v1", "secrets", "app", "cred"),
+			Object: &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "v1", "kind": "Secret",
+				"metadata": map[string]interface{}{"name": "cred", "namespace": "app"},
+			}},
+		},
+		{
+			Resource: types.NewResourceIdentifier("", "v1", "configmaps", "app", "cache"),
+			Object: &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "v1", "kind": "ConfigMap",
+				"metadata": map[string]interface{}{"name": "cache", "namespace": "app"},
+			}},
+		},
+	}
+
+	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
+	stats, _, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil, policy)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, stats.PlacementSkipped,
+		"the resource refused fail-safe to avoid co-mingling must be counted, not vanish")
+	assert.Equal(t, 1, stats.Created, "the other resource is still written")
+}
+
 // A sensitive (SOPS) resource that the resync re-encrypts is counted as Updated, not
 // Skipped. The planner marks an encrypted document PlanSkip (it cannot patch it in
 // place), but applyUpsert re-encrypts and commits it — so stats must come from the

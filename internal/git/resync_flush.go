@@ -143,6 +143,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		"updated", stats.Updated,
 		"deleted", stats.Deleted,
 		"skipped", stats.Skipped,
+		"placementSkipped", stats.PlacementSkipped,
 		"pendingWrites", len(l.pendingWrites))
 	req.reply(ResyncResult{Stats: *stats})
 }
@@ -283,7 +284,8 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	}
 	log.FromContext(ctx).Info("git resync commit created",
 		"created", stats.Created, "updated", stats.Updated,
-		"deleted", stats.Deleted, "skipped", stats.Skipped, "revision", pendingWrite.Revision)
+		"deleted", stats.Deleted, "skipped", stats.Skipped,
+		"placementSkipped", stats.PlacementSkipped, "revision", pendingWrite.Revision)
 	return 1, nil
 }
 
@@ -385,6 +387,12 @@ func (wb *writeBatch) applyResyncPlan(
 			stats.Created++
 		case upsertUpdated:
 			stats.Updated++
+		case upsertSkippedUnsafe:
+			// A fail-safe placement refusal (see createNew/writeWholeFile). Count it
+			// so a resource the resync did not mirror shows up in the summary instead
+			// of vanishing between Created and Skipped; the per-resource reason is
+			// already logged at the skip site.
+			stats.PlacementSkipped++
 		case upsertNoChange:
 		}
 	}

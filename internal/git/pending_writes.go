@@ -186,15 +186,20 @@ func resolvePlacementPolicy(spec *v1alpha3.GitTargetPlacementSpec) *manifestanal
 }
 
 // placementPolicyForBase finds the placement policy for the GitTarget that owns
-// base among targets. GitTarget paths never overlap, so at most one target can
-// match; a base with no matching target (e.g. an event whose target metadata could
-// not be resolved) gets no declared policy, falling through to sibling inference.
+// base among targets. base is already a sanitized subtree key (groupEventsByBase
+// runs it through sanitizePath), so md.Path must be sanitized the same way before
+// comparing — otherwise a root target, whose spec.path is "." but whose sanitized
+// base is "", would never match and would silently drop its declared placement on
+// the live-write path (resync resolves target.Placement directly, so the two paths
+// would diverge). GitTarget paths never overlap, so at most one target can match; a
+// base with no matching target (e.g. an event whose target metadata could not be
+// resolved) gets no declared policy, falling through to sibling inference.
 func placementPolicyForBase(
 	targets map[pendingTargetKey]ResolvedTargetMetadata,
 	base string,
 ) *manifestanalyzer.PlacementPolicy {
 	for _, md := range targets {
-		if md.Path == base {
+		if sanitizePath(md.Path) == base {
 			return md.Placement
 		}
 	}

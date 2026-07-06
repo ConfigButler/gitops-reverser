@@ -51,9 +51,6 @@ simpler for other teams.
 > managed control planes (EKS/GKE/AKS) generally do not expose. Without it the operator still mirrors
 > state, with commits authored by the configured committer. **Valkey/Redis is required either way** — it
 > holds each GitTarget's watch resume state so work is re-picked up after a restart or reconnect.
->
-> If exact per-user authorship matters but you do not want to own kube-apiserver audit delivery yourself,
-> I welcome conversations about a managed ConfigButler path.
 
 ## How it works
 
@@ -122,12 +119,8 @@ Directions we may revisit later live in [docs/TODO.md](docs/TODO.md) and [docs/f
 ## Quick start
 
 This quick start sets up **committer-only mode**: the operator mirrors watched Kubernetes state into Git,
-and commits are authored by the configured committer identity. That is the easiest way to prove the
-workflow works.
-
-Valkey/Redis is still required: it holds each GitTarget's watch resume state so the operator re-picks up
-where it left off after a restart or reconnect. Named commit authors can be added later with
-kube-apiserver audit delivery.
+commits are authored by the configured committer identity, and named authors can be added later. It is the
+easiest way to prove the workflow works.
 
 **Prerequisites**
 

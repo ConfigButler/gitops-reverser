@@ -324,6 +324,9 @@ The important fields are:
 - `spec.path`: required relative path inside the repository; use `.` only when you deliberately
   want the repository root
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
+- `spec.placement`: optional policy for where **new** resources are written (see
+  [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it to follow
+  the repository's existing layout
 
 Example:
 
@@ -365,6 +368,52 @@ The most useful status fields are:
 - `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
 
 Use conditions for automation.
+
+### Where new resources are written (`spec.placement`)
+
+Placement decides the file path for a resource that has **no document in Git yet**. Once a document
+exists, updates and deletes always edit it in place at its current location (found by manifest identity,
+not path), so changing placement never moves an existing file.
+
+By default you configure **nothing**. A new resource follows the layout the folder already has — appended
+to the bundle its type shares, or placed one-per-file beside its siblings — so pointing a target at an
+existing repository just continues that repository's convention. With nothing to follow (an empty repo, or
+a brand-new type), it falls back to the built-in default path
+`{namespace}/{group}/{resource}/{name}.yaml` (namespace first, the group omitted for core resources, no
+version segment, `cluster/` in place of the namespace for cluster-scoped resources, and a `.sops.yaml`
+suffix for sensitive resources).
+
+Set `spec.placement` only when you want to **prescribe** a layout instead of following the repo:
+
+```yaml
+spec:
+  placement:
+    byType:
+      v1/configmaps: "{namespace}/configmaps.yaml"     # bundle all ConfigMaps of a namespace into one file
+      v1/secrets: "{namespace}/secrets/{name}.yaml"    # one file per Secret
+    default: "{namespace}/{group}/{resource}/{name}.yaml"
+```
+
+- `byType` maps an exact `[group/]version/resource` key (core resources omit the group, e.g.
+  `v1/configmaps`; grouped resources include it, e.g. `apps/v1/deployments`) to a path template.
+- `default` is the template for any type with no `byType` entry. Omit it to fall through to sibling
+  inference and then the built-in path.
+- Templates are small brace-variable paths — `{namespace}`, `{namespaceOrCluster}`, `{group}`,
+  `{groupPath}`, `{version}`, `{resource}`, `{name}`, `{kind}`, `{scope}` — validated statically as part
+  of the `Validated` gate (unknown variable, path escaping `spec.path`, or a wrong suffix fails the
+  target before any write).
+
+Sensitivity is **not** a placement setting; it is a write-safety rule the operator enforces whatever path
+is chosen. A `Secret` (and any operator-configured sensitive type) is always written encrypted, is never
+appended to an existing file, and is never co-mingled with a plaintext document. Two consequences:
+
+- A `byType` route for a sensitive type must be **identity-complete** (contain `{name}` and a scope such
+  as `{namespace}`) so two of them can never collide onto one file.
+- A **bundling `default`** that is not identity-complete (e.g. `"all.yaml"`) is rejected unless every
+  sensitive type has its own identity-complete `byType` entry, so a Secret can never fall through into a
+  shared file. If an operator-configured sensitive type still reaches such a path at write time, that
+  resource is **skipped fail-safe** — logged and counted in the resync summary (`placementSkipped`) —
+  rather than written unsafely. It is not surfaced as a dedicated status condition today.
 
 ### Additional sensitive resources
 

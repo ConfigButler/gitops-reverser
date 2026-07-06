@@ -567,7 +567,7 @@ func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t 
 		"worker should prepare by pulling remote content before first write",
 	)
 
-	manifestPath := filepath.Join(localRepoPath, "clusters/dev", "v1", "configmaps", "default", "example.yaml")
+	manifestPath := filepath.Join(localRepoPath, "clusters/dev", "default", "configmaps", "example.yaml")
 	content, err := os.ReadFile(manifestPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "name: example")
@@ -684,9 +684,8 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 	manifestPath := filepath.Join(
 		featureCheckoutPath,
 		"clusters/dev",
-		"v1",
-		"configmaps",
 		"default",
+		"configmaps",
 		"example-feature.yaml",
 	)
 	manifestContent, err := os.ReadFile(manifestPath)

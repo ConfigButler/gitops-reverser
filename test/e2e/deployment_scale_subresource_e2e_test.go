@@ -47,7 +47,7 @@ var _ = Describe("Deployment scale subresource", Label("manager", "subresource")
 		deploymentFile := filepath.Join(
 			repo.CheckoutDir,
 			targetPath,
-			fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, deploymentName),
+			fmt.Sprintf("%s/apps/deployments/%s.yaml", testNs, deploymentName),
 		)
 		Eventually(func(g Gomega) {
 			g.Expect(committedDeploymentReplicas(g, repo.CheckoutDir, deploymentFile)).To(Equal(int64(1)))

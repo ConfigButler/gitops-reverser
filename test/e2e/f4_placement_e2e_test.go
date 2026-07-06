@@ -92,7 +92,7 @@ var _ = Describe("Manager F4 New-File Placement", Label("manager", "f4-placement
 		By("verifying the new file landed in the overlay and the kustomization was updated")
 		newFileFullPath := filepath.Join(repo.CheckoutDir, gitPath, newFileRepoPath)
 		kustFullPath := filepath.Join(repo.CheckoutDir, gitPath, kustRepoPath)
-		canonicalPath := filepath.Join(repo.CheckoutDir, gitPath, "v1", "configmaps", testNs, newConfigMap+".yaml")
+		canonicalPath := filepath.Join(repo.CheckoutDir, gitPath, testNs, "configmaps", newConfigMap+".yaml")
 
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, repo.CheckoutDir)

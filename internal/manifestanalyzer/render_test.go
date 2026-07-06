@@ -121,7 +121,7 @@ func TestRenderScanText(t *testing.T) {
 		"kustomization.yaml",
 		"Plan: 2 action(s)",
 		"create",
-		"v1/configmaps/default/new.yaml",
+		"default/configmaps/new.yaml",
 		"patch",
 		"deploy.yaml#0",
 	} {

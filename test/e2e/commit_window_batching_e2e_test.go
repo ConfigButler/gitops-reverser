@@ -194,7 +194,7 @@ func assertBurstFilesAreGroupedIntoLatestCommit(checkoutDir string, burstNames [
 
 	expectedPaths := make(map[string]struct{}, len(burstNames))
 	for _, name := range burstNames {
-		p := fmt.Sprintf("%s/v1/configmaps/%s/%s.yaml", basePath, namespace, name)
+		p := fmt.Sprintf("%s/%s/configmaps/%s.yaml", basePath, namespace, name)
 		expectedPaths[p] = struct{}{}
 	}
 

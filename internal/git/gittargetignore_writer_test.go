@@ -34,10 +34,10 @@ func TestWriter_IgnoreShadowsManagedPath(t *testing.T) {
 	createBareRepo(t, remotePath)
 	remoteURL := "file://" + remotePath
 
-	// "v1/" shadows the canonical write path v1/pods/default/<name>.yaml. It is not a
-	// catastrophic whole-space pattern, so the acceptance gate accepts it — the danger is
+	// "default/pods/" shadows the canonical write path default/pods/<name>.yaml. It is not
+	// a catastrophic whole-space pattern, so the acceptance gate accepts it — the danger is
 	// caught only at write time, where the path is finally known.
-	simulateClientCommitOnDisk(t, remoteURL, "main", ".gittargetignore", "v1/\n")
+	simulateClientCommitOnDisk(t, remoteURL, "main", ".gittargetignore", "default/pods/\n")
 
 	worker, err := newTestBranchWorker(remoteURL, "test-repo", "main")
 	require.NoError(t, err)

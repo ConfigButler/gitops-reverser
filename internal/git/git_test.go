@@ -51,7 +51,7 @@ func TestToGitPath_NamespacedResource(t *testing.T) {
 			group:          "",
 			version:        "v1",
 			resourcePlural: "pods",
-			expected:       "v1/pods/default/test-pod.yaml",
+			expected:       "default/pods/test-pod.yaml",
 		},
 		{
 			name:           "my-service",
@@ -59,7 +59,7 @@ func TestToGitPath_NamespacedResource(t *testing.T) {
 			group:          "",
 			version:        "v1",
 			resourcePlural: "services",
-			expected:       "v1/services/production/my-service.yaml",
+			expected:       "production/services/my-service.yaml",
 		},
 		{
 			name:           "app-config",
@@ -67,7 +67,7 @@ func TestToGitPath_NamespacedResource(t *testing.T) {
 			group:          "",
 			version:        "v1",
 			resourcePlural: "configmaps",
-			expected:       "v1/configmaps/staging/app-config.yaml",
+			expected:       "staging/configmaps/app-config.yaml",
 		},
 		{
 			name:           "complex-name-with-dashes",
@@ -75,7 +75,7 @@ func TestToGitPath_NamespacedResource(t *testing.T) {
 			group:          "apps",
 			version:        "v1",
 			resourcePlural: "deployments",
-			expected:       "apps/v1/deployments/kube-system/complex-name-with-dashes.yaml",
+			expected:       "kube-system/apps/deployments/complex-name-with-dashes.yaml",
 		},
 	}
 
@@ -107,28 +107,28 @@ func TestToGitPath_ClusterScopedResource(t *testing.T) {
 			group:          "",
 			version:        "v1",
 			resourcePlural: "namespaces",
-			expected:       "v1/namespaces/my-namespace.yaml",
+			expected:       "cluster/namespaces/my-namespace.yaml",
 		},
 		{
 			name:           "cluster-admin",
 			group:          "rbac.authorization.k8s.io",
 			version:        "v1",
 			resourcePlural: "clusterroles",
-			expected:       "rbac.authorization.k8s.io/v1/clusterroles/cluster-admin.yaml",
+			expected:       "cluster/rbac.authorization.k8s.io/clusterroles/cluster-admin.yaml",
 		},
 		{
 			name:           "system-binding",
 			group:          "rbac.authorization.k8s.io",
 			version:        "v1",
 			resourcePlural: "clusterrolebindings",
-			expected:       "rbac.authorization.k8s.io/v1/clusterrolebindings/system-binding.yaml",
+			expected:       "cluster/rbac.authorization.k8s.io/clusterrolebindings/system-binding.yaml",
 		},
 		{
 			name:           "my-pv",
 			group:          "",
 			version:        "v1",
 			resourcePlural: "persistentvolumes",
-			expected:       "v1/persistentvolumes/my-pv.yaml",
+			expected:       "cluster/persistentvolumes/my-pv.yaml",
 		},
 	}
 
@@ -156,7 +156,7 @@ func TestToGitPath_EmptyNamespace(t *testing.T) {
 		Name:      "test-resource",
 	}
 	path := identifier.ToGitPath()
-	assert.Equal(t, "v1/testkinds/test-resource.yaml", path)
+	assert.Equal(t, "cluster/testkinds/test-resource.yaml", path)
 }
 
 func TestToGitPath_SpecialCharacters(t *testing.T) {
@@ -170,19 +170,19 @@ func TestToGitPath_SpecialCharacters(t *testing.T) {
 			name:           "test.resource",
 			namespace:      "default",
 			resourcePlural: "pods",
-			expected:       "v1/pods/default/test.resource.yaml",
+			expected:       "default/pods/test.resource.yaml",
 		},
 		{
 			name:           "test_resource",
 			namespace:      "default",
 			resourcePlural: "services",
-			expected:       "v1/services/default/test_resource.yaml",
+			expected:       "default/services/test_resource.yaml",
 		},
 		{
 			name:           "test-resource-123",
 			namespace:      "test-ns-456",
 			resourcePlural: "configmaps",
-			expected:       "v1/configmaps/test-ns-456/test-resource-123.yaml",
+			expected:       "test-ns-456/configmaps/test-resource-123.yaml",
 		},
 	}
 
@@ -315,7 +315,7 @@ func TestPathGeneration_ConsistentOutput(t *testing.T) {
 
 	assert.Equal(t, path1, path2)
 	assert.Equal(t, path2, path3)
-	assert.Equal(t, "v1/pods/consistent-ns/consistent-test.yaml", path1)
+	assert.Equal(t, "consistent-ns/pods/consistent-test.yaml", path1)
 }
 
 func TestToGitPath_DeleteOperation(t *testing.T) {
@@ -330,7 +330,7 @@ func TestToGitPath_DeleteOperation(t *testing.T) {
 
 	// File path should be same for CREATE, UPDATE, and DELETE
 	path := identifier.ToGitPath()
-	expected := "v1/secrets/production/test-resource.yaml"
+	expected := "production/secrets/test-resource.yaml"
 
 	assert.Equal(t, expected, path)
 }

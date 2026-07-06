@@ -23,7 +23,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "default",
 				Name:      "nginx",
 			},
-			want: "v1/pods/default/nginx.yaml",
+			want: "default/pods/nginx.yaml",
 		},
 		{
 			name: "core namespaced resource - ConfigMap",
@@ -34,7 +34,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "default",
 				Name:      "config",
 			},
-			want: "v1/configmaps/default/config.yaml",
+			want: "default/configmaps/config.yaml",
 		},
 		{
 			name: "core cluster-scoped resource - Node",
@@ -45,7 +45,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "",
 				Name:      "worker-1",
 			},
-			want: "v1/nodes/worker-1.yaml",
+			want: "cluster/nodes/worker-1.yaml",
 		},
 		{
 			name: "non-core namespaced resource - Deployment",
@@ -56,7 +56,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "production",
 				Name:      "app",
 			},
-			want: "apps/v1/deployments/production/app.yaml",
+			want: "production/apps/deployments/app.yaml",
 		},
 		{
 			name: "non-core namespaced resource - StatefulSet",
@@ -67,7 +67,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "database",
 				Name:      "postgres",
 			},
-			want: "apps/v1/statefulsets/database/postgres.yaml",
+			want: "database/apps/statefulsets/postgres.yaml",
 		},
 		{
 			name: "non-core cluster-scoped resource - ClusterRole",
@@ -78,7 +78,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "",
 				Name:      "admin",
 			},
-			want: "rbac.authorization.k8s.io/v1/clusterroles/admin.yaml",
+			want: "cluster/rbac.authorization.k8s.io/clusterroles/admin.yaml",
 		},
 		{
 			name: "custom CRD with group",
@@ -89,7 +89,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "prod",
 				Name:      "instance",
 			},
-			want: "example.com/v1alpha1/myapps/prod/instance.yaml",
+			want: "prod/example.com/myapps/instance.yaml",
 		},
 		{
 			name: "custom CRD cluster-scoped",
@@ -100,7 +100,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "",
 				Name:      "main",
 			},
-			want: "custom.io/v1beta1/globalconfigs/main.yaml",
+			want: "cluster/custom.io/globalconfigs/main.yaml",
 		},
 		{
 			name: "resource with special characters in name",
@@ -111,7 +111,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "default",
 				Name:      "my-app-v2",
 			},
-			want: "apps/v1/deployments/default/my-app-v2.yaml",
+			want: "default/apps/deployments/my-app-v2.yaml",
 		},
 	}
 

@@ -427,7 +427,7 @@ func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
 	commitMessage, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
 
-	assert.Equal(t, "v1/pods/integration-test/integration-test-pod.yaml", filePath)
+	assert.Equal(t, "integration-test/pods/integration-test-pod.yaml", filePath)
 	assert.Equal(t, "[CREATE] v1/pods/integration-test-pod", commitMessage)
 	assert.Contains(t, filePath, "integration-test-pod")
 	assert.Contains(t, commitMessage, "integration-test-pod")
@@ -586,7 +586,7 @@ func TestDeleteOperation_ClusterScoped(t *testing.T) {
 	commitMessage, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
 
-	assert.Equal(t, "v1/namespaces/test-namespace.yaml", filePath)
+	assert.Equal(t, "cluster/namespaces/test-namespace.yaml", filePath)
 	assert.Equal(t, "[DELETE] v1/namespaces/test-namespace", commitMessage)
 }
 

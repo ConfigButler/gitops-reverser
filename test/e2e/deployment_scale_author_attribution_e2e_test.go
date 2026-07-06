@@ -80,7 +80,7 @@ var _ = Describe("Deployment scale author attribution", Label("manager", "subres
 		osDeploymentFile := filepath.Join(
 			repo.CheckoutDir,
 			targetPath,
-			fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, deploymentName),
+			fmt.Sprintf("%s/apps/deployments/%s.yaml", testNs, deploymentName),
 		)
 		Eventually(func(g Gomega) {
 			g.Expect(committedDeploymentReplicas(g, repo.CheckoutDir, osDeploymentFile)).To(Equal(int64(1)))
@@ -96,7 +96,7 @@ var _ = Describe("Deployment scale author attribution", Label("manager", "subres
 		)
 		Expect(err).NotTo(HaveOccurred(), "impersonated kubectl scale should succeed")
 
-		repoPath := path.Join(targetPath, fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, deploymentName))
+		repoPath := path.Join(targetPath, fmt.Sprintf("%s/apps/deployments/%s.yaml", testNs, deploymentName))
 
 		By("verifying the parent Deployment manifest is updated AND the commit is authored by the scaler")
 		Eventually(func(g Gomega) {

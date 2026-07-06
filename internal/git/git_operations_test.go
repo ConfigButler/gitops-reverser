@@ -349,7 +349,7 @@ func TestBranchWorker_FirstCommitOnEmptyRepo(t *testing.T) {
 	assert.Equal(t, "main", branchName)
 
 	// Verify file exists
-	filePath := filepath.Join(worker.repoPathForRemote("file://"+serverPath), "v1/pods/default/test-pod.yaml")
+	filePath := filepath.Join(worker.repoPathForRemote("file://"+serverPath), "default/pods/test-pod.yaml")
 	assert.FileExists(t, filePath)
 }
 

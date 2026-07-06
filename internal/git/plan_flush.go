@@ -194,6 +194,13 @@ const (
 	upsertNoChange upsertOutcome = iota
 	upsertCreated
 	upsertUpdated
+	// upsertSkippedUnsafe is a deliberate, fail-safe refusal to write a resource:
+	// its placement could not be resolved safely, or writing would co-mingle a
+	// sensitive and a plaintext document, or would overwrite a multi-document file.
+	// It is distinct from upsertNoChange (a genuine no-op) so the resync path can
+	// count it and surface it, rather than have a not-mirrored resource vanish with
+	// no signal (F4 Option B2's fail-safe skips — see createNew/writeWholeFile).
+	upsertSkippedUnsafe
 )
 
 // applyEvent folds one event into the batch: a field patch sets bounded fields on an
@@ -258,7 +265,7 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	if err != nil {
 		log.FromContext(ctx).Info("Skipping new resource: placement could not be resolved safely",
 			"resource", event.Identifier.String(), "reason", err.Error())
-		return upsertNoChange, nil
+		return upsertSkippedUnsafe, nil
 	}
 
 	if placement.Kustomization != nil {
@@ -301,7 +308,7 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 			log.FromContext(ctx).Info(
 				"Skipping new resource: sensitive and plaintext resources must not share a new file",
 				"resource", event.Identifier.String(), "file", placement.Path, "sensitive", sensitive)
-			return upsertNoChange, nil
+			return upsertSkippedUnsafe, nil
 		}
 		return wb.writeColdBundleMember(ctx, event, placement.Path, sensitive)
 	}
@@ -706,7 +713,7 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 				"file", rel,
 				"resource", event.Identifier.String(),
 			)
-			return upsertNoChange, nil
+			return upsertSkippedUnsafe, nil
 		}
 		if bytes.Equal(buf.current, content) || manifestsAreSemanticallyEqual(buf.current, content) {
 			return upsertNoChange, nil

@@ -208,7 +208,7 @@ func TestLocateNew_Sensitive_NeverJoinsPlaintextBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LocateNew: %v", err)
 	}
-	want := "v1/secrets/app/api-token.sops.yaml"
+	want := "app/secrets/api-token.sops.yaml"
 	if res.Path != want || res.Append || res.Source != PlacementSourceCanonical {
 		t.Fatalf("got %+v, want the secure canonical SOPS fallback %q", res, want)
 	}

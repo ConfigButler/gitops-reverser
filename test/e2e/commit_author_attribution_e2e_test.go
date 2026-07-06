@@ -121,7 +121,7 @@ var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() 
 		)
 		Expect(err).NotTo(HaveOccurred(), "failed to create impersonated ConfigMap")
 
-		repoPath := path.Join(basePath, fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, cmName))
+		repoPath := path.Join(basePath, fmt.Sprintf("%s/configmaps/%s.yaml", testNs, cmName))
 		expectedFile := filepath.Join(repo.CheckoutDir, repoPath)
 
 		By("waiting for the commit and asserting its author is the OIDC identity")

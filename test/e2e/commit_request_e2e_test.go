@@ -127,7 +127,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 			pullLatestRepoState(g, repo.CheckoutDir)
 
 			expectedFile := filepath.Join(repo.CheckoutDir, basePath,
-				fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, deployName))
+				fmt.Sprintf("%s/apps/deployments/%s.yaml", testNs, deployName))
 			info, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("Deployment file should exist at %s", expectedFile))
 			g.Expect(info.Size()).To(BeNumerically(">", 0))
@@ -198,7 +198,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, repo.CheckoutDir)
 			expected := filepath.Join(repo.CheckoutDir, basePath,
-				fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, deployName))
+				fmt.Sprintf("%s/apps/deployments/%s.yaml", testNs, deployName))
 			_, statErr := os.Stat(expected)
 			g.Expect(statErr).NotTo(HaveOccurred(),
 				fmt.Sprintf("the held Deployment should exist after finalize at %s", expected))
@@ -247,7 +247,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 			pullLatestRepoState(g, repo.CheckoutDir)
 
 			expectedFile := filepath.Join(repo.CheckoutDir, basePath,
-				fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, deployName))
+				fmt.Sprintf("%s/apps/deployments/%s.yaml", testNs, deployName))
 			info, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("Deployment file should exist at %s", expectedFile))
 			g.Expect(info.Size()).To(BeNumerically(">", 0))
@@ -401,7 +401,7 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 
 			for _, name := range deployNames {
 				expected := filepath.Join(repo.CheckoutDir, basePath,
-					fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, name))
+					fmt.Sprintf("%s/apps/deployments/%s.yaml", testNs, name))
 				_, statErr := os.Stat(expected)
 				g.Expect(statErr).NotTo(HaveOccurred(),
 					fmt.Sprintf("every bundled Deployment must be present in the one commit: %s", expected))
