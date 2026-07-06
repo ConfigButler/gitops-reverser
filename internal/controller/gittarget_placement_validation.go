@@ -23,7 +23,8 @@ func validatePlacementPolicy(spec *configbutleraiv1alpha3.GitTargetPlacementSpec
 	if msg, bad := validatePlacementClass(spec.Sensitive, true); bad {
 		return false, msg
 	}
-	if msg, bad := validatePlacementClass(spec.Normal, false); bad {
+	normal := configbutleraiv1alpha3.GitTargetPlacementClass{ByType: spec.ByType, Default: spec.Default}
+	if msg, bad := validatePlacementClass(normal, false); bad {
 		return false, msg
 	}
 	return true, ""

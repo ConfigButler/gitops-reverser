@@ -83,23 +83,38 @@ type GitTargetSpec struct {
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document
-// for their identity exists yet in Git. When a resource's class has no matching
-// ByType entry and no Default, placement falls back to following the layout already
-// established by sibling resources in the repository, and finally to the canonical
-// {group}/{version}/{resource}/{namespace}/{name}.yaml path when there is nothing to
-// follow. See docs/design/manifest/version2/gittarget-new-file-placement-rules.md.
+// for their identity exists yet in Git. ByType/Default govern every resource
+// except the ones Sensitive claims (Option B1 of
+// docs/design/manifest/version2/gittarget-new-file-placement-rules.md): placement
+// is a default path plus a guarded override, not two peer classes, because that
+// is the actual shape of the requirement — sensitive resources need stricter
+// guarantees (identity-complete, single-document, SOPS-suffixed paths) that a
+// broad normal default must never accidentally satisfy. When a resource's class
+// has no matching ByType entry and no Default, placement falls back to following
+// the layout already established by sibling resources in the repository, and
+// finally to the canonical {group}/{version}/{resource}/{namespace}/{name}.yaml
+// path when there is nothing to follow.
 type GitTargetPlacementSpec struct {
-	// Sensitive governs placement of resources the GitTarget's encryption policy
-	// classifies as sensitive (e.g. Secrets). Sensitive templates must render an
-	// identity-complete, single-document ".sops.yaml"/".sops.yml" path.
+	// ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
+	// "v1/configmaps" or "apps/v1/deployments"; core resources omit the group) to
+	// the path template used for a new, non-sensitive resource of that type.
+	// +optional
+	ByType map[string]string `json:"byType,omitempty"`
+
+	// Default is the path template used for a new non-sensitive resource whose
+	// type has no ByType entry. Omitted, it falls through to sibling-layout
+	// inference and then the built-in canonical path. Never consulted for a
+	// sensitive resource — see Sensitive.
+	// +optional
+	Default string `json:"default,omitempty"`
+
+	// Sensitive overrides placement for resources the GitTarget's encryption
+	// policy classifies as sensitive (e.g. Secrets). Sensitive templates must
+	// render an identity-complete, single-document ".sops.yaml"/".sops.yml" path;
+	// ByType/Default above never apply to a sensitive resource, regardless of
+	// what they contain.
 	// +optional
 	Sensitive GitTargetPlacementClass `json:"sensitive,omitempty"`
-
-	// Normal governs placement of every other resource. Normal templates may
-	// intentionally collide: new resources whose template renders the same path
-	// are appended to that multi-document plaintext file.
-	// +optional
-	Normal GitTargetPlacementClass `json:"normal,omitempty"`
 }
 
 // GitTargetPlacementClass maps exact resource types to a path template, with a

@@ -1,8 +1,10 @@
 # GitTarget new-file placement rules
 
-> Status: implemented (F4 v1 — declared policy (Option B) + sibling inference
-> (Option C) steps 1/2/4, plus the kustomize-root fallback documented below;
-> Option A and step 3 remain deferred as this document recommends)
+> Status: implemented (F4 v1 — declared policy (Option B1: top-level
+> `byType`/`default` for normal placement, `sensitive` as the guarded override)
+> + sibling inference (Option C) steps 1/2/4, plus the kustomize-root fallback
+> documented below; Option A, the fully-nested B, and step 3 remain deferred/
+> superseded as this document recommends)
 > Captured: 2026-06-05
 > Related:
 > [file-agnostic-placement.md](../file-agnostic-placement.md) — **the vision Option C serves**,
@@ -30,12 +32,14 @@ A and B both make placement a *declared CRD policy*. C makes it a *continuation
 of the layout already in the repo* — zero new API surface. They are not rivals;
 they layer:
 
-- **Option B is the chosen declared API family.** When a user wants to
-  *prescribe* a layout, an exact type-map plus default is the surface to reach for
-  — small, exact, easy to validate. The open surface choice is whether the normal
-  class is explicitly nested (`placement.normal.byType`) or implicit at the top
-  level (`placement.byType`) with `placement.sensitive` as the guarded override
-  (Option B1). Ordered rules (A) stay a later escape hatch only if the type map
+- **Option B is the chosen declared API family, in its B1 shape.** When a user
+  wants to *prescribe* a layout, an exact type-map plus default is the surface to
+  reach for — small, exact, easy to validate. The normal class is implicit at the
+  top level (`placement.byType`, `placement.default`), with `placement.sensitive`
+  as the guarded override (Option B1 — decided over the fully-nested
+  `placement.normal.byType` shape: sensitive and normal are not two peer classes,
+  they are a default path and its guarded exception, and the API now says so
+  directly). Ordered rules (A) stay a later escape hatch only if the type map
   proves too limiting.
 - **Option C is the default underneath it.** With no policy, placement *follows the
   layout already in the repo*; on an empty repo it falls through to today's
@@ -67,14 +71,13 @@ spec:
   branch: main
   path: clusters/prod
   placement:
+    byType:
+      v1/configmaps: "{namespace}/configmaps.yaml"
+    default: "all-else.yaml"
     sensitive:
       byType:
         v1/secrets: "{namespace}/secret-{name}.sops.yaml"
       default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml"
-    normal:
-      byType:
-        v1/configmaps: "{namespace}/configmaps.yaml"
-      default: "all-else.yaml"
 ```
 
 In this example:
@@ -371,11 +374,13 @@ Cons:
 - migration from the fully nested shape would require either accepting both
   shapes for a while or picking this before the field ships.
 
-My current leaning is that **B1 is the best declared API** if we are still free to
-change the CRD surface. It keeps the security property that motivated the split,
-but removes the awkward "two defaults" feel from the day-one UX. The fully nested
-shape remains cleaner from a type-system symmetry point of view, but B1 is likely
-easier for users to read and write.
+**Decided and implemented: B1 is the declared API.** It keeps the security
+property that motivated the split, but removes the awkward "two defaults" feel
+from the day-one UX. The fully nested shape stayed cleaner from a type-system
+symmetry point of view for exactly as long as it cost nothing to change — once
+weighed against actually shipping the field, B1's asymmetry reads as honest
+(sensitive genuinely is the guarded exception, not a peer class) rather than as
+a wart, and it was changed before the CRD field reached any release.
 
 The validation rules are almost the same as for ordered rules:
 
@@ -400,12 +405,11 @@ go to `namespace-{namespace}.yaml`, but cluster-scoped resources go to
 metadata such as labels. If we do not need those patterns yet, this may be a
 better first API than ordered rules.
 
-My current preference is:
+Implemented shape:
 
-1. ship a type-map (B) as **the** declared API, preferably the B1 shape if the
-   CRD surface is still malleable — it is the smallest surface that covers the
-   real "this type here, everything else normal there, keep sensitive guarded"
-   need;
+1. ship the B1 type-map as **the** declared API — it is the smallest surface
+   that covers the real "this type here, everything else normal there, keep
+   sensitive guarded" need;
 2. ship Option C (sibling inference, below) as the **default** that runs when B is
    absent or silent for a resource, so an unconfigured target follows the repo's
    own layout instead of forcing canonical;
@@ -1073,18 +1077,16 @@ layout.
 
 ## Implementation sketch
 
-1. Settle the surface: **B is the declared API, C is the default.**
-   - B1 (preferred if still possible): top-level normal type map
-     (`placement.byType`, `placement.default`) plus `placement.sensitive` for
-     sensitive overrides;
-   - B nested (fallback if symmetry wins): nested type map
-     (`placement.sensitive.byType`, `placement.sensitive.default`,
-     `placement.normal.byType`, `placement.normal.default`);
+1. Settle the surface: **B1 is the declared API, C is the default.**
+   - B1 (implemented): top-level normal type map (`placement.byType`,
+     `placement.default`) plus `placement.sensitive` for sensitive overrides;
    - C (default): no API surface — it resolves against the content-derived store;
-   - A: ordered `sensitiveRules` / `normalRules`, a later escape hatch only.
+   - A: ordered `sensitiveRules` / `normalRules`, a later escape hatch only, not
+     implemented.
 2. Add the CRD field:
    - `GitTargetSpec.Placement *GitTargetPlacementSpec`
-   - the chosen nested type-map shape, or the ordered-rule shape
+   - the B1 type-map shape (`ByType`/`Default` at top level, `Sensitive
+     GitTargetPlacementClass` nested)
    - policy/path validation that can be done statically.
 3. Introduce a placement policy interface in the writer/manifestreport layer:
 

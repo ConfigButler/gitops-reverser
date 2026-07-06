@@ -28,10 +28,8 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		{
 			"valid normal byType and default",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{
-					ByType:  map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
-					Default: "all.yaml",
-				},
+				ByType:  map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
+				Default: "all.yaml",
 			},
 			true,
 		},
@@ -47,32 +45,28 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		{
 			"unknown template variable",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{Default: "{bogus}/all.yaml"},
+				Default: "{bogus}/all.yaml",
 			},
 			false,
 		},
 		{
 			"normal template escapes spec.path with a parent traversal",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{Default: "../outside.yaml"},
+				Default: "../outside.yaml",
 			},
 			false,
 		},
 		{
 			"normal template does not end in a YAML suffix",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{
-					ByType: map[string]string{"v1/configmaps": "{namespace}/{name}.txt"},
-				},
+				ByType: map[string]string{"v1/configmaps": "{namespace}/{name}.txt"},
 			},
 			false,
 		},
 		{
 			"malformed byType key",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{
-					ByType: map[string]string{"not-a-type-key": "all.yaml"},
-				},
+				ByType: map[string]string{"not-a-type-key": "all.yaml"},
 			},
 			false,
 		},
@@ -162,9 +156,7 @@ func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
 			Branch:      "main",
 			Path:        "apps",
 			Placement: &configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{
-					Default: "{bogus}/all.yaml",
-				},
+				Default: "{bogus}/all.yaml",
 			},
 		},
 	}
