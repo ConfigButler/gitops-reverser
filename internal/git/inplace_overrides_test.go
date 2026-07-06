@@ -3,6 +3,7 @@
 package git
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -198,6 +200,76 @@ func TestPlanFlush_RoutesScaleFieldPatchToKustomizationEntry(t *testing.T) {
 	kust, err := os.ReadFile(kustPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(kust), "count: 7")
+}
+
+// An override edit that cannot land (the entry lacks the field, or the
+// kustomization is not in the subtree) is dropped without touching any buffer —
+// the source file was already left in source form, so the next event re-decides.
+func TestApplyOverrideEdits_SkipLeavesBuffersUntouched(t *testing.T) {
+	kust := "images:\n  - name: app\n    newName: mirror/app\n"
+	scan := manifestanalyzer.FolderScan{YAMLFiles: []manifestedit.FileContent{
+		{Path: "kustomization.yaml", Content: []byte(kust)},
+	}}
+	wb := newWriteBatch(context.Background(), newContentWriter(types.SensitiveResourcePolicy{}), nil, scan)
+
+	fieldMissing := manifestanalyzer.OverrideEdit{
+		KustomizationPath: "kustomization.yaml",
+		Edit: manifestedit.KustomizationEdit{
+			Section: manifestedit.KustomizationSectionImages, EntryIndex: 0,
+			EntryName: "app", Field: "newTag", Value: "2.0.0",
+		},
+	}
+	fileMissing := manifestanalyzer.OverrideEdit{
+		KustomizationPath: "gone/kustomization.yaml",
+		Edit:              fieldMissing.Edit,
+	}
+	changed := wb.applyOverrideEdits(context.Background(), Event{}, []manifestanalyzer.OverrideEdit{
+		fieldMissing, fileMissing,
+	})
+	assert.False(t, changed, "no edit can land, so no buffer may change")
+	assert.Equal(t, kust, string(wb.buffer("kustomization.yaml").current),
+		"a refused edit must leave the kustomization bytes untouched")
+}
+
+// A resync over a governed folder whose live state equals the overlay render is
+// a complete no-op: no churn on the source manifest OR the kustomization. This
+// pins the mark-and-sweep path (M8) explicitly, not just via shared code.
+func TestResync_GovernedFolderInSyncIsNoOp(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem.Root())
+
+	stats, changed := applyResyncViaWorktree(t, writer, deploymentMapper(), worktree,
+		desiredOverridesDeployment("ghcr.io/example/podinfo:6.4.0", 3))
+	assert.False(t, changed, "live == render must resync to zero changes")
+	assert.Zero(t, stats.Created+stats.Updated+stats.Deleted)
+	assertFileBytes(t, deployPath, overridesDeploymentYAML, "resync must not churn the source manifest")
+	assertFileBytes(t, kustPath, overridesKustomizationYAML, "resync must not churn the kustomization")
+}
+
+// A resync that finds governed drift routes it to the kustomization entry, just
+// like the steady-state path.
+func TestResync_GovernedDriftRoutesToKustomizationEntry(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem.Root())
+
+	stats, changed := applyResyncViaWorktree(t, writer, deploymentMapper(), worktree,
+		desiredOverridesDeployment("ghcr.io/example/podinfo:6.5.0", 3))
+	require.True(t, changed)
+	assert.Equal(t, 1, stats.Updated, "the routed edit counts as one update")
+	assertFileBytes(t, deployPath, overridesDeploymentYAML, "the source manifest keeps its bytes")
+
+	kust, err := os.ReadFile(kustPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), `newTag: "6.5.0"`)
+}
+
+// desiredOverridesDeployment adapts the live Deployment fixture into a resync
+// snapshot entry.
+func desiredOverridesDeployment(image string, replicas int64) manifestanalyzer.DesiredResource {
+	event := overridesDeploymentEvent(image, replicas)
+	return manifestanalyzer.DesiredResource{Resource: event.Identifier, Object: event.Object}
 }
 
 // A change no entry governs keeps today's behavior: it is patched into the

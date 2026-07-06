@@ -99,6 +99,20 @@ func TestPatchKustomization_SameValueIsNoChange(t *testing.T) {
 	}
 }
 
+func TestDocumentBody(t *testing.T) {
+	content := []byte("a: 1\n---\n# second\nb: 2\n")
+	body, ok := DocumentBody(content, 1)
+	if !ok || string(body) != "# second\nb: 2\n" {
+		t.Errorf("DocumentBody(1) = %q, %v; want the exact second-document bytes", body, ok)
+	}
+	if _, ok := DocumentBody(content, 2); ok {
+		t.Errorf("an out-of-range index must report ok=false")
+	}
+	if _, ok := DocumentBody(content, -1); ok {
+		t.Errorf("a negative index must report ok=false")
+	}
+}
+
 // All-or-nothing: any edit that cannot land skips the whole call, byte-for-byte.
 func TestPatchKustomization_RefusalsLeaveContentUntouched(t *testing.T) {
 	cases := []struct {

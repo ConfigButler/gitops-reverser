@@ -220,6 +220,13 @@ func (a *overrideAssignment) ambiguous() bool {
 // kustomization as a root and refuses parent/child conflicts), a referenced base
 // is not a root here: its transformers compose with its parent's, innermost
 // first, exactly as kustomize applies them.
+//
+// Cycle protection is on the CURRENT PATH, not per walk: a diamond (one root
+// reaching a shared base through two overlays) must record both paths so their
+// differing chains trip the ambiguity refusal, while a true reference cycle
+// still terminates. Real kustomize rejects the diamond outright (duplicate
+// resources), so ambiguity — never silent first-path attribution — is the
+// honest outcome.
 func kustomizeOverrideAssignments(
 	kusts map[string]*kustomizationDoc,
 	resourceFiles map[string]struct{},
@@ -230,17 +237,17 @@ func kustomizeOverrideAssignments(
 		if root == nil || root.unsupported {
 			continue
 		}
-		visited := map[string]struct{}{}
+		onPath := map[string]struct{}{}
 		var stack []*kustomizationDoc
 		var walk func(dir string, cur *kustomizationDoc)
 		walk = func(dir string, cur *kustomizationDoc) {
 			if cur == nil || cur.unsupported {
 				return
 			}
-			if _, seen := visited[dir]; seen {
+			if _, cycling := onPath[dir]; cycling {
 				return
 			}
-			visited[dir] = struct{}{}
+			onPath[dir] = struct{}{}
 			stack = append(stack, cur)
 			for _, entry := range cur.resources {
 				target := cleanJoin(dir, entry)
@@ -254,6 +261,7 @@ func kustomizeOverrideAssignments(
 				}
 			}
 			stack = stack[:len(stack)-1]
+			delete(onPath, dir)
 		}
 		walk(rootDir, root)
 	}

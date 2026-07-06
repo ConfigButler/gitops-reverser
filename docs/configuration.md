@@ -382,6 +382,38 @@ Entries are `resource` for the core API group or `group/resource` for grouped AP
 API version, so a served CRD version change does not change the sensitive classification. The custom
 resource still needs a `GitTarget` with `spec.encryption` configured before Git writes can succeed.
 
+### Kustomize support in the target path
+
+A target path may contain `kustomization.yaml` files. The operator retains them as build directives
+(it never sweeps them) and understands a deliberately small, round-trippable subset:
+
+- **`namespace:` + `resources:`/`bases`** (local files and directory bases): a namespace-less
+  resource file inherits its namespace from the kustomization that references it, and
+  `metadata.namespace` is kept out of the file on write.
+- **`images:` and `replicas:` overrides**: a live change *produced by* an override entry — an image
+  tag, name, or digest pinned by `images:`, or a replica count pinned by `replicas:` (including
+  `kubectl scale`) — is written back **to that entry**, preserving comments, and the source manifest
+  keeps its bytes. Only fields the entry already declares are updated; the operator never adds or
+  removes entries. Note that one entry is a shared knob, exactly as in kustomize itself: updating it
+  affects every resource in the build whose image matches.
+
+Anything outside that subset **refuses the whole target path before anything is written**:
+`patches`/`patchesStrategicMerge`/`patchesJson6902`, generators, `components`, Helm fields,
+`replacements`, `transformers`, `namePrefix`/`nameSuffix`, remote bases, and `images:`/`replicas:`
+values that do not parse (those would fail `kustomize build` too). A refusal is loud: the target
+reports `GitPathAccepted=False`, `Stalled=True`, and `Ready=False` with reason `UnsupportedContent`
+until the path is cleaned up.
+
+Two situations fall back to plain in-place editing of the source manifest instead of refusing:
+a resource file reachable from more than one render root with differing override chains
+(ambiguous — the operator will not guess which chain governs), and a live change an entry cannot
+express (for example a removed digest, or two containers demanding different values from one
+entry). These fallbacks are recorded as store diagnostics — visible in the analyzer CLI and, for
+the running operator, in the logs at debug verbosity (`manifest store diagnostic`).
+
+For design details and the exact boundary, see
+[design/gitops-api/f1-images-replicas-edit-through.md](design/gitops-api/f1-images-replicas-edit-through.md).
+
 ## `WatchRule`
 
 `WatchRule` is the normal namespaced watcher. It only watches resources in its own namespace and

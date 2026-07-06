@@ -108,7 +108,11 @@ resync mark-and-sweep upsert funnel through it, so fixing it fixes both.
   present-but-unparseable marks the kustomization unsupported (Decision 3).
 - The existing render-root graph walk (`assignFromRoot`) additionally records,
   per resource file, the ordered **override chain**: the kustomizations along
-  the reference path (innermost → root) that carry any override entries.
+  the reference path (innermost → root) that carry any override entries. Every
+  distinct path within a root is recorded (cycle protection is on the current
+  path, not per walk), so a diamond — one root reaching a shared base through
+  two overlays — trips the ambiguity refusal instead of silently attributing
+  the first path.
 - `DocumentModel` gains `Overrides *KustomizeOverrides` — the collapsed,
   unambiguous chain (nil when none or ambiguous), each entry carrying its
   source kustomization path so the writer knows which file to edit.
@@ -146,9 +150,11 @@ object, and the override chain, return
 - `docs/architecture.md`: the Manifest Aware Writer and acceptance-gate
   sections document the supported subset change ("images/replicas overrides
   are understood and edited through").
-- Log one line per override edit (kustomization path, entry, field); the
-  ambiguous case is visible via the diagnostic. A GitTarget status surface
-  for override routing is deferred.
+- Log one line per override edit (kustomization path, entry, field). The
+  ambiguity fallback is recorded as a store diagnostic, surfaced by the
+  analyzer CLI / scan report and logged by the live writer once per write
+  batch at debug verbosity (`manifest store diagnostic`). A GitTarget status
+  surface for override routing is deferred.
 
 ## Known limitation: shared entries with divergent live consumers
 

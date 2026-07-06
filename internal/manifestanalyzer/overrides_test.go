@@ -18,20 +18,20 @@ import (
 // the ambiguity diagnostic. See
 // docs/design/gitops-api/f1-images-replicas-edit-through.md.
 
-func corpusDeployment(t *testing.T, store *ManifestStore, ns string) *DocumentModel {
+func corpusDeployment(t *testing.T, store *ManifestStore) *DocumentModel {
 	t.Helper()
 	dm := store.ByManifestIdentity[manifestedit.Identity{
-		APIVersion: "apps/v1", Kind: "Deployment", Namespace: ns, Name: "web",
+		APIVersion: "apps/v1", Kind: "Deployment", Namespace: "app", Name: "web",
 	}]
 	if dm == nil {
-		t.Fatalf("Deployment web should be indexed under namespace %q", ns)
+		t.Fatalf("Deployment web should be indexed under namespace app")
 	}
 	return dm
 }
 
 func TestKustomizeOverridesCorpus_ImagesOverlay(t *testing.T) {
 	store := corpusStore(t, "supported/images-overlay")
-	dm := corpusDeployment(t, store, "app")
+	dm := corpusDeployment(t, store)
 	if dm.Overrides == nil || len(dm.Overrides.Images) != 1 || len(dm.Overrides.Replicas) != 0 {
 		t.Fatalf("want exactly one image override, got %+v", dm.Overrides)
 	}
@@ -50,7 +50,7 @@ func TestKustomizeOverridesCorpus_ImagesOverlay(t *testing.T) {
 
 func TestKustomizeOverridesCorpus_ReplicasOverlayChain(t *testing.T) {
 	store := corpusStore(t, "supported/replicas-overlay")
-	dm := corpusDeployment(t, store, "app")
+	dm := corpusDeployment(t, store)
 	if dm.Overrides == nil || len(dm.Overrides.Images) != 1 || len(dm.Overrides.Replicas) != 1 {
 		t.Fatalf("want one image + one replica override from the chain, got %+v", dm.Overrides)
 	}
@@ -68,9 +68,23 @@ func TestKustomizeOverridesCorpus_ReplicasOverlayChain(t *testing.T) {
 	}
 }
 
+// A diamond under ONE render root (root → a → base, root → b → base) must
+// record both paths: their chains differ, so no overrides attach and the
+// ambiguity diagnostic fires. Pins the on-path (not per-walk) cycle protection.
+func TestKustomizeOverridesCorpus_DiamondUnderOneRoot(t *testing.T) {
+	store := corpusStore(t, "unsupported/diamond-images")
+	dm := corpusDeployment(t, store)
+	if dm.Overrides != nil {
+		t.Errorf("a diamond's conflicting chains must attach no overrides, got %+v", dm.Overrides)
+	}
+	if !hasOverrideAmbiguityDiag(store) {
+		t.Errorf("want an %s diagnostic for the diamond", reasonAmbiguousOverrides)
+	}
+}
+
 func TestKustomizeOverridesCorpus_AmbiguousImages(t *testing.T) {
 	store := corpusStore(t, "unsupported/ambiguous-images")
-	dm := corpusDeployment(t, store, "app")
+	dm := corpusDeployment(t, store)
 	if dm.Overrides != nil {
 		t.Errorf("distinct chains from two roots must attach no overrides, got %+v", dm.Overrides)
 	}

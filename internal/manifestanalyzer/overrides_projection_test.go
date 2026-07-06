@@ -147,6 +147,28 @@ func TestSplitDesired_NameChangeRoutedToNewName(t *testing.T) {
 	}
 }
 
+// TestSplitDesired_DigestRoutedToEntry: a live digest change whose supplier is a
+// digest entry updates the entry; tag and name keep their source form.
+func TestSplitDesired_DigestRoutedToEntry(t *testing.T) {
+	git := deploymentObj("app:1.0.0", nil)
+	desired := desiredOf(deploymentObj("app:1.0.0@sha256:ccc", nil))
+	ov := &KustomizeOverrides{Images: []ImageOverride{
+		imgEntry("app", map[string]string{"digest": "sha256:bbb"}),
+	}}
+
+	out, edits := SplitDesiredForOverrides(git, desired, ov)
+	if got := desiredImage(t, out); got != "app:1.0.0" {
+		t.Errorf("file image = %q, want untouched source (no digest)", got)
+	}
+	if len(edits) != 1 ||
+		edits[0].Edit != (manifestedit.KustomizationEdit{
+			Section: manifestedit.KustomizationSectionImages, EntryIndex: 0,
+			EntryName: "app", Field: "digest", Value: "sha256:ccc",
+		}) {
+		t.Fatalf("want one digest edit to sha256:ccc, got %+v", edits)
+	}
+}
+
 // TestSplitDesired_RemovalUnroutable: live drops the digest an entry supplies;
 // nothing can express that on the entry, so the whole object writes through.
 func TestSplitDesired_RemovalUnroutable(t *testing.T) {

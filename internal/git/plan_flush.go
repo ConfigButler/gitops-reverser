@@ -87,6 +87,12 @@ func newWriteBatch(
 	// .gittargetignore, so the structure-only acceptance gate (run by writeBatch.refusal) and
 	// the write-plan precondition (run by writeBatch.flush) read both from the store.
 	store := manifestanalyzer.BuildStoreFromScan(ctx, scan, mapper, manifestanalyzer.WriterAllowlist())
+	// Surface the store's build-time warnings (ambiguous namespace or override
+	// context, scope mismatches) once per batch: these drive silent fallbacks —
+	// e.g. an ambiguous override chain falls back to write-through — and without
+	// this line the live path would leave no trace of why. The analyzer CLI and
+	// scan mode show the same diagnostics offline.
+	logStoreDiagnostics(ctx, store.Diagnostics)
 	contentByPath := make(map[string][]byte, len(scan.YAMLFiles))
 	for _, f := range scan.YAMLFiles {
 		contentByPath[f.Path] = f.Content
@@ -754,6 +760,21 @@ func sortedBaseKeys(byBase map[string][]Event) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// logStoreDiagnostics surfaces store build-time diagnostics of warning level or
+// above at low verbosity — the trace for decisions the writer makes silently
+// (ambiguity fallbacks, scope mismatches). Info-level index chatter is dropped.
+func logStoreDiagnostics(ctx context.Context, diags []manifestedit.Diagnostic) {
+	logger := log.FromContext(ctx)
+	for _, d := range diags {
+		if d.Level == manifestedit.DiagInfo {
+			continue
+		}
+		logger.V(1).Info("manifest store diagnostic",
+			"level", d.Level, "reason", d.Reason, "file", d.Path,
+			"documentIndex", d.DocumentIndex, "message", d.Message)
+	}
 }
 
 // logManifestDiagnostics surfaces manifestedit diagnostics at low verbosity so a

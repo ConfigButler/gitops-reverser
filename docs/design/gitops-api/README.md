@@ -44,7 +44,7 @@ when work starts.
 
 | # | Feature | Design doc | Status |
 |---|---------|-----------|--------|
-| F1 | Kustomize `images:` / `replicas:` edit-through — a live change produced by an override entry is written back to that entry, never through into the source manifest | [f1-images-replicas-edit-through.md](f1-images-replicas-edit-through.md) | in progress |
+| F1 | Kustomize `images:` / `replicas:` edit-through — a live change produced by an override entry is written back to that entry, never through into the source manifest | [f1-images-replicas-edit-through.md](f1-images-replicas-edit-through.md) | implemented ([#198](https://github.com/ConfigButler/gitops-reverser/pull/198)) |
 | F2 | Render-root scoping — a GitTarget declares its render root (e.g. `overlays/env1`); base files reached through `../../base` become read-only context, dissolving overlay fan-out ambiguity | — | not designed |
 | F3 | Restricted patch authoring — write/update scalar-field strategic-merge patches in an overlay ("live drift lands in the environment's overlay") | — | not designed |
 | F4 | New-file placement rules — sibling inference + `spec.newFilePath` template so new resources land in the folder's convention, not the canonical REST path | designed in [version2/gittarget-new-file-placement-rules.md](../manifest/version2/gittarget-new-file-placement-rules.md) | designed, unbuilt |
