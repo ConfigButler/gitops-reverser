@@ -86,6 +86,15 @@ type PlacementResult struct {
 	// writer must add it as part of the same commit so kustomize picks the file
 	// up (F4's "add to the right kustomize file").
 	Kustomization *KustomizationInfo
+	// NamespaceInherited is true when Path's destination infers its namespace
+	// from build context (a kustomization.yaml's namespace: transformer) rather
+	// than from metadata.namespace in the file — mirroring
+	// DocumentModel.NamespaceInheritedFromContext for a document that does not
+	// exist yet. The writer must keep metadata.namespace out of the written
+	// bytes, exactly as it already does for an in-place edit of an existing
+	// document in the same context (see design doc: "the new file inherits its
+	// sibling's NamespaceSource").
+	NamespaceInherited bool
 }
 
 // LocateNew resolves the placement of a resource with no existing document, per
@@ -115,18 +124,20 @@ func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementReque
 	class := policy.classFor(req.Sensitive)
 
 	if path, ok, err := resolveDeclared(class, req, vars); err == nil && ok {
-		return finishPlacement(store, req, path, PlacementSourceDeclared, "")
+		return finishPlacement(store, req, path, PlacementSourceDeclared, "", false)
 	}
 
-	if path, cohort, ok := resolveInferred(store, req); ok {
-		return finishPlacement(store, req, path, PlacementSourceInferred, cohort)
+	if path, cohort, nsInherited, ok := resolveInferred(store, req); ok {
+		return finishPlacement(store, req, path, PlacementSourceInferred, cohort, nsInherited)
 	}
 
-	if path, ok := resolveKustomizeRoot(store, req); ok {
-		return finishPlacement(store, req, path, PlacementSourceInferred, "the GitTarget's one kustomization root")
+	if path, ok, nsInherited := resolveKustomizeRoot(store, req); ok {
+		return finishPlacement(
+			store, req, path, PlacementSourceInferred, "the GitTarget's one kustomization root", nsInherited,
+		)
 	}
 
-	return finishPlacement(store, req, canonicalPath(req), PlacementSourceCanonical, "")
+	return finishPlacement(store, req, canonicalPath(req), PlacementSourceCanonical, "", false)
 }
 
 // resolveKustomizeRoot is a narrow, F4-specific fallback for when no sibling cohort
@@ -148,25 +159,25 @@ func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementReque
 // swallows every new type" risk (P5) the doc's own step 3 raised. More than one
 // supported kustomization under the scanned root is ambiguous and declines rather
 // than guessing.
-func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, bool) {
+func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, bool, bool) {
 	var only *KustomizationInfo
 	for _, k := range store.Kustomizations {
 		if k.Unsupported {
 			continue
 		}
 		if only != nil {
-			return "", false
+			return "", false, false
 		}
 		only = k
 	}
 	if only == nil {
-		return "", false
+		return "", false, false
 	}
 	name := req.Identifier.Name + ".yaml"
 	if req.Sensitive {
 		name = req.Identifier.Name + ".sops.yaml"
 	}
-	return cleanJoin(slashDir(only.Path), name), true
+	return cleanJoin(slashDir(only.Path), name), true, only.Namespace != ""
 }
 
 // finishPlacement fills in the parts of a PlacementResult that depend only on the
@@ -178,8 +189,9 @@ func finishPlacement(
 	resolvedPath string,
 	source PlacementSource,
 	cohort string,
+	namespaceInherited bool,
 ) (PlacementResult, error) {
-	res := PlacementResult{Path: resolvedPath, Source: source, Cohort: cohort}
+	res := PlacementResult{Path: resolvedPath, Source: source, Cohort: cohort, NamespaceInherited: namespaceInherited}
 	// A resolved path that already holds a file is only a safe append target when
 	// every document already in it is cleanly editable. A file that tolerates a
 	// non-editable construct (an anchor, alias, or other disallowed pattern) may
@@ -409,7 +421,7 @@ func IdentityCompletePlacementTemplate(tmpl string, narrowedToOneType bool) bool
 
 // resolveInferred implements Option C steps 1 and 2. See LocateNew's doc comment for
 // why step 3 is not implemented.
-func resolveInferred(store *ManifestStore, req PlacementRequest) (string, string, bool) {
+func resolveInferred(store *ManifestStore, req PlacementRequest) (string, string, bool, bool) {
 	id := req.Identifier
 
 	if members := cohortMembers(
@@ -423,8 +435,14 @@ func resolveInferred(store *ManifestStore, req PlacementRequest) (string, string
 	); len(
 		members,
 	) > 0 {
-		if path, cohort, ok := cohortDestination(store, members, req, "same type and namespace", false); ok {
-			return path, cohort, true
+		if path, cohort, nsInherited, ok := cohortDestination(
+			store,
+			members,
+			req,
+			"same type and namespace",
+			false,
+		); ok {
+			return path, cohort, nsInherited, true
 		}
 	}
 	// Step 2 matches across namespaces, so — unlike step 1, where every candidate
@@ -438,11 +456,17 @@ func resolveInferred(store *ManifestStore, req PlacementRequest) (string, string
 	// namespace (singleton style); an unseen namespace then correctly falls through to
 	// the canonical path, which builds the right namespace segment directly.
 	if members := cohortMembers(store, id.Group, id.Version, id.Resource, "", false, req.Sensitive); len(members) > 0 {
-		if path, cohort, ok := cohortDestination(store, members, req, "same type, any namespace", true); ok {
-			return path, cohort, true
+		if path, cohort, nsInherited, ok := cohortDestination(
+			store,
+			members,
+			req,
+			"same type, any namespace",
+			true,
+		); ok {
+			return path, cohort, nsInherited, true
 		}
 	}
-	return "", "", false
+	return "", "", false, false
 }
 
 // cohortMembers collects every existing document of the given type (optionally
@@ -528,7 +552,7 @@ func cohortDestination(
 	req PlacementRequest,
 	step string,
 	namespaceAgnostic bool,
-) (string, string, bool) {
+) (string, string, bool, bool) {
 	docLoc := store.DocumentLocations()
 	perFile := map[string][]*DocumentModel{}
 	for _, m := range members {
@@ -537,25 +561,32 @@ func cohortDestination(
 		}
 	}
 	if len(perFile) == 0 {
-		return "", "", false
+		return "", "", false, false
 	}
 
-	singletonDirs, bestPath, bestCount := classifyCohortLocations(store, perFile, namespaceAgnostic)
+	singletonDirs, bestPath, bestCount, dirReps, bundleReps := classifyCohortLocations(
+		store,
+		perFile,
+		namespaceAgnostic,
+	)
 	if bestPath == "" && len(singletonDirs) == 0 {
-		return "", "", false
+		return "", "", false, false
 	}
 
 	cohort := fmt.Sprintf("%d sibling(s) via %s", len(members), step)
 	if bestCount > len(singletonDirs) {
-		return bestPath, cohort, true
+		nsInherited := bundleReps[bestPath] != nil && bundleReps[bestPath].NamespaceInheritedFromContext()
+		return bestPath, cohort, nsInherited, true
 	}
 
 	sort.Strings(singletonDirs)
+	winDir := singletonDirs[0]
 	name := req.Identifier.Name + ".yaml"
 	if req.Sensitive {
 		name = req.Identifier.Name + ".sops.yaml"
 	}
-	return cleanJoin(singletonDirs[0], name), cohort, true
+	nsInherited := dirReps[winDir] != nil && dirReps[winDir].NamespaceInheritedFromContext()
+	return cleanJoin(winDir, name), cohort, nsInherited, true
 }
 
 // classifyCohortLocations partitions a cohort's members by where they live:
@@ -565,15 +596,19 @@ func cohortDestination(
 // excluded from both. namespaceAgnostic applies the P4 safety rule (see
 // resolveInferred): a bundle must already span more than one namespace, and
 // singleton style must resolve to a single shared directory, or the candidate is
-// dropped. It returns the eligible singleton directories and the winning bundle
-// (path/count), determined independently of map iteration order by scanning
-// candidate paths in sorted order.
+// dropped. It returns the eligible singleton directories, the winning bundle
+// (path/count), and one representative document per singleton directory / bundle
+// path — used to decide whether the destination's namespace is inherited from
+// build context (see PlacementResult.NamespaceInherited) — determined
+// independently of map iteration order by scanning candidate paths in sorted order.
 func classifyCohortLocations(
 	store *ManifestStore,
 	perFile map[string][]*DocumentModel,
 	namespaceAgnostic bool,
-) ([]string, string, int) {
+) ([]string, string, int, map[string]*DocumentModel, map[string]*DocumentModel) {
 	var singletonDirs []string
+	dirReps := map[string]*DocumentModel{}
+	bundleReps := map[string]*DocumentModel{}
 	bundleCounts := map[string]int{}
 	for p, ms := range perFile {
 		fm := store.FilesByPath[p]
@@ -585,9 +620,14 @@ func classifyCohortLocations(
 				continue // unproven: looks like a per-namespace-segmented bundle (P4)
 			}
 			bundleCounts[p] = len(ms)
+			bundleReps[p] = ms[0]
 			continue
 		}
-		singletonDirs = append(singletonDirs, slashDir(p))
+		dir := slashDir(p)
+		singletonDirs = append(singletonDirs, dir)
+		if _, seen := dirReps[dir]; !seen {
+			dirReps[dir] = ms[0]
+		}
 	}
 	if namespaceAgnostic && !allSameDir(singletonDirs) {
 		singletonDirs = nil // unproven: directories look namespace-segmented (P4)
@@ -604,7 +644,7 @@ func classifyCohortLocations(
 			bestCount, bestPath = bundleCounts[p], p
 		}
 	}
-	return singletonDirs, bestPath, bestCount
+	return singletonDirs, bestPath, bestCount, dirReps, bundleReps
 }
 
 // spansMultipleNamespaces reports whether ms (all documents sharing one file)

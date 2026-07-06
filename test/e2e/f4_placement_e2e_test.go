@@ -100,6 +100,8 @@ var _ = Describe("Manager F4 New-File Placement", Label("manager", "f4-placement
 			newFileBody := readRepoFile(g, newFileFullPath)
 			g.Expect(newFileBody).To(ContainSubstring("name: " + newConfigMap))
 			g.Expect(newFileBody).To(ContainSubstring("color: blue"))
+			g.Expect(newFileBody).NotTo(ContainSubstring("namespace:"),
+				"the overlay's kustomization sets namespace:, so the new file must not repeat it")
 
 			kustBody := readRepoFile(g, kustFullPath)
 			g.Expect(kustBody).To(ContainSubstring("- deployment.yaml"), "the existing entry must survive")

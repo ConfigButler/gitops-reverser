@@ -123,6 +123,80 @@ func TestLocateNew_SingletonCohort_NewFileBesideSiblings(t *testing.T) {
 	}
 }
 
+// A sibling whose namespace is inherited from a kustomization's namespace:
+// transformer (no metadata.namespace in its own bytes) means a new document
+// placed beside it must also omit metadata.namespace — otherwise the write
+// would silently break the convention every document in that context follows
+// (this is what let an incidental resource sharing the namespace, e.g. a
+// cluster-injected ConfigMap, write a namespace: line into a hand-curated
+// bundle file in production; see the design doc's Option C test plan, "the new
+// file inherits its sibling's NamespaceSource").
+func TestLocateNew_SiblingNamespaceInheritedFromKustomize_NewFileOmitsNamespace(t *testing.T) {
+	fsys := fstest.MapFS{
+		"overlays/test/kustomization.yaml": {
+			Data: []byte("namespace: app\nresources:\n  - configmap-a.yaml\n"),
+		},
+		"overlays/test/configmap-a.yaml": {
+			Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n"),
+		},
+	}
+	store := placementStore(t, fsys)
+	req := newConfigMapRequest("cache", "app")
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if !res.NamespaceInherited {
+		t.Fatalf("got %+v, want NamespaceInherited since the sibling omits metadata.namespace", res)
+	}
+}
+
+// A sibling with an explicit metadata.namespace (no kustomize context) means a
+// new document beside it keeps writing its namespace explicitly too.
+func TestLocateNew_SiblingNamespaceExplicit_NewFileKeepsNamespace(t *testing.T) {
+	fsys := fstest.MapFS{
+		"overlays/test/configmap-a.yaml": {Data: []byte(configMapYAML("a", "app"))},
+	}
+	store := placementStore(t, fsys)
+	req := newConfigMapRequest("cache", "app")
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.NamespaceInherited {
+		t.Fatalf("got %+v, want NamespaceInherited false: the sibling writes its namespace explicitly", res)
+	}
+}
+
+// resolveKustomizeRoot's fallback (no sibling of this type yet) must also flag
+// NamespaceInherited when the one kustomization declares a namespace:
+// transformer, for the same reason.
+func TestLocateNew_KustomizeRootWithNamespaceTransformer_NewFileOmitsNamespace(t *testing.T) {
+	fsys := fstest.MapFS{
+		"overlays/test/kustomization.yaml": {
+			Data: []byte("namespace: podinfo-test\nresources:\n  - deployment.yaml\n"),
+		},
+		"overlays/test/deployment.yaml": {Data: []byte(
+			"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: podinfo-test\n",
+		)},
+	}
+	store := placementStore(t, fsys)
+	req := PlacementRequest{
+		Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "podinfo-test", "debug-toolbox"),
+		Kind:       "ConfigMap",
+	}
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if !res.NamespaceInherited {
+		t.Fatalf("got %+v, want NamespaceInherited since the kustomization sets namespace:", res)
+	}
+}
+
 func TestLocateNew_Sensitive_NeverJoinsPlaintextBundle(t *testing.T) {
 	fsys := fstest.MapFS{
 		"all.yaml": {Data: []byte(configMapYAML("a", "app") + "---\n" + configMapYAML("b", "app"))},

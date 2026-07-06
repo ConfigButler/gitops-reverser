@@ -237,6 +237,16 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		wb.appendKustomizationResource(ctx, event, placement)
 	}
 
+	// A destination that infers its namespace from build context (a kustomization's
+	// namespace: transformer) must keep metadata.namespace out of the written bytes,
+	// exactly as patchExisting already does for an in-place edit of an existing
+	// document in the same context — otherwise the new document would silently break
+	// the convention every sibling in that directory follows.
+	if placement.NamespaceInherited && event.Object != nil {
+		event.Object = event.Object.DeepCopy()
+		event.Object.SetNamespace("")
+	}
+
 	if placement.Append {
 		return wb.appendNewDocument(ctx, event, placement.Path)
 	}

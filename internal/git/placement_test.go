@@ -97,6 +97,32 @@ func TestPlacement_BundleAppend_ExistingMultiDocFile(t *testing.T) {
 		"exactly one document must be added, not a replace")
 }
 
+// A new resource whose siblings are in a kustomize-namespace-inferred bundle
+// must not write metadata.namespace into that bundle — otherwise an incidental
+// resource sharing the namespace (e.g. a cluster-injected ConfigMap watched by
+// too broad a WatchRule) would break the "no namespace: in this file"
+// convention every other document in the bundle already follows.
+func TestPlacement_BundleAppend_OmitsNamespaceInKustomizeContext(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	kustYAML := "namespace: app\nresources:\n  - all.yaml\n"
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml", kustYAML)
+	seeded := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\ndata:\n  k: v\n" +
+		"---\n" +
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\ndata:\n  k: v\n"
+	full := seedPlacedManifest(t, worktree, "overlays/test/all.yaml", seeded)
+
+	changed := applyEventsWithPolicy(t, worktree, nil, newConfigMapEvent("cache", "app"))
+	require.True(t, changed)
+
+	got, err := os.ReadFile(full)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "name: a", "the first existing document must survive")
+	assert.Contains(t, string(got), "name: b", "the second existing document must survive")
+	assert.Contains(t, string(got), "name: cache", "the new document must be appended")
+	assert.NotContains(t, string(got), "namespace:",
+		"the new document must not break the bundle's namespace-omitted convention")
+}
+
 func TestPlacement_KustomizeEntryAppended_SameCommit(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
