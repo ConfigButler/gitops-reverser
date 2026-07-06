@@ -162,6 +162,56 @@ spec:
                   Immutable: delete and recreate the GitTarget to change its destination.
                 minLength: 1
                 type: string
+              placement:
+                description: |-
+                  Placement declares where NEW resources are written. It has no effect on a
+                  resource that already has a document in Git — that document is always
+                  updated in place at its existing location, wherever that is. Mutable: a
+                  change only affects resources created after the change.
+                properties:
+                  normal:
+                    description: |-
+                      Normal governs placement of every other resource. Normal templates may
+                      intentionally collide: new resources whose template renders the same path
+                      are appended to that multi-document plaintext file.
+                    properties:
+                      byType:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
+                          "v1/secrets" or "apps/v1/deployments"; core resources omit the group) to the
+                          path template used for a new resource of that type.
+                        type: object
+                      default:
+                        description: |-
+                          Default is the path template used for a new resource whose type has no
+                          ByType entry. Omitted, it falls through to sibling-layout inference and then
+                          the built-in canonical path.
+                        type: string
+                    type: object
+                  sensitive:
+                    description: |-
+                      Sensitive governs placement of resources the GitTarget's encryption policy
+                      classifies as sensitive (e.g. Secrets). Sensitive templates must render an
+                      identity-complete, single-document ".sops.yaml"/".sops.yml" path.
+                    properties:
+                      byType:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
+                          "v1/secrets" or "apps/v1/deployments"; core resources omit the group) to the
+                          path template used for a new resource of that type.
+                        type: object
+                      default:
+                        description: |-
+                          Default is the path template used for a new resource whose type has no
+                          ByType entry. Omitted, it falls through to sibling-layout inference and then
+                          the built-in canonical path.
+                        type: string
+                    type: object
+                type: object
               providerRef:
                 description: |-
                   ProviderRef references the GitProvider that backs this target.

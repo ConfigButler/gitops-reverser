@@ -73,6 +73,49 @@ type GitTargetSpec struct {
 	// Encryption defines encryption settings for Secret resource writes.
 	// +optional
 	Encryption *EncryptionSpec `json:"encryption,omitempty"`
+
+	// Placement declares where NEW resources are written. It has no effect on a
+	// resource that already has a document in Git — that document is always
+	// updated in place at its existing location, wherever that is. Mutable: a
+	// change only affects resources created after the change.
+	// +optional
+	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
+}
+
+// GitTargetPlacementSpec declares where NEW resources are written when no document
+// for their identity exists yet in Git. When a resource's class has no matching
+// ByType entry and no Default, placement falls back to following the layout already
+// established by sibling resources in the repository, and finally to the canonical
+// {group}/{version}/{resource}/{namespace}/{name}.yaml path when there is nothing to
+// follow. See docs/design/manifest/version2/gittarget-new-file-placement-rules.md.
+type GitTargetPlacementSpec struct {
+	// Sensitive governs placement of resources the GitTarget's encryption policy
+	// classifies as sensitive (e.g. Secrets). Sensitive templates must render an
+	// identity-complete, single-document ".sops.yaml"/".sops.yml" path.
+	// +optional
+	Sensitive GitTargetPlacementClass `json:"sensitive,omitempty"`
+
+	// Normal governs placement of every other resource. Normal templates may
+	// intentionally collide: new resources whose template renders the same path
+	// are appended to that multi-document plaintext file.
+	// +optional
+	Normal GitTargetPlacementClass `json:"normal,omitempty"`
+}
+
+// GitTargetPlacementClass maps exact resource types to a path template, with a
+// fallback default template for every type the map does not name.
+type GitTargetPlacementClass struct {
+	// ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
+	// "v1/secrets" or "apps/v1/deployments"; core resources omit the group) to the
+	// path template used for a new resource of that type.
+	// +optional
+	ByType map[string]string `json:"byType,omitempty"`
+
+	// Default is the path template used for a new resource whose type has no
+	// ByType entry. Omitted, it falls through to sibling-layout inference and then
+	// the built-in canonical path.
+	// +optional
+	Default string `json:"default,omitempty"`
 }
 
 // GitTargetStatus defines the observed state of GitTarget.

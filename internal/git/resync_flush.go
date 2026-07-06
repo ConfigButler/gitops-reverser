@@ -246,7 +246,9 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		return 0, fmt.Errorf("configure secret encryptor: %w", err)
 	}
 
-	stats, anyChanges, err := w.applyResyncToWorktree(ctx, worktree, base, pendingWrite.Desired, pendingWrite.ScopeGVR)
+	stats, anyChanges, err := w.applyResyncToWorktree(
+		ctx, worktree, base, pendingWrite.Desired, pendingWrite.ScopeGVR, target.Placement,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -291,7 +293,8 @@ func (w *BranchWorker) refuseUnsafeWorktree(ctx context.Context, worktree *gogit
 	if err != nil {
 		return err
 	}
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan)
+	// The acceptance gate never places a resource, so no placement policy is needed here.
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan, nil)
 	return batch.refusal()
 }
 
@@ -321,6 +324,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 	base string,
 	desired []manifestanalyzer.DesiredResource,
 	scopeGVR *schema.GroupVersionResource,
+	policy *manifestanalyzer.PlacementPolicy,
 ) (ResyncStats, bool, error) {
 	root := worktree.Filesystem.Root()
 	scan, err := scanWorktreeSubtree(filepath.Join(root, base))
@@ -328,7 +332,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 		return ResyncStats{}, false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan, policy)
 	// First materialization is the adoption gate: refuse a subtree that holds content the
 	// operator cannot safely manage (unsupported kustomization, duplicate identity, impure
 	// or non-KRM files, foreign content, a catastrophic .gittargetignore) and commit nothing,

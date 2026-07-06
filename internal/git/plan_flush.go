@@ -41,6 +41,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	worktree *gogit.Worktree,
 	base string,
 	events []Event,
+	policy *manifestanalyzer.PlacementPolicy,
 ) (bool, error) {
 	root := worktree.Filesystem.Root()
 	scan, err := scanWorktreeSubtree(filepath.Join(root, base))
@@ -48,7 +49,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 		return false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan, policy)
 	if err := batch.refusal(); err != nil {
 		return false, err
 	}
@@ -71,6 +72,10 @@ type writeBatch struct {
 	docLoc        map[*manifestanalyzer.DocumentModel]manifestanalyzer.RecordRef
 	contentByPath map[string][]byte
 	buffers       map[string]*fileBuffer
+	// policy is the GitTarget's declared new-file placement policy (F4), consulted
+	// only for a resource with no existing document. nil means no declared policy —
+	// placement falls through to sibling inference and then the canonical path.
+	policy *manifestanalyzer.PlacementPolicy
 }
 
 func newWriteBatch(
@@ -78,6 +83,7 @@ func newWriteBatch(
 	writer eventContentWriter,
 	mapper typeset.Lookup,
 	scan manifestanalyzer.FolderScan,
+	policy *manifestanalyzer.PlacementPolicy,
 ) *writeBatch {
 	// The writer allowlist retains build directives (kustomization.yaml) and the operator's
 	// own .sops.yaml bootstrap config outside the managed model — these are auxiliary input,
@@ -104,6 +110,7 @@ func newWriteBatch(
 		docLoc:        store.DocumentLocations(),
 		contentByPath: contentByPath,
 		buffers:       map[string]*fileBuffer{},
+		policy:        policy,
 	}
 }
 
@@ -186,8 +193,8 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 // a sensitive document is re-encrypted wholesale AT ITS EXISTING PATH (never patched in
 // place — that would drop the SOPS metadata and write the secret back in cleartext, and
 // never at the canonical path, which would orphan the moved copy). A resource with no
-// existing document is a new file at the canonical placement path. It returns what it
-// did to the bytes (created / updated / no change).
+// existing document is placed by createNew (F4). It returns what it did to the bytes
+// (created / updated / no change).
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
 	if id, ok := manifestIdentity(event.Object); ok {
 		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
@@ -198,7 +205,116 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 			return wb.patchExisting(ctx, event, filePath, id, dm)
 		}
 	}
-	return wb.writeWholeFile(ctx, event, wb.writer.filePathForIdentifier(event.Identifier))
+	return wb.createNew(ctx, event)
+}
+
+// createNew resolves the placement of a resource with no existing document —
+// declared policy (Option B), sibling inference (Option C), or the canonical
+// fallback — per docs/design/manifest/version2/gittarget-new-file-placement-rules.md,
+// adds the kustomize resources: entry the placement may require, and writes the new
+// document: a brand-new file, or an additional document appended to an existing
+// accepted plaintext bundle. A placement LocateNew cannot honour safely (today, only
+// a sensitive resource whose resolved path collides with an existing file) is logged
+// and left unwritten rather than risking a mis-write; the next event or resync
+// retries it once the conflict is resolved (e.g. the placement policy is fixed).
+func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome, error) {
+	kind := ""
+	if event.Object != nil {
+		kind = event.Object.GetKind()
+	}
+	placement, err := manifestanalyzer.LocateNew(wb.store, wb.policy, manifestanalyzer.PlacementRequest{
+		Identifier: event.Identifier,
+		Kind:       kind,
+		Sensitive:  wb.writer.isSensitiveIdentifier(event.Identifier),
+	})
+	if err != nil {
+		log.FromContext(ctx).Info("Skipping new resource: placement could not be resolved safely",
+			"resource", event.Identifier.String(), "reason", err.Error())
+		return upsertNoChange, nil
+	}
+
+	if placement.Kustomization != nil {
+		wb.appendKustomizationResource(ctx, event, placement)
+	}
+
+	if placement.Append {
+		return wb.appendNewDocument(ctx, event, placement.Path)
+	}
+	return wb.writeWholeFile(ctx, event, placement.Path)
+}
+
+// appendNewDocument adds a resource with no existing document as an additional
+// document in an existing accepted plaintext file (a "bundle" placement). Unlike
+// writeWholeFile it never replaces the file's existing bytes — every prior document
+// in the buffer survives untouched, byte for byte; LocateNew never returns an
+// Append placement for a sensitive resource (see its doc comment), so this path is
+// plaintext-only.
+func (wb *writeBatch) appendNewDocument(ctx context.Context, event Event, rel string) (upsertOutcome, error) {
+	content, err := wb.writer.buildContentForWrite(ctx, event)
+	if err != nil {
+		return upsertNoChange, err
+	}
+	buf := wb.buffer(rel)
+	buf.current = appendYAMLDocument(buf.current, content)
+	return upsertCreated, nil
+}
+
+// appendYAMLDocument appends newDoc as an additional "---\n"-separated document
+// after existing. existing is assumed to already be valid, accepted YAML (single- or
+// multi-document); newDoc is assumed to be exactly one well-formed document
+// (sanitize.MarshalToOrderedYAML's output, which always ends in a newline).
+func appendYAMLDocument(existing, newDoc []byte) []byte {
+	if len(existing) == 0 {
+		return newDoc
+	}
+	const separator = "---\n"
+	out := make([]byte, 0, len(existing)+len(separator)+len(newDoc))
+	out = append(out, existing...)
+	if out[len(out)-1] != '\n' {
+		out = append(out, '\n')
+	}
+	out = append(out, separator...)
+	out = append(out, newDoc...)
+	return out
+}
+
+// appendKustomizationResource adds the new document's path to its resources:
+// sequence as part of the same commit, so kustomize picks up the file createNew just
+// placed inside the kustomization's directory — F4's "add to the right kustomize
+// file." The entry is rendered relative to the kustomization's own directory
+// (resources: entries are relative to the kustomization file, not the repo root).
+// A failure here only drops the resources: entry (logged as a diagnostic); the
+// resource's own file is still written, since a human can add the missing entry by
+// hand and the next placement for that directory re-detects the gap.
+func (wb *writeBatch) appendKustomizationResource(
+	ctx context.Context,
+	event Event,
+	placement manifestanalyzer.PlacementResult,
+) {
+	k := placement.Kustomization
+	entry := placement.Path
+	if dir := path.Dir(k.Path); dir != "." {
+		if rel, err := filepath.Rel(dir, placement.Path); err == nil {
+			entry = filepath.ToSlash(rel)
+		}
+	}
+
+	buf := wb.buffer(k.Path)
+	if buf.current == nil {
+		return // the kustomization vanished within this batch; nothing to edit
+	}
+	res, diags := manifestedit.AppendKustomizationResource(k.Path, buf.current, entry)
+	switch res.Mode {
+	case manifestedit.EditPatched:
+		buf.current = res.Content
+		log.FromContext(ctx).Info("Added resources: entry for new file",
+			"kustomization", k.Path, "entry", entry, "resource", event.Identifier.String())
+	case manifestedit.EditNoChange:
+	case manifestedit.EditSkipped, manifestedit.EditDeleted, manifestedit.EditWholeReplace:
+		log.FromContext(ctx).Info("Could not add resources: entry for new file",
+			"kustomization", k.Path, "entry", entry, "resource", event.Identifier.String())
+		logManifestDiagnostics(ctx, diags)
+	}
 }
 
 // applyFieldPatch folds a subresource field-patch event into the batch: it locates the

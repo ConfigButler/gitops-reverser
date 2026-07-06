@@ -65,7 +65,7 @@ func applyResyncViaWorktree(
 ) (ResyncStats, bool) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil)
+	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil, nil)
 	require.NoError(t, err)
 	return stats, changed
 }
@@ -222,7 +222,7 @@ func TestResync_ScopedSweepDropsOnlyTargetType(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
 	scope := &schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", nil, scope)
+	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", nil, scope, nil)
 	require.NoError(t, err)
 	require.True(t, changed, "the removed type's document is swept")
 	assert.Equal(t, 1, stats.Deleted, "exactly the configmap is swept, not the secret")
@@ -274,9 +274,12 @@ func TestResync_FoldsCreateUpdateDropTogether(t *testing.T) {
 	_, dropErr := os.Stat(dropFull)
 	assert.True(t, os.IsNotExist(dropErr))
 
-	freshCanonical := filepath.Join(root, writer.filePathForIdentifier(desiredCM("fresh", "red").Resource))
-	_, freshErr := os.Stat(freshCanonical)
-	assert.NoError(t, freshErr, "the created resource lands at its canonical path")
+	// F4: with existing ConfigMap siblings ("keep", "drop") each in their own file
+	// under apps/, a genuinely new ConfigMap follows that established layout
+	// (Option C sibling inference) rather than the canonical GVR-tree path.
+	freshInferred := filepath.Join(root, "apps", "fresh.yaml")
+	_, freshErr := os.Stat(freshInferred)
+	assert.NoError(t, freshErr, "the created resource lands beside its siblings under apps/")
 }
 
 // A sensitive (SOPS) resource that the resync re-encrypts is counted as Updated, not
@@ -321,6 +324,7 @@ func TestResync_SensitiveUpdateCountsAsUpdatedNotSkipped(t *testing.T) {
 		worktree,
 		"",
 		[]manifestanalyzer.DesiredResource{desired},
+		nil,
 		nil,
 	)
 	require.NoError(t, err)

@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 )
 
 func (w *BranchWorker) buildGroupedPendingWrite(ctx context.Context, events []Event) (*PendingWrite, error) {
@@ -164,7 +167,44 @@ func (w *BranchWorker) resolveTargetMetadata(
 		Path:             target.Spec.Path,
 		BootstrapOptions: buildBootstrapOptions(encryptionConfig),
 		EncryptionConfig: encryptionConfig,
+		Placement:        resolvePlacementPolicy(target.Spec.Placement),
 	}, nil
+}
+
+// resolvePlacementPolicy converts the CRD's declared placement spec into the
+// package-local shape manifestanalyzer.LocateNew consumes. Kept as a plain field-
+// for-field copy (not a shared type) so manifestanalyzer stays free of any
+// Kubernetes API type dependency; see PlacementPolicy's doc comment.
+func resolvePlacementPolicy(spec *v1alpha3.GitTargetPlacementSpec) *manifestanalyzer.PlacementPolicy {
+	if spec == nil {
+		return nil
+	}
+	return &manifestanalyzer.PlacementPolicy{
+		Sensitive: manifestanalyzer.PlacementPolicyClass{
+			ByType:  spec.Sensitive.ByType,
+			Default: spec.Sensitive.Default,
+		},
+		Normal: manifestanalyzer.PlacementPolicyClass{
+			ByType:  spec.Normal.ByType,
+			Default: spec.Normal.Default,
+		},
+	}
+}
+
+// placementPolicyForBase finds the placement policy for the GitTarget that owns
+// base among targets. GitTarget paths never overlap, so at most one target can
+// match; a base with no matching target (e.g. an event whose target metadata could
+// not be resolved) gets no declared policy, falling through to sibling inference.
+func placementPolicyForBase(
+	targets map[pendingTargetKey]ResolvedTargetMetadata,
+	base string,
+) *manifestanalyzer.PlacementPolicy {
+	for _, md := range targets {
+		if md.Path == base {
+			return md.Placement
+		}
+	}
+	return nil
 }
 
 // MessageKind is derived from the pending write's shape.

@@ -127,7 +127,7 @@ func (w *BranchWorker) executePendingWrite(
 		return 0, plumbing.ZeroHash, fmt.Errorf("configure secret encryptor: %w", err)
 	}
 
-	anyChanges, err := w.applyPendingWriteEvents(ctx, repo, worktree, pendingWrite.Events)
+	anyChanges, err := w.applyPendingWriteEvents(ctx, repo, worktree, pendingWrite.Events, pendingWrite.Targets)
 	if err != nil {
 		return 0, plumbing.ZeroHash, err
 	}
@@ -162,6 +162,7 @@ func (w *BranchWorker) applyPendingWriteEvents(
 	repo *gogit.Repository,
 	worktree *gogit.Worktree,
 	events []Event,
+	targets map[pendingTargetKey]ResolvedTargetMetadata,
 ) (bool, error) {
 	// Stage path-scoped bootstrap files first, before any resource write, exactly as
 	// the per-event path did.
@@ -178,7 +179,13 @@ func (w *BranchWorker) applyPendingWriteEvents(
 	byBase := groupEventsByBase(events)
 	anyChanges := false
 	for _, base := range sortedBaseKeys(byBase) {
-		changed, err := w.flushEventsToWorktree(ctx, worktree, base, byBase[base])
+		changed, err := w.flushEventsToWorktree(
+			ctx,
+			worktree,
+			base,
+			byBase[base],
+			placementPolicyForBase(targets, base),
+		)
 		if err != nil {
 			return false, err
 		}

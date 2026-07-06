@@ -154,6 +154,10 @@ type ResolvedTargetMetadata struct {
 	Path             string
 	BootstrapOptions pathBootstrapOptions
 	EncryptionConfig *ResolvedEncryptionConfig
+	// Placement is the GitTarget's declared new-file placement policy (F4), resolved
+	// from spec.placement. Nil when the GitTarget declares none, in which case new
+	// resources are placed by sibling inference and then the canonical path.
+	Placement *manifestanalyzer.PlacementPolicy
 }
 
 // PendingWrite is the unit retained until a push succeeds.

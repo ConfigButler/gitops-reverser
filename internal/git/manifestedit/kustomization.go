@@ -4,6 +4,7 @@ package manifestedit
 
 import (
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,6 +36,36 @@ type KustomizationEdit struct {
 	Value string
 }
 
+// locateKustomizationDocument finds and decodes the sole document in a
+// single-document kustomization.yaml, ready for an editor to mutate root in place.
+// ok is false when the file cannot be safely edited — a multi-document file,
+// unparseable YAML, an empty document, or a non-mapping document — in which case
+// reason names why, for the caller's skip diagnostic.
+func locateKustomizationDocument(
+	path string,
+	content []byte,
+) ([]rawDoc, int, *yaml.Node, string, bool) {
+	if DocumentCount(content) != 1 {
+		return nil, -1, nil, fmt.Sprintf("kustomization %s is not a single-document file", path), false
+	}
+	docs := splitDocuments(string(content))
+	idx := -1
+	for i, d := range docs {
+		if !isBlankLine(d.body) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, -1, nil, fmt.Sprintf("kustomization %s holds no document", path), false
+	}
+	decoded, empty, err := decodeDoc(docs[idx].body)
+	if err != nil || empty || decoded.Kind != yaml.MappingNode {
+		return nil, -1, nil, fmt.Sprintf("kustomization %s is not an editable mapping document", path), false
+	}
+	return docs, idx, decoded, "", true
+}
+
 // PatchKustomization applies the edits to a single-document kustomization file,
 // preserving comments, key order, and framing exactly as the manifest patch path
 // does. All-or-nothing: any edit that cannot be applied (multi-document file,
@@ -47,26 +78,11 @@ func PatchKustomization(path string, content []byte, edits []KustomizationEdit) 
 			[]Diagnostic{diag(DiagWarning, Location{Path: path}, format, args...)}
 	}
 
-	if DocumentCount(content) != 1 {
-		return skip("kustomization %s is not a single-document file", path)
-	}
-	docs := splitDocuments(string(content))
-	idx := -1
-	for i, d := range docs {
-		if !isBlankLine(d.body) {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return skip("kustomization %s holds no document", path)
+	docs, idx, root, reason, ok := locateKustomizationDocument(path, content)
+	if !ok {
+		return skip("%s", reason)
 	}
 	target := docs[idx].body
-
-	root, empty, err := decodeDoc(target)
-	if err != nil || empty || root.Kind != yaml.MappingNode {
-		return skip("kustomization %s is not an editable mapping document", path)
-	}
 	for _, e := range edits {
 		if err := applyKustomizationEdit(root, e); err != nil {
 			return skip("kustomization %s: %v", path, err)
@@ -108,6 +124,58 @@ func applyKustomizationEdit(root *yaml.Node, e KustomizationEdit) error {
 	}
 	setOverrideScalar(field, e)
 	return nil
+}
+
+// AppendKustomizationResource adds one entry to an existing kustomization.yaml's
+// resources: sequence — the mechanism half of F4's "add to the right kustomize
+// file" (docs/design/manifest/version2/gittarget-new-file-placement-rules.md): a
+// new sibling file placed inside a kustomize-governed directory must also be named
+// in that directory's resources: list, or kustomize never renders it.
+//
+// It is idempotent: if entry already appears in the sequence, the call is a no-op
+// (EditNoChange), never a duplicate append. All-or-nothing like PatchKustomization:
+// a multi-document file, unparseable YAML, or a document with no existing
+// resources: sequence skips the whole call with a diagnostic — the writer never
+// invents a resources: key that is not already there, mirroring F1's "never
+// creates a kustomization file" boundary one level down (never creates a
+// resources: section either).
+func AppendKustomizationResource(path string, content []byte, entry string) (EditResult, []Diagnostic) {
+	skip := func(format string, args ...interface{}) (EditResult, []Diagnostic) {
+		return EditResult{Content: content, Mode: EditSkipped},
+			[]Diagnostic{diag(DiagWarning, Location{Path: path}, format, args...)}
+	}
+
+	docs, idx, root, reason, ok := locateKustomizationDocument(path, content)
+	if !ok {
+		return skip("%s", reason)
+	}
+	target := docs[idx].body
+
+	section := nodeMapGet(root, "resources")
+	if section == nil || section.Kind != yaml.SequenceNode {
+		return skip("kustomization %s has no resources sequence", path)
+	}
+	for _, item := range section.Content {
+		if item.Kind == yaml.ScalarNode && strings.TrimSpace(item.Value) == strings.TrimSpace(entry) {
+			return EditResult{Content: content, Mode: EditNoChange}, nil
+		}
+	}
+	section.Content = append(section.Content, &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!str",
+		Value: entry,
+	})
+
+	encoded, err := encodeNode(root)
+	if err != nil {
+		return skip("kustomization %s: re-encode failed: %v", path, err)
+	}
+	body := reskinDocument(target, string(encoded))
+	if body == target {
+		return EditResult{Content: content, Mode: EditNoChange}, nil
+	}
+	docs[idx].body = body
+	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
 }
 
 // setOverrideScalar writes the new value, keeping the value string-typed for the

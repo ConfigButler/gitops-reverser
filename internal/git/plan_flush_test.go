@@ -119,7 +119,7 @@ func TestPlanFlush_DeleteByGVROnlyFollowsMovedManifestViaMapper(t *testing.T) {
 		},
 		Operation: "DELETE",
 	}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{del})
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{del}, nil)
 	require.NoError(t, err)
 	assert.True(t, changed, "the moved manifest must be deleted via the resolved resource identity")
 	_, statErr := os.Stat(placedFull)
