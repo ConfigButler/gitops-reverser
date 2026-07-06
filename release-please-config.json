@@ -3,6 +3,7 @@
     ".": {
       "release-type": "simple",
       "package-name": "gitops-reverser",
+      "last-release-sha": "7a53779c6a8da0dbff72940011c34396a85530cc",
       "bump-minor-pre-major": true,
       "draft": true,
       "changelog-sections": [
