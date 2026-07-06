@@ -12,6 +12,10 @@ asserts the outcome.
   None`); the ambiguous case also emits an `ambiguous-namespace` diagnostic. These
   are the inputs the pending `RepositoryValid` refusal will fail the GitTarget on.
 
+The `images-overlay`, `replicas-overlay`, and `ambiguous-images` folders pin the
+F1 override-chain attribution the same way (`overrides_test.go`); see
+`docs/design/gitops-api/f1-images-replicas-edit-through.md`.
+
 See `docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md`
 (the "Supported and unsupported example folders" matrix). Add a new folder here
 whenever a new "can we support X?" question comes up.

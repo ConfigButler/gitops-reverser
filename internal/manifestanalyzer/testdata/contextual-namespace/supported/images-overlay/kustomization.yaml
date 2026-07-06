@@ -1,0 +1,8 @@
+# Single-root overlay pinning an image tag: the entry, not the source file,
+# owns the deployed tag.
+namespace: app
+resources:
+  - deployment.yaml
+images:
+  - name: ghcr.io/example/podinfo
+    newTag: "6.5.0"

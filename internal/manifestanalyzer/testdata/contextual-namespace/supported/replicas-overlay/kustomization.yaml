@@ -1,0 +1,7 @@
+# Single-root overlay pinning a replica count via the replicas transformer.
+namespace: app
+resources:
+  - base
+replicas:
+  - name: web
+    count: 3

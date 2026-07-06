@@ -1,0 +1,7 @@
+# Two render roots reach shared.yaml with different override chains: no chain
+# can be trusted, so no override routing applies (ambiguous-kustomize-overrides).
+resources:
+  - shared.yaml
+images:
+  - name: ghcr.io/example/podinfo
+    newTag: "1.0.0"

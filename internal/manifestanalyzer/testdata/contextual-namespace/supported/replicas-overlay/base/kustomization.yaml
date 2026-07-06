@@ -1,0 +1,5 @@
+resources:
+  - deployment.yaml
+images:
+  - name: ghcr.io/example/podinfo
+    newName: ghcr.io/example/podinfo-mirror

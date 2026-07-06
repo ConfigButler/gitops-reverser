@@ -232,7 +232,8 @@ func unsupportedKustomizeRefusals(store *ManifestStore) []AcceptanceIssue {
 			Path:          rd.Location.Path,
 			DocumentIndex: rd.Location.DocumentIndex,
 			Message: "kustomization " + rd.Location.Path + " uses an unsupported feature " +
-				"(generators/patches/components/helm/replacements/transformers/namePrefix/nameSuffix/remote bases); " +
+				"(generators/patches/components/helm/replacements/transformers/namePrefix/nameSuffix/remote bases) " +
+				"or malformed images/replicas overrides; " +
 				"the operator cannot map it back to editable source documents and will not write into this folder",
 		})
 	}
