@@ -123,6 +123,38 @@ func TestPlacement_BundleAppend_OmitsNamespaceInKustomizeContext(t *testing.T) {
 		"the new document must not break the bundle's namespace-omitted convention")
 }
 
+// A misconfigured declared template (missing {name}) makes two distinct secrets
+// collide on the same rendered path. createNew must skip the write rather than
+// crash or corrupt the existing file — the next event or resync retries once the
+// policy is fixed.
+func TestPlacement_SensitiveCollision_SkipsWithoutCrashing(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	existing := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: other\n  namespace: app\nsops:\n  version: \"3\"\n"
+	full := seedPlacedManifest(t, worktree, "secrets/app.sops.yaml", existing)
+	policy := &manifestanalyzer.PlacementPolicy{
+		Sensitive: manifestanalyzer.PlacementPolicyClass{Default: "secrets/{namespace}.sops.yaml"},
+	}
+
+	event := Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata":   map[string]interface{}{"name": "api-token", "namespace": "app"},
+		}},
+		Identifier: types.NewResourceIdentifier("", "v1", "secrets", "app", "api-token"),
+		Operation:  "CREATE",
+	}
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{})}
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{event}, policy)
+
+	require.NoError(t, err, "a placement conflict must be skipped, not returned as a batch error")
+	assert.False(t, changed, "no file should be written when placement cannot be resolved safely")
+
+	got, readErr := os.ReadFile(full)
+	require.NoError(t, readErr)
+	assert.Equal(t, existing, string(got), "the existing secret must survive byte-for-byte")
+}
+
 func TestPlacement_KustomizeEntryAppended_SameCommit(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
@@ -167,4 +199,80 @@ func TestPlacement_KustomizeEntryIdempotent_OnRepeatedApply(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(string(kust), "debug-toolbox.yaml"),
 		"the resources: entry must appear exactly once")
+}
+
+// A kustomization whose resources: field is malformed (not a sequence) is still
+// accepted by the analyzer (only specific disallowed keys, not resources: shape,
+// disqualify a kustomization) — so the writer must still place the resource's own
+// file, but the resources: entry add is skipped rather than corrupting the
+// kustomization, leaving it exactly as it was for a human to fix.
+func TestPlacement_KustomizeEntryAppendSkipped_MalformedResourcesField(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	kustYAML := "namespace: app\nresources: not-a-list\n"
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml", kustYAML)
+
+	changed := applyEventsWithPolicy(t, worktree, nil, newConfigMapEvent("cache", "app"))
+	require.True(t, changed, "the new resource's own file must still be written")
+
+	_, err := os.Stat(filepath.Join(root, "overlays/test/cache.yaml"))
+	require.NoError(t, err, "the resource itself is written even though the kustomize entry could not be added")
+
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	// Byte-exact, not YAMLEq: the guarantee under test is that a skipped edit
+	// returns the original content untouched, not merely a semantically
+	// equivalent one.
+	assert.Equal(t, kustYAML, string(kust), //nolint:testifylint
+		"a malformed resources: field must be left untouched, not corrupted")
+}
+
+func newTestWriteBatch(t *testing.T) *writeBatch {
+	t.Helper()
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	return newWriteBatch(context.Background(), writer, nil, manifestanalyzer.FolderScan{}, nil)
+}
+
+func TestAppendYAMLDocument(t *testing.T) {
+	if got := appendYAMLDocument(nil, []byte("a: 1\n")); string(got) != "a: 1\n" {
+		t.Errorf("empty existing should return newDoc verbatim, got %q", got)
+	}
+	if got := appendYAMLDocument([]byte("a: 1"), []byte("b: 2\n")); string(got) != "a: 1\n---\nb: 2\n" {
+		t.Errorf("got %q, want a newline inserted before the separator when existing lacks a trailing one", got)
+	}
+	if got := appendYAMLDocument([]byte("a: 1\n"), []byte("b: 2\n")); string(got) != "a: 1\n---\nb: 2\n" {
+		t.Errorf("got %q, want no extra blank line when existing already ends in a newline", got)
+	}
+}
+
+func TestAppendNewDocument_BuildContentErrorIsPropagated(t *testing.T) {
+	wb := newTestWriteBatch(t)
+	event := Event{
+		Object:     nil,
+		Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "app", "x"),
+	}
+
+	_, err := wb.appendNewDocument(context.Background(), event, "all.yaml")
+
+	require.Error(t, err, "a nil object cannot be marshaled, and that error must not be swallowed")
+}
+
+// If the kustomization file was removed by an earlier delete in the same batch
+// (an edge case that should not happen in practice, since kustomization.yaml is
+// a retained build directive, but the writer must never panic on it),
+// appendKustomizationResource must no-op rather than dereference a nil buffer.
+func TestAppendKustomizationResource_VanishedBuffer_NoPanic(t *testing.T) {
+	wb := newTestWriteBatch(t)
+	kustPath := "overlays/test/kustomization.yaml"
+	wb.buffers[kustPath] = &fileBuffer{rel: kustPath, current: nil}
+	placement := manifestanalyzer.PlacementResult{
+		Path:          "overlays/test/new.yaml",
+		Kustomization: &manifestanalyzer.KustomizationInfo{Path: kustPath, Resources: []string{"deployment.yaml"}},
+	}
+	event := Event{Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "app", "new")}
+
+	assert.NotPanics(t, func() {
+		wb.appendKustomizationResource(context.Background(), event, placement)
+	})
+	assert.Nil(t, wb.buffers[kustPath].current, "a vanished buffer must not be resurrected")
 }

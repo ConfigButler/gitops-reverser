@@ -3,7 +3,16 @@
 package controller
 
 import (
+	"context"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -111,4 +120,52 @@ func TestValidPlacementTypeKeySyntax(t *testing.T) {
 			t.Errorf("validPlacementTypeKeySyntax(%q) = %v, want %v", tc.key, got, tc.want)
 		}
 	}
+}
+
+// TestEvaluateValidatedGate_InvalidPlacementPolicy proves the wiring, not just the
+// pure function: an otherwise-valid GitTarget (provider found, branch allowed, no
+// path conflict) whose declared placement policy is invalid must fail the
+// Validated gate with reason InvalidConfig, not just make validatePlacementPolicy
+// return false in isolation.
+func TestEvaluateValidatedGate_InvalidPlacementPolicy(t *testing.T) {
+	const ns = "default"
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha3.AddToScheme(scheme))
+
+	provider := &configbutleraiv1alpha3.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "provider-a", Namespace: ns},
+		Spec: configbutleraiv1alpha3.GitProviderSpec{
+			AllowedBranches: []string{"main"},
+		},
+	}
+	target := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: ns},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "provider-a"},
+			Branch:      "main",
+			Path:        "apps",
+			Placement: &configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{
+					Default: "{bogus}/all.yaml",
+				},
+			},
+		},
+	}
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, target).Build()
+	reconciler := &GitTargetReconciler{Client: client}
+
+	validated, msg, result, err := reconciler.evaluateValidatedGate(context.Background(), target, ns)
+
+	require.NoError(t, err)
+	assert.Nil(t, result)
+	assert.False(t, validated)
+	assert.Contains(t, msg, GitTargetReasonInvalidConfig)
+
+	cond := apimeta.FindStatusCondition(target.Status.Conditions, GitTargetConditionValidated)
+	require.NotNil(t, cond, "Validated condition must be set")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, GitTargetReasonInvalidConfig, cond.Reason)
+	assert.Contains(t, cond.Message, "bogus")
 }

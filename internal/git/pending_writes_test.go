@@ -229,3 +229,30 @@ func TestExecutor_PendingWrites_PreservesArrivalOrder(t *testing.T) {
 	assert.Equal(t, "[UPDATE] v1/configmaps/c", second.Message)
 	assert.Equal(t, "[UPDATE] v1/configmaps/a", first.Message)
 }
+
+func TestResolvePlacementPolicy_NilSpec(t *testing.T) {
+	if got := resolvePlacementPolicy(nil); got != nil {
+		t.Errorf("resolvePlacementPolicy(nil) = %+v, want nil", got)
+	}
+}
+
+func TestResolvePlacementPolicy_ConvertsFieldForField(t *testing.T) {
+	spec := &configv1alpha3.GitTargetPlacementSpec{
+		Sensitive: configv1alpha3.GitTargetPlacementClass{
+			ByType:  map[string]string{"v1/secrets": "{namespace}/secret-{name}.sops.yaml"},
+			Default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml",
+		},
+		Normal: configv1alpha3.GitTargetPlacementClass{
+			ByType:  map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
+			Default: "all.yaml",
+		},
+	}
+
+	got := resolvePlacementPolicy(spec)
+
+	require.NotNil(t, got)
+	assert.Equal(t, spec.Sensitive.ByType, got.Sensitive.ByType)
+	assert.Equal(t, spec.Sensitive.Default, got.Sensitive.Default)
+	assert.Equal(t, spec.Normal.ByType, got.Normal.ByType)
+	assert.Equal(t, spec.Normal.Default, got.Normal.Default)
+}

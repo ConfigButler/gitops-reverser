@@ -68,9 +68,9 @@ func newConfigMapRequest(name, namespace string) PlacementRequest {
 	}
 }
 
-func newSecretRequest(name, namespace string) PlacementRequest {
+func newSecretRequest(name string) PlacementRequest {
 	return PlacementRequest{
-		Identifier: types.NewResourceIdentifier("", "v1", "secrets", namespace, name),
+		Identifier: types.NewResourceIdentifier("", "v1", "secrets", "app", name),
 		Kind:       "Secret",
 		Sensitive:  true,
 	}
@@ -202,7 +202,7 @@ func TestLocateNew_Sensitive_NeverJoinsPlaintextBundle(t *testing.T) {
 		"all.yaml": {Data: []byte(configMapYAML("a", "app") + "---\n" + configMapYAML("b", "app"))},
 	}
 	store := placementStore(t, fsys)
-	req := newSecretRequest("api-token", "app")
+	req := newSecretRequest("api-token")
 
 	res, err := LocateNew(store, nil, req)
 	if err != nil {
@@ -219,7 +219,7 @@ func TestLocateNew_Sensitive_JoinsSensitiveSiblingDirectory(t *testing.T) {
 		"secrets/app/db.sops.yaml": {Data: []byte(secretYAML("db", "app"))},
 	}
 	store := placementStore(t, fsys)
-	req := newSecretRequest("api-token", "app")
+	req := newSecretRequest("api-token")
 
 	res, err := LocateNew(store, nil, req)
 	if err != nil {
@@ -368,7 +368,7 @@ func TestLocateNew_SensitiveCollision_Errors(t *testing.T) {
 		},
 	}
 
-	_, err := LocateNew(store, policy, newSecretRequest("api-token-2", "app"))
+	_, err := LocateNew(store, policy, newSecretRequest("api-token-2"))
 	if err == nil {
 		t.Fatalf("expected an error placing a second identity onto the same sensitive path")
 	}
@@ -499,6 +499,69 @@ func TestRenderPlacementTemplate(t *testing.T) {
 	}
 }
 
+func TestPlacementVars_GroupedClusterScoped(t *testing.T) {
+	req := PlacementRequest{
+		Identifier: types.NewResourceIdentifier("rbac.authorization.k8s.io", "v1", "clusterroles", "", "admin"),
+		Kind:       "ClusterRole",
+	}
+	vars := placementVars(req)
+	if vars["scope"] != "cluster" || vars["namespaceOrCluster"] != "cluster" {
+		t.Errorf("got scope=%q namespaceOrCluster=%q, want both \"cluster\" for a cluster-scoped resource",
+			vars["scope"], vars["namespaceOrCluster"])
+	}
+	if want := "rbac.authorization.k8s.io/v1"; vars["apiVersion"] != want {
+		t.Errorf("apiVersion = %q, want %q for a grouped resource", vars["apiVersion"], want)
+	}
+}
+
+// A sensitive and a normal document of the SAME type (e.g. one ConfigMap
+// encrypted as .sops.yaml, one plain) must not be conflated: cohortMembers must
+// skip the mismatched-sensitivity sibling rather than only relying on the type
+// filter (which cannot tell them apart, since sensitivity is an encryption fact,
+// not a type fact).
+func TestLocateNew_MixedSensitivityConfigMapsInSameNamespace_NeverConflated(t *testing.T) {
+	fsys := fstest.MapFS{
+		"normal.yaml": {Data: []byte(configMapYAML("a", "app") + "---\n" + configMapYAML("b", "app"))},
+		"secret.sops.yaml": {
+			Data: []byte(
+				"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: sensitive-cm\n  namespace: app\nsops:\n  version: \"3\"\n",
+			),
+		},
+	}
+	store := placementStore(t, fsys)
+
+	res, err := LocateNew(store, nil, newConfigMapRequest("cache", "app"))
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	want := "normal.yaml"
+	if res.Path != want || !res.Append {
+		t.Fatalf("got %+v, want the new normal ConfigMap appended to its normal bundle %q, "+
+			"never to the encrypted sibling", res, want)
+	}
+}
+
+// A file tolerated despite a non-editable construct (e.g. a YAML anchor) must
+// never be joined — classifyCohortLocations excludes it from both bundle and
+// singleton candidacy, so a genuinely new sibling falls through past it instead
+// of silently landing beside content the writer cannot vouch for.
+func TestLocateNew_TaintedSiblingNeverJoined(t *testing.T) {
+	tainted := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: anchored\n  namespace: app\n" +
+		"data: &d\n  color: blue\nextra:\n  <<: *d\n"
+	fsys := fstest.MapFS{
+		"tainted.yaml": {Data: []byte(tainted)},
+	}
+	store := placementStore(t, fsys)
+
+	res, err := LocateNew(store, nil, newConfigMapRequest("cache", "app"))
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Path == "tainted.yaml" || res.Source != PlacementSourceCanonical {
+		t.Fatalf("got %+v, want the tainted file excluded and canonical fallback used", res)
+	}
+}
+
 func TestRenderPlacementTemplate_UnknownVariable(t *testing.T) {
 	_, err := RenderPlacementTemplate("{namespace}/{bogus}.yaml", map[string]string{"namespace": "default"})
 	if err == nil {
@@ -547,5 +610,127 @@ func TestPlacementTypeKey(t *testing.T) {
 	}
 	if got := PlacementTypeKey("apps", "v1", "deployments"); got != "apps/v1/deployments" {
 		t.Errorf("grouped key = %q, want apps/v1/deployments", got)
+	}
+}
+
+func TestValidPlacementTemplateSyntax(t *testing.T) {
+	if err := ValidPlacementTemplateSyntax("{namespace}/{name}.yaml"); err != nil {
+		t.Errorf("a template built only from known variables must be valid: %v", err)
+	}
+	if err := ValidPlacementTemplateSyntax("{namespace}/{bogus}.yaml"); err == nil {
+		t.Errorf("expected an error for the unknown variable {bogus}")
+	}
+}
+
+// Two supported kustomizations under the scanned root is ambiguous: neither can
+// safely be assumed to be "the one" the GitTarget is about, so a genuinely new
+// type falls through to canonical rather than guessing.
+func TestLocateNew_KustomizeRoot_AmbiguousWithTwoSupported(t *testing.T) {
+	fsys := fstest.MapFS{
+		"overlays/a/kustomization.yaml": {Data: []byte("namespace: a\nresources:\n  - deployment.yaml\n")},
+		"overlays/a/deployment.yaml": {Data: []byte(
+			"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: a\n",
+		)},
+		"overlays/b/kustomization.yaml": {Data: []byte("namespace: b\nresources:\n  - deployment.yaml\n")},
+		"overlays/b/deployment.yaml": {Data: []byte(
+			"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: b\n",
+		)},
+	}
+	store := placementStore(t, fsys)
+	req := newConfigMapRequest("cache", "a")
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
+		t.Fatalf("got %+v, want canonical fallback: two supported kustomizations is ambiguous", res)
+	}
+}
+
+// The kustomize-root fallback must also work for a sensitive resource: no
+// existing sibling of that type, exactly one supported kustomization, no
+// namespace: transformer set (so the sensitive path keeps its explicit namespace).
+func TestLocateNew_KustomizeRootSensitive(t *testing.T) {
+	fsys := fstest.MapFS{
+		"overlays/test/kustomization.yaml": {Data: []byte("resources:\n  - deployment.yaml\n")},
+		"overlays/test/deployment.yaml": {Data: []byte(
+			"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: app\n",
+		)},
+	}
+	store := placementStore(t, fsys)
+	req := newSecretRequest("api-token")
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	want := "overlays/test/api-token.sops.yaml"
+	if res.Path != want || res.NamespaceInherited {
+		t.Fatalf("got %+v, want %q with no namespace transformer set", res, want)
+	}
+}
+
+// A declared template with an unknown variable is a misconfiguration LocateNew
+// must not crash or write on; it falls through to sibling inference / canonical,
+// exactly as if no declared template had matched.
+func TestLocateNew_DeclaredTemplateUnknownVariable_FallsThrough(t *testing.T) {
+	store := placementStore(t, fstest.MapFS{})
+	policy := &PlacementPolicy{
+		Normal: PlacementPolicyClass{Default: "{bogus}/all.yaml"},
+	}
+	req := newConfigMapRequest("cache", "app")
+
+	res, err := LocateNew(store, policy, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
+		t.Fatalf("got %+v, want canonical fallback when the declared template is invalid", res)
+	}
+}
+
+func TestFileIsAppendSafe(t *testing.T) {
+	if fileIsAppendSafe(nil) {
+		t.Error("a nil FileModel must never be append-safe")
+	}
+	clean := &FileModel{Documents: []*DocumentModel{{Cause: DocumentCause{Kind: CauseNone}}}}
+	if !fileIsAppendSafe(clean) {
+		t.Error("a file with only cleanly editable documents must be append-safe")
+	}
+	sensitive := &FileModel{Documents: []*DocumentModel{{Cause: DocumentCause{Kind: CauseEncrypted}}}}
+	if !fileIsAppendSafe(sensitive) {
+		t.Error("an ordinary encrypted document must not be treated as tainted")
+	}
+	tainted := &FileModel{Documents: []*DocumentModel{
+		{Cause: DocumentCause{Kind: CauseNone}},
+		{Cause: DocumentCause{Kind: CauseNonEditable}},
+	}}
+	if fileIsAppendSafe(tainted) {
+		t.Error("a file holding a non-editable (e.g. anchor-using) document must never be append-safe")
+	}
+}
+
+func TestSpansMultipleNamespaces(t *testing.T) {
+	if spansMultipleNamespaces(nil) {
+		t.Error("no members cannot span multiple namespaces")
+	}
+	unresolved := []*DocumentModel{{ResourceIdentity: nil}}
+	if spansMultipleNamespaces(unresolved) {
+		t.Error("a document with no resolved ResourceIdentity contributes no namespace")
+	}
+	oneNamespace := []*DocumentModel{
+		{ResourceIdentity: &types.ResourceIdentifier{Namespace: "a"}},
+		{ResourceIdentity: &types.ResourceIdentifier{Namespace: "a"}},
+	}
+	if spansMultipleNamespaces(oneNamespace) {
+		t.Error("members sharing one namespace do not span multiple namespaces")
+	}
+	twoNamespaces := []*DocumentModel{
+		{ResourceIdentity: &types.ResourceIdentifier{Namespace: "a"}},
+		{ResourceIdentity: &types.ResourceIdentifier{Namespace: "b"}},
+	}
+	if !spansMultipleNamespaces(twoNamespaces) {
+		t.Error("members in two distinct namespaces must span multiple namespaces")
 	}
 }
