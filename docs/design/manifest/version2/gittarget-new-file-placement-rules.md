@@ -1,6 +1,8 @@
 # GitTarget new-file placement rules
 
-> Status: proposed
+> Status: implemented (F4 v1 — declared policy (Option B) + sibling inference
+> (Option C) steps 1/2/4, plus the kustomize-root fallback documented below;
+> Option A and step 3 remain deferred as this document recommends)
 > Captured: 2026-06-05
 > Related:
 > [file-agnostic-placement.md](../file-agnostic-placement.md) — **the vision Option C serves**,
@@ -28,10 +30,13 @@ A and B both make placement a *declared CRD policy*. C makes it a *continuation
 of the layout already in the repo* — zero new API surface. They are not rivals;
 they layer:
 
-- **Option B is the chosen declared API.** When a user wants to *prescribe* a
-  layout, the nested type-map (`placement.sensitive.byType` / `.normal.byType` +
-  defaults) is the surface to reach for — small, exact, easy to validate. Ordered
-  rules (A) stay a later escape hatch only if the type map proves too limiting.
+- **Option B is the chosen declared API family.** When a user wants to
+  *prescribe* a layout, an exact type-map plus default is the surface to reach for
+  — small, exact, easy to validate. The open surface choice is whether the normal
+  class is explicitly nested (`placement.normal.byType`) or implicit at the top
+  level (`placement.byType`) with `placement.sensitive` as the guarded override
+  (Option B1). Ordered rules (A) stay a later escape hatch only if the type map
+  proves too limiting.
 - **Option C is the default underneath it.** With no policy, placement *follows the
   layout already in the repo*; on an empty repo it falls through to today's
   canonical path, so default behaviour is byte-identical to now. C is what makes
@@ -297,12 +302,88 @@ This nested version is probably the cleaner type-map API. It keeps the
 sensitive/normal split obvious and leaves room for class-level fields later, such as
 `allowMultiDocument`, without inventing new top-level names.
 
+### Option B1: one normal surface plus a sensitive override
+
+There is a smaller variant of the nested type-map API that may be the better
+first surface: make the common, plaintext placement policy the top-level shape,
+and keep `sensitive` only as the guarded override.
+
+```yaml
+placement:
+  byType:
+    v1/configmaps: "{namespace}/configmaps.yaml"
+  default: "all.yaml"
+  sensitive:
+    byType:
+      v1/secrets: "{namespace}/secret-{name}.sops.yaml"
+```
+
+```go
+type GitTargetPlacementSpec struct {
+    ByType    map[string]string       `json:"byType,omitempty"`
+    Default   string                  `json:"default,omitempty"`
+    Sensitive GitTargetPlacementClass `json:"sensitive,omitempty"`
+}
+
+type GitTargetPlacementClass struct {
+    ByType  map[string]string `json:"byType,omitempty"`
+    Default string            `json:"default,omitempty"`
+}
+```
+
+The semantics are:
+
+- classify the resource first;
+- sensitive resources consult `placement.sensitive.byType`, then
+  `placement.sensitive.default`, then sibling inference, then the built-in secure
+  canonical SOPS fallback;
+- normal resources consult `placement.byType`, then `placement.default`, then
+  sibling inference, then the built-in canonical plaintext fallback;
+- a top-level `default` never applies to sensitive resources;
+- any supplied sensitive template is still strictly validated as SOPS and
+  identity-complete.
+
+This makes the ordinary case read like what users mean: "put ConfigMaps here,
+and put everything else normal in `all.yaml`." They do not have to learn a
+`normal` wrapper before they can express the common case, and they do not feel
+invited to provide two defaults. The sensitive block remains visible only where
+the user wants to override the secure default.
+
+Pros:
+
+- fewer concepts in the common path: `placement.byType` and `placement.default`
+  are enough for normal resources;
+- the broad default is safer to explain, because it is explicitly a normal-only
+  default rather than a default that needs a hidden exception for Secrets;
+- sensitive placement remains hard-split and cannot be caught by a plaintext
+  bundle such as `all.yaml`;
+- it still leaves room for sensitive-specific fields later without putting them
+  on every placement class.
+
+Cons:
+
+- the shape is slightly asymmetric: normal is implicit at the top level, while
+  sensitive has an explicit block;
+- future class-level fields for normal resources need top-level names, while the
+  sensitive class has its own namespace;
+- users who expect parallel classes may ask why there is `sensitive` but no
+  `normal`;
+- migration from the fully nested shape would require either accepting both
+  shapes for a while or picking this before the field ships.
+
+My current leaning is that **B1 is the best declared API** if we are still free to
+change the CRD surface. It keeps the security property that motivated the split,
+but removes the awkward "two defaults" feel from the day-one UX. The fully nested
+shape remains cleaner from a type-system symmetry point of view, but B1 is likely
+easier for users to read and write.
+
 The validation rules are almost the same as for ordered rules:
 
 - omitted `placement.sensitive.default` uses the built-in secure canonical SOPS
   fallback;
-- omitted `placement.normal.default` uses the built-in canonical plaintext
-  fallback;
+- omitted normal default (`placement.default` in B1, or
+  `placement.normal.default` in the fully nested shape) uses sibling inference
+  and then the built-in canonical plaintext fallback;
 - every `byType` key must parse as a valid resolved type key;
 - every referenced type should be served and watched by the GitTarget, or at
   least reported as unused policy;
@@ -321,8 +402,10 @@ better first API than ordered rules.
 
 My current preference is:
 
-1. ship the nested type-map (B) as **the** declared API — it is the smallest
-   surface that covers the real "this type here, everything else there" need;
+1. ship a type-map (B) as **the** declared API, preferably the B1 shape if the
+   CRD surface is still malleable — it is the smallest surface that covers the
+   real "this type here, everything else normal there, keep sensitive guarded"
+   need;
 2. ship Option C (sibling inference, below) as the **default** that runs when B is
    absent or silent for a resource, so an unconfigured target follows the repo's
    own layout instead of forcing canonical;
@@ -412,6 +495,33 @@ A freshly bootstrapped repo has no siblings, so the first resource of each kind
 lands on canonical `ToGitPath()` — **byte-identical to today.** From then on the
 layout propagates itself. A brand-new target behaves exactly as it does now; the
 power only appears once a human (or a prior import) has established any layout.
+
+**Amendment, decided during F4 implementation: a kustomize-root fallback sits
+between "no sibling match" and true canonical.** The rule above is exactly right
+for a flat or already-populated folder, but it silently breaks the moment the
+GitTarget's one kustomization-managed folder receives its *first* resource of a
+brand-new type: canonical is a `{group}/{version}/{resource}/{namespace}/{name}.yaml`
+tree the kustomization's `resources:` graph can never reach, so the new file
+would land outside the very folder it was meant to join — precisely what this
+document exists to prevent, just for a type instead of a whole folder.
+
+So, when steps 1/2 (sibling inference) both miss **and** the scanned subtree is
+governed by exactly one supported kustomization, the new resource is placed
+beside that kustomization's other files (and gets a `resources:` entry — see
+`kustomize-support-boundary-and-product-model.md` and
+`unreflectable-edits-and-write-gating.md` for the product-level "add to the right
+kustomize file" framing) instead of falling to canonical. This is deliberately
+narrower than the shelved step 3 (same namespace, any type) above: it never joins
+an existing bundle, and it only ever fires when there is exactly one supported
+kustomization for the whole GitTarget to be about — the destination follows from
+there being one root, not from picking the largest matching cohort — so it cannot
+become the "sink that swallows every new type" risk (P5) step 3 raised. More than
+one supported kustomization under the scanned root is ambiguous and falls through
+to canonical rather than guessing which root the new resource belongs to.
+
+True canonical — no sibling of the matching type or kind, and no single
+kustomization root to fall back to — remains exactly as described above: a
+brand-new, unmanaged target behaves byte-identical to today.
 
 ### Determinism and ambiguity
 
@@ -927,9 +1037,10 @@ A new ConfigMap in a *new* namespace `billing` arrives:
   so the new namespace needs no new segment.
 
 Nothing was configured; the layout the user already had simply continued. The same
-target with `placement.normal.byType: { "v1/configmaps": "{namespace}/configmaps.yaml" }`
-(Option B) would instead route ConfigMaps into per-namespace files — B overriding
-C where the user has an opinion.
+target with `placement.byType: { "v1/configmaps": "{namespace}/configmaps.yaml" }`
+in the B1 shape (or `placement.normal.byType` in the fully nested shape) would
+instead route ConfigMaps into per-namespace files — B overriding C where the user
+has an opinion.
 
 ## Keeping it small
 
@@ -942,7 +1053,8 @@ inside these limits:
   extend to unseen namespaces — P4);
 - C infers **directory + bundle-vs-file only** — never a filename or path-segment
   template (that is B's job);
-- separate sensitive and normal rule lists;
+- keep sensitive placement hard-split from normal placement, whether normal is a
+  top-level B1 surface or an explicitly nested class;
 - prefer exact type-map overrides plus defaults unless ordered matching proves
   necessary;
 - when ordered matching exists, keep it first-match-wins only;
@@ -962,9 +1074,12 @@ layout.
 ## Implementation sketch
 
 1. Settle the surface: **B is the declared API, C is the default.**
-   - B (chosen): nested type map (`placement.sensitive.byType`,
-     `placement.sensitive.default`, `placement.normal.byType`,
-     `placement.normal.default`);
+   - B1 (preferred if still possible): top-level normal type map
+     (`placement.byType`, `placement.default`) plus `placement.sensitive` for
+     sensitive overrides;
+   - B nested (fallback if symmetry wins): nested type map
+     (`placement.sensitive.byType`, `placement.sensitive.default`,
+     `placement.normal.byType`, `placement.normal.default`);
    - C (default): no API surface — it resolves against the content-derived store;
    - A: ordered `sensitiveRules` / `normalRules`, a later escape hatch only.
 2. Add the CRD field:

@@ -276,3 +276,136 @@ func TestAppendKustomizationResource_VanishedBuffer_NoPanic(t *testing.T) {
 	})
 	assert.Nil(t, wb.buffers[kustPath].current, "a vanished buffer must not be resurrected")
 }
+
+// Two new resources that both render to the same brand-new declared path (a
+// collision LocateNew cannot see coming, since it only consults the pre-batch
+// store) must form one deterministic multi-document file — never silently
+// overwrite one another — regardless of which event the writer processes
+// first. This is the design doc's "if several new plaintext resources in one
+// plan render to the same path, write a multi-document file in deterministic
+// resource-identity order".
+func TestPlacement_ColdBundleCollision_BothSurviveRegardlessOfOrder(t *testing.T) {
+	policy := &manifestanalyzer.PlacementPolicy{
+		Normal: manifestanalyzer.PlacementPolicyClass{Default: "all.yaml"},
+	}
+	first := newConfigMapEvent("alpha", "app")
+	second := newConfigMapEvent("beta", "app")
+
+	forward := newWorktreeForTest(t)
+	changed := applyEventsWithPolicy(t, forward, policy, first, second)
+	require.True(t, changed)
+	forwardBody, err := os.ReadFile(filepath.Join(forward.Filesystem.Root(), "all.yaml"))
+	require.NoError(t, err)
+
+	reversed := newWorktreeForTest(t)
+	changed = applyEventsWithPolicy(t, reversed, policy, second, first)
+	require.True(t, changed)
+	reversedBody, err := os.ReadFile(filepath.Join(reversed.Filesystem.Root(), "all.yaml"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(forwardBody), "name: alpha", "the first resource must survive")
+	assert.Contains(t, string(forwardBody), "name: beta", "the second resource must survive")
+	assert.Equal(t, 2, strings.Count(string(forwardBody), "kind: ConfigMap"), "both must land as separate documents")
+	assert.Equal(t, string(forwardBody), string(reversedBody),
+		"the resulting file must not depend on event processing order")
+}
+
+// A third collision on the same batch-cold path must also survive and stay
+// sorted, proving the fix generalizes beyond exactly two resources.
+func TestPlacement_ColdBundleCollision_ThreeResourcesAllSurvive(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	policy := &manifestanalyzer.PlacementPolicy{
+		Normal: manifestanalyzer.PlacementPolicyClass{Default: "all.yaml"},
+	}
+
+	changed := applyEventsWithPolicy(t, worktree, policy,
+		newConfigMapEvent("charlie", "app"),
+		newConfigMapEvent("alpha", "app"),
+		newConfigMapEvent("bravo", "app"),
+	)
+	require.True(t, changed)
+
+	got, err := os.ReadFile(filepath.Join(worktree.Filesystem.Root(), "all.yaml"))
+	require.NoError(t, err)
+	body := string(got)
+	assert.Equal(t, 3, strings.Count(body, "kind: ConfigMap"))
+	// Sorted by resource identity ("…/app/alpha" < "…/app/bravo" < "…/app/charlie"),
+	// independent of the arrival order above.
+	assert.Less(t, strings.Index(body, "name: alpha"), strings.Index(body, "name: bravo"))
+	assert.Less(t, strings.Index(body, "name: bravo"), strings.Index(body, "name: charlie"))
+}
+
+// A sensitive resource must never be merged into a shared file, even when the
+// collision is with another new resource within the same batch (not a
+// pre-existing file, which the analyzer-level test already covers).
+func TestPlacement_ColdBundleCollision_SensitiveNeverMerged(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	policy := &manifestanalyzer.PlacementPolicy{
+		Sensitive: manifestanalyzer.PlacementPolicyClass{Default: "secrets/{namespace}.sops.yaml"},
+	}
+	newSecretEvent := func(name string) Event {
+		return Event{
+			Object: &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Secret",
+				"metadata":   map[string]interface{}{"name": name, "namespace": "app"},
+			}},
+			Identifier: types.NewResourceIdentifier("", "v1", "secrets", "app", name),
+			Operation:  "CREATE",
+		}
+	}
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	writer.setEncryptor(&stubEncryptor{result: []byte(
+		"apiVersion: v1\nkind: Secret\nmetadata:\n  name: first\n  namespace: app\n" +
+			"data:\n  k: ENC[AES256,data:x,iv:y,tag:z]\nsops:\n  version: 3.9.0\n",
+	)}, "test-scope")
+	w := &BranchWorker{contentWriter: writer}
+
+	changed, err := w.flushEventsToWorktree(
+		context.Background(), worktree, "", []Event{newSecretEvent("first"), newSecretEvent("second")}, policy,
+	)
+
+	require.NoError(t, err)
+	assert.True(t, changed, "the first secret must still be written")
+
+	got, readErr := os.ReadFile(filepath.Join(worktree.Filesystem.Root(), "secrets/app.sops.yaml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(got), "kind: Secret"),
+		"the second secret must be skipped, never merged into the first's file")
+}
+
+// Resync (M8) folds its whole desired snapshot through the same createNew path
+// as steady-state events, so the same brand-new-path collision can occur there
+// too — proving the fix covers both entry points the design doc calls out.
+func TestPlacement_ColdBundleCollision_ViaResync(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	policy := &manifestanalyzer.PlacementPolicy{
+		Normal: manifestanalyzer.PlacementPolicyClass{Default: "all.yaml"},
+	}
+	desired := []manifestanalyzer.DesiredResource{
+		{
+			Resource: types.NewResourceIdentifier("", "v1", "configmaps", "app", "alpha"),
+			Object: &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "v1", "kind": "ConfigMap",
+				"metadata": map[string]interface{}{"name": "alpha", "namespace": "app"},
+			}},
+		},
+		{
+			Resource: types.NewResourceIdentifier("", "v1", "configmaps", "app", "beta"),
+			Object: &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "v1", "kind": "ConfigMap",
+				"metadata": map[string]interface{}{"name": "beta", "namespace": "app"},
+			}},
+		},
+	}
+
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	_, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil, policy)
+
+	require.NoError(t, err)
+	assert.True(t, changed)
+
+	got, readErr := os.ReadFile(filepath.Join(worktree.Filesystem.Root(), "all.yaml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, 2, strings.Count(string(got), "kind: ConfigMap"), "both resync creates must survive")
+}

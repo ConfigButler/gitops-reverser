@@ -734,3 +734,73 @@ func TestSpansMultipleNamespaces(t *testing.T) {
 		t.Error("members in two distinct namespaces must span multiple namespaces")
 	}
 }
+
+func TestValidateResolvedPlacementPath(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		ok   bool
+	}{
+		{"clean relative yaml", "overlays/test/cache.yaml", true},
+		{"clean relative yml", "overlays/test/cache.yml", true},
+		{"sops path is a yaml path too", "secrets/app/db.sops.yaml", true},
+		{"empty", "", false},
+		{"parent traversal", "../outside.yaml", false},
+		{"nested parent traversal", "overlays/../../outside.yaml", false},
+		{"absolute", "/etc/passwd", false},
+		{"backslash separator", "overlays\\test\\cache.yaml", false},
+		{"not clean (double slash)", "overlays//cache.yaml", false},
+		{"no file name", "overlays/test/", false},
+		{"bad suffix", "overlays/test/cache.txt", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateResolvedPlacementPath(tc.path)
+			if (err == nil) != tc.ok {
+				t.Errorf("ValidateResolvedPlacementPath(%q) = %v, want ok=%v", tc.path, err, tc.ok)
+			}
+		})
+	}
+}
+
+func TestValidPlacementTemplatePath(t *testing.T) {
+	cases := []struct {
+		name string
+		tmpl string
+		ok   bool
+	}{
+		{"clean relative", "{namespace}/{name}.yaml", true},
+		{"sensitiveSuffix placeholder", "{namespace}/secret-{name}{sensitiveSuffix}", true},
+		{"parent traversal", "../outside.yaml", false},
+		{"nested parent traversal", "{namespace}/../../outside.yaml", false},
+		{"absolute", "/etc/{name}.yaml", false},
+		{"backslash", "{namespace}\\{name}.yaml", false},
+		{"bad suffix", "{namespace}/{name}.txt", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidPlacementTemplatePath(tc.tmpl)
+			if (err == nil) != tc.ok {
+				t.Errorf("ValidPlacementTemplatePath(%q) = %v, want ok=%v", tc.tmpl, err, tc.ok)
+			}
+		})
+	}
+}
+
+// Defense in depth: even if a path-escaping template somehow reached LocateNew
+// (e.g. validation were bypassed, stale, or a future bug), the runtime gate in
+// finishPlacement must still refuse to write outside the GitTarget's spec.path,
+// exactly like the existing sensitive-collision refusal — skip the resource, not
+// escape the folder.
+func TestLocateNew_DeclaredTemplateEscapingPath_Refused(t *testing.T) {
+	store := placementStore(t, fstest.MapFS{})
+	policy := &PlacementPolicy{
+		Normal: PlacementPolicyClass{Default: "../../outside.yaml"},
+	}
+
+	_, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))
+	if err == nil {
+		t.Fatal("expected an error for a declared template that escapes spec.path")
+	}
+}

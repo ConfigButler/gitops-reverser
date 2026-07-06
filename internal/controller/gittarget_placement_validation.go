@@ -57,6 +57,9 @@ func validatePlacementTemplate(tmpl string, narrowedToOneType, sensitive bool) (
 	if err := manifestanalyzer.ValidPlacementTemplateSyntax(tmpl); err != nil {
 		return err.Error(), true
 	}
+	if err := manifestanalyzer.ValidPlacementTemplatePath(tmpl); err != nil {
+		return err.Error(), true
+	}
 	if !sensitive {
 		return "", false
 	}

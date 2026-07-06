@@ -3,7 +3,9 @@
 package manifestanalyzer
 
 import (
+	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -191,6 +193,17 @@ func finishPlacement(
 	cohort string,
 	namespaceInherited bool,
 ) (PlacementResult, error) {
+	// This is the one gate every resolution path — declared, inferred, the
+	// kustomize-root fallback, and canonical alike — funnels through before a
+	// byte is ever written, so a rendered path can never escape the GitTarget's
+	// spec.path regardless of which mechanism produced it. See "Path validation"
+	// in the design doc: non-empty, a clean relative path, no "..", and a YAML
+	// suffix.
+	if err := ValidateResolvedPlacementPath(resolvedPath); err != nil {
+		return PlacementResult{}, fmt.Errorf(
+			"placement for resource %s resolved to an invalid path: %w", req.Identifier.String(), err,
+		)
+	}
 	res := PlacementResult{Path: resolvedPath, Source: source, Cohort: cohort, NamespaceInherited: namespaceInherited}
 	// A resolved path that already holds a file is only a safe append target when
 	// every document already in it is cleanly editable. A file that tolerates a
@@ -226,6 +239,41 @@ func kustomizationListsResource(k *KustomizationInfo, resolvedPath string) bool 
 		}
 	}
 	return false
+}
+
+// ValidateResolvedPlacementPath enforces the design doc's "Path validation"
+// contract against a fully-resolved (variable-substituted) placement path,
+// regardless of which mechanism produced it: non-empty, a clean relative path
+// staying under the GitTarget's spec.path (no "..", not absolute, no redundant
+// segments), no Windows-style backslash separators, a non-empty final file name,
+// and a recognized YAML suffix (".sops.yaml"/".sops.yml" satisfy this too, since
+// they end in ".yaml"/".yml"). finishPlacement runs this on every path before a
+// single byte is written, so a bad declared template (F4 Option B) can never
+// escape the folder the writer owns — sanitizePlacementSegment already defends
+// each individual variable's value, but the template's own literal text is
+// author-supplied and unconstrained without this gate.
+func ValidateResolvedPlacementPath(p string) error {
+	if p == "" {
+		return errors.New("path is empty")
+	}
+	if strings.ContainsRune(p, '\\') {
+		return fmt.Errorf("path %q must use \"/\" separators, not \"\\\"", p)
+	}
+	if path.IsAbs(p) {
+		return fmt.Errorf("path %q must be relative, not absolute", p)
+	}
+	cleaned := path.Clean(p)
+	if cleaned != p || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return fmt.Errorf("path %q must be a clean relative path that stays under the GitTarget's spec.path", p)
+	}
+	base := path.Base(cleaned)
+	if base == "" || base == "." || base == "/" {
+		return fmt.Errorf("path %q has no file name", p)
+	}
+	if !strings.HasSuffix(cleaned, ".yaml") && !strings.HasSuffix(cleaned, ".yml") {
+		return fmt.Errorf("path %q must end in .yaml or .yml", p)
+	}
+	return nil
 }
 
 // canonicalPath mirrors internal/git's generateFilePath (ResourceIdentifier.ToGitPath
@@ -394,6 +442,40 @@ func ValidPlacementTemplateSyntax(tmpl string) error {
 	}
 	_, err := RenderPlacementTemplate(tmpl, stub)
 	return err
+}
+
+// ValidPlacementTemplatePath statically rejects a declared template whose own
+// literal text (never mind any variable substitution, which sanitizePlacementSegment
+// already defends per-value) could render outside the GitTarget's spec.path or
+// with the wrong kind of file name: an explicit ".." path segment, a leading "/"
+// (absolute), a "\" separator, or a suffix that isn't ".yaml"/".yml" (a template
+// ending in the literal "{sensitiveSuffix}" placeholder is accepted without
+// rendering it, since that variable only ever expands to ".yaml" or ".sops.yaml").
+// This runs at the GitTarget's Validated gate — before any repository scan, and
+// before any resource can ever trigger a write — so a bad template fails fast and
+// visibly instead of silently skipping (or, without ValidateResolvedPlacementPath's
+// runtime backstop, escaping) resource by resource.
+func ValidPlacementTemplatePath(tmpl string) error {
+	trimmed := strings.TrimSpace(tmpl)
+	if trimmed == "" {
+		return errors.New("placement template is empty")
+	}
+	if strings.ContainsRune(trimmed, '\\') {
+		return fmt.Errorf("placement template %q must use \"/\" separators, not \"\\\"", tmpl)
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		return fmt.Errorf("placement template %q must be relative, not absolute", tmpl)
+	}
+	for _, segment := range strings.Split(trimmed, "/") {
+		if segment == ".." {
+			return fmt.Errorf("placement template %q must not contain a \"..\" path segment", tmpl)
+		}
+	}
+	if !strings.HasSuffix(trimmed, "{sensitiveSuffix}") &&
+		!strings.HasSuffix(trimmed, ".yaml") && !strings.HasSuffix(trimmed, ".yml") {
+		return fmt.Errorf("placement template %q must end in .yaml, .yml, or {sensitiveSuffix}", tmpl)
+	}
+	return nil
 }
 
 // IdentityCompletePlacementTemplate reports whether tmpl is guaranteed to render a

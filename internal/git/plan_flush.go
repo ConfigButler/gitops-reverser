@@ -19,6 +19,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
@@ -76,6 +77,27 @@ type writeBatch struct {
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to sibling inference and then the canonical path.
 	policy *manifestanalyzer.PlacementPolicy
+	// coldBundles tracks, per path, the new resources this batch has placed at a
+	// path that held no document before the batch started (keyed the same as
+	// buffers). It exists so several new resources that render to the same
+	// brand-new path — a collision LocateNew resolves against the pre-batch store
+	// and therefore cannot see coming — form one deterministic, resource-identity-
+	// sorted multi-document file instead of each writeWholeFile call silently
+	// discarding the one before it. See
+	// docs/design/manifest/version2/gittarget-new-file-placement-rules.md,
+	// "Collision and append behavior": "if several new plaintext resources in one
+	// plan render to the same path, write a multi-document file in deterministic
+	// resource-identity order."
+	coldBundles map[string][]coldBundleMember
+}
+
+// coldBundleMember is one new document contributing to a brand-new shared bundle
+// file within this batch. Retained (rather than re-parsed from buf.current) so a
+// later collision on the same path can re-sort and rebuild the whole file from
+// scratch, independent of which new resource's event the writer processed first.
+type coldBundleMember struct {
+	identifier types.ResourceIdentifier
+	content    []byte
 }
 
 func newWriteBatch(
@@ -222,10 +244,11 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	if event.Object != nil {
 		kind = event.Object.GetKind()
 	}
+	sensitive := wb.writer.isSensitiveIdentifier(event.Identifier)
 	placement, err := manifestanalyzer.LocateNew(wb.store, wb.policy, manifestanalyzer.PlacementRequest{
 		Identifier: event.Identifier,
 		Kind:       kind,
-		Sensitive:  wb.writer.isSensitiveIdentifier(event.Identifier),
+		Sensitive:  sensitive,
 	})
 	if err != nil {
 		log.FromContext(ctx).Info("Skipping new resource: placement could not be resolved safely",
@@ -250,7 +273,60 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	if placement.Append {
 		return wb.appendNewDocument(ctx, event, placement.Path)
 	}
+
+	buf := wb.buffer(placement.Path)
+	if buf.original == nil {
+		// Nothing occupied this path before the batch started, so every write
+		// here is a new resource: this event, or an earlier one in the same
+		// batch that rendered to the same path (a collision LocateNew cannot
+		// see coming — it only ever consults the pre-batch store). Route
+		// through the cold-bundle path so a collision forms a deterministic
+		// multi-document file instead of a second writeWholeFile silently
+		// discarding whichever new resource arrived first.
+		if sensitive && buf.current != nil {
+			log.FromContext(ctx).Info(
+				"Skipping new resource: a sensitive resource must not share a file with another new resource",
+				"resource", event.Identifier.String(), "file", placement.Path)
+			return upsertNoChange, nil
+		}
+		return wb.writeColdBundleMember(ctx, event, placement.Path)
+	}
 	return wb.writeWholeFile(ctx, event, placement.Path)
+}
+
+// writeColdBundleMember writes a resource with no existing document to rel, a
+// path nothing occupied before this batch started. Because LocateNew resolves
+// every event against the pre-batch store snapshot (P2 of the design doc),
+// several new resources rendering to the same brand-new path each look like the
+// sole occupant to LocateNew, so a plain single-document write would let each
+// one overwrite the last. Instead every member seen so far at rel (including
+// this one) is re-sorted by resource identity and the file is rebuilt from
+// scratch, so the result is independent of which new resource's event the
+// writer processed first — see the design doc's "Collision and append
+// behavior": "if several new plaintext resources in one plan render to the same
+// path, write a multi-document file in deterministic resource-identity order."
+// For the common single-member case this produces byte-identical output to a
+// plain write.
+func (wb *writeBatch) writeColdBundleMember(ctx context.Context, event Event, rel string) (upsertOutcome, error) {
+	content, err := wb.writer.buildContentForWrite(ctx, event)
+	if err != nil {
+		return upsertNoChange, err
+	}
+	if wb.coldBundles == nil {
+		wb.coldBundles = map[string][]coldBundleMember{}
+	}
+	wb.coldBundles[rel] = append(wb.coldBundles[rel], coldBundleMember{identifier: event.Identifier, content: content})
+	members := wb.coldBundles[rel]
+	sort.Slice(members, func(i, j int) bool {
+		return members[i].identifier.Key() < members[j].identifier.Key()
+	})
+
+	var rebuilt []byte
+	for _, m := range members {
+		rebuilt = appendYAMLDocument(rebuilt, m.content)
+	}
+	wb.buffer(rel).current = rebuilt
+	return upsertCreated, nil
 }
 
 // appendNewDocument adds a resource with no existing document as an additional

@@ -52,6 +52,22 @@ func TestValidatePlacementPolicy(t *testing.T) {
 			false,
 		},
 		{
+			"normal template escapes spec.path with a parent traversal",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{Default: "../outside.yaml"},
+			},
+			false,
+		},
+		{
+			"normal template does not end in a YAML suffix",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{
+					ByType: map[string]string{"v1/configmaps": "{namespace}/{name}.txt"},
+				},
+			},
+			false,
+		},
+		{
 			"malformed byType key",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Normal: configbutleraiv1alpha3.GitTargetPlacementClass{
