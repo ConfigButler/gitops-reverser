@@ -58,6 +58,7 @@ RUN apt-get update \
 # ACTIONLINT_VERSION -> https://github.com/rhysd/actionlint/releases
 # HADOLINT_VERSION -> https://github.com/hadolint/hadolint/releases
 # VALKEY_VERSION -> https://github.com/valkey-io/valkey/releases
+# COSIGN_VERSION -> https://github.com/sigstore/cosign/releases
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUBECTL_VERSION=v1.36.2 \
@@ -71,7 +72,8 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     TASK_VERSION=v3.51.1 \
     ACTIONLINT_VERSION=1.7.12 \
     HADOLINT_VERSION=2.14.0 \
-    VALKEY_VERSION=9.1.0
+    VALKEY_VERSION=9.1.0 \
+    COSIGN_VERSION=v3.1.1
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -157,6 +159,22 @@ RUN asset="hadolint-linux-x86_64" \
 RUN curl -fsSL "https://download.valkey.io/releases/valkey-${VALKEY_VERSION}-jammy-x86_64.tar.gz" \
     | tar -xzO "valkey-${VALKEY_VERSION}-jammy-x86_64/bin/valkey-cli" > /usr/local/bin/valkey-cli \
     && chmod +x /usr/local/bin/valkey-cli
+
+# Install cosign (Sigstore keyless signing/verification). Lives in the ci stage,
+# not dev-only: release.yml's publish-helm job runs *inside* this same image
+# (see `container:` in .github/workflows/release.yml) and signs install.yaml
+# with cosign — baking it in here means that job no longer needs its own
+# sigstore/cosign-installer step. Also lets you run `cosign verify`/`verify-blob`
+# locally against what release.yml publishes (see docs/ci-overview.md).
+RUN asset="cosign-linux-amd64" \
+    && base="https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}" \
+    && tmpdir="$(mktemp -d)" \
+    && curl -fsSL "${base}/${asset}" -o "${tmpdir}/${asset}" \
+    && curl -fsSL "${base}/cosign_checksums.txt" -o "${tmpdir}/checksums.txt" \
+    && cd "${tmpdir}" \
+    && grep "  ${asset}$" checksums.txt | sha256sum -c - \
+    && install -m 0755 "${asset}" /usr/local/bin/cosign \
+    && rm -rf "${tmpdir}"
 
 # Set working directory
 WORKDIR /workspaces
