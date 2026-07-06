@@ -50,9 +50,7 @@ func TestPlacement_DeclaredPolicy_NewFile(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
 	policy := &manifestanalyzer.PlacementPolicy{
-		Normal: manifestanalyzer.PlacementPolicyClass{
-			ByType: map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
-		},
+		ByType: map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
 	}
 
 	changed := applyEventsWithPolicy(t, worktree, policy, newConfigMapEvent("cache", "app"))
@@ -132,7 +130,7 @@ func TestPlacement_SensitiveCollision_SkipsWithoutCrashing(t *testing.T) {
 	existing := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: other\n  namespace: app\nsops:\n  version: \"3\"\n"
 	full := seedPlacedManifest(t, worktree, "secrets/app.sops.yaml", existing)
 	policy := &manifestanalyzer.PlacementPolicy{
-		Sensitive: manifestanalyzer.PlacementPolicyClass{Default: "secrets/{namespace}.sops.yaml"},
+		ByType: map[string]string{"v1/secrets": "secrets/{namespace}.sops.yaml"},
 	}
 
 	event := Event{
@@ -285,9 +283,7 @@ func TestAppendKustomizationResource_VanishedBuffer_NoPanic(t *testing.T) {
 // plan render to the same path, write a multi-document file in deterministic
 // resource-identity order".
 func TestPlacement_ColdBundleCollision_BothSurviveRegardlessOfOrder(t *testing.T) {
-	policy := &manifestanalyzer.PlacementPolicy{
-		Normal: manifestanalyzer.PlacementPolicyClass{Default: "all.yaml"},
-	}
+	policy := &manifestanalyzer.PlacementPolicy{Default: "all.yaml"}
 	first := newConfigMapEvent("alpha", "app")
 	second := newConfigMapEvent("beta", "app")
 
@@ -314,9 +310,7 @@ func TestPlacement_ColdBundleCollision_BothSurviveRegardlessOfOrder(t *testing.T
 // sorted, proving the fix generalizes beyond exactly two resources.
 func TestPlacement_ColdBundleCollision_ThreeResourcesAllSurvive(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	policy := &manifestanalyzer.PlacementPolicy{
-		Normal: manifestanalyzer.PlacementPolicyClass{Default: "all.yaml"},
-	}
+	policy := &manifestanalyzer.PlacementPolicy{Default: "all.yaml"}
 
 	changed := applyEventsWithPolicy(t, worktree, policy,
 		newConfigMapEvent("charlie", "app"),
@@ -341,7 +335,7 @@ func TestPlacement_ColdBundleCollision_ThreeResourcesAllSurvive(t *testing.T) {
 func TestPlacement_ColdBundleCollision_SensitiveNeverMerged(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	policy := &manifestanalyzer.PlacementPolicy{
-		Sensitive: manifestanalyzer.PlacementPolicyClass{Default: "secrets/{namespace}.sops.yaml"},
+		ByType: map[string]string{"v1/secrets": "secrets/{namespace}.sops.yaml"},
 	}
 	newSecretEvent := func(name string) Event {
 		return Event{
@@ -374,14 +368,67 @@ func TestPlacement_ColdBundleCollision_SensitiveNeverMerged(t *testing.T) {
 		"the second secret must be skipped, never merged into the first's file")
 }
 
+// A sensitive and a plaintext resource that a bundling default routes to the same
+// brand-new file must never co-mingle in it, whichever event the writer processes
+// first. This is the same-batch half of Option B2's write-safety guard: the single
+// declared map is consulted for both classes, so a Secret and a ConfigMap can now
+// resolve to one path, and the guard keeps encrypted and cleartext documents out of
+// the same file (the first arrival wins; the other is skipped and retried).
+func TestPlacement_ColdBundleCollision_SensitiveAndPlaintextNeverMix(t *testing.T) {
+	policy := &manifestanalyzer.PlacementPolicy{Default: "all.yaml"}
+	secretEvent := Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata":   map[string]interface{}{"name": "cred", "namespace": "app"},
+		}},
+		Identifier: types.NewResourceIdentifier("", "v1", "secrets", "app", "cred"),
+		Operation:  "CREATE",
+	}
+	configMapEvent := newConfigMapEvent("cache", "app")
+
+	newWriter := func() *contentWriter {
+		writer := newContentWriter(types.SensitiveResourcePolicy{})
+		writer.setEncryptor(&stubEncryptor{result: []byte(
+			"apiVersion: v1\nkind: Secret\nmetadata:\n  name: cred\n  namespace: app\n" +
+				"data:\n  k: ENC[AES256,data:x,iv:y,tag:z]\nsops:\n  version: 3.9.0\n",
+		)}, "test-scope")
+		return writer
+	}
+
+	// Secret first: the Secret wins the file, the ConfigMap is skipped.
+	secretFirst := newWorktreeForTest(t)
+	wsf := &BranchWorker{contentWriter: newWriter()}
+	_, err := wsf.flushEventsToWorktree(
+		context.Background(), secretFirst, "", []Event{secretEvent, configMapEvent}, policy,
+	)
+	require.NoError(t, err)
+	secretFirstBody, readErr := os.ReadFile(filepath.Join(secretFirst.Filesystem.Root(), "all.yaml"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(secretFirstBody), "kind: Secret")
+	assert.NotContains(t, string(secretFirstBody), "kind: ConfigMap",
+		"a plaintext resource must never join a file that already holds an encrypted document")
+
+	// ConfigMap first: the ConfigMap wins the file, the Secret is skipped.
+	configMapFirst := newWorktreeForTest(t)
+	wcf := &BranchWorker{contentWriter: newWriter()}
+	_, err = wcf.flushEventsToWorktree(
+		context.Background(), configMapFirst, "", []Event{configMapEvent, secretEvent}, policy,
+	)
+	require.NoError(t, err)
+	configMapFirstBody, readErr := os.ReadFile(filepath.Join(configMapFirst.Filesystem.Root(), "all.yaml"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(configMapFirstBody), "kind: ConfigMap")
+	assert.NotContains(t, string(configMapFirstBody), "kind: Secret",
+		"a sensitive resource must never share a file with a plaintext resource")
+}
+
 // Resync (M8) folds its whole desired snapshot through the same createNew path
 // as steady-state events, so the same brand-new-path collision can occur there
 // too — proving the fix covers both entry points the design doc calls out.
 func TestPlacement_ColdBundleCollision_ViaResync(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	policy := &manifestanalyzer.PlacementPolicy{
-		Normal: manifestanalyzer.PlacementPolicyClass{Default: "all.yaml"},
-	}
+	policy := &manifestanalyzer.PlacementPolicy{Default: "all.yaml"}
 	desired := []manifestanalyzer.DesiredResource{
 		{
 			Resource: types.NewResourceIdentifier("", "v1", "configmaps", "app", "alpha"),

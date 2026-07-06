@@ -13,34 +13,25 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// PlacementPolicyClass is one class (sensitive or normal) of a declared placement
-// policy (Option B of
-// docs/design/manifest/version2/gittarget-new-file-placement-rules.md): an
-// exact-type map plus a fallback default template. It mirrors
-// api/v1alpha3.GitTargetPlacementClass field-for-field but is defined locally so
-// this analyzer package stays free of any Kubernetes API type dependency; the git
-// package converts the CRD spec into this shape.
-type PlacementPolicyClass struct {
+// PlacementPolicy is a resolved GitTarget placement declaration (Option B2 of
+// docs/design/manifest/version2/gittarget-new-file-placement-rules.md): a single
+// exact-type map plus a fallback default template, consulted for every resource
+// regardless of sensitivity. It mirrors api/v1alpha3.GitTargetPlacementSpec
+// field-for-field but is defined locally so this analyzer package stays free of any
+// Kubernetes API type dependency; the git package converts the CRD spec into this
+// shape.
+//
+// There is no sensitive/normal split here: sensitivity is a write-safety property
+// (encrypt the content, keep the path identity-complete, never append or
+// co-mingle) enforced after resolution — in finishPlacement (sensitive never
+// appends), in the writer (encrypt by classification), and in cohortMembers
+// (inference never crosses the encrypted boundary) — not a second map to configure.
+//
+// A nil *PlacementPolicy, or one with no matching ByType entry and no Default,
+// falls through to sibling inference (Option C) and then the canonical fallback.
+type PlacementPolicy struct {
 	ByType  map[string]string
 	Default string
-}
-
-// PlacementPolicy is a resolved GitTarget placement declaration. A nil
-// *PlacementPolicy, or a class with no matching ByType entry and no Default, falls
-// through to sibling inference (Option C) and then the canonical fallback.
-type PlacementPolicy struct {
-	Sensitive PlacementPolicyClass
-	Normal    PlacementPolicyClass
-}
-
-func (p *PlacementPolicy) classFor(sensitive bool) PlacementPolicyClass {
-	if p == nil {
-		return PlacementPolicyClass{}
-	}
-	if sensitive {
-		return p.Sensitive
-	}
-	return p.Normal
 }
 
 // PlacementRequest describes a resource with no existing document in Git — the
@@ -58,8 +49,8 @@ type PlacementRequest struct {
 type PlacementSource string
 
 const (
-	// PlacementSourceDeclared is Option B: an explicit placement.{sensitive,normal}
-	// ByType/Default template matched.
+	// PlacementSourceDeclared is Option B: an explicit placement.byType/default
+	// template matched.
 	PlacementSourceDeclared PlacementSource = "declared"
 	// PlacementSourceInferred is Option C: no declared template matched, but an
 	// existing sibling cohort determined the destination.
@@ -123,9 +114,8 @@ type PlacementResult struct {
 // a diagnostic rather than writing into a shared or multi-document sensitive file.
 func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementRequest) (PlacementResult, error) {
 	vars := placementVars(req)
-	class := policy.classFor(req.Sensitive)
 
-	if path, ok, err := resolveDeclared(class, req, vars); err == nil && ok {
+	if path, ok, err := resolveDeclared(policy, req, vars); err == nil && ok {
 		return finishPlacement(store, req, path, PlacementSourceDeclared, "", false)
 	}
 
@@ -214,13 +204,28 @@ func finishPlacement(
 	// cannot vouch for what is already in that file. Append stays false, so the
 	// caller falls back to writeWholeFile, whose own multi-document guard is the
 	// established, tested safety net for exactly this collision.
-	if fm, exists := store.FilesByPath[resolvedPath]; exists && fileIsAppendSafe(fm) {
+	fm, exists := store.FilesByPath[resolvedPath]
+	if exists && fileIsAppendSafe(fm) {
 		res.Append = true
 	}
 	if req.Sensitive && res.Append {
 		return PlacementResult{}, fmt.Errorf(
 			"placement for sensitive resource %s resolved to %q, which already holds a document; "+
 				"sensitive resources are never appended to an existing file",
+			req.Identifier.String(), resolvedPath,
+		)
+	}
+	// A plaintext resource must never join a file that already holds an encrypted
+	// document: appending would sit its cleartext beside SOPS-encrypted data (a
+	// partially-encrypted file), and falling through to writeWholeFile would
+	// instead overwrite — destroy — the encrypted document. Under Option B2 the one
+	// declared map is consulted for sensitive and normal resources alike, so this
+	// runtime guard (not a separate sensitive placement block) is what keeps the two
+	// classes from co-mingling for every sensitive type, core or operator-configured.
+	if res.Append && !req.Sensitive && fileHoldsEncryptedDocument(fm) {
+		return PlacementResult{}, fmt.Errorf(
+			"placement for resource %s resolved to %q, which already holds an encrypted document; "+
+				"a plaintext resource is never appended to an encrypted file",
 			req.Identifier.String(), resolvedPath,
 		)
 	}
@@ -294,14 +299,17 @@ func canonicalPath(req PlacementRequest) string {
 
 // --- Option B: declared type-map placement -------------------------------------
 
-func resolveDeclared(class PlacementPolicyClass, req PlacementRequest, vars map[string]string) (string, bool, error) {
+func resolveDeclared(policy *PlacementPolicy, req PlacementRequest, vars map[string]string) (string, bool, error) {
+	if policy == nil {
+		return "", false, nil
+	}
 	key := PlacementTypeKey(req.Identifier.Group, req.Identifier.Version, req.Identifier.Resource)
 	var tmpl string
 	switch {
-	case strings.TrimSpace(class.ByType[key]) != "":
-		tmpl = class.ByType[key]
-	case strings.TrimSpace(class.Default) != "":
-		tmpl = class.Default
+	case strings.TrimSpace(policy.ByType[key]) != "":
+		tmpl = policy.ByType[key]
+	case strings.TrimSpace(policy.Default) != "":
+		tmpl = policy.Default
 	default:
 		return "", false, nil
 	}
@@ -312,7 +320,7 @@ func resolveDeclared(class PlacementPolicyClass, req PlacementRequest, vars map[
 	return rendered, true, nil
 }
 
-// PlacementTypeKey renders the exact-type key used by GitTargetPlacementClass.ByType:
+// PlacementTypeKey renders the exact-type key used by GitTargetPlacementSpec.ByType:
 // "{group}/{version}/{resource}", with the group segment omitted for core resources
 // ("v1/secrets", "apps/v1/deployments", "cert-manager.io/v1/certificates").
 func PlacementTypeKey(group, version, resource string) string {
@@ -599,6 +607,23 @@ func fileIsAppendSafe(fm *FileModel) bool {
 		}
 	}
 	return true
+}
+
+// fileHoldsEncryptedDocument reports whether fm already contains at least one
+// encrypted (sensitive) document. finishPlacement uses it to refuse appending a
+// plaintext resource into an encrypted file — the write-time half of the
+// "sensitivity is a write-safety classifier, not a placement namespace" contract
+// (Option B2 of the design doc).
+func fileHoldsEncryptedDocument(fm *FileModel) bool {
+	if fm == nil {
+		return false
+	}
+	for _, d := range fm.Documents {
+		if d.Cause.Kind == CauseEncrypted {
+			return true
+		}
+	}
+	return false
 }
 
 // cohortDestination decides, for one matched cohort, whether the repository's

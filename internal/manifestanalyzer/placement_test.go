@@ -279,9 +279,7 @@ func TestLocateNew_DeclaredOutranksInferred(t *testing.T) {
 	}
 	store := placementStore(t, fsys)
 	policy := &PlacementPolicy{
-		Normal: PlacementPolicyClass{
-			ByType: map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
-		},
+		ByType: map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
 	}
 
 	res, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))
@@ -363,14 +361,36 @@ func TestLocateNew_SensitiveCollision_Errors(t *testing.T) {
 	}
 	store := placementStore(t, fsys)
 	policy := &PlacementPolicy{
-		Sensitive: PlacementPolicyClass{
-			ByType: map[string]string{"v1/secrets": "secrets/{namespace}/{name}.sops.yaml"},
-		},
+		ByType: map[string]string{"v1/secrets": "secrets/{namespace}/{name}.sops.yaml"},
 	}
 
 	_, err := LocateNew(store, policy, newSecretRequest("api-token-2"))
 	if err == nil {
 		t.Fatalf("expected an error placing a second identity onto the same sensitive path")
+	}
+}
+
+// Under Option B2 the single declared map is consulted for sensitive and normal
+// resources alike, so a plaintext resource can be routed onto a path that already
+// holds an encrypted document. finishPlacement must refuse that rather than
+// append the cleartext beside SOPS data (or fall through to a whole-file
+// overwrite that would destroy the encrypted document) — the write-time guard
+// that replaces B1's structural sensitive/normal split.
+func TestLocateNew_PlaintextOntoEncryptedFile_Refused(t *testing.T) {
+	// The analyzer classifies a document as encrypted only for a ".sops.yaml"/
+	// ".sops.yml" file carrying a sops: key, so the fixture must use that name.
+	fsys := fstest.MapFS{
+		"bundle.sops.yaml": {Data: []byte(secretYAML("db", "app"))},
+	}
+	store := placementStore(t, fsys)
+	policy := &PlacementPolicy{Default: "bundle.sops.yaml"}
+
+	_, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))
+	if err == nil {
+		t.Fatalf("expected a refusal placing a plaintext resource onto an encrypted file")
+	}
+	if !strings.Contains(err.Error(), "encrypted") {
+		t.Fatalf("error should name the encrypted-file conflict, got: %v", err)
 	}
 }
 
@@ -410,7 +430,7 @@ func TestLocateNew_KustomizationAlreadyListed_NoEntryNeeded(t *testing.T) {
 	}
 	store := placementStore(t, fsys)
 	policy := &PlacementPolicy{
-		Normal: PlacementPolicyClass{Default: "overlays/test/debug-toolbox.yaml"},
+		Default: "overlays/test/debug-toolbox.yaml",
 	}
 	req := PlacementRequest{
 		Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "podinfo-test", "debug-toolbox"),
@@ -677,7 +697,7 @@ func TestLocateNew_KustomizeRootSensitive(t *testing.T) {
 func TestLocateNew_DeclaredTemplateUnknownVariable_FallsThrough(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
 	policy := &PlacementPolicy{
-		Normal: PlacementPolicyClass{Default: "{bogus}/all.yaml"},
+		Default: "{bogus}/all.yaml",
 	}
 	req := newConfigMapRequest("cache", "app")
 
@@ -796,7 +816,7 @@ func TestValidPlacementTemplatePath(t *testing.T) {
 func TestLocateNew_DeclaredTemplateEscapingPath_Refused(t *testing.T) {
 	store := placementStore(t, fstest.MapFS{})
 	policy := &PlacementPolicy{
-		Normal: PlacementPolicyClass{Default: "../../outside.yaml"},
+		Default: "../../outside.yaml",
 	}
 
 	_, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))

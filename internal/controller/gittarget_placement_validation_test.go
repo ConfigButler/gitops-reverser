@@ -26,38 +26,73 @@ func TestValidatePlacementPolicy(t *testing.T) {
 		{"nil spec is valid", nil, true},
 		{"empty spec is valid", &configbutleraiv1alpha3.GitTargetPlacementSpec{}, true},
 		{
-			"valid normal byType and default",
+			"byType plus an identity-complete default",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				ByType:  map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
+				Default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml",
+			},
+			true,
+		},
+		{
+			"bundling default is valid when Secrets have an identity-complete route",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType:  map[string]string{"v1/secrets": "{namespace}/secrets/{name}.yaml"},
 				Default: "all.yaml",
 			},
 			true,
 		},
 		{
-			"valid sensitive byType, identity-complete SOPS path",
+			"bundling default with no Secret route is rejected",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Sensitive: configbutleraiv1alpha3.GitTargetPlacementClass{
-					ByType: map[string]string{"v1/secrets": "{namespace}/secret-{name}.sops.yaml"},
-				},
+				Default: "all.yaml",
+			},
+			false,
+		},
+		{
+			"bundling default with a non-identity-complete Secret route is rejected",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType:  map[string]string{"v1/secrets": "secrets.yaml"},
+				Default: "all.yaml",
+			},
+			false,
+		},
+		{
+			"Secret byType route must be identity-complete even without a default",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType: map[string]string{"v1/secrets": "secrets/{name}.yaml"},
+			},
+			false,
+		},
+		{
+			"identity-complete Secret route needs no .sops suffix",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType: map[string]string{"v1/secrets": "{namespace}/secret-{name}.yaml"},
+			},
+			true,
+		},
+		{
+			"a .sops suffix on a Secret route is still accepted",
+			&configbutleraiv1alpha3.GitTargetPlacementSpec{
+				ByType: map[string]string{"v1/secrets": "{namespace}/secret-{name}.sops.yaml"},
 			},
 			true,
 		},
 		{
 			"unknown template variable",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Default: "{bogus}/all.yaml",
+				Default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}-{bogus}.yaml",
 			},
 			false,
 		},
 		{
-			"normal template escapes spec.path with a parent traversal",
+			"template escapes spec.path with a parent traversal",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				Default: "../outside.yaml",
 			},
 			false,
 		},
 		{
-			"normal template does not end in a YAML suffix",
+			"template does not end in a YAML suffix",
 			&configbutleraiv1alpha3.GitTargetPlacementSpec{
 				ByType: map[string]string{"v1/configmaps": "{namespace}/{name}.txt"},
 			},
@@ -69,33 +104,6 @@ func TestValidatePlacementPolicy(t *testing.T) {
 				ByType: map[string]string{"not-a-type-key": "all.yaml"},
 			},
 			false,
-		},
-		{
-			"sensitive template missing the sops suffix",
-			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Sensitive: configbutleraiv1alpha3.GitTargetPlacementClass{
-					ByType: map[string]string{"v1/secrets": "{namespace}/secret-{name}.yaml"},
-				},
-			},
-			false,
-		},
-		{
-			"sensitive default missing type variables",
-			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Sensitive: configbutleraiv1alpha3.GitTargetPlacementClass{
-					Default: "{namespaceOrCluster}/{name}.sops.yaml",
-				},
-			},
-			false,
-		},
-		{
-			"sensitive byType narrowed template needs only scope + name",
-			&configbutleraiv1alpha3.GitTargetPlacementSpec{
-				Sensitive: configbutleraiv1alpha3.GitTargetPlacementClass{
-					ByType: map[string]string{"v1/secrets": "{namespaceOrCluster}/{name}.sops.yaml"},
-				},
-			},
-			true,
 		},
 	}
 	for _, tc := range cases {

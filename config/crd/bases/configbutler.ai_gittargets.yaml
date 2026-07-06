@@ -174,39 +174,20 @@ spec:
                       type: string
                     description: |-
                       ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
-                      "v1/configmaps" or "apps/v1/deployments"; core resources omit the group) to
-                      the path template used for a new, non-sensitive resource of that type.
+                      "v1/configmaps", "apps/v1/deployments", or "v1/secrets"; core resources omit
+                      the group) to the path template used for a new resource of that type. A path
+                      selected for a sensitive resource (Secrets, plus any operator-configured
+                      sensitive type) must be identity-complete so it cannot collide two distinct
+                      sensitive resources onto one file.
                     type: object
                   default:
                     description: |-
-                      Default is the path template used for a new non-sensitive resource whose
-                      type has no ByType entry. Omitted, it falls through to sibling-layout
-                      inference and then the built-in canonical path. Never consulted for a
-                      sensitive resource — see Sensitive.
+                      Default is the path template used for a new resource whose type has no ByType
+                      entry. Omitted, it falls through to sibling-layout inference and then the
+                      built-in canonical path. A bundling default (one that is not identity-complete,
+                      such as "all.yaml") is only valid when a sensitive resource can never reach it
+                      — give every sensitive type an explicit identity-complete ByType entry.
                     type: string
-                  sensitive:
-                    description: |-
-                      Sensitive overrides placement for resources the GitTarget's encryption
-                      policy classifies as sensitive (e.g. Secrets). Sensitive templates must
-                      render an identity-complete, single-document ".sops.yaml"/".sops.yml" path;
-                      ByType/Default above never apply to a sensitive resource, regardless of
-                      what they contain.
-                    properties:
-                      byType:
-                        additionalProperties:
-                          type: string
-                        description: |-
-                          ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
-                          "v1/secrets" or "apps/v1/deployments"; core resources omit the group) to the
-                          path template used for a new resource of that type.
-                        type: object
-                      default:
-                        description: |-
-                          Default is the path template used for a new resource whose type has no
-                          ByType entry. Omitted, it falls through to sibling-layout inference and then
-                          the built-in canonical path.
-                        type: string
-                    type: object
                 type: object
               providerRef:
                 description: |-

@@ -180,14 +180,8 @@ func resolvePlacementPolicy(spec *v1alpha3.GitTargetPlacementSpec) *manifestanal
 		return nil
 	}
 	return &manifestanalyzer.PlacementPolicy{
-		Sensitive: manifestanalyzer.PlacementPolicyClass{
-			ByType:  spec.Sensitive.ByType,
-			Default: spec.Sensitive.Default,
-		},
-		Normal: manifestanalyzer.PlacementPolicyClass{
-			ByType:  spec.ByType,
-			Default: spec.Default,
-		},
+		ByType:  spec.ByType,
+		Default: spec.Default,
 	}
 }
 

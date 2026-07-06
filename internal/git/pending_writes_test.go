@@ -240,17 +240,11 @@ func TestResolvePlacementPolicy_ConvertsFieldForField(t *testing.T) {
 	spec := &configv1alpha3.GitTargetPlacementSpec{
 		ByType:  map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
 		Default: "all.yaml",
-		Sensitive: configv1alpha3.GitTargetPlacementClass{
-			ByType:  map[string]string{"v1/secrets": "{namespace}/secret-{name}.sops.yaml"},
-			Default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml",
-		},
 	}
 
 	got := resolvePlacementPolicy(spec)
 
 	require.NotNil(t, got)
-	assert.Equal(t, spec.Sensitive.ByType, got.Sensitive.ByType)
-	assert.Equal(t, spec.Sensitive.Default, got.Sensitive.Default)
-	assert.Equal(t, spec.ByType, got.Normal.ByType)
-	assert.Equal(t, spec.Default, got.Normal.Default)
+	assert.Equal(t, spec.ByType, got.ByType)
+	assert.Equal(t, spec.Default, got.Default)
 }

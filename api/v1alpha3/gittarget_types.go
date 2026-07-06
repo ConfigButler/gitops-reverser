@@ -83,52 +83,33 @@ type GitTargetSpec struct {
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document
-// for their identity exists yet in Git. ByType/Default govern every resource
-// except the ones Sensitive claims (Option B1 of
-// docs/design/manifest/version2/gittarget-new-file-placement-rules.md): placement
-// is a default path plus a guarded override, not two peer classes, because that
-// is the actual shape of the requirement — sensitive resources need stricter
-// guarantees (identity-complete, single-document, SOPS-suffixed paths) that a
-// broad normal default must never accidentally satisfy. When a resource's class
-// has no matching ByType entry and no Default, placement falls back to following
-// the layout already established by sibling resources in the repository, and
-// finally to the canonical {group}/{version}/{resource}/{namespace}/{name}.yaml
-// path when there is nothing to follow.
+// for their identity exists yet in Git — one exact-type map plus a fallback
+// default template (Option B2 of
+// docs/design/manifest/version2/gittarget-new-file-placement-rules.md). There is
+// deliberately no separate "sensitive" placement block: sensitivity is a
+// write-safety classification the controller owns (encrypt the content, keep the
+// path identity-complete, never append or co-mingle), not a second placement
+// namespace the user has to configure. A user routes Secrets the same way they
+// route anything else — by naming their type in ByType. When a resource's type
+// has no ByType entry and no Default, placement falls back to following the layout
+// already established by sibling resources in the repository, and finally to the
+// canonical {group}/{version}/{resource}/{namespace}/{name}.yaml path when there
+// is nothing to follow.
 type GitTargetPlacementSpec struct {
 	// ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
-	// "v1/configmaps" or "apps/v1/deployments"; core resources omit the group) to
-	// the path template used for a new, non-sensitive resource of that type.
+	// "v1/configmaps", "apps/v1/deployments", or "v1/secrets"; core resources omit
+	// the group) to the path template used for a new resource of that type. A path
+	// selected for a sensitive resource (Secrets, plus any operator-configured
+	// sensitive type) must be identity-complete so it cannot collide two distinct
+	// sensitive resources onto one file.
 	// +optional
 	ByType map[string]string `json:"byType,omitempty"`
 
-	// Default is the path template used for a new non-sensitive resource whose
-	// type has no ByType entry. Omitted, it falls through to sibling-layout
-	// inference and then the built-in canonical path. Never consulted for a
-	// sensitive resource — see Sensitive.
-	// +optional
-	Default string `json:"default,omitempty"`
-
-	// Sensitive overrides placement for resources the GitTarget's encryption
-	// policy classifies as sensitive (e.g. Secrets). Sensitive templates must
-	// render an identity-complete, single-document ".sops.yaml"/".sops.yml" path;
-	// ByType/Default above never apply to a sensitive resource, regardless of
-	// what they contain.
-	// +optional
-	Sensitive GitTargetPlacementClass `json:"sensitive,omitempty"`
-}
-
-// GitTargetPlacementClass maps exact resource types to a path template, with a
-// fallback default template for every type the map does not name.
-type GitTargetPlacementClass struct {
-	// ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
-	// "v1/secrets" or "apps/v1/deployments"; core resources omit the group) to the
-	// path template used for a new resource of that type.
-	// +optional
-	ByType map[string]string `json:"byType,omitempty"`
-
-	// Default is the path template used for a new resource whose type has no
-	// ByType entry. Omitted, it falls through to sibling-layout inference and then
-	// the built-in canonical path.
+	// Default is the path template used for a new resource whose type has no ByType
+	// entry. Omitted, it falls through to sibling-layout inference and then the
+	// built-in canonical path. A bundling default (one that is not identity-complete,
+	// such as "all.yaml") is only valid when a sensitive resource can never reach it
+	// — give every sensitive type an explicit identity-complete ByType entry.
 	// +optional
 	Default string `json:"default,omitempty"`
 }

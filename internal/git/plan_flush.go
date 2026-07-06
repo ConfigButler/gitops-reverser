@@ -98,6 +98,11 @@ type writeBatch struct {
 type coldBundleMember struct {
 	identifier types.ResourceIdentifier
 	content    []byte
+	// sensitive records whether this member is an encrypted (sensitive) resource, so
+	// createNew can refuse to co-mingle sensitive and plaintext documents in one
+	// brand-new file regardless of the order their events arrived (Option B2's
+	// write-safety guard — see createNew).
+	sensitive bool
 }
 
 func newWriteBatch(
@@ -283,13 +288,22 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		// through the cold-bundle path so a collision forms a deterministic
 		// multi-document file instead of a second writeWholeFile silently
 		// discarding whichever new resource arrived first.
-		if sensitive && buf.current != nil {
+		//
+		// A sensitive resource must never share a file (with anything), and a
+		// plaintext resource must never join a bundle that already holds a
+		// sensitive member — either way the file would co-mingle encrypted and
+		// plaintext documents. Skip rather than mix; the next event or resync
+		// retries once the placement policy stops routing them together. This is
+		// the same-batch half of Option B2's write-safety guard (the cross-batch
+		// half — appending into an already-encrypted file — is refused in
+		// LocateNew/finishPlacement).
+		if buf.current != nil && (sensitive || wb.coldBundleHasSensitive(placement.Path)) {
 			log.FromContext(ctx).Info(
-				"Skipping new resource: a sensitive resource must not share a file with another new resource",
-				"resource", event.Identifier.String(), "file", placement.Path)
+				"Skipping new resource: sensitive and plaintext resources must not share a new file",
+				"resource", event.Identifier.String(), "file", placement.Path, "sensitive", sensitive)
 			return upsertNoChange, nil
 		}
-		return wb.writeColdBundleMember(ctx, event, placement.Path)
+		return wb.writeColdBundleMember(ctx, event, placement.Path, sensitive)
 	}
 	return wb.writeWholeFile(ctx, event, placement.Path)
 }
@@ -307,7 +321,12 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 // path, write a multi-document file in deterministic resource-identity order."
 // For the common single-member case this produces byte-identical output to a
 // plain write.
-func (wb *writeBatch) writeColdBundleMember(ctx context.Context, event Event, rel string) (upsertOutcome, error) {
+func (wb *writeBatch) writeColdBundleMember(
+	ctx context.Context,
+	event Event,
+	rel string,
+	sensitive bool,
+) (upsertOutcome, error) {
 	content, err := wb.writer.buildContentForWrite(ctx, event)
 	if err != nil {
 		return upsertNoChange, err
@@ -315,7 +334,10 @@ func (wb *writeBatch) writeColdBundleMember(ctx context.Context, event Event, re
 	if wb.coldBundles == nil {
 		wb.coldBundles = map[string][]coldBundleMember{}
 	}
-	wb.coldBundles[rel] = append(wb.coldBundles[rel], coldBundleMember{identifier: event.Identifier, content: content})
+	wb.coldBundles[rel] = append(
+		wb.coldBundles[rel],
+		coldBundleMember{identifier: event.Identifier, content: content, sensitive: sensitive},
+	)
 	members := wb.coldBundles[rel]
 	sort.Slice(members, func(i, j int) bool {
 		return members[i].identifier.Key() < members[j].identifier.Key()
@@ -327,6 +349,18 @@ func (wb *writeBatch) writeColdBundleMember(ctx context.Context, event Event, re
 	}
 	wb.buffer(rel).current = rebuilt
 	return upsertCreated, nil
+}
+
+// coldBundleHasSensitive reports whether any member already staged for the
+// brand-new file at rel is an encrypted (sensitive) resource, so createNew can
+// refuse to add a plaintext member that would co-mingle with it.
+func (wb *writeBatch) coldBundleHasSensitive(rel string) bool {
+	for _, m := range wb.coldBundles[rel] {
+		if m.sensitive {
+			return true
+		}
+	}
+	return false
 }
 
 // appendNewDocument adds a resource with no existing document as an additional
