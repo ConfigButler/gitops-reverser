@@ -161,6 +161,15 @@ type DocumentModel struct {
 	// See NamespaceSourceKind.
 	NamespaceSource NamespaceSource
 
+	// Overrides is the unambiguous kustomize images/replicas override chain
+	// governing this document's file, in build order — nil when no supported
+	// render root supplies one, or when distinct roots disagree (the
+	// ambiguous-kustomize-overrides diagnostic). The writer routes a live change
+	// produced by one of these entries back to the entry instead of writing it
+	// through into the source document. See
+	// docs/design/gitops-api/f1-images-replicas-edit-through.md.
+	Overrides *KustomizeOverrides
+
 	// ResourceIdentity is the API-side identity (GVR + namespace + name). It is set
 	// only when the injected GVK->GVR mapper resolves the document's GVK to a single
 	// served, allowed resource; structure-only analysis (and any unresolved lookup)
@@ -344,7 +353,10 @@ func buildStore(
 	}
 	yamlFiles := scan.YAMLFiles
 	inv, indexDiags := manifestedit.IndexFiles(yamlFiles)
-	nsAssignments := kustomizeNamespaceAssignments(yamlFiles)
+	kusts := parseKustomizations(yamlFiles)
+	resourceFiles := resourceFilePaths(yamlFiles)
+	nsAssignments := kustomizeNamespaceAssignments(kusts, resourceFiles)
+	ovAssignments := kustomizeOverrideAssignments(kusts, resourceFiles)
 
 	store := &ManifestStore{
 		FilesByPath:        map[string]*FileModel{},
@@ -375,7 +387,7 @@ func buildStore(
 			})
 			continue
 		}
-		store.materialize(ctx, r, lookup, nsAssignments)
+		store.materialize(ctx, r, lookup, nsAssignments, ovAssignments)
 	}
 
 	// Record every allowlisted file with no named record as a whole-file retention,
@@ -444,11 +456,16 @@ func (s *ManifestStore) materialize(
 	r manifestedit.DocumentRecord,
 	lookup typeset.Lookup,
 	nsAssignments map[string]namespaceAssignment,
+	ovAssignments map[string]*overrideAssignment,
 ) {
 	gvk := gvkOf(r.Identity)
 	identity, nsSource, diag := resolveNamespaceContext(ctx, r.Identity, gvk, lookup, r.Location, nsAssignments)
 	if diag != nil {
 		s.Diagnostics = append(s.Diagnostics, *diag)
+	}
+	overrides, ovDiag := resolveOverrides(r.Location, ovAssignments)
+	if ovDiag != nil {
+		s.Diagnostics = append(s.Diagnostics, *ovDiag)
 	}
 
 	fm := s.FilesByPath[r.Location.Path]
@@ -459,6 +476,7 @@ func (s *ManifestStore) materialize(
 	dm := &DocumentModel{
 		ManifestIdentity: identity,
 		NamespaceSource:  nsSource,
+		Overrides:        overrides,
 		Editable:         r.Editable && !r.Encrypted,
 		Cause:            causeFor(r),
 	}
@@ -579,10 +597,12 @@ type namespaceAssignment struct {
 // a namespace source). See the "Kustomize subset proposal" in
 // docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md.
 type kustomizationDoc struct {
-	path        string   // kustomization file path (slash)
-	namespace   string   // the namespace: transformer value
-	resources   []string // resources + bases entries, raw and relative to the file's dir
-	unsupported bool     // uses generators/patches/components/remote bases/name(pre|suf)fix/...
+	path        string            // kustomization file path (slash)
+	namespace   string            // the namespace: transformer value
+	resources   []string          // resources + bases entries, raw and relative to the file's dir
+	images      []ImageOverride   // parsed images: entries, in listed order
+	replicas    []ReplicaOverride // parsed replicas: entries, in listed order
+	unsupported bool              // uses generators/patches/components/remote bases/name(pre|suf)fix/...
 }
 
 // kustomizeNamespaceAssignments walks each supported kustomization as a render root and
@@ -591,10 +611,10 @@ type kustomizationDoc struct {
 // overrides a child's namespace) accumulates both, which resolveNamespaceContext then
 // refuses as ambiguous. Following the graph — not the nearest kustomization on disk —
 // is the safety property the design doc requires.
-func kustomizeNamespaceAssignments(files []manifestedit.FileContent) map[string]namespaceAssignment {
-	kusts := parseKustomizations(files)
-	resourceFiles := resourceFilePaths(files)
-
+func kustomizeNamespaceAssignments(
+	kusts map[string]*kustomizationDoc,
+	resourceFiles map[string]struct{},
+) map[string]namespaceAssignment {
 	// nsByFile[file][namespace] = kustomization path that first assigned it.
 	nsByFile := map[string]map[string]string{}
 	for dir, root := range kusts {
@@ -704,7 +724,11 @@ func parseKustomizations(files []manifestedit.FileContent) map[string]*kustomiza
 		}
 		doc.namespace = strings.TrimSpace(stringField(raw, "namespace"))
 		doc.resources = append(stringList(raw, "resources"), stringList(raw, "bases")...)
-		doc.unsupported = hasUnsupportedKustomizeFeature(raw) || hasRemoteResource(doc.resources)
+		images, imagesOK := parseImageOverrides(raw, doc.path)
+		replicas, replicasOK := parseReplicaOverrides(raw, doc.path)
+		doc.images, doc.replicas = images, replicas
+		doc.unsupported = hasUnsupportedKustomizeFeature(raw) || hasRemoteResource(doc.resources) ||
+			!imagesOK || !replicasOK
 		out[slashDir(f.Path)] = doc
 	}
 	return out
@@ -721,14 +745,17 @@ func kustomizationUsesUnsupportedFeature(content []byte) bool {
 		return true
 	}
 	resources := append(stringList(raw, "resources"), stringList(raw, "bases")...)
-	return hasUnsupportedKustomizeFeature(raw) || hasRemoteResource(resources)
+	_, imagesOK := parseImageOverrides(raw, "")
+	_, replicasOK := parseReplicaOverrides(raw, "")
+	return hasUnsupportedKustomizeFeature(raw) || hasRemoteResource(resources) || !imagesOK || !replicasOK
 }
 
 // hasUnsupportedKustomizeFeature reports whether a kustomization uses a field that
 // creates resources or mutates resource identity (name/namespace) in ways the
 // contextual-namespace writer cannot map back to an editable source document. Their
 // presence disqualifies a kustomization as a namespace source; benign transformers
-// (labels, annotations, images) do not.
+// (labels, annotations) do not. images/replicas are parsed separately (overrides.go)
+// and disqualify only when malformed.
 func hasUnsupportedKustomizeFeature(raw map[string]interface{}) bool {
 	unsupported := []string{
 		"generators", "configMapGenerator", "secretGenerator",

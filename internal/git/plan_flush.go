@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -85,6 +87,12 @@ func newWriteBatch(
 	// .gittargetignore, so the structure-only acceptance gate (run by writeBatch.refusal) and
 	// the write-plan precondition (run by writeBatch.flush) read both from the store.
 	store := manifestanalyzer.BuildStoreFromScan(ctx, scan, mapper, manifestanalyzer.WriterAllowlist())
+	// Surface the store's build-time warnings (ambiguous namespace or override
+	// context, scope mismatches) once per batch: these drive silent fallbacks —
+	// e.g. an ambiguous override chain falls back to write-through — and without
+	// this line the live path would leave no trace of why. The analyzer CLI and
+	// scan mode show the same diagnostics offline.
+	logStoreDiagnostics(ctx, store.Diagnostics)
 	contentByPath := make(map[string][]byte, len(scan.YAMLFiles))
 	for _, f := range scan.YAMLFiles {
 		contentByPath[f.Path] = f.Content
@@ -216,6 +224,14 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 		return nil
 	}
 
+	assignments := event.FieldPatch.Assignments
+	if dm := wb.store.ByManifestIdentity[id]; dm != nil && dm.Overrides != nil {
+		assignments = wb.routeGovernedFieldAssignments(ctx, event, dm, assignments)
+		if len(assignments) == 0 {
+			return nil
+		}
+	}
+
 	buf := wb.buffer(filePath)
 	idx, found := currentDocIndex(filePath, buf.current, id)
 	if !found {
@@ -224,7 +240,7 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 	}
 
 	res, diags := manifestedit.PatchFields(
-		buf.current, idx, id, event.FieldPatch.Assignments, manifestedit.EditOptions{},
+		buf.current, idx, id, assignments, manifestedit.EditOptions{},
 	)
 	switch res.Mode {
 	case manifestedit.EditPatched:
@@ -240,6 +256,50 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 		logManifestDiagnostics(ctx, diags)
 	}
 	return nil
+}
+
+// routeGovernedFieldAssignments diverts a spec.replicas assignment whose value a
+// replicas override governs to its kustomization entry (the /scale subresource
+// case of F1) and returns the assignments the file patch should still apply. An
+// ungoverned assignment — any other path, a non-integer value, no matching
+// entry — keeps today's bounded file patch.
+func (wb *writeBatch) routeGovernedFieldAssignments(
+	ctx context.Context,
+	event Event,
+	dm *manifestanalyzer.DocumentModel,
+	assignments []manifestedit.FieldAssignment,
+) []manifestedit.FieldAssignment {
+	kept := make([]manifestedit.FieldAssignment, 0, len(assignments))
+	for _, a := range assignments {
+		if len(a.Path) == 2 && a.Path[0] == "spec" && a.Path[1] == "replicas" {
+			if count, isInt := assignmentInt64(a.Value); isInt {
+				if edit, governed := manifestanalyzer.ReplicaCountEdit(dm, count); governed {
+					wb.applyOverrideEdits(ctx, event, []manifestanalyzer.OverrideEdit{edit})
+					continue
+				}
+			}
+		}
+		kept = append(kept, a)
+	}
+	return kept
+}
+
+// assignmentInt64 reads a field-assignment value as a whole number (audit JSON
+// may deliver it as int64 or float64).
+func assignmentInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case float64:
+		if n == math.Trunc(n) {
+			return int64(n), true
+		}
+	}
+	return 0, false
 }
 
 // resolveFieldPatchTarget locates the parent manifest a field-patch event targets.
@@ -265,6 +325,11 @@ func (wb *writeBatch) resolveFieldPatchTarget(event Event) (string, manifestedit
 // same batch that shifted a multi-document file does not misdirect this edit. A
 // document the store located but an earlier event already removed is simply absent now,
 // so there is nothing to patch.
+//
+// When the document is governed by a kustomize images/replicas override chain, the
+// desired projection is first split: values the chain produces are restored to their
+// source form (so the file keeps its bytes) and the divergence is routed to the
+// override entries instead — see docs/design/gitops-api/f1-images-replicas-edit-through.md.
 func (wb *writeBatch) patchExisting(
 	ctx context.Context,
 	event Event,
@@ -283,16 +348,24 @@ func (wb *writeBatch) patchExisting(
 		desired = desired.DeepCopy()
 		desired.SetNamespace("")
 	}
+	projected := manifestreport.Project(desired)
+	var overrideEdits []manifestanalyzer.OverrideEdit
+	if dm.Overrides != nil {
+		if gitRaw, parsed := gitDocRawObject(buf.current, idx); parsed {
+			projected, overrideEdits = manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Overrides)
+		}
+	}
 	c := manifestedit.Comparison{
 		Git:     gitDoc,
-		Desired: manifestreport.Project(desired),
+		Desired: projected,
 		Options: manifestreport.EditOptions(),
 	}
 	res, diags := manifestedit.Apply(c, manifestedit.Decide(c))
+	outcome := upsertNoChange
 	switch res.Mode {
 	case manifestedit.EditPatched, manifestedit.EditWholeReplace:
 		buf.current = res.Content
-		return upsertUpdated, nil
+		outcome = upsertUpdated
 	case manifestedit.EditNoChange, manifestedit.EditSkipped, manifestedit.EditDeleted:
 		// No-op, an unsafe edit left untouched, or (impossible here) a delete: leave
 		// the bytes as they are. Surface a skip so an operator can see a document Git
@@ -301,7 +374,71 @@ func (wb *writeBatch) patchExisting(
 			logManifestDiagnostics(ctx, diags)
 		}
 	}
-	return upsertNoChange, nil
+	if wb.applyOverrideEdits(ctx, event, overrideEdits) {
+		outcome = upsertUpdated
+	}
+	return outcome, nil
+}
+
+// applyOverrideEdits folds routed override edits into their kustomization file
+// buffers, so they flush (and hit the .gittargetignore shadow precondition)
+// exactly like any other planned write. It reports whether any buffer changed.
+// A skipped edit (drifted or missing entry) is logged and dropped — the source
+// file was deliberately left in its source form, so the next event or resync
+// re-decides against the changed kustomization rather than guessing now.
+func (wb *writeBatch) applyOverrideEdits(
+	ctx context.Context,
+	event Event,
+	edits []manifestanalyzer.OverrideEdit,
+) bool {
+	if len(edits) == 0 {
+		return false
+	}
+	byPath := map[string][]manifestedit.KustomizationEdit{}
+	paths := make([]string, 0, len(edits))
+	for _, e := range edits {
+		if _, seen := byPath[e.KustomizationPath]; !seen {
+			paths = append(paths, e.KustomizationPath)
+		}
+		byPath[e.KustomizationPath] = append(byPath[e.KustomizationPath], e.Edit)
+	}
+	sort.Strings(paths)
+
+	changed := false
+	for _, p := range paths {
+		buf := wb.buffer(p)
+		if buf.current == nil {
+			continue // the kustomization vanished within this batch; nothing to edit
+		}
+		res, diags := manifestedit.PatchKustomization(p, buf.current, byPath[p])
+		switch res.Mode {
+		case manifestedit.EditPatched:
+			buf.current = res.Content
+			changed = true
+			log.FromContext(ctx).Info("Routed live change to kustomization override",
+				"kustomization", p, "resource", event.Identifier.String(), "edits", len(byPath[p]))
+		case manifestedit.EditNoChange:
+			// Another event in this batch already landed the same value.
+		case manifestedit.EditSkipped, manifestedit.EditWholeReplace, manifestedit.EditDeleted:
+			logManifestDiagnostics(ctx, diags)
+		}
+	}
+	return changed
+}
+
+// gitDocRawObject parses one document of a managed file into JSON-typed maps for
+// the override projection. parsed is false for an out-of-range index or a body
+// that is not a YAML mapping — the projection then simply does not run.
+func gitDocRawObject(content []byte, idx int) (map[string]interface{}, bool) {
+	body, ok := manifestedit.DocumentBody(content, idx)
+	if !ok {
+		return nil, false
+	}
+	raw := map[string]interface{}{}
+	if err := sigsyaml.Unmarshal(body, &raw); err != nil {
+		return nil, false
+	}
+	return raw, true
 }
 
 // writeWholeFile renders the event's clean content (sanitized, or SOPS-encrypted for a
@@ -623,6 +760,21 @@ func sortedBaseKeys(byBase map[string][]Event) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// logStoreDiagnostics surfaces store build-time diagnostics of warning level or
+// above at low verbosity — the trace for decisions the writer makes silently
+// (ambiguity fallbacks, scope mismatches). Info-level index chatter is dropped.
+func logStoreDiagnostics(ctx context.Context, diags []manifestedit.Diagnostic) {
+	logger := log.FromContext(ctx)
+	for _, d := range diags {
+		if d.Level == manifestedit.DiagInfo {
+			continue
+		}
+		logger.V(1).Info("manifest store diagnostic",
+			"level", d.Level, "reason", d.Reason, "file", d.Path,
+			"documentIndex", d.DocumentIndex, "message", d.Message)
+	}
 }
 
 // logManifestDiagnostics surfaces manifestedit diagnostics at low verbosity so a

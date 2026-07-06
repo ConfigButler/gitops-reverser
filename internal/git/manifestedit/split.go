@@ -75,6 +75,18 @@ func DocumentCount(content []byte) int {
 	return n
 }
 
+// DocumentBody returns the exact bytes of the document at index within content,
+// carved by the same byte-faithful splitter every edit path uses. ok is false
+// when the index is out of range. Callers use it to parse one document's raw
+// object without re-implementing document splitting.
+func DocumentBody(content []byte, index int) ([]byte, bool) {
+	docs := splitDocuments(string(content))
+	if index < 0 || index >= len(docs) {
+		return nil, false
+	}
+	return []byte(docs[index].body), true
+}
+
 // joinDocuments reassembles documents into file content.
 func joinDocuments(docs []rawDoc) string {
 	var b strings.Builder

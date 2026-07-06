@@ -1,0 +1,5 @@
+resources:
+  - ../shared.yaml
+images:
+  - name: ghcr.io/example/podinfo
+    newTag: "2.0.0"

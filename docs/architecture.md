@@ -812,7 +812,8 @@ write side is shared with live writes):
 * before anything is planned, a **structure-only acceptance gate** runs over the scanned subtree; if it
   finds content the operator cannot safely manage — a kustomization using an unsupported feature
   (generators / patches / components / helm / replacements / transformers / name(pre|suf)fix / remote
-  bases), a duplicate manifest identity, an impure managed file, or a standalone non-KRM / invalid YAML —
+  bases) or malformed `images:`/`replicas:` overrides, a duplicate manifest identity, an impure managed
+  file, or a standalone non-KRM / invalid YAML —
   the whole apply is **refused**: nothing is committed, `GitPathAccepted=False`, `Stalled=True`, and
   `Ready=False` with reason `UnsupportedContent` until a human cleans the path;
 * desired resources are upserted through the same content derived path as live writes;
@@ -901,10 +902,16 @@ hydrates only touched files into buffers for the commit, and flushes only change
 * **Upserts:** if a managed document for the resource already exists, patch it in place (preserving
   siblings in a multi document file); if it is sensitive, encrypt the whole document again at its existing
   path; if no document exists, create a new file at the canonical placement path.
+* **Kustomize override edit-through:** a live value produced by a well-formed `images:` or `replicas:`
+  entry in the document's kustomization chain is written back to that entry (comment-preserving, only
+  fields the entry already declares); the source manifest keeps its bytes. Anything the inversion cannot
+  express falls back to the plain in-place patch. See
+  [gitops-api/f1-images-replicas-edit-through.md](design/gitops-api/f1-images-replicas-edit-through.md).
 * **Deletes:** use the manifest identity index, so a moved manifest can still be deleted even when it is
   not at the canonical path.
 * **Field patches** (currently `/scale` → parent `spec.replicas`) are intentionally narrow: they only
-  patch an existing parent manifest and never fabricate a parent object from partial subresource data.
+  patch an existing parent manifest and never fabricate a parent object from partial subresource data; a
+  `spec.replicas` assignment governed by a `replicas:` override is routed to the entry instead.
 
 ### File Placement
 

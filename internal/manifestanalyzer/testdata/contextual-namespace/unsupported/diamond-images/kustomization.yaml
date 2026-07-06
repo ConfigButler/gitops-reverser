@@ -1,0 +1,7 @@
+# One render root reaches the shared base through two overlays whose override
+# chains differ (a diamond). Real kustomize rejects this build (duplicate
+# resources); the analyzer must record BOTH paths and refuse to route
+# (ambiguous-kustomize-overrides), never silently attribute the first path.
+resources:
+  - a
+  - b
