@@ -171,6 +171,23 @@ jobs:
           sbom-path: sbom.spdx.json
           push-to-registry: true
 
+      # The image itself is already signed + attested above, but OpenSSF
+      # Scorecard's Signed-Releases check only looks at the GitHub *release
+      # assets*, not the OCI registry. Sign and attest the SBOM asset directly
+      # so the release itself carries a signature (*.sigstore.json) and SLSA
+      # provenance (*.intoto.jsonl) next to it.
+      - name: Sign the SBOM asset (cosign keyless)
+        run: cosign sign-blob --bundle sbom.spdx.json.sigstore.json --yes sbom.spdx.json
+
+      - name: Attest SLSA provenance for the SBOM asset
+        id: attest-sbom-asset
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: sbom.spdx.json
+
+      - name: Rename provenance bundle to the Scorecard-recognized suffix
+        run: cp "${{ steps.attest-sbom-asset.outputs.bundle-path }}" sbom.spdx.json.intoto.jsonl
+
       - name: Update release info
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
@@ -181,7 +198,10 @@ jobs:
           # it to published after all assets are attached.
           draft: true
           append_body: true
-          files: sbom.spdx.json
+          files: |
+            sbom.spdx.json
+            sbom.spdx.json.sigstore.json
+            sbom.spdx.json.intoto.jsonl
           body: |
             ## Installation
             ### Quick Install (Single YAML)
@@ -226,7 +246,8 @@ jobs:
     permissions:
       contents: write # upload install.yaml release asset
       packages: write
-      id-token: write # cosign keyless signing
+      id-token: write # cosign keyless signing + attestation OIDC
+      attestations: write
     container:
       image: ${{ needs.ci.outputs.ci-image }}
       credentials:
@@ -277,6 +298,23 @@ jobs:
       - name: Sign the Helm chart (cosign keyless)
         run: cosign sign --yes "${CHART_REGISTRY}/gitops-reverser@${{ steps.chart.outputs.digest }}"
 
+      # The chart is already signed above via its OCI digest, but OpenSSF
+      # Scorecard's Signed-Releases check only looks at the GitHub *release
+      # assets*, not the OCI registry. Sign and attest install.yaml directly so
+      # the release carries a signature (*.sigstore.json) and SLSA provenance
+      # (*.intoto.jsonl) next to it.
+      - name: Sign install.yaml (cosign keyless)
+        run: cosign sign-blob --bundle install.yaml.sigstore.json --yes dist/install.yaml
+
+      - name: Attest SLSA provenance for install.yaml
+        id: attest-install-yaml
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: dist/install.yaml
+
+      - name: Rename provenance bundle to the Scorecard-recognized suffix
+        run: cp "${{ steps.attest-install-yaml.outputs.bundle-path }}" install.yaml.intoto.jsonl
+
       - name: Upload install.yaml as release asset
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
@@ -285,7 +323,10 @@ jobs:
           # every asset is in place (immutable releases reject post-publish
           # uploads).
           draft: true
-          files: dist/install.yaml
+          files: |
+            dist/install.yaml
+            install.yaml.sigstore.json
+            install.yaml.intoto.jsonl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

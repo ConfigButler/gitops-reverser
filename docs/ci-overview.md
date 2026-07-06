@@ -84,7 +84,7 @@ step merges those exact digests into a multi-arch manifest tagged with the semve
 | --- | --- | --- |
 | Multi-arch image (`linux/amd64`, `linux/arm64`) | `ghcr.io/configbutler/gitops-reverser` | cosign keyless signature, SLSA build provenance attestation, SPDX SBOM attestation |
 | Helm chart | `oci://ghcr.io/configbutler/charts/gitops-reverser` | cosign keyless signature |
-| `install.yaml` + `sbom.spdx.json` | GitHub release assets | part of the signed release |
+| `install.yaml`, `sbom.spdx.json` | GitHub release assets | each signed directly (`<asset>.sigstore.json`) and SLSA-attested (`<asset>.intoto.jsonl`), also uploaded as release assets |
 
 Verify an image (also embedded in every release's notes):
 
@@ -97,6 +97,20 @@ cosign verify \
 gh attestation verify oci://ghcr.io/configbutler/gitops-reverser:<version> \
   --repo ConfigButler/gitops-reverser
 ```
+
+Verify a release asset (e.g. `install.yaml`) from its downloaded `.sigstore.json` bundle:
+
+```bash
+cosign verify-blob \
+  --bundle install.yaml.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/ConfigButler/gitops-reverser/\.github/workflows/release\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  install.yaml
+```
+
+These per-asset signatures/attestations exist specifically so release assets carry their
+own verifiable integrity, independent of the OCI registry — the surface OpenSSF Scorecard's
+`Signed-Releases` check actually inspects.
 
 Signing is *keyless* (Sigstore): there is no private key to store or leak. The signature
 certifies "built by the `release.yml` workflow on `main` of this repository", issued via
