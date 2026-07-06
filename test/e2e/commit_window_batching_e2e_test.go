@@ -104,7 +104,7 @@ var _ = Describe("Commit Window Batching",
 			Eventually(func(g Gomega) {
 				pullLatestRepoState(g, repo.CheckoutDir)
 				expected := filepath.Join(repo.CheckoutDir, basePath,
-					"v1", "configmaps", testNs, seedCM+".yaml")
+					testNs, "configmaps", seedCM+".yaml")
 				_, statErr := os.Stat(expected)
 				g.Expect(statErr).NotTo(HaveOccurred(),
 					fmt.Sprintf("seed ConfigMap should land before the burst: %s", expected))
@@ -131,7 +131,7 @@ var _ = Describe("Commit Window Batching",
 				pullLatestRepoState(g, repo.CheckoutDir)
 				for _, name := range burstNames {
 					expected := filepath.Join(repo.CheckoutDir, basePath,
-						"v1", "configmaps", testNs, name+".yaml")
+						testNs, "configmaps", name+".yaml")
 					_, statErr := os.Stat(expected)
 					g.Expect(statErr).NotTo(HaveOccurred(),
 						fmt.Sprintf("ConfigMap file should exist: %s", expected))

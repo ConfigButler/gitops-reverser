@@ -175,9 +175,7 @@ spec:
 		expectedOrder := filepath.Join(
 			watchRuleRepo.CheckoutDir,
 			gitTargetPath,
-			iceCreamInstanceDir(crdGroupWildcardRule),
-			testNs,
-			orderName+".yaml",
+			iceCreamInstancePath(crdGroupWildcardRule, testNs, orderName),
 		)
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, watchRuleRepo.CheckoutDir)
@@ -534,7 +532,7 @@ spec:
 			assertLatestCommitTouchesNoNamespaces(
 				g,
 				watchRuleRepo.CheckoutDir,
-				"e2e/configmap-test/v1/configmaps",
+				"e2e/configmap-test",
 				[]string{
 					"gitops-reverser",
 					"flux-system",
@@ -768,7 +766,7 @@ spec:
 			assertLatestCommitTouchesNoNamespaces(
 				g,
 				watchRuleRepo.CheckoutDir,
-				"e2e/delete-test/v1/configmaps",
+				"e2e/delete-test",
 				[]string{
 					"gitops-reverser",
 					"flux-system",

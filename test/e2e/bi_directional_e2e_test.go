@@ -395,18 +395,15 @@ func (r biDirectionalRun) repoPath(parts ...string) string {
 func (r biDirectionalRun) liveOrderPath(name string) string {
 	return r.repoPath(
 		r.livePath,
-		iceCreamInstanceDir(crdGroupBiDirectional),
-		r.testNs,
-		name+".yaml",
+		iceCreamInstancePath(crdGroupBiDirectional, r.testNs, name),
 	)
 }
 
 func (r biDirectionalRun) liveSecretPath(name string) string {
 	return r.repoPath(
 		r.livePath,
-		"v1",
-		"secrets",
 		r.testNs,
+		"secrets",
 		name+".sops.yaml",
 	)
 }
@@ -419,7 +416,7 @@ func (r biDirectionalRun) writeCRDToRepo() {
 	Expect(err).NotTo(HaveOccurred(), "failed to render IceCreamOrder CRD fixture")
 	Expect(
 		os.MkdirAll(
-			r.repoPath(r.crdPath, "apiextensions.k8s.io", "v1", "customresourcedefinitions"),
+			r.repoPath(r.crdPath, "cluster", "apiextensions.k8s.io", "customresourcedefinitions"),
 			0o755,
 		),
 	).To(Succeed())
@@ -427,8 +424,8 @@ func (r biDirectionalRun) writeCRDToRepo() {
 		os.WriteFile(
 			r.repoPath(
 				r.crdPath,
+				"cluster",
 				"apiextensions.k8s.io",
-				"v1",
 				"customresourcedefinitions",
 				iceCreamCRDMirrorFile(crdGroupBiDirectional),
 			),

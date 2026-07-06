@@ -225,9 +225,8 @@ func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
 	expectedFile := filepath.Join(
 		r.checkoutDir,
 		"live-cluster",
-		"v1",
-		"configmaps",
 		ns,
+		"configmaps",
 		fmt.Sprintf("%s.yaml", configMapName),
 	)
 
@@ -316,9 +315,8 @@ func (r *quickstartFrameworkRun) verifyQuickstartSecretEncryption(generatedAgeKe
 	expectedFile := filepath.Join(
 		r.checkoutDir,
 		"live-cluster",
-		"v1",
-		"secrets",
 		ns,
+		"secrets",
 		fmt.Sprintf("%s.sops.yaml", secretName),
 	)
 

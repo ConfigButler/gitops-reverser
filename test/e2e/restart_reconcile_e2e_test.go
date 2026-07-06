@@ -123,7 +123,7 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 		expectedFiles := make([]string, 0, len(orderNames))
 		for _, name := range orderNames {
 			expectedFiles = append(expectedFiles, filepath.Join(
-				gitTargetPath, iceCreamInstanceDir(crdGroupRestartReconcile), testNs, name+".yaml",
+				gitTargetPath, iceCreamInstancePath(crdGroupRestartReconcile, testNs, name),
 			))
 		}
 

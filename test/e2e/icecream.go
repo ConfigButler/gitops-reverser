@@ -25,15 +25,17 @@ func iceCreamCRDName(group string) string {
 }
 
 // iceCreamCRDMirrorFile returns the filename gitops-reverser writes for the CRD
-// under apiextensions.k8s.io/v1/customresourcedefinitions/.
+// under cluster/apiextensions.k8s.io/customresourcedefinitions/ (CRDs are
+// cluster-scoped, so the scope segment is the literal "cluster").
 func iceCreamCRDMirrorFile(group string) string {
 	return iceCreamCRDName(group) + ".yaml"
 }
 
-// iceCreamInstanceDir returns the mirror path prefix for IceCreamOrder instances
-// of the given group: "<group>/v1/icecreamorders".
-func iceCreamInstanceDir(group string) string {
-	return group + "/v1/icecreamorders"
+// iceCreamInstancePath returns the canonical mirror path for one IceCreamOrder
+// instance under the new namespace-first, version-less layout:
+// "<namespace>/<group>/icecreamorders/<name>.yaml".
+func iceCreamInstancePath(group, namespace, name string) string {
+	return namespace + "/" + group + "/icecreamorders/" + name + ".yaml"
 }
 
 // applyIceCreamCRD renders and applies the IceCreamOrder CRD for the given group.

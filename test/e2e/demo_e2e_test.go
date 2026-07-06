@@ -26,10 +26,9 @@ const (
 
 var demoCoffeeConfigGitPath = strings.Join([]string{
 	"voter-coffee",
-	"examples.configbutler.ai",
-	"v1alpha1",
-	"coffeeconfigs",
 	"voter-test",
+	"examples.configbutler.ai",
+	"coffeeconfigs",
 	"testnet-coffee.yaml",
 }, "/")
 
