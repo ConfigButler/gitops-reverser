@@ -107,6 +107,7 @@ jobs:
             controller-gen --version
             k3d version
             docker --version
+            cosign version
             echo '✅ All CI container tools verified'
           "
 
