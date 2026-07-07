@@ -93,8 +93,11 @@ type GitTargetSpec struct {
 // route anything else — by naming their type in ByType. When a resource's type
 // has no ByType entry and no Default, placement falls back to following the layout
 // already established by sibling resources in the repository, and finally to the
-// canonical {group}/{version}/{resource}/{namespace}/{name}.yaml path when there
-// is nothing to follow.
+// canonical, versionless {namespaceOrCluster}/{group}/{resource}/{name}.yaml path
+// when there is nothing to follow. Because that fallback omits the API version,
+// objects that differ only by version share a file; a target that watches several
+// versions of the same group/resource and wants them separated must use a
+// ByType/Default template that includes {version}.
 type GitTargetPlacementSpec struct {
 	// ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
 	// "v1/configmaps", "apps/v1/deployments", or "v1/secrets"; core resources omit

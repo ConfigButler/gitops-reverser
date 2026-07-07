@@ -105,16 +105,22 @@ func validatePlacementTemplate(tmpl string) (string, bool) {
 }
 
 // validPlacementTypeKeySyntax reports whether key has the shape
-// "[group/]version/resource" — two or three non-empty, slash-separated segments.
-// It checks syntax only; whether the type is actually served/watched is a
-// repository-independent question this static gate cannot answer.
+// "[group/]version/resource" — two or three slash-separated segments, each
+// non-empty and free of surrounding whitespace. It checks syntax only; whether
+// the type is actually served/watched is a repository-independent question this
+// static gate cannot answer.
 func validPlacementTypeKeySyntax(key string) bool {
 	parts := strings.Split(key, "/")
 	if len(parts) != 2 && len(parts) != 3 {
 		return false
 	}
 	for _, p := range parts {
-		if strings.TrimSpace(p) == "" {
+		// Reject empty segments and, crucially, segments carrying surrounding
+		// whitespace: the resolver matches this key against the watched GVR by
+		// exact string equality, so "apps/v1/deployments " would clear a
+		// trim-then-check gate yet never match — the placement would silently
+		// fall through instead of erroring. Fail such keys at the Validated gate.
+		if p == "" || p != strings.TrimSpace(p) {
 			return false
 		}
 	}

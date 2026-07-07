@@ -7,9 +7,10 @@ import (
 	"fmt"
 )
 
-// ResourceIdentifier encapsulates all information needed to uniquely identify
-// a Kubernetes resource and generate its Git storage path following the
-// Kubernetes REST API structure: {group}/{version}/{resource}/{namespace}/{name}.
+// ResourceIdentifier encapsulates all information needed to uniquely identify a
+// Kubernetes resource. Its Key() is the fully-qualified REST-style identity
+// ({group}/{version}/{resource}/{namespace}/{name}); its ToGitPath() is the
+// versionless, namespace-first Git storage path (see that method).
 type ResourceIdentifier struct {
 	Group     string // e.g., "apps", "" for core resources
 	Version   string // e.g., "v1"

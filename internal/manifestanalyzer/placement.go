@@ -55,9 +55,10 @@ const (
 	// PlacementSourceInferred is Option C: no declared template matched, but an
 	// existing sibling cohort determined the destination.
 	PlacementSourceInferred PlacementSource = "inferred"
-	// PlacementSourceCanonical is the built-in {group}/{version}/{resource}/
-	// {namespace}/{name}.yaml fallback: no declared template and no sibling to
-	// follow (e.g. an empty repository, or the type/namespace is new).
+	// PlacementSourceCanonical is the built-in, versionless
+	// {namespaceOrCluster}/{group}/{resource}/{name}.yaml fallback: no declared
+	// template and no sibling to follow (e.g. an empty repository, or the
+	// type/namespace is new).
 	PlacementSourceCanonical PlacementSource = "canonical"
 )
 

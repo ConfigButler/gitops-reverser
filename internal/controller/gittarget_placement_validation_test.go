@@ -132,6 +132,10 @@ func TestValidPlacementTypeKeySyntax(t *testing.T) {
 		{"a/b/c/d", false},
 		{"v1//secrets", false},
 		{"/v1/secrets", false},
+		{"apps/v1/deployments ", false},  // trailing space can never match the resolver's exact GVR key
+		{" apps/v1/deployments", false},  // leading space
+		{"apps/v1/ deployments", false},  // padded middle segment
+		{"apps/v1/deployments\t", false}, // trailing tab
 	}
 	for _, tc := range cases {
 		if got := validPlacementTypeKeySyntax(tc.key); got != tc.want {
