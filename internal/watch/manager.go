@@ -127,7 +127,7 @@ type Manager struct {
 
 	// gitPathEventsCh carries a GenericEvent for a GitTarget whenever its GitPath acceptance
 	// state TRANSITIONS, so the GitTarget controller re-projects GitPathAccepted promptly
-	// instead of waiting up to RequeueLongInterval (10m) for its next periodic reconcile. The
+	// instead of waiting up to RequeueSteadyInterval (5m) for its next periodic reconcile. The
 	// data plane records acceptance asynchronously; without this edge the status lags. See
 	// docs/design/manifest/gitpathaccepted-projection-race-and-external-drift.md. Lazily
 	// created by GitPathEvents() and guarded by gitPathEventsMu.

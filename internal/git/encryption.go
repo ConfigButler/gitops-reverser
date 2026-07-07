@@ -8,9 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -41,22 +38,19 @@ const (
 	EncryptionProviderSOPS = "sops"
 	// defaultSOPSBinaryPath is resolved from PATH in the controller runtime image.
 	defaultSOPSBinaryPath = "sops"
-	// sopsAgeKeyFileEnvVar points SOPS to a file containing age private identities.
-	sopsAgeKeyFileEnvVar = "SOPS" + "_AGE_KEY_FILE"
-	// ageSecretKeySuffix identifies Flux-compatible age private-key entries.
+	// ageSecretKeySuffix identifies Flux-compatible age private-key entries. The write path
+	// reads these only to derive the public recipient; the private identity is never kept.
 	ageSecretKeySuffix = ".agekey"
-	// ageIdentityFileDir is the temp directory used for SOPS age identity files.
-	ageIdentityFileDir = "gitops-reverser-age-identities"
 )
 
-var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
 // ResolvedEncryptionConfig contains runtime encryption settings resolved from GitTarget spec.
+//
+// It carries public age recipients only. The write path encrypts, it never decrypts, so no
+// private age identity is retained, written to disk, or passed to the sops process. See
+// docs/future/secret-value-retention-plan.md.
 type ResolvedEncryptionConfig struct {
 	Provider      string
-	Environment   map[string]string
 	AgeRecipients []string
-	AgeIdentities []string
 }
 
 // ResolveTargetEncryption resolves and validates GitTarget encryption configuration.
@@ -83,12 +77,7 @@ func ResolveTargetEncryption(
 	if err != nil {
 		return nil, err
 	}
-	secretRecipients, secretIdentities, environment, err := resolveSecretRecipientsAndEnvironment(
-		ctx,
-		k8sClient,
-		target,
-		encryptionSpec,
-	)
+	secretRecipients, err := resolveSecretRecipients(ctx, k8sClient, target, encryptionSpec)
 	if err != nil {
 		return nil, err
 	}
@@ -100,12 +89,9 @@ func ResolveTargetEncryption(
 		)
 	}
 
-	environment = normalizeEnvironment(environment)
 	return &ResolvedEncryptionConfig{
 		Provider:      providerName,
-		Environment:   environment,
 		AgeRecipients: resolvedRecipients,
-		AgeIdentities: secretIdentities,
 	}, nil
 }
 
@@ -120,19 +106,23 @@ func resolveEncryptionProvider(encryptionSpec *v1alpha3.EncryptionSpec) (string,
 	return providerName, nil
 }
 
-func resolveSecretRecipientsAndEnvironment(
+// resolveSecretRecipients reads the referenced age-key Secret and derives the public age
+// recipients from its *.agekey entries. It intentionally derives recipients only: the private
+// identities and the rest of the Secret data are never returned to the caller, so they cannot
+// reach the sops process or disk.
+func resolveSecretRecipients(
 	ctx context.Context,
 	k8sClient client.Client,
 	target *v1alpha3.GitTarget,
 	encryptionSpec *v1alpha3.EncryptionSpec,
-) ([]string, []string, map[string]string, error) {
+) ([]string, error) {
 	if encryptionSpec.Age == nil || !encryptionSpec.Age.Recipients.ExtractFromSecret {
-		return nil, nil, nil, nil
+		return nil, nil
 	}
 
 	secretKind := strings.TrimSpace(encryptionSpec.SecretRef.Kind)
 	if secretKind != "" && secretKind != "Secret" {
-		return nil, nil, nil, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"encryption.secretRef.kind must be Secret, got %q",
 			encryptionSpec.SecretRef.Kind,
 		)
@@ -140,23 +130,22 @@ func resolveSecretRecipientsAndEnvironment(
 
 	secretName := strings.TrimSpace(encryptionSpec.SecretRef.Name)
 	if secretName == "" {
-		return nil, nil, nil, errors.New(
+		return nil, errors.New(
 			"encryption.secretRef.name must be set when age.recipients.extractFromSecret=true",
 		)
 	}
 
 	secret, secretKey, err := getEncryptionSecret(ctx, k8sClient, target.Namespace, secretName)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	secretRecipients, secretIdentities, err := resolveAgeRecipientsFromSecret(secret.Data)
+	secretRecipients, err := resolveAgeRecipientsFromSecret(secret.Data)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to resolve recipients from encryption secret %s: %w", secretKey, err)
+		return nil, fmt.Errorf("failed to resolve recipients from encryption secret %s: %w", secretKey, err)
 	}
 
-	environment := toSOPSEnvironment(secret.Data)
-	return secretRecipients, secretIdentities, environment, nil
+	return secretRecipients, nil
 }
 
 func getEncryptionSecret(
@@ -177,13 +166,6 @@ func getEncryptionSecret(
 	return &secret, secretKey, nil
 }
 
-func normalizeEnvironment(environment map[string]string) map[string]string {
-	if len(environment) == 0 {
-		return nil
-	}
-	return environment
-}
-
 func configureSecretEncryptionWriter(
 	writer *contentWriter,
 	workDir string,
@@ -196,12 +178,11 @@ func configureSecretEncryptionWriter(
 
 	switch cfg.Provider {
 	case EncryptionProviderSOPS:
-		environment, err := buildSOPSEnvironment(workDir, cfg)
-		if err != nil {
-			return err
-		}
+		// No environment is passed to sops: age recipients are published to the target's
+		// .sops.yaml at bootstrap, and the write path only encrypts, so it needs neither a
+		// private-key file (SOPS_AGE_KEY_FILE) nor blanket Secret data in the process env.
 		scope := secretEncryptionCacheScope(workDir, cfg)
-		writer.setEncryptor(NewSOPSEncryptorWithEnv(defaultSOPSBinaryPath, "", workDir, environment), scope)
+		writer.setEncryptor(NewSOPSEncryptorWithEnv(defaultSOPSBinaryPath, "", workDir, nil), scope)
 		return nil
 	default:
 		return fmt.Errorf("unsupported encryption provider %q", cfg.Provider)
@@ -223,105 +204,30 @@ func secretEncryptionCacheScope(workDir string, cfg *ResolvedEncryptionConfig) s
 		hasher.Write([]byte(strings.TrimSpace(recipient)))
 		hasher.Write([]byte{0})
 	}
-	for _, identity := range cfg.AgeIdentities {
-		hasher.Write([]byte(strings.TrimSpace(identity)))
-		hasher.Write([]byte{0})
-	}
 
 	sum := hasher.Sum(nil)
 	return hex.EncodeToString(sum[:16])
 }
 
-func buildSOPSEnvironment(workDir string, cfg *ResolvedEncryptionConfig) (map[string]string, error) {
-	environment := cloneEnvironment(cfg.Environment)
-	if len(cfg.AgeIdentities) == 0 {
-		return environment, nil
-	}
-
-	ageKeyFilePath, err := writeAgeIdentityFile(workDir, cfg.AgeIdentities)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write SOPS age identity file: %w", err)
-	}
-	if environment == nil {
-		environment = make(map[string]string, 1)
-	}
-	environment[sopsAgeKeyFileEnvVar] = ageKeyFilePath
-	return environment, nil
-}
-
-func cloneEnvironment(environment map[string]string) map[string]string {
-	if len(environment) == 0 {
-		return nil
-	}
-	cloned := make(map[string]string, len(environment))
-	for key, value := range environment {
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func writeAgeIdentityFile(workDir string, identities []string) (string, error) {
-	if len(identities) == 0 {
-		return "", errors.New("no age identities provided")
-	}
-
-	dirPath := filepath.Join(os.TempDir(), ageIdentityFileDir)
-	if err := os.MkdirAll(dirPath, 0700); err != nil {
-		return "", fmt.Errorf("create age identity directory: %w", err)
-	}
-
-	keyHash := sha256.Sum256([]byte(strings.TrimSpace(workDir)))
-	fileName := hex.EncodeToString(keyHash[:8]) + ageSecretKeySuffix
-	filePath := filepath.Join(dirPath, fileName)
-	fileContent := strings.Join(identities, "\n") + "\n"
-	if err := os.WriteFile(filePath, []byte(fileContent), 0600); err != nil {
-		return "", fmt.Errorf("write age identity file: %w", err)
-	}
-
-	return filePath, nil
-}
-
-func toSOPSEnvironment(secretData map[string][]byte) map[string]string {
+func resolveAgeRecipientsFromSecret(secretData map[string][]byte) ([]string, error) {
 	if len(secretData) == 0 {
-		return nil
-	}
-
-	environment := make(map[string]string, len(secretData))
-	for key, value := range secretData {
-		if !envVarNamePattern.MatchString(key) {
-			continue
-		}
-		environment[key] = string(value)
-	}
-
-	if len(environment) == 0 {
-		return nil
-	}
-
-	return environment
-}
-
-func resolveAgeRecipientsFromSecret(secretData map[string][]byte) ([]string, []string, error) {
-	if len(secretData) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	recipients := make([]string, 0, len(secretData))
-	identities := make([]string, 0, len(secretData))
 	for key, value := range secretData {
 		if !strings.HasSuffix(key, ageSecretKeySuffix) {
 			continue
 		}
 
-		recipient, identity, err := deriveAgeRecipientFromSecretEntry(key, string(value))
+		recipient, err := deriveAgeRecipientFromSecretEntry(key, string(value))
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		recipients = append(recipients, recipient)
-		identities = append(identities, identity)
 	}
 
-	return dedupeAndSortRecipients(recipients), dedupeAndSortIdentities(identities), nil
+	return dedupeAndSortRecipients(recipients), nil
 }
 
 func normalizePublicAgeRecipients(publicKeys []string) ([]string, error) {
@@ -346,7 +252,10 @@ func normalizePublicAgeRecipients(publicKeys []string) ([]string, error) {
 	return dedupeAndSortRecipients(recipients), nil
 }
 
-func deriveAgeRecipientFromSecretEntry(secretKey, secretValue string) (string, string, error) {
+// deriveAgeRecipientFromSecretEntry parses a single AGE-SECRET-KEY identity from a *.agekey
+// Secret entry and returns only its public recipient. The parsed private identity is used
+// solely to derive the recipient and is never returned, stored, or written to disk.
+func deriveAgeRecipientFromSecretEntry(secretKey, secretValue string) (string, error) {
 	lines := strings.Split(secretValue, "\n")
 	identities := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -358,21 +267,21 @@ func deriveAgeRecipientFromSecretEntry(secretKey, secretValue string) (string, s
 	}
 
 	if len(identities) == 0 {
-		return "", "", fmt.Errorf("%s must contain one AGE-SECRET-KEY identity", secretKey)
+		return "", fmt.Errorf("%s must contain one AGE-SECRET-KEY identity", secretKey)
 	}
 	if len(identities) > 1 {
-		return "", "", fmt.Errorf("%s must contain exactly one AGE-SECRET-KEY identity", secretKey)
+		return "", fmt.Errorf("%s must contain exactly one AGE-SECRET-KEY identity", secretKey)
 	}
 	if !strings.HasPrefix(identities[0], "AGE-SECRET-KEY-") {
-		return "", "", fmt.Errorf("%s must contain AGE-SECRET-KEY identity", secretKey)
+		return "", fmt.Errorf("%s must contain AGE-SECRET-KEY identity", secretKey)
 	}
 
 	identity, err := age.ParseX25519Identity(identities[0])
 	if err != nil {
-		return "", "", fmt.Errorf("invalid %s identity: %w", secretKey, err)
+		return "", fmt.Errorf("invalid %s identity: %w", secretKey, err)
 	}
 
-	return identity.Recipient().String(), identity.String(), nil
+	return identity.Recipient().String(), nil
 }
 
 func dedupeAndSortRecipients(recipients []string) []string {
@@ -396,32 +305,6 @@ func dedupeAndSortRecipients(recipients []string) []string {
 	result := make([]string, 0, len(uniq))
 	for recipient := range uniq {
 		result = append(result, recipient)
-	}
-	sort.Strings(result)
-	return result
-}
-
-func dedupeAndSortIdentities(identities []string) []string {
-	if len(identities) == 0 {
-		return nil
-	}
-
-	uniq := make(map[string]struct{}, len(identities))
-	for _, identity := range identities {
-		trimmed := strings.TrimSpace(identity)
-		if trimmed == "" {
-			continue
-		}
-		uniq[trimmed] = struct{}{}
-	}
-
-	if len(uniq) == 0 {
-		return nil
-	}
-
-	result := make([]string, 0, len(uniq))
-	for identity := range uniq {
-		result = append(result, identity)
 	}
 	sort.Strings(result)
 	return result

@@ -238,7 +238,7 @@ func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 		return ctrl.Result{}, err
 	}
 	if conditionIsFalse(clusterRule.Status.Conditions, ConditionTypeResourcesResolved) {
-		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+		return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 	}
 	if !conditionIsTrue(clusterRule.Status.Conditions, ConditionTypeGitTargetReady) {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
@@ -246,7 +246,7 @@ func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	if !conditionIsTrue(clusterRule.Status.Conditions, ConditionTypeStreamsRunning) {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
-	return ctrl.Result{RequeueAfter: RequeueMediumInterval}, nil
+	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
 // setCondition sets or updates the Ready condition.
@@ -374,7 +374,7 @@ func (r *ClusterWatchRuleReconciler) updateStatusAndRequeue(
 	if err := r.updateStatusWithRetry(ctx, clusterRule); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions.

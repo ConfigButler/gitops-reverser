@@ -145,7 +145,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+		return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 	}
 
 	encryptionReady, encryptionMessage, encryptionRequeueAfter := r.evaluateEncryptionGate(ctx, &target, log)
@@ -178,7 +178,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+		return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 	}
 
 	// Ensure watch-first data-plane streams exist, then project source and target readiness
@@ -220,7 +220,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if streamsSettling {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
-	return ctrl.Result{RequeueAfter: RequeueLongInterval}, nil
+	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
 func (r *GitTargetReconciler) evaluateValidatedGate(
@@ -292,7 +292,7 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 			reason = GitTargetReasonMissingSecret
 		}
 		r.setCondition(target, GitTargetConditionEncryptionConfigured, metav1.ConditionFalse, reason, err.Error())
-		return false, fmt.Sprintf("EncryptionConfigured gate failed: %s", reason), RequeueMediumInterval
+		return false, fmt.Sprintf("EncryptionConfigured gate failed: %s", reason), RequeueSteadyInterval
 	}
 	if _, err := git.ResolveTargetEncryption(ctx, r.Client, target); err != nil {
 		reason := GitTargetReasonInvalidConfig
@@ -300,7 +300,7 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 			reason = GitTargetReasonMissingSecret
 		}
 		r.setCondition(target, GitTargetConditionEncryptionConfigured, metav1.ConditionFalse, reason, err.Error())
-		return false, fmt.Sprintf("EncryptionConfigured gate failed: %s", reason), RequeueMediumInterval
+		return false, fmt.Sprintf("EncryptionConfigured gate failed: %s", reason), RequeueSteadyInterval
 	}
 
 	r.setCondition(
@@ -591,7 +591,7 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 	if err := r.Get(ctx, gpKey, &gp); err != nil {
 		if apierrors.IsNotFound(err) {
 			msg := fmt.Sprintf("Referenced GitProvider '%s/%s' not found", providerNS, target.Spec.ProviderRef.Name)
-			result := ctrl.Result{RequeueAfter: RequeueShortInterval}
+			result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
 			return false, msg, GitTargetReasonProviderNotFound, &result, nil
 		}
 		return false, "", "", nil, err
@@ -617,7 +617,7 @@ func (r *GitTargetReconciler) validateProviderAndBranch(
 			providerNS,
 			target.Spec.ProviderRef.Name,
 		)
-		result := ctrl.Result{RequeueAfter: RequeueShortInterval}
+		result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
 		return false, msg, GitTargetReasonBranchNotAllowed, &result, nil
 	}
 
@@ -684,7 +684,7 @@ func (r *GitTargetReconciler) checkForConflicts(
 					target.Spec.Branch,
 				)
 			}
-			return true, msg, GitTargetReasonTargetConflict, ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+			return true, msg, GitTargetReasonTargetConflict, ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 		}
 	}
 
@@ -962,7 +962,11 @@ func (r *GitTargetReconciler) updateStatusWithRetry(
 func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha3.GitTarget{}).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.encryptionSecretToGitTargets)).
+		// No control-plane Secret watch. Reacting to age-key Secret changes with a
+		// full-object Secret watch made the process retain every Secret value in the
+		// cluster. Generated-age-Secret recovery and out-of-band age-key updates are
+		// picked up by the periodic reconcile (RequeueSteadyInterval) instead.
+		// See docs/future/secret-value-retention-plan.md.
 		// GenerationChangedPredicate keeps this watch reacting to a freshly
 		// applied or spec-changed GitProvider while ignoring the status-only
 		// updates the controllers write themselves — without it every provider
@@ -990,7 +994,7 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("gittarget")
 
 	// React to a data-plane GitPath acceptance TRANSITION (refused/recovered) so GitPathAccepted
-	// is re-projected within one reconcile instead of lagging up to RequeueLongInterval (10m).
+	// is re-projected within one reconcile instead of lagging up to RequeueSteadyInterval (5m).
 	// The watch manager records acceptance asynchronously and pushes a GenericEvent here. See
 	// docs/design/manifest/gitpathaccepted-projection-race-and-external-drift.md.
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
@@ -1029,36 +1033,10 @@ func (r *GitTargetReconciler) clusterWatchRuleToGitTarget(
 	}}}
 }
 
-// encryptionSecretToGitTargets maps a Secret event to the GitTargets that reference it as their
-// encryption secret, so the controller re-reconciles and recreates a deleted/emptied secret.
-func (r *GitTargetReconciler) encryptionSecretToGitTargets(
-	ctx context.Context,
-	obj client.Object,
-) []ctrlreconcile.Request {
-	var targets configbutleraiv1alpha3.GitTargetList
-	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
-		return nil
-	}
-
-	var requests []ctrlreconcile.Request
-	for i := range targets.Items {
-		t := &targets.Items[i]
-		if !shouldGenerateAgeKey(t) {
-			continue
-		}
-		if t.Spec.Encryption.SecretRef.Name == obj.GetName() {
-			requests = append(requests, ctrlreconcile.Request{
-				NamespacedName: k8stypes.NamespacedName{Name: t.Name, Namespace: t.Namespace},
-			})
-		}
-	}
-	return requests
-}
-
 // gitProviderToGitTargets maps a GitProvider event to every GitTarget in the
 // same namespace that references it, so a freshly-arrived provider re-enqueues
 // any dependents currently stuck on ProviderNotFound instead of waiting for the
-// periodic RequeueShortInterval.
+// periodic RequeueSteadyInterval.
 func (r *GitTargetReconciler) gitProviderToGitTargets(
 	ctx context.Context,
 	obj client.Object,

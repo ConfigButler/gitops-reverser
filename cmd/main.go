@@ -23,12 +23,14 @@ import (
 	"go.uber.org/zap/zapcore"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -843,6 +845,18 @@ func newManager(
 		Metrics:                metricsOptions,
 		HealthProbeBindAddress: probeAddr,
 		WebhookServer:          webhookServer,
+		// Never cache Secret values. The control plane reads a small set of named
+		// Secrets (Git credentials, signing keys, age keys) directly by name; caching
+		// them would start a cluster-wide Secret informer that retains every Secret
+		// value in memory. Typed Secret Get/List go straight to the API server instead,
+		// which also keeps credential/age-key rotation reads fresh. Mirrored Secrets
+		// selected by a WatchRule use the separate dynamic-watch path, not this cache.
+		// See docs/future/secret-value-retention-plan.md.
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{&corev1.Secret{}},
+			},
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

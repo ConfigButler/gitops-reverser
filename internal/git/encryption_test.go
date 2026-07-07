@@ -4,8 +4,6 @@ package git
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"sort"
 	"testing"
 
@@ -136,7 +134,6 @@ func TestResolveTargetEncryption(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, resolved)
 		assert.Equal(t, []string{identity.Recipient().String()}, resolved.AgeRecipients)
-		assert.Nil(t, resolved.Environment)
 	})
 
 	t.Run("fails when extractFromSecret is enabled and secret name is empty", func(t *testing.T) {
@@ -229,7 +226,9 @@ func TestResolveTargetEncryption(t *testing.T) {
 			Data: map[string][]byte{
 				"identity.agekey": []byte(firstIdentity.String()),
 				"backup.agekey":   []byte(secondIdentity.String()),
-				"SOPS_KMS_ARN":    []byte("kms-arn"),
+				// A non-agekey entry that also happens to be a valid env var name must be
+				// ignored entirely: it is neither a recipient source nor passed to sops.
+				"SOPS_KMS_ARN": []byte("kms-arn"),
 			},
 		}).Build()
 		target := &v1alpha3.GitTarget{
@@ -265,58 +264,32 @@ func TestResolveTargetEncryption(t *testing.T) {
 		}
 		sort.Strings(expectedRecipients)
 		assert.Equal(t, expectedRecipients, resolved.AgeRecipients)
-		assert.Equal(t, "kms-arn", resolved.Environment["SOPS_KMS_ARN"])
-
-		expectedIdentities := []string{
-			firstIdentity.String(),
-			secondIdentity.String(),
-		}
-		sort.Strings(expectedIdentities)
-		assert.Equal(t, expectedIdentities, resolved.AgeIdentities)
 	})
 }
 
-func TestBuildSOPSEnvironment(t *testing.T) {
-	t.Run("returns base environment when no age identities exist", func(t *testing.T) {
-		cfg := &ResolvedEncryptionConfig{
-			Environment: map[string]string{
-				"SOPS_KMS_ARN": "kms-arn",
-			},
-		}
+// TestConfigureSecretEncryptionWriter_NoPrivateAgeMaterial proves the SOPS write path never
+// receives private age identity material: no SOPS_AGE_KEY_FILE, and no environment carrying
+// AGE-SECRET-KEY content. Recipients reach sops through the target's .sops.yaml, not the env.
+func TestConfigureSecretEncryptionWriter_NoPrivateAgeMaterial(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
 
-		env, err := buildSOPSEnvironment(t.TempDir(), cfg)
-		require.NoError(t, err)
-		assert.Equal(t, "kms-arn", env["SOPS_KMS_ARN"])
-		_, hasKeyFile := env[sopsAgeKeyFileEnvVar]
-		assert.False(t, hasKeyFile)
-	})
+	writer := &contentWriter{}
+	cfg := &ResolvedEncryptionConfig{
+		Provider:      EncryptionProviderSOPS,
+		AgeRecipients: []string{identity.Recipient().String()},
+	}
 
-	t.Run("writes age identities to temp file and sets SOPS age key file env", func(t *testing.T) {
-		firstIdentity, err := age.GenerateX25519Identity()
-		require.NoError(t, err)
-		secondIdentity, err := age.GenerateX25519Identity()
-		require.NoError(t, err)
+	require.NoError(t, configureSecretEncryptionWriter(writer, t.TempDir(), cfg))
 
-		workDir := t.TempDir()
-		cfg := &ResolvedEncryptionConfig{
-			Environment: map[string]string{
-				"SOPS_KMS_ARN": "kms-arn",
-			},
-			AgeIdentities: []string{firstIdentity.String(), secondIdentity.String()},
-		}
-
-		env, err := buildSOPSEnvironment(workDir, cfg)
-		require.NoError(t, err)
-		keyFilePath := env[sopsAgeKeyFileEnvVar]
-		require.NotEmpty(t, keyFilePath)
-		assert.Equal(t, ageIdentityFileDir, filepath.Base(filepath.Dir(keyFilePath)))
-
-		content, err := os.ReadFile(keyFilePath)
-		require.NoError(t, err)
-		assert.Contains(t, string(content), firstIdentity.String())
-		assert.Contains(t, string(content), secondIdentity.String())
-		assert.Equal(t, "kms-arn", env["SOPS_KMS_ARN"])
-	})
+	encryptor, ok := writer.encryptor.(*SOPSEncryptor)
+	require.True(t, ok, "expected a *SOPSEncryptor to be configured")
+	assert.Empty(t, encryptor.env, "SOPS env must be empty; no private key file or secret data")
+	_, hasKeyFile := encryptor.env["SOPS_AGE_KEY_FILE"]
+	assert.False(t, hasKeyFile, "the age private-key file env var must never be set")
+	for key, value := range encryptor.env {
+		assert.NotContains(t, value, "AGE-SECRET-KEY", "env var %q must not carry a private age key", key)
+	}
 }
 
 func TestDeriveAgeRecipientFromSecretEntry(t *testing.T) {
@@ -324,20 +297,19 @@ func TestDeriveAgeRecipientFromSecretEntry(t *testing.T) {
 		identity, err := age.GenerateX25519Identity()
 		require.NoError(t, err)
 
-		recipient, parsedIdentity, err := deriveAgeRecipientFromSecretEntry("identity.agekey", identity.String())
+		recipient, err := deriveAgeRecipientFromSecretEntry("identity.agekey", identity.String())
 		require.NoError(t, err)
 		assert.Equal(t, identity.Recipient().String(), recipient)
-		assert.Equal(t, identity.String(), parsedIdentity)
 	})
 
 	t.Run("fails when identity is missing", func(t *testing.T) {
-		_, _, err := deriveAgeRecipientFromSecretEntry("identity.agekey", "")
+		_, err := deriveAgeRecipientFromSecretEntry("identity.agekey", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "identity.agekey must contain one AGE-SECRET-KEY identity")
 	})
 
 	t.Run("fails when identity is invalid", func(t *testing.T) {
-		_, _, err := deriveAgeRecipientFromSecretEntry("identity.agekey", "AGE-SECRET-KEY-1invalid")
+		_, err := deriveAgeRecipientFromSecretEntry("identity.agekey", "AGE-SECRET-KEY-1invalid")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid identity.agekey identity")
 	})
@@ -349,7 +321,7 @@ func TestDeriveAgeRecipientFromSecretEntry(t *testing.T) {
 		require.NoError(t, err)
 
 		combined := first.String() + "\n" + second.String()
-		_, _, err = deriveAgeRecipientFromSecretEntry("identity.agekey", combined)
+		_, err = deriveAgeRecipientFromSecretEntry("identity.agekey", combined)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "must contain exactly one AGE-SECRET-KEY identity")
 	})

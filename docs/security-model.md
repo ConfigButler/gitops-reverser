@@ -10,7 +10,17 @@ GitOps Reverser writes the live state of watched resource types into Git. To do 
   followed, but the controller needs read (get/list/watch) access to those types to materialize
   them. Broad WatchRules imply broad read access.
 - **Read referenced Secrets.** It reads the Git credentials Secret (and, when encryption is
-  configured, the SOPS/age key Secret) named by a GitProvider/GitTarget.
+  configured, the SOPS/age key Secret) named by a GitProvider/GitTarget. At **runtime** the
+  control-plane code paths read these controller-owned input Secrets **directly by name** (`get`):
+  they no longer `list` or `watch` Secrets and never cache Secret values in memory. Out-of-band
+  credential or age-key rotations are picked up on the direct read the next time work happens, and
+  at the latest by the 5-minute periodic reconcile. **This is a runtime-behavior change, not (yet)
+  an RBAC change:** the default install still *grants* `secrets get;list;watch` (and the
+  dynamic-watch wildcard), so the ServiceAccount's effective Secret permission is unchanged until
+  the separate RBAC-narrowing track lands. Mirrored Secrets selected by a WatchRule are a separate
+  concern and still use the watched-resource read path above. See
+  [`future/secret-value-retention-plan.md`](future/secret-value-retention-plan.md) and
+  [`future/scoped-rbac-least-privilege-plan.md`](future/scoped-rbac-least-privilege-plan.md).
 - **Receive audit events.** The kube-apiserver audit webhook posts events to the controller's
   audit ingress. Those events carry object metadata and, for some resources, request/response
   bodies.
@@ -31,8 +41,10 @@ The controller does not need write access to watched resources. Its only write t
 
 Without encryption, a watched `Secret` is committed as-is (its data is plain in the repository). With
 SOPS + age (`GitTarget.spec.encryption`), Secret values are encrypted before commit using the age
-recipients, and the private key never leaves the cluster. So: only watch `Secret` types you intend
-to commit, and prefer encryption. Secret-shaped custom resource types can opt into the same
+recipients, and the private key never leaves the cluster. Because the write path only encrypts, it
+uses **public age recipients only**: the private age identity is never written to disk or passed to
+the `sops` process, even when the recipient is derived from a cluster age-key Secret. So: only watch
+`Secret` types you intend to commit, and prefer encryption. Secret-shaped custom resource types can opt into the same
 encryption path at controller startup. See [`sops-age-guide.md`](sops-age-guide.md).
 
 ## Git credentials Secret shape
