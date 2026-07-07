@@ -356,3 +356,49 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: gh release edit "${TAG_NAME}" --draft=false --repo "${{ github.repository }}"
+
+  # release-please builds the *next* release PR in the very same invocation that
+  # cuts the draft release for the just-merged one (the release-please job above),
+  # i.e. before publish-release flips that draft to published. A draft release is
+  # invisible to release-please's "latest release" lookup, so that next PR is
+  # computed against the whole history and proposes a bogus "release everything"
+  # version — it literally cannot see the release we just cut. Once the release is
+  # published and main carries no commits past its tag, that PR is stale. Close it
+  # here so release-please opens a correct one on the next push with releasable
+  # commits. See docs/ci-overview.md.
+  close-stale-release-pr:
+    name: Close Stale Release PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [release-please, publish-release]
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read # compare the published tag against main
+      pull-requests: write # close the stale release-please PR
+    steps:
+      - name: Close the stale release-please PR when nothing is unreleased
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          # Any commit on main past the freshly published tag is a genuine pending
+          # release; only prune when the tag is at main's tip.
+          ahead="$(gh api "repos/${REPO}/compare/${TAG_NAME}...main" --jq '.ahead_by')"
+          if [ "${ahead}" != "0" ]; then
+            echo "main is ${ahead} commit(s) ahead of ${TAG_NAME}; leaving the release PR for release-please to rebuild."
+            exit 0
+          fi
+          # release-please marks its release PRs with the 'autorelease: pending'
+          # label and a 'release-please--' head branch; require both before closing
+          # so an unrelated PR can never be caught.
+          gh pr list --repo "${REPO}" --state open --label "autorelease: pending" \
+            --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("release-please--")) | .number' \
+          | while read -r pr; do
+              [ -n "${pr}" ] || continue
+              echo "Closing stale release PR #${pr} (no commits past ${TAG_NAME})."
+              gh pr close "${pr}" --repo "${REPO}" --comment \
+                "Auto-closed by the release pipeline: **${TAG_NAME}** is published and main has no commits past its tag, so this release-please PR was built against the pre-publish (draft-invisible) state and is stale. release-please will open a fresh, correct one on the next push that carries releasable commits."
+            done
