@@ -45,7 +45,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "",
 				Name:      "worker-1",
 			},
-			want: "cluster/nodes/worker-1.yaml",
+			want: "_cluster/nodes/worker-1.yaml",
 		},
 		{
 			name: "non-core namespaced resource - Deployment",
@@ -78,7 +78,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "",
 				Name:      "admin",
 			},
-			want: "cluster/rbac.authorization.k8s.io/clusterroles/admin.yaml",
+			want: "_cluster/rbac.authorization.k8s.io/clusterroles/admin.yaml",
 		},
 		{
 			name: "custom CRD with group",
@@ -100,7 +100,7 @@ func TestResourceIdentifier_ToGitPath(t *testing.T) {
 				Namespace: "",
 				Name:      "main",
 			},
-			want: "cluster/custom.io/globalconfigs/main.yaml",
+			want: "_cluster/custom.io/globalconfigs/main.yaml",
 		},
 		{
 			name: "resource with special characters in name",

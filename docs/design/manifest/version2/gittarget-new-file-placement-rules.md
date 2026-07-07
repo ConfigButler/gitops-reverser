@@ -903,7 +903,7 @@ Recommended variables:
 | `{kind}` | manifest kind, for example `ConfigMap` |
 | `{scope}` | `namespaced` or `cluster` |
 | `{namespace}` | metadata namespace, empty for cluster-scoped resources |
-| `{namespaceOrCluster}` | namespace, or `cluster` for cluster-scoped resources |
+| `{namespaceOrCluster}` | namespace, or `_cluster` (an illegal-namespace sentinel, so it never collides with a real namespace) for cluster-scoped resources |
 | `{name}` | metadata name |
 | `{sensitiveSuffix}` | Optional convention helper: `.sops.yaml` for sensitive writes, `.yaml` otherwise |
 
@@ -914,8 +914,9 @@ version segment** (as implemented in `ResourceIdentifier.ToGitPath`):
 {namespaceOrCluster}/{groupPath}/{resource}/{name}{sensitiveSuffix}
 ```
 
-The scope leads (a real namespace, or the literal `cluster` for a cluster-scoped
-resource) so a repository browses namespace-first; the group is omitted for core
+The scope leads (a real namespace, or the literal `_cluster` for a cluster-scoped
+resource — an illegal Kubernetes namespace name, so it can never collide with a real
+namespace) so a repository browses namespace-first; the group is omitted for core
 resources, and the API version is deliberately left out — the operator writes one
 version per object, so a version segment only adds noise and would churn the path on
 a preferred-version bump. For a core `v1` ConfigMap named `app` in namespace
@@ -931,11 +932,11 @@ For an `apps/v1` Deployment:
 default/apps/deployments/app.yaml
 ```
 
-For a cluster-scoped resource the scope segment is the literal `cluster`, e.g. a
+For a cluster-scoped resource the scope segment is the literal `_cluster`, e.g. a
 ClusterRole `admin`:
 
 ```text
-cluster/rbac.authorization.k8s.io/clusterroles/admin.yaml
+_cluster/rbac.authorization.k8s.io/clusterroles/admin.yaml
 ```
 
 For a Secret under the suffix convention:

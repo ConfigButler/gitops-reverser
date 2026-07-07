@@ -107,28 +107,28 @@ func TestToGitPath_ClusterScopedResource(t *testing.T) {
 			group:          "",
 			version:        "v1",
 			resourcePlural: "namespaces",
-			expected:       "cluster/namespaces/my-namespace.yaml",
+			expected:       "_cluster/namespaces/my-namespace.yaml",
 		},
 		{
 			name:           "cluster-admin",
 			group:          "rbac.authorization.k8s.io",
 			version:        "v1",
 			resourcePlural: "clusterroles",
-			expected:       "cluster/rbac.authorization.k8s.io/clusterroles/cluster-admin.yaml",
+			expected:       "_cluster/rbac.authorization.k8s.io/clusterroles/cluster-admin.yaml",
 		},
 		{
 			name:           "system-binding",
 			group:          "rbac.authorization.k8s.io",
 			version:        "v1",
 			resourcePlural: "clusterrolebindings",
-			expected:       "cluster/rbac.authorization.k8s.io/clusterrolebindings/system-binding.yaml",
+			expected:       "_cluster/rbac.authorization.k8s.io/clusterrolebindings/system-binding.yaml",
 		},
 		{
 			name:           "my-pv",
 			group:          "",
 			version:        "v1",
 			resourcePlural: "persistentvolumes",
-			expected:       "cluster/persistentvolumes/my-pv.yaml",
+			expected:       "_cluster/persistentvolumes/my-pv.yaml",
 		},
 	}
 
@@ -156,7 +156,7 @@ func TestToGitPath_EmptyNamespace(t *testing.T) {
 		Name:      "test-resource",
 	}
 	path := identifier.ToGitPath()
-	assert.Equal(t, "cluster/testkinds/test-resource.yaml", path)
+	assert.Equal(t, "_cluster/testkinds/test-resource.yaml", path)
 }
 
 func TestToGitPath_SpecialCharacters(t *testing.T) {

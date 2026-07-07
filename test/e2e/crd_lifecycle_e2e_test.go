@@ -137,7 +137,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 			// CRDs are cluster-scoped, so path should NOT include namespace
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-install-test",
-				"cluster/apiextensions.k8s.io/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
+				"_cluster/apiextensions.k8s.io/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
 			fileInfo, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("CRD file should exist at %s", expectedFile))
 			g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "CRD file should not be empty")
@@ -629,7 +629,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-delete-test",
-				"cluster/apiextensions.k8s.io/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
+				"_cluster/apiextensions.k8s.io/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
 			_, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(), "CRD file should exist before deletion")
 		}
@@ -641,7 +641,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		By("verifying CRD file is deleted from Git repository")
 		crdRelPath := filepath.Join(
 			"e2e/crd-delete-test",
-			"cluster/apiextensions.k8s.io/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
+			"_cluster/apiextensions.k8s.io/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
 		verifyFileDeleted := func(g Gomega) {
 			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
@@ -662,7 +662,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-delete-test",
-				"cluster/apiextensions.k8s.io/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
+				"_cluster/apiextensions.k8s.io/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
 			_, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).To(HaveOccurred(), "CRD file must stay deleted after CRD termination updates")
 			g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "CRD file must not reappear in Git")

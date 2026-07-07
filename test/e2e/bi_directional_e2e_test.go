@@ -416,7 +416,7 @@ func (r biDirectionalRun) writeCRDToRepo() {
 	Expect(err).NotTo(HaveOccurred(), "failed to render IceCreamOrder CRD fixture")
 	Expect(
 		os.MkdirAll(
-			r.repoPath(r.crdPath, "cluster", "apiextensions.k8s.io", "customresourcedefinitions"),
+			r.repoPath(r.crdPath, "_cluster", "apiextensions.k8s.io", "customresourcedefinitions"),
 			0o755,
 		),
 	).To(Succeed())
@@ -424,7 +424,7 @@ func (r biDirectionalRun) writeCRDToRepo() {
 		os.WriteFile(
 			r.repoPath(
 				r.crdPath,
-				"cluster",
+				"_cluster",
 				"apiextensions.k8s.io",
 				"customresourcedefinitions",
 				iceCreamCRDMirrorFile(crdGroupBiDirectional),

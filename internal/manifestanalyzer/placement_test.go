@@ -525,8 +525,9 @@ func TestPlacementVars_GroupedClusterScoped(t *testing.T) {
 		Kind:       "ClusterRole",
 	}
 	vars := placementVars(req)
-	if vars["scope"] != "cluster" || vars["namespaceOrCluster"] != "cluster" {
-		t.Errorf("got scope=%q namespaceOrCluster=%q, want both \"cluster\" for a cluster-scoped resource",
+	if vars["scope"] != "cluster" || vars["namespaceOrCluster"] != "_cluster" {
+		t.Errorf("got scope=%q namespaceOrCluster=%q, want scope=\"cluster\" (descriptor) and "+
+			"namespaceOrCluster=\"_cluster\" (illegal-namespace sentinel) for a cluster-scoped resource",
 			vars["scope"], vars["namespaceOrCluster"])
 	}
 	if want := "rbac.authorization.k8s.io/v1"; vars["apiVersion"] != want {

@@ -586,7 +586,7 @@ func TestDeleteOperation_ClusterScoped(t *testing.T) {
 	commitMessage, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
 	require.NoError(t, err)
 
-	assert.Equal(t, "cluster/namespaces/test-namespace.yaml", filePath)
+	assert.Equal(t, "_cluster/namespaces/test-namespace.yaml", filePath)
 	assert.Equal(t, "[DELETE] v1/namespaces/test-namespace", commitMessage)
 }
 

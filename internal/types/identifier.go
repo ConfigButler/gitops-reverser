@@ -45,7 +45,7 @@ func (r ResourceIdentifier) Key() string {
 
 // ToGitPath generates the canonical Git file path for a new resource:
 // {namespace-or-cluster}/{group}/{resource}/{name}.yaml. The scope segment leads
-// (a real namespace, or the literal "cluster" for a cluster-scoped resource) so a
+// (a real namespace, or the literal "_cluster" for a cluster-scoped resource) so a
 // repository reads namespace-first, the way a human browses it; the API group is
 // omitted for core resources, and the API version is deliberately left out — the
 // operator writes one version per object, so a version segment adds noise and would
@@ -57,9 +57,12 @@ func (r ResourceIdentifier) Key() string {
 func (r ResourceIdentifier) ToGitPath() string {
 	scope := r.Namespace
 	if scope == "" {
-		// Cluster-scoped resource: the scope segment is the literal "cluster",
-		// matching the {namespaceOrCluster} placement template variable.
-		scope = "cluster"
+		// Cluster-scoped resource: the scope segment is "_cluster", an illegal
+		// Kubernetes namespace name (DNS-1123 forbids "_"), so it can never collide
+		// with a real namespace and reads unambiguously as "not a namespace" — unlike
+		// a bare "cluster", which is itself a legal namespace name. Matches the
+		// {namespaceOrCluster} placement template variable.
+		scope = "_cluster"
 	}
 
 	if r.Group == "" {

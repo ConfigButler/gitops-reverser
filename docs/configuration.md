@@ -380,8 +380,9 @@ to the bundle its type shares, or placed one-per-file beside its siblings — so
 existing repository just continues that repository's convention. With nothing to follow (an empty repo, or
 a brand-new type), it falls back to the built-in default path
 `{namespace}/{group}/{resource}/{name}.yaml` (namespace first, the group omitted for core resources, no
-version segment, `cluster/` in place of the namespace for cluster-scoped resources, and a `.sops.yaml`
-suffix for sensitive resources).
+version segment, `_cluster/` (an illegal-namespace sentinel that can never clash with a real namespace)
+in place of the namespace for cluster-scoped resources, and a `.sops.yaml` suffix for sensitive
+resources).
 
 Set `spec.placement` only when you want to **prescribe** a layout instead of following the repo:
 

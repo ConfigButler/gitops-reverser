@@ -361,7 +361,12 @@ func placementVars(req PlacementRequest) map[string]string {
 	nsOrCluster := id.Namespace
 	if id.IsClusterScoped() {
 		scope = "cluster"
-		nsOrCluster = "cluster"
+		// The namespace-position segment uses "_cluster", an illegal Kubernetes
+		// namespace name (DNS-1123 forbids "_"), so it can never collide with a real
+		// namespace — unlike a bare "cluster", which is a legal namespace name. This
+		// mirrors ResourceIdentifier.ToGitPath's built-in canonical scope segment.
+		// {scope} above stays the readable "cluster"/"namespaced" descriptor.
+		nsOrCluster = "_cluster"
 	}
 	apiVersion := id.Version
 	if id.Group != "" {

@@ -935,7 +935,7 @@ placed never moves a file already in Git. A new resource is placed by the first 
    that kustomization and gets a `resources:` entry.
 3. **Canonical fallback.** With nothing to follow (an empty repo, a brand-new type), the built-in default
    `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml` — namespace-first, group omitted for core, no
-   version, `cluster/` for cluster-scoped, `.sops.yaml` for sensitive — so a fresh target is deterministic
+   version, `_cluster/` for cluster-scoped, `.sops.yaml` for sensitive — so a fresh target is deterministic
    and self-propagating.
 
 Sensitivity is a write-safety classifier, not a placement input: whatever path is chosen, a sensitive

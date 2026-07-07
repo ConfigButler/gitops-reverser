@@ -25,8 +25,8 @@ func iceCreamCRDName(group string) string {
 }
 
 // iceCreamCRDMirrorFile returns the filename gitops-reverser writes for the CRD
-// under cluster/apiextensions.k8s.io/customresourcedefinitions/ (CRDs are
-// cluster-scoped, so the scope segment is the literal "cluster").
+// under _cluster/apiextensions.k8s.io/customresourcedefinitions/ (CRDs are
+// cluster-scoped, so the scope segment is the literal "_cluster").
 func iceCreamCRDMirrorFile(group string) string {
 	return iceCreamCRDName(group) + ".yaml"
 }
