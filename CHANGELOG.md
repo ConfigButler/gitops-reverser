@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.29.2...gitops-reverser-v0.30.0) (2026-07-07)
+
+
+### Features
+
+* **gitops-api:** place new resources to match the repo's existing layout ([#202](https://github.com/ConfigButler/gitops-reverser/issues/202)) ([97a9c87](https://github.com/ConfigButler/gitops-reverser/commit/97a9c8793847efb6a2fba5a9626490e1bbfb9ee7))
+* **kustomize:** edit images/replicas overrides through to kustomization.yaml ([#198](https://github.com/ConfigButler/gitops-reverser/issues/198)) ([a8ce917](https://github.com/ConfigButler/gitops-reverser/commit/a8ce917a211d30c7ff4f6c6d82bf0acccbac97c2))
+
+
+### Bug Fixes
+
+* **release:** sign and attest GitHub release assets directly ([#201](https://github.com/ConfigButler/gitops-reverser/issues/201)) ([10f8962](https://github.com/ConfigButler/gitops-reverser/commit/10f8962f61cf1ac7da5bab08f5373fda61028862))
+
 ## [0.29.2](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.29.1...gitops-reverser-v0.29.2) (2026-07-05)
 
 
