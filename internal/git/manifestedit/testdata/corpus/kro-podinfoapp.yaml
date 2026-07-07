@@ -1,0 +1,11 @@
+# a KRO-generated instance (schema comes from a ResourceGraphDefinition)
+apiVersion: kro.run/v1alpha1
+kind: PodInfoApp
+metadata:
+  name: frontend
+  namespace: apps
+spec:
+  replicas: 1
+  message: hello from kro
+  color: "#34577c" # brand color
+  logoURL: https://demo.configbutler.ai/podinfo-assets/frontend.jpg

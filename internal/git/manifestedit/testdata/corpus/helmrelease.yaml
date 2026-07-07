@@ -1,0 +1,21 @@
+# podinfo release — bump spec.chart.spec.version to roll out a new version
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: podinfo
+  namespace: apps
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: podinfo
+      version: "6.5.0" # pinned chart version
+      sourceRef:
+        kind: HelmRepository
+        name: podinfo
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  values:
+    replicaCount: 2

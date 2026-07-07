@@ -60,6 +60,15 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Cut releases here, but do NOT open the next release PR yet.
+          # release-please creates the release as a draft (immutable-releases
+          # requires every asset attached before publish — see publish-manifest/
+          # publish-helm), and a draft is invisible to release-please's own
+          # "latest release" lookup. Opening the next PR in this same invocation
+          # would compute it against the whole history and propose a bogus
+          # "release everything" version. The release-please-pr job opens/refreshes
+          # the PR *after* publish-release makes the release visible.
+          skip-github-pull-request: true
 
   # Merge the per-arch release-grade digests — already built and pushed by the
   # `ci` run of *this* workflow (see build-release-* in ci.yml) — into one
@@ -356,3 +365,37 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: gh release edit "${TAG_NAME}" --draft=false --repo "${{ github.repository }}"
+
+  # The PR half of release-please, run as a separate invocation so it sees an
+  # already-published release instead of the draft the release-please job just
+  # created. skip-github-release: true means it only opens/refreshes the next
+  # release PR — it never tags or releases.
+  #
+  # Gating: this must run AFTER publish-release when a release was cut (so the
+  # release is published and visible), but also on ordinary pushes that cut no
+  # release (so the pending release PR keeps tracking new commits). The `if`
+  # therefore runs whenever CI + release-please succeeded and EITHER no release
+  # was created (publish-release was skipped) OR publish-release succeeded — so a
+  # failed publish (release still a draft) will NOT open a PR against the draft.
+  release-please-pr:
+    name: Release Please (PR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [ci, release-please, publish-release]
+    if: >-
+      ${{ !cancelled()
+          && needs.ci.result == 'success'
+          && needs.release-please.result == 'success'
+          && (needs.publish-release.result == 'success'
+              || needs.release-please.outputs.release_created != 'true') }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Open or refresh the next release PR
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true
