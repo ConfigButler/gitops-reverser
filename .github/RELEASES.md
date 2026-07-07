@@ -50,10 +50,14 @@ Push to main
     ↓ (version bump needed)
 [Create/Update Release PR]
     ↓ (human reviews & merges)
-[Create GitHub Release + Tag]
+[Create GitHub Release + Tag (draft)]
     ↓
-[Retag CI-built images to semver + latest, sign, attest]
+[Retag CI-built images to semver + latest, sign, attest → publish the release]
 ```
+
+> The next Release PR is opened/refreshed by a **second release-please pass** that runs
+> *after* a release is published, so it never sees the still-draft release. See
+> [What Happens When You Push](#what-happens-when-you-push).
 
 ### What Happens When You Push
 
@@ -65,10 +69,15 @@ Push to main
    - Unit tests: `task test` (with the coverage ratchet)
    - E2E tests: the Ginkgo suite in a k3d cluster, plus the project image scan
 
-2. **Release Analysis** (if tests pass):
-   - release-please analyzes commits since last release
-   - Determines version bump based on commit types
-   - Creates/updates Release PR if needed
+2. **Release handling** (if tests pass) — release-please runs as **two separate passes**:
+   - **Cut pass** (`release-please` job): if the previous Release PR was merged, cut its
+     GitHub Release (created as a *draft* — see step 4). This pass uses
+     `skip-github-pull-request`, so it does **not** open the next PR.
+   - **PR pass** (`release-please-pr` job): analyze commits since the last release, determine
+     the version bump, and create/update the next Release PR (`skip-github-release`). It runs
+     **after** the release is published, so it sees the just-published release instead of the
+     draft. Without this split, the run that cut a draft would open a PR computed against the
+     whole history and propose a bogus "release everything" version.
 
 3. **Release PR Contents**:
    - Auto-generated CHANGELOG.md updates
@@ -76,7 +85,10 @@ Push to main
    - Summary of all changes
 
 4. **When Release PR is Merged**:
-   - GitHub Release created with tag (e.g., `v0.2.0`)
+   - GitHub Release created with tag (e.g., `v0.2.0`) — first as a **draft**, so every signed
+     asset (`install.yaml`, SBOM, `.sigstore.json` signatures, `.intoto.jsonl` attestations)
+     can be attached before it goes public; immutable releases reject post-publish uploads, so
+     `publish-release` flips the draft to published only after every asset is in place.
    - The linux/amd64 + linux/arm64 image digests already built and scanned by that
      commit's CI run are **retagged** (not rebuilt) as `0.2.0`, `0.2`, `0`, `latest` on
      `ghcr.io`, then cosign-signed with SLSA provenance + SPDX SBOM attestations

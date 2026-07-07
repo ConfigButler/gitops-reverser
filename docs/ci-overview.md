@@ -19,7 +19,7 @@ so local and CI results cannot drift apart.
 | Release & publish | [release.yml](../.github/workflows/release.yml) tail jobs | after trusted validation is green | `GITHUB_TOKEN` + OIDC | packages, releases, attestations | Version (release-please), **retag** the CI-built multi-arch digests to semver + `latest` (zero rebuilds), publish chart, sign, attest |
 | Hygiene | [scorecard.yml](../.github/workflows/scorecard.yml) | weekly + `main` | none | security-events | OpenSSF Scorecard supply-chain checks |
 
-Two properties are worth calling out:
+Three properties are worth calling out:
 
 - **One copy of the validation pipeline.** `ci.yml` runs directly for PRs and is invoked
   by `release.yml` as a [reusable workflow](https://docs.github.com/en/actions/using-workflows/reusing-workflows)
@@ -33,6 +33,16 @@ Two properties are worth calling out:
   published from a commit that did not pass the full pipeline first. The release tail
   builds nothing — the multi-arch image digests it publishes were built and scanned by the
   `ci` run of the same commit; the release only retags, signs, and attests them.
+- **release-please runs in two passes, on purpose.** A GitHub release is created as a
+  *draft* so every signed asset can be attached before it goes public (immutable releases
+  reject post-publish uploads — see [Release artifacts](#release-artifacts-and-how-to-verify-them)).
+  But a draft is invisible to release-please's own "latest release" lookup, so if the
+  invocation that cut the draft also opened the *next* release PR, that PR would be computed
+  against the whole history and propose a bogus "release everything" version. `release.yml`
+  therefore splits the action: the `release-please` job cuts the release with
+  `skip-github-pull-request`, and a separate `release-please-pr` job opens/refreshes the next
+  PR with `skip-github-release` **after** `publish-release` has made the release public and
+  visible. Same guarantee, correct changelog.
 
 ## How fork PRs work
 
