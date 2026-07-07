@@ -11,6 +11,8 @@ If you only want the supported product docs, start with the files below.
 
 - [`../README.md`](../README.md): product overview and end-to-end quick start
 - [`configuration.md`](configuration.md): core configuration objects and how they fit together
+- [`installing-apps-as-krm.md`](installing-apps-as-krm.md): installing an app is adding a KRM
+  document — Flux `HelmRelease`, Argo CD `Application`, KRO, and core resources all mirror and edit alike
 - [`commit-signing.md`](commit-signing.md): how valid Git signatures map to platform verification
 - [`github-setup-guide.md`](github-setup-guide.md): GitHub repository and credential setup
 - [`sops-age-guide.md`](sops-age-guide.md): Secret encryption with SOPS + age

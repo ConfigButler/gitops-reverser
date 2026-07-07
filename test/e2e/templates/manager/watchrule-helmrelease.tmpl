@@ -1,0 +1,11 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  targetRef:
+    name: {{ .DestinationName }}
+  rules:
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]

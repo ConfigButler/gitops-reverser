@@ -124,7 +124,7 @@ base"), and the mirror-mode vs. intent-cluster topology — live in
 | # | Feature | Design doc | Status |
 |---|---------|-----------|--------|
 | F1 | Kustomize `images:` / `replicas:` edit-through — a live change produced by an override entry is written back to that entry, never through into the source manifest | [f1-images-replicas-edit-through.md](f1-images-replicas-edit-through.md) | implemented ([#198](https://github.com/ConfigButler/gitops-reverser/pull/198)) |
-| F7 | Higher-level KRM objects as first-class documents — corpus + e2e pinning that Flux `HelmRelease`/`Kustomization`, Argo CD `Application`, KRO resources, and core resources mirror and edit like any KRM document (they should already; F7 *proves* it), plus "install an app = add KRM" user docs | — | not designed (expected small) — **launch-critical** |
+| F7 | Higher-level KRM objects as first-class documents — corpus + e2e pinning that Flux `HelmRelease`/`Kustomization`, Argo CD `Application`, KRO resources, and core resources mirror and edit like any KRM document (they should already; F7 *proves* it), plus "install an app = add KRM" user docs | [f7-higher-level-krm-documents.md](f7-higher-level-krm-documents.md) | implemented (manifestedit corpus for HelmRelease/Application/KRO; HelmRelease mirror+edit e2e; [installing-apps-as-krm.md](../../installing-apps-as-krm.md) user docs) |
 | F2 | Render-root scoping — a GitTarget declares its render root (e.g. `overlays/env1`); base files reached through `../../base` become read-only context, dissolving overlay fan-out ambiguity. Launch scope: overlay `images:`/`replicas:` entries + overlay-local documents, shipped **with** the per-edit `FullyReflected` accounting | — | not designed — **launch-critical** |
 | F4 | New-file placement rules — sibling inference + `spec.placement` template so new resources land in the folder's convention, not the canonical REST path; includes creating the `resources:` entry when the target folder carries a kustomization | designed in [version2/gittarget-new-file-placement-rules.md](../manifest/version2/gittarget-new-file-placement-rules.md) | implemented (v1: declared policy + sibling inference steps 1/2/4 + kustomize `resources:` entry; step 3 and ordered-rule Option A deferred) |
 | F5 | Branch/session ergonomics — base-branch selection, opt-in remote branch cleanup, a GitTarget-level quiescence condition | — | not designed — **launch-critical** |
@@ -143,6 +143,10 @@ base"), and the mirror-mode vs. intent-cluster topology — live in
   surface with terminal `Pushed=True` + SHA.
 - Refusals: unsupported kustomize features, duplicate identities, impure or
   foreign content — refuse-first, never mis-edit.
+- Higher-level KRM documents (Flux `HelmRelease`, Argo CD `Application`, KRO
+  resources) mirror and edit exactly like core resources — the pipeline is
+  kind-agnostic, now pinned by F7's corpus + HelmRelease e2e
+  ([f7-higher-level-krm-documents.md](f7-higher-level-krm-documents.md)).
 
 ## Known boundary (what stays refused)
 
