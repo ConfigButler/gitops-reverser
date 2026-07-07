@@ -70,10 +70,67 @@ spec:
     namespace: guestbook
 ```
 
+## The design decision: capture intent, not the rendered output
+
+This is the part worth slowing down for. Before you point GitOps Reverser at a
+cluster, decide **where and how your intent is expressed**, and configure the
+operator to mirror *that* — not the objects your controllers render from it.
+
+Every kind in the table above is a piece of **intent** that a controller expands
+into many **derived** objects. One `HelmRelease` becomes Deployments, Services,
+ConfigMaps, ReplicaSets, and Pods. One Argo CD `Application` becomes whatever it
+syncs. One KRO instance becomes its entire resource graph. You want Git to hold
+the small authored document, not the large derived tree — the derived tree is a
+*projection* the controller recomputes on every reconcile.
+
+**Why mirroring the output is wrong**, not just noisy:
+
+- It breaks the [governing rule](design/gitops-api/README.md) — round-trippability.
+  A rendered object is *owned by a controller*: it carries generated names, hash
+  suffixes, injected defaults, and controller-managed metadata. There is no single
+  writable human destination for it, so an edit can't round-trip. Capturing
+  intent keeps exactly one writable destination per change.
+- It churns. Reconcilers rewrite their outputs constantly; a repo full of
+  rendered Deployments and ReplicaSets commits on every loop.
+- It duplicates state that already exists as intent — the `HelmRelease` *is* the
+  Deployment, expressed once, at the level a human actually edits.
+
+This is the same principle as the [chart-inflation boundary](#the-boundary-documents-not-chart-inflation)
+below, applied at runtime: don't put *derived* state in Git, at any level.
+
+**The catch: the operator cannot tell intent from output for you.** A
+`Deployment` is a `Deployment` whether you hand-authored it or Flux rendered it.
+GitOps Reverser ignores a few purely-runtime kinds by default — Pods, Events,
+Endpoints/EndpointSlices, Leases, ControllerRevisions, Jobs, CronJobs — but it
+does **not** ignore Deployments, ReplicaSets, Services, or ConfigMaps, because
+those are often exactly the intent you *do* want to capture. Drawing the line is
+your job, and it is worth doing deliberately.
+
+**How to draw it:**
+
+1. **Select intent kinds, not workload kinds.** In a namespace where a controller
+   renders output, watch `helmreleases` / `applications` / your KRO CRD — not the
+   `deployments` and `services` they produce. Avoid a catch-all `resources: ["*"]`
+   there.
+2. **Separate intent from runtime, ideally by namespace.** The cleanest, most
+   robust setup keeps authored intent in its own namespace (or cluster area) that
+   your `GitTarget`/`WatchRule` points at, and lets the rendered workloads live
+   elsewhere, unwatched. Then "what to capture" is answered by *where*, not by a
+   fragile per-kind allow/deny list.
+3. **Mind overlaps.** If a controller renders into the same namespace as other
+   authored intent, keep the rule kind-scoped (watch only the intent kinds), so
+   you never recapture the rendered output alongside it.
+
+Getting this balance right up front is most of the work of adopting the tool. If
+you skip it, the symptom is unmistakable: the repository fills with
+controller-owned objects that change on every reconcile and that you cannot
+meaningfully edit — noise, not intent.
+
 ## Telling the operator to watch these kinds
 
-A `WatchRule` selects resources by plural name and (optionally) API group. To
-mirror HelmReleases in a namespace:
+A `WatchRule` selects resources by plural name and (optionally) API group. Keep
+it **scoped to intent kinds** (see the section above). To mirror HelmReleases in
+a namespace — and nothing they render:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
