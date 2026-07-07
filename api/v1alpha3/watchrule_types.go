@@ -88,6 +88,11 @@ type ResourceRule struct {
 	//   - ["v1", "v1beta1"] matches both versions
 	//   - ["*"] matches all served versions
 	//   - [] matches the preferred served version
+	//
+	// Multi-version note: the built-in cold-start Git path is versionless, so two
+	// objects that differ only by API version resolve to the same file. To watch
+	// several versions of a group/resource and keep them in separate files, give the
+	// GitTarget a placement template that includes {version} (see GitTargetPlacementSpec).
 	// +optional
 	APIVersions []string `json:"apiVersions,omitempty"`
 

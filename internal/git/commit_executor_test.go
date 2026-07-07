@@ -94,7 +94,7 @@ func TestGenerateFilePath_AdditionalSensitiveResourceUsesSOPSPath(t *testing.T) 
 		Name:      "registry",
 	}, policy)
 
-	assert.Equal(t, "core.cozystack.io/v1beta1/tenantsecrets/tenant-a/registry.sops.yaml", path)
+	assert.Equal(t, "tenant-a/core.cozystack.io/tenantsecrets/registry.sops.yaml", path)
 }
 
 func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
@@ -215,9 +215,9 @@ func TestExecutor_AppliesEncryptionFromPendingWrite_NotFromWorker(t *testing.T) 
 	assert.Equal(t, 1, created)
 	assert.False(t, hash.IsZero(), "a committed write reports its commit hash")
 
-	encryptedPath := filepath.Join(repoPath, "team-secrets", "v1", "secrets", "default", "unit-secret.sops.yaml")
+	encryptedPath := filepath.Join(repoPath, "team-secrets", "default", "secrets", "unit-secret.sops.yaml")
 	assert.FileExists(t, encryptedPath)
-	assert.NoFileExists(t, filepath.Join(repoPath, "team-secrets", "v1", "secrets", "default", "unit-secret.yaml"))
+	assert.NoFileExists(t, filepath.Join(repoPath, "team-secrets", "default", "secrets", "unit-secret.yaml"))
 
 	content, err := os.ReadFile(encryptedPath)
 	require.NoError(t, err)

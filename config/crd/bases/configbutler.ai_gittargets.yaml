@@ -162,6 +162,33 @@ spec:
                   Immutable: delete and recreate the GitTarget to change its destination.
                 minLength: 1
                 type: string
+              placement:
+                description: |-
+                  Placement declares where NEW resources are written. It has no effect on a
+                  resource that already has a document in Git — that document is always
+                  updated in place at its existing location, wherever that is. Mutable: a
+                  change only affects resources created after the change.
+                properties:
+                  byType:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ByType maps an exact resource type key ("{group}/{version}/{resource}", e.g.
+                      "v1/configmaps", "apps/v1/deployments", or "v1/secrets"; core resources omit
+                      the group) to the path template used for a new resource of that type. A path
+                      selected for a sensitive resource (Secrets, plus any operator-configured
+                      sensitive type) must be identity-complete so it cannot collide two distinct
+                      sensitive resources onto one file.
+                    type: object
+                  default:
+                    description: |-
+                      Default is the path template used for a new resource whose type has no ByType
+                      entry. Omitted, it falls through to sibling-layout inference and then the
+                      built-in canonical path. A bundling default (one that is not identity-complete,
+                      such as "all.yaml") is only valid when a sensitive resource can never reach it
+                      — give every sensitive type an explicit identity-complete ByType entry.
+                    type: string
+                type: object
               providerRef:
                 description: |-
                   ProviderRef references the GitProvider that backs this target.

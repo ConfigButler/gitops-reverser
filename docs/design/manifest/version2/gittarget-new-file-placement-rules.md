@@ -1,6 +1,13 @@
 # GitTarget new-file placement rules
 
-> Status: proposed
+> Status: implemented (F4 v1 — Option B2: one `byType`/`default` placement map,
+> with sensitivity treated as an internal write-safety classification rather than a
+> separate user-facing placement namespace) + Option C sibling inference (steps
+> 1/2/4) + the kustomize-root fallback documented below. The earlier B1 surface (a
+> nested `sensitive:` override block) shipped first and was superseded by B2 on the
+> same branch before release; Option A and C step 3 remain deferred. See
+> "Sensitivity as a write-safety classifier (B2 implementation notes)" below for how
+> the encryption guarantee is preserved without the API-level split.
 > Captured: 2026-06-05
 > Related:
 > [file-agnostic-placement.md](../file-agnostic-placement.md) — **the vision Option C serves**,
@@ -18,8 +25,10 @@ are three viable shapes:
 
 - **Option A: ordered rule lists** (`sensitiveRules` / `normalRules`), evaluated
   top to bottom.
-- **Option B: type maps plus defaults** (`sensitive.byType` / `normal.byType`),
-  using exact GVR keys such as `v1/secrets` and `apps/v1/deployments`.
+- **Option B: type maps plus defaults**, using exact GVR keys such as
+  `v1/secrets` and `apps/v1/deployments`. B has three surface variants below:
+  the fully nested split, B1's top-level normal plus `sensitive` override, and
+  B2's single map.
 - **Option C: follow the existing layout (sibling inference)** — no policy at all;
   place a new resource where resources like it already live in the repo, and only
   fall back to canonical placement when there is no sibling to learn from.
@@ -28,10 +37,15 @@ A and B both make placement a *declared CRD policy*. C makes it a *continuation
 of the layout already in the repo* — zero new API surface. They are not rivals;
 they layer:
 
-- **Option B is the chosen declared API.** When a user wants to *prescribe* a
-  layout, the nested type-map (`placement.sensitive.byType` / `.normal.byType` +
-  defaults) is the surface to reach for — small, exact, easy to validate. Ordered
-  rules (A) stay a later escape hatch only if the type map proves too limiting.
+- **Option B is the declared API family, shipped in its B2 shape.** When a user
+  wants to *prescribe* a layout, an exact type-map plus default is the surface to
+  reach for — small, exact, easy to validate. The shipped shape is **one map**
+  (`placement.byType`, `placement.default`) where type-specific entries express
+  Secret placement just like any other resource placement. Sensitivity still
+  exists, but as a write-safety classifier: it decides encryption,
+  identity-completeness, and append/collision rules, not which config block to
+  read. Ordered rules (A) stay a later escape hatch only if the type map proves
+  too limiting.
 - **Option C is the default underneath it.** With no policy, placement *follows the
   layout already in the repo*; on an empty repo it falls through to today's
   canonical path, so default behaviour is byte-identical to now. C is what makes
@@ -62,28 +76,24 @@ spec:
   branch: main
   path: clusters/prod
   placement:
-    sensitive:
-      byType:
-        v1/secrets: "{namespace}/secret-{name}.sops.yaml"
-      default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml"
-    normal:
-      byType:
-        v1/configmaps: "{namespace}/configmaps.yaml"
-      default: "all-else.yaml"
+    byType:
+      v1/secrets: "{namespace}/secret-{name}.yaml"
+      v1/configmaps: "{namespace}/configmaps.yaml"
+    default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
 ```
 
 In this example:
 
-- sensitive resources land in one identity-complete SOPS file per resource;
+- Secrets land in one identity-complete encrypted file per resource;
 - ConfigMaps are grouped into `clusters/prod/configmaps.yaml`;
-- every other new resource is appended to `clusters/prod/all-else.yaml`.
+- every other new resource uses the identity-complete canonical-style fallback.
 
 That is powerful enough to express layouts such as `namespace-{namespace}.yaml`,
-per-kind bundles, Secret-only SOPS paths, and the current canonical
-`group/version/resource/namespace/name.yaml` layout. Splitting sensitive and
-normal placement is what keeps this from becoming too sharp: a broad normal
-default cannot catch a Secret, and sensitive placement can have stricter
-uniqueness rules.
+per-kind bundles, Secret-specific paths, and the current canonical
+`group/version/resource/namespace/name.yaml` layout. Sensitivity is still what
+keeps this from becoming too sharp, but it is enforced after placement: a
+sensitive write must be encrypted, identity-complete, and single-document in v1.
+It does not need a separate placement namespace to say where the file belongs.
 
 The pushback: fully ordered rules may be more API than we need first. A type map
 is smaller, easier to validate, and still supports Secret-specific paths,
@@ -106,8 +116,9 @@ The writer already uses the materialized-model direction described in
   managed orphans ([internal/git/resync_flush.go](../../../../internal/git/resync_flush.go));
 - existing resources are found by manifest identity, so moved files are updated
   in place;
-- new resources still fall back to `ResourceIdentifier.ToGitPath()`, with
-  `.sops.yaml` added for sensitive resources
+- new resources still fall back to `ResourceIdentifier.ToGitPath()`; sensitive
+  resources are currently routed through the encrypted writer and commonly use
+  the built-in `.sops.yaml` naming convention
   ([internal/types/identifier.go](../../../../internal/types/identifier.go),
   [internal/git/git.go](../../../../internal/git/git.go)).
 
@@ -297,21 +308,178 @@ This nested version is probably the cleaner type-map API. It keeps the
 sensitive/normal split obvious and leaves room for class-level fields later, such as
 `allowMultiDocument`, without inventing new top-level names.
 
+### Option B1: one normal surface plus a sensitive override
+
+There is a smaller variant of the nested type-map API that may be the better
+first surface: make the common, plaintext placement policy the top-level shape,
+and keep `sensitive` only as the guarded override.
+
+```yaml
+placement:
+  byType:
+    v1/configmaps: "{namespace}/configmaps.yaml"
+  default: "all.yaml"
+  sensitive:
+    byType:
+      v1/secrets: "{namespace}/secret-{name}.sops.yaml"
+```
+
+```go
+type GitTargetPlacementSpec struct {
+    ByType    map[string]string       `json:"byType,omitempty"`
+    Default   string                  `json:"default,omitempty"`
+    Sensitive GitTargetPlacementClass `json:"sensitive,omitempty"`
+}
+
+type GitTargetPlacementClass struct {
+    ByType  map[string]string `json:"byType,omitempty"`
+    Default string            `json:"default,omitempty"`
+}
+```
+
+The semantics are:
+
+- classify the resource first;
+- sensitive resources consult `placement.sensitive.byType`, then
+  `placement.sensitive.default`, then sibling inference, then the built-in secure
+  canonical SOPS fallback;
+- normal resources consult `placement.byType`, then `placement.default`, then
+  sibling inference, then the built-in canonical plaintext fallback;
+- a top-level `default` never applies to sensitive resources;
+- any supplied sensitive template is still strictly validated as SOPS and
+  identity-complete.
+
+This makes the ordinary case read like what users mean: "put ConfigMaps here,
+and put everything else normal in `all.yaml`." They do not have to learn a
+`normal` wrapper before they can express the common case, and they do not feel
+invited to provide two defaults. The sensitive block remains visible only where
+the user wants to override the secure default.
+
+Pros:
+
+- fewer concepts in the common path: `placement.byType` and `placement.default`
+  are enough for normal resources;
+- the broad default is safer to explain, because it is explicitly a normal-only
+  default rather than a default that needs a hidden exception for Secrets;
+- sensitive placement remains hard-split and cannot be caught by a plaintext
+  bundle such as `all.yaml`;
+- it still leaves room for sensitive-specific fields later without putting them
+  on every placement class.
+
+Cons:
+
+- the shape is slightly asymmetric: normal is implicit at the top level, while
+  sensitive has an explicit block;
+- future class-level fields for normal resources need top-level names, while the
+  sensitive class has its own namespace;
+- users who expect parallel classes may ask why there is `sensitive` but no
+  `normal`;
+- migration from the fully nested shape would require either accepting both
+  shapes for a while or picking this before the field ships.
+
+This is a useful intermediate shape: it keeps the security property that
+motivated the split, but removes the awkward "two defaults" feel from the day-one
+UX. Its weakness is that it still makes sensitivity part of the placement API.
+That is not quite the model we want. Placement answers "where does this resource
+go?"; sensitivity answers "what write rules apply once it gets there?"
+
+### Option B2: one type map, sensitivity as write policy
+
+B2 goes one step smaller: there is only one declared placement map. Users express
+Secret placement by naming `v1/secrets` in `byType`, exactly like they express
+ConfigMap or Deployment placement.
+
+```yaml
+placement:
+  byType:
+    v1/secrets: "{namespace}/secrets/{name}.yaml"
+    v1/configmaps: "{namespace}/configmaps.yaml"
+  default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
+```
+
+```go
+type GitTargetPlacementSpec struct {
+    ByType  map[string]string `json:"byType,omitempty"`
+    Default string            `json:"default,omitempty"`
+}
+```
+
+The semantics are:
+
+- resolve placement from the single map: exact `byType` first, then `default`,
+  then sibling inference, then canonical fallback;
+- independently classify the resource as sensitive or not;
+- for a sensitive resource, require the selected path to be identity-complete;
+- for a sensitive resource, write encrypted content and refuse multi-document
+  append/collision in v1;
+- for a non-sensitive resource, allow plaintext multi-document append only into
+  files that are not classified encrypted;
+- `.sops.yaml` is not required. It is a useful convention and may still be what
+  the built-in canonical SOPS fallback chooses, but real GitOps repositories can
+  contain SOPS-encrypted files named `secret.yaml`, and the controller should
+  infer encryption from content/classification, not from filename alone.
+
+The important safety rule moves from the API shape into validation:
+
+- a `byType` entry for a sensitive type can be shorter because the type key
+  supplies type identity; it still needs scope identity and name, for example
+  `{namespace}/{name}.yaml`;
+- a `default` that can catch sensitive resources must be identity-complete across
+  type, scope, and name, for example
+  `{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml`;
+- a broad bundling default such as `all.yaml` is valid only if it cannot catch
+  sensitive resources, for example because every sensitive type watched by the
+  target has an exact `byType` entry or because the target has no sensitive
+  writes in scope. Otherwise the policy is unsafe and should fail validation or
+  be reported as unused/ambiguous policy before writes start.
+
+Pros:
+
+- smallest user-facing API: one `byType`, one `default`;
+- no duplicated "normal vs sensitive" mental model;
+- matches how users already think about resource layouts: "Secrets go here,
+  ConfigMaps go there";
+- supports repositories that encrypt SOPS files without a `.sops.yaml` suffix;
+- keeps safety attached to the write class, where it belongs: encrypted content,
+  identity-complete paths, no sensitive append, no plaintext append into
+  encrypted files.
+
+Cons:
+
+- validation needs to know, or conservatively approximate, which selected types
+  are sensitive for this GitTarget;
+- a broad `default: all.yaml` becomes invalid or limited when sensitive resources
+  can reach it, so the error message must explain how to fix it with explicit
+  `byType` entries;
+- without the visual `sensitive:` block, documentation must be very clear that
+  sensitivity still exists and still changes write rules;
+- a future per-class option such as `allowMultiDocument` would need either a new
+  field or a later rule-list surface.
+
+**Decided and implemented: B2 is the declared API.** It keeps the good part of
+B1 — one obvious common path — and removes the remaining API-level split.
+Sensitivity stays load-bearing, but not as a second placement namespace. It is a
+controller-owned write-safety contract: encrypt sensitive content, require
+identity-complete placement, and refuse unsafe appends/collisions. The
+`GitTargetPlacementSpec` CRD field is exactly `{byType, default}`; the earlier B1
+`sensitive:` block was removed. How the encryption guarantee survives the removal
+of the API-level split is written up in "Sensitivity as a write-safety classifier
+(B2 implementation notes)" below.
+
 The validation rules are almost the same as for ordered rules:
 
-- omitted `placement.sensitive.default` uses the built-in secure canonical SOPS
-  fallback;
-- omitted `placement.normal.default` uses the built-in canonical plaintext
-  fallback;
+- omitted `placement.default` uses sibling inference and then the built-in
+  canonical fallback;
 - every `byType` key must parse as a valid resolved type key;
 - every referenced type should be served and watched by the GitTarget, or at
   least reported as unused policy;
-- sensitive paths must end in `.sops.yaml` or `.sops.yml`;
-- sensitive paths must be identity-complete, unless the type key itself narrows
-  to one namespaced or cluster-scoped type and the path contains the scope
-  identity;
-- normal paths may intentionally collide and append to plaintext multi-document
-  files.
+- paths selected for sensitive resources must be identity-complete, unless the
+  exact `byType` key itself narrows to one namespaced or cluster-scoped type and
+  the path contains the scope identity plus name;
+- paths selected for sensitive resources do **not** need to end in `.sops.yaml`
+  or `.sops.yml`; suffix is convention, content classification is the truth;
+- paths selected for plaintext resources may intentionally collide and append to
+  plaintext multi-document files, but must not append to encrypted files.
 
 The main loss is expressiveness. A type map cannot say "all namespaced resources
 go to `namespace-{namespace}.yaml`, but cluster-scoped resources go to
@@ -319,17 +487,75 @@ go to `namespace-{namespace}.yaml`, but cluster-scoped resources go to
 metadata such as labels. If we do not need those patterns yet, this may be a
 better first API than ordered rules.
 
-My current preference is:
+Implemented shape:
 
-1. ship the nested type-map (B) as **the** declared API — it is the smallest
-   surface that covers the real "this type here, everything else there" need;
-2. ship Option C (sibling inference, below) as the **default** that runs when B is
+1. the B2 type-map is **the** declared API — the smallest surface that covers the
+   real "this type here, everything else there" need while keeping sensitivity as a
+   write-safety rule;
+2. Option C (sibling inference, below) is the **default** that runs when B is
    absent or silent for a resource, so an unconfigured target follows the repo's
    own layout instead of forcing canonical;
-3. keep ordered rules (A) as a future extension only if users hit the type-map
+3. ordered rules (A) remain a future extension only if users hit the type-map
    limit;
-4. keep the same template renderer, SOPS validation, and append rules across all
-   three, so B's templates and C's inferred locations flow through one writer.
+4. one template renderer, identity validation, encryption enforcement, and append
+   rules serve all of it, so B's templates and C's inferred locations flow through
+   one writer.
+
+### Sensitivity as a write-safety classifier (B2 implementation notes)
+
+Dropping B1's `sensitive:` block only removed the ability to give sensitive
+resources a *different declared path*; it removed **no** part of the encryption
+guarantee, because every piece of that guarantee already lived outside the
+placement API and stays there under B2:
+
+- **Encrypt by classification, not by path.** Whether a resource is written
+  through the encrypted (SOPS) writer is decided by
+  `types.SensitiveResourcePolicy` (core Secrets always; plus operator-configured
+  types), independent of which path placement chose. A Secret routed to `all.yaml`
+  is still encrypted.
+- **Inference never crosses the encrypted boundary.** Sibling-cohort matching
+  reads a document's own `CauseEncrypted` classification, so a sensitive resource
+  only ever infers from encrypted siblings and a plaintext one only from plaintext
+  siblings — no config needed.
+- **Sensitive never appends.** A sensitive resource whose resolved path already
+  holds a document is refused (`finishPlacement`), never appended.
+- **Canonical stays SOPS.** The built-in fallback keeps the `.sops.yaml` suffix for
+  a sensitive resource.
+
+What B1's API split *did* additionally provide — the guarantee that a Secret could
+never reach a shared/plaintext file — is preserved by moving it from "structural
+(two maps)" to "one static check plus two write-time guards", so it now holds for
+**every** sensitive type (core and operator-configured), not just those the user
+remembered to list in a `sensitive:` block:
+
+- **Static (the Validated gate).** Core Secrets are always sensitive, so the
+  spec-only validation can name them: an explicit `byType["v1/secrets"]` route must
+  be identity-complete, and a bundling `default` (one that is not itself
+  identity-complete, e.g. `all.yaml`) is rejected unless such a route exists — a
+  Secret can never fall through a bundle. Additional sensitive types are operator
+  configuration, invisible to a spec-only gate, so they rely on the write-time
+  guards instead.
+- **Write-time guard 1 — no cold-bundle mixing.** When several new resources in one
+  batch collide on a brand-new path, the writer refuses to place a sensitive and a
+  plaintext resource in the same file regardless of arrival order (the first wins,
+  the other is skipped and retried).
+- **Write-time guard 2 — no append into an encrypted file.** A plaintext resource
+  is refused (not appended, and not overwritten) when its resolved path already
+  holds an encrypted document.
+
+The residual, deliberately accepted for v1: if an operator configures an
+*additional* sensitive type and a GitTarget uses a bundling `default` without an
+explicit `byType` entry for that type, resources of it are **skipped fail-safe**
+rather than co-mingled — not written until the policy is fixed. As implemented, that
+skip is **logged per-resource at the skip site and counted in the resync summary as
+`placementSkipped`** (`ResyncStats.PlacementSkipped`); it is deliberately **not** a
+dedicated GitTarget status condition in v1. So the observability claim is bounded:
+the operator will not silently mirror the resource, and the skip is visible in logs
+and the resync roll-up, but a reader watching only GitTarget conditions will not see
+it. Core Secrets never hit this because the static gate rejects the policy up front.
+Whether to teach the Validated gate about operator-configured sensitive types (so
+this becomes a fast, up-front rejection there too), and whether to add a bounded
+status surface for placement skips, are open questions below.
 
 ## Option C: follow the existing layout (sibling inference)
 
@@ -387,9 +613,10 @@ free from the encryption classification already in the store:
 
 - a sensitive resource **never** infers from plaintext siblings and is **never**
   appended to a plaintext bundle;
-- it infers only from other sensitive single-document `.sops.yaml` siblings in the
-  same directory, otherwise it uses the built-in **secure canonical SOPS fallback**
-  (identity-complete, `.sops.yaml`).
+- it infers only from other encrypted/sensitive single-document siblings in the
+  same directory, regardless of filename suffix; otherwise it uses the built-in
+  **secure canonical fallback** (identity-complete and encrypted, with a
+  `.sops.yaml` suffix only as a convention).
 
 So the encryption guarantee never depends on the user having configured the split
 correctly — there is no split to configure.
@@ -412,6 +639,33 @@ A freshly bootstrapped repo has no siblings, so the first resource of each kind
 lands on canonical `ToGitPath()` — **byte-identical to today.** From then on the
 layout propagates itself. A brand-new target behaves exactly as it does now; the
 power only appears once a human (or a prior import) has established any layout.
+
+**Amendment, decided during F4 implementation: a kustomize-root fallback sits
+between "no sibling match" and true canonical.** The rule above is exactly right
+for a flat or already-populated folder, but it silently breaks the moment the
+GitTarget's one kustomization-managed folder receives its *first* resource of a
+brand-new type: canonical is a `{group}/{version}/{resource}/{namespace}/{name}.yaml`
+tree the kustomization's `resources:` graph can never reach, so the new file
+would land outside the very folder it was meant to join — precisely what this
+document exists to prevent, just for a type instead of a whole folder.
+
+So, when steps 1/2 (sibling inference) both miss **and** the scanned subtree is
+governed by exactly one supported kustomization, the new resource is placed
+beside that kustomization's other files (and gets a `resources:` entry — see
+`kustomize-support-boundary-and-product-model.md` and
+`unreflectable-edits-and-write-gating.md` for the product-level "add to the right
+kustomize file" framing) instead of falling to canonical. This is deliberately
+narrower than the shelved step 3 (same namespace, any type) above: it never joins
+an existing bundle, and it only ever fires when there is exactly one supported
+kustomization for the whole GitTarget to be about — the destination follows from
+there being one root, not from picking the largest matching cohort — so it cannot
+become the "sink that swallows every new type" risk (P5) step 3 raised. More than
+one supported kustomization under the scanned root is ambiguous and falls through
+to canonical rather than guessing which root the new resource belongs to.
+
+True canonical — no sibling of the matching type or kind, and no single
+kustomization root to fall back to — remains exactly as described above: a
+brand-new, unmanaged target behaves byte-identical to today.
 
 ### Determinism and ambiguity
 
@@ -553,8 +807,9 @@ higher under C.
 
 - C adds **no policy to validate** — there is no template to parse in the base
   case. The only new runtime check is the sensitive backstop: a resolved sensitive
-  path must be `.sops.yaml` and identity-complete (the same invariant A/B enforce),
-  else fall back to canonical SOPS.
+  path must be identity-complete and must use the encrypted writer. If the
+  inferred sibling cohort cannot prove that, placement falls back to the secure
+  canonical path.
 - The resolved path still passes the existing path validation (under `spec.path`,
   no `..`, correct suffix, inside discovery scope) and the existing
   plaintext-append acceptance (never partially manage a file).
@@ -570,14 +825,15 @@ higher under C.
 
 ## Sensitive placement and uniqueness
 
-Sensitive placement should be stricter than normal placement. A normal template
-may intentionally map many resources to one file because plaintext
-multi-document append is supported. A sensitive template must not do that in the
-first version.
+Sensitive writes should be stricter than normal writes. A normal template may
+intentionally map many resources to one file because plaintext multi-document
+append is supported. A sensitive resource must not do that in the first version,
+regardless of whether the filename contains `.sops`.
 
 The guarantee should be structural:
 
-> Every accepted sensitive template must render an identity-complete path.
+> Every placement selected for a sensitive resource must render an
+> identity-complete path, and the content writer must produce encrypted content.
 
 Identity-complete means the rendered path cannot collide for two distinct
 sensitive resources in the GitTarget. There are two ways a template can prove
@@ -590,31 +846,34 @@ that:
    `{namespace}` plus `{name}` for namespaced resources, or `{name}` for
    cluster-scoped resources.
 
-For the type-map API, the `byType` key itself narrows to one type. For ordered
-rules, "narrows to exactly one served resource type" means the rule names one API
-group, one API version, and one resource, with no wildcard or omitted type field.
+For the type-map API, the `byType` key itself narrows to one type. For a broad
+`default`, the template must carry the full API identity if it can catch any
+sensitive resource. For ordered rules, "narrows to exactly one served resource
+type" means the rule names one API group, one API version, and one resource, with
+no wildcard or omitted type field.
 
 This rule is intentionally conservative. A user might know that
-`{namespace}/secret-{name}.sops.yaml` is unique because they only watch core
-Secrets, but the controller can only rely on that if the match proves it:
+`{namespace}/secret-{name}.yaml` is unique because they only watch core Secrets,
+but the controller can only rely on that if the match proves it:
 
 ```yaml
 placement:
-  sensitiveRules:
-    - match:
-        apiGroups: [""]
-        apiVersions: ["v1"]
-        resources: ["secrets"]
-      path: "{namespace}/secret-{name}.sops.yaml"
+  byType:
+    v1/secrets: "{namespace}/secret-{name}.yaml"
 ```
 
 If the match does not narrow to one type, use the full identity path:
 
 ```yaml
 placement:
-  sensitiveRules:
-    - path: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml"
+  default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
 ```
+
+`.sops.yaml` and `.sops.yml` remain good conventions, and the built-in secure
+canonical fallback may use them, but they are not required for correctness. Some
+GitOps repositories use SOPS metadata inside ordinary `*.yaml` files. The
+operator should classify encryption from file content and write behavior, not
+from suffix alone.
 
 Variable expansion must also be non-lossy for identity variables. Do not use a
 sanitizer that turns two legal Kubernetes names into the same path segment.
@@ -644,34 +903,58 @@ Recommended variables:
 | `{kind}` | manifest kind, for example `ConfigMap` |
 | `{scope}` | `namespaced` or `cluster` |
 | `{namespace}` | metadata namespace, empty for cluster-scoped resources |
-| `{namespaceOrCluster}` | namespace, or `cluster` for cluster-scoped resources |
+| `{namespaceOrCluster}` | namespace, or `_cluster` (an illegal-namespace sentinel, so it never collides with a real namespace) for cluster-scoped resources |
 | `{name}` | metadata name |
-| `{sensitiveSuffix}` | `.sops.yaml` in sensitive rules, `.yaml` in normal rules |
+| `{sensitiveSuffix}` | Optional convention helper: `.sops.yaml` for sensitive writes, `.yaml` otherwise |
 
-With those variables, the built-in canonical normal layout is:
+With those variables, the built-in canonical layout is **namespace-first, no
+version segment** (as implemented in `ResourceIdentifier.ToGitPath`):
 
 ```text
-{groupPath}/{version}/{resource}/{namespace}/{name}{sensitiveSuffix}
+{namespaceOrCluster}/{groupPath}/{resource}/{name}{sensitiveSuffix}
 ```
 
-For a core `v1` ConfigMap named `app` in namespace `default`, empty path segments
-are removed, so the canonical result is:
+The scope leads (a real namespace, or the literal `_cluster` for a cluster-scoped
+resource — an illegal Kubernetes namespace name, so it can never collide with a real
+namespace) so a repository browses namespace-first; the group is omitted for core
+resources, and the API version is deliberately left out — the operator writes one
+version per object, so a version segment only adds noise and would churn the path on
+a preferred-version bump. For a core `v1` ConfigMap named `app` in namespace
+`default`, empty segments are removed, so the canonical result is:
 
 ```text
-v1/configmaps/default/app.yaml
+default/configmaps/app.yaml
 ```
 
 For an `apps/v1` Deployment:
 
 ```text
-apps/v1/deployments/default/app.yaml
+default/apps/deployments/app.yaml
 ```
 
-For a Secret:
+For a cluster-scoped resource the scope segment is the literal `_cluster`, e.g. a
+ClusterRole `admin`:
 
 ```text
-v1/secrets/default/app.sops.yaml
+_cluster/rbac.authorization.k8s.io/clusterroles/admin.yaml
 ```
+
+For a Secret under the suffix convention:
+
+```text
+default/secrets/app.sops.yaml
+```
+
+The equally valid suffix-neutral form is:
+
+```text
+default/secrets/app.yaml
+```
+
+(An earlier revision seeded a REST-first `{groupPath}/{version}/{resource}/
+{namespace}/{name}` path; the namespace-first, version-less shape above replaced it
+before release. Because placement is match-first for existing files, the change only
+affects newly-created files and never moves one already in Git.)
 
 Optional future variables can expose selected object metadata:
 
@@ -708,30 +991,34 @@ next scan would intentionally ignore that child folder. Either the placement rul
 must render an immediate child file such as `default-app.yaml`, or the GitTarget
 must enable recursive discovery.
 
-Sensitive resources need one more invariant: if the selected resource is sensitive,
-the final path must be a SOPS path. Because sensitive resources use
-the sensitive placement class, the policy can validate this without guessing:
+Sensitive resources need one more invariant: if the selected resource is
+sensitive, the selected path must be identity-complete and the write must produce
+encrypted content. The filename does not prove encryption.
 
-- every sensitive template must render `.sops.yaml` or `.sops.yml`;
-- every sensitive template must be identity-complete;
-- if sensitive placement is omitted, the controller uses the built-in secure
-  canonical SOPS rule.
+- every selected sensitive path must be identity-complete;
+- a sensitive `byType` entry can rely on the type key for type identity, but must
+  include scope identity and `{name}`;
+- a `default` that can catch sensitive resources must include type identity,
+  scope identity, and `{name}`;
+- if no declared placement applies, sibling inference may follow existing
+  encrypted siblings, otherwise the controller uses the built-in secure canonical
+  fallback.
 
-A Secret rule that renders `secrets/{name}.yaml` should fail validation or
-reconciliation before any cleartext write is attempted.
+A Secret rule that renders `secrets/{name}.yaml` is only valid for cluster-scoped
+secrets (which do not exist in core Kubernetes) or for a narrowed single
+namespace. For ordinary namespaced core Secrets, it is not identity-complete
+because two namespaces can both contain `name`.
 
 ## Collision and append behavior
 
-Normal placement rules intentionally allow many resources to render to the same
+Plaintext placement intentionally allows many resources to render to the same
 file:
 
 ```yaml
 placement:
-  normalRules:
-    - match:
-        resources: ["configmaps"]
-      path: "configmaps.yaml"
-    - path: "all-else.yaml"
+  byType:
+    v1/configmaps: "configmaps.yaml"
+  default: "all-else.yaml"
 ```
 
 That means collision is not automatically an error. It is a request to create or
@@ -755,8 +1042,9 @@ Sensitive rules:
 - a sensitive rule that is not identity-complete is invalid;
 - a sensitive rule that still maps two resources to the same path is a placement
   error;
-- a sensitive resource must not be appended to a plaintext multi-document file;
-- a plaintext resource must not be appended to a SOPS file.
+- a sensitive resource must not be appended to any multi-document file;
+- a plaintext resource must not be appended to a file classified encrypted,
+  regardless of suffix.
 
 That is stricter than SOPS can theoretically support, but it keeps the current
 writer's invariant: encrypted documents are not patched in place and are handled
@@ -780,11 +1068,11 @@ The content acceptance gate remains responsible for:
 Placement adds policy acceptance:
 
 - the policy must be syntactically valid;
-- custom placement classes must have defaults, or use the built-in defaults;
 - every path template must reference only known variables;
 - rendered paths for the current desired snapshot must pass path validation;
-- sensitive resources must render to SOPS paths;
-- sensitive templates must be identity-complete;
+- selected paths for sensitive resources must be identity-complete;
+- selected paths for sensitive resources must be written encrypted, regardless of
+  filename suffix;
 - sensitive collisions are refused;
 - plaintext collisions are allowed only when they produce an accepted managed
   multi-document file.
@@ -816,20 +1104,18 @@ This is the likely first API shape:
 
 ```yaml
 placement:
-  sensitive:
-    byType:
-      v1/secrets: "{namespace}/secret-{name}.sops.yaml"
-    default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml"
-  normal:
-    byType:
-      v1/configmaps: "{namespace}/configmaps.yaml"
-    default: "all.yaml"
+  byType:
+    v1/secrets: "{namespace}/secret-{name}.yaml"
+    v1/configmaps: "{namespace}/configmaps.yaml"
+  default: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
 ```
 
 The keys are plural resource keys, so use `v1/secrets` and `v1/configmaps`, not
-`v1/secret` or `v1/configmap`. A ConfigMap goes through `normal.byType` unless
-the cluster/operator configuration classifies ConfigMaps as sensitive; in that
-case it goes through `sensitive.byType` or `sensitive.default`.
+`v1/secret` or `v1/configmap`. A ConfigMap can share
+`{namespace}/configmaps.yaml`. A Secret can also be placed by the same `byType`
+map, but the resolved path must be identity-complete and the writer must produce
+encrypted content. The `.sops.yaml` suffix is not required; `secret-app.yaml`
+can be encrypted SOPS YAML just as much as `secret-app.sops.yaml`.
 
 ### Namespace bundle with ordered rules
 
@@ -839,7 +1125,7 @@ resources get their own bundle.
 ```yaml
 placement:
   sensitiveRules:
-    - path: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml"
+    - path: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
   normalRules:
     - match:
         scope: Namespaced
@@ -860,20 +1146,21 @@ placement:
         apiGroups: [""]
         apiVersions: ["v1"]
         resources: ["secrets"]
-      path: "{namespace}/secrets/{name}.sops.yaml"
+      path: "{namespace}/secrets/{name}.yaml"
   normalRules:
     - path: "{groupPath}/{version}/{resource}/{namespace}/{name}.yaml"
 ```
 
-This keeps sensitive resources one-per-file and leaves everything else in the
-current canonical layout.
+This keeps sensitive resources one-per-file and encrypted while leaving
+everything else in the current canonical layout. A `.sops.yaml` suffix could be
+used here as a repository convention, but it is not part of the safety contract.
 
 ### ConfigMaps grouped with ordered rules
 
 ```yaml
 placement:
   sensitiveRules:
-    - path: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.sops.yaml"
+    - path: "{groupPath}/{version}/{resource}/{namespaceOrCluster}/{name}.yaml"
   normalRules:
     - match:
         apiGroups: [""]
@@ -885,18 +1172,20 @@ placement:
 This is a reasonable middle ground: only the low-risk, plaintext resource type is
 bundled.
 
-### Broad normal default
+### Broad B2 default
 
 ```yaml
 placement:
-  normalRules:
-    - path: "all.yaml"
+  byType:
+    v1/secrets: "{namespace}/secrets/{name}.yaml"
+  default: "all.yaml"
 ```
 
-This affects only normal resources. It is valid for plaintext resources but
-operationally heavy. Every edit touches one file, and a very large file becomes
-harder to review, merge, and re-render. Sensitive resources still use the
-built-in secure canonical fallback unless `sensitiveRules` is explicitly set.
+This is valid because the sensitive type is explicitly covered by an
+identity-complete path. The broad default then catches plaintext resources only.
+If `v1/secrets` were not covered, `default: "all.yaml"` would be invalid for a
+GitTarget that can write Secrets, because a sensitive resource could otherwise
+land in a non-identity-complete bundle.
 
 ### Brownfield import with no policy (Option C)
 
@@ -906,7 +1195,7 @@ folder already looks like:
 ```text
 clusters/prod/
   all.yaml                       # 9 ConfigMaps, multi-document
-  v1/secrets/app/db.sops.yaml    # one Secret, encrypted, one-per-file
+  v1/secrets/app/db.yaml         # one Secret, encrypted, one-per-file
 ```
 
 A new ConfigMap `cache` in namespace `app` arrives:
@@ -918,7 +1207,8 @@ A new ConfigMap `cache` in namespace `app` arrives:
 A new Secret `api-token` in namespace `app` arrives:
 
 - it is sensitive, so plaintext siblings are ignored; the only sensitive cohort is
-  `v1/secrets/app/` one-per-file → a new **`v1/secrets/app/api-token.sops.yaml`**.
+  `v1/secrets/app/` one-per-file → a new encrypted
+  **`v1/secrets/app/api-token.yaml`**.
 
 A new ConfigMap in a *new* namespace `billing` arrives:
 
@@ -927,9 +1217,9 @@ A new ConfigMap in a *new* namespace `billing` arrives:
   so the new namespace needs no new segment.
 
 Nothing was configured; the layout the user already had simply continued. The same
-target with `placement.normal.byType: { "v1/configmaps": "{namespace}/configmaps.yaml" }`
-(Option B) would instead route ConfigMaps into per-namespace files — B overriding
-C where the user has an opinion.
+target with `placement.byType: { "v1/configmaps": "{namespace}/configmaps.yaml" }`
+in the B2 shape would instead route ConfigMaps into per-namespace files — B
+overriding C where the user has an opinion.
 
 ## Keeping it small
 
@@ -942,7 +1232,8 @@ inside these limits:
   extend to unseen namespaces — P4);
 - C infers **directory + bundle-vs-file only** — never a filename or path-segment
   template (that is B's job);
-- separate sensitive and normal rule lists;
+- keep sensitivity as an internal write-safety classifier, not a second public
+  placement namespace;
 - prefer exact type-map overrides plus defaults unless ordered matching proves
   necessary;
 - when ordered matching exists, keep it first-match-wins only;
@@ -956,20 +1247,21 @@ inside these limits:
 - no per-resource status spam. Status should show bounded examples.
 
 This still gives enough flexibility for the use cases that motivated the idea:
-Secret-specific SOPS paths, ConfigMap bundles, namespace files, and a catch-all
-layout.
+Secret-specific encrypted paths, ConfigMap bundles, namespace files, and a
+catch-all layout.
 
 ## Implementation sketch
 
-1. Settle the surface: **B is the declared API, C is the default.**
-   - B (chosen): nested type map (`placement.sensitive.byType`,
-     `placement.sensitive.default`, `placement.normal.byType`,
-     `placement.normal.default`);
+1. Settle the surface: **B2 is the declared API, C is the default.**
+   - B2: one top-level type map (`placement.byType`) plus one
+     `placement.default`; sensitivity is applied as write policy after placement
+     resolves;
    - C (default): no API surface — it resolves against the content-derived store;
-   - A: ordered `sensitiveRules` / `normalRules`, a later escape hatch only.
+   - A: ordered `sensitiveRules` / `normalRules`, a later escape hatch only, not
+     implemented.
 2. Add the CRD field:
    - `GitTargetSpec.Placement *GitTargetPlacementSpec`
-   - the chosen nested type-map shape, or the ordered-rule shape
+   - the B2 type-map shape (`ByType`/`Default` at top level)
    - policy/path validation that can be done statically.
 3. Introduce a placement policy interface in the writer/manifestreport layer:
 
@@ -990,13 +1282,14 @@ layout.
    - resolve a whole batch of new creates together so placement is
      order-independent (P2), reusing step 8's grouping;
    - never let a sensitive resource infer across the plaintext boundary (it uses
-     other `.sops.yaml` siblings or the secure canonical SOPS fallback);
+     other encrypted/sensitive siblings or the secure canonical fallback);
    - emit, for every new create, the chosen path plus the cohort and ladder step
      that produced it, into the scan/dry-run output (P8).
 5. Parse and validate path templates once per GitTarget reconcile. Sensitive
-   templates must be SOPS-suffixed and identity-complete. Type-map keys must
-   parse to exact GVR keys. Store compiled templates in the resolved target
-   metadata passed to the BranchWorker.
+   resources must resolve to identity-complete paths and must be written through
+   the encrypted writer; the selected filename suffix is not the contract.
+   Type-map keys must parse to exact GVR keys. Store compiled templates in the
+   resolved target metadata passed to the BranchWorker.
 6. Replace calls to `filePathForIdentifier` / `generateFilePath` for new
    resources with `placement.LocateNew`.
 7. Leave existing-document paths unchanged. `applyUpsert` still checks the store
@@ -1007,7 +1300,11 @@ layout.
    - write or append multi-document YAML only for accepted plaintext files.
 9. Add sensitive collision checks before rendering encrypted bytes; this is a
    runtime backstop behind the static identity-completeness validation.
-10. Feed placement errors into GitTarget status and the scan/dry-run output.
+10. Surface placement skips. **Implemented as:** each fail-safe skip is logged
+    per-resource at the skip site and counted in the resync summary
+    (`ResyncStats.PlacementSkipped`, distinct from the planner's `Skipped`). A
+    dedicated GitTarget status condition and a scan/dry-run "why here" trace remain
+    future work (see open questions).
 11. Update chart docs and examples after the API shape is settled.
 
 ## Tests
@@ -1023,9 +1320,13 @@ Unit tests:
 - path validation rejects absolute paths, `..`, empty names, bad suffixes, and
   paths outside non-recursive discovery scope;
 - core group removes the empty `{groupPath}` segment;
-- sensitive resources require `.sops.yaml`;
-- omitted sensitive placement still uses the built-in secure canonical fallback;
-- sensitive templates that are not identity-complete are rejected;
+- sensitive resources do not require `.sops.yaml`;
+- sensitive resources require identity-complete selected paths;
+- sensitive resources are written encrypted regardless of filename suffix;
+- an unmatched sensitive resource still uses the built-in secure canonical
+  fallback;
+- a broad default such as `all.yaml` is rejected if it can catch sensitive
+  resources;
 - plaintext same-path creates produce deterministic multi-document YAML;
 - sensitive same-path creates fail;
 - existing moved manifests are updated in place and do not re-run placement;
@@ -1038,8 +1339,8 @@ Option C (sibling inference) unit tests:
 - a new resource whose type-cohort is a bundle is appended to that bundle file;
 - a new resource whose type-cohort is one-per-file gets a new `{name}.yaml` beside
   the siblings;
-- a sensitive resource never joins a plaintext bundle and uses the secure canonical
-  SOPS path when only plaintext siblings exist;
+- a sensitive resource never joins a plaintext bundle and uses the secure
+  canonical encrypted path when only plaintext siblings exist;
 - cohort tie-break is deterministic: most members, then lexically-smallest
   directory, then file (P1);
 - a batch of new creates against an empty snapshot is order-independent — all
@@ -1057,7 +1358,8 @@ Integration/e2e tests:
 
 - a GitTarget with ConfigMaps grouped into `configmaps.yaml` creates and updates
   multiple ConfigMaps without duplicate files;
-- Secret placement writes `.sops.yaml` and never creates cleartext Secret YAML;
+- Secret placement writes encrypted YAML and never creates cleartext Secret YAML,
+  even when the configured path ends in ordinary `.yaml`;
 - a namespace-bundle policy removes one document when the API resource is deleted
   and deletes the file only after the last managed document is gone;
 - an invalid policy blocks `Ready` before live events are accepted;
@@ -1089,3 +1391,10 @@ Integration/e2e tests:
 - When B and C disagree for a resource (B names a path, C would infer another),
   confirm B always wins and C only fills B's gaps — and that this precedence is
   visible in the dry-run.
+- Should the Validated gate learn about operator-configured *additional* sensitive
+  types (beyond core Secrets) so a bundling `default` that could catch one is
+  rejected up front, instead of relying on the write-time guards to skip those
+  resources fail-safe at commit time? Doing so means threading the operator's
+  sensitive-resource configuration into GitTarget validation, which today is
+  spec-only. For v1 the write-time guards cover the safety; this would only upgrade
+  a fail-safe skip into a faster, more visible up-front error.

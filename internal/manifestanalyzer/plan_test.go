@@ -160,8 +160,8 @@ func TestBuildPlan_Create(t *testing.T) {
 	if create.Desired == nil {
 		t.Errorf("create action should carry the desired object")
 	}
-	if got := create.Resource.ToGitPath(); got != "v1/configmaps/default/c.yaml" {
-		t.Errorf("create placement = %q, want v1/configmaps/default/c.yaml", got)
+	if got := create.Resource.ToGitPath(); got != "default/configmaps/c.yaml" {
+		t.Errorf("create placement = %q, want default/configmaps/c.yaml", got)
 	}
 }
 

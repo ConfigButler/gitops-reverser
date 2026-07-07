@@ -364,7 +364,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		// per-event ConfigMap commit. That backfill touches a different file, so scoping to the ConfigMap
 		// file (and matching the per-event commit explicitly) asserts the per-event behaviour without
 		// being fragile to that acceptable setup-time ordering.
-		cmFile := fmt.Sprintf("%s/v1/configmaps/%s/%s.yaml", commitPath, testNs, cmName)
+		cmFile := fmt.Sprintf("%s/%s/configmaps/%s.yaml", commitPath, testNs, cmName)
 		Eventually(func(g Gomega) {
 			_, pullErr := gitRun(signingRepo.CheckoutDir, "pull")
 			g.Expect(pullErr).NotTo(HaveOccurred())

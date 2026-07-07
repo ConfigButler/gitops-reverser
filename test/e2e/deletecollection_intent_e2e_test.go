@@ -325,7 +325,7 @@ func forceClearConfigMapFinalizers(client *kubernetes.Clientset, ns string) {
 }
 
 func configMapRepoPath(ns, name string) string {
-	return path.Join(dcIntentBasePath, fmt.Sprintf("v1/configmaps/%s/%s.yaml", ns, name))
+	return path.Join(dcIntentBasePath, fmt.Sprintf("%s/configmaps/%s.yaml", ns, name))
 }
 
 func waitForFilePresent(repo *RepoArtifacts, repoPath string) {

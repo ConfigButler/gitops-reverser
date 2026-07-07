@@ -246,12 +246,23 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, fmt.Sprintf("Validated gate failed: %s", conflictReason), &conflictResult, nil
 	}
 
+	if placementOK, placementMsg := validatePlacementPolicy(target.Spec.Placement); !placementOK {
+		r.setCondition(
+			target,
+			GitTargetConditionValidated,
+			metav1.ConditionFalse,
+			GitTargetReasonInvalidConfig,
+			placementMsg,
+		)
+		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
+	}
+
 	r.setCondition(
 		target,
 		GitTargetConditionValidated,
 		metav1.ConditionTrue,
 		GitTargetReasonOK,
-		"Provider and branch validation passed",
+		"Provider, branch, and placement policy validation passed",
 	)
 	return true, "", nil, nil
 }

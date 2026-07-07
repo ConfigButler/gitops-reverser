@@ -184,7 +184,7 @@ func TestBranchWorker_SecretWritesSOPSPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	sopsPath := filepath.Join(worker.repoPathForRemote(remoteURL), "v1", "secrets", "default", "test-secret.sops.yaml")
+	sopsPath := filepath.Join(worker.repoPathForRemote(remoteURL), "default", "secrets", "test-secret.sops.yaml")
 	assert.FileExists(t, sopsPath)
 }
 

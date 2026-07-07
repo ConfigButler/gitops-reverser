@@ -70,6 +70,14 @@ type ManifestStore struct {
 	// unless the store was built with a non-empty allowlist.
 	Retained []RetainedDocument
 
+	// Kustomizations indexes every kustomization.yaml found under the scanned root by
+	// its directory (slash, relative to the root; "." for the root itself). New-file
+	// placement (F4) consults it to decide whether a candidate directory is
+	// kustomize-governed and, if so, which file's resources: list a new sibling must
+	// be added to. Populated independent of the allowlist — build-directive discovery
+	// does not depend on which files the writer materialises.
+	Kustomizations map[string]*KustomizationInfo
+
 	// Foreign lists the filesystem entries under spec.path that matched no recognized role
 	// (non-YAML files, symlinks, submodules) and survived the .gittargetignore filter. The
 	// acceptance gate refuses each one (foreignContentRefusals); the path is an
@@ -367,9 +375,10 @@ func buildStore(
 		// The foreign-content view and the active .gittargetignore travel with the store so
 		// the acceptance gate (foreignContentRefusals + IgnoreIssues) and the writer's
 		// write-plan precondition both read them from one place.
-		Foreign:      scan.Foreign,
-		Ignore:       scan.Ignore,
-		IgnoreIssues: scan.IgnoreIssues,
+		Foreign:        scan.Foreign,
+		Ignore:         scan.Ignore,
+		IgnoreIssues:   scan.IgnoreIssues,
+		Kustomizations: kustomizationInfos(kusts),
 	}
 
 	// inv.Records are exactly the KRM documents (editable or not), in stable scan
@@ -589,6 +598,49 @@ func resolveNamespaceContext(
 type namespaceAssignment struct {
 	namespaces        []string          // sorted, distinct
 	sourceByNamespace map[string]string // namespace -> kustomization file path that assigned it
+}
+
+// KustomizationInfo is the write-relevant view of one kustomization.yaml exposed for
+// new-file placement (F4): whether the directory it lives in carries a supported
+// kustomization and, if so, its local resources/bases entries (raw, relative to its
+// own directory) — the list a new sibling file must be added to so kustomize
+// includes it.
+type KustomizationInfo struct {
+	// Path is the kustomization.yaml's own file path (slash), relative to the
+	// scanned root.
+	Path string
+
+	// Resources holds the resources + bases entries exactly as written (local file
+	// names, child-directory bases, or remote URLs), in file order. It is the raw
+	// text, not resolved paths — cleanJoin resolves an entry against Path's directory.
+	Resources []string
+
+	// Unsupported is true when the kustomization uses a feature outside the
+	// supported subset (hasUnsupportedKustomizeFeature) or a remote base, or is
+	// unparseable. The writer must never edit an unsupported kustomization.
+	Unsupported bool
+
+	// Namespace is the kustomization's namespace: transformer value, empty when
+	// it sets none. A new document placed directly in this kustomization's
+	// directory (resolveKustomizeRoot) omits metadata.namespace when this is
+	// set, exactly as an existing document in this context already does.
+	Namespace string
+}
+
+// kustomizationInfos exports the analyzer's internal kustomization index for
+// new-file placement (F4). Copying into a fresh map/slice keeps ManifestStore
+// immune to any future mutation of the internal kustomizationDoc values.
+func kustomizationInfos(kusts map[string]*kustomizationDoc) map[string]*KustomizationInfo {
+	out := make(map[string]*KustomizationInfo, len(kusts))
+	for dir, doc := range kusts {
+		out[dir] = &KustomizationInfo{
+			Path:        doc.path,
+			Resources:   append([]string(nil), doc.resources...),
+			Unsupported: doc.unsupported,
+			Namespace:   doc.namespace,
+		}
+	}
+	return out
 }
 
 // kustomizationDoc is the parsed, write-relevant view of one kustomization.yaml: its

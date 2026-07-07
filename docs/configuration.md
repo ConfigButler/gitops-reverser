@@ -324,6 +324,9 @@ The important fields are:
 - `spec.path`: required relative path inside the repository; use `.` only when you deliberately
   want the repository root
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
+- `spec.placement`: optional policy for where **new** resources are written (see
+  [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it to follow
+  the repository's existing layout
 
 Example:
 
@@ -365,6 +368,133 @@ The most useful status fields are:
 - `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
 
 Use conditions for automation.
+
+### Where new resources are written (`spec.placement`)
+
+Placement decides the file path for a resource that has **no document in Git yet**. Once a document
+exists, updates and deletes always edit it in place at its current location (found by manifest identity,
+not path), so changing placement never moves an existing file — it only affects resources created after
+the change.
+
+#### How a path is chosen (the resolution ladder)
+
+For each new resource the operator walks this order and stops at the first that produces a path:
+
+1. **`spec.placement.byType[<exact type>]`** — an explicit template for that resource's type, if you
+   declared one.
+2. **`spec.placement.default`** — your explicit catch-all template, if you declared one.
+3. **Sibling inference** — follow the layout the repository already uses for resources like this one
+   (described next).
+4. **Built-in canonical path** — `{namespace}/{group}/{resource}/{name}.yaml`: namespace first, the group
+   omitted for core resources, no version segment, `_cluster/` in place of the namespace for
+   cluster-scoped resources (an illegal namespace name, so it can never clash with a real one), and a
+   `.sops.yaml` suffix for sensitive resources.
+
+If you set **no** `spec.placement`, only steps 3 and 4 run — which is why pointing a target at an
+existing repository "just continues" that repo's conventions, and a brand-new empty repo gets the tidy
+canonical layout.
+
+#### Following the existing layout (sibling inference)
+
+This is the part that looks like magic but isn't: the operator never reverse-engineers a template. It
+reads the files already in the target and makes two **observed** decisions for the new resource — *which
+directory* (the nearest cohort of resources like it — same type, then same type in any namespace) and
+*one-file-or-bundle* (does that cohort keep one resource per file, or share a multi-document file?).
+
+Worked example — a target at `spec.path: clusters/prod` already looks like:
+
+```text
+clusters/prod/
+  all.yaml                       # 9 ConfigMaps in one multi-document file (a "bundle")
+  team-a/secrets/db.sops.yaml    # one Secret, encrypted, one file per Secret
+```
+
+- A new **ConfigMap** `cache` arrives: its type-cohort (ConfigMaps) lives entirely in the `all.yaml`
+  bundle → the new document is **appended to `all.yaml`**. No new file, no canonical tree is created.
+- A new **Secret** `api-token` arrives: it is sensitive, so plaintext siblings are ignored; the only
+  encrypted cohort is `team-a/secrets/` (one-per-file) → a new encrypted file
+  **`team-a/secrets/api-token.sops.yaml`**.
+- A new ConfigMap in a **brand-new namespace** `billing`: the ConfigMap cohort is still the `all.yaml`
+  bundle, which is namespace-agnostic, so it is **appended to `all.yaml`** too — the new namespace needs
+  no new segment.
+
+The boundaries that keep it predictable:
+
+- A **sensitive** resource never infers from (or is appended into) a plaintext file; it only follows
+  encrypted siblings, otherwise it uses the secure canonical path.
+- When a type genuinely lives in two layouts at once, the tie-break is deterministic (the cohort with the
+  most members wins, then the lexically smallest path) — never a coin-flip.
+- Inference can only **continue** a layout that already exists. It cannot invent a greenfield one — "I
+  want all ConfigMaps bundled even though none exist yet" is a job for `byType` below.
+
+The full ladder, tie-break rules, and edge cases are in
+[design/manifest/version2/gittarget-new-file-placement-rules.md](design/manifest/version2/gittarget-new-file-placement-rules.md);
+the vision behind it is [design/manifest/file-agnostic-placement.md](design/manifest/file-agnostic-placement.md).
+
+#### Declaring a layout (`byType` / `default`)
+
+Set `spec.placement` when you want to **prescribe** a layout rather than follow the repo (for example a
+greenfield repo, or a convention inference can't reach):
+
+```yaml
+spec:
+  placement:
+    byType:
+      v1/configmaps: "{namespace}/configmaps.yaml"     # bundle every ConfigMap of a namespace into one file
+      v1/secrets: "{namespace}/secrets/{name}.yaml"    # one file per Secret
+    default: "{namespaceOrCluster}/{group}/{resource}/{name}.yaml"
+```
+
+- **`byType`** maps an exact `[group/]version/resource` key (core resources omit the group, e.g.
+  `v1/configmaps`; grouped resources include it, e.g. `apps/v1/deployments`) to a path template.
+- **`default`** is the template for any type with no `byType` entry. Omit it to fall through to sibling
+  inference and then the built-in path.
+- Templates are small **brace-variable path templates** (see the table below), validated statically as
+  part of the `Validated` gate — an unknown variable, a path that escapes `spec.path` (a leading `/` or
+  `..`), or a non-`.yaml`/`.yml` suffix fails the target *before* any write.
+
+#### Template variables
+
+Every value is sanitized for use as a single path segment. An **empty** segment (an omitted variable,
+e.g. `{group}` for a core resource) is dropped from the final path, so `{group}/{resource}/{name}.yaml`
+renders `configmaps/app.yaml`, not `/configmaps/app.yaml`. Example values are for an `apps/v1` Deployment
+named `api` in namespace `team-a`:
+
+| Variable | Renders | Example |
+|---|---|---|
+| `{name}` | resource name | `api` |
+| `{namespace}` | the resource's namespace; **empty** for a cluster-scoped resource | `team-a` |
+| `{namespaceOrCluster}` | the namespace, or the literal `_cluster` for a cluster-scoped resource | `team-a` (a Node → `_cluster`) |
+| `{resource}` | plural resource name | `deployments` |
+| `{group}` | API group; **empty** for core resources | `apps` (a ConfigMap → empty) |
+| `{groupPath}` | the API group as a path segment; equivalent to `{group}` today (the empty core-group segment is dropped either way) | `apps` |
+| `{version}` | API version | `v1` |
+| `{apiVersion}` | manifest `apiVersion` — `group/version`, or just `version` for core | `apps/v1` (a ConfigMap → `v1`) |
+| `{kind}` | manifest kind | `Deployment` |
+| `{scope}` | `namespaced` or `cluster` (a readable label — not a namespace-position value) | `namespaced` |
+| `{sensitiveSuffix}` | `.sops.yaml` for a sensitive resource, `.yaml` otherwise | `.yaml` (a Secret → `.sops.yaml`) |
+
+> **`{namespace}` vs `{namespaceOrCluster}` — the one to get right.** For a cluster-scoped resource
+> `{namespace}` is **empty**, so its whole path segment vanishes: a template `{namespace}/{resource}/{name}.yaml`
+> renders `clusterroles/admin.yaml` for a ClusterRole (no scope folder at all). Use `{namespaceOrCluster}`
+> when a single template must also place cluster-scoped resources — it keeps a stable `_cluster/` segment
+> (`_cluster/clusterroles/admin.yaml`) so namespaced and cluster-scoped resources stay cleanly separated.
+> `{scope}` is a *descriptor* (`cluster`/`namespaced`), not a substitute — don't use it as the folder for
+> cluster resources.
+
+#### Sensitivity is a write-safety rule, not a placement setting
+
+Sensitivity is enforced by the operator whatever path is chosen. A `Secret` (and any operator-configured
+sensitive type) is always written encrypted, is never appended to an existing file, and is never
+co-mingled with a plaintext document. Two consequences for your templates:
+
+- A `byType` route for a sensitive type must be **identity-complete** — it must contain `{name}` and a
+  scope such as `{namespace}` — so two of them can never collide onto one file.
+- A **bundling `default`** that is not identity-complete (e.g. `"all.yaml"`) is rejected unless every
+  sensitive type has its own identity-complete `byType` entry, so a Secret can never fall through into a
+  shared file. If an operator-configured sensitive type still reaches such a path at write time, that
+  resource is **skipped fail-safe** — logged and counted in the resync summary (`placementSkipped`) —
+  rather than written unsafely. It is not surfaced as a dedicated status condition today.
 
 ### Additional sensitive resources
 

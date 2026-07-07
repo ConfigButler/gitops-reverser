@@ -152,3 +152,59 @@ func TestPatchKustomization_RefusalsLeaveContentUntouched(t *testing.T) {
 		})
 	}
 }
+
+func TestAppendKustomizationResource_AddsEntryPreservingHandAuthoring(t *testing.T) {
+	res, diags := AppendKustomizationResource("kustomization.yaml", []byte(kustomizationFixture), "debug-toolbox.yaml")
+	if res.Mode != EditPatched {
+		t.Fatalf("Mode = %q, want patched (diags %+v)", res.Mode, diags)
+	}
+	got := string(res.Content)
+	for _, want := range []string{
+		"# pin the app image here",
+		"resources:\n  - deployment.yaml\n  - debug-toolbox.yaml\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("want %q in:\n%s", want, got)
+		}
+	}
+	// Unrelated sections stay put.
+	if !strings.Contains(got, "namespace: app") || !strings.Contains(got, "count: 3") {
+		t.Errorf("unrelated fields must be untouched:\n%s", got)
+	}
+}
+
+func TestAppendKustomizationResource_IdempotentWhenAlreadyListed(t *testing.T) {
+	res, _ := AppendKustomizationResource("kustomization.yaml", []byte(kustomizationFixture), "deployment.yaml")
+	if res.Mode != EditNoChange {
+		t.Fatalf("Mode = %q, want no-change for an entry that is already listed", res.Mode)
+	}
+	if string(res.Content) != kustomizationFixture {
+		t.Errorf("a no-op must leave the bytes byte-identical")
+	}
+}
+
+func TestAppendKustomizationResource_RefusalsLeaveContentUntouched(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"no resources sequence", "namespace: app\nimages:\n  - name: x\n    newTag: \"1\"\n"},
+		{"resources is not a sequence", "resources: not-a-list\n"},
+		{"multi-document file", kustomizationFixture + "---\nnamespace: other\n"},
+		{"unparseable", "resources: [::\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, diags := AppendKustomizationResource("kustomization.yaml", []byte(tc.content), "new.yaml")
+			if res.Mode != EditSkipped {
+				t.Fatalf("Mode = %q, want skipped", res.Mode)
+			}
+			if string(res.Content) != tc.content {
+				t.Errorf("a refused append must leave the bytes untouched")
+			}
+			if len(diags) == 0 {
+				t.Errorf("a refusal must carry a diagnostic")
+			}
+		})
+	}
+}

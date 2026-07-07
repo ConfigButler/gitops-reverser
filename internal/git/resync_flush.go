@@ -143,6 +143,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		"updated", stats.Updated,
 		"deleted", stats.Deleted,
 		"skipped", stats.Skipped,
+		"placementSkipped", stats.PlacementSkipped,
 		"pendingWrites", len(l.pendingWrites))
 	req.reply(ResyncResult{Stats: *stats})
 }
@@ -246,7 +247,9 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		return 0, fmt.Errorf("configure secret encryptor: %w", err)
 	}
 
-	stats, anyChanges, err := w.applyResyncToWorktree(ctx, worktree, base, pendingWrite.Desired, pendingWrite.ScopeGVR)
+	stats, anyChanges, err := w.applyResyncToWorktree(
+		ctx, worktree, base, pendingWrite.Desired, pendingWrite.ScopeGVR, target.Placement,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -281,7 +284,8 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	}
 	log.FromContext(ctx).Info("git resync commit created",
 		"created", stats.Created, "updated", stats.Updated,
-		"deleted", stats.Deleted, "skipped", stats.Skipped, "revision", pendingWrite.Revision)
+		"deleted", stats.Deleted, "skipped", stats.Skipped,
+		"placementSkipped", stats.PlacementSkipped, "revision", pendingWrite.Revision)
 	return 1, nil
 }
 
@@ -291,7 +295,8 @@ func (w *BranchWorker) refuseUnsafeWorktree(ctx context.Context, worktree *gogit
 	if err != nil {
 		return err
 	}
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan)
+	// The acceptance gate never places a resource, so no placement policy is needed here.
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan, nil)
 	return batch.refusal()
 }
 
@@ -321,6 +326,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 	base string,
 	desired []manifestanalyzer.DesiredResource,
 	scopeGVR *schema.GroupVersionResource,
+	policy *manifestanalyzer.PlacementPolicy,
 ) (ResyncStats, bool, error) {
 	root := worktree.Filesystem.Root()
 	scan, err := scanWorktreeSubtree(filepath.Join(root, base))
@@ -328,7 +334,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 		return ResyncStats{}, false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan, policy)
 	// First materialization is the adoption gate: refuse a subtree that holds content the
 	// operator cannot safely manage (unsupported kustomization, duplicate identity, impure
 	// or non-KRM files, foreign content, a catastrophic .gittargetignore) and commit nothing,
@@ -381,6 +387,12 @@ func (wb *writeBatch) applyResyncPlan(
 			stats.Created++
 		case upsertUpdated:
 			stats.Updated++
+		case upsertSkippedUnsafe:
+			// A fail-safe placement refusal (see createNew/writeWholeFile). Count it
+			// so a resource the resync did not mirror shows up in the summary instead
+			// of vanishing between Created and Skipped; the per-resource reason is
+			// already logged at the skip site.
+			stats.PlacementSkipped++
 		case upsertNoChange:
 		}
 	}

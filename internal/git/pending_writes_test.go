@@ -229,3 +229,55 @@ func TestExecutor_PendingWrites_PreservesArrivalOrder(t *testing.T) {
 	assert.Equal(t, "[UPDATE] v1/configmaps/c", second.Message)
 	assert.Equal(t, "[UPDATE] v1/configmaps/a", first.Message)
 }
+
+// TestPlacementPolicyForBase_RootTargetMatchesSanitizedBase pins the fix for a root
+// GitTarget silently dropping its declared placement on the live-write path:
+// groupEventsByBase keys events by sanitizePath(event.Path), which collapses a root
+// target's "." to "", so the lookup must sanitize md.Path the same way or "." would
+// never equal "" and the policy would come back nil (falling back to sibling/canonical
+// placement, diverging from resync which resolves target.Placement directly).
+func TestPlacementPolicyForBase_RootTargetMatchesSanitizedBase(t *testing.T) {
+	policy := resolvePlacementPolicy(&configv1alpha3.GitTargetPlacementSpec{Default: "all.yaml"})
+	targets := map[pendingTargetKey]ResolvedTargetMetadata{
+		{Name: "root", Namespace: "default"}: {
+			Name: "root", Namespace: "default", Path: ".", Placement: policy,
+		},
+	}
+
+	// A root target's events group under the sanitized base "".
+	got := placementPolicyForBase(targets, "")
+	require.NotNil(t, got, "a root target's declared placement must be found on the live path")
+	assert.Same(t, policy, got)
+}
+
+func TestPlacementPolicyForBase_NonRootAndNoMatch(t *testing.T) {
+	policy := resolvePlacementPolicy(&configv1alpha3.GitTargetPlacementSpec{Default: "all.yaml"})
+	targets := map[pendingTargetKey]ResolvedTargetMetadata{
+		{Name: "sub", Namespace: "default"}: {
+			Name: "sub", Namespace: "default", Path: "live-cluster", Placement: policy,
+		},
+	}
+
+	assert.Same(t, policy, placementPolicyForBase(targets, "live-cluster"))
+	assert.Nil(t, placementPolicyForBase(targets, "somewhere-else"),
+		"a base no target owns gets no declared policy")
+}
+
+func TestResolvePlacementPolicy_NilSpec(t *testing.T) {
+	if got := resolvePlacementPolicy(nil); got != nil {
+		t.Errorf("resolvePlacementPolicy(nil) = %+v, want nil", got)
+	}
+}
+
+func TestResolvePlacementPolicy_ConvertsFieldForField(t *testing.T) {
+	spec := &configv1alpha3.GitTargetPlacementSpec{
+		ByType:  map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
+		Default: "all.yaml",
+	}
+
+	got := resolvePlacementPolicy(spec)
+
+	require.NotNil(t, got)
+	assert.Equal(t, spec.ByType, got.ByType)
+	assert.Equal(t, spec.Default, got.Default)
+}

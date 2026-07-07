@@ -159,7 +159,7 @@ spec:
 		flunderName := fmt.Sprintf("aggregated-commit-flunder-%d", GinkgoRandomSeed())
 		repoPath := path.Join(
 			aggregatedPath,
-			fmt.Sprintf("wardle.example.com/v1alpha1/flunders/%s/%s.yaml", testNs, flunderName),
+			fmt.Sprintf("%s/wardle.example.com/flunders/%s.yaml", testNs, flunderName),
 		)
 		repoFile := filepath.Join(repo.CheckoutDir, repoPath)
 

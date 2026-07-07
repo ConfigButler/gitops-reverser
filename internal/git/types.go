@@ -154,6 +154,10 @@ type ResolvedTargetMetadata struct {
 	Path             string
 	BootstrapOptions pathBootstrapOptions
 	EncryptionConfig *ResolvedEncryptionConfig
+	// Placement is the GitTarget's declared new-file placement policy (F4), resolved
+	// from spec.placement. Nil when the GitTarget declares none, in which case new
+	// resources are placed by sibling inference and then the canonical path.
+	Placement *manifestanalyzer.PlacementPolicy
 }
 
 // PendingWrite is the unit retained until a push succeeds.
@@ -262,12 +266,18 @@ type ResyncResult struct {
 // ResyncStats summarises what a resync changed, for GitTarget status. Created,
 // Updated, and Deleted are the materialised create / patch+replace / managed-drop
 // counts; Skipped is documents present but not safely editable (e.g. encrypted or
-// disallowed constructs).
+// disallowed constructs). PlacementSkipped is new resources the writer refused to
+// place fail-safe — placement could not be resolved safely, or the write would
+// co-mingle sensitive and plaintext documents (F4 Option B2). It is counted (not
+// silently swallowed) and logged per-resource so a not-mirrored resource is visible
+// in the resync summary; it is not (yet) surfaced as a dedicated GitTarget status
+// condition.
 type ResyncStats struct {
-	Created int
-	Updated int
-	Deleted int
-	Skipped int
+	Created          int
+	Updated          int
+	Deleted          int
+	Skipped          int
+	PlacementSkipped int
 }
 
 // reply delivers a result on the request's buffered channel without blocking, so a

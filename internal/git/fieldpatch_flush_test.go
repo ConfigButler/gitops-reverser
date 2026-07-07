@@ -54,7 +54,7 @@ func deploymentsMapper() typeset.Lookup {
 func applyScalePatch(t *testing.T, writer *contentWriter, worktree *gogit.Worktree, events ...Event) bool {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: deploymentsMapper()}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events)
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, nil)
 	require.NoError(t, err)
 	return changed
 }

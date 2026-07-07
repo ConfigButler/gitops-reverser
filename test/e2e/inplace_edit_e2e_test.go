@@ -35,7 +35,7 @@ var _ = Describe("Manager In-Place Manifest Editing", Label("manager", "inplace-
 	const preservedComment = "# gitops-reverser-e2e: preserve-this-comment"
 
 	configMapRepoPath := func() string {
-		return filepath.Join(gitPath, fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, cmName))
+		return filepath.Join(gitPath, fmt.Sprintf("%s/configmaps/%s.yaml", testNs, cmName))
 	}
 
 	BeforeAll(func() {
@@ -254,7 +254,7 @@ var _ = Describe(
 				g.Expect(kustomizationBody).To(Equal(readRepoFile(g, renderedKustomization)))
 
 				for _, name := range []string{bundleConfigMapName, nestedConfigMapName} {
-					canonicalPath := filepath.Join(repo.CheckoutDir, gitPath, "v1", "configmaps", testNs, name+".yaml")
+					canonicalPath := filepath.Join(repo.CheckoutDir, gitPath, testNs, "configmaps", name+".yaml")
 					_, statErr := os.Stat(canonicalPath)
 					g.Expect(os.IsNotExist(statErr)).
 						To(BeTrue(), "must not create canonical duplicate %s", canonicalPath)

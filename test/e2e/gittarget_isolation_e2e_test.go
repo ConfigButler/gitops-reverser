@@ -110,7 +110,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 			applyIsolationConfigMap(cmName, testNs)
 
 			By("asserting target A commits it as an event commit, not a reconcile")
-			relPath := path.Join(pathA, fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, cmName))
+			relPath := path.Join(pathA, fmt.Sprintf("%s/configmaps/%s.yaml", testNs, cmName))
 			assertEventCommit := func(g Gomega) {
 				pullLatestRepoState(g, isoRepo.CheckoutDir)
 

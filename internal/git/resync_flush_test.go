@@ -65,7 +65,7 @@ func applyResyncViaWorktree(
 ) (ResyncStats, bool) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil)
+	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil, nil)
 	require.NoError(t, err)
 	return stats, changed
 }
@@ -222,7 +222,7 @@ func TestResync_ScopedSweepDropsOnlyTargetType(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
 	scope := &schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", nil, scope)
+	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", nil, scope, nil)
 	require.NoError(t, err)
 	require.True(t, changed, "the removed type's document is swept")
 	assert.Equal(t, 1, stats.Deleted, "exactly the configmap is swept, not the secret")
@@ -274,9 +274,52 @@ func TestResync_FoldsCreateUpdateDropTogether(t *testing.T) {
 	_, dropErr := os.Stat(dropFull)
 	assert.True(t, os.IsNotExist(dropErr))
 
-	freshCanonical := filepath.Join(root, writer.filePathForIdentifier(desiredCM("fresh", "red").Resource))
-	_, freshErr := os.Stat(freshCanonical)
-	assert.NoError(t, freshErr, "the created resource lands at its canonical path")
+	// F4: with existing ConfigMap siblings ("keep", "drop") each in their own file
+	// under apps/, a genuinely new ConfigMap follows that established layout
+	// (Option C sibling inference) rather than the canonical GVR-tree path.
+	freshInferred := filepath.Join(root, "apps", "fresh.yaml")
+	_, freshErr := os.Stat(freshInferred)
+	assert.NoError(t, freshErr, "the created resource lands beside its siblings under apps/")
+}
+
+// A fail-safe placement refusal during resync is counted in PlacementSkipped, not
+// silently swallowed between Created and the planner's Skipped view. Here a bundling
+// default routes both a Secret and a ConfigMap in the same namespace to one cold
+// "all.yaml"; the writer refuses to co-mingle encrypted and plaintext documents, so
+// one of the two is skipped fail-safe — and that skip must show up in the stats.
+func TestResync_UnsafePlacementCountsAsPlacementSkipped(t *testing.T) {
+	enc := &stubEncryptor{result: []byte(
+		"apiVersion: v1\nkind: Secret\nmetadata:\n  name: cred\n  namespace: app\n" +
+			"data:\n  k: ENC[AES256,data:x,iv:y,tag:z]\nsops:\n  version: 3.9.0\n")}
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	writer.setEncryptor(enc, "test-scope")
+	worktree := newWorktreeForTest(t)
+
+	policy := &manifestanalyzer.PlacementPolicy{Default: "all.yaml"}
+	desired := []manifestanalyzer.DesiredResource{
+		{
+			Resource: types.NewResourceIdentifier("", "v1", "secrets", "app", "cred"),
+			Object: &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "v1", "kind": "Secret",
+				"metadata": map[string]interface{}{"name": "cred", "namespace": "app"},
+			}},
+		},
+		{
+			Resource: types.NewResourceIdentifier("", "v1", "configmaps", "app", "cache"),
+			Object: &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "v1", "kind": "ConfigMap",
+				"metadata": map[string]interface{}{"name": "cache", "namespace": "app"},
+			}},
+		},
+	}
+
+	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
+	stats, _, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil, policy)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, stats.PlacementSkipped,
+		"the resource refused fail-safe to avoid co-mingling must be counted, not vanish")
+	assert.Equal(t, 1, stats.Created, "the other resource is still written")
 }
 
 // A sensitive (SOPS) resource that the resync re-encrypts is counted as Updated, not
@@ -321,6 +364,7 @@ func TestResync_SensitiveUpdateCountsAsUpdatedNotSkipped(t *testing.T) {
 		worktree,
 		"",
 		[]manifestanalyzer.DesiredResource{desired},
+		nil,
 		nil,
 	)
 	require.NoError(t, err)

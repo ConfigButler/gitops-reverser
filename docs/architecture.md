@@ -422,24 +422,26 @@ local SHA from before the retry.
 
 ## What It Writes to Git
 
-A `GitTarget` owns one subtree (`spec.path`) on one branch. New objects are placed at a canonical REST
-like path; once a document exists it is edited in place wherever it already lives. A populated target
-looks like:
+A `GitTarget` owns one subtree (`spec.path`) on one branch. A new object follows the layout the folder
+already has (or a declared policy); once a document exists it is edited in place wherever it already
+lives. A populated target seeded from empty looks like:
 
 ```text
 team-a-config/                              # GitTarget spec.path
 ├── README.md                               # operator-managed bootstrap file
 ├── .sops.yaml                              # present only when encryption is configured
-├── v1/
-│   ├── configmaps/team-a/app-config.yaml
-│   └── secrets/team-a/db-creds.sops.yaml   # sensitive types are SOPS/age encrypted
-└── apps/
-    └── v1/deployments/team-a/api.yaml
+├── team-a/
+│   ├── configmaps/app-config.yaml
+│   ├── secrets/db-creds.sops.yaml          # sensitive types are SOPS/age encrypted
+│   └── apps/deployments/api.yaml
 ```
 
-The path shape is `{spec.path}/{group}/{version}/{resource}/{namespace}/{name}.yaml` (the empty core
-group is omitted, sensitive resources get a `.sops.yaml` suffix). Details and the placement policy are in
-[Git Write Architecture](#git-write-architecture).
+The **built-in default** path is `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml` — namespace
+first, the API group omitted for core resources, no version segment, and a `.sops.yaml` suffix for
+sensitive resources; a cluster-scoped resource uses the literal `cluster/` in place of the namespace.
+But that default is only the cold-start seed: a new resource first follows its **siblings'** existing
+layout, and a `GitTarget` can declare its own placement policy. Details and the placement policy are in
+[File Placement](#file-placement).
 
 ***
 
@@ -901,7 +903,8 @@ hydrates only touched files into buffers for the commit, and flushes only change
 
 * **Upserts:** if a managed document for the resource already exists, patch it in place (preserving
   siblings in a multi document file); if it is sensitive, encrypt the whole document again at its existing
-  path; if no document exists, create a new file at the canonical placement path.
+  path; if no document exists, place a new file per [File Placement](#file-placement) (declared policy,
+  then sibling inference, then the canonical default).
 * **Kustomize override edit-through:** a live value produced by a well-formed `images:` or `replicas:`
   entry in the document's kustomization chain is written back to that entry (comment-preserving, only
   fields the entry already declares); the source manifest keeps its bytes. Anything the inversion cannot
@@ -915,11 +918,31 @@ hydrates only touched files into buffers for the commit, and flushes only change
 
 ### File Placement
 
-New resources use the canonical REST like path
-`{spec.path}/{group}/{version}/{resource}/{namespace}/{name}.yaml`. The core group's empty segment is
-omitted (`{spec.path}/v1/configmaps/ns/name.yaml`), and sensitive resources use a `.sops.yaml` suffix.
-Existing resources are **match first**: once a document exists in Git, updates and deletes use its current
-location instead of recomputing placement.
+Placement runs **only for a resource with no existing document** in the target. Existing resources are
+**match first**: once a document exists in Git, updates and deletes use its current location — found by
+manifest identity, not by path — instead of recomputing placement. So a change to how new files are
+placed never moves a file already in Git. A new resource is placed by the first of these that applies
+([internal/manifestanalyzer/placement.go](../internal/manifestanalyzer/placement.go),
+[design](design/manifest/version2/gittarget-new-file-placement-rules.md)):
+
+1. **Declared policy (`spec.placement`).** A `GitTarget` can declare a `byType` map (exact
+   `[group/]version/resource` → path template) plus a `default` template, rendered from a small
+   brace-variable path language (`{namespace}`, `{group}`, `{resource}`, `{name}`, …).
+2. **Sibling inference.** With no matching declared template, the new resource follows the layout its
+   siblings already use — appended to the bundle its type shares, or placed one-per-file beside them —
+   so pointing a target at an existing folder just continues that folder's convention. When the whole
+   subtree is governed by one supported kustomization and the type is brand new, the file lands beside
+   that kustomization and gets a `resources:` entry.
+3. **Canonical fallback.** With nothing to follow (an empty repo, a brand-new type), the built-in default
+   `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml` — namespace-first, group omitted for core, no
+   version, `_cluster/` for cluster-scoped, `.sops.yaml` for sensitive — so a fresh target is deterministic
+   and self-propagating.
+
+Sensitivity is a write-safety classifier, not a placement input: whatever path is chosen, a sensitive
+resource is written encrypted, is never appended to an existing file, and is never co-mingled with a
+plaintext document. When those guarantees cannot be honoured (e.g. a bundling `default` would route a
+sensitive resource into a shared file), the resource is **skipped fail-safe** — logged per-resource and
+counted in the resync summary (`placementSkipped`) — rather than written unsafely.
 
 ### Bootstrap, Encryption, and Signing
 
@@ -1062,7 +1085,9 @@ Current limitations:
 * **No multi cluster routing;** cluster ID path segments on `/audit-webhook` are rejected.
 * **`deletecollection`** is reconciled by the watch (each item arrives as its own `DELETED`, or the
   mark-and-sweep reconciles them on replay).
-* **New file placement** is the canonical path, not user configurable.
+* **A fail-safe placement skip has no dedicated status condition.** A resource the writer refuses to
+  place unsafely is logged per-resource and counted in the resync summary (`placementSkipped`), but is
+  not (yet) surfaced as a distinct GitTarget status condition.
 
 ***
 

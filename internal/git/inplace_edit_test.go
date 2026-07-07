@@ -52,7 +52,7 @@ func newWorktreeForTest(t *testing.T) *gogit.Worktree {
 func applyEventsViaPlanFlush(t *testing.T, writer *contentWriter, worktree *gogit.Worktree, events ...Event) bool {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events)
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, nil)
 	require.NoError(t, err)
 	return changed
 }
@@ -66,7 +66,7 @@ func applyEventsViaPlanFlushWithMapper(
 ) bool {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events)
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, nil)
 	require.NoError(t, err)
 	return changed
 }

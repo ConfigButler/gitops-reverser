@@ -170,14 +170,12 @@ spec:
 		expectedConfigMap := filepath.Join(
 			watchRuleRepo.CheckoutDir,
 			gitTargetPath,
-			fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
+			fmt.Sprintf("%s/configmaps/%s.yaml", testNs, configMapName),
 		)
 		expectedOrder := filepath.Join(
 			watchRuleRepo.CheckoutDir,
 			gitTargetPath,
-			iceCreamInstanceDir(crdGroupWildcardRule),
-			testNs,
-			orderName+".yaml",
+			iceCreamInstancePath(crdGroupWildcardRule, testNs, orderName),
 		)
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, watchRuleRepo.CheckoutDir)
@@ -256,7 +254,7 @@ spec:
 
 			expectedFile := filepath.Join(watchRuleRepo.CheckoutDir,
 				"e2e/secret-encryption-test",
-				fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", testNs, secretName))
+				fmt.Sprintf("%s/secrets/%s.sops.yaml", testNs, secretName))
 			content, readErr := os.ReadFile(expectedFile)
 			g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("Secret file must exist at %s", expectedFile))
 			g.Expect(string(content)).To(ContainSubstring("sops:"))
@@ -412,7 +410,7 @@ spec:
 
 			expectedFile := filepath.Join(watchRuleRepo.CheckoutDir,
 				"e2e/secret-autogen-test",
-				fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", testNs, secretName))
+				fmt.Sprintf("%s/secrets/%s.sops.yaml", testNs, secretName))
 			content, readErr := os.ReadFile(expectedFile)
 			g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("Secret file must exist at %s", expectedFile))
 			g.Expect(string(content)).To(ContainSubstring("sops:"))
@@ -511,14 +509,14 @@ spec:
 			// Check for the expected ConfigMap file (new API-aligned path)
 			expectedFile := filepath.Join(watchRuleRepo.CheckoutDir,
 				"e2e/configmap-test",
-				fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName))
+				fmt.Sprintf("%s/configmaps/%s.yaml", testNs, configMapName))
 			fileInfo, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 			g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "ConfigMap file should not be empty")
 
 			expectedRepoPath := path.Join(
 				"e2e/configmap-test",
-				fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
+				fmt.Sprintf("%s/configmaps/%s.yaml", testNs, configMapName),
 			)
 			assertLatestCommitForPathTouchesOnlyWithOptional(
 				g,
@@ -534,7 +532,7 @@ spec:
 			assertLatestCommitTouchesNoNamespaces(
 				g,
 				watchRuleRepo.CheckoutDir,
-				"e2e/configmap-test/v1/configmaps",
+				"e2e/configmap-test",
 				[]string{
 					"gitops-reverser",
 					"flux-system",
@@ -634,7 +632,7 @@ spec:
 		// must not appear in the repo before we apply the WatchRule.
 		expectedRepoPath := path.Join(
 			"e2e/backfill-rule-add",
-			fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
+			fmt.Sprintf("%s/configmaps/%s.yaml", testNs, configMapName),
 		)
 		expectedFile := filepath.Join(watchRuleRepo.CheckoutDir, expectedRepoPath)
 
@@ -731,7 +729,7 @@ spec:
 			// Check for the expected ConfigMap file (new API-aligned path)
 			expectedFile := filepath.Join(watchRuleRepo.CheckoutDir,
 				"e2e/delete-test",
-				fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName))
+				fmt.Sprintf("%s/configmaps/%s.yaml", testNs, configMapName))
 			fileInfo, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 			g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "ConfigMap file should not be empty")
@@ -751,7 +749,7 @@ spec:
 			// Check that the ConfigMap file no longer exists (new API-aligned path)
 			expectedRelativePath := path.Join(
 				"e2e/delete-test",
-				fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
+				fmt.Sprintf("%s/configmaps/%s.yaml", testNs, configMapName),
 			)
 			expectedFile := filepath.Join(watchRuleRepo.CheckoutDir, expectedRelativePath)
 			_, statErr := os.Stat(expectedFile)
@@ -768,7 +766,7 @@ spec:
 			assertLatestCommitTouchesNoNamespaces(
 				g,
 				watchRuleRepo.CheckoutDir,
-				"e2e/delete-test/v1/configmaps",
+				"e2e/delete-test",
 				[]string{
 					"gitops-reverser",
 					"flux-system",

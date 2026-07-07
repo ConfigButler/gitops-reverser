@@ -456,9 +456,9 @@ func TestBranchWorker_Replay_UsesResolvedMetadata_GitTargetDeletedMidBurst(t *te
 	verifyPath := filepath.Join(t.TempDir(), "verify")
 	_, _ = initLocalRepo(t, verifyPath, remoteURL, "main")
 
-	sopsPath := filepath.Join(verifyPath, "v1", "secrets", "default", "burst-secret.sops.yaml")
+	sopsPath := filepath.Join(verifyPath, "default", "secrets", "burst-secret.sops.yaml")
 	assert.FileExists(t, sopsPath, "replay must reuse the resolved encryption metadata after the target disappears")
-	assert.NoFileExists(t, filepath.Join(verifyPath, "v1", "secrets", "default", "burst-secret.yaml"))
+	assert.NoFileExists(t, filepath.Join(verifyPath, "default", "secrets", "burst-secret.yaml"))
 	assert.FileExists(
 		t,
 		filepath.Join(verifyPath, "OUTSIDE.md"),
