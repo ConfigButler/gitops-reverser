@@ -436,7 +436,7 @@ status:
     - type: Ready        # summary: True once it reached a non-error terminal outcome
       status: "True"
       reason: Committed  # Committed | NoWindowInGrace | WindowMismatch | AlreadyPresent | FinalizeFailed
-    - type: Attributed   # True immediately when attribution is not required (committer-only)
+    - type: Attributed   # True immediately when attribution is not required (configured-author)
       status: "True"
       reason: AttributedFromAuditEvent
     - type: Pushed       # True once the commit is in the remote repository

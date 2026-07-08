@@ -17,10 +17,10 @@ import (
 var _ = Describe("CommitRequest controller", func() {
 	const namespace = "default"
 
-	// The suite registers the reconciler in attributed mode (a non-nil AuthorLookup
+	// The suite registers the reconciler in attributed-author mode (a non-nil AuthorLookup
 	// that never resolves) with a Finalizer that never resolves, so these specs cover
 	// the in-progress stamp and the terminal short-circuit only; the full
-	// attribute → attach → terminal flow and the committer-only path are covered by
+	// attribute → attach → terminal flow and the configured-author path are covered by
 	// the unit tests in commitrequest_controller_unit_test.go.
 	It("stamps a freshly created CommitRequest with in-progress conditions", func() {
 		commitRequest := &configbutleraiv1alpha3.CommitRequest{

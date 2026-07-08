@@ -25,9 +25,12 @@ What the chart did for you:
 - configured the audit listener without TLS (`servers.audit.tls.enabled=false`)
 {{- end }}
 {{- else }}
-- started in committer-only mode (`attribution.enabled=false`)
+- started in configured-author mode (`attribution.enabled=false`)
 {{- end }}
 {{- if .Values.quickstart.enabled }}
+{{- if .Values.quickstart.createNamespace }}
+- created the demo namespace `{{ .Values.quickstart.namespace }}`
+{{- end }}
 - created quickstart resources in namespace `{{ .Values.quickstart.namespace }}`
   - GitProvider: `{{ .Values.quickstart.gitProvider.name }}`
   - GitTarget: `{{ .Values.quickstart.gitTarget.name }}`
@@ -35,7 +38,13 @@ What the chart did for you:
 {{- end }}
 
 What the chart did NOT do for you:
+{{- if .Values.quickstart.enabled }}
+- it did NOT create your Git credentials Secret. If `{{ .Values.quickstart.gitProvider.secretRef.name }}` is not
+  already in namespace `{{ .Values.quickstart.namespace }}`, create it now; the starter GitProvider is re-checked
+  only about every 5 minutes, so add it promptly to avoid a delayed first commit.
+{{- else }}
 - it did NOT create your Git credentials Secret
+{{- end }}
 - it did NOT install Valkey/Redis
 {{- if .Values.attribution.enabled }}
 - it did NOT write `/etc/kubernetes/...` files on your control-plane node(s)

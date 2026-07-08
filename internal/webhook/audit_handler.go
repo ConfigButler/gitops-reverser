@@ -45,7 +45,7 @@ type auditHandlerFirsts struct {
 // AuditFactRecorder stores the minimal author-attribution fact for one accepted,
 // mutating audit event. It is the only thing the audit webhook does now: watch
 // carries the object body, so audit is a pure attribution lookup table. A nil
-// recorder means committer-only mode — the handler is not wired at all.
+// recorder means configured-author mode — the handler is not wired at all.
 type AuditFactRecorder interface {
 	RecordFact(ctx context.Context, event auditv1.Event) error
 }

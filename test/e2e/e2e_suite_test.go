@@ -94,7 +94,7 @@ func assertNoAnomalousAuditOutcomes() {
 	Expect(err).NotTo(HaveOccurred(), "failed to query the audit-events counter")
 	if total == 0 {
 		_, _ = fmt.Fprintf(GinkgoWriter,
-			"✅ audit outcome invariant skipped: watch-first committer-only mode produced no audit events\n")
+			"✅ audit outcome invariant skipped: watch-first configured-author mode produced no audit events\n")
 		return
 	}
 
@@ -126,7 +126,7 @@ func committerOnlyModeEnabled() bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(out, "committer-only mode:")
+	return strings.Contains(out, "configured-author mode:")
 }
 
 var _ = AfterEach(func() {

@@ -56,7 +56,7 @@ var _ = Describe("DeleteCollection intent & attribution", Label("manager"), Orde
 
 	BeforeAll(func() {
 		if committerOnlyModeEnabled() {
-			Skip("watch-first committer-only mode has no audit facts for delete attribution")
+			Skip("watch-first configured-author mode has no audit facts for delete attribution")
 		}
 
 		By("creating deletecollection-intent test namespace")

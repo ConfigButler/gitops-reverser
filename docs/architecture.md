@@ -38,7 +38,7 @@ Every write to that branch goes through the worker's single event loop and commi
 
 **Redis is a hard dependency — treat it as always available.** The operator wires Valkey/Redis
 unconditionally and stays not-ready until it is reachable. Redis stores watch resume cursors and the small
-coordination records used by attribution, CommitRequest authorship, and HA work; committer-only mode still
+coordination records used by attribution, CommitRequest authorship, and HA work; configured-author mode still
 requires Redis.
 
 **Audit is an optional attribution lookup.** When attribution is enabled, kube-apiserver posts audit
@@ -1032,7 +1032,7 @@ flowchart TD
     Hi --> Hq{author-attribution?}
     Hj --> Hq
     Hq -->|yes| I[Build attribution index + audit fact extractor + audit HTTP server + resolver]
-    Hq -->|no| J[Committer-only: no attribution index; audit webhook skipped]
+    Hq -->|no| J[Configured-author: no attribution index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
     K --> L[Register GitProvider + GitTarget + CommitRequest controllers]
@@ -1040,13 +1040,13 @@ flowchart TD
     M --> N[mgr.Start]
 ```
 
-Redis is optional in committer-only mode. When `--redis-addr` is set, the cursor store is wired and a
+Redis is optional in configured-author mode. When `--redis-addr` is set, the cursor store is wired and a
 Redis readiness gate keeps the pod not-ready until Redis is reachable; watches resume from their last
 stored resourceVersion after a restart. When `--redis-addr` is empty, the cursor store is skipped and
 watches cold-replay from scratch on restart instead. With `--author-attribution` on (the default), a
 non-empty `--redis-addr` is required: the attribution index is built on the Redis connection, the audit
 HTTP handler is wired with the fact extractor, the watch manager gets the author resolver, and the audit
-ingress is added to `/readyz`. With `--author-attribution=false` (committer-only) no attribution index is
+ingress is added to `/readyz`. With `--author-attribution=false` (configured-author) no attribution index is
 built and the audit webhook is skipped entirely; every commit is committer-authored.
 
 ***

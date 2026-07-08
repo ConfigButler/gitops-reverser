@@ -198,7 +198,7 @@ func main() {
 
 	// Optional author attribution. When enabled, the attribution index is built on the Redis connection,
 	// the audit webhook records minimal facts, and live watch events are author-attributed when a fact
-	// matches. When disabled (committer-only), no attribution index exists and commits use the configured
+	// matches. When disabled (configured-author), no attribution index exists and commits use the configured
 	// committer identity; the cursor store above is unaffected.
 	var (
 		auditRunnable    *auditServerRunnable
@@ -228,10 +228,11 @@ func main() {
 		setupLog.Info("author attribution enabled: matched audit facts name the commit author",
 			"redisAddr", cfg.redisAddr, "grace", cfg.attributionGrace.String())
 	case cfg.redisAddr != "":
-		setupLog.Info("committer-only mode: author attribution disabled; commits use the configured "+
+		setupLog.Info("configured-author mode: author attribution disabled; commits use the configured "+
 			"committer identity", "redisAddr", cfg.redisAddr)
 	default:
-		setupLog.Info("committer-only mode: no Redis configured; attribution disabled, watches cold-replay on restart")
+		setupLog.Info("configured-author mode: no Redis configured; attribution disabled, " +
+			"watches cold-replay on restart")
 	}
 
 	// Setup watch manager (must be after controllers are set up)
@@ -268,10 +269,16 @@ func main() {
 	var commandAuthorStore *queue.CommandAuthorStore
 	var commandAuthorLookup controller.CommandAuthorLookup
 	if cfg.admissionWebhookEnabled {
-		commandAuthorStore = redisStore.CommandAuthorStore()
-		commandAuthorLookup = commandAuthorStore
-		setupLog.Info("validate-operator-types webhook enabled: command submitters are captured at admission " +
-			"and named as the commit author")
+		if redisStore != nil {
+			commandAuthorStore = redisStore.CommandAuthorStore()
+			commandAuthorLookup = commandAuthorStore
+			setupLog.Info("validate-operator-types webhook enabled: command submitters are captured at admission " +
+				"and named as the commit author")
+		} else {
+			setupLog.Info("validate-operator-types webhook enabled without Redis: command author capture is a " +
+				"no-op; CommitRequests commit as the configured committer (AuthorAttributed=False). " +
+				"Set --redis-addr to capture command authors.")
+		}
 	}
 	if err := (&controller.CommitRequestReconciler{
 		Client:       mgr.GetClient(),
@@ -288,7 +295,7 @@ func main() {
 	}
 	// +kubebuilder:scaffold:builder
 
-	// Cert watchers (auditCertWatcher is nil in committer-only mode / --audit-insecure).
+	// Cert watchers (auditCertWatcher is nil in configured-author mode / --audit-insecure).
 	addCertWatchersToManager(mgr, metricsCertWatcher, auditCertWatcher)
 
 	// Health checks: readiness reflects the audit ingress preconditions when attribution is on,
@@ -411,7 +418,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.BoolVar(&cfg.authorAttribution, "author-attribution", true,
 		"Name the real actor (human or service account) who caused each change as the Git commit author, "+
 			"resolved from matching audit facts; this runs the audit webhook ingress (default true). When "+
-			"false, every commit is authored by the configured committer identity (committer-only mode).")
+			"false, every commit is authored by the configured committer identity (configured-author mode).")
 	fs.StringVar(&cfg.redisUsername, "redis-username", "", "Optional Redis username.")
 	fs.StringVar(
 		&cfg.redisPassword,
@@ -519,11 +526,11 @@ func validateAuditConfig(cfg appConfig) error {
 		if cfg.authorAttribution {
 			return errors.New("redis-addr is required when author-attribution is enabled")
 		}
-		// Committer-only mode with no Redis: watches cold-replay on restart, attribution is off.
+		// Configured-author mode with no Redis: watches cold-replay on restart, attribution is off.
 		return nil
 	}
 	if !cfg.authorAttribution {
-		// Committer-only mode with Redis configured: the audit ingress server is not started, so its
+		// Configured-author mode with Redis configured: the audit ingress server is not started, so its
 		// server/TLS settings are irrelevant.
 		return nil
 	}
@@ -552,10 +559,9 @@ func validateAdmissionWebhookConfig(cfg appConfig) error {
 	if !cfg.admissionWebhookEnabled {
 		return nil
 	}
-	if strings.TrimSpace(cfg.redisAddr) == "" {
-		return errors.New("redis-addr is required when the admission webhook is enabled: " +
-			"command authorship requires Redis")
-	}
+	// No redis-addr requirement here: the admission webhook stays enabled without Redis and
+	// simply no-ops command-author capture (commits fall back to the committer). Redis is
+	// wired only when configured; see the commandAuthorStore setup.
 	if _, _, err := splitBindAddress(cfg.admissionWebhookBindAddress); err != nil {
 		return fmt.Errorf("invalid admission-webhook-bind-address %q: %w", cfg.admissionWebhookBindAddress, err)
 	}
@@ -890,9 +896,15 @@ func setupAdmissionWebhooks(mgr ctrl.Manager, commandAuthorStore *queue.CommandA
 		webhookhandler.ValidateAllPath,
 		&ctrladmission.Webhook{Handler: webhookhandler.AdmissionAllowHandler{}},
 	)
+	// Leave Store as a nil interface when there is no Redis-backed store, so the handler
+	// no-ops rather than dereferencing a typed-nil *CommandAuthorStore.
+	operatorTypesHandler := &webhookhandler.ValidateOperatorTypesHandler{}
+	if commandAuthorStore != nil {
+		operatorTypesHandler.Store = commandAuthorStore
+	}
 	mgr.GetWebhookServer().Register(
 		webhookhandler.ValidateOperatorTypesPath,
-		&ctrladmission.Webhook{Handler: &webhookhandler.ValidateOperatorTypesHandler{Store: commandAuthorStore}},
+		&ctrladmission.Webhook{Handler: operatorTypesHandler},
 	)
 }
 

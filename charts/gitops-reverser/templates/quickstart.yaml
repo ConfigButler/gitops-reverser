@@ -1,4 +1,14 @@
 {{- if .Values.quickstart.enabled }}
+{{- if .Values.quickstart.createNamespace }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.quickstart.namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    app.kubernetes.io/component: quickstart
+{{- end }}
 ---
 apiVersion: configbutler.ai/v1alpha3
 kind: GitProvider

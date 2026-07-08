@@ -215,7 +215,7 @@ objects**. The owner's trap: *in a few seconds you could see more than one `dele
 - **Option C — commit as committer, document the limit.** v1.
 
 **v1: Option C.** The hard case is a narrow intersection (aggregated/hollow body ∧ supports `deletecollection` ∧
-watched ∧ attributed mode), and the failure is *degraded attribution*, not wrong state or wrong author — which is
+watched ∧ attributed-author mode), and the failure is *degraded attribution*, not wrong state or wrong author — which is
 the correct conservative outcome. **Ship §2 + §5 now; Option B is the named fast-follow; Option A is rejected.**
 
 ## 7. Recommendation at a glance
@@ -265,7 +265,7 @@ the correct conservative outcome. **Ship §2 + §5 now; Option B is the named fa
 ### 9.2 E2E — implemented
 
 Implemented as Ginkgo specs in `test/e2e/deletecollection_intent_e2e_test.go`
-(`Describe("DeleteCollection intent & attribution")`). Attributed mode on (skipped in committer-only mode); a
+(`Describe("DeleteCollection intent & attribution")`). Attributed-author mode on (skipped in configured-author mode); a
 GitTarget claims `configmaps` with a 0s commit window; deletes are issued by an **impersonated actor** carrying
 OIDC name/email claims, and finalizers are cleared by a **separate** impersonated identity. Each spec scopes its
 collection delete with a per-spec label selector and asserts **convergence** (these files gone/authored thus,

@@ -1,0 +1,9 @@
+{{- /*
+Attribution (attributed-author mode) reads and writes audit facts in Redis, so it cannot run
+without an endpoint — the controller would fail at startup. Fail the render early with an
+actionable message instead. The admission webhook is deliberately NOT gated here: it stays
+enabled without Redis and simply no-ops command-author capture.
+*/ -}}
+{{- if and .Values.attribution.enabled (eq (trim .Values.queue.redis.addr) "") -}}
+{{- fail "attribution.enabled=true requires queue.redis.addr: attributed-author mode stores audit facts in Redis. Set queue.redis.addr, or leave attribution.enabled=false." -}}
+{{- end -}}

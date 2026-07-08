@@ -49,7 +49,7 @@ type Manager struct {
 	EventRouter *EventRouter
 	// AuthorResolver optionally names the commit author for a live watch event by
 	// joining the audit attribution index (RV/UID match, bounded grace window). Nil
-	// is committer-only mode (no audit/Redis): every event commits as the committer.
+	// is configured-author mode (no audit/Redis): every event commits as the committer.
 	AuthorResolver AuthorResolver
 	// WatchCursorStore optionally persists per-watch resourceVersion cursors so
 	// reconnects can resume without replaying the full type snapshot.

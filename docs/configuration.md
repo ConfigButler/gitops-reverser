@@ -14,7 +14,7 @@ The short version:
 The chart's optional `quickstart` values are just a convenience layer that creates starter
 instances of those same resources.
 
-For a first trial, use the root README quick start. It runs committer-only: Git writes work without
+For a first trial, use the root README quick start. It runs configured-author: Git writes work without
 kube-apiserver audit delivery, and every commit uses the configured committer identity. Add audit
 attribution later only when you need named Kubernetes users or service accounts in Git history.
 
@@ -679,11 +679,11 @@ author to each watch event by matching a fact (by resourceVersion/UID) within a 
 The same Redis connection also stores per-watch resume cursors, so short reconnects can resume a normal
 watch from the last processed resourceVersion when the apiserver can still serve that history.
 
-Valkey/Redis is **optional in committer-only mode**: when `--redis-addr` is set, watch resume cursors are
+Valkey/Redis is **optional in configured-author mode**: when `--redis-addr` is set, watch resume cursors are
 stored so restarts pick up where they left off; when left empty, watches cold-replay from scratch on
 restart instead. When author attribution is enabled (`--author-attribution=true`), a non-empty
 `--redis-addr` is required — attribution facts and resume cursors both use the same connection. The Helm
-chart defaults to **committer-only** (`attribution.enabled: false`): the audit webhook is unused and every
+chart defaults to **configured-author** (`attribution.enabled: false`): the audit webhook is unused and every
 mirrored-resource commit is authored by the configured committer.
 
 ```yaml

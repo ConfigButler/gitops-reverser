@@ -231,7 +231,7 @@ func TestAuditHandler_AcceptedEventRecordsFact(t *testing.T) {
 	assert.Equal(t, []string{"create-1"}, recorder.auditIDs())
 }
 
-// TestAuditHandler_NilRecorderAcceptsWithoutRecording confirms committer-only
+// TestAuditHandler_NilRecorderAcceptsWithoutRecording confirms configured-author
 // mode: a nil FactRecorder records nothing yet still returns 200.
 func TestAuditHandler_NilRecorderAcceptsWithoutRecording(t *testing.T) {
 	handler, err := NewAuditHandler(AuditHandlerConfig{}) // FactRecorder nil

@@ -382,8 +382,8 @@ func TestCommitRequestReconcile_StaleCacheEchoDoesNotRefinalize(t *testing.T) {
 // Webhook-disabled mode (no AuthorLookup) never waits: a freshly created CommitRequest
 // attaches immediately with a blank author and commits as the configured committer,
 // recording AuthorAttributed=False (CommitterFallback).
-func TestCommitRequestReconcile_CommitterOnlyCommitsWithoutWaiting(t *testing.T) {
-	cr := newCommitRequest("save-committer-only")
+func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing.T) {
+	cr := newCommitRequest("save-configured-author")
 	cr.CreationTimestamp = metav1.Now() // fresh: a waiting path would requeue instead of commit
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
@@ -392,10 +392,10 @@ func TestCommitRequestReconcile_CommitterOnlyCommitsWithoutWaiting(t *testing.T)
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f} // AuthorLookup nil
 
-	res := reconcileCommitRequest(t, r, "save-committer-only")
+	res := reconcileCommitRequest(t, r, "save-configured-author")
 
 	assert.Zero(t, res.RequeueAfter, "webhook-disabled mode must not requeue waiting for an author")
-	got := fetchCommitRequest(t, c, "save-committer-only")
+	got := fetchCommitRequest(t, c, "save-configured-author")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
 	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
@@ -407,7 +407,7 @@ func TestCommitRequestReconcile_CommitterOnlyCommitsWithoutWaiting(t *testing.T)
 // Webhook-disabled mode settles AuthorAttributed=False (CommitterFallback) immediately
 // and never parks the request in a "waiting for the author" state: even while the
 // attach is still being polled, the request is in the WaitingForCloseDelay wait.
-func TestCommitRequestReconcile_CommitterOnlyAttributedImmediately(t *testing.T) {
+func TestCommitRequestReconcile_ConfiguredAuthorAttributedImmediately(t *testing.T) {
 	cr := newCommitRequest("save-committer-poll")
 	cr.CreationTimestamp = metav1.Now()
 	c := newCommitRequestClient(t, nil, cr)

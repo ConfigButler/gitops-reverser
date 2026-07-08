@@ -33,7 +33,7 @@ import (
 var _ = Describe("Deployment scale author attribution", Label("manager", "subresource"), func() {
 	It("attributes a kubectl scale commit to the human who ran it", func() {
 		if committerOnlyModeEnabled() {
-			Skip("watch-first committer-only mode has no audit facts for author attribution")
+			Skip("watch-first configured-author mode has no audit facts for author attribution")
 		}
 
 		testNs := testNamespaceFor("scale-author")

@@ -42,7 +42,7 @@ var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() 
 
 	BeforeAll(func() {
 		if committerOnlyModeEnabled() {
-			Skip("watch-first committer-only mode has no audit facts for author attribution")
+			Skip("watch-first configured-author mode has no audit facts for author attribution")
 		}
 
 		By("creating commit-author test namespace")
