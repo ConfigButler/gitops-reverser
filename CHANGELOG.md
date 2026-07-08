@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.30.0...gitops-reverser-v0.31.0) (2026-07-08)
+
+
+### Features
+
+* **gitops-api:** treat higher-level KRM objects (HelmRelease, Argo Application, KRO) as first-class documents ([#203](https://github.com/ConfigButler/gitops-reverser/issues/203)) ([e5722a7](https://github.com/ConfigButler/gitops-reverser/commit/e5722a73bf8e0f9f32c986f478f89e9899a92c9b))
+* **secrets:** stop retaining Secret values in the control plane ([#208](https://github.com/ConfigButler/gitops-reverser/issues/208)) ([535c5ed](https://github.com/ConfigButler/gitops-reverser/commit/535c5ed3991db33e7f5f2343256f4b5ffab87d85))
+
 ## [0.30.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.29.2...gitops-reverser-v0.30.0) (2026-07-07)
 
 
