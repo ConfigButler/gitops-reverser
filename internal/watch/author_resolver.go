@@ -28,7 +28,7 @@ const DefaultAttributionGraceWindow = 3 * time.Second
 const attributionPollInterval = 150 * time.Millisecond
 
 // AttributionLookup is the read side of the optional audit attribution index. The
-// Redis-backed queue.AttributionIndex satisfies it; nil means committer-only.
+// Redis-backed queue.AttributionIndex satisfies it; nil means configured-author.
 type AttributionLookup interface {
 	// LookupAuthorResolution resolves the strongest author fact for a watch event.
 	// exactCapable is true for ADDED/MODIFIED events (try only the immutable exact key

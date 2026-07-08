@@ -356,7 +356,7 @@ Concretely, `attributeAuthor` collapses to:
 func (r *CommitRequestReconciler) attributeAuthor(
 	ctx context.Context, cr *configbutleraiv1alpha3.CommitRequest,
 ) (queue.CommandAuthor, commitRequestAttribution) {
-	if r.AuthorLookup == nil { // validate-operator-types webhook disabled → committer-only
+	if r.AuthorLookup == nil { // validate-operator-types webhook disabled → configured-author
 		return queue.CommandAuthor{}, attributionCommitter
 	}
 	if a, ok := r.AuthorLookup.LookupCommandAuthor(ctx, cr.UID); ok {
@@ -424,12 +424,12 @@ if cfg.internalCommandsWebhookEnabled {
 // ...
 if err := (&controller.CommitRequestReconciler{
 	// ...
-	AuthorLookup: commandAuthorStore, // nil when the webhook is disabled → committer-only, immediate
+	AuthorLookup: commandAuthorStore, // nil when the webhook is disabled → configured-author, immediate
 }).SetupWithManager(mgr); err != nil { /* ... */ }
 ```
 
-The `AuthorLookup == nil` contract is preserved and *strengthened*: nil → committer-only;
-non-nil + miss → committer-only **for that request** — both immediate, neither waits,
+The `AuthorLookup == nil` contract is preserved and *strengthened*: nil → configured-author;
+non-nil + miss → configured-author **for that request** — both immediate, neither waits,
 both surface `AuthorAttributed=False`.
 
 **HA.** Admission can hit any replica (it is a `Service`); the controller leader reads
@@ -586,7 +586,7 @@ status-contract and behavior change are acceptable.
   `--admission-webhook` server: when that flag is on, `cmd/main.go` builds the
   `CommandAuthorStore` and registers both the always-allow observer and the
   validate-operator-types handler (`setupAdmissionWebhooks`). The controller's `AuthorLookup`
-  is that store (nil when the flag is off → committer-only, immediate).
+  is that store (nil when the flag is off → configured-author, immediate).
 - **Chart value surface.** A new `internalCommands` block in `values.yaml`
   (`enabled`, `bindAddress`/`port`, `tls.*`, `certManager.enabled`, `timeoutSeconds`),
   defaulting `enabled: true` to mirror `attribution.enabled`. New templates
@@ -604,8 +604,8 @@ status-contract and behavior change are acceptable.
 - **Window-match coupling.** Command authorship is admission-sourced, but the attach
   still matches the open window *by author string* (`openWindow.Author`, set from the
   edit's audit attribution). So a named admission author only finalizes a window that
-  was *also* attributed to the same user — i.e. with audit on. In committer-only mode
+  was *also* attributed to the same user — i.e. with audit on. In configured-author mode
   the window author is empty and a named command author would not match; the
   CommitRequest e2e specs that assert a named author therefore still skip
-  committer-only mode. Worth a follow-up if command authorship should stand fully
+  configured-author mode. Worth a follow-up if command authorship should stand fully
   alone.

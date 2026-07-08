@@ -75,8 +75,8 @@ wait_for_manager_rollout() {
 # terminating pod from before the restart cannot produce a false-positive match.
 warmup_audit_path() {
     if kubectl --context "${CTX}" -n "${NAMESPACE}" logs "${MANAGER_DEPLOY}" \
-        --since=10m 2>/dev/null | grep -q "watch-first committer-only mode enabled"; then
-        echo "✅ Watch-first committer-only mode detected — audit warmup not required"
+        --since=10m 2>/dev/null | grep -q "watch-first configured-author mode enabled"; then
+        echo "✅ Watch-first configured-author mode detected — audit warmup not required"
         return 0
     fi
 
@@ -101,11 +101,11 @@ warmup_audit_path() {
     return 1
 }
 
-# Committer-only installs (attribution disabled — the chart default since the
+# Configured-author installs (attribution disabled — the chart default since the
 # watch-first work) render no audit TLS material and run no audit ingress, so
 # there is nothing to inject. The kube-apiserver still boots with the bootstrap
 # audit webhook config written by start-cluster.sh; with no receiver its batched
-# events are simply dropped, which is exactly committer-only behaviour. Detect
+# events are simply dropped, which is exactly configured-author behaviour. Detect
 # this by the absence of the audit root CA Certificate (rendered only when
 # attribution is enabled) and skip the whole audit webhook TLS dance — otherwise
 # generate-audit-webhook-kubeconfig.sh below would block for ~2 minutes waiting on
@@ -113,7 +113,7 @@ warmup_audit_path() {
 if ! kubectl --context "${CTX}" -n "${NAMESPACE}" get certificate \
     gitops-reverser-audit-root-ca >/dev/null 2>&1; then
     echo "ℹ️  No audit root CA Certificate in namespace '${NAMESPACE}' —" \
-        "committer-only install; skipping audit webhook TLS injection"
+        "configured-author install; skipping audit webhook TLS injection"
     exit 0
 fi
 

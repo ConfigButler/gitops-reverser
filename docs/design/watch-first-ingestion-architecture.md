@@ -33,7 +33,7 @@ Three decisions frame this rewrite:
    GitTarget's watch **resume cursors** (state continuity / work re-pickup) and is the substrate for HA
    and the planned durable branch-worker queue, so it is a hard dependency in every mode. What is
    optional is **audit attribution**, toggled by `--author-attribution` (chart
-   `attribution.enabled`). With attribution off the product runs **committer-only**: it mirrors cluster
+   `attribution.enabled`). With attribution off the product runs **configured-author**: it mirrors cluster
    state to Git, authored by the configured committer identity, and Redis still backs the resume cursors.
    With attribution on (and the audit webhook configured to post to it), the product additionally
    resolves the **author** from audit facts when the evidence is strong. Attribution off → committer.
@@ -363,7 +363,7 @@ sometimes *fewer* when bursts/downtime collapse to current state. Both are accep
 
 `CommitRequest` currently **fails closed** if it cannot attribute the requester
 ([commitrequest_controller.go](../../internal/controller/commitrequest_controller.go),
-`attributionFailedMessage`). That does not fit a committer-only install.
+`attributionFailedMessage`). That does not fit a configured-author install.
 
 New behavior:
 
@@ -380,10 +380,10 @@ signed request — Kubernetes object state alone does not identify the human who
 
 | Mode | State source | Redis / audit | Author fidelity | Use |
 |---|---|---|---|---|
-| **Committer-only** | watch | Redis only (no audit webhook) | committer identity | simplest install, state mirror |
-| **Attributed** | watch | Redis + audit webhook | named user/SA on strong match; committer otherwise | recommended target |
+| **Configured-author** | watch | Redis optional (no audit webhook); cold-replay without it | committer identity | simplest install, state mirror |
+| **attributed-author** | watch | Redis + audit webhook | named user/SA on strong match; committer otherwise | recommended target |
 
-The product must not imply committer-only equals attributed mode, nor that attributed mode recovers
+The product must not imply configured-author equals attributed-author mode, nor that attributed-author mode recovers
 every author (the audit policy still bounds which writes carry a fact, and the CommitRequest submitter
 is not recoverable from state alone). Both modes deliver a continuously updated Git mirror of desired
 cluster state.
@@ -438,10 +438,10 @@ moved attribution bits), `internal/gate`, `webhook/audit_joiner.go`, the materia
 the late-lane/divert/nudge code. Shrink `audit_handler.go` to fact extraction.
 
 **Stage 4 — Config, wiring, docs.**
-Keep Redis **required** in `cmd/main.go` (a missing `--redis-addr` is a startup error, and the
-readiness gate holds the pod not-ready until Redis is reachable); make only the audit webhook /
-attribution optional via `--author-attribution=false` (committer-only — the audit ingress is not
-started, but Redis still backs the resume cursors). Remove the dead audit-stream flags
+Note: the shipped behavior later relaxed this. Redis is now **optional** in `cmd/main.go` (an empty
+`--redis-addr` is valid and runs configured-author with cold-replay; the readiness gate only applies
+when Redis is configured). The audit webhook / attribution remains optional via
+`--author-attribution=false`; when Redis *is* configured it still backs the resume cursors. Remove the dead audit-stream flags
 (`--audit-redis-max-len`, `--audit-bytype-*`, `--watch-state-stream`, body TTL/wait, etc.). Update the
 Helm chart and `config/` so the audit webhook is opt-out while Redis stays a hard dependency. Rewrite
 `docs/architecture.md` to the watch-first model and document the two operating modes and the

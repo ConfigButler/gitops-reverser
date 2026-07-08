@@ -85,6 +85,13 @@ func (h *ValidateOperatorTypesHandler) Handle(ctx context.Context, req admission
 		return admission.Allowed("dry-run: not recorded")
 	}
 
+	// No store means the webhook is running without a Redis backend (admission is on by
+	// default, but command-author capture is Redis-backed). Allow without recording; the
+	// controller then finalizes as the committer (AuthorAttributed=False).
+	if h.Store == nil {
+		return admission.Allowed("no author store: not recorded")
+	}
+
 	// metadata.uid identifies the object (not req.UID, which identifies the review). The
 	// API server assigns it before validating admission runs, so it is present even for
 	// a generateName CREATE — no response-body name recovery is ever needed.

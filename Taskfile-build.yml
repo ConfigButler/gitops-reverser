@@ -377,6 +377,7 @@ tasks:
           --set labels.managedBy=kubectl \
           --set createNamespace=true \
           --set queue.redis.addr={{.DEFAULT_AUDIT_REDIS_ADDR}} \
+          --set queue.redis.auth.existingSecret=valkey-auth \
           --include-crds \
           > dist/install.yaml
 

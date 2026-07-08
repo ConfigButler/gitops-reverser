@@ -122,7 +122,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            {{- if .Values.queue.redis.auth.existingSecret }}
+            {{- if and .Values.queue.redis.addr .Values.queue.redis.auth.existingSecret }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:

@@ -119,8 +119,8 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 	})
 
 	It("should receive audit webhook events from kube-apiserver", func() {
-		if committerOnlyModeEnabled() {
-			Skip("watch-first committer-only mode does not require audit webhook ingestion")
+		if configuredAuthorModeEnabled() {
+			Skip("watch-first configured-author mode does not require audit webhook ingestion")
 		}
 
 		By("recording baseline audit event count")

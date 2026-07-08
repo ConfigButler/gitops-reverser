@@ -132,9 +132,9 @@ func TestParseFlagsWithArgs_RedisAddrRequiredWhenAttributionEnabled(t *testing.T
 	assert.Contains(t, err.Error(), "redis-addr is required when author-attribution is enabled")
 }
 
-func TestParseFlagsWithArgs_CommitterOnlyNoRedis(t *testing.T) {
-	fs := flag.NewFlagSet("test-committer-only-no-redis", flag.ContinueOnError)
-	// Committer-only mode with no Redis: watches cold-replay on restart, no attribution.
+func TestParseFlagsWithArgs_ConfiguredAuthorNoRedis(t *testing.T) {
+	fs := flag.NewFlagSet("test-configured-author-no-redis", flag.ContinueOnError)
+	// Configured-author mode with no Redis: watches cold-replay on restart, no attribution.
 	cfg, err := parseFlagsWithArgs(fs, []string{
 		"--author-attribution=false",
 		"--redis-addr=",
@@ -144,9 +144,9 @@ func TestParseFlagsWithArgs_CommitterOnlyNoRedis(t *testing.T) {
 	assert.Empty(t, cfg.redisAddr)
 }
 
-func TestParseFlagsWithArgs_CommitterOnlyDisablesAttribution(t *testing.T) {
-	fs := flag.NewFlagSet("test-committer-only", flag.ContinueOnError)
-	// Committer-only = attribution off, Redis still configured (default addr). The audit ingress
+func TestParseFlagsWithArgs_ConfiguredAuthorDisablesAttribution(t *testing.T) {
+	fs := flag.NewFlagSet("test-configured-author", flag.ContinueOnError)
+	// Configured-author = attribution off, Redis still configured (default addr). The audit ingress
 	// server is not started, so its TLS / client-CA settings need not be configured.
 	cfg, err := parseFlagsWithArgs(fs, []string{
 		"--author-attribution=false",

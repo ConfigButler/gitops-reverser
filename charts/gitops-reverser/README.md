@@ -29,11 +29,13 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 
 - Kubernetes 1.36 (probably works for older versions, but not tested)
 - cert-manager (for TLS certificates)
-- **Valkey or Redis** reachable from the controller, with auth enabled (`queue.redis.auth.existingSecret`).
-  This is **required**: it holds each GitTarget's watch resume state so work is re-picked up after a
-  restart or reconnect.
-- **Optional — attributed mode only:** kube-apiserver audit delivery, which adds commit-author
-  attribution. Without it the operator still mirrors state, authored by the configured committer.
+- **Valkey or Redis: optional but advised.** The default install runs without it in
+  `configured-author` mode (watches cold-replay on restart). Add it to unlock warm-restart resume
+  cursors, CommitRequest author capture (the admission webhook), and attributed-author mode; enabling
+  any of those requires a non-empty `queue.redis.addr`.
+- **Optional, attributed-author mode only:** kube-apiserver audit delivery, which adds
+  mirrored-resource commit-author attribution. Without it the operator still mirrors state, authored by
+  the configured committer.
 
 ## Installation
 
@@ -173,19 +175,21 @@ nodeSelector:
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |
 | `quickstart.enabled` | Create starter `GitProvider`, `GitTarget`, and `WatchRule` resources | `false` |
-| `quickstart.namespace` | Namespace for the starter quickstart resources | `default` |
+| `quickstart.namespace` | Namespace for the starter quickstart resources (create it, and the git-creds Secret, before install) | `gitops-reverser-quickstart-demo` |
+| `quickstart.createNamespace` | Let the chart create `quickstart.namespace` (Helm then owns it) | `false` |
 | `quickstart.gitProvider.url` | Repository URL used by the starter `GitProvider` | `""` |
 | `quickstart.gitProvider.secretRef.name` | Existing Secret name used by the starter `GitProvider` | `git-creds` |
 | `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget`; set `.` only to deliberately target the repo root | `live-cluster` |
 | `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
-| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). **Required** — holds each GitTarget's watch resume cursors (state continuity) and, when audit is configured, the attribution facts | `valkey:6379` |
-| `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password | `valkey-auth` |
+| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty runs `configured-author` with cold-replay on restart. Set it for warm-restart cursors and for the admission webhook to actually record CommitRequest authors (admission runs as a no-op without it); **required** only when `attribution.enabled=true` | `""` |
+| `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password (only used when `queue.redis.addr` is set) | `""` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
 | `attribution.enabled` | Run audit ingress and name mirrored-resource commit authors from matching kube-apiserver audit facts | `false` |
 | `attribution.ttl` | How long an attribution fact is retained waiting for the matching watch event to join it | `10m` |
 | `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
+| `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |
@@ -194,7 +198,6 @@ nodeSelector:
 | `service.ports.audit` | Service port for audit ingress when `attribution.enabled=true` | `9444` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `servers.healthProbe.bindAddress` | Liveness/readiness probe bind address (`--health-probe-bind-address`) | `:8081` |
-| `servers.admission.enabled` | Run the validating admission server hosting the validate-operator-types webhook (captures the CommitRequest submitter as the commit author) | `true` |
 | `servers.admission.port` | Admission webhook container/Service port | `9443` |
 | `servers.admission.timeoutSeconds` | Admission webhook timeout (failurePolicy is Ignore) | `2` |
 | `servers.admission.tls.certManager` | Mint the admission serving cert via cert-manager (false = BYO via `secretNameOverride`) | `true` |
@@ -222,14 +225,15 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 When `attribution.enabled=true`, `https://<service>:9444/audit-webhook` receives audit events from
 kube-apiserver. The operator extracts a minimal attribution fact from each (auditID, user, verb,
 resourceVersion, GVR, namespace, name, UID, status, timestamps) into the Redis attribution index
-(populated only when audit attribution is enabled). The same Redis endpoint also stores each GitTarget's
-watch resume cursors — that part is always needed — so reconnects resume a normal watch from the last
-processed resourceVersion when the apiserver can still serve that history. Object state itself comes
-from Kubernetes **watch**, not from audit; audit only names the commit author.
+(populated only when audit attribution is enabled). When a Redis endpoint is configured it also stores
+each GitTarget's watch resume cursors, so reconnects resume a normal watch from the last processed
+resourceVersion when the apiserver can still serve that history. Object state itself comes from
+Kubernetes **watch**, not from audit; audit only names the commit author.
 
 When `attribution.enabled=false`, the audit webhook is not rendered or served and the product runs
-committer-only: mirrored-resource commits are authored by the configured committer. `queue.redis.addr`
-is still required because Redis/Valkey stores watch resume cursors.
+configured-author: mirrored-resource commits are authored by the configured committer. `queue.redis.addr`
+is optional here: set it for warm-restart resume cursors, or leave it empty and watches cold-replay
+from scratch on restart.
 
 Cluster ID path segments are rejected.
 

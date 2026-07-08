@@ -32,8 +32,8 @@ import (
 // separately by commit_author_attribution_e2e_test.go.
 var _ = Describe("Deployment scale author attribution", Label("manager", "subresource"), func() {
 	It("attributes a kubectl scale commit to the human who ran it", func() {
-		if committerOnlyModeEnabled() {
-			Skip("watch-first committer-only mode has no audit facts for author attribution")
+		if configuredAuthorModeEnabled() {
+			Skip("watch-first configured-author mode has no audit facts for author attribution")
 		}
 
 		testNs := testNamespaceFor("scale-author")

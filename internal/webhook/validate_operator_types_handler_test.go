@@ -84,6 +84,18 @@ func TestValidateOperatorTypesHandler_RecordsCommandAuthor(t *testing.T) {
 	assert.NotEmpty(t, got.RequestedAt, "RequestedAt is stamped for lag/debug")
 }
 
+func TestValidateOperatorTypesHandler_NilStoreNoOp(t *testing.T) {
+	// Admission stays enabled without Redis: no Store, so the handler must allow the
+	// command without recording (and without a nil dereference).
+	h := &ValidateOperatorTypesHandler{}
+
+	resp := h.Handle(context.Background(),
+		commandReview(commitRequestResource(), `{"metadata":{"uid":"cr-uid"}}`,
+			authnv1.UserInfo{Username: "alice"}, nil))
+
+	assert.True(t, resp.Allowed, "a missing author store never blocks a command")
+}
+
 func TestValidateOperatorTypesHandler_ServiceAccountSubmitter(t *testing.T) {
 	rec := &fakeCommandAuthorRecorder{}
 	h := &ValidateOperatorTypesHandler{Store: rec}

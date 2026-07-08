@@ -89,7 +89,7 @@ by the `Reconciling`/`Ready` reason and the `Attributed` condition.
 
 Canonical reads:
 
-* waiting for the create audit event (attributed mode only): `Reconciling=True` reason
+* waiting for the create audit event (attributed-author mode only): `Reconciling=True` reason
   `WaitingForAuditEvent`, `Attributed=Unknown` → kstatus InProgress
 * waiting for the close delay (author settled, attached — the `closeDelaySeconds` collect window, then
   commit and push): `Reconciling=True` reason `WaitingForCloseDelay`, `Attributed` settled, `Pushed=False`
@@ -98,6 +98,6 @@ Canonical reads:
 * benign no-commit (nothing to save / already present / foreign open window): `Ready=True`, `Pushed=False`,
   `Stalled=False`, with the specific reason on `Ready` → kstatus Current (a correct, non-error outcome)
 * failed finalize: `Ready=False`, `Stalled=True`, reason `FinalizeFailed` → kstatus Failed
-* committer-only mode sets `Attributed=True` (`AttributionNotRequired`) immediately; attributed mode leaves
+* configured-author mode sets `Attributed=True` (`AttributionNotRequired`) immediately; attributed-author mode leaves
   it `Unknown` until the create audit event names the author, or `False` (`AuditEventNotObserved`) if it
   never arrives and the commit is authored by the configured committer

@@ -120,8 +120,8 @@ optional.** Everything below states it that way; never call Redis optional.
   index and wires `watchMgr.WatchCursorStore` **unconditionally**; `validateAuditConfig` **requires** a
   non-empty `--redis-addr`; a new `--author-attribution` flag (default `true`, chart
   `attribution.enabled`) gates **only** the audit webhook ingress + resolver + CommitRequest lookup. So
-  "committer-only" now means *attribution off, Redis still on*. `cmd/main_audit_server_test.go` updated
-  (empty `--redis-addr` is now an error; committer-only is the attribution toggle).
+  "configured-author" now means *attribution off, Redis still on*. `cmd/main_audit_server_test.go` updated
+  (empty `--redis-addr` is now an error; configured-author is the attribution toggle).
 - **Dead-code removal.** Deleted the last materialization-phase-machine residue in `internal/watch`
   (`NudgeTypeResyncForLateEvent` → `claimedGVRForGroupResource` → `materializerInstance` + the backing
   `lateNudge*`/`materializer*` fields and `lateNudgeMinInterval` const), zero-external-caller verified;

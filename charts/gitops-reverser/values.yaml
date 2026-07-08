@@ -102,6 +102,11 @@ servers:
   # *command* authorship (from admission). Off → CommitRequests commit as the configured
   # committer and report AuthorAttributed=False. See
   # docs/design/commitrequest-admission-authorship.md.
+  #
+  # Command-author capture is Redis-backed: the captured author is written to Redis at admission and
+  # read back at reconcile. Enabled by default so the webhook is always installed, but it is a no-op
+  # without Redis: the pod runs healthy and CommitRequests commit as the configured committer
+  # (AuthorAttributed=False) until queue.redis.addr is set.
   admission:
     enabled: true
     bindAddress: ":9443"
@@ -161,17 +166,19 @@ servers:
         secretNameOverride: ""
 
 # Redis/Valkey holds each GitTarget's watch resume cursors (warm restart) and, when attribution is
-# enabled, the audit attribution facts. Optional in committer-only mode: leave addr empty to run without
-# Redis (watches cold-replay on restart). Required when attribution.enabled is true.
+# enabled, the audit attribution facts. Empty by default: the chart runs in configured-author mode with
+# no Redis (watches cold-replay on restart). Set addr to enable warm restarts; required when
+# attribution.enabled is true.
 queue:
   redis:
-    # Redis/Valkey endpoint (host:port). Leave empty to run without Redis in committer-only mode;
-    # required when attribution.enabled is true.
-    addr: "valkey:6379"
+    # Redis/Valkey endpoint (host:port). Empty by default (no Redis, configured-author mode). Set to a
+    # host:port for warm restarts; required when attribution.enabled is true.
+    addr: ""
     auth:
-      # Pre-existing Secret (same namespace) holding the Redis password. Create it before install;
-      # leave empty only for dev clusters where Valkey runs without authentication.
-      existingSecret: "valkey-auth"
+      # Pre-existing Secret (same namespace) holding the Redis password. Empty by default (no Redis).
+      # Set it when queue.redis.addr points at an authenticated Valkey; leave empty for a Valkey with
+      # no auth.
+      existingSecret: ""
       # Key within the Secret that holds the password value.
       existingSecretKey: "password"
       # Optional Redis username for ACL-based auth (Redis 6+). Not sensitive; stays as a plain value.
@@ -182,11 +189,11 @@ queue:
 
 # Commit-author attribution from audit facts. Off by default so first-time installs can prove the
 # Kubernetes-to-Git workflow without kube-apiserver audit webhook configuration. With it off, the
-# operator runs committer-only (Redis optional — leave queue.redis.addr empty to run without it), and every mirrored-resource commit uses the
+# operator runs configured-author (Redis optional — leave queue.redis.addr empty to run without it), and every mirrored-resource commit uses the
 # configured committer.
 attribution:
   # When true, run the audit webhook ingress and name commit authors from matching audit facts; requires
-  # a non-empty queue.redis.addr. When false, run committer-only (no audit ingress, commits authored by
+  # a non-empty queue.redis.addr. When false, run configured-author (no audit ingress, commits authored by
   # the committer); Redis is optional (leave queue.redis.addr empty to run without it).
   enabled: false
   # How long an attribution fact is retained waiting for the matching watch event to join it.
@@ -275,9 +282,14 @@ auditKubeconfig:
 # you explicitly opt in.
 quickstart:
   enabled: false
-  # Namespace for the starter GitProvider, GitTarget, and WatchRule.
-  # This namespace must already exist.
-  namespace: default
+  # Namespace for the starter GitProvider, GitTarget, and WatchRule. Create it (and the git-creds
+  # Secret) before installing, so the starter GitProvider is Ready on the first reconcile instead of
+  # waiting up to ~5 minutes (RequeueSteadyInterval) for the Secret to appear.
+  namespace: gitops-reverser-quickstart-demo
+  # Let the chart create quickstart.namespace (Helm then owns it). Left false by default because the
+  # recommended flow pre-creates the namespace and git-creds Secret before install; set true only if
+  # the credentials Secret will be supplied some other way.
+  createNamespace: false
   gitProvider:
     name: example-provider
     # Required when quickstart.enabled=true.

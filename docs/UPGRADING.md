@@ -7,6 +7,31 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — chart defaults now run Redis-free (next minor; behavior change)
+
+The Helm chart now defaults to the simple, Redis-free `configured-author` path, so a bare
+`helm install` comes up healthy without external infrastructure:
+
+- `queue.redis.addr` now defaults to `""` (was `valkey:6379`) and `queue.redis.auth.existingSecret`
+  to `""` (was `valkey-auth`). Without a Redis endpoint the operator runs `configured-author` and
+  watches cold-replay on restart.
+- `servers.admission.enabled` stays `true` by default, but the validate-operator-types admission
+  webhook no longer requires Redis. Without `queue.redis.addr` it runs as a no-op (CommitRequests
+  commit as the configured committer, `AuthorAttributed=False`); it captures authors once Redis is
+  configured. Previously enabling admission without Redis failed startup.
+- The chart still rejects one invalid combination at render time: `attribution.enabled=true` without
+  `queue.redis.addr` fails `helm install`/`upgrade` with an actionable message (attributed-author mode
+  cannot run without Redis) instead of crash-looping the pod.
+- `quickstart.namespace` now defaults to `gitops-reverser-quickstart-demo` (was `default`), and a new
+  `quickstart.createNamespace` (default `false`) controls whether the chart creates it.
+
+**Migration**
+
+- To keep the previous behavior, set the values explicitly: `--set queue.redis.addr=valkey:6379
+  --set queue.redis.auth.existingSecret=valkey-auth --set servers.admission.enabled=true`.
+- `helm upgrade --reuse-values` preserves your existing settings, so reused-value upgrades are
+  unaffected; only fresh installs (or upgrades that re-specify values) pick up the new defaults.
+
 ## Unreleased — API group version bumped `v1alpha2` → `v1alpha3` (next minor; breaking)
 
 The served API version moved from `configbutler.ai/v1alpha2` to `configbutler.ai/v1alpha3` to
@@ -31,19 +56,19 @@ CRDs are applied.
 This branch changes the default install to be easier to try, and it tightens the v1alpha3 status
 surface around conditions. Existing installs should check the items below before upgrading.
 
-### 1. Helm installs now start committer-only by default
+### 1. Helm installs now start configured-author by default
 
 The chart default for `attribution.enabled` changed from `true` to `false`. A default install no longer
 renders the audit receiver Service or audit TLS Secrets, and mirrored-resource commits are authored by
 the configured committer identity.
 
-Redis/Valkey is optional in committer-only mode. Set `--redis-addr` to store watch resume cursors (warm
-restart); leave it empty to cold-replay from scratch on restart. Attribution mode still requires a
+Redis/Valkey is optional in configured-author mode. Set `--redis-addr` to store watch resume cursors (warm
+restart); leave it empty to cold-replay from scratch on restart. Attributed-author mode still requires a
 non-empty `--redis-addr`.
 
 **Migration**
 
-- If you want the easier committer-only install, no chart value is needed.
+- If you want the easier configured-author install, no chart value is needed.
 - If you currently rely on kube-apiserver audit delivery for named commit authors, set:
 
   ```yaml

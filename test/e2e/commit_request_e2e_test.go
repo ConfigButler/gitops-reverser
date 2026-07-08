@@ -216,7 +216,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	// generateName headache is gone, see
 	// docs/design/commitrequest-admission-authorship.md §8). This spec proves a
 	// generateName CommitRequest still finalizes and becomes Ready. It is skipped in
-	// committer-only mode, where the edit's window is committer-authored and the
+	// configured-author mode, where the edit's window is committer-authored and the
 	// named admission author would not match it end to end.
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
 		basePath := "e2e/commit-request-test"
