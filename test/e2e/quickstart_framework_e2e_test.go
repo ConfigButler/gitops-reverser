@@ -22,10 +22,16 @@ const (
 	quickstartFrameworkEnabledEnv = "E2E_ENABLE_QUICKSTART_FRAMEWORK"
 	quickstartFrameworkModeEnv    = "E2E_QUICKSTART_MODE"
 	quickstartTimeoutSecondsEnv   = "QUICKSTART_TIMEOUT_SECONDS"
+
+	// readmeDemoNamespace is the exact namespace the README quick start tells a
+	// first-time user to create. The helm-mode run installs the chart quickstart
+	// into it so the test exercises the documented path verbatim.
+	readmeDemoNamespace = "gitops-reverser-quickstart-demo"
 )
 
 type quickstartFrameworkRun struct {
 	mode            string
+	namespace       string
 	testID          string
 	repoName        string
 	checkoutDir     string
@@ -51,51 +57,208 @@ var _ = Describe("Quickstart Framework", Label("quickstart-framework"), Ordered,
 			))
 		}
 
-		qsNs := testNamespaceFor("quickstart-framework")
-		_, _ = kubectlRun("create", "namespace", qsNs)
+		run = newQuickstartFrameworkRun()
+
+		_, _ = kubectlRun("create", "namespace", run.namespace)
 
 		By("setting up Gitea repo and credentials for quickstart-framework tests")
 		quickstartRepo = SetupRepo(
 			resolveE2EContext(),
-			qsNs,
+			run.namespace,
 			fmt.Sprintf("e2e-quickstart-framework-%d", GinkgoRandomSeed()),
 		)
+		run.repoName = quickstartRepo.RepoName
+		run.checkoutDir = quickstartRepo.CheckoutDir
+		run.repoURL = quickstartRepo.RepoURLHTTP
 
-		_, err := kubectlRunInNamespace(qsNs, "apply", "-f", quickstartRepo.SecretsYAML)
+		_, err := kubectlRunInNamespace(run.namespace, "apply", "-f", quickstartRepo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to quickstart namespace")
-		applySOPSAgeKeyToNamespace(qsNs)
 
-		run = newQuickstartFrameworkRun()
+		// Helm mode drives the README path, where the chart auto-generates the age
+		// key (generateWhenMissing). The other install modes reuse the pre-seeded key.
+		if run.mode != "helm" {
+			applySOPSAgeKeyToNamespace(run.namespace)
+		}
 	})
 
 	AfterAll(func() {
-		cleanupNamespace(testNamespaceFor("quickstart-framework"))
+		if !quickstartFrameworkEnabled() {
+			return
+		}
+		cleanupNamespace(run.namespace)
 	})
 
 	It("sets up quickstart flow via Go framework", func() {
-		By("creating dedicated Gitea repository and bootstrap credentials")
-		run.setupGiteaRepository()
-
-		By("applying quickstart resources from Go")
-		run.applyQuickstartResources()
-
-		By("verifying quickstart resources become Ready")
-		run.verifyQuickstartResourcesReady()
-
-		By("verifying generated encryption secret and commit flow")
-		generatedAgeKey := run.verifyGeneratedEncryptionSecret()
-
-		By("verifying quickstart commits for create/update/delete")
-		run.verifyQuickstartConfigMapCommits()
-
-		By("verifying quickstart encrypted Secret commit is decryptable")
-		run.verifyQuickstartSecretEncryption(generatedAgeKey)
-
-		By("verifying invalid credentials provider shows actionable message")
-		run.verifyInvalidProviderActionableMessage()
+		if run.mode == "helm" {
+			run.runReadmeQuickstartFlow()
+			return
+		}
+		run.runConfigObjectFlow()
 	})
 
 })
+
+// runReadmeQuickstartFlow drives the exact path README.md documents for a
+// first-time user: a no-Redis Helm install with quickstart.enabled=true into the
+// gitops-reverser-quickstart-demo namespace, then verifies the chart's own
+// starter resources become Ready, the controller runs healthy in configured-author
+// mode without Redis, and a ConfigMap in the demo namespace lands a commit.
+func (r *quickstartFrameworkRun) runReadmeQuickstartFlow() {
+	By("helm-installing the chart the README way (no Redis, quickstart.enabled, demo namespace)")
+	r.helmInstallReadmeQuickstart()
+
+	By("verifying the controller is healthy in configured-author mode with no Redis")
+	r.verifyNoRedisConfiguredAuthor()
+
+	By("verifying the chart's starter resources become Ready")
+	verifyResourceStatus("gitprovider", "example-provider", r.namespace, "True", "Ready", "")
+	verifyResourceCondition("gittarget", "example-target", r.namespace, "Validated", "True", "OK", "")
+	verifyResourceStatus("watchrule", "example-watchrule", r.namespace, "True", "Ready", "")
+	waitForStreamsRunning("example-target", r.namespace)
+
+	By("verifying the starter GitTarget generated its SOPS age key")
+	r.verifyGeneratedEncryptionSecret("sops-age-key")
+
+	By("verifying a ConfigMap in the demo namespace lands a commit")
+	r.verifyStarterConfigMapCommit()
+}
+
+// helmInstallReadmeQuickstart upgrades the already-installed release to the exact
+// values the README's `helm install` command uses. The quickstart-framework spec
+// only runs in the isolated quickstart leg (its own cluster, this the only spec),
+// so reconfiguring the single controller to no-Redis here is safe.
+func (r *quickstartFrameworkRun) helmInstallReadmeQuickstart() {
+	ctx := resolveE2EContext()
+	releaseNs := resolveE2ENamespace()
+	release := resolveE2EInstallName(releaseNs)
+
+	chart := strings.TrimSpace(os.Getenv("HELM_CHART_SOURCE"))
+	if chart == "" {
+		chart = "charts/gitops-reverser"
+	}
+
+	args := []string{
+		"--kube-context", ctx,
+		"upgrade", "--install", release, chart,
+		"--namespace", releaseNs,
+		"--reuse-values",
+		// The README's no-Redis default: empty addr runs configured-author.
+		"--set", "queue.redis.addr=",
+		"--set", "quickstart.enabled=true",
+		"--set", fmt.Sprintf("quickstart.namespace=%s", r.namespace),
+		// We created the namespace + git-creds above (README step 3, before install).
+		"--set", "quickstart.createNamespace=false",
+		"--set-string", fmt.Sprintf("quickstart.gitProvider.url=%s", r.repoURL),
+		"--set", fmt.Sprintf("quickstart.gitProvider.secretRef.name=%s", quickstartRepo.GitSecretHTTP),
+	}
+
+	cmd := exec.Command("helm", args...)
+	output, err := cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(),
+		fmt.Sprintf("helm upgrade to README quickstart config failed: %s", strings.TrimSpace(string(output))))
+
+	By("waiting for the reconfigured controller to roll out")
+	Eventually(func() error {
+		_, rolloutErr := kubectlRunInNamespace(
+			releaseNs, "rollout", "status", fmt.Sprintf("deployment/%s", release), "--timeout=30s",
+		)
+		return rolloutErr
+	}, quickstartTimeout(), 3*time.Second).Should(Succeed(), "controller did not roll out after README quickstart install")
+}
+
+// verifyNoRedisConfiguredAuthor asserts the controller logged the no-Redis
+// configured-author sentinel (main.go emits "configured-author mode: no Redis
+// configured" only when queue.redis.addr is empty) and that the pod is not
+// crash-looping — proving admission-on-without-Redis is a healthy no-op.
+func (r *quickstartFrameworkRun) verifyNoRedisConfiguredAuthor() {
+	releaseNs := resolveE2ENamespace()
+	release := resolveE2EInstallName(releaseNs)
+
+	Eventually(func(g Gomega) {
+		logs, err := kubectlRunInNamespace(
+			releaseNs, "logs", fmt.Sprintf("deployment/%s", release), "--since=10m",
+		)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(logs).To(ContainSubstring("no Redis configured"),
+			"controller should log the no-Redis configured-author sentinel")
+	}, quickstartTimeout(), 3*time.Second).Should(Succeed())
+
+	restarts, err := kubectlRunInNamespace(
+		releaseNs, "get", "pods", "-l", fmt.Sprintf("app.kubernetes.io/instance=%s", release),
+		"-o", "jsonpath={.items[*].status.containerStatuses[*].restartCount}",
+	)
+	Expect(err).NotTo(HaveOccurred())
+	for _, field := range strings.Fields(restarts) {
+		count, convErr := strconv.Atoi(field)
+		Expect(convErr).NotTo(HaveOccurred())
+		Expect(count).To(Equal(0), "controller must not crash-loop with admission on and no Redis")
+	}
+}
+
+// verifyStarterConfigMapCommit creates, updates, and deletes a ConfigMap in the
+// demo namespace and asserts the chart's starter GitTarget mirrors each change to
+// live-cluster/<ns>/configmaps/<name>.yaml (the chart default path).
+func (r *quickstartFrameworkRun) verifyStarterConfigMapCommit() {
+	ns := r.namespace
+	configMapName := fmt.Sprintf("quickstart-config-%s", r.testID)
+	expectedFile := filepath.Join(
+		r.checkoutDir, "live-cluster", ns, "configmaps", fmt.Sprintf("%s.yaml", configMapName),
+	)
+
+	_, _ = kubectlRunInNamespace(ns, "delete", "configmap", configMapName, "--ignore-not-found=true")
+
+	commitsBefore, err := r.gitCommitCount()
+	Expect(err).NotTo(HaveOccurred())
+
+	_, err = kubectlRunInNamespace(ns, "create", "configmap", configMapName, "--from-literal=value=one")
+	Expect(err).NotTo(HaveOccurred(), "failed to create quickstart ConfigMap")
+
+	Eventually(func(g Gomega) {
+		g.Expect(r.gitPull()).To(Succeed())
+		content, readErr := os.ReadFile(expectedFile)
+		g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file must exist at %s", expectedFile))
+		g.Expect(string(content)).To(ContainSubstring("value: one"))
+		commitsAfter, countErr := r.gitCommitCount()
+		g.Expect(countErr).NotTo(HaveOccurred())
+		g.Expect(commitsAfter).To(BeNumerically(">", commitsBefore))
+	}, quickstartTimeout(), 2*time.Second).Should(Succeed())
+
+	_, err = kubectlRunInNamespace(ns, "delete", "configmap", configMapName)
+	Expect(err).NotTo(HaveOccurred(), "failed to delete quickstart ConfigMap")
+
+	Eventually(func(g Gomega) {
+		g.Expect(r.gitPull()).To(Succeed())
+		_, statErr := os.Stat(expectedFile)
+		g.Expect(os.IsNotExist(statErr)).To(BeTrue(), fmt.Sprintf("ConfigMap file should be deleted: %s", expectedFile))
+	}, quickstartTimeout(), 2*time.Second).Should(Succeed())
+}
+
+// runConfigObjectFlow is the pre-existing coverage for the non-Helm install modes
+// (config-dir, plain-manifests-file), which are Redis-backed and cannot exercise
+// the no-Redis README path. It validates the install by creating config objects
+// directly and checking the mirror + encryption + actionable errors.
+func (r *quickstartFrameworkRun) runConfigObjectFlow() {
+	By("creating dedicated Gitea repository and bootstrap credentials")
+	r.setupGiteaRepository()
+
+	By("applying quickstart resources from Go")
+	r.applyQuickstartResources()
+
+	By("verifying quickstart resources become Ready")
+	r.verifyQuickstartResourcesReady()
+
+	By("verifying generated encryption secret and commit flow")
+	generatedAgeKey := r.verifyGeneratedEncryptionSecret(r.encryptionName)
+
+	By("verifying quickstart commits for create/update/delete")
+	r.verifyQuickstartConfigMapCommits()
+
+	By("verifying quickstart encrypted Secret commit is decryptable")
+	r.verifyQuickstartSecretEncryption(generatedAgeKey)
+
+	By("verifying invalid credentials provider shows actionable message")
+	r.verifyInvalidProviderActionableMessage()
+}
 
 func quickstartFrameworkEnabled() bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv(quickstartFrameworkEnabledEnv)))
@@ -121,12 +284,19 @@ func quickstartFrameworkMode() string {
 
 func newQuickstartFrameworkRun() quickstartFrameworkRun {
 	testID := strconv.FormatInt(time.Now().UnixNano(), 10)
+	mode := quickstartFrameworkMode()
+
+	// Helm mode uses the exact README demo namespace; other modes stay on a
+	// throwaway per-run namespace.
+	ns := readmeDemoNamespace
+	if mode != "helm" {
+		ns = testNamespaceFor("quickstart-framework")
+	}
+
 	return quickstartFrameworkRun{
-		mode:            quickstartFrameworkMode(),
+		mode:            mode,
+		namespace:       ns,
 		testID:          testID,
-		repoName:        quickstartRepo.RepoName,
-		checkoutDir:     quickstartRepo.CheckoutDir,
-		repoURL:         quickstartRepo.RepoURLHTTP,
 		providerName:    fmt.Sprintf("quickstart-provider-%s", testID),
 		targetName:      fmt.Sprintf("quickstart-target-%s", testID),
 		watchRuleName:   fmt.Sprintf("quickstart-watchrule-%s", testID),
@@ -143,7 +313,7 @@ func (r *quickstartFrameworkRun) setupGiteaRepository() {
 }
 
 func (r *quickstartFrameworkRun) applyQuickstartResources() {
-	qsNamespace := testNamespaceFor("quickstart-framework")
+	qsNamespace := r.namespace
 	createGitProviderWithURLInNamespace(r.providerName, qsNamespace, quickstartRepo.GitSecretHTTP, r.repoURL)
 
 	createGitTargetWithEncryptionOptions(
@@ -173,19 +343,19 @@ func (r *quickstartFrameworkRun) applyQuickstartResources() {
 }
 
 func (r *quickstartFrameworkRun) verifyQuickstartResourcesReady() {
-	ns := testNamespaceFor("quickstart-framework")
+	ns := r.namespace
 	verifyResourceStatus("gitprovider", r.providerName, ns, "True", "Ready", "")
 	verifyResourceCondition("gittarget", r.targetName, ns, "Validated", "True", "OK", "")
 	verifyResourceStatus("watchrule", r.watchRuleName, ns, "True", "Ready", "")
 	waitForStreamsRunning(r.targetName, ns)
 }
 
-func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret() string {
-	ns := testNamespaceFor("quickstart-framework")
+func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret(secretName string) string {
+	ns := r.namespace
 	var generatedAgeKey string
 
 	Eventually(func(g Gomega) {
-		output, err := kubectlRunInNamespace(ns, "get", "secret", r.encryptionName, "-o", "json")
+		output, err := kubectlRunInNamespace(ns, "get", "secret", secretName, "-o", "json")
 		g.Expect(err).NotTo(HaveOccurred())
 
 		var secretObj map[string]interface{}
@@ -220,7 +390,7 @@ func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret() string {
 }
 
 func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
-	ns := testNamespaceFor("quickstart-framework")
+	ns := r.namespace
 	configMapName := fmt.Sprintf("quickstart-config-%s", r.testID)
 	expectedFile := filepath.Join(
 		r.checkoutDir,
@@ -305,7 +475,7 @@ func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
 }
 
 func (r *quickstartFrameworkRun) verifyQuickstartSecretEncryption(generatedAgeKey string) {
-	ns := testNamespaceFor("quickstart-framework")
+	ns := r.namespace
 	secretName := fmt.Sprintf("quickstart-secret-%s", r.testID)
 	secretValueOne := fmt.Sprintf("quickstart-plaintext-one-%s", r.testID)
 	secretValueTwo := fmt.Sprintf("quickstart-plaintext-two-%s", r.testID)
@@ -379,7 +549,7 @@ func (r *quickstartFrameworkRun) verifyQuickstartSecretEncryption(generatedAgeKe
 }
 
 func (r *quickstartFrameworkRun) verifyInvalidProviderActionableMessage() {
-	ns := testNamespaceFor("quickstart-framework")
+	ns := r.namespace
 	Eventually(func(g Gomega) {
 		output, err := kubectlRunInNamespace(ns, "get", "gitprovider", r.invalidProvName, "-o", "json")
 		g.Expect(err).NotTo(HaveOccurred())
