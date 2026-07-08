@@ -41,7 +41,7 @@ var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() 
 	const basePath = "e2e/commit-author-test"
 
 	BeforeAll(func() {
-		if committerOnlyModeEnabled() {
+		if configuredAuthorModeEnabled() {
 			Skip("watch-first configured-author mode has no audit facts for author attribution")
 		}
 

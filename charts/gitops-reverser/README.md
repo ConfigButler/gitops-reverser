@@ -181,7 +181,7 @@ nodeSelector:
 | `quickstart.gitProvider.secretRef.name` | Existing Secret name used by the starter `GitProvider` | `git-creds` |
 | `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget`; set `.` only to deliberately target the repo root | `live-cluster` |
 | `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
-| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty runs `configured-author` with cold-replay on restart; set it for warm-restart cursors, and it is **required** when `servers.admission.enabled` or `attribution.enabled` is true | `""` |
+| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty runs `configured-author` with cold-replay on restart. Set it for warm-restart cursors and for the admission webhook to actually record CommitRequest authors (admission runs as a no-op without it); **required** only when `attribution.enabled=true` | `""` |
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password (only used when `queue.redis.addr` is set) | `""` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
@@ -198,7 +198,6 @@ nodeSelector:
 | `service.ports.audit` | Service port for audit ingress when `attribution.enabled=true` | `9444` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `servers.healthProbe.bindAddress` | Liveness/readiness probe bind address (`--health-probe-bind-address`) | `:8081` |
-| `servers.admission.enabled` | Run the validating admission server hosting the validate-operator-types webhook (captures the CommitRequest submitter as the commit author) | `true` |
 | `servers.admission.port` | Admission webhook container/Service port | `9443` |
 | `servers.admission.timeoutSeconds` | Admission webhook timeout (failurePolicy is Ignore) | `2` |
 | `servers.admission.tls.certManager` | Mint the admission serving cert via cert-manager (false = BYO via `secretNameOverride`) | `true` |

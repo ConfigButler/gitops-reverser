@@ -380,7 +380,7 @@ signed request — Kubernetes object state alone does not identify the human who
 
 | Mode | State source | Redis / audit | Author fidelity | Use |
 |---|---|---|---|---|
-| **Configured-author** | watch | Redis only (no audit webhook) | committer identity | simplest install, state mirror |
+| **Configured-author** | watch | Redis optional (no audit webhook); cold-replay without it | committer identity | simplest install, state mirror |
 | **attributed-author** | watch | Redis + audit webhook | named user/SA on strong match; committer otherwise | recommended target |
 
 The product must not imply configured-author equals attributed-author mode, nor that attributed-author mode recovers
@@ -438,10 +438,10 @@ moved attribution bits), `internal/gate`, `webhook/audit_joiner.go`, the materia
 the late-lane/divert/nudge code. Shrink `audit_handler.go` to fact extraction.
 
 **Stage 4 — Config, wiring, docs.**
-Keep Redis **required** in `cmd/main.go` (a missing `--redis-addr` is a startup error, and the
-readiness gate holds the pod not-ready until Redis is reachable); make only the audit webhook /
-attribution optional via `--author-attribution=false` (configured-author — the audit ingress is not
-started, but Redis still backs the resume cursors). Remove the dead audit-stream flags
+Note: the shipped behavior later relaxed this. Redis is now **optional** in `cmd/main.go` (an empty
+`--redis-addr` is valid and runs configured-author with cold-replay; the readiness gate only applies
+when Redis is configured). The audit webhook / attribution remains optional via
+`--author-attribution=false`; when Redis *is* configured it still backs the resume cursors. Remove the dead audit-stream flags
 (`--audit-redis-max-len`, `--audit-bytype-*`, `--watch-state-stream`, body TTL/wait, etc.). Update the
 Helm chart and `config/` so the audit webhook is opt-out while Redis stays a hard dependency. Rewrite
 `docs/architecture.md` to the watch-first model and document the two operating modes and the

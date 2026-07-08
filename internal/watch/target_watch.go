@@ -689,7 +689,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 // attachAuthor names the commit author for a live watch event from the optional
 // attribution index. The live object still carries its UID and resourceVersion
 // here (sanitize strips them inside targetWatchGitEvent), so the resolver joins on
-// the strongest available key. Committer-only mode (nil resolver) leaves UserInfo
+// the strongest available key. Configured-author mode (nil resolver) leaves UserInfo
 // zero, so the writer authors the commit as the configured committer.
 func (m *Manager) attachAuthor(
 	ctx context.Context,

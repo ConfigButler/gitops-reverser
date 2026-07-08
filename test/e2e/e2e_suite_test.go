@@ -121,7 +121,7 @@ func assertNoAnomalousAuditOutcomes() {
 	_, _ = fmt.Fprintf(GinkgoWriter, "✅ no anomalous audit outcomes (0 error-category events across the run)\n")
 }
 
-func committerOnlyModeEnabled() bool {
+func configuredAuthorModeEnabled() bool {
 	out, err := kubectlRunInNamespace(namespace, "logs", "deployment/gitops-reverser", "--since=30m")
 	if err != nil {
 		return false

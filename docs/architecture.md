@@ -36,10 +36,11 @@ fails; there is no plaintext opt-out.
 `(GitProvider namespace, GitProvider name, branch)` tuple. Multiple `GitTarget`s may share one branch.
 Every write to that branch goes through the worker's single event loop and commit window.
 
-**Redis is a hard dependency — treat it as always available.** The operator wires Valkey/Redis
-unconditionally and stays not-ready until it is reachable. Redis stores watch resume cursors and the small
-coordination records used by attribution, CommitRequest authorship, and HA work; configured-author mode still
-requires Redis.
+**Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
+`helm install` comes up healthy and watches cold-replay on restart. When an endpoint is configured,
+Redis stores watch resume cursors (warm restarts) and the small coordination records used by
+attribution, CommitRequest author capture, and HA. Attributed-author mode requires Redis, and HA will
+require it as the shared store across replicas.
 
 **Audit is an optional attribution lookup.** When attribution is enabled, kube-apiserver posts audit
 events to `/audit-webhook`; the operator extracts a minimal attribution fact (auditID, user, verb,

@@ -148,12 +148,14 @@ if the Secret is missing at install time your first commit can be minutes late; 
 front lets the starter resources go Ready on the first reconcile:
 
 ```bash
-kubectl create namespace gitops-reverser-quickstart-demo
+kubectl create namespace gitops-reverser-quickstart-demo \
+  --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl create secret generic git-creds \
   --namespace gitops-reverser-quickstart-demo \
   --from-file=ssh-privatekey=/tmp/gitops-reverser-key \
-  --from-literal=known_hosts="$(ssh-keyscan github.com 2>/dev/null)"
+  --from-literal=known_hosts="$(ssh-keyscan github.com 2>/dev/null)" \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 SSH host-key verification fails closed, so the `known_hosts` line is required. Existing Flux or Argo CD
@@ -172,14 +174,21 @@ helm install gitops-reverser \
   --namespace gitops-reverser \
   --create-namespace \
   --set quickstart.enabled=true \
-  --set quickstart.gitProvider.url=git@github.com:<org>/<repo>.git
+  --set-string quickstart.gitProvider.url=git@github.com:OWNER/REPO.git
 ```
+
+Replace `OWNER/REPO` with your repository (angle brackets would be parsed by the shell).
 
 This runs without Redis, so warm-restart cursors and author capture (CommitRequest and
 attributed-author) stay inactive; the operator is healthy regardless. To enable them, point it at a
-reachable Valkey/Redis with `--set queue.redis.addr=<host:port>` (add
-`--set queue.redis.auth.existingSecret=<secret>` if it requires auth; see the
+reachable Valkey/Redis with `--set queue.redis.addr=HOST:PORT` (add
+`--set queue.redis.auth.existingSecret=SECRET` if it requires auth; see the
 [chart README](charts/gitops-reverser/README.md)).
+
+The starter `GitTarget` has SOPS encryption enabled, so on first reconcile the controller generates a
+`sops-age-key` Secret in the demo namespace and annotates it with a backup reminder. That is expected;
+it only matters once you mirror `Secret` resources (the demo watches ConfigMaps). Back up that key if
+you keep the demo around.
 
 Check the starter resources become ready:
 
