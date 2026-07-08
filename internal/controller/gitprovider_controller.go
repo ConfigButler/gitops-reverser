@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -94,7 +93,7 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 	r.setProgressingConditions(gitProvider, ReasonChecking, "Validating repository connectivity...")
 	if err := r.validateCommitConfiguration(gitProvider); err != nil {
 		r.setStalledConditions(gitProvider, ReasonCommitConfigInvalid, err.Error())
-		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueLongInterval)
+		result, _ := r.updateStatusAndRequeue(ctx, gitProvider)
 		return result, nil
 	}
 
@@ -109,14 +108,14 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		}
 
 		r.setStalledConditions(gitProvider, reason, err.Error())
-		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueMediumInterval)
+		result, _ := r.updateStatusAndRequeue(ctx, gitProvider)
 		return result, nil
 	}
 
 	// Fetch and validate secret
 	secret, shouldReturn := r.fetchAndValidateSecret(ctx, log, gitProvider)
 	if shouldReturn {
-		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueMediumInterval)
+		result, _ := r.updateStatusAndRequeue(ctx, gitProvider)
 		return result, nil
 	}
 
@@ -190,7 +189,7 @@ func (r *GitProviderReconciler) getAuthFromSecret(
 		secretName := gitProvider.Spec.SecretRef.Name
 		r.setStalledConditions(gitProvider, ReasonSecretMalformed,
 			fmt.Sprintf("Secret '%s' malformed: %v", secretName, err))
-		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueShortInterval)
+		result, _ := r.updateStatusAndRequeue(ctx, gitProvider)
 		return nil, result, true
 	}
 
@@ -225,7 +224,7 @@ func (r *GitProviderReconciler) validateAndUpdateStatus(
 			"url", gitProvider.Spec.URL)
 		r.setStalledConditions(gitProvider, ReasonConnectionFailed,
 			fmt.Sprintf("Failed to connect to repository: %v", err))
-		return r.updateStatusAndRequeue(ctx, gitProvider, RequeueShortInterval)
+		return r.updateStatusAndRequeue(ctx, gitProvider)
 	}
 
 	log.V(1).Info("Repository connectivity validated successfully", "branchCount", branchCount)
@@ -246,8 +245,8 @@ func (r *GitProviderReconciler) validateAndUpdateStatus(
 			"namespace", gitProvider.Namespace,
 			"branchCount", branchCount)
 	})
-	log.V(1).Info("Status update completed successfully, scheduling requeue", "requeueAfter", RequeueLongInterval)
-	return ctrl.Result{RequeueAfter: RequeueLongInterval}, nil
+	log.V(1).Info("Status update completed successfully, scheduling requeue", "requeueAfter", RequeueSteadyInterval)
+	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
 // fetchSecret retrieves the secret containing Git credentials.
@@ -385,16 +384,17 @@ func (r *GitProviderReconciler) setCondition(
 	)
 }
 
-// updateStatusAndRequeue updates the status and returns requeue result.
+// updateStatusAndRequeue updates the status and requeues on the unified control-plane steady
+// interval. The control plane no longer watches Secrets, so every status outcome falls back to
+// this single cadence; see docs/future/secret-value-retention-plan.md.
 func (r *GitProviderReconciler) updateStatusAndRequeue(
 	ctx context.Context,
 	gitProvider *configbutleraiv1alpha3.GitProvider,
-	requeueAfter time.Duration,
 ) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, gitProvider); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions.

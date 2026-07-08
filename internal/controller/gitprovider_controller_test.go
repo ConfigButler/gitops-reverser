@@ -400,7 +400,9 @@ var _ = Describe("GitProvider Controller", func() {
 			})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Minute * 2))
+			// Control-plane reconciles now share one steady fallback cadence; see
+			// docs/future/secret-value-retention-plan.md.
+			Expect(result.RequeueAfter).To(Equal(RequeueSteadyInterval))
 
 			// Verify the resource was updated with failure condition
 			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
@@ -460,7 +462,7 @@ var _ = Describe("GitProvider Controller", func() {
 			})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Minute * 10))
+			Expect(result.RequeueAfter).To(Equal(RequeueSteadyInterval))
 
 			updatedProvider := &configbutleraiv1alpha3.GitProvider{}
 			err = k8sClient.Get(

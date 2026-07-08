@@ -56,12 +56,14 @@ const (
 	// cluster snapshot has been successfully committed to Git.
 	MsgSnapshotCompleted = "Initial snapshot reconciliation completed"
 
-	// RequeueShortInterval is the requeue interval for transient errors.
-	RequeueShortInterval = 2 * time.Minute
-	// RequeueMediumInterval is the requeue interval for auth/secret errors.
-	RequeueMediumInterval = 5 * time.Minute
-	// RequeueLongInterval is the requeue interval for periodic revalidation.
-	RequeueLongInterval = 10 * time.Minute
+	// RequeueSteadyInterval is the unified control-plane periodic reconcile fallback.
+	// The control plane no longer watches Secrets (docs/future/secret-value-retention-plan.md),
+	// so out-of-band credential and age-key changes are picked up on this steady cadence
+	// instead of via a Secret informer. It replaces the former split of a 2-minute
+	// transient-retry, a 5-minute auth/secret, and a 10-minute revalidation interval with
+	// a single 5-minute fallback for the GitProvider, GitTarget, WatchRule, and
+	// ClusterWatchRule reconcilers. The fast stream-settle loop below is separate.
+	RequeueSteadyInterval = 5 * time.Minute
 	// RequeueStreamSettleInterval is the requeue interval while a Ready GitTarget still
 	// has streams pending replay completion. Stream status is computed during reconcile, so
 	// this keeps status.streams fresh while watches converge.

@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -141,7 +140,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			"Target.name must be specified",
 		)
 		r.setRuleStalled(&watchRule, WatchRuleReasonGitDestinationInvalid, "Target.name must be specified")
-		return r.updateStatusAndRequeue(ctx, &watchRule, RequeueShortInterval)
+		return r.updateStatusAndRequeue(ctx, &watchRule)
 	}
 	return r.reconcileWatchRuleViaTarget(ctx, &watchRule)
 }
@@ -182,7 +181,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 			"Referenced GitTarget not found",
 		)
 		r.setRuleStalled(watchRule, WatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
-		return r.updateStatusAndRequeue(ctx, watchRule, RequeueShortInterval)
+		return r.updateStatusAndRequeue(ctx, watchRule)
 	}
 	r.setGitTargetReadyCondition(watchRule, target)
 
@@ -215,7 +214,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 			"Referenced GitProvider not found",
 		)
 		r.setRuleStalled(watchRule, WatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
-		return r.updateStatusAndRequeue(ctx, watchRule, RequeueShortInterval)
+		return r.updateStatusAndRequeue(ctx, watchRule)
 	}
 
 	// Ready check (GitProvider doesn't have status conditions yet in my implementation? I added them)
@@ -263,7 +262,7 @@ func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 		return ctrl.Result{}, err
 	}
 	if conditionIsFalse(watchRule.Status.Conditions, ConditionTypeResourcesResolved) {
-		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+		return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 	}
 	if !conditionIsTrue(watchRule.Status.Conditions, ConditionTypeGitTargetReady) {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
@@ -271,7 +270,7 @@ func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	if !conditionIsTrue(watchRule.Status.Conditions, ConditionTypeStreamsRunning) {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
-	return ctrl.Result{RequeueAfter: RequeueMediumInterval}, nil
+	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
 // setCondition sets or updates the Ready condition.
@@ -370,13 +369,15 @@ func conditionIsFalse(conditions []metav1.Condition, conditionType string) bool 
 	return false
 }
 
-// updateStatusAndRequeue updates the status and returns requeue result.
-func (r *WatchRuleReconciler) updateStatusAndRequeue( //nolint:lll // Function signature
-	ctx context.Context, watchRule *configbutleraiv1alpha3.WatchRule, requeueAfter time.Duration) (ctrl.Result, error) {
+// updateStatusAndRequeue updates the status and requeues on the unified control-plane steady
+// interval. The control plane no longer watches Secrets, so every status outcome falls back to
+// this single cadence; see docs/future/secret-value-retention-plan.md.
+func (r *WatchRuleReconciler) updateStatusAndRequeue(
+	ctx context.Context, watchRule *configbutleraiv1alpha3.WatchRule) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, watchRule); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -384,4 +385,12 @@ func TestDependencyMapFunctionsTolerateListErrors(t *testing.T) {
 	assert.Nil(t, (&WatchRuleReconciler{Client: client}).gitProviderToWatchRules(ctx, provider))
 	assert.Nil(t, (&ClusterWatchRuleReconciler{Client: client}).gitTargetToClusterWatchRules(ctx, target))
 	assert.Nil(t, (&ClusterWatchRuleReconciler{Client: client}).gitProviderToClusterWatchRules(ctx, provider))
+}
+
+// TestRequeueSteadyIntervalIsFiveMinutes locks the unified control-plane periodic reconcile
+// fallback at 5 minutes. After the secret-value-retention change the control plane no longer
+// watches Secrets, so out-of-band credential and age-key rotations are picked up on this steady
+// cadence rather than by a Secret informer. See docs/future/secret-value-retention-plan.md.
+func TestRequeueSteadyIntervalIsFiveMinutes(t *testing.T) {
+	assert.Equal(t, 5*time.Minute, RequeueSteadyInterval)
 }

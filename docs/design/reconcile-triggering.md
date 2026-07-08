@@ -28,23 +28,33 @@ Facts first, then the fix, then the gaps, then the toolbox.
 | Constant | Value |
 |---|---|
 | `RequeueStreamSettleInterval` | 10 s |
-| `RequeueShortInterval` | 2 min |
-| `RequeueMediumInterval` | 5 min |
-| `RequeueLongInterval` | 10 min |
+| `RequeueSteadyInterval` | 5 min |
+
+> **Update (2026-07-07, secret-value-retention):** the former `RequeueShortInterval`
+> (2 min), `RequeueMediumInterval` (5 min), and `RequeueLongInterval` (10 min) collapsed
+> into a single 5-minute `RequeueSteadyInterval`. The control plane no longer watches
+> Secrets, so out-of-band credential/age-key changes are picked up on this unified steady
+> cadence instead of via a Secret informer. Where the narrative below says "up to 10
+> minutes," read 5 minutes. See
+> [`future/secret-value-retention-plan.md`](../future/secret-value-retention-plan.md).
 
 ### 1.2 Per-controller triggers
 
 | Controller | Watches (besides `For`) | Predicate | Happy-path requeue | Data-plane edge |
 |---|---|---|---|---|
-| **GitProvider** | *(none)* | `GenerationChanged` on self | 10 min | ❌ |
-| **GitTarget** | Secret, GitProvider, WatchRule, ClusterWatchRule | `GenerationChanged` on deps | 10 min | ✅ GitPath channel (new) |
+| **GitProvider** | *(none)* | `GenerationChanged` on self | 5 min | ❌ |
+| **GitTarget** | GitProvider, WatchRule, ClusterWatchRule | `GenerationChanged` on deps | 5 min | ✅ GitPath channel (new) |
 | **WatchRule** | GitTarget, GitProvider | `GenerationChanged` | 5 min | ❌ |
 | **ClusterWatchRule** | GitTarget, GitProvider | `GenerationChanged` | 5 min | ❌ |
 | **CommitRequest** | *(none)* | — | polls every 2 s | polls worker, no push |
 
-Sources: `gitprovider_controller.go:428`, `gittarget_controller.go:967`,
-`watchrule_controller.go:458`, `clusterwatchrule_controller.go:455`,
-`commitrequest_controller.go:377`.
+The GitTarget no longer watches Secrets: the encryption-Secret watch was removed so the
+process stops retaining every Secret value in the cluster; generated-age-Secret recovery
+and out-of-band age-key updates ride the 5-minute reconcile instead.
+
+Sources: `gitprovider_controller.go`, `gittarget_controller.go`,
+`watchrule_controller.go`, `clusterwatchrule_controller.go`,
+`commitrequest_controller.go`.
 
 ### 1.3 Two structural consequences
 
@@ -136,19 +146,24 @@ already exists; only the push edge is missing. A nudge would replace the poll.
 ### Gap B — control-plane status does not propagate to dependents
 
 **B1. WatchRule / ClusterWatchRule lag their GitTarget/GitProvider.** They watch
-those deps with `GenerationChangedPredicate` (`watchrule_controller.go:465`,
-`clusterwatchrule_controller.go:463`), so when a GitTarget flips to refused or a
+those deps with `GenerationChangedPredicate`, so when a GitTarget flips to refused or a
 GitProvider goes `Ready=False` (status-only changes), the rules do **not**
 re-reconcile; their projected `GitTargetReady` dependency condition is stale for up
-to `RequeueMediumInterval` (5 min).
+to `RequeueSteadyInterval` (5 min).
 
 ### Gap C — missing dependency watches
 
 **C1. GitProvider does not watch its credentials Secret.** `SetupWithManager` is
-`For(GitProvider)` only (`gitprovider_controller.go:428`). A rotated or corrected
-Git credentials Secret is not picked up until the 10-minute requeue, so
-`Ready=False (ConnectionFailed)` lingers after the fix. (GitTarget watches Secrets
-for *encryption*, but no controller watches the *auth* Secret.)
+`For(GitProvider)` only. A rotated or corrected Git credentials Secret is not picked up
+until the 5-minute steady requeue, so `Ready=False (ConnectionFailed)` lingers that long.
+
+> **Superseded (2026-07-07, secret-value-retention):** not watching the auth Secret is now a
+> deliberate least-privilege choice, not a gap to fix with a Secret watch. The control plane
+> reads credential and age-key Secrets directly by name and relies on the 5-minute
+> `RequeueSteadyInterval` to pick up rotations; the GitTarget's former encryption-Secret watch
+> was also removed. Adding a Secret watch would reintroduce cluster-wide Secret retention. See
+> [`future/secret-value-retention-plan.md`](../future/secret-value-retention-plan.md). The
+> §5 recommendation to "watch the auth Secret" below is retained only as historical context.
 
 ---
 

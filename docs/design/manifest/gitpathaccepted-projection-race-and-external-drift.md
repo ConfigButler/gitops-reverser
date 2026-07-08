@@ -25,6 +25,16 @@ is and is not the cause, then the design direction.
 
 ## 1. Facts and observations (no interpretation yet)
 
+> **Update (2026-07-07, secret-value-retention):** §1 is a point-in-time snapshot of the
+> code at investigation time. Two facts below have since changed. (1) The GitTarget
+> control-plane **Secret watch was removed**, so `SetupWithManager` now watches
+> `GitProvider`, `WatchRule`, and `ClusterWatchRule` — not `Secret` (§1.5). (2) The
+> `RequeueShortInterval`/`RequeueLongInterval` split (2 min / 10 min) collapsed into a single
+> 5-minute `RequeueSteadyInterval`, so the happy-path GitTarget reconcile requeues after
+> **5 minutes, not 10** (§1.5, §2). The projection-race analysis and its GitPath-channel fix
+> are otherwise unaffected. See
+> [`../../future/secret-value-retention-plan.md`](../../future/secret-value-retention-plan.md).
+
 ### 1.1 The failure
 
 CI run [`28331751067`](https://github.com/ConfigButler/gitops-reverser/actions/runs/28331751067)

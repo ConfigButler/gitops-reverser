@@ -1052,13 +1052,17 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 		return fmt.Errorf("get GitProvider: %w", err)
 	}
 
-	auth, err := getAuthFromSecret(w.ctx, w.Client, provider, w.sshHostKeys)
-	if err != nil {
-		return fmt.Errorf("resolve auth: %w", err)
-	}
-
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
 	if !hasPendingCommits {
+		// Resolve credentials only on the first commit of a push cycle — the one branch
+		// that touches the remote (PrepareBranch fetches the tip). Later commits in the
+		// same cycle build on the local repo and never use auth, so re-reading the
+		// credentials Secret here would be a wasted API GET per commit now that the
+		// Secret cache is disabled. See docs/future/secret-value-retention-plan.md §5.
+		auth, err := getAuthFromSecret(w.ctx, w.Client, provider, w.sshHostKeys)
+		if err != nil {
+			return fmt.Errorf("resolve auth: %w", err)
+		}
 		pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 		if err != nil {
 			return fmt.Errorf("prepare repository: %w", err)
