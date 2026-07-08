@@ -182,7 +182,7 @@ queue:
 
 # Commit-author attribution from audit facts. Off by default so first-time installs can prove the
 # Kubernetes-to-Git workflow without kube-apiserver audit webhook configuration. With it off, the
-# operator runs committer-only (still requires Redis), and every mirrored-resource commit uses the
+# operator runs committer-only (Redis optional — leave queue.redis.addr empty to run without it), and every mirrored-resource commit uses the
 # configured committer.
 attribution:
   # When true, run the audit webhook ingress and name commit authors from matching audit facts; requires

@@ -462,6 +462,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return appConfig{}, err
 	}
+	cfg.redisAddr = strings.TrimSpace(cfg.redisAddr)
 	if err := validateAuditConfig(cfg); err != nil {
 		return appConfig{}, err
 	}

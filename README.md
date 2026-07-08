@@ -75,7 +75,7 @@ Capturing objects served by an **aggregated API server** is supported through th
 
 ### Operating modes
 
-Every install needs the same base: Kubernetes watch/RBAC access, **Valkey/Redis** (watch resume state),
+Every install needs the same base: Kubernetes watch/RBAC access,
 Git credentials, and cert-manager. The only thing that varies is **author attribution**:
 
 | Mode | Attribution | Additionally needs | Commit author |
@@ -156,11 +156,23 @@ helm install valkey valkey/valkey --version 0.9.3 --namespace gitops-reverser \
 
 **3. Install GitOps Reverser**
 
+With Valkey (warm restarts — watches resume from last cursor):
+
 ```bash
 helm install gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
   --namespace gitops-reverser \
   --create-namespace
+```
+
+Without Valkey (committer-only mode — watches cold-replay on restart):
+
+```bash
+helm install gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser \
+  --create-namespace \
+  --set queue.redis.addr=""
 ```
 
 **4. Create Git credentials**
