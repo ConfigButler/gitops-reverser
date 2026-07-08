@@ -124,19 +124,30 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, 750*time.Millisecond, cfg.attributionGrace)
 }
 
-func TestParseFlagsWithArgs_RedisAddrRequired(t *testing.T) {
+func TestParseFlagsWithArgs_RedisAddrRequiredWhenAttributionEnabled(t *testing.T) {
 	fs := flag.NewFlagSet("test-redis-required", flag.ContinueOnError)
-	// Redis/Valkey holds each GitTarget's watch resume cursors, so an empty redis-addr is a
-	// hard error in every mode — committer-only disables attribution, it does not drop Redis.
+	// Default --author-attribution=true, so an empty redis-addr must be rejected.
 	_, err := parseFlagsWithArgs(fs, []string{"--redis-addr="})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "redis-addr is required")
+	assert.Contains(t, err.Error(), "redis-addr is required when author-attribution is enabled")
+}
+
+func TestParseFlagsWithArgs_CommitterOnlyNoRedis(t *testing.T) {
+	fs := flag.NewFlagSet("test-committer-only-no-redis", flag.ContinueOnError)
+	// Committer-only mode with no Redis: watches cold-replay on restart, no attribution.
+	cfg, err := parseFlagsWithArgs(fs, []string{
+		"--author-attribution=false",
+		"--redis-addr=",
+	})
+	require.NoError(t, err)
+	assert.False(t, cfg.authorAttribution)
+	assert.Empty(t, cfg.redisAddr)
 }
 
 func TestParseFlagsWithArgs_CommitterOnlyDisablesAttribution(t *testing.T) {
 	fs := flag.NewFlagSet("test-committer-only", flag.ContinueOnError)
-	// Committer-only = attribution off, Redis still required (default addr). The audit ingress server
-	// is not started, so its TLS / client-CA settings need not be configured.
+	// Committer-only = attribution off, Redis still configured (default addr). The audit ingress
+	// server is not started, so its TLS / client-CA settings need not be configured.
 	cfg, err := parseFlagsWithArgs(fs, []string{
 		"--author-attribution=false",
 		"--audit-client-ca-path=",
@@ -213,6 +224,10 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "missing admission webhook cert path",
 			args: []string{"--admission-webhook", "--admission-webhook-cert-path="},
+		},
+		{
+			name: "admission webhook without redis",
+			args: []string{"--admission-webhook", "--admission-webhook-cert-path=/tmp/certs", "--redis-addr="},
 		},
 	}
 

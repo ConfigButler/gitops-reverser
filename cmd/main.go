@@ -173,23 +173,28 @@ func main() {
 		WatchManager: watchMgr,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
-	// Valkey/Redis is a required dependency: it holds each GitTarget's watch resume cursors so work is
-	// re-picked up exactly where it left off after a restart or reconnect, and it underpins HA and the
-	// planned durable branch-worker queue. The cursor store is always wired and the readiness gate keeps
-	// the pod not-ready until Redis is reachable. Author attribution is a separate optional layer built
-	// on the same connection only when enabled (see below) — the store itself never depends on it.
-	redisStore, err := queue.NewRedisStore(queue.RedisStoreConfig{
-		Addr:       cfg.redisAddr,
-		Username:   cfg.redisUsername,
-		AuthValue:  cfg.redisPassword,
-		DB:         cfg.redisDB,
-		TLSEnabled: !cfg.redisInsecure,
-	})
-	fatalIfErr(err, "unable to build Redis cursor store")
-	watchMgr.WatchCursorStore = redisStore
+	// Valkey/Redis is optional. When configured it holds each GitTarget's watch resume cursor so work
+	// is re-picked up exactly where it left off after a restart or reconnect. When not configured the
+	// WatchCursorStore stays nil and watches cold-replay from scratch on restart instead of resuming.
+	// Author attribution and the admission webhook both require Redis; validation has already rejected
+	// those combinations when redis-addr is empty.
+	var redisStore *queue.RedisStore
+	var redisGate *redisReadinessGate
+	if cfg.redisAddr != "" {
+		var err error
+		redisStore, err = queue.NewRedisStore(queue.RedisStoreConfig{
+			Addr:       cfg.redisAddr,
+			Username:   cfg.redisUsername,
+			AuthValue:  cfg.redisPassword,
+			DB:         cfg.redisDB,
+			TLSEnabled: !cfg.redisInsecure,
+		})
+		fatalIfErr(err, "unable to build Redis cursor store")
+		watchMgr.WatchCursorStore = redisStore
 
-	redisGate := newRedisReadinessGate(redisStore)
-	fatalIfErr(mgr.Add(redisGate), "unable to add redis readiness gate")
+		redisGate = newRedisReadinessGate(redisStore)
+		fatalIfErr(mgr.Add(redisGate), "unable to add redis readiness gate")
+	}
 
 	// Optional author attribution. When enabled, the attribution index is built on the Redis connection,
 	// the audit webhook records minimal facts, and live watch events are author-attributed when a fact
@@ -200,7 +205,8 @@ func main() {
 		auditCertWatcher *certwatcher.CertWatcher
 		attributionIndex *queue.AttributionIndex
 	)
-	if cfg.authorAttribution {
+	switch {
+	case cfg.authorAttribution:
 		attributionIndex = redisStore.AttributionIndex(cfg.attributionFactTTL)
 
 		auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
@@ -221,9 +227,11 @@ func main() {
 		)
 		setupLog.Info("author attribution enabled: matched audit facts name the commit author",
 			"redisAddr", cfg.redisAddr, "grace", cfg.attributionGrace.String())
-	} else {
+	case cfg.redisAddr != "":
 		setupLog.Info("committer-only mode: author attribution disabled; commits use the configured "+
 			"committer identity", "redisAddr", cfg.redisAddr)
+	default:
+		setupLog.Info("committer-only mode: no Redis configured; attribution disabled, watches cold-replay on restart")
 	}
 
 	// Setup watch manager (must be after controllers are set up)
@@ -396,8 +404,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.DurationVar(&cfg.auditIdleTimeout, "audit-idle-timeout", defaultAuditIdleTimeout,
 		"Idle timeout for the audit ingress HTTPS server (duration string; default 60s).")
 	fs.StringVar(&cfg.redisAddr, "redis-addr", "valkey:6379",
-		"Redis/Valkey address (host:port). Required — it holds each GitTarget's watch resume cursors "+
-			"(state continuity), and, when author attribution is enabled, the attribution facts.")
+		"Redis/Valkey address (host:port). Holds each GitTarget's watch resume cursors (state continuity) "+
+			"and, when author attribution is enabled, the attribution facts. Leave empty to run without "+
+			"Redis: watches cold-replay on restart instead of resuming. Incompatible with "+
+			"--author-attribution=true or --admission-webhook.")
 	fs.BoolVar(&cfg.authorAttribution, "author-attribution", true,
 		"Name the real actor (human or service account) who caused each change as the Git commit author, "+
 			"resolved from matching audit facts; this runs the audit webhook ingress (default true). When "+
@@ -501,17 +511,19 @@ func validateAuditConfig(cfg appConfig) error {
 	if cfg.attributionFactTTL <= 0 {
 		return fmt.Errorf("author-attribution-ttl must be > 0, got %s", cfg.attributionFactTTL)
 	}
-	// Redis/Valkey is required in every mode: it holds each GitTarget's watch resume cursors. This is
-	// independent of author attribution, which only adds commit-author naming on top.
-	if strings.TrimSpace(cfg.redisAddr) == "" {
-		return errors.New("redis-addr is required: Valkey/Redis holds each GitTarget's watch resume cursors")
-	}
 	if cfg.redisDB < 0 {
 		return fmt.Errorf("redis-db must be >= 0, got %d", cfg.redisDB)
 	}
+	if strings.TrimSpace(cfg.redisAddr) == "" {
+		if cfg.authorAttribution {
+			return errors.New("redis-addr is required when author-attribution is enabled")
+		}
+		// Committer-only mode with no Redis: watches cold-replay on restart, attribution is off.
+		return nil
+	}
 	if !cfg.authorAttribution {
-		// Committer-only mode: the audit ingress server is not started, so its server/TLS settings
-		// are irrelevant. Redis is still required and was validated above.
+		// Committer-only mode with Redis configured: the audit ingress server is not started, so its
+		// server/TLS settings are irrelevant.
 		return nil
 	}
 	if _, _, err := splitBindAddress(cfg.auditBindAddress); err != nil {
@@ -538,6 +550,10 @@ func validateAuditConfig(cfg appConfig) error {
 func validateAdmissionWebhookConfig(cfg appConfig) error {
 	if !cfg.admissionWebhookEnabled {
 		return nil
+	}
+	if strings.TrimSpace(cfg.redisAddr) == "" {
+		return errors.New("redis-addr is required when the admission webhook is enabled: " +
+			"command authorship requires Redis")
 	}
 	if _, _, err := splitBindAddress(cfg.admissionWebhookBindAddress); err != nil {
 		return fmt.Errorf("invalid admission-webhook-bind-address %q: %w", cfg.admissionWebhookBindAddress, err)
