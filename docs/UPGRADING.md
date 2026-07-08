@@ -37,7 +37,9 @@ The chart default for `attribution.enabled` changed from `true` to `false`. A de
 renders the audit receiver Service or audit TLS Secrets, and mirrored-resource commits are authored by
 the configured committer identity.
 
-Redis/Valkey is still required. It stores each `GitTarget`'s watch resume cursors in both modes.
+Redis/Valkey is optional in committer-only mode. Set `--redis-addr` to store watch resume cursors (warm
+restart); leave it empty to cold-replay from scratch on restart. Attribution mode still requires a
+non-empty `--redis-addr`.
 
 **Migration**
 

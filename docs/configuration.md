@@ -679,11 +679,12 @@ author to each watch event by matching a fact (by resourceVersion/UID) within a 
 The same Redis connection also stores per-watch resume cursors, so short reconnects can resume a normal
 watch from the last processed resourceVersion when the apiserver can still serve that history.
 
-Redis/Valkey is **required**: it stores each GitTarget's watch resume cursors (state continuity, so a
-restart or reconnect resumes where it left off), and when attribution is enabled it also stores the audit
-facts. The Helm chart defaults to **committer-only** (`attribution.enabled: false`): the audit webhook is
-unused and every mirrored-resource commit is authored by the configured committer. Redis stays required
-either way.
+Valkey/Redis is **optional in committer-only mode**: when `--redis-addr` is set, watch resume cursors are
+stored so restarts pick up where they left off; when left empty, watches cold-replay from scratch on
+restart instead. When author attribution is enabled (`--author-attribution=true`), a non-empty
+`--redis-addr` is required — attribution facts and resume cursors both use the same connection. The Helm
+chart defaults to **committer-only** (`attribution.enabled: false`): the audit webhook is unused and every
+mirrored-resource commit is authored by the configured committer.
 
 ```yaml
 queue:

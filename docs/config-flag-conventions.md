@@ -120,7 +120,7 @@ tells the operator how to fix it, not just what's wrong. Flux and our own
 say so *and* explain what it is for:
 
 ```
-redis-addr is required: Valkey/Redis holds each GitTarget's watch resume cursors
+redis-addr is required when author-attribution is enabled
 ```
 
 ## Boolean help-text checklist
@@ -132,7 +132,7 @@ Before merging a new or renamed boolean flag, confirm:
 - [ ] Help text states the default explicitly.
 - [ ] Default is the value a careful operator would pick blind.
 - [ ] Flag shares its prefix with the rest of its component's flags.
-- [ ] Any required-dependency caveat that survives the "off" state is spelled out (e.g. "Redis is still required").
+- [ ] Any required-dependency caveat that survives the "off" state is spelled out (e.g. "Redis is required when attribution is enabled").
 
 ## Numbers, durations, and sizes — five more rules
 

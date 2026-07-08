@@ -1026,8 +1026,11 @@ flowchart TD
     D --> E[Create WorkerManager + register Runnable]
     E --> F[Create Watch Manager + EventRouter; inject TypeRegistry]
     F --> G[Register WatchRule + ClusterWatchRule controllers]
-    G --> H[Create Redis cursor store + wire WatchCursorStore + readiness gate - required]
-    H --> Hq{author-attribution?}
+    G --> H{redis-addr set?}
+    H -->|yes| Hi[Create Redis cursor store + wire WatchCursorStore + readiness gate]
+    H -->|no| Hj[Skip Redis — WatchCursorStore nil; watches cold-replay on restart]
+    Hi --> Hq{author-attribution?}
+    Hj --> Hq
     Hq -->|yes| I[Build attribution index + audit fact extractor + audit HTTP server + resolver]
     Hq -->|no| J[Committer-only: no attribution index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
@@ -1037,13 +1040,14 @@ flowchart TD
     M --> N[mgr.Start]
 ```
 
-Redis is required: the cursor store is wired unconditionally and a Redis readiness gate keeps the pod
-not-ready until Redis is reachable. With `--author-attribution` on (the default), the attribution index is
-built on the Redis connection, the audit HTTP handler is wired with the fact extractor, the watch manager
-gets the author resolver, the CommitRequest controller gets the index as its `AuthorLookup`, and the audit
+Redis is optional in committer-only mode. When `--redis-addr` is set, the cursor store is wired and a
+Redis readiness gate keeps the pod not-ready until Redis is reachable; watches resume from their last
+stored resourceVersion after a restart. When `--redis-addr` is empty, the cursor store is skipped and
+watches cold-replay from scratch on restart instead. With `--author-attribution` on (the default), a
+non-empty `--redis-addr` is required: the attribution index is built on the Redis connection, the audit
+HTTP handler is wired with the fact extractor, the watch manager gets the author resolver, and the audit
 ingress is added to `/readyz`. With `--author-attribution=false` (committer-only) no attribution index is
-built and the audit webhook is skipped entirely; every commit is committer-authored. Redis stays required
-either way.
+built and the audit webhook is skipped entirely; every commit is committer-authored.
 
 ***
 
