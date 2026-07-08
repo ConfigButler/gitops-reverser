@@ -160,11 +160,13 @@ servers:
         # Leave empty to use the chart-generated Secret name.
         secretNameOverride: ""
 
-# Redis/Valkey is a required dependency: it holds each GitTarget's watch resume cursors (so work is
-# re-picked up after a restart/reconnect) and, when attribution is enabled, the audit attribution facts.
+# Redis/Valkey holds each GitTarget's watch resume cursors (warm restart) and, when attribution is
+# enabled, the audit attribution facts. Optional in committer-only mode: leave addr empty to run without
+# Redis (watches cold-replay on restart). Required when attribution.enabled is true.
 queue:
   redis:
-    # Redis/Valkey endpoint (host:port). Required — the operator refuses to start without it.
+    # Redis/Valkey endpoint (host:port). Leave empty to run without Redis in committer-only mode;
+    # required when attribution.enabled is true.
     addr: "valkey:6379"
     auth:
       # Pre-existing Secret (same namespace) holding the Redis password. Create it before install;
@@ -183,8 +185,9 @@ queue:
 # operator runs committer-only (still requires Redis), and every mirrored-resource commit uses the
 # configured committer.
 attribution:
-  # When true, run the audit webhook ingress and name commit authors from matching audit facts. When
-  # false, run committer-only (no audit ingress, commits authored by the committer); Redis stays required.
+  # When true, run the audit webhook ingress and name commit authors from matching audit facts; requires
+  # a non-empty queue.redis.addr. When false, run committer-only (no audit ingress, commits authored by
+  # the committer); Redis is optional (leave queue.redis.addr empty to run without it).
   enabled: false
   # How long an attribution fact is retained waiting for the matching watch event to join it.
   ttl: "10m"

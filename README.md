@@ -49,8 +49,9 @@ simpler for other teams.
 
 > **Author attribution** is the only optional capability: it needs kube-apiserver audit delivery, which
 > managed control planes (EKS/GKE/AKS) generally do not expose. Without it the operator still mirrors
-> state, with commits authored by the configured committer. **Valkey/Redis is required either way** — it
-> holds each GitTarget's watch resume state so work is re-picked up after a restart or reconnect.
+> state, with commits authored by the configured committer. Valkey/Redis is optional in committer-only
+> mode: when `--redis-addr` is set, watch resume cursors are stored so restarts pick up where they left
+> off; when left empty, watches cold-replay from scratch on restart.
 
 ## How it works
 
@@ -137,7 +138,7 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
 ```
 
-**2. Install Valkey with auth** *(required — both modes)*
+**2. Install Valkey with auth** *(required for author attribution; optional in committer-only mode)*
 
 ```bash
 kubectl create namespace gitops-reverser
