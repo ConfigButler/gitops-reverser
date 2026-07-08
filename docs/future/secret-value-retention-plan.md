@@ -1,11 +1,22 @@
 # Stop retaining Secret values
 
-> Status: implementation plan.
-> Date: 2026-07-07
+> Status: **implemented** (steps 1–6) in PR
+> [#208](https://github.com/ConfigButler/gitops-reverser/pull/208). Step 7 (publish
+> recipients as metadata) remains future work.
+> Date: 2026-07-07 (implemented 2026-07-08).
 > Roadmap: [Secret handling roadmap](secret-handling-roadmap.md).
 > Scope: remove full Secret values from the controller-runtime cache, keep direct reads
 > fresh, drop control-plane Secret watches, and remove private age identities from the SOPS
 > encrypt path.
+
+> **What shipped.** The manager sets `Client.Cache.DisableFor: corev1.Secret`, so typed
+> Secret reads bypass the cache and no informer retains Secret values. The GitTarget
+> control-plane Secret watch was removed. The short/medium/long requeue intervals collapsed
+> into one 5-minute `RequeueSteadyInterval`. The SOPS write path carries public age
+> recipients only — no `SOPS_AGE_KEY_FILE`, no identity temp file, no blanket Secret-data
+> env. And (step 5) the branch worker resolves Git credentials once per push cycle instead
+> of per commit. RBAC narrowing is deliberately **not** part of this — it stays in
+> [scoped-rbac-least-privilege-plan.md](scoped-rbac-least-privilege-plan.md).
 
 ## Summary
 
@@ -238,12 +249,17 @@ reactivity only and must not reintroduce a full Secret value cache.
 
 ## Done
 
-This plan is complete when:
+All of the following are met as of PR
+[#208](https://github.com/ConfigButler/gitops-reverser/pull/208):
 
-- no full-object Secret informer is created by the manager;
-- no Secret metadata informer is created by default;
-- typed Secret reads bypass the cache;
-- control-plane controllers use a 5-minute fallback reconcile for external changes;
-- SOPS encryption no longer receives private age identities;
-- docs clearly state the default mode needs Secret `get` for inputs, not Secret
-  `list/watch`.
+- [x] no full-object Secret informer is created by the manager;
+- [x] no Secret metadata informer is created by default;
+- [x] typed Secret reads bypass the cache;
+- [x] control-plane controllers use a 5-minute fallback reconcile for external changes;
+- [x] SOPS encryption no longer receives private age identities;
+- [x] docs clearly state the default mode needs Secret `get` for inputs, not Secret
+  `list/watch` (see [../security-model.md](../security-model.md)).
+
+Note this is a **runtime** milestone: the default install still *grants* `secrets
+get;list;watch` — narrowing that grant is tracked separately in
+[scoped-rbac-least-privilege-plan.md](scoped-rbac-least-privilege-plan.md).

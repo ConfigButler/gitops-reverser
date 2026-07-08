@@ -1,7 +1,13 @@
 # Scoped RBAC and least-privilege install
 
-> Status: design plan.
-> Date: 2026-07-07
+> Status: design plan — **not started** (this is Track B). Its runtime prerequisites
+> (stop retaining Secret values, drop control-plane Secret watches, 5-minute reconcile
+> fallback) shipped in PR
+> [#208](https://github.com/ConfigButler/gitops-reverser/pull/208), so the runtime no longer
+> *needs* Secret `list/watch` for controller-owned inputs. What remains is the packaging/RBAC
+> work below: the default install still *grants* the broad Secret permission and the
+> `*/* get,list,watch` wildcard.
+> Date: 2026-07-07 (updated 2026-07-08).
 > Roadmap: [Secret handling roadmap](secret-handling-roadmap.md).
 > Related issue: [#205](https://github.com/ConfigButler/gitops-reverser/issues/205).
 
@@ -35,11 +41,11 @@ The reported use case is narrower than the default product model:
 The right answer is not only `--secret-namespaces`. That flag name also implies a scoped
 value cache, which is not the target after the retention cleanup. The better plan is:
 
-1. stop retaining Secret values in the controller process;
-2. drop control-plane Secret watches and use a 5-minute reconcile fallback;
-3. add a mode that refuses to mirror Secrets;
-4. support BYO-RBAC without the wildcard;
-5. generate the narrow RBAC needed for a specific install.
+1. ✅ stop retaining Secret values in the controller process (PR #208);
+2. ✅ drop control-plane Secret watches and use a 5-minute reconcile fallback (PR #208);
+3. ⬜ add a mode that refuses to mirror Secrets;
+4. ⬜ support BYO-RBAC without the wildcard;
+5. ⬜ generate the narrow RBAC needed for a specific install.
 
 ## Current RBAC sources
 

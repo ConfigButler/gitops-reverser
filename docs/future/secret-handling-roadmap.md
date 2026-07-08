@@ -1,11 +1,20 @@
 # Secret handling roadmap
 
-> Status: roadmap.
-> Date: 2026-07-07
+> Status: roadmap. **Track A (process/crypto exposure) is implemented; Track B (RBAC blast
+> radius) is not started.**
+> Date: 2026-07-07 (updated 2026-07-08).
 > Related issue: [#205](https://github.com/ConfigButler/gitops-reverser/issues/205).
 > Detailed plans:
 > [Secret value retention](secret-value-retention-plan.md) and
 > [Scoped RBAC and least-privilege install](scoped-rbac-least-privilege-plan.md).
+
+> **Progress.** PR [#208](https://github.com/ConfigButler/gitops-reverser/pull/208)
+> delivered Track A: the controller no longer retains Secret values in memory, no longer
+> watches Secrets on the control plane, reconciles on a unified 5-minute fallback, and keeps
+> the SOPS write path public-recipient-only. This closes the **process-exposure** and
+> **rotation-reaction** axes of the table below. The **RBAC blast radius** axis — the literal
+> "limit secrets permissions" ask in #205 — is Track B and still open: the default install
+> still grants `secrets get;list;watch` plus the dynamic-watch wildcard.
 
 ## Why this exists
 
@@ -73,26 +82,29 @@ This is what reduces what the ServiceAccount is allowed to read.
 
 ## Recommended order
 
-1. **Stop value caching and drop Secret dependency watches.**
-   Implement the small controller/client changes in
+Steps 1–3 are **done** (PR
+[#208](https://github.com/ConfigButler/gitops-reverser/pull/208)); steps 4–6 are Track B and
+**not started**; step 7 is optional and not needed while the 5-minute fallback suffices.
+
+1. ✅ **Stop value caching and drop Secret dependency watches.**
+   Implemented the small controller/client changes in
    [secret-value-retention-plan.md](secret-value-retention-plan.md). This makes Secret
    `list/watch` unnecessary for controller-owned inputs; packaging cleanup follows in the
    RBAC track.
-2. **Remove private age identity handling from the encrypt path.**
-   Keep SOPS encryption public-recipient only. This is a small deletion with a strong
-   security payoff.
-3. **Set control-plane reconcile fallback to 5 minutes.**
-   Use 5 minutes as the common periodic reconcile cadence for control-plane controllers
-   after removing Secret watches.
-4. **Add `--exclude-resources=secrets` or equivalent.**
+2. ✅ **Remove private age identity handling from the encrypt path.**
+   SOPS encryption is now public-recipient only. Small deletion, strong security payoff.
+3. ✅ **Set control-plane reconcile fallback to 5 minutes.**
+   `RequeueSteadyInterval` is now the common periodic reconcile cadence for control-plane
+   controllers after removing Secret watches.
+4. ⬜ **Add `--exclude-resources=secrets` or equivalent.**
    This lets an install say: Git credentials are controller input; Kubernetes Secrets are
    not mirrored output.
-5. **Document BYO-RBAC and add permission-aware followability.**
+5. ⬜ **Document BYO-RBAC and add permission-aware followability.**
    This makes hand-narrowed RBAC predictable.
-6. **Add an RBAC generator.**
+6. ⬜ **Add an RBAC generator.**
    Generate the narrow role set from `GitProvider`, `GitTarget`, `WatchRule`, and
    `ClusterWatchRule` manifests.
-7. **Optional: add Secret metadata watches for faster rotation.**
+7. ⬜ **Optional: add Secret metadata watches for faster rotation.**
    Do this only if the 5-minute fallback is not responsive enough. Prefer a namespace set
    derived from manifests or generated Helm values before adding a runtime flag.
 
