@@ -42,6 +42,8 @@ type CommandAuthor struct {
 type CommandAuthorStore struct {
 	client *redis.Client
 	ttl    time.Duration
+	// keyPrefix is the root namespace shared with the RedisStore that built this store.
+	keyPrefix string
 }
 
 // RecordCommandAuthor is the admission-side write: capture the authenticated submitter
@@ -78,5 +80,5 @@ func (s *CommandAuthorStore) LookupCommandAuthor(
 // key identifies the command by UID alone — globally unique, like the watch cursor key,
 // so namespace/name/kind would be redundant (kept out for a tight key).
 func (s *CommandAuthorStore) key(uid types.UID) string {
-	return keyPrefix + commandAuthorKeySuffix + escapeKeyField(string(uid))
+	return resolveKeyPrefix(s.keyPrefix) + commandAuthorKeySuffix + escapeKeyField(string(uid))
 }

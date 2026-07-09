@@ -34,6 +34,11 @@ type RedisStoreConfig struct {
 	AuthValue  string
 	DB         int
 	TLSEnabled bool
+	// KeyPrefix is the root namespace for every key this connection's stores own. Empty
+	// means DefaultKeyPrefix. Several reversers can then share one Redis/Valkey without
+	// sharing a logical database — Redis offers only 16 of those, and --redis-db was the
+	// only separator this operator provided.
+	KeyPrefix string
 }
 
 // RedisStore is the required Redis/Valkey-backed store. It owns the connection and
@@ -42,7 +47,8 @@ type RedisStoreConfig struct {
 // and knows nothing about attribution: author attribution is an optional layer built
 // on the same connection via AttributionIndex.
 type RedisStore struct {
-	client *redis.Client
+	client    *redis.Client
+	keyPrefix string
 }
 
 // NewRedisStore opens the Redis/Valkey connection that backs the resume cursors.
@@ -61,7 +67,13 @@ func NewRedisStore(cfg RedisStoreConfig) (*RedisStore, error) {
 		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 
-	return &RedisStore{client: redis.NewClient(options)}, nil
+	return &RedisStore{client: redis.NewClient(options), keyPrefix: resolveKeyPrefix(cfg.KeyPrefix)}, nil
+}
+
+// KeyPrefix returns the root namespace every key this store's family owns is written
+// under. Reported at startup so an operator can confirm which keyspace a pod claims.
+func (s *RedisStore) KeyPrefix() string {
+	return s.keyPrefix
 }
 
 // AttributionIndex builds the optional author-attribution fact index on this store's
@@ -71,7 +83,7 @@ func (s *RedisStore) AttributionIndex(factTTL time.Duration) *AttributionIndex {
 	if factTTL <= 0 {
 		factTTL = DefaultAttributionFactTTL
 	}
-	return &AttributionIndex{client: s.client, factTTL: factTTL}
+	return &AttributionIndex{client: s.client, factTTL: factTTL, keyPrefix: s.keyPrefix}
 }
 
 // CommandAuthorStore builds the command-authorship store on this connection. Wire it
@@ -79,7 +91,7 @@ func (s *RedisStore) AttributionIndex(factTTL time.Duration) *AttributionIndex {
 // record lives in the same top-level author domain as audit facts but in the separate
 // command subfamily, with its own fixed cleanup TTL.
 func (s *RedisStore) CommandAuthorStore() *CommandAuthorStore {
-	return &CommandAuthorStore{client: s.client, ttl: commandAuthorRecordTTL}
+	return &CommandAuthorStore{client: s.client, ttl: commandAuthorRecordTTL, keyPrefix: s.keyPrefix}
 }
 
 // Ping checks liveness of the underlying Redis/Valkey connection. The readiness gate
@@ -138,6 +150,6 @@ func (s *RedisStore) watchCursorKey(
 	if namespace != "" {
 		scope = "namespace:" + escapeKeyField(namespace)
 	}
-	return keyPrefix + watchCursorKeySuffix + "target:" + escapeKeyField(gitTargetUID) + ":" +
+	return s.keyPrefix + watchCursorKeySuffix + "target:" + escapeKeyField(gitTargetUID) + ":" +
 		groupResourceKey(gvr.Group, gvr.Resource) + ":" + scope + ":last-rv"
 }

@@ -28,8 +28,10 @@ import (
 // from one that never arrived. Configurable via --author-attribution-ttl.
 const DefaultAttributionFactTTL = 15 * time.Minute
 
-// keyPrefix is the fixed root namespace for every Redis key (cursors and facts alike).
-const keyPrefix = "gitops-reverser"
+// DefaultKeyPrefix is the root namespace every Redis key (cursors, facts, and command
+// author records alike) carries when --redis-key-prefix is not set. It is also the value
+// every release before the flag existed used, so the default is a no-op upgrade.
+const DefaultKeyPrefix = "gitops-reverser"
 
 const (
 	// attributionKeySuffix namespaces audit-sourced resource author facts under the
@@ -105,6 +107,10 @@ type AuthorResolution struct {
 type AttributionIndex struct {
 	client  *redis.Client
 	factTTL time.Duration
+	// keyPrefix is the root namespace this index writes and reads under, shared with the
+	// RedisStore that built it. Empty only in tests constructed by hand; every key builder
+	// resolves it so an empty value still lands on DefaultKeyPrefix.
+	keyPrefix string
 }
 
 // RecordFact stores the attribution fact for one accepted, mutating audit event. A
@@ -406,7 +412,7 @@ func attributionResultForFact(fact AuthorFact, weak bool) AttributionResult {
 // factKeyBase is the per-type prefix shared by every fact key, e.g.
 // "gitops-reverser:author:v1:audit:apps/deployments".
 func (a *AttributionIndex) factKeyBase(gr string) string {
-	return keyPrefix + attributionKeySuffix + gr
+	return resolveKeyPrefix(a.keyPrefix) + attributionKeySuffix + gr
 }
 
 // factKeyExact is the immutable per-write fact key, e.g.
@@ -447,7 +453,7 @@ func (a *AttributionIndex) recordFactIndexSize(ctx context.Context) {
 	}
 	var cursor uint64
 	var count int64
-	pattern := keyPrefix + attributionKeySuffix + "*"
+	pattern := resolveKeyPrefix(a.keyPrefix) + attributionKeySuffix + "*"
 	for {
 		keys, next, err := a.client.Scan(ctx, cursor, pattern, attributionFactScanBatchSize).Result()
 		if err != nil {
