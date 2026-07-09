@@ -114,6 +114,14 @@ Explicitly **out of scope**, and worth saying in user docs:
   controller CRs in-cluster to learn those transforms is a possible
   much-later feature, not part of this boundary.)
 
+This allowlist is a **write** contract, not a discovery one. The read-only
+onboarding scanner ([F8 repo-walker](f8-repo-discovery-and-onboarding-scan.md))
+walks a whole repo and classifies each folder against *exactly* this boundary
+— `plain` / `kustomize-single` (accepted), `kustomize-overlay` (forward-looking,
+needs F2), `refused-structural` (the permanent wall above) — without widening
+what the operator writes. Discovering broadly and writing narrowly is what lets
+onboarding meet real GitOps repos without eroding round-trippability.
+
 ## 3. Why overlays are a different animal
 
 Fan-out is exactly why the governing rule is "one writable destination per

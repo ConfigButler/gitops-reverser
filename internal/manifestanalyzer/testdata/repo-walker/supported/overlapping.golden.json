@@ -1,0 +1,47 @@
+{
+  "candidates": [
+    {
+      "path": "apps/web",
+      "layout": "plain",
+      "acceptedByOperator": true,
+      "renderRoot": false,
+      "inferredNamespace": "web",
+      "resources": {
+        "rendered": 2,
+        "editable": 2,
+        "nonKrm": 0
+      },
+      "overlapsWith": [
+        "apps/web/extra"
+      ]
+    },
+    {
+      "path": "apps/web/extra",
+      "layout": "plain",
+      "acceptedByOperator": true,
+      "renderRoot": false,
+      "inferredNamespace": "web",
+      "resources": {
+        "rendered": 1,
+        "editable": 1,
+        "nonKrm": 0
+      },
+      "overlapsWith": [
+        "apps/web"
+      ]
+    }
+  ],
+  "summary": {
+    "candidatesByLayout": {
+      "plain": 2
+    },
+    "accepted": 2,
+    "refused": 0,
+    "overlapConflicts": [
+      {
+        "ancestor": "apps/web",
+        "descendant": "apps/web/extra"
+      }
+    ]
+  }
+}

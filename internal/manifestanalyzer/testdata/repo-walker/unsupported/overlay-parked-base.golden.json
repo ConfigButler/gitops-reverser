@@ -1,0 +1,32 @@
+{
+  "candidates": [
+    {
+      "path": "overlays/test",
+      "layout": "kustomize-overlay",
+      "acceptedByOperator": false,
+      "refusalReasons": [
+        {
+          "code": "overlay-fan-out-needs-f2",
+          "detail": "base \"base\" is read from outside this folder's subtree and is shared by 1 render root(s); render-root scoping (F2) required"
+        }
+      ],
+      "renderRoot": true,
+      "readScope": [
+        "base"
+      ],
+      "inferredNamespace": "parked-test",
+      "resources": {
+        "rendered": 1,
+        "editable": 0,
+        "nonKrm": 0
+      }
+    }
+  ],
+  "summary": {
+    "candidatesByLayout": {
+      "kustomize-overlay": 1
+    },
+    "accepted": 0,
+    "refused": 1
+  }
+}

@@ -137,6 +137,67 @@ func TestRun_ScanJSON(t *testing.T) {
 	}
 }
 
+// repoWalkFixture builds a tiny two-folder repo: a plain KRM app folder and a kustomize
+// overlay reaching an out-of-subtree base, so repo-walker reports both an accepted plain
+// candidate and a refused kustomize-overlay one.
+func repoWalkFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	write(t, mkdir(t, root, "plain"), "deploy.yaml", deployYAML)
+	base := mkdir(t, root, "base")
+	write(t, base, "kustomization.yaml", "resources:\n- deploy.yaml\n")
+	write(t, base, "deploy.yaml", deployYAML)
+	overlay := mkdir(t, root, filepath.Join("overlays", "test"))
+	write(t, overlay, "kustomization.yaml", "namespace: test\nresources:\n- ../../base\n")
+	return root
+}
+
+// mkdir creates dir/sub (and parents) and returns the full path.
+func mkdir(t *testing.T, dir, sub string) string {
+	t.Helper()
+	full := filepath.Join(dir, sub)
+	if err := os.MkdirAll(full, 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", full, err)
+	}
+	return full
+}
+
+func TestRun_RepoWalkText(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"--mode", "repo-walker", repoWalkFixture(t)}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
+	}
+	for _, want := range []string{"candidates:", "kustomize-overlay", "overlay-fan-out-needs-f2"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("repo-walker text missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRun_RepoWalkJSON(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	args := []string{"--mode", "repo-walker", "--format", "json", repoWalkFixture(t)}
+	if code := run(args, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
+	}
+	var parsed struct {
+		Candidates []struct {
+			Path   string `json:"path"`
+			Layout string `json:"layout"`
+		} `json:"candidates"`
+		Summary map[string]any `json:"summary"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("repo-walker JSON invalid: %v\n%s", err, out.String())
+	}
+	if len(parsed.Candidates) != 2 {
+		t.Fatalf("want 2 candidates, got %d: %s", len(parsed.Candidates), out.String())
+	}
+	if parsed.Summary == nil {
+		t.Errorf("repo-walker JSON missing summary: %s", out.String())
+	}
+}
+
 func TestRun_DiscoveryJSON(t *testing.T) {
 	client := fakeDiscovery{
 		groups: []*metav1.APIGroup{
@@ -214,6 +275,8 @@ func TestRun_Errors(t *testing.T) {
 		{"discovery rejects dir", []string{"--mode", "discovery", "x"}, 2},
 		{"missing dir", []string{filepath.Join("definitely", "missing", "dir")}, 2},
 		{"scan missing dir", []string{"--mode", "scan", filepath.Join("definitely", "missing")}, 2},
+		{"repo-walker missing dir", []string{"--mode", "repo-walker", filepath.Join("definitely", "missing")}, 2},
+		{"repo-walker no args", []string{"--mode", "repo-walker"}, 2},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

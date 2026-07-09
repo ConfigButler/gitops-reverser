@@ -9,12 +9,17 @@
 // Usage:
 //
 //	manifest-analyzer [flags] <dir>
+//	manifest-analyzer --mode repo-walker [flags] <repo-root>
 //	manifest-analyzer --mode discovery [flags]
 //
-//	--mode   analyze|scan|discovery  what to produce (default analyze)
+//	--mode   analyze|scan|repo-walker|discovery  what to produce (default analyze)
 //	                                 analyze: the structural report (files, GVK inventory)
 //	                                 scan:    the adoption dry-run (acceptance + plan), the
 //	                                          shared scan-mode pipeline with no flush
+//	                                 repo-walker: the F8 whole-repo onboarding scan — walk
+//	                                          every folder, classify candidate GitTargets.
+//	                                          Report-only: --policy is not applied (the
+//	                                          repo-level refuse gate is deferred)
 //	                                 discovery: raw Kubernetes API discovery dump
 //	--format text|json     output format (default text)
 //	--policy report|refuse
@@ -82,9 +87,9 @@ func runWithDiscoveryClientFactory(
 ) int {
 	fs := flag.NewFlagSet("manifest-analyzer", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	mode := fs.String("mode", "analyze", "what to produce: analyze|scan|discovery")
+	mode := fs.String("mode", "analyze", "what to produce: analyze|scan|repo-walker|discovery")
 	format := fs.String("format", "text", "output format: text|json")
-	policy := fs.String("policy", "report", "adoption policy: report|refuse")
+	policy := fs.String("policy", "report", "adoption policy: report|refuse (repo-walker is report-only)")
 	kubeconfig := fs.String(
 		"kubeconfig",
 		"",
@@ -93,6 +98,7 @@ func runWithDiscoveryClientFactory(
 	contextName := fs.String("context", "", "kubeconfig context for --mode discovery")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: manifest-analyzer [flags] <dir>")
+		fmt.Fprintln(stderr, "       manifest-analyzer --mode repo-walker [flags] <repo-root>")
 		fmt.Fprintln(stderr, "       manifest-analyzer --mode discovery [flags]")
 		fs.PrintDefaults()
 	}
@@ -100,16 +106,7 @@ func runWithDiscoveryClientFactory(
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if *mode != "analyze" && *mode != "scan" && *mode != "discovery" {
-		fmt.Fprintf(stderr, "error: unknown mode %q (want analyze|scan|discovery)\n", *mode)
-		return exitUsage
-	}
-	if *format != "text" && *format != "json" {
-		fmt.Fprintf(stderr, "error: unknown format %q (want text|json)\n", *format)
-		return exitUsage
-	}
-	if *policy != "report" && *policy != "refuse" {
-		fmt.Fprintf(stderr, "error: unknown policy %q (want report|refuse)\n", *policy)
+	if !validChoices(*mode, *format, *policy, stderr) {
 		return exitUsage
 	}
 	if *mode == "discovery" {
@@ -125,11 +122,35 @@ func runWithDiscoveryClientFactory(
 		fs.Usage()
 		return exitUsage
 	}
+	return runDirMode(*mode, fs.Arg(0), *format, *policy, stdout, stderr)
+}
 
-	if *mode == "scan" {
-		return runScan(fs.Arg(0), *format, *policy, stdout, stderr)
+// validChoices validates the mode/format/policy enum flags, reporting the first bad one
+// to stderr. Splitting it out of run keeps the top-level dispatch simple.
+func validChoices(mode, format, policy string, stderr io.Writer) bool {
+	switch {
+	case mode != "analyze" && mode != "scan" && mode != "repo-walker" && mode != "discovery":
+		fmt.Fprintf(stderr, "error: unknown mode %q (want analyze|scan|repo-walker|discovery)\n", mode)
+	case format != "text" && format != "json":
+		fmt.Fprintf(stderr, "error: unknown format %q (want text|json)\n", format)
+	case policy != "report" && policy != "refuse":
+		fmt.Fprintf(stderr, "error: unknown policy %q (want report|refuse)\n", policy)
+	default:
+		return true
 	}
-	return runAnalyze(fs.Arg(0), *format, *policy, stdout, stderr)
+	return false
+}
+
+// runDirMode dispatches the directory-argument modes (everything but discovery).
+func runDirMode(mode, dir, format, policy string, stdout, stderr io.Writer) int {
+	switch mode {
+	case "scan":
+		return runScan(dir, format, policy, stdout, stderr)
+	case "repo-walker":
+		return runRepoWalk(dir, format, stdout, stderr)
+	default:
+		return runAnalyze(dir, format, policy, stdout, stderr)
+	}
 }
 
 // runAnalyze renders the structural report and applies the refuse policy over its
@@ -237,6 +258,29 @@ func runScan(dir, format, policy string, stdout, stderr io.Writer) int {
 
 	if policy == "refuse" && !result.Acceptance.Accepted {
 		return exitRefused
+	}
+	return exitOK
+}
+
+// runRepoWalk runs the F8 whole-repo onboarding scan: walk every folder, enumerate
+// candidate GitTarget subtrees, classify each one's layout and acceptance, and emit the
+// report. It is read-only and needs no cluster. Exit codes stay simple for this cut
+// (exitOK, or exitUsage on an I/O error); the repo-level --policy refuse gate is
+// deferred per the design doc.
+func runRepoWalk(root, format string, stdout, stderr io.Writer) int {
+	rep, err := manifestanalyzer.WalkRepo(context.Background(), root)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitUsage
+	}
+
+	if format == "json" {
+		if err := manifestanalyzer.RenderRepoJSON(stdout, rep); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitUsage
+		}
+	} else {
+		manifestanalyzer.RenderRepoText(stdout, rep)
 	}
 	return exitOK
 }

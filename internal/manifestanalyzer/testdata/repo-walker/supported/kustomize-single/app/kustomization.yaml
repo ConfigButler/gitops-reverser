@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: demo
+resources:
+  - deployment.yaml
+  - service.yaml
+images:
+  - name: web
+    newTag: v2
+replicas:
+  - name: web
+    count: 2

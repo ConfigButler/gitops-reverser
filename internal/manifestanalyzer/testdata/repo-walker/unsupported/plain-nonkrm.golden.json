@@ -1,0 +1,29 @@
+{
+  "candidates": [
+    {
+      "path": "app",
+      "layout": "plain",
+      "acceptedByOperator": false,
+      "refusalReasons": [
+        {
+          "code": "non-krm-yaml",
+          "detail": "values.yaml: YAML is not a Kubernetes manifest"
+        }
+      ],
+      "renderRoot": false,
+      "inferredNamespace": "demo",
+      "resources": {
+        "rendered": 1,
+        "editable": 1,
+        "nonKrm": 1
+      }
+    }
+  ],
+  "summary": {
+    "candidatesByLayout": {
+      "plain": 1
+    },
+    "accepted": 0,
+    "refused": 1
+  }
+}
