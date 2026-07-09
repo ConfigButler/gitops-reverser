@@ -392,7 +392,9 @@ Three things are worth knowing before you patch a path:
 - **The new folder is rebuilt from a full snapshot**, so the resources that already existed land in
   it — not only the ones that change afterwards.
 - **A retarget onto a conflicting path is refused** by the ordinary `Validated` gate, and the target
-  keeps serving its current destination until you pick a free one.
+  then mirrors *nothing* (`Stalled=True`, reason `TargetConflict`) until you pick a free path. It does
+  not fall back to the old destination: the old materialization is torn down before the new one is
+  validated, precisely so a live event can never be written to the new path on the old branch.
 
 `spec.providerRef` stays immutable. Pointing at a different repository is not a move: there is
 nothing to migrate and nothing to observe. Delete and recreate the `GitTarget`.
