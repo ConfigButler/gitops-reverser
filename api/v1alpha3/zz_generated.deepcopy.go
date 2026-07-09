@@ -686,6 +686,11 @@ func (in *GitTargetStatus) DeepCopyInto(out *GitTargetStatus) {
 		*out = new(GitTargetDestination)
 		**out = **in
 	}
+	if in.RetargetingTo != nil {
+		in, out := &in.RetargetingTo, &out.RetargetingTo
+		*out = new(GitTargetDestination)
+		**out = **in
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

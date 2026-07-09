@@ -221,14 +221,25 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
 		gitDest := types.NewResourceReference(target.Name, target.Namespace).WithUID(string(target.UID))
-		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(
-			ctx,
-			gitDest,
-			gitPathWasRefused,
-		); declareErr != nil {
-			log.V(1).Info("stream declaration skipped; surface not observable",
-				"gitDest", gitDest.String(), "err", declareErr.Error())
+		switch {
+		case !r.sourceClusterRulesCaughtUp(&target, gitDest):
+			// The rules still name the previous source cluster: a rule recompiles when its
+			// GitTarget's generation bumps, and this reconcile can win that race. Declaring now
+			// would open watches against the OLD cluster and write its objects into this
+			// GitTarget's folder. Wait one requeue instead.
+			log.Info("waiting for WatchRules to recompile against the new source cluster",
+				"gitDest", gitDest.String(), "sourceCluster", describeSourceCluster(target.SourceClusterID()))
 			streamsSettling = true
+		default:
+			if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(
+				ctx,
+				gitDest,
+				gitPathWasRefused,
+			); declareErr != nil {
+				log.V(1).Info("stream declaration skipped; surface not observable",
+					"gitDest", gitDest.String(), "err", declareErr.Error())
+				streamsSettling = true
+			}
 		}
 		streams = r.EventRouter.WatchManager.StreamSummaryForGitTarget(gitDest)
 		gitPath = r.EventRouter.WatchManager.GitPathAcceptanceForGitTarget(gitDest)

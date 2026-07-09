@@ -61,6 +61,9 @@ func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
 // re-derives its followability registry, and re-arms its API-surface trigger informers.
 func (m *Manager) refreshClusterCatalog(ctx context.Context, clusterID string) error {
 	cc := m.cluster(clusterID)
+	// One Secret read per cluster per refresh. A rotated kubeconfig drops the cached clients
+	// here, so the watch reconnect path never has to read the config plane itself.
+	m.refreshClusterCredentials(ctx, cc)
 	disco, err := m.clusterDiscovery(ctx, clusterID)
 	if err != nil {
 		return err

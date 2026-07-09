@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // GitTargetReasonSourceClusterUnreachable is the Validated=False reason for a GitTarget
@@ -19,6 +20,42 @@ import (
 // hold a parseable kubeconfig. It is a control-plane fault, not a data-plane one: nothing
 // has been watched or written, and the human fix is on the Secret.
 const GitTargetReasonSourceClusterUnreachable = "SourceClusterUnreachable"
+
+// sourceClusterRulesCaughtUp reports whether the compiled WatchRule/ClusterWatchRule set
+// already names the GitTarget's CURRENT source cluster.
+//
+// The watch data plane learns a GitTarget's source cluster from the rules that point at it,
+// because rules resolve their GitTarget when they compile. A rule recompiles when its
+// GitTarget's generation bumps — but this reconcile can win that race, and declaring in that
+// window would open watches against the previous cluster and write its objects into this
+// GitTarget's folder. Waiting one requeue is free; mirroring the wrong cluster is not.
+//
+// A GitTarget with no rules yet has nothing to watch and nothing to disagree about.
+func (r *GitTargetReconciler) sourceClusterRulesCaughtUp(
+	target *configbutleraiv1alpha3.GitTarget,
+	gitDest types.ResourceReference,
+) bool {
+	compiled := r.EventRouter.WatchManager.CompiledSourceClusters(gitDest)
+	switch len(compiled) {
+	case 0:
+		// Nothing points at this GitTarget, so there is nothing to watch and nothing to
+		// disagree about.
+		return true
+	case 1:
+		return compiled[0] == target.SourceClusterID()
+	default:
+		// The rules disagree with each other: some have recompiled and some have not.
+		return false
+	}
+}
+
+// describeSourceCluster renders a source-cluster id for logs and messages.
+func describeSourceCluster(id string) string {
+	if id == "" {
+		return "local"
+	}
+	return id
+}
 
 // validateSourceCluster checks that a GitTarget's source-cluster kubeconfig can be read and
 // parsed from the config plane, before any watch is opened against it.

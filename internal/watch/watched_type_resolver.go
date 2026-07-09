@@ -188,10 +188,32 @@ func (m *Manager) residentWatchedTypeTable(gitDest types.ResourceReference) Watc
 type targetSelections struct {
 	gitDest types.ResourceReference
 	dest    string
-	// clusterID is the source cluster every rule for this GitTarget agrees on: they all
-	// resolved the same GitTarget when they compiled.
-	clusterID  string
-	selections []watchSelection
+	// clusterID is the source cluster the rules for this GitTarget name. They all resolved
+	// the same GitTarget when they compiled, so in steady state they agree.
+	clusterID string
+	// clusterSet records whether clusterID has been assigned yet, so the first rule wins
+	// rather than the last.
+	clusterSet bool
+	// clusterConflict is true when two rules for this GitTarget disagree about the source
+	// cluster. That happens only in the window where a spec.sourceCluster change has
+	// recompiled some of the target's rules and not others. A table is then built with NO
+	// types: watching one cluster's objects while another cluster's types were resolved
+	// would mirror the wrong cluster into the folder, which is worse than mirroring none.
+	clusterConflict bool
+	selections      []watchSelection
+}
+
+// noteCluster folds one rule's source cluster into the target's, flagging a disagreement
+// rather than letting the last rule silently win.
+func (ts *targetSelections) noteCluster(clusterID string) {
+	if !ts.clusterSet {
+		ts.clusterID = clusterID
+		ts.clusterSet = true
+		return
+	}
+	if ts.clusterID != clusterID {
+		ts.clusterConflict = true
+	}
 }
 
 // resolveWatchedTypeTables projects every GitTarget's rules onto the type registry's
@@ -212,7 +234,7 @@ func (m *Manager) resolveWatchedTypeTables(generation uint64) map[string]Watched
 			byTarget[key] = ts
 		}
 		ts.dest = watchPlanDest(binding.providerNS, binding.provider, binding.branch, binding.path)
-		ts.clusterID = binding.clusterID
+		ts.noteCluster(binding.clusterID)
 		return ts
 	}
 
@@ -221,7 +243,17 @@ func (m *Manager) resolveWatchedTypeTables(generation uint64) map[string]Watched
 
 	tables := make(map[string]WatchedTypeTable, len(byTarget))
 	for key, ts := range byTarget {
-		table := buildWatchedTypeTable(ts.gitDest, generation, ts.selections)
+		selections := ts.selections
+		if ts.clusterConflict {
+			// A spec.sourceCluster change has recompiled some of this GitTarget's rules and
+			// not others. Open no watches until they agree: the GitTarget controller is
+			// already waiting on the same condition, and this keeps the data plane honest if
+			// it ever declares first.
+			m.Log.Info("GitTarget rules disagree about the source cluster; watching nothing until they agree",
+				"gitDest", ts.gitDest.String())
+			selections = nil
+		}
+		table := buildWatchedTypeTable(ts.gitDest, generation, selections)
 		table.Dest = ts.dest
 		table.ClusterID = ts.clusterID
 		tables[key] = table

@@ -3,12 +3,14 @@
 package controller
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -251,4 +253,119 @@ func TestDestinationAlreadySettled(t *testing.T) {
 	r.setCondition(target, GitTargetConditionRetargeting, metav1.ConditionFalse,
 		GitTargetReasonDestinationSettled, "settled")
 	assert.True(t, destinationAlreadySettled(target))
+}
+
+// recordedEvent is one Kubernetes event the reconciler emitted.
+type recordedEvent struct{ reason, message string }
+
+type fakeRecorder struct{ events []recordedEvent }
+
+func (f *fakeRecorder) Event(_ runtime.Object, _, reason, message string) {
+	f.events = append(f.events, recordedEvent{reason, message})
+}
+
+func (f *fakeRecorder) Eventf(_ runtime.Object, _, reason, messageFmt string, args ...any) {
+	f.events = append(f.events, recordedEvent{reason, fmt.Sprintf(messageFmt, args...)})
+}
+
+func (f *fakeRecorder) AnnotatedEventf(
+	_ runtime.Object, _ map[string]string, _, reason, messageFmt string, args ...any,
+) {
+	f.events = append(f.events, recordedEvent{reason, fmt.Sprintf(messageFmt, args...)})
+}
+
+func (f *fakeRecorder) reasons() []string {
+	out := make([]string, 0, len(f.events))
+	for _, e := range f.events {
+		out = append(out, e.reason)
+	}
+	return out
+}
+
+// status.retargetingTo makes a move self-describing, and is cleared once it settles.
+func TestRetargetingTo_TracksTheMoveAndClearsOnSettle(t *testing.T) {
+	t.Parallel()
+
+	target := materializedAtMainApps(targetAt("main", "clusters/acme"))
+	r := &GitTargetReconciler{}
+
+	require.NoError(t, r.beginRetarget(t.Context(), target, logr.Discard()))
+	require.NotNil(t, target.Status.RetargetingTo)
+	assert.Equal(t, "clusters/acme", target.Status.RetargetingTo.Path)
+
+	r.settleDestination(target, logr.Discard())
+	assert.Nil(t, target.Status.RetargetingTo, "the move is over")
+}
+
+// A destination change arriving mid-move leaves the first move's partially-built folder
+// behind. observedDestination still names the ORIGINAL folder, so without this event nothing
+// would ever name the intermediate one.
+func TestBeginRetarget_NamesTheFolderASupersededMoveAbandoned(t *testing.T) {
+	t.Parallel()
+
+	recorder := &fakeRecorder{}
+	r := &GitTargetReconciler{Recorder: recorder}
+
+	// main:apps -> main:intermediate, still building.
+	target := materializedAtMainApps(targetAt("main", "intermediate"))
+	require.NoError(t, r.beginRetarget(t.Context(), target, logr.Discard()))
+	assert.Empty(t, recorder.events, "the first move abandons only observedDestination, named at settle")
+
+	// A second change before the first settles.
+	target.Generation = 2
+	target.Spec.Path = "final"
+	require.NoError(t, r.beginRetarget(t.Context(), target, logr.Discard()))
+
+	require.Equal(t, []string{GitTargetEventRetargetSuperseded}, recorder.reasons())
+	assert.Contains(t, recorder.events[0].message, "main:intermediate")
+	assert.Contains(t, recorder.events[0].message, "main:final")
+	assert.Equal(t, "final", target.Status.RetargetingTo.Path)
+
+	// The original folder is still the one observedDestination names, and settle reports it.
+	assert.Equal(t, "apps", target.Status.ObservedDestination.Path)
+	r.settleDestination(target, logr.Discard())
+	assert.Contains(t,
+		conditionByType(target.Status.Conditions, GitTargetConditionRetargeting).Message,
+		"main:apps was abandoned")
+	require.Equal(t,
+		[]string{GitTargetEventRetargetSuperseded, GitTargetEventRetargeted}, recorder.reasons())
+}
+
+// Reverting a destination mid-move never passes through beginRetarget — spec agrees with
+// observedDestination again — but the folder the abandoned move began building is still there.
+func TestSettleDestination_NamesTheFolderARevertedMoveAbandoned(t *testing.T) {
+	t.Parallel()
+
+	recorder := &fakeRecorder{}
+	r := &GitTargetReconciler{Recorder: recorder}
+
+	target := materializedAtMainApps(targetAt("main", "elsewhere"))
+	require.NoError(t, r.beginRetarget(t.Context(), target, logr.Discard()))
+	require.Empty(t, recorder.events)
+
+	// The operator changes their mind and puts the path back.
+	target.Generation = 2
+	target.Spec.Path = "apps"
+	require.False(t, destinationMoved(target), "spec agrees with observedDestination again")
+
+	r.settleDestination(target, logr.Discard())
+
+	require.Equal(t, []string{GitTargetEventRetargetSuperseded}, recorder.reasons())
+	assert.Contains(t, recorder.events[0].message, "main:elsewhere")
+	assert.Nil(t, target.Status.RetargetingTo)
+	assert.Equal(t, "apps", target.Status.ObservedDestination.Path)
+}
+
+// A move that settles where it said it was going supersedes nothing.
+func TestSettleDestination_CompletedMoveEmitsOnlyRetargeted(t *testing.T) {
+	t.Parallel()
+
+	recorder := &fakeRecorder{}
+	r := &GitTargetReconciler{Recorder: recorder}
+
+	target := materializedAtMainApps(targetAt("main", "clusters/acme"))
+	require.NoError(t, r.beginRetarget(t.Context(), target, logr.Discard()))
+	r.settleDestination(target, logr.Discard())
+
+	assert.Equal(t, []string{GitTargetEventRetargeted}, recorder.reasons())
 }

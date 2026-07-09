@@ -198,9 +198,10 @@ func TestManager_RemoteClusterResolverError(t *testing.T) {
 	assert.Contains(t, err.Error(), "secret not found")
 }
 
-// A rotated kubeconfig Secret must rebuild the cached clients. The Secret's resourceVersion
-// is the version token, so an unchanged Secret rebuilds nothing.
-func TestManager_KubeConfigRotationRebuildsClients(t *testing.T) {
+// The watch reconnect path must never read the config plane: it runs once per (GitTarget,
+// GVR, scope) watch, and a Secret GET per reconnect would couple every reconnect to the
+// config-plane apiserver.
+func TestManager_CachedClientIsReusedWithoutReadingTheSecret(t *testing.T) {
 	t.Parallel()
 
 	resolver := &stubSourceClusterResolver{cfg: &rest.Config{Host: "https://one.example"}, version: "1"}
@@ -209,17 +210,49 @@ func TestManager_KubeConfigRotationRebuildsClients(t *testing.T) {
 
 	first, err := m.clusterDynamicClient(ctx, remoteClusterID)
 	require.NoError(t, err)
+	require.Equal(t, 1, resolver.calls)
 
 	second, err := m.clusterDynamicClient(ctx, remoteClusterID)
 	require.NoError(t, err)
+	assert.Same(t, first, second)
+	assert.Equal(t, 1, resolver.calls, "a cached client must not re-read the kubeconfig Secret")
+}
+
+// Rotation is detected on the catalog-refresh cadence, not on the reconnect path. The
+// Secret's resourceVersion is the version token, so an unchanged Secret rebuilds nothing.
+func TestManager_KubeConfigRotationRebuildsClients(t *testing.T) {
+	t.Parallel()
+
+	resolver := &stubSourceClusterResolver{cfg: &rest.Config{Host: "https://one.example"}, version: "1"}
+	m := &Manager{Log: logr.Discard(), SourceClusters: resolver}
+	ctx := context.Background()
+	cc := m.cluster(remoteClusterID)
+
+	first, err := m.clusterDynamicClient(ctx, remoteClusterID)
+	require.NoError(t, err)
+
+	m.refreshClusterCredentials(ctx, cc)
+	second, err := m.clusterDynamicClient(ctx, remoteClusterID)
+	require.NoError(t, err)
 	assert.Same(t, first, second, "an unchanged Secret must not rebuild the client")
-	assert.Equal(t, 2, resolver.calls, "the Secret is re-read, but the client is reused")
 
 	resolver.cfg = &rest.Config{Host: "https://two.example"}
 	resolver.version = "2"
+	m.refreshClusterCredentials(ctx, cc)
+
 	third, err := m.clusterDynamicClient(ctx, remoteClusterID)
 	require.NoError(t, err)
 	assert.NotSame(t, first, third, "a rotated kubeconfig must rebuild the client")
+}
+
+// The local cluster has no kubeconfig Secret to rotate.
+func TestManager_RefreshClusterCredentials_LocalIsANoOp(t *testing.T) {
+	t.Parallel()
+
+	resolver := &stubSourceClusterResolver{err: errors.New("must not be called")}
+	m := &Manager{Log: logr.Discard(), SourceClusters: resolver}
+	m.refreshClusterCredentials(context.Background(), m.localCluster())
+	assert.Zero(t, resolver.calls)
 }
 
 func TestManager_LocalClusterIgnoresTheResolver(t *testing.T) {
@@ -279,4 +312,62 @@ func TestResolveWatchedTypeTables_RemoteTypesDoNotComeFromTheLocalCatalog(t *tes
 	table := tables["team-a/acme"]
 	assert.Empty(t, table.Types,
 		"the local cluster's configmaps are not the remote's; a GitTarget must never mirror the wrong cluster")
+}
+
+// A rule recompiles when its GitTarget's generation bumps, but the GitTarget's own reconcile
+// can win that race. The controller needs to tell "the rules have not caught up" and "the
+// rules disagree with each other" apart from "nothing points at this GitTarget", so it never
+// declares against the previous cluster.
+func TestManager_CompiledSourceClusters(t *testing.T) {
+	t.Parallel()
+
+	m := &Manager{Log: logr.Discard(), RuleStore: storeWithRemoteRule(t)}
+	assert.Equal(t, []string{remoteClusterID},
+		m.CompiledSourceClusters(types.NewResourceReference("acme", "team-a")))
+
+	assert.Empty(t, m.CompiledSourceClusters(types.NewResourceReference("other", "team-a")),
+		"no rule points at this GitTarget, so there is nothing to disagree about")
+
+	noStore := &Manager{Log: logr.Discard()}
+	assert.Empty(t, noStore.CompiledSourceClusters(types.NewResourceReference("acme", "team-a")))
+}
+
+// Mid-recompile, a GitTarget's WatchRule can name the new cluster while its ClusterWatchRule
+// still names the old one. The data plane must then watch nothing rather than pick one.
+func TestResolveWatchedTypeTables_DisagreeingRulesWatchNothing(t *testing.T) {
+	t.Parallel()
+
+	store := storeWithRemoteRule(t)
+	// A second rule for the same GitTarget, still compiled against the local cluster.
+	store.AddOrUpdateClusterWatchRule(configv1alpha3.ClusterWatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "stale-rule"},
+		Spec: configv1alpha3.ClusterWatchRuleSpec{
+			Rules: []configv1alpha3.ClusterResourceRule{{
+				Resources: []string{"configmaps"},
+				Scope:     configv1alpha3.ResourceScopeNamespaced,
+			}},
+		},
+	}, rulestore.TargetBinding{
+		GitTargetName:      "acme",
+		GitTargetNamespace: "team-a",
+		Branch:             "main",
+		Path:               "apps",
+		SourceCluster:      LocalClusterID,
+	})
+
+	m := &Manager{Log: logr.Discard(), RuleStore: store}
+	for _, id := range []string{LocalClusterID, remoteClusterID} {
+		cc := m.cluster(id)
+		_, err := cc.catalog.Refresh(newCommonTestDiscovery())
+		require.NoError(t, err)
+		m.refreshTypeRegistry(cc)
+	}
+
+	assert.Len(t, m.CompiledSourceClusters(types.NewResourceReference("acme", "team-a")), 2,
+		"the rules disagree, and both clusters are reported")
+
+	tables := m.resolveWatchedTypeTables(1)
+	table := tables["team-a/acme"]
+	assert.Empty(t, table.Types,
+		"watching one cluster's objects with another cluster's resolved types would mirror the wrong cluster")
 }

@@ -86,11 +86,17 @@ GitOps tool manages is still an object the GitTarget mirrors, and dropping it
 from the desired set would make the sweep delete its file from Git.
 
 The practical consequence: after the forward leg changes an object, Git keeps the
-content the human last wrote, and the cluster carries the forward leg's. The next
-replay of that type (a reconnect, a restart, a rule change) reconciles the
-difference in Git's favour of the live state — one idempotent write that does not
-re-trigger the forward leg, because the content it commits is what the forward leg
-already applied. The loop is broken; the reconciliation is not.
+content the human last wrote, and the cluster carries the forward leg's. Git catches
+up the next time that object is mirrored for any *other* reason — a replay of its
+type (reconnect, restart, rule change), or the next non-excluded write to the same
+object, which commits the object's whole current state including the forward leg's
+change. Either way it is one idempotent write that does not re-trigger the forward
+leg, because the content it commits is what the forward leg already applied.
+
+So `excludeFieldManagers` is not "this manager's changes never reach Git". It is
+"this manager's writes never *cause* a commit". The loop is broken; the
+reconciliation is not. Field-level attribution of Git content to the manager that
+produced it would be a different feature entirely.
 
 ### What is *not* a change to mirror
 

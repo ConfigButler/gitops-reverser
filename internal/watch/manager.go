@@ -9,6 +9,7 @@ package watch
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -99,9 +100,10 @@ type Manager struct {
 	// operator runs in, and the only one a single-cluster install ever creates.
 	clustersMu sync.Mutex
 	clusters   map[string]*clusterContext
-	// clientsMu guards the client/config fields inside every clusterContext, so a
-	// kubeconfig rotation rebuilds them exactly once.
-	clientsMu sync.Mutex
+	// clusterOrder is the published, ordered snapshot of clusters (local first). The git
+	// writer's GVK lookup reads it once per document it scans out of a Git folder, on the
+	// branch-worker goroutine, so it must not contend on clustersMu with the reconcile loop.
+	clusterOrder atomic.Pointer[[]*clusterContext]
 	// resourceCatalogMu guards every clusterContext's catalog/registry logging state.
 	resourceCatalogMu sync.Mutex
 	// discoveryClient overrides REST-config discovery construction for the LOCAL cluster

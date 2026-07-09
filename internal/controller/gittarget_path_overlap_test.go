@@ -154,3 +154,99 @@ func TestGitTargetLosesConflict(t *testing.T) {
 		})
 	}
 }
+
+// established builds a GitTarget whose materialization already lives where its spec says.
+func established(name, path string, created time.Time) *configbutleraiv1alpha3.GitTarget {
+	t := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: "team-a", CreationTimestamp: metav1.NewTime(created),
+		},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{Branch: "main", Path: path},
+	}
+	t.Status.ObservedDestination = &configbutleraiv1alpha3.GitTargetDestination{Branch: "main", Path: path}
+	return t
+}
+
+// retargeting builds a GitTarget asking to move to path, still materialized at from.
+func retargeting(name, from, to string, created time.Time) *configbutleraiv1alpha3.GitTarget {
+	t := established(name, from, created)
+	t.Spec.Path = to
+	return t
+}
+
+// pending builds a GitTarget that has never materialized anywhere.
+func pending(name, path string, created time.Time) *configbutleraiv1alpha3.GitTarget {
+	t := established(name, path, created)
+	t.Status.ObservedDestination = nil
+	return t
+}
+
+// Once spec.path became mutable, creation time stopped being a faithful "who claimed this
+// folder first". An OLDER target retargeting onto a YOUNGER incumbent's folder is still the
+// newcomer, and must not evict the target that is already writing there.
+func TestGitTargetLosesConflict_EstablishedBeatsRetargeting(t *testing.T) {
+	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	younger := older.Add(time.Hour)
+
+	mover := retargeting("mover", "apps", "clusters", older)
+	incumbent := established("incumbent", "clusters", younger)
+
+	if !gitTargetLosesConflict(mover, incumbent) {
+		t.Error("the older target retargeting onto an occupied folder must lose: it is the newcomer")
+	}
+	if gitTargetLosesConflict(incumbent, mover) {
+		t.Error("the incumbent, which never moved, must keep its folder")
+	}
+}
+
+// A target that has never materialized is also a pending claim.
+func TestGitTargetLosesConflict_EstablishedBeatsNeverMaterialized(t *testing.T) {
+	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	younger := older.Add(time.Hour)
+
+	fresh := pending("fresh", "clusters", older)
+	incumbent := established("incumbent", "clusters", younger)
+
+	if !gitTargetLosesConflict(fresh, incumbent) {
+		t.Error("a target that has never materialized must not evict one that has")
+	}
+}
+
+// Two claims of the same strength still fall back to creation time, as before.
+func TestGitTargetLosesConflict_EqualStrengthFallsBackToCreationTime(t *testing.T) {
+	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	younger := older.Add(time.Hour)
+
+	if !gitTargetLosesConflict(pending("b", "apps", younger), pending("a", "apps", older)) {
+		t.Error("two fresh targets: the later-created one loses, as before")
+	}
+	if !gitTargetLosesConflict(established("b", "apps", younger), established("a", "apps", older)) {
+		t.Error("two established targets: the later-created one loses")
+	}
+	// Both retargeting onto the same folder: neither holds it, so creation time decides.
+	if !gitTargetLosesConflict(
+		retargeting("b", "x", "apps", younger), retargeting("a", "y", "apps", older),
+	) {
+		t.Error("two movers: the later-created one loses")
+	}
+}
+
+func TestGitTargetIsEstablished(t *testing.T) {
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	if !gitTargetIsEstablished(established("a", "apps", created)) {
+		t.Error("spec and observedDestination agree: established")
+	}
+	if gitTargetIsEstablished(retargeting("a", "apps", "clusters", created)) {
+		t.Error("a target asking to move is not established at its new destination")
+	}
+	if gitTargetIsEstablished(pending("a", "apps", created)) {
+		t.Error("a target that never materialized is not established")
+	}
+	// A trailing slash is the same folder, so it is still established.
+	settled := established("a", "apps", created)
+	settled.Spec.Path = "apps/"
+	if !gitTargetIsEstablished(settled) {
+		t.Error("a trailing slash must not make a settled target look like a mover")
+	}
+}

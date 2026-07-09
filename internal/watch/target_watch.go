@@ -84,6 +84,22 @@ func (m *Manager) replaceGitTargetWatches(
 	table WatchedTypeTable,
 	forceRecheck ...bool,
 ) error {
+	return m.replaceGitTargetWatchesIfRunning(ctx, table, false, forceRecheck...)
+}
+
+// replaceGitTargetWatchesIfRunning reconciles a GitTarget's watch set.
+//
+// requireRunning=true means "only refresh a set that is still running": the periodic refresh
+// must never CREATE one. Without that, a GitTarget torn down between the moment the refresh
+// snapshotted the running keys and the moment it re-took the lock — a delete, or a retarget —
+// would be resurrected: fresh watch goroutines launched against an object that no longer has
+// a materialization, writing stream state and cursors after its teardown.
+func (m *Manager) replaceGitTargetWatchesIfRunning(
+	ctx context.Context,
+	table WatchedTypeTable,
+	requireRunning bool,
+	forceRecheck ...bool,
+) error {
 	specs := targetWatchSpecs(table)
 	keys := sortedTargetWatchSpecKeys(specs)
 	childCtx, cancel := context.WithCancel(ctx)
@@ -94,7 +110,7 @@ func (m *Manager) replaceGitTargetWatches(
 		m.targetWatches = map[string]*targetWatchSet{}
 	}
 	key := table.GitDest.Key()
-	if m.prepareTargetWatchSetReplacementLocked(key, specs, force) {
+	if m.skipTargetWatchReplacementLocked(key, specs, requireRunning, force) {
 		m.targetWatchesMu.Unlock()
 		cancel()
 		return nil
@@ -134,14 +150,19 @@ func (m *Manager) replaceGitTargetWatches(
 	return nil
 }
 
-func (m *Manager) prepareTargetWatchSetReplacementLocked(
+// skipTargetWatchReplacementLocked reports whether this reconcile has nothing to do, and
+// cancels the prior watch set when it does. It returns true for a set whose specs are
+// unchanged, and — when requireRunning — for a target that has no running set at all.
+func (m *Manager) skipTargetWatchReplacementLocked(
 	key string,
 	specs map[targetWatchKey]string,
-	force bool,
+	requireRunning, force bool,
 ) bool {
 	prior := m.targetWatches[key]
 	if prior == nil {
-		return false
+		// requireRunning: the set was torn down (deleted or retargeted) since the caller
+		// snapshotted it. This refresh must not bring it back.
+		return requireRunning
 	}
 	if !force && equalTargetWatchSpecs(prior.specs, specs) {
 		return true
@@ -164,7 +185,9 @@ func (m *Manager) refreshRunningTargetWatches(ctx context.Context) {
 		if _, ok := running[table.GitDest.Key()]; !ok {
 			continue
 		}
-		if err := m.replaceGitTargetWatches(ctx, table); err != nil {
+		// requireRunning: the set may have been torn down (deleted or retargeted) since the
+		// snapshot above; this refresh must not bring it back.
+		if err := m.replaceGitTargetWatchesIfRunning(ctx, table, true); err != nil {
 			m.Log.Error(err, "refresh running GitTarget watches failed", "gitDest", table.GitDest.String())
 		}
 	}
@@ -203,12 +226,12 @@ func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
 		namespaces := wt.SnapshotNamespaces()
 		if len(namespaces) == 0 {
 			key := targetWatchKey{GVR: wt.GVR}
-			out[key] = watchSpec(wt.NamespaceSelections[""])
+			out[key] = watchSpec(table.ClusterID, wt.NamespaceSelections[""])
 			continue
 		}
 		for _, ns := range namespaces {
 			key := targetWatchKey{GVR: wt.GVR, Namespace: ns}
-			out[key] = watchSpec(wt.NamespaceSelections[ns])
+			out[key] = watchSpec(table.ClusterID, wt.NamespaceSelections[ns])
 		}
 	}
 	return out
@@ -228,15 +251,21 @@ func sortedTargetWatchSpecKeys(specs map[targetWatchKey]string) []targetWatchKey
 	return out
 }
 
-// watchSpec fingerprints one watch's admission state. It covers the exclusions as well as
-// the operations, so editing a rule's excludeUsers/excludeFieldManagers restarts the
-// affected watch with the new clauses instead of leaving the running goroutine on the old
-// ones.
-func watchSpec(selections RuleSelections) string {
-	if len(selections) == 0 {
-		return "*"
+// watchSpec fingerprints one watch's admission state. It covers the source cluster and the
+// exclusions as well as the operations, so repointing a GitTarget at another cluster — or
+// editing a rule's excludeUsers/excludeFieldManagers — restarts the affected watch instead
+// of leaving the running goroutine bound to the old cluster and the old clauses. The watch
+// key alone (GVR, namespace) is identical across clusters, so without the cluster here a
+// source-cluster change would compare equal and reuse the running watch.
+func watchSpec(clusterID string, selections RuleSelections) string {
+	spec := "*"
+	if len(selections) > 0 {
+		spec = selections.Key()
 	}
-	return selections.Key()
+	if clusterID == LocalClusterID {
+		return spec
+	}
+	return clusterID + "|" + spec
 }
 
 func equalTargetWatchSpecs(a, b map[targetWatchKey]string) bool {

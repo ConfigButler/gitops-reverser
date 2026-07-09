@@ -841,3 +841,29 @@ func (f *fakeWatchCursorStore) lastLookedUpUID() string {
 	defer f.mu.Unlock()
 	return f.lookedUpUID
 }
+
+// The watch key (GVR, namespace) is identical across clusters, so the source cluster has to
+// be part of the spec fingerprint. Without it, repointing a GitTarget at another cluster
+// would compare equal and reuse the running watch — still bound to the old cluster.
+func TestTargetWatchSpecs_SourceClusterChangeChangesTheSpec(t *testing.T) {
+	specFor := func(clusterID string) string {
+		table := WatchedTypeTable{
+			GitDest:   types.NewResourceReference("target", "default"),
+			ClusterID: clusterID,
+			Types: []WatchedType{{
+				GVR:                 configmapsGVR,
+				NamespaceSelections: nsSelections(map[string]OperationSet{"apps": {"UPDATE": struct{}{}}}),
+			}},
+		}
+		return targetWatchSpecs(table)[targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}]
+	}
+
+	local := specFor(LocalClusterID)
+	remoteA := specFor("team-a/kubeconfig-a/value.yaml")
+	remoteB := specFor("team-a/kubeconfig-b/value.yaml")
+
+	assert.NotEqual(t, local, remoteA)
+	assert.NotEqual(t, remoteA, remoteB)
+	// The local cluster keeps the bare fingerprint, so single-cluster installs see no churn.
+	assert.Equal(t, "UPDATE", local)
+}

@@ -28,10 +28,11 @@ status *observes* rather than a thing the spec cannot change:
 
 ```yaml
 status:
-  observedDestination:
+  observedDestination:                                 # where the content actually is
     branch: main
     path: clusters/acme
     sourceCluster: team-a/acme-kubeconfig/value.yaml   # empty for the local cluster
+  retargetingTo: null                                  # set while a move is in flight
   conditions:
     - type: Retargeting
       status: "False"
@@ -84,6 +85,17 @@ destination change arriving mid-move bumps the generation, which makes the
 recorded teardown stale, so it tears down again rather than quietly continuing to
 build the first one.
 
+### A move that is superseded before it settles
+
+`status.retargetingTo` names the destination an in-flight move is building. It exists
+because a *second* destination change — or a revert — arriving before the first settles
+would otherwise orphan a folder nobody named: `observedDestination` still points at the
+original, and the intermediate folder the first move had begun writing is left behind
+silently.
+
+When that happens the controller emits a `RetargetSuperseded` event naming the intermediate
+folder. Like every folder a retarget leaves, nothing deletes it.
+
 ## The old folder is left alone
 
 **A retarget never deletes the old folder's files.** Two reasons, either
@@ -94,6 +106,17 @@ sufficient:
   meant.
 - The path the target is leaving may already have a new owner — the overlap check
   in step 2 only guards the destination it is *moving to*.
+
+## A mover never evicts an incumbent
+
+Once `spec.path` is mutable, a `GitTarget`'s creation timestamp stops being a faithful
+"who claimed this folder first". The overlap resolver therefore compares **claim strength**
+before age: a target is *established* when `status.observedDestination` agrees with its
+spec, and *pending* when it is asking to move somewhere (or has never materialized).
+
+An established claim beats a pending one. So a target retargeting onto an occupied folder is
+the newcomer, whatever its age, and loses — it never evicts the target already writing there.
+Creation time only breaks ties between two claims of the same strength, exactly as before.
 
 The old folder becomes ordinary, unmanaged Git content. The controller emits a
 `Retargeted` event naming the abandoned `branch:path` so the operator can `git rm`

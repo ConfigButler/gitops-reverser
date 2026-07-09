@@ -372,6 +372,7 @@ The most useful status fields are:
   moving (see [Moving a GitTarget](#moving-a-gittarget-retarget)).
 - `status.observedDestination`: the branch, path, and source cluster the current materialization
   actually belongs to. This, not `spec`, answers "which folder is this target's content in?".
+- `status.retargetingTo`: where an in-flight move is building. Cleared once it settles.
 - `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
 
 Use conditions for automation.
@@ -709,7 +710,10 @@ Semantics worth knowing:
 - **Exclusions are a veto within their own rule, not a global filter.** Rules are a logical OR, so a
   second, unrestricted rule for the same type re-admits everything the first excluded.
 - **An exclusion suppresses a *write*, not the *state*.** A replay or resync still lists the object;
-  otherwise the mark-and-sweep would delete its file from Git.
+  otherwise the mark-and-sweep would delete its file from Git. And the next *non-excluded* write to
+  the same object commits its whole current state, including whatever the excluded manager changed.
+  The guarantee is "this manager's writes never *cause* a commit", not "this manager's changes never
+  reach Git".
 
 `excludeUsers` matches the identity the audit webhook attributed the write to (the impersonated user
 when impersonation is in play, otherwise the authenticated user):

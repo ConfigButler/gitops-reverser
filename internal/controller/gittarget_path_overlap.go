@@ -51,13 +51,28 @@ func gitTargetPathsOverlap(a, b string) bool {
 }
 
 // gitTargetLosesConflict reports whether target should lose an overlap conflict
-// against existing. The later-created target loses so the earlier owner keeps its
-// folder. When both carry the same creationTimestamp (the API server stamps at
-// second precision, so concurrent applies can tie) the loser is chosen
-// deterministically by identity — otherwise neither would lose and both could go
-// Ready over the same subtree. Both targets share a namespace here, so the
-// namespace/name key is unique and stable across every reconcile.
+// against existing, so that every materialized folder keeps exactly one owner.
+//
+// An ESTABLISHED claim beats a PENDING one. A target is established when its
+// materialization already lives where its spec says (status.observedDestination
+// agrees with spec); it is pending when it is asking to move somewhere, or has never
+// materialized at all. This is the rule that survives spec.path becoming mutable: a
+// target that retargets ONTO an occupied folder is the newcomer, whatever its age, and
+// it must not evict the incumbent that is already writing there.
+//
+// Creation time only breaks a tie between two claims of the same strength — two fresh
+// targets racing to claim a folder, as before. When both carry the same
+// creationTimestamp (the API server stamps at second precision, so concurrent applies
+// can tie) the loser is chosen deterministically by identity, otherwise neither would
+// lose and both could go Ready over the same subtree. Both targets share a namespace
+// here, so the namespace/name key is unique and stable across every reconcile.
 func gitTargetLosesConflict(target, existing *configbutleraiv1alpha3.GitTarget) bool {
+	targetEstablished := gitTargetIsEstablished(target)
+	if targetEstablished != gitTargetIsEstablished(existing) {
+		// Exactly one of them holds the folder. The one that does not, loses.
+		return !targetEstablished
+	}
+
 	switch {
 	case target.CreationTimestamp.Time.After(existing.CreationTimestamp.Time):
 		return true
@@ -66,6 +81,14 @@ func gitTargetLosesConflict(target, existing *configbutleraiv1alpha3.GitTarget) 
 	default:
 		return false
 	}
+}
+
+// gitTargetIsEstablished reports whether a GitTarget's materialization already lives at
+// the destination its spec names. A target that has never materialized, or one that is
+// retargeting, is not established: it is asking for a folder rather than holding one.
+func gitTargetIsEstablished(target *configbutleraiv1alpha3.GitTarget) bool {
+	observed := target.Status.ObservedDestination
+	return observed != nil && sameDestination(*observed, specDestination(target))
 }
 
 // gitTargetIdentityKey returns a stable, unique ordering key for a GitTarget.

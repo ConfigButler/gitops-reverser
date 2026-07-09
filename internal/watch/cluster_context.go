@@ -50,16 +50,21 @@ type clusterContext struct {
 	catalog  *APIResourceCatalog
 	registry *typeset.Registry
 
+	// clientsMu guards the client/config fields below. It is PER CLUSTER: resolving a
+	// remote cluster's kubeconfig reads a Secret from the config plane, and a slow apiserver
+	// must not block client construction for every other cluster behind one global lock.
+	clientsMu sync.Mutex
 	// restConfig is nil until the cluster is first reached. configVersion is the version
 	// token restConfig was built from; when it changes, the cached clients are dropped so a
-	// rotated credential takes effect. Both are guarded by Manager.clientsMu.
+	// rotated credential takes effect.
 	restConfig    *rest.Config
 	configVersion string
 	dynamicClient dynamic.Interface
 	discovery     apiResourceDiscovery
 
 	// Logging state, edge-triggered per cluster: a degraded remote must not silence the
-	// local cluster's transitions, and vice versa. Guarded by Manager.resourceCatalogMu.
+	// local cluster's transitions, and vice versa. catalogReadyOnce synchronizes itself; the
+	// two maps are guarded by Manager.resourceCatalogMu.
 	catalogReadyOnce      sync.Once
 	catalogDegradedLogged map[schema.GroupVersion]struct{}
 	typeRefusalsLogged    map[string]string
@@ -109,6 +114,7 @@ func (m *Manager) cluster(id string) *clusterContext {
 			cc.catalog = m.resourceCatalog
 		}
 		m.clusters[id] = cc
+		m.publishClusterOrderLocked()
 		if id != LocalClusterID {
 			m.Log.Info("source cluster registered", "clusterID", id)
 		}
@@ -142,60 +148,125 @@ func (m *Manager) activeClusterIDs() []string {
 }
 
 // clusterIDForGitTarget resolves the source cluster of a GitTarget from the rules pointing
-// at it. Rules resolve their GitTarget when they compile, so they all agree; a GitTarget
-// with no rules yet has nothing to watch and lands on the local cluster.
+// at it. Rules resolve their GitTarget when they compile, so in steady state they agree; a
+// GitTarget with no rules yet has nothing to watch and lands on the local cluster. When rules
+// disagree — the window in which a spec.sourceCluster change has recompiled some and not
+// others — this returns the lexically first, and the table resolver refuses to watch anything
+// at all, so the answer is never used to open a watch.
 func (m *Manager) clusterIDForGitTarget(gitDest types.ResourceReference) string {
-	if m.RuleStore == nil {
+	clusters := m.CompiledSourceClusters(gitDest)
+	if len(clusters) == 0 {
 		return LocalClusterID
 	}
+	return clusters[0]
+}
+
+// CompiledSourceClusters returns every distinct source cluster the currently-COMPILED rules
+// name for a GitTarget, sorted. Empty means nothing points at this GitTarget yet.
+//
+// The GitTarget controller reads it to answer "have my rules caught up with my spec?". A rule
+// recompiles when its GitTarget's generation bumps, but the GitTarget's own reconcile may win
+// that race — so right after spec.sourceCluster changes, some or all rules still name the OLD
+// cluster. Declaring then would open watches against the old cluster and write its objects
+// into the new destination's folder. More than one entry means the rules disagree with each
+// other, which is the same window seen from the other side.
+func (m *Manager) CompiledSourceClusters(gitDest types.ResourceReference) []string {
+	if m.RuleStore == nil {
+		return nil
+	}
 	key := gitDest.Key()
+	seen := map[string]struct{}{}
 	for _, rule := range m.RuleStore.SnapshotWatchRules() {
 		if rule.GitTargetNamespace+"/"+rule.GitTargetRef == key {
-			return rule.SourceCluster
+			seen[rule.SourceCluster] = struct{}{}
 		}
 	}
 	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
 		if rule.GitTargetNamespace+"/"+rule.GitTargetRef == key {
-			return rule.SourceCluster
+			seen[rule.SourceCluster] = struct{}{}
 		}
 	}
-	return LocalClusterID
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
-// clusterRESTConfig resolves the rest.Config for a cluster, rebuilding the cached clients
-// when the kubeconfig Secret behind a remote cluster rotates.
+// clusterRESTConfigLocked returns a cluster's rest.Config, resolving it on first use.
+//
+// It does NOT re-read the kubeconfig Secret when a config is already cached — that read is a
+// config-plane API call, and this runs on the watch reconnect path, once per (GitTarget, GVR,
+// scope) watch. Rotation is picked up by refreshClusterCredentials on the catalog-refresh
+// cadence instead.
 //
 // The kubeconfig bytes are never retained: the resolver builds a rest.Config, the bytes are
 // dropped, and only an opaque version token is remembered. Same reasoning as
 // docs/future/secret-value-retention-plan.md — this operator does not hold credential
 // material in memory longer than it must, and it starts no Secret informer.
 //
-// Must be called with clientsMu held.
+// Must be called with cc.clientsMu held.
 func (m *Manager) clusterRESTConfigLocked(ctx context.Context, cc *clusterContext) (*rest.Config, error) {
-	if cc.isLocal() {
-		if cc.restConfig == nil {
-			cfg, err := ctrl.GetConfig()
-			if err != nil {
-				return nil, fmt.Errorf("no REST config for the local cluster: %w", err)
-			}
-			cc.restConfig = cfg
-		}
+	if cc.restConfig != nil {
 		return cc.restConfig, nil
 	}
+	if cc.isLocal() {
+		cfg, err := ctrl.GetConfig()
+		if err != nil {
+			return nil, fmt.Errorf("no REST config for the local cluster: %w", err)
+		}
+		cc.restConfig = cfg
+		return cfg, nil
+	}
+	cfg, version, err := m.resolveRemoteConfig(ctx, cc)
+	if err != nil {
+		return nil, err
+	}
+	cc.restConfig = cfg
+	cc.configVersion = version
+	return cfg, nil
+}
 
+// resolveRemoteConfig reads a remote cluster's kubeconfig Secret from the config plane.
+func (m *Manager) resolveRemoteConfig(ctx context.Context, cc *clusterContext) (*rest.Config, string, error) {
 	if m.SourceClusters == nil {
-		return nil, fmt.Errorf("cannot reach source cluster %q: no source-cluster resolver configured", cc.id)
+		return nil, "", fmt.Errorf("cannot reach source cluster %q: no source-cluster resolver configured", cc.id)
 	}
 	cfg, version, err := m.SourceClusters.ResolveSourceCluster(ctx, cc.id)
 	if err != nil {
-		return nil, fmt.Errorf("resolve source cluster %q: %w", cc.id, err)
+		return nil, "", fmt.Errorf("resolve source cluster %q: %w", cc.id, err)
 	}
 	if cfg == nil {
-		return nil, fmt.Errorf("resolve source cluster %q: nil REST config", cc.id)
+		return nil, "", fmt.Errorf("resolve source cluster %q: nil REST config", cc.id)
+	}
+	return cfg, version, nil
+}
+
+// refreshClusterCredentials re-reads a remote cluster's kubeconfig Secret and, when it has
+// rotated, drops the cached clients so the next use rebuilds them. It runs on the
+// catalog-refresh cadence (every 30s and on every rule change), never on the watch reconnect
+// path — one Secret read per cluster per refresh, not one per watch.
+//
+// A watch already streaming on the old credential keeps working until that credential stops
+// being accepted; the reconnect that follows picks up the rebuilt client.
+func (m *Manager) refreshClusterCredentials(ctx context.Context, cc *clusterContext) {
+	if cc.isLocal() {
+		return
+	}
+	cfg, version, err := m.resolveRemoteConfig(ctx, cc)
+	if err != nil {
+		// The catalog refresh that follows reports this properly; nothing to drop.
+		return
 	}
 
+	cc.clientsMu.Lock()
+	defer cc.clientsMu.Unlock()
 	if cc.restConfig != nil && version == cc.configVersion {
-		return cc.restConfig, nil
+		return
 	}
 	if cc.restConfig != nil {
 		m.Log.Info("source cluster kubeconfig rotated; rebuilding clients",
@@ -205,26 +276,25 @@ func (m *Manager) clusterRESTConfigLocked(ctx context.Context, cc *clusterContex
 	cc.configVersion = version
 	cc.dynamicClient = nil
 	cc.discovery = nil
-	return cfg, nil
 }
 
 // clusterDynamicClient returns the dynamic client a cluster's watches and lists run on.
 func (m *Manager) clusterDynamicClient(ctx context.Context, clusterID string) (dynamic.Interface, error) {
 	cc := m.cluster(clusterID)
 
-	m.clientsMu.Lock()
-	defer m.clientsMu.Unlock()
-
 	// Tests inject a fake client for the local cluster without a REST config at all.
 	if cc.isLocal() && m.dynamicClient != nil {
 		return m.dynamicClient, nil
 	}
+
+	cc.clientsMu.Lock()
+	defer cc.clientsMu.Unlock()
+	if cc.dynamicClient != nil {
+		return cc.dynamicClient, nil
+	}
 	cfg, err := m.clusterRESTConfigLocked(ctx, cc)
 	if err != nil {
 		return nil, err
-	}
-	if cc.dynamicClient != nil {
-		return cc.dynamicClient, nil
 	}
 	dc, err := dynamic.NewForConfig(cfg)
 	if err != nil {
@@ -238,18 +308,18 @@ func (m *Manager) clusterDynamicClient(ctx context.Context, clusterID string) (d
 func (m *Manager) clusterDiscovery(ctx context.Context, clusterID string) (apiResourceDiscovery, error) {
 	cc := m.cluster(clusterID)
 
-	m.clientsMu.Lock()
-	defer m.clientsMu.Unlock()
-
 	if cc.isLocal() && m.discoveryClient != nil {
 		return m.discoveryClient()
+	}
+
+	cc.clientsMu.Lock()
+	defer cc.clientsMu.Unlock()
+	if cc.discovery != nil {
+		return cc.discovery, nil
 	}
 	cfg, err := m.clusterRESTConfigLocked(ctx, cc)
 	if err != nil {
 		return nil, err
-	}
-	if cc.discovery != nil {
-		return cc.discovery, nil
 	}
 	disco, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {
@@ -300,9 +370,28 @@ func (u unionLookup) ByGVK(gvk schema.GroupVersionKind) (typeset.TypeRecord, boo
 
 // orderedClusters returns the live cluster contexts, local first and then remotes sorted by
 // id, so the union lookup's "first answer wins" is deterministic across reconciles.
+//
+// It reads a snapshot published whenever the cluster set changes, rather than taking
+// clustersMu and rebuilding a slice: the git writer's GVK lookup calls this once per
+// document it scans out of a folder, on the branch-worker goroutine, and that is no place
+// for a mutex the reconcile loop also holds. Cluster contexts are created once and never
+// mutated in place by this path, so handing out the slice is safe.
 func (m *Manager) orderedClusters() []*clusterContext {
-	m.clustersMu.Lock()
-	defer m.clustersMu.Unlock()
+	if snapshot := m.clusterOrder.Load(); snapshot != nil {
+		return *snapshot
+	}
+	// No cluster has been created yet: force the local one into existence, which publishes
+	// the first snapshot.
+	m.localCluster()
+	if snapshot := m.clusterOrder.Load(); snapshot != nil {
+		return *snapshot
+	}
+	return nil
+}
+
+// publishClusterOrderLocked recomputes the ordered snapshot. Must be called with clustersMu
+// held, from the one place that adds a cluster.
+func (m *Manager) publishClusterOrderLocked() {
 	ids := make([]string, 0, len(m.clusters))
 	for id := range m.clusters {
 		ids = append(ids, id)
@@ -312,5 +401,5 @@ func (m *Manager) orderedClusters() []*clusterContext {
 	for _, id := range ids {
 		out = append(out, m.clusters[id])
 	}
-	return out
+	m.clusterOrder.Store(&out)
 }

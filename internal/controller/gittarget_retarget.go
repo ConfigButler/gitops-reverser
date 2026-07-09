@@ -30,6 +30,10 @@ const (
 	// GitTargetEventRetargeted is the Kubernetes event emitted when a retarget completes. It
 	// names the abandoned folder, which nothing else deletes.
 	GitTargetEventRetargeted = "Retargeted"
+	// GitTargetEventRetargetSuperseded is emitted when a destination change arrives while a
+	// previous one was still building. It names the intermediate folder that move had begun
+	// writing, which status.observedDestination never named and nothing deletes.
+	GitTargetEventRetargetSuperseded = "RetargetSuperseded"
 )
 
 // specDestination is the destination the spec asks for, in the shape status records: the
@@ -107,6 +111,9 @@ func (r *GitTargetReconciler) beginRetarget(
 	log.Info("GitTarget destination changed; tearing down the old materialization",
 		"from", destinationString(abandoned), "to", destinationString(want))
 
+	r.noteSupersededDestination(target, want, log)
+	target.Status.RetargetingTo = &want
+
 	if r.EventRouter != nil {
 		gitDest := types.NewResourceReference(target.Name, target.Namespace).WithUID(string(target.UID))
 		// Release the old branch worker so evaluateWorkerWiringGate binds a fresh stream to
@@ -149,6 +156,11 @@ func (r *GitTargetReconciler) settleDestination(target *configbutleraiv1alpha3.G
 	if observed != nil && sameDestination(*observed, want) && destinationAlreadySettled(target) {
 		return
 	}
+	// The move is over, whichever branch below records it. A destination reverted mid-move
+	// lands here without ever passing through beginRetarget, so this is the second place an
+	// abandoned intermediate folder can be discovered.
+	r.noteSupersededDestination(target, want, log)
+	target.Status.RetargetingTo = nil
 
 	if observed == nil || sameDestination(*observed, want) {
 		r.setCondition(target, GitTargetConditionRetargeting, metav1.ConditionFalse,
@@ -170,6 +182,35 @@ func (r *GitTargetReconciler) settleDestination(target *configbutleraiv1alpha3.G
 			"remove it by hand if it is no longer wanted",
 			destinationString(want), destinationString(abandoned)))
 	target.Status.ObservedDestination = &want
+}
+
+// noteSupersededDestination names the folder an unfinished retarget had already begun
+// building, when the destination changes again before it settles — including a revert back to
+// where the content already is, which never passes through beginRetarget.
+//
+// status.observedDestination keeps naming the ORIGINAL folder until a move settles, so nothing
+// else would ever name the intermediate one. It holds partially-written, now-unmanaged Git
+// content, and — like every folder a retarget leaves — nothing deletes it.
+func (r *GitTargetReconciler) noteSupersededDestination(
+	target *configbutleraiv1alpha3.GitTarget,
+	want configbutleraiv1alpha3.GitTargetDestination,
+	log logr.Logger,
+) {
+	superseded := target.Status.RetargetingTo
+	if superseded == nil || sameDestination(*superseded, want) {
+		return
+	}
+	if observed := target.Status.ObservedDestination; observed != nil && sameDestination(*superseded, *observed) {
+		// The settled path already names it.
+		return
+	}
+
+	log.Info("a retarget was superseded before it settled; its partially-built folder is now unmanaged",
+		"superseded", destinationString(*superseded), "to", destinationString(want))
+	r.eventf(target, GitTargetEventRetargetSuperseded,
+		"a retarget to %s was superseded by %s before it settled; %s may hold partially-written, "+
+			"now unmanaged Git content",
+		destinationString(*superseded), destinationString(want), destinationString(*superseded))
 }
 
 // destinationAlreadySettled reports whether the Retargeting condition already records a

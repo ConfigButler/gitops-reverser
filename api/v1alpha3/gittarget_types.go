@@ -64,6 +64,13 @@ type GitTargetSpec struct {
 	// behind as ordinary, unmanaged Git content; the new branch's folder is built from a
 	// fresh full snapshot. status.observedDestination names the destination the current
 	// materialization belongs to.
+	//
+	// A retarget tears the old materialization down BEFORE the new destination is
+	// validated, because the writer resolves spec.path fresh on every write while the
+	// branch worker is bound to the branch its event stream was registered against — so a
+	// live event arriving mid-move would otherwise land at the new path on the old branch.
+	// A retarget onto an invalid or occupied destination therefore leaves the GitTarget
+	// mirroring NOTHING until a valid one is chosen. It does not fall back.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Branch string `json:"branch"`
@@ -77,9 +84,11 @@ type GitTargetSpec struct {
 	// trailing slash is normalized away.
 	//
 	// Mutable: changing it retargets the GitTarget, exactly as changing branch does. The
-	// new path must not overlap another GitTarget on the same provider and branch; a
-	// retarget onto a conflicting path is refused and the target keeps serving its
-	// current destination.
+	// new path must not overlap another GitTarget on the same provider and branch. A
+	// retargeting GitTarget is a newcomer to the folder it is moving into, whatever its
+	// age, so it loses the overlap conflict to whoever is already materialized there —
+	// and, because the teardown precedes validation, it then mirrors nothing until a free
+	// path is chosen.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Path string `json:"path"`
@@ -239,6 +248,14 @@ type GitTargetStatus struct {
 	// abandoned, so an operator can `git rm` it deliberately once the move settles.
 	// +optional
 	ObservedDestination *GitTargetDestination `json:"observedDestination,omitempty"`
+
+	// RetargetingTo is the destination a retarget in progress is building, set while
+	// Retargeting=True and cleared once the move settles. It exists so a move is
+	// self-describing, and so a SECOND destination change arriving mid-move can name the
+	// intermediate folder the first move had already begun writing — otherwise that folder
+	// would be orphaned without ever being named. See the RetargetSuperseded event.
+	// +optional
+	RetargetingTo *GitTargetDestination `json:"retargetingTo,omitempty"`
 
 	// Conditions represent the latest available observations of an object's state
 	// +optional
