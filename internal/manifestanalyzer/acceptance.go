@@ -107,6 +107,26 @@ const (
 	// write-plan precondition — an ignore pattern matching a planned write/edit/delete path.
 	// It surfaces as the GitTarget reason IgnoreShadowsManagedPath.
 	IssueIgnoreShadowsManaged IssueKind = "ignore-shadows-managed"
+	// IssueWriteEscapesScope marks a planned write whose path escapes the GitTarget write
+	// scope (spec.path) — an absolute or ".."-escaping destination. It is the write-plan half
+	// of the L1 write-boundary invariant: the operator reads shared context outside the scope
+	// but never writes outside it. Enforced by the writer's pathScopePrecondition; today it is
+	// defense-in-depth (planned write paths are base-relative by construction), made explicit
+	// and tested per
+	// docs/design/gitops-api/gittarget-granularity-and-cross-environment-edits.md §1.
+	IssueWriteEscapesScope IssueKind = "write-escapes-scope"
+	// IssueWriteFanIn marks a planned in-place edit of a source file that more than one
+	// kustomize render path reaches with override entries at stake (write-fan-in > 1). Writing
+	// the change through would corrupt what another render root renders, so the flush is
+	// refused instead of falling back to write-through. It is the L2 write-boundary invariant
+	// made explicit; the broader "any file shared by multiple render roots" generalization is
+	// F2 render-root scoping.
+	IssueWriteFanIn IssueKind = "write-fan-in"
+
+	// A refusal made up purely of the two write-boundary kinds above surfaces as the GitTarget
+	// reason WriteBoundaryRefused rather than the umbrella UnsupportedContent: the folder holds
+	// nothing the operator cannot manage, the edit simply had nowhere safe to land. See the
+	// watch package's gitPathRefusalReason.
 )
 
 // Allowlist is the set of build-directive files that are retained on disk but never

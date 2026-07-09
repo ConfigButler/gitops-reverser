@@ -84,6 +84,12 @@ type BranchWorker struct {
 	// before Start, on the same goroutine the event loop reads it from.
 	sshHostKeys SSHHostKeyConfig
 
+	// pathRefusal surfaces a refused write plan as GitTarget GitPathAccepted=False. The
+	// live-event paths have no result channel to carry the refusal back, so without it a
+	// refused live write would abort the commit and leave the GitTarget looking healthy. Set
+	// by the WorkerManager before Start; a nil reporter only drops the status transition.
+	pathRefusal PathRefusalReporter
+
 	// Event processing
 	eventQueue chan WorkItem
 	ctx        context.Context
@@ -686,30 +692,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	}
 
 	if item.Request.CommitMode == CommitModeAtomic {
-		// Atomic batches bypass the commit window, but not the retained push
-		// lifecycle. Finalize any open live work first so arrival order is
-		// preserved, then append the atomic write to pendingWrites and let the
-		// normal cooldown-driven push path decide when to publish.
-		l.finalizeOpenWindowWithReason(windowFinalizeReasonAtomicBeforeApply)
-		// Finalizing the window opened an idle boundary: a heal parked behind that window
-		// arrived BEFORE this atomic, so drain it here to keep arrival order (window, then heal,
-		// then atomic) rather than letting the atomic overtake it.
-		l.applyDeferredHeals()
-
-		pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, item.Request)
-		if err != nil {
-			l.w.Log.Error(err, "Failed to build atomic pending write", "events", len(item.Request.Events))
-			return
-		}
-
-		if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, len(l.pendingWrites) > 0); err != nil {
-			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(item.Request.Events))
-			return
-		}
-
-		l.pendingWrites = append(l.pendingWrites, *pendingWrite)
-		l.pendingWritesBytes += pendingWrite.ByteSize
-		l.maybeSchedulePush()
+		l.handleAtomicRequest(item.Request)
 		return
 	}
 
@@ -766,6 +749,39 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 
 		l.resetCommitTimer()
 	}
+}
+
+// handleAtomicRequest applies one atomic write request. Atomic batches bypass the commit
+// window, but not the retained push lifecycle: any open live work is finalized first so
+// arrival order is preserved, then the atomic write joins pendingWrites and the normal
+// cooldown-driven push path decides when to publish.
+func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
+	l.finalizeOpenWindowWithReason(windowFinalizeReasonAtomicBeforeApply)
+	// Finalizing the window opened an idle boundary: a heal parked behind that window
+	// arrived BEFORE this atomic, so drain it here to keep arrival order (window, then heal,
+	// then atomic) rather than letting the atomic overtake it.
+	l.applyDeferredHeals()
+
+	pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, request)
+	if err != nil {
+		l.w.Log.Error(err, "Failed to build atomic pending write", "events", len(request.Events))
+		return
+	}
+
+	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, len(l.pendingWrites) > 0); err != nil {
+		// A refused write plan is surfaced as a GitTarget status transition rather than
+		// logged as a write fault; nothing was committed either way, so the request is
+		// dropped in both cases.
+		name, namespace := atomicRefusalTarget(request)
+		if !l.w.reportPathRefusal(err, name, namespace) {
+			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
+		}
+		return
+	}
+
+	l.pendingWrites = append(l.pendingWrites, *pendingWrite)
+	l.pendingWritesBytes += pendingWrite.ByteSize
+	l.maybeSchedulePush()
 }
 
 func (l *branchWorkerEventLoop) handleShutdown() {
@@ -845,7 +861,8 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	l.stopCommitTimer()
 	events := l.openWindow.orderedEvents()
 	windowAuthor := l.openWindow.Author
-	windowTarget := l.openWindow.GitTargetNamespace + "/" + l.openWindow.GitTarget
+	targetName, targetNamespace := l.openWindow.GitTarget, l.openWindow.GitTargetNamespace
+	windowTarget := targetNamespace + "/" + targetName
 	pendingCR := l.openWindow.pendingCR
 	// Message precedence (§6.4.2): explicit override, else the attached
 	// CommitRequest message, else the generated grouped-commit message (empty).
@@ -885,11 +902,18 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	batch := []PendingWrite{*pendingWrite}
 	hasPendingCommits := len(l.pendingWrites) > 0
 	if err := l.w.commitPendingWrites(batch, hasPendingCommits); err != nil {
-		l.w.Log.Error(err, "Commit failed; dropping open window",
-			"reason", string(reason),
-			"windowAuthor", windowAuthor,
-			"windowTarget", windowTarget,
-			"events", len(events))
+		// A refused write plan (acceptance gate or write-boundary precondition) committed
+		// nothing and needs a human to fix the Git path, so it is surfaced as
+		// GitPathAccepted=False instead of being logged as a transient write fault. The
+		// window is dropped either way — the events are already lost to the failed flush,
+		// and the next resync re-derives them.
+		if !l.w.reportPathRefusal(err, targetName, targetNamespace) {
+			l.w.Log.Error(err, "Commit failed; dropping open window",
+				"reason", string(reason),
+				"windowAuthor", windowAuthor,
+				"windowTarget", windowTarget,
+				"events", len(events))
+		}
 		l.dropOpenWindow(pendingCR, fmt.Errorf("commit failed: %w", err))
 		return false
 	}

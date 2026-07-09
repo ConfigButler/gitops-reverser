@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -822,7 +823,21 @@ func currentDocIndex(filePath string, content []byte, id manifestedit.Identity) 
 // operator can no longer see) is never reached — the flush is refused and the GitTarget
 // fails before the file exists.
 func (wb *writeBatch) flush(ctx context.Context, worktree *gogit.Worktree, root, base string) (bool, error) {
+	// Write-plan preconditions run before any byte is touched, so a violation aborts the
+	// whole flush and commits nothing (each reuses the existing "refusal aborts before a file
+	// is written" seam). They enforce, at the one moment the planned paths are known, the two
+	// write-boundary invariants the operator must never break: the .gittargetignore shadow
+	// guard (§4.3), the L1 write-scope jail (writes stay inside spec.path), and the L2
+	// write-fan-in = 1 rule (never write a live change through into context shared by more
+	// than one render root). See
+	// docs/design/gitops-api/gittarget-granularity-and-cross-environment-edits.md §1.
 	if err := wb.ignoreShadowPrecondition(); err != nil {
+		return false, err
+	}
+	if err := wb.pathScopePrecondition(); err != nil {
+		return false, err
+	}
+	if err := wb.fanInPrecondition(); err != nil {
 		return false, err
 	}
 	logger := log.FromContext(ctx)
@@ -873,6 +888,83 @@ func (wb *writeBatch) ignoreShadowPrecondition() error {
 					"%s pattern %q shadows the managed write path %s; the operator would be blind to its own "+
 						"file. Remove the pattern or move the resource out of its match",
 					manifestanalyzer.GitTargetIgnoreFileName, pattern, rel),
+			})
+		}
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
+}
+
+// pathScopePrecondition enforces the L1 write-boundary invariant: every planned write stays
+// inside the GitTarget write scope (spec.path). It tests each created/edited (dirty) or
+// removed (deleted) buffer path and refuses the whole flush — one IssueWriteEscapesScope per
+// offender — if the base-relative path is absolute or escapes the subtree via "..". Reading
+// shared context outside the scope is legitimate (the analyzer follows ../../base); writing
+// outside it never is. Planned paths are base-relative by construction today (scan Rel plus
+// ".."-free placement validation), so this is defense-in-depth made explicit and tested,
+// symmetric to ignoreShadowPrecondition: it never write-then-detects.
+func (wb *writeBatch) pathScopePrecondition() error {
+	var issues []manifestanalyzer.AcceptanceIssue
+	for _, rel := range sortedBufferKeys(wb.buffers) {
+		buf := wb.buffers[rel]
+		if !buf.dirty() && !buf.deleted() {
+			continue
+		}
+		if writePathEscapesScope(rel) {
+			issues = append(issues, manifestanalyzer.AcceptanceIssue{
+				Kind: manifestanalyzer.IssueWriteEscapesScope,
+				Path: rel,
+				Message: fmt.Sprintf(
+					"planned write path %q escapes the GitTarget write scope: the operator only ever writes "+
+						"inside spec.path (reads may reach shared context such as ../../base, writes never leave it)",
+					rel),
+			})
+		}
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
+}
+
+// writePathEscapesScope reports whether a base-relative planned write path would land outside
+// the GitTarget subtree — an empty path (no destination), an absolute path, or one whose
+// cleaned form still climbs above the base with "..".
+func writePathEscapesScope(rel string) bool {
+	if rel == "" || path.IsAbs(rel) {
+		return true
+	}
+	clean := path.Clean(rel)
+	return clean == ".." || strings.HasPrefix(clean, "../")
+}
+
+// fanInPrecondition enforces the L2 write-boundary invariant: never write a live change
+// through into a source file more than one kustomize render path reaches with override
+// entries at stake (write-fan-in > 1). It refuses the whole flush — one IssueWriteFanIn per
+// offending path — when a dirty/deleted buffer targets a file the store flagged
+// reasonAmbiguousOverrides. This replaces the former warn-and-write-through fallback with a
+// refusal, so the fan-in guarantee no longer depends on the emergent side effect of namespace
+// ambiguity blocking the match. It fires only on an actual planned write, so the legitimate
+// base-sharing layout (a base doc reached by distinct overlays is NamespaceNone and never
+// dirty) is not refused — F2 render-root scoping generalizes the check.
+func (wb *writeBatch) fanInPrecondition() error {
+	var issues []manifestanalyzer.AcceptanceIssue
+	for _, rel := range sortedBufferKeys(wb.buffers) {
+		buf := wb.buffers[rel]
+		if !buf.dirty() && !buf.deleted() {
+			continue
+		}
+		if wb.store.OverridesAmbiguousAt(rel) {
+			issues = append(issues, manifestanalyzer.AcceptanceIssue{
+				Kind: manifestanalyzer.IssueWriteFanIn,
+				Path: rel,
+				Message: fmt.Sprintf(
+					"planned write to %q would edit in place a source file that more than one kustomize render "+
+						"path reaches with override entries at stake (write-fan-in must be 1); refusing rather than "+
+						"writing the change through into context shared by multiple render roots",
+					rel),
 			})
 		}
 	}

@@ -73,6 +73,14 @@ const (
 	// written and the GitTarget is failed with this reason. The string must stay in sync with
 	// the watch package's gitPathRefusalReason.
 	GitTargetReasonIgnoreShadowsManagedPath = "IgnoreShadowsManagedPath"
+	// GitTargetReasonWriteBoundaryRefused is the reason for a write the operator refused
+	// because it had nowhere safe to land, rather than because the folder holds content the
+	// operator cannot manage
+	// (docs/design/gitops-api/gittarget-granularity-and-cross-environment-edits.md §1): a
+	// planned write escaping spec.path (L1), or an in-place edit of a source file more than
+	// one kustomize render root reaches (L2, write-fan-in > 1). Nothing was committed. The
+	// string must stay in sync with the watch package's gitPathRefusalReason.
+	GitTargetReasonWriteBoundaryRefused = "WriteBoundaryRefused"
 
 	GitTargetReadyReasonValidationFailed        = "ValidationFailed"
 	GitTargetReadyReasonEncryptionNotConfigured = "EncryptionNotConfigured"

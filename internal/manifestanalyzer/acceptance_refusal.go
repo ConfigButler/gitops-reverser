@@ -2,7 +2,10 @@
 
 package manifestanalyzer
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // AcceptanceRefusedError is the writer-facing error for a GitTarget folder the acceptance
 // gate refused. It carries every issue so the surface (GitTarget status / a blocked stream)
@@ -33,17 +36,18 @@ func (e *AcceptanceRefusedError) Error() string {
 // the surface intent is explicit at the call site.
 func (e *AcceptanceRefusedError) BlockMessage() string { return e.Error() }
 
-// AllIssuesOfKind reports whether the refusal is composed entirely of one issue kind. The
-// surface uses it to pick a precise status reason: a refusal that is purely
-// IssueIgnoreShadowsManaged is the unrecoverable .gittargetignore-shadows-a-write case
-// (§4.3) and deserves its own reason, whereas any mix falls back to the umbrella
-// UnsupportedContent. An empty issue set returns false.
-func (e *AcceptanceRefusedError) AllIssuesOfKind(kind IssueKind) bool {
+// AllIssuesOfKinds reports whether every issue in the refusal is one of the given kinds. The
+// surface uses it to pick a precise status reason: a refusal made up purely of
+// IssueIgnoreShadowsManaged is the unrecoverable .gittargetignore-shadows-a-write case (§4.3),
+// and one made up purely of the write-boundary kinds (IssueWriteEscapesScope, IssueWriteFanIn)
+// is a refused write-boundary violation — each deserves its own reason, whereas any mix falls
+// back to the umbrella UnsupportedContent. An empty issue set returns false.
+func (e *AcceptanceRefusedError) AllIssuesOfKinds(kinds ...IssueKind) bool {
 	if len(e.Issues) == 0 {
 		return false
 	}
 	for _, iss := range e.Issues {
-		if iss.Kind != kind {
+		if !slices.Contains(kinds, iss.Kind) {
 			return false
 		}
 	}

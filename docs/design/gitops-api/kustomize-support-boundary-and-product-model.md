@@ -1,9 +1,12 @@
 # Kustomize support boundary and product model
 
-> Status: direction-setting (no code change; feeds F2/F3 design)
+> Status: direction-setting; feeds F2/F3 design. The §4 fan-in invariant is no
+> longer emergent — it ships as a write-plan refusal (see §1 and
+> [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md)).
 > Captured: 2026-07-06
 > Related:
 > [README.md](README.md),
+> [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md),
 > [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md),
 > [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../manifest/contextual-namespace-and-kustomize-folder-editing.md),
 > [../unsupported-folder-refusal-plan.md](../unsupported-folder-refusal-plan.md),
@@ -61,13 +64,15 @@ Two nuances found while auditing the current gate
   same "dead text shadowed by a transformer" pathology F1 fixed for `images:`.
   A future projection-side subtraction is the F1-style fix; until then the
   support statement should name the limitation.
-- **The fan-out fallback is safe only emergently.** Ambiguous override chains
-  (`ambiguous-images`, `diamond-images` corpora) emit a *warning* and fall
-  back to plain write-through. Write-through into a file consumed by two
-  render roots is the one edit that must never happen. Today the parallel
-  namespace ambiguity (`NamespaceNone`) prevents the live-object match in
-  practice, so no write occurs — but that safety is a side effect, not a
-  stated rule. See [§4](#4-the-invariant).
+- **The fan-out fallback is now an explicit refusal.** Ambiguous override chains
+  (`ambiguous-images`, `diamond-images` corpora) still emit a warning at store
+  build time, but a *planned write* into such a file is refused before any byte
+  is written: write-through into a file consumed by two render roots is the one
+  edit that must never happen, and it no longer depends on the coincidental
+  namespace ambiguity (`NamespaceNone`) that used to block the live-object match.
+  The refusal fails the GitTarget with reason `WriteBoundaryRefused`. See
+  [§4](#4-the-invariant) and
+  [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md).
 
 ## 2. Supported layouts: an allowlist, not field caveats
 
@@ -91,8 +96,9 @@ layout 3 launches in its **F2+F4 scope** — per-overlay `namespace` +
 new overlay-local KRM added to that overlay's `resources:`. The day-to-day
 use cases (add something to test, bump a version, edit an overlay-local
 object) need exactly that slice. Per-environment edits of base-owned *fields*
-are the deferred hard part (F3) and are honestly reported as unreflected until
-then. See the launch path in [README.md](README.md).
+are the deferred hard part (F3); today they are refused rather than written into
+the base, and reporting each one as unreflected is the unbuilt Tier-2 accounting
+(§4). See the launch path in [README.md](README.md).
 
 Explicitly **out of scope**, and worth saying in user docs:
 
@@ -152,9 +158,13 @@ This single sentence:
 - explains the `diamond-images` refusal (two paths from one root);
 - decides the multi-environment product questions in §9 (the operator cannot
   "add to all environments" *by design*);
-- must be promoted from today's emergent behavior to an explicit, tested rule
-  **before** the F2/F4 launch unit ships (see the fan-out fallback nuance in
-  §1).
+- **has been promoted from emergent behavior to an explicit, tested rule** — a
+  write-plan precondition that refuses the flush (`WriteBoundaryRefused`) rather
+  than writing through. It is paired with the filesystem jail (writes never leave
+  `spec.path`); the two layers are specified in
+  [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md).
+  Generalizing it from "a file two override chains reach" to "any file two render
+  roots reach" is F2 render-root scoping.
 
 ## 5. The overlay model (F2+F4 at launch, F3 completes it)
 
@@ -172,12 +182,23 @@ The third row is the honesty condition on shipping F2+F4 first: an arbitrary
 field edit on a base-owned object has no legal destination without patch
 authoring (in-place would be the base). Day-one Kustomize support therefore
 covers the common slice — overlay entries, overlay-local documents, and adding
-overlay-local KRM to `resources:` — **and must ship with the per-edit
-`FullyReflected` accounting**, so an
-out-of-scope edit is reported and reverted, never silently lost. That is a
-scoped promise, not a gap: the launch use cases (add to test, bump a
-version) never hit the third row, and tier-2 metrics on how often real
-users *do* hit it are what price F3.
+overlay-local KRM to `resources:`.
+
+Two mechanisms cover what falls outside that slice, and they must not be
+conflated:
+
+| | Status | Granularity | Surface |
+|---|---|---|---|
+| **Write-boundary refusal** (L1/L2) | **shipped** | aborts the whole flush; commits nothing | `GitPathAccepted=False`, `Stalled=True`, reason `WriteBoundaryRefused` |
+| **Per-edit `FullyReflected` accounting** | **designed, unbuilt** | records the individual dropped edit; reverted by hydration | planned `FullyReflected` condition + unreflected set |
+
+Today an out-of-scope edit is *prevented* — refused before any byte is written —
+but the operator is told at the target level, not per edit. Making the third row
+"reported and reverted, never silently lost" is the unbuilt accounting, and it is
+a **prerequisite for the F2/F4 launch unit**, not something this branch delivers.
+That remains a scoped promise rather than a gap: the launch use cases (add to
+test, bump a version) never hit the third row, and tier-2 metrics on how often
+real users *do* hit it are what price F3.
 
 F3's scope stays narrow and safe: the operator only creates/updates patches
 **it authored** (scalar fields, one patch file per object per overlay);
@@ -422,15 +443,17 @@ diff instead of an archaeology exercise.
   selection, remote branch cleanup, a quiescence condition) — whose priority
   intent mode raises from "ergonomics" to "product prerequisite."
 - **F2+F4 ship at launch; F3 completes them.** Render-root scoping, overlay
-  new-file placement, `resources:` entry creation, and the unreflected-set
-  accounting are an honest launch unit scoped to adds, bumps, and
-  overlay-local edits; the first `kubectl set env` against a base-owned
-  object in test is *reported and reverted*, not silently lost. F3 turns
-  that report into a reflected edit, priced by how often the report fires.
-- **Prerequisite hardening (pre-F2/F4):** make the write-fan-in-=-1
-  invariant (§4) explicit and tested — the ambiguity fallback must provably
-  never write-through into a multi-consumer file, rather than being blocked as
-  a side effect of namespace ambiguity.
+  new-file placement, `resources:` entry creation, and the (still unbuilt)
+  unreflected-set accounting are an honest launch unit scoped to adds, bumps, and
+  overlay-local edits; once the accounting exists, the first `kubectl set env`
+  against a base-owned object in test is *reported and reverted* rather than
+  merely refused, and never silently lost. F3 turns that report into a reflected
+  edit, priced by how often the report fires.
+- **Prerequisite hardening (pre-F2/F4): done.** The write-fan-in-=-1 invariant
+  (§4) is explicit and tested — the ambiguity fallback provably never writes
+  through into a multi-consumer file, instead of being blocked as a side effect
+  of namespace ambiguity. It refuses the flush and fails the GitTarget
+  (`WriteBoundaryRefused`), paired with the L1 filesystem jail.
 - **F4 moves a boundary:** overlay new-object placement needs `resources:`
   entry *creation*, which F1 explicitly excluded. The exclusion was per-F1
   policy, not architecture; F4's design should own it.

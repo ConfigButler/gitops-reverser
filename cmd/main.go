@@ -157,6 +157,12 @@ func main() {
 	// The registry is a stable pointer the watch manager refreshes in place.
 	workerManager.SetMapper(watchMgr.TypeRegistry())
 
+	// Give the workers a way to surface a refused live write plan. Live events are committed
+	// off a timer with no result channel, so without this a refusal (acceptance gate or a
+	// write-boundary precondition) would abort the commit and leave the GitTarget looking
+	// healthy; the resync path already reports its own refusals through the router.
+	workerManager.SetPathRefusalReporter(watchMgr.ReportGitPathRefusal)
+
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{
 		Client:       mgr.GetClient(),
