@@ -864,6 +864,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	targetName, targetNamespace := l.openWindow.GitTarget, l.openWindow.GitTargetNamespace
 	windowTarget := targetNamespace + "/" + targetName
 	pendingCR := l.openWindow.pendingCR
+	assertedAuthor := l.openWindow.pendingAuthor
 	// Message precedence (§6.4.2): explicit override, else the attached
 	// CommitRequest message, else the generated grouped-commit message (empty).
 	effectiveMessage := message
@@ -892,6 +893,10 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 		return false
 	}
 	pendingWrite.CommitMessage = effectiveMessage
+	// An authorized CommitRequest's asserted author signs this commit instead of the
+	// events' audit-derived author. Carried on the write, not applied here, so it
+	// survives the push cooldown and the conflict rebase-replay with the data.
+	pendingWrite.AssertedAuthor = assertedAuthor
 	// Carry the claiming CommitRequest onto the write so its result follows the
 	// data: it is resolved Committed once this write is pushed (§6.5).
 	pendingWrite.CommitRequest = pendingCR

@@ -377,7 +377,11 @@ func TestDeletecollection(t *testing.T) {
 
 	// N watch DELETED + one name-less audit deletecollection + N per-object
 	// admission DELETE (validating admission fires once per object).
-	records := h.drain(t, s.id, drainSpec{minCount: 2*len(names) + 1, settle: 3 * time.Second, timeout: 60 * time.Second})
+	records := h.drain(
+		t,
+		s.id,
+		drainSpec{minCount: 2*len(names) + 1, settle: 3 * time.Second, timeout: 60 * time.Second},
+	)
 	if got := countSource(records, mutationlab.SourceWatch); got != len(names) {
 		t.Errorf("deletecollection produced %d watch deletes; want %d (per-object fan-out)", got, len(names))
 	}

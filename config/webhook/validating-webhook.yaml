@@ -81,6 +81,14 @@ webhooks:
   # reject a user's CommitRequest. The handler also returns Allowed even when the Redis
   # write errors, so the command's success never depends on this webhook at all —
   # Ignore only covers the webhook being entirely unreachable.
+  #
+  # The handler DOES deny an unauthorized CommitRequest spec.author, and Ignore means that
+  # denial can be bypassed by taking the webhook down. That is by design and it is safe:
+  # the webhook records its authorization verdict on the author record, and the controller
+  # honors spec.author only against a record carrying it. A bypassed webhook writes no
+  # record, so the assertion is ignored rather than silently honored. The real gate is the
+  # controller; this denial is the legible error. See
+  # docs/design/multi-tenant/asserted-commit-author.md.
   failurePolicy: Ignore
   matchPolicy: Equivalent
   name: validate-operator-types.configbutler.ai

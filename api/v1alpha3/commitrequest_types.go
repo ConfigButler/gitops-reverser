@@ -42,6 +42,60 @@ type CommitRequestSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=300
 	CloseDelaySeconds int32 `json:"closeDelaySeconds,omitempty"`
+
+	// Author names the human this commit is for, instead of deriving them from an
+	// apiserver audit fact. It exists for an authenticated control plane that already
+	// knows who the user is — one that verified their token before impersonating them —
+	// and for any cluster whose apiserver audit flags the operator cannot set.
+	//
+	// Asserting an author is a privilege, not a field anyone may set. It is honored only
+	// when the requester holds the `assert-author` verb on the named GitTarget, in the
+	// style of `bind`, `escalate` and `impersonate`:
+	//
+	//	rules:
+	//	  - apiGroups: ["configbutler.ai"]
+	//	    resources: ["gittargets"]
+	//	    resourceNames: ["tenants"]
+	//	    verbs: ["assert-author"]
+	//
+	// The check runs in the validate-operator-types admission webhook, which denies an
+	// unauthorized create. Because that webhook is failurePolicy: Ignore by design, the
+	// controller is the real gate: it honors this field only when an admission record
+	// exists for the object AND that record carries the authorized verdict. Without one —
+	// the webhook is off, was bypassed, or Redis is not configured — the assertion is
+	// ignored, the commit is authored by the configured committer, and the request reports
+	// AuthorAttributed=False with reason AuthorAssertionUnverified.
+	//
+	// An asserted author attaches to any open commit window for the target, not only to
+	// one whose audit-derived author matches: the assertion is a statement about the
+	// commit being made, not a claim to be the actor the audit stream recorded. It becomes
+	// the commit's author signature; the committer stays the operator's configured
+	// identity.
+	// +optional
+	Author *CommitAuthor `json:"author,omitempty"`
+}
+
+// CommitAuthor is the Git author identity a privileged client asserts for a commit.
+// Neither field is verified to correspond to a real identity: they are what the trusted
+// control plane says they are. Granting `assert-author` grants the ability to write any
+// author into the repository's history — treat it exactly like granting `impersonate`.
+type CommitAuthor struct {
+	// Name is the Git author name, used verbatim in the commit's author header.
+	// ASCII control characters, angle brackets and newlines are rejected because they
+	// would let a name forge a signature header.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[^\x00-\x1F\x7F<>]*$`
+	Name string `json:"name"`
+
+	// Email is the Git author email. When omitted, a stable synthetic address is derived
+	// from Name, exactly as it is for an audit-attributed author with no email claim.
+	// +optional
+	// +kubebuilder:validation:MinLength=3
+	// +kubebuilder:validation:MaxLength=254
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`
+	Email string `json:"email,omitempty"`
 }
 
 // CommitRequestStatus defines the observed state of CommitRequest. Progress and
@@ -54,10 +108,13 @@ type CommitRequestSpec struct {
 //   - Reconciling / Stalled: the kstatus progress / blocked pair. Reconciling=True
 //     while finalizing; Stalled=True when the finalize failed and needs attention.
 //   - AuthorAttributed (domain): binary and settled immediately. True
-//     (AttributedFromAdmission) when the submitter captured at admission named the
-//     commit author; False (CommitterFallback) when no admission record exists — the
-//     validate-operator-types webhook is not configured — and the commit is authored by the
-//     configured committer. False is not a failure and does not affect Ready.
+//     (AuthorAsserted) when spec.author named the commit author and the requester was
+//     authorized to assert it; True (AttributedFromAdmission) when the submitter captured
+//     at admission named the commit author; False (CommitterFallback) when no admission
+//     record exists — the validate-operator-types webhook is not configured — and the
+//     commit is authored by the configured committer; False (AuthorAssertionUnverified)
+//     when spec.author was set but no authorized admission record backs it, so the
+//     assertion was ignored. False is not a failure and does not affect Ready.
 //   - Pushed (domain): True once the commit is in the remote repository.
 type CommitRequestStatus struct {
 	// ObservedGeneration is the most recent generation observed by the controller.

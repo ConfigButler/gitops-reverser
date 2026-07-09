@@ -70,6 +70,51 @@ spec:
           spec:
             description: spec defines the desired state of CommitRequest
             properties:
+              author:
+                description: "Author names the human this commit is for, instead of
+                  deriving them from an\napiserver audit fact. It exists for an authenticated
+                  control plane that already\nknows who the user is — one that verified
+                  their token before impersonating them —\nand for any cluster whose
+                  apiserver audit flags the operator cannot set.\n\nAsserting an author
+                  is a privilege, not a field anyone may set. It is honored only\nwhen
+                  the requester holds the `assert-author` verb on the named GitTarget,
+                  in the\nstyle of `bind`, `escalate` and `impersonate`:\n\n\trules:\n\t
+                  \ - apiGroups: [\"configbutler.ai\"]\n\t    resources: [\"gittargets\"]\n\t
+                  \   resourceNames: [\"tenants\"]\n\t    verbs: [\"assert-author\"]\n\nThe
+                  check runs in the validate-operator-types admission webhook, which
+                  denies an\nunauthorized create. Because that webhook is failurePolicy:
+                  Ignore by design, the\ncontroller is the real gate: it honors this
+                  field only when an admission record\nexists for the object AND that
+                  record carries the authorized verdict. Without one —\nthe webhook
+                  is off, was bypassed, or Redis is not configured — the assertion
+                  is\nignored, the commit is authored by the configured committer,
+                  and the request reports\nAuthorAttributed=False with reason AuthorAssertionUnverified.\n\nAn
+                  asserted author attaches to any open commit window for the target,
+                  not only to\none whose audit-derived author matches: the assertion
+                  is a statement about the\ncommit being made, not a claim to be the
+                  actor the audit stream recorded. It becomes\nthe commit's author
+                  signature; the committer stays the operator's configured\nidentity."
+                properties:
+                  email:
+                    description: |-
+                      Email is the Git author email. When omitted, a stable synthetic address is derived
+                      from Name, exactly as it is for an audit-attributed author with no email claim.
+                    maxLength: 254
+                    minLength: 3
+                    pattern: ^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$
+                    type: string
+                  name:
+                    description: |-
+                      Name is the Git author name, used verbatim in the commit's author header.
+                      ASCII control characters, angle brackets and newlines are rejected because they
+                      would let a name forge a signature header.
+                    maxLength: 128
+                    minLength: 1
+                    pattern: ^[^\x00-\x1F\x7F<>]*$
+                    type: string
+                required:
+                - name
+                type: object
               closeDelaySeconds:
                 description: |-
                   CloseDelaySeconds optionally delays closing the open commit window for this

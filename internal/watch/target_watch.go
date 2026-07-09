@@ -684,8 +684,8 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		event := targetWatchGitEvent(key.GVR, u, op)
 		// Identity exclusion runs before the content dedup, so a write this GitTarget
 		// declines never seeds the dedup cache with content that was not routed to Git.
-		authorAttached, admitted := m.admitLiveTargetWatchEvent(ctx, log, gitDest, key, filter, &event, u, op)
-		if !admitted {
+		admission := m.admitLiveTargetWatchEvent(ctx, log, gitDest, key, filter, &event, u, op)
+		if !admission.Admitted {
 			return rv, nil
 		}
 		// Drop a no-op UPDATE before it reaches the worker: a /status-only change
@@ -698,7 +698,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 				"resource", event.Identifier.String())
 			return rv, nil
 		}
-		if !authorAttached {
+		if !admission.AuthorAttached {
 			m.attachAuthor(ctx, &event, key.GVR, u)
 		}
 		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
@@ -714,14 +714,18 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	}
 }
 
+// liveEventAdmission is the outcome of applying a rule's write exclusions to one live
+// event. AuthorAttached lets the caller skip a second attribution lookup: attribution
+// costs a bounded grace-window wait, normally deferred until after the content dedup so
+// status-only churn never pays for it. Only excludeUsers forces it early, because the
+// identity is the thing being matched.
+type liveEventAdmission struct {
+	Admitted       bool
+	AuthorAttached bool
+}
+
 // admitLiveTargetWatchEvent applies the rules' write exclusions to one live event.
-//
-// It returns authorAttached so the caller does not resolve the author twice: attribution
-// costs a bounded grace-window wait, and it is normally deferred until after the content
-// dedup so that status-only churn never pays for it. Only excludeUsers forces it early,
-// because the identity is the thing being matched.
-//
-// admitted=false means the event is dropped: a GitOps forward leg's own apply, mirrored
+// Admitted=false means the event is dropped: a GitOps forward leg's own apply, mirrored
 // back into the branch it came from, is the loop this exists to break.
 func (m *Manager) admitLiveTargetWatchEvent(
 	ctx context.Context,
@@ -732,15 +736,16 @@ func (m *Manager) admitLiveTargetWatchEvent(
 	event *git.Event,
 	u *unstructured.Unstructured,
 	op string,
-) (authorAttached, admitted bool) {
+) liveEventAdmission {
 	if !filter.selections.HasExclusions() {
-		return false, true
+		return liveEventAdmission{Admitted: true}
 	}
 
 	// Empty for a DELETE: managedFields names the last writer, not the deleter.
 	lastWriters := lastWritersForOperation(op, u)
 
 	username := ""
+	authorAttached := false
 	if filter.selections.NeedsAuthor() {
 		m.attachAuthor(ctx, event, key.GVR, u)
 		authorAttached = true
@@ -750,7 +755,7 @@ func (m *Manager) admitLiveTargetWatchEvent(
 	}
 
 	if filter.selections.Admits(op, lastWriters, username) {
-		return authorAttached, true
+		return liveEventAdmission{Admitted: true, AuthorAttached: authorAttached}
 	}
 
 	reason := filter.selections.ExclusionReason(op, lastWriters, username)
@@ -759,7 +764,7 @@ func (m *Manager) admitLiveTargetWatchEvent(
 		"resource", event.Identifier.String(), "operation", op,
 		"reason", reason, "lastWriters", lastWriters, "user", username)
 	m.recordExcludedWatchEvent(gitDest, key.GVR, reason)
-	return authorAttached, false
+	return liveEventAdmission{AuthorAttached: authorAttached}
 }
 
 // attachAuthor names the commit author for a live watch event from the optional

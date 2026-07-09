@@ -107,6 +107,12 @@ type CommitRequestReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests/status,verbs=get;update;patch
 
+// The validate-operator-types admission webhook issues a SubjectAccessReview to decide
+// whether a CommitRequest's submitter may assert a commit author (the assert-author verb
+// on the referenced GitTarget). Without this the review cannot run and every assertion is
+// denied. See docs/design/multi-tenant/asserted-commit-author.md.
+// +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
+
 // Reconcile advances one CommitRequest through attribute → attach + poll →
 // terminal status. With MaxConcurrentReconciles=1 concurrent CommitRequests are
 // serialized by construction, and the worker keys attaches by request identity so
@@ -126,9 +132,9 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// 1. ATTRIBUTE: settle the commit author synchronously (present-or-never, §2).
-	// A hit names the admission submitter; a miss is the configured committer. Either
-	// way the decision is final — there is no wait and no requeue for the author.
-	author, attribution := r.attributeAuthor(ctx, commitRequest)
+	// An authorized spec.author wins; else the admission submitter; else the configured
+	// committer. Either way the decision is final — no wait, no requeue for the author.
+	author, assertedAuthor, attribution := r.attributeAuthor(ctx, commitRequest)
 
 	// First sight: stamp the still-running conditions so the object reports its
 	// progress (kstatus InProgress) and AuthorAttributed is settled immediately. A
@@ -149,6 +155,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Name:               commitRequest.Name,
 		UID:                string(commitRequest.UID),
 		Author:             author.Author,
+		AssertedAuthor:     assertedAuthor,
 		GitTargetName:      commitRequest.Spec.TargetRef.Name,
 		GitTargetNamespace: commitRequest.Namespace,
 		Message:            capCommitRequestMessage(commitRequest.Spec.Message),
@@ -186,27 +193,69 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // the configured committer immediately. The miss case is final — the record is written
 // before the object is visible, so there is no asynchronous arrival to wait for.
 //
+// spec.author overrides both, but ONLY when the admission record for this object carries
+// the authorized verdict. That is the real gate: the webhook is failurePolicy: Ignore, so
+// a guard living only there would be bypassable by taking the webhook down. No record —
+// off, bypassed, or no Redis — means the assertion is ignored, not honored.
+//
 // The lookup result is logged at Info: it is the counterpart to the admission handler's
 // "recorded command author" line, so a hit/miss pair makes the whole capture→read path
 // legible (the first thing to check when a CommitRequest commits as the committer).
 func (r *CommitRequestReconciler) attributeAuthor(
 	ctx context.Context,
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
-) (queue.CommandAuthor, commitRequestAttribution) {
+) (queue.CommandAuthor, *git.UserInfo, commitRequestAttribution) {
 	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
+	key := client.ObjectKeyFromObject(commitRequest)
+
 	if r.AuthorLookup == nil {
+		if commitRequest.Spec.Author != nil {
+			log.Info("spec.author ignored: command-author lookup disabled "+
+				"(validate-operator-types webhook off or no Redis); committing as committer",
+				"name", key, "uid", commitRequest.UID)
+			return queue.CommandAuthor{}, nil, attributionAssertionUnverified
+		}
 		log.Info("command-author lookup disabled (validate-operator-types webhook off); committing as committer",
-			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
-		return queue.CommandAuthor{}, attributionCommitter
+			"name", key, "uid", commitRequest.UID)
+		return queue.CommandAuthor{}, nil, attributionCommitter
 	}
-	if author, ok := r.AuthorLookup.LookupCommandAuthor(ctx, commitRequest.UID); ok {
+
+	author, found := r.AuthorLookup.LookupCommandAuthor(ctx, commitRequest.UID)
+
+	if commitRequest.Spec.Author != nil {
+		if !found || !author.AssertAuthorAllowed {
+			log.Info("spec.author ignored: no authorized admission record backs the assertion; "+
+				"committing as committer", "name", key, "uid", commitRequest.UID, "recordFound", found)
+			return queue.CommandAuthor{}, nil, attributionAssertionUnverified
+		}
+		asserted := assertedUserInfo(commitRequest.Spec.Author)
+		log.Info("commit author asserted by an authorized CommitRequest",
+			"name", key, "uid", commitRequest.UID,
+			"submitter", author.Author, "assertedAuthor", asserted.Username)
+		return author, &asserted, attributionAsserted
+	}
+
+	if found {
 		log.Info("command author resolved from admission record",
-			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID, "author", author.Author)
-		return author, attributionFromAdmission
+			"name", key, "uid", commitRequest.UID, "author", author.Author)
+		return author, nil, attributionFromAdmission
 	}
 	log.Info("no admission command-author record found; committing as committer",
-		"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
-	return queue.CommandAuthor{}, attributionCommitter
+		"name", key, "uid", commitRequest.UID)
+	return queue.CommandAuthor{}, nil, attributionCommitter
+}
+
+// assertedUserInfo maps an asserted CommitAuthor onto the git identity that signs the
+// commit. Name lands in both Username and DisplayName: DisplayName is what the signature
+// header prefers, and Username is the fallback when the name carries a character a
+// signature header cannot hold. An empty Email is derived downstream, exactly as it is for
+// an audit-attributed author whose token had no email claim.
+func assertedUserInfo(author *configbutleraiv1alpha3.CommitAuthor) git.UserInfo {
+	return git.UserInfo{
+		Username:    author.Name,
+		DisplayName: author.Name,
+		Email:       author.Email,
+	}
 }
 
 // recordCloseDelayWait makes the post-attribution wait — the closeDelaySeconds

@@ -33,6 +33,11 @@ type openWindow struct {
 	// Once set, whichever path finalizes the window uses it instead of the
 	// generated grouped-commit message, so an early cut-off still carries intent.
 	pendingMessage string
+	// pendingAuthor is the author a privileged CommitRequest asserted for this window
+	// (spec.author). When set it overrides the events' own audit-derived author in the
+	// commit's author signature. Nil is the ordinary case: the window's events name the
+	// author, or nobody does and the committer signs.
+	pendingAuthor *UserInfo
 	// pendingCR identifies the CommitRequest claiming this window; at most one. On
 	// finalize its outcome is resolved (Committed once the carrying write pushes).
 	pendingCR *commitRequestID

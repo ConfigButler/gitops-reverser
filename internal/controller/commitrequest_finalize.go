@@ -19,16 +19,18 @@ const commitRequestMessageMaxBytes = 1024
 
 // CommitRequest condition reasons (CamelCase tokens surfaced on status.conditions).
 const (
-	crReasonWaitingForCloseDelay    = "WaitingForCloseDelay"
-	crReasonCommitted               = "Committed"
-	crReasonNoWindowInGrace         = "NoWindowInGrace"
-	crReasonWindowMismatch          = "WindowMismatch"
-	crReasonAlreadyPresent          = "AlreadyPresent"
-	crReasonFinalizeFailed          = "FinalizeFailed"
-	crReasonUnexpectedOutcome       = "UnexpectedOutcome"
-	crReasonAttributedFromAdmission = "AttributedFromAdmission"
-	crReasonCommitterFallback       = "CommitterFallback"
-	crReasonPushed                  = "Pushed"
+	crReasonWaitingForCloseDelay      = "WaitingForCloseDelay"
+	crReasonCommitted                 = "Committed"
+	crReasonNoWindowInGrace           = "NoWindowInGrace"
+	crReasonWindowMismatch            = "WindowMismatch"
+	crReasonAlreadyPresent            = "AlreadyPresent"
+	crReasonFinalizeFailed            = "FinalizeFailed"
+	crReasonUnexpectedOutcome         = "UnexpectedOutcome"
+	crReasonAttributedFromAdmission   = "AttributedFromAdmission"
+	crReasonAuthorAsserted            = "AuthorAsserted"
+	crReasonAuthorAssertionUnverified = "AuthorAssertionUnverified"
+	crReasonCommitterFallback         = "CommitterFallback"
+	crReasonPushed                    = "Pushed"
 )
 
 // noWindowInGraceMessage is the prose for a NoWindowInGrace outcome: the grace
@@ -57,6 +59,14 @@ const (
 	// validate-operator-types webhook is not configured (or did not record one) — so the
 	// commit is authored by the configured committer.
 	attributionCommitter
+	// attributionAsserted means spec.author named the commit author and an admission
+	// record confirms the requester held the assert-author verb on the GitTarget.
+	attributionAsserted
+	// attributionAssertionUnverified means spec.author was set but no authorized
+	// admission record backs it: the webhook is off, was bypassed, or Redis is not
+	// configured. The assertion is ignored and the commit is authored by the committer —
+	// fail-closed, and independent of the webhook's failurePolicy.
+	attributionAssertionUnverified
 )
 
 // setCommitRequestCondition upserts a condition keyed by type, stamping it with
@@ -106,6 +116,16 @@ func markCommitRequestWaitingForCloseDelay(cr *configv1alpha3.CommitRequest, att
 // affect Ready — it is the honest signal that no admission author record was found.
 func setCommitRequestAttributed(cr *configv1alpha3.CommitRequest, attribution commitRequestAttribution) {
 	switch attribution {
+	case attributionAsserted:
+		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue,
+			crReasonAuthorAsserted,
+			"spec.author named the commit author; the requester holds the assert-author verb on the GitTarget")
+	case attributionAssertionUnverified:
+		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
+			crReasonAuthorAssertionUnverified,
+			"spec.author was set but no authorized admission record backs it (the validate-operator-types "+
+				"webhook is not configured, was bypassed, or Redis is not set); the assertion was ignored "+
+				"and the commit is authored by the configured committer")
 	case attributionFromAdmission:
 		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue,
 			crReasonAttributedFromAdmission,

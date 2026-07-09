@@ -27,7 +27,10 @@ webhooks:
         path: /validate-operator-types
         port: {{ .Values.servers.admission.port }}
     # Ignore, not Fail: a missed author capture must degrade to the committer, never
-    # reject a user's CommitRequest.
+    # reject a user's CommitRequest. The handler does deny an unauthorized spec.author,
+    # and Ignore means that denial is bypassable — safely: the controller honors
+    # spec.author only against an admission record carrying the authorization verdict, and
+    # a bypassed webhook writes no record. See docs/design/multi-tenant/asserted-commit-author.md.
     failurePolicy: Ignore
     matchPolicy: Equivalent
     rules:

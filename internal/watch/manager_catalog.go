@@ -455,7 +455,8 @@ func apiSurfaceTriggerGVRs() []schema.GroupVersionResource {
 func selectAPISurfaceTriggers(
 	catalog *APIResourceCatalog,
 	started map[schema.GroupVersionResource]struct{},
-) (start, unserved []schema.GroupVersionResource) {
+) ([]schema.GroupVersionResource, []schema.GroupVersionResource) {
+	var start, unserved []schema.GroupVersionResource
 	for _, gvr := range apiSurfaceTriggerGVRs() {
 		if _, running := started[gvr]; running {
 			continue

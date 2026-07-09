@@ -67,15 +67,21 @@ func TestTargetWatchSpecs_ExclusionChangeChangesTheSpec(t *testing.T) {
 	specFor := func(selections RuleSelections) string {
 		table := WatchedTypeTable{
 			GitDest: types.NewResourceReference("target", "default"),
-			Types:   []WatchedType{{GVR: configmapsGVR, NamespaceSelections: map[string]RuleSelections{"apps": selections}}},
+			Types: []WatchedType{
+				{GVR: configmapsGVR, NamespaceSelections: map[string]RuleSelections{"apps": selections}},
+			},
 		}
 		return targetWatchSpecs(table)[targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}]
 	}
 
 	ops := OperationSet{"UPDATE": struct{}{}}
 	plain := specFor(RuleSelections{{Ops: ops}})
-	excludingFlux := specFor(RuleSelections{{Ops: ops, Exclusion: newWriteExclusion([]string{"kustomize-controller"}, nil)}})
-	excludingArgo := specFor(RuleSelections{{Ops: ops, Exclusion: newWriteExclusion([]string{"argocd-controller"}, nil)}})
+	excludingFlux := specFor(
+		RuleSelections{{Ops: ops, Exclusion: newWriteExclusion([]string{"kustomize-controller"}, nil)}},
+	)
+	excludingArgo := specFor(
+		RuleSelections{{Ops: ops, Exclusion: newWriteExclusion([]string{"argocd-controller"}, nil)}},
+	)
 
 	assert.NotEqual(t, plain, excludingFlux)
 	assert.NotEqual(t, excludingFlux, excludingArgo)

@@ -61,6 +61,13 @@ type AttachCommitRequest struct {
 	// matches is attached; this binds "the open window" to "the requesting
 	// author's open window".
 	Author string
+	// AssertedAuthor, when set, is the identity a privileged client stated this commit
+	// is for (CommitRequest spec.author, honored only against an authorized admission
+	// record). It changes the attach in two ways: the request binds to ANY open window
+	// for the GitTarget rather than only to one whose audit-derived author matches, and
+	// the identity becomes the commit's author signature instead of merely selecting a
+	// window. The committer is unaffected.
+	AssertedAuthor *UserInfo
 	// GitTargetName / GitTargetNamespace scope the finalize to one GitTarget.
 	GitTargetName      string
 	GitTargetNamespace string
@@ -93,6 +100,7 @@ func (a AttachCommitRequest) id() commitRequestID {
 type pendingCommitRequest struct {
 	id                 commitRequestID
 	author             string
+	assertedAuthor     *UserInfo
 	gitTargetName      string
 	gitTargetNamespace string
 	message            string
@@ -103,15 +111,25 @@ type pendingCommitRequest struct {
 	attached bool
 }
 
-// matchesWindow reports whether the request identifies the given open window by
-// author and GitTarget.
+// matchesWindow reports whether the request identifies the given open window.
+//
+// Without an asserted author the match is by audit-derived author AND GitTarget: the
+// request finalizes "the requesting author's open window", never someone else's.
+//
+// With an asserted author the match is by GitTarget alone. The assertion is a statement
+// about the commit being made, by a caller who had to hold an RBAC verb to make it — not
+// a claim to be whichever actor the audit stream happened to record for the pending edits.
 func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p == nil || w == nil {
 		return false
 	}
-	return p.author == w.Author &&
-		p.gitTargetName == w.GitTarget &&
-		p.gitTargetNamespace == w.GitTargetNamespace
+	if p.gitTargetName != w.GitTarget || p.gitTargetNamespace != w.GitTargetNamespace {
+		return false
+	}
+	if p.assertedAuthor != nil {
+		return true
+	}
+	return p.author == w.Author
 }
 
 // commitRequestOutcomeEntry is a resolved outcome retained for the controller to

@@ -34,6 +34,19 @@ type CommandAuthor struct {
 	DisplayName string `json:"displayName,omitempty"`
 	Email       string `json:"email,omitempty"`
 	RequestedAt string `json:"requestedAt,omitempty"` // RFC3339Nano, for lag metrics/debug
+
+	// AssertAuthorAllowed records that the admission webhook ran a SubjectAccessReview
+	// for this submitter against the `assert-author` verb on the referenced GitTarget,
+	// and it said yes. It is the ONLY thing that lets the controller honor a
+	// CommitRequest's spec.author.
+	//
+	// The verdict lives on the record rather than being re-derived by the controller
+	// because the controller cannot know who submitted the object — only admission saw
+	// the requester. And it must be recorded rather than trusted from the webhook's
+	// allow/deny alone, because that webhook is failurePolicy: Ignore by design: a
+	// bypassed webhook writes no record, so the assertion is ignored rather than
+	// silently honored. Fail-closed, independent of failurePolicy.
+	AssertAuthorAllowed bool `json:"assertAuthorAllowed,omitempty"`
 }
 
 // CommandAuthorStore records and reads command authorship. It shares RedisStore's

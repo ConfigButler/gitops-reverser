@@ -227,7 +227,15 @@ func (p PendingWrite) Author() string {
 // AuthorUserInfo returns the full author identity for commit-shaped pending
 // writes, including any OIDC display name and email. Atomic and empty writes
 // have no per-user author and return the zero value.
+//
+// An author asserted by an authorized CommitRequest (spec.author) wins over the events'
+// own audit-derived identity: it is the more specific, more recent statement, made by a
+// caller who had to hold an RBAC verb to make it. It applies even to an atomic write,
+// which otherwise has no author at all.
 func (p PendingWrite) AuthorUserInfo() UserInfo {
+	if p.AssertedAuthor != nil {
+		return *p.AssertedAuthor
+	}
 	if p.Kind == PendingWriteAtomic || len(p.Events) == 0 {
 		return UserInfo{}
 	}

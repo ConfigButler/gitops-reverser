@@ -193,6 +193,12 @@ type PendingWrite struct {
 	// snapshot's push past its window.
 	Committed *bool
 
+	// AssertedAuthor, when set, is the identity an authorized CommitRequest stated this
+	// commit is for (spec.author). It overrides the events' audit-derived author in the
+	// commit's author signature; the committer is always the operator. See
+	// docs/design/multi-tenant/asserted-commit-author.md.
+	AssertedAuthor *UserInfo
+
 	// CommitRequest, when set, is the CommitRequest claiming this write: it is
 	// resolved Committed (with CommitSHA) once this write is pushed (§6.5 of
 	// docs/design/stream/commitrequest-design.md). It rides the write through the

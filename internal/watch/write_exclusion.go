@@ -278,10 +278,16 @@ func lastWriteFieldManagers(u *unstructured.Unstructured) []string {
 		return nil
 	}
 	entries := u.GetManagedFields()
-	if len(entries) == 0 {
+	newest := newestManagedFieldsTime(entries)
+	if newest == nil {
 		return nil
 	}
+	return managersAt(entries, newest)
+}
 
+// newestManagedFieldsTime returns the newest usable timestamp across the entries, or nil
+// when none carries one.
+func newestManagedFieldsTime(entries []metav1.ManagedFieldsEntry) *metav1.Time {
 	var newest *metav1.Time
 	for i := range entries {
 		ts := entries[i].Time
@@ -292,15 +298,17 @@ func lastWriteFieldManagers(u *unstructured.Unstructured) []string {
 			newest = ts
 		}
 	}
-	if newest == nil {
-		return nil
-	}
+	return newest
+}
 
+// managersAt returns the sorted, de-duplicated managers of every entry stamped at exactly
+// the given time.
+func managersAt(entries []metav1.ManagedFieldsEntry, at *metav1.Time) []string {
 	seen := map[string]struct{}{}
-	writers := make([]string, 0, 2)
+	var writers []string
 	for i := range entries {
 		ts := entries[i].Time
-		if ts == nil || !ts.Equal(newest) {
+		if ts == nil || !ts.Equal(at) {
 			continue
 		}
 		manager := strings.TrimSpace(entries[i].Manager)

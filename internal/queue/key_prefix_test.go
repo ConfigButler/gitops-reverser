@@ -26,17 +26,20 @@ func TestValidateKeyPrefix(t *testing.T) {
 		"surrounding space":      {in: "  tenant-7  ", want: "tenant-7"},
 		"dots and underscores":   {in: "rev_1.example.com", want: "rev_1.example.com"},
 
-		"empty":            {in: "", wantErr: "non-empty"},
-		"only colons":      {in: ":::", wantErr: "non-empty"},
-		"glob star":        {in: "tenant-*", wantErr: `contains "*"`},
-		"glob question":    {in: "tenant-?", wantErr: `contains "?"`},
-		"glob bracket":     {in: "tenant-[a]", wantErr: `contains "["`},
-		"escape char":      {in: `tenant\a`, wantErr: `contains "\\"`},
-		"percent":          {in: "tenant%3A", wantErr: `contains "%"`},
-		"slash":            {in: "tenant/a", wantErr: `contains "/"`},
-		"space inside":     {in: "tenant a", wantErr: `contains " "`},
-		"too long":         {in: strings.Repeat("a", maxKeyPrefixLength+1), wantErr: "at most 128 characters"},
-		"exactly max long": {in: strings.Repeat("a", maxKeyPrefixLength), want: strings.Repeat("a", maxKeyPrefixLength)},
+		"empty":         {in: "", wantErr: "non-empty"},
+		"only colons":   {in: ":::", wantErr: "non-empty"},
+		"glob star":     {in: "tenant-*", wantErr: `contains "*"`},
+		"glob question": {in: "tenant-?", wantErr: `contains "?"`},
+		"glob bracket":  {in: "tenant-[a]", wantErr: `contains "["`},
+		"escape char":   {in: `tenant\a`, wantErr: `contains "\\"`},
+		"percent":       {in: "tenant%3A", wantErr: `contains "%"`},
+		"slash":         {in: "tenant/a", wantErr: `contains "/"`},
+		"space inside":  {in: "tenant a", wantErr: `contains " "`},
+		"too long":      {in: strings.Repeat("a", maxKeyPrefixLength+1), wantErr: "at most 128 characters"},
+		"exactly max long": {
+			in:   strings.Repeat("a", maxKeyPrefixLength),
+			want: strings.Repeat("a", maxKeyPrefixLength),
+		},
 	}
 
 	for name, tc := range tests {
@@ -64,18 +67,18 @@ func TestResolveKeyPrefix_FallsBackToDefault(t *testing.T) {
 }
 
 // newPrefixedRedisStore builds a store on a fresh miniredis under an explicit prefix.
-func newPrefixedRedisStore(t *testing.T, prefix string) (*RedisStore, *miniredis.Miniredis) {
+func newPrefixedRedisStore(t *testing.T, prefix string) *RedisStore {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	store, err := NewRedisStore(RedisStoreConfig{Addr: mr.Addr(), KeyPrefix: prefix})
 	require.NoError(t, err)
-	return store, mr
+	return store
 }
 
 func TestRedisStore_KeyPrefixReachesEveryKeyFamily(t *testing.T) {
 	t.Parallel()
 
-	store, _ := newPrefixedRedisStore(t, "cell-a:tenant-7")
+	store := newPrefixedRedisStore(t, "cell-a:tenant-7")
 	require.Equal(t, "cell-a:tenant-7", store.KeyPrefix())
 
 	gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
@@ -99,7 +102,7 @@ func TestRedisStore_DefaultPrefixIsUnchanged(t *testing.T) {
 
 	// The flag defaults to DefaultKeyPrefix, so an upgrade must not orphan the keys a
 	// previous release wrote.
-	store, _ := newPrefixedRedisStore(t, DefaultKeyPrefix)
+	store := newPrefixedRedisStore(t, DefaultKeyPrefix)
 	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
 		store.watchCursorKey("gtuid-3", coreConfigmapsGVR(), ""))
 	require.Equal(t, "gitops-reverser:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
@@ -135,13 +138,36 @@ func TestRedisStore_DistinctPrefixesIsolateCursors(t *testing.T) {
 	require.Equal(t, "111", rv, "tenant-b's write must not clobber tenant-a's cursor")
 }
 
+// The assert-author verdict is the only thing that lets the controller honor a
+// CommitRequest's spec.author, so it has to survive the Redis round trip.
+func TestCommandAuthorStore_AssertAuthorAllowedRoundTrips(t *testing.T) {
+	t.Parallel()
+
+	store := newPrefixedRedisStore(t, DefaultKeyPrefix)
+	commandStore := store.CommandAuthorStore()
+	ctx := context.Background()
+
+	require.NoError(t, commandStore.RecordCommandAuthor(ctx, "cr-allowed",
+		CommandAuthor{Author: "gitops-api", AssertAuthorAllowed: true}))
+	got, ok := commandStore.LookupCommandAuthor(ctx, "cr-allowed")
+	require.True(t, ok)
+	require.True(t, got.AssertAuthorAllowed)
+
+	// The zero value is the safe one: a record written before this field existed, or by a
+	// submitter that asserted nothing, must not authorize an assertion.
+	require.NoError(t, commandStore.RecordCommandAuthor(ctx, "cr-plain", CommandAuthor{Author: "alice"}))
+	got, ok = commandStore.LookupCommandAuthor(ctx, "cr-plain")
+	require.True(t, ok)
+	require.False(t, got.AssertAuthorAllowed)
+}
+
 // The attribution telemetry gauge SCANs "<prefix>:author:v1:audit:*". A prefix that
 // contained a glob metacharacter would make it count the wrong keyspace; validation
 // rejects those, so the pattern is always a literal prefix plus one trailing star.
 func TestAttributionIndex_ScanPatternIsPrefixed(t *testing.T) {
 	t.Parallel()
 
-	store, _ := newPrefixedRedisStore(t, "tenant-a")
+	store := newPrefixedRedisStore(t, "tenant-a")
 	idx := store.AttributionIndex(0)
 	require.Equal(t, "tenant-a:author:v1:audit:", idx.factKeyBase(""))
 }

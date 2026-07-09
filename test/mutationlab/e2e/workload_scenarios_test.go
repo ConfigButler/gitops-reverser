@@ -76,7 +76,9 @@ func TestStatusSubresource(t *testing.T) {
 	ctx := context.Background()
 	s := h.newScenario(ctx, t, "status-update")
 
-	if _, err := h.kube.AppsV1().Deployments(s.ns).Create(ctx, pausedDeployment(s, "d1"), metav1.CreateOptions{}); err != nil {
+	if _, err := h.kube.AppsV1().
+		Deployments(s.ns).
+		Create(ctx, pausedDeployment(s, "d1"), metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create deployment: %v", err)
 	}
 	// create => admission CREATE + audit create + watch ADDED + the controller's
@@ -113,7 +115,9 @@ func TestScaleSubresource(t *testing.T) {
 	ctx := context.Background()
 	s := h.newScenario(ctx, t, "scale-patch")
 
-	if _, err := h.kube.AppsV1().Deployments(s.ns).Create(ctx, pausedDeployment(s, "d1"), metav1.CreateOptions{}); err != nil {
+	if _, err := h.kube.AppsV1().
+		Deployments(s.ns).
+		Create(ctx, pausedDeployment(s, "d1"), metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create deployment: %v", err)
 	}
 	h.quiesceAndClear(t, s.id, 3)

@@ -83,14 +83,20 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 	l.pendingCRs[id] = &pendingCommitRequest{
 		id:                 id,
 		author:             req.Author,
+		assertedAuthor:     req.AssertedAuthor,
 		gitTargetName:      req.GitTargetName,
 		gitTargetNamespace: req.GitTargetNamespace,
 		message:            req.Message,
 		finalizeAt:         time.Now().Add(time.Duration(req.CloseDelaySeconds) * time.Second),
 	}
+	assertedAuthor := ""
+	if req.AssertedAuthor != nil {
+		assertedAuthor = req.AssertedAuthor.Username
+	}
 	l.w.Log.Info("CommitRequest registered with worker",
 		"request", id.Namespace+"/"+id.Name,
 		"author", req.Author,
+		"assertedAuthor", assertedAuthor,
 		"target", req.GitTargetNamespace+"/"+req.GitTargetName,
 		"closeDelaySeconds", req.CloseDelaySeconds)
 }
@@ -129,15 +135,23 @@ func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 	}
 }
 
-// attachToOpenWindow binds a request's message to the currently-open window.
+// attachToOpenWindow binds a request's message — and, when it carries one, its asserted
+// author — to the currently-open window.
 func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 	l.openWindow.pendingMessage = pcr.message
+	l.openWindow.pendingAuthor = pcr.assertedAuthor
 	id := pcr.id
 	l.openWindow.pendingCR = &id
 	pcr.attached = true
+	assertedAuthor := ""
+	if pcr.assertedAuthor != nil {
+		assertedAuthor = pcr.assertedAuthor.Username
+	}
 	l.w.Log.Info("CommitRequest attached to open window",
 		"request", id.Namespace+"/"+id.Name,
 		"author", pcr.author,
+		"assertedAuthor", assertedAuthor,
+		"windowAuthor", l.openWindow.Author,
 		"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName)
 }
 

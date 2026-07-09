@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	authzv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -913,7 +914,8 @@ func newManager(
 
 // setupAdmissionWebhooks registers both handlers on the one admission server: the
 // always-allow observer (a future-policy extension point) and the validate-operator-types
-// handler that captures the submitter of our own command kinds into commandAuthorStore.
+// handler that captures the submitter of our own command kinds into commandAuthorStore
+// and authorizes a CommitRequest's asserted commit author.
 func setupAdmissionWebhooks(mgr ctrl.Manager, commandAuthorStore *queue.CommandAuthorStore) {
 	mgr.GetWebhookServer().Register(
 		webhookhandler.ValidateAllPath,
@@ -924,6 +926,16 @@ func setupAdmissionWebhooks(mgr ctrl.Manager, commandAuthorStore *queue.CommandA
 	operatorTypesHandler := &webhookhandler.ValidateOperatorTypesHandler{}
 	if commandAuthorStore != nil {
 		operatorTypesHandler.Store = commandAuthorStore
+	}
+	// The assert-author guard delegates to whatever authorizers the cluster runs (RBAC,
+	// webhook, node) via SubjectAccessReview. A client we cannot build leaves Authorizer
+	// nil, which denies every assertion — an unverifiable privilege is not a granted one.
+	if authzClient, err := authzv1client.NewForConfig(mgr.GetConfig()); err != nil {
+		setupLog.Error(err, "unable to build authorization client: CommitRequest spec.author will be denied")
+	} else {
+		operatorTypesHandler.Authorizer = webhookhandler.NewSubjectAccessReviewAuthorizer(
+			authzClient.SubjectAccessReviews(),
+		)
 	}
 	mgr.GetWebhookServer().Register(
 		webhookhandler.ValidateOperatorTypesPath,
