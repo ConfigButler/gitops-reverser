@@ -49,6 +49,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
+	publicanalyzer "github.com/ConfigButler/gitops-reverser/pkg/manifestanalyzer"
 )
 
 // Process exit codes.
@@ -237,7 +238,24 @@ func failedGroupVersions(failed map[schema.GroupVersion]error) map[string]string
 // refuse policy over the acceptance decision. It is structure-only: no cluster
 // state, so the plan is empty, but the acceptance gate is the full one — it applies
 // the non-API KRM allowlist and the impure-managed-file / mixed-file refusals.
+//
+// --format json goes through pkg/manifestanalyzer, so the CLI's machine-readable output
+// and the published Go contract are the same document and cannot drift. Text output stays
+// on the internal renderer, which can show the plan the public report deliberately omits.
 func runScan(dir, format, policy string, stdout, stderr io.Writer) int {
+	if format == "json" {
+		report, err := publicanalyzer.ScanFolder(context.Background(), dir)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitUsage
+		}
+		if err := report.WriteJSON(stdout); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitUsage
+		}
+		return scanExitCode(policy, report.Accepted)
+	}
+
 	scanPolicy := manifestanalyzer.ScanPolicy{
 		Acceptance: manifestanalyzer.AcceptancePolicy{Allowlist: manifestanalyzer.DefaultAllowlist()},
 	}
@@ -246,17 +264,12 @@ func runScan(dir, format, policy string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitUsage
 	}
+	manifestanalyzer.RenderScanText(stdout, result)
+	return scanExitCode(policy, result.Acceptance.Accepted)
+}
 
-	if format == "json" {
-		if err := manifestanalyzer.RenderScanJSON(stdout, result); err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return exitUsage
-		}
-	} else {
-		manifestanalyzer.RenderScanText(stdout, result)
-	}
-
-	if policy == "refuse" && !result.Acceptance.Accepted {
+func scanExitCode(policy string, accepted bool) int {
+	if policy == "refuse" && !accepted {
 		return exitRefused
 	}
 	return exitOK
@@ -268,19 +281,24 @@ func runScan(dir, format, policy string, stdout, stderr io.Writer) int {
 // (exitOK, or exitUsage on an I/O error); the repo-level --policy refuse gate is
 // deferred per the design doc.
 func runRepoWalk(root, format string, stdout, stderr io.Writer) int {
+	if format == "json" {
+		report, err := publicanalyzer.ScanRepo(context.Background(), root)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitUsage
+		}
+		if err := report.WriteJSON(stdout); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitUsage
+		}
+		return exitOK
+	}
+
 	rep, err := manifestanalyzer.WalkRepo(context.Background(), root)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitUsage
 	}
-
-	if format == "json" {
-		if err := manifestanalyzer.RenderRepoJSON(stdout, rep); err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return exitUsage
-		}
-	} else {
-		manifestanalyzer.RenderRepoText(stdout, rep)
-	}
+	manifestanalyzer.RenderRepoText(stdout, rep)
 	return exitOK
 }

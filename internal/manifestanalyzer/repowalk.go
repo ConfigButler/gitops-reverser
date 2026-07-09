@@ -4,7 +4,6 @@ package manifestanalyzer
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -709,14 +708,6 @@ func sortedKeysOf(m map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// RenderRepoJSON writes the repo report as indented JSON — the product's interface,
-// matching the existing --format json convention.
-func RenderRepoJSON(w io.Writer, rep RepoReport) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(rep)
 }
 
 // RenderRepoText writes a compact human summary of the repo report: one line per

@@ -7,6 +7,33 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — `manifest-analyzer --format json` now emits a versioned contract (next minor; breaking)
+
+The analyzer's machine-readable output moved to the new public
+[`pkg/manifestanalyzer`](../pkg/manifestanalyzer), which is a supported Go API and the single
+definition of the JSON documents the CLI prints. Both affected modes gained a `schemaVersion`
+field, and one field was dropped:
+
+- `--mode scan --format json` no longer carries `plan`. In scan mode the analyzer has no cluster
+  state and no desired resources, so `plan` was structurally always `{"counts":{},"actions":null}` —
+  it never carried information. The meaningful fields (`accepted`, `issues`, `retained`) are
+  unchanged, and `issues` now marshals as `[]` rather than `null` when there are none.
+- `--mode repo-walker --format json` is otherwise unchanged.
+- Retained entries now omit `identity` for a whole-file retention (an ordinary
+  `kustomization.yaml`, which names no resource) instead of emitting a zero-valued object. It is
+  still present for the refused mixed-file case, where a named resource hides inside a build
+  directive.
+- `--mode analyze` and every `--format text` output are unchanged.
+
+**Migration**
+
+- Read `schemaVersion` and ignore fields you do not know; new fields are added within a schema major.
+- If you exec'd the binary only to reach the acceptance verdict, prefer importing
+  `pkg/manifestanalyzer` and calling `ScanFolder` / `ScanRepo`. They run the same acceptance gate the
+  operator's writer enforces, so a tool built on them cannot drift from the operator that will later
+  adopt (or refuse) the folder.
+- If you parsed `plan` from scan mode, you were reading an empty object; drop the field.
+
 ## Unreleased — chart defaults now run Redis-free (next minor; behavior change)
 
 The Helm chart now defaults to the simple, Redis-free `configured-author` path, so a bare
