@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.31.0...gitops-reverser-v0.32.0) (2026-07-08)
+
+
+### Features
+
+* **chart:** Redis-optional install by default; rename modes to configured-author/attributed-author ([#211](https://github.com/ConfigButler/gitops-reverser/issues/211)) ([3bd40c0](https://github.com/ConfigButler/gitops-reverser/commit/3bd40c0199dc858c978ed784726c2742dd2d3751))
+
 ## [0.31.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.30.0...gitops-reverser-v0.31.0) (2026-07-08)
 
 
