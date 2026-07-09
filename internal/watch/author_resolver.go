@@ -46,8 +46,10 @@ type AttributionLookup interface {
 // CursorStore persists the last processed resourceVersion for each (GitTarget UID,
 // GVR, scope) watch shard, bounded by a TTL. The GitTarget is identified by its UID
 // alone — globally unique, so namespace/name would be redundant. Cursors are refreshed
-// on write and never deleted: a live watch keeps its cursor fresh, a dead one's cursor
-// expires. Nil means every new watch session rebuilds from a fresh replay.
+// on write and expire on their own: a live watch keeps its cursor fresh, a dead one's
+// cursor ages out. Nil means every new watch session rebuilds from a fresh replay.
+//
+// The one case that deletes a cursor is a retarget, through the optional CursorForgetter.
 type CursorStore interface {
 	LookupWatchCursor(
 		ctx context.Context,
@@ -61,6 +63,14 @@ type CursorStore interface {
 		gvr schema.GroupVersionResource,
 		namespace, rv string,
 	) error
+}
+
+// CursorForgetter is the optional half of CursorStore a retarget needs: dropping every
+// cursor a GitTarget owns, so its next watch session rebuilds the new folder from a full
+// replay rather than resuming mid-stream into it. *queue.RedisStore satisfies it; a store
+// that does not is simply never asked (without Redis, watches cold-replay regardless).
+type CursorForgetter interface {
+	ForgetWatchCursors(ctx context.Context, gitTargetUID string) error
 }
 
 // AuthorResolver names the commit author for a live watch event from audit facts.

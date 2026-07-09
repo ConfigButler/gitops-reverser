@@ -7,6 +7,30 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — `GitTarget.spec.branch` and `.spec.path` are now mutable (next minor; behavior change)
+
+Changing either used to be rejected by the API server, and relocating a `GitTarget` meant
+delete-and-recreate. Both are now mutable, and changing one is a supported **retarget**: the
+controller tears the old materialization down (including its watch resume cursors) and rebuilds the
+folder from a fresh full snapshot at the new destination. `spec.providerRef` stays immutable.
+
+- **The old folder is never deleted.** It becomes ordinary, unmanaged Git content. The
+  `Retargeting=False` condition message names it so you can `git rm` it deliberately.
+- New `status.observedDestination` records the destination the current materialization actually
+  belongs to. New `Retargeting` condition is True while it disagrees with spec.
+- A retarget onto a path that overlaps another `GitTarget` on the same provider and branch is
+  refused by the ordinary `Validated` gate, and the target keeps serving its current destination.
+
+**Migration**
+
+- Nothing to do. An operator that caught the immutable-field rejection and delete-and-recreated can
+  drop that code path; a plain `kubectl patch` of `spec.path` now works.
+- If you relied on the API server rejecting a `spec.branch`/`spec.path` change as a guardrail —
+  a GitOps tool re-applying a `GitTarget` from a template, say — note that such an apply will now
+  retarget instead of erroring. Gate it the way you gate any other spec change.
+
+See [design/multi-tenant/gittarget-retarget.md](design/multi-tenant/gittarget-retarget.md).
+
 ## Unreleased — `manifest-analyzer --format json` now emits a versioned contract (next minor; breaking)
 
 The analyzer's machine-readable output moved to the new public

@@ -134,6 +134,43 @@ func (s *RedisStore) RecordWatchCursor(
 	return nil
 }
 
+// watchCursorScanBatchSize bounds one SCAN round when forgetting a GitTarget's cursors.
+const watchCursorScanBatchSize = 100
+
+// ForgetWatchCursors deletes every resume cursor a GitTarget owns, so its next watch
+// session rebuilds from a fresh replay instead of resuming mid-stream.
+//
+// It exists for the retarget: cursors are keyed by GitTarget UID, and a retarget keeps the
+// same object — so without this the new folder would only ever receive the changes that
+// happened after the move, never the state that already existed. Deletion is not needed on
+// GitTarget deletion (a dead target's cursors expire on their own, and a recreated one has
+// a new UID).
+//
+// A Kubernetes UID is hex and dashes, so the escaped uid can never introduce a glob
+// metacharacter into the SCAN pattern; the key prefix is validated for the same reason.
+func (s *RedisStore) ForgetWatchCursors(ctx context.Context, gitTargetUID string) error {
+	if strings.TrimSpace(gitTargetUID) == "" {
+		return nil
+	}
+	pattern := s.keyPrefix + watchCursorKeySuffix + "target:" + escapeKeyField(gitTargetUID) + ":*"
+	var cursor uint64
+	for {
+		keys, next, err := s.client.Scan(ctx, cursor, pattern, watchCursorScanBatchSize).Result()
+		if err != nil {
+			return fmt.Errorf("scan watch cursors: %w", err)
+		}
+		if len(keys) > 0 {
+			if err := s.client.Del(ctx, keys...).Err(); err != nil {
+				return fmt.Errorf("delete watch cursors: %w", err)
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			return nil
+		}
+	}
+}
+
 // watchCursorKey builds a readable cursor key naming the store and leaf directly, e.g.
 // "gitops-reverser:watch:v1:target:<uid>:apps/deployments:namespace:team-a:last-rv" or
 // "…:configmaps:cluster:last-rv". The GitTarget UID is globally unique, so its

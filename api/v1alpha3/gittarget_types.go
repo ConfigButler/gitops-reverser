@@ -33,27 +33,37 @@ type GitProviderReference struct {
 
 // GitTargetSpec defines the desired state of GitTarget.
 //
-// The destination fields — providerRef, branch, and path — are immutable. A
-// GitTarget materializes the watched resources at exactly one (provider, branch,
-// folder); changing where it writes would orphan the old materialization and require
-// migrating manifests between repositories/branches/folders. Instead of reconciling
-// that move, the destination is fixed: to relocate a GitTarget, delete it and create a
-// new one. This keeps the one-owner-per-folder invariant and the initial-snapshot gate
-// simple — a successful snapshot can never be silently invalidated by a destination
-// change.
+// A GitTarget materializes the watched resources at exactly one (provider, branch,
+// folder). branch and path are mutable: changing either is a supported "retarget", in
+// which the controller tears the old materialization down and rebuilds the folder from a
+// fresh full snapshot at the new destination. The old folder's files are never deleted —
+// deleting from Git is the one irreversible thing this operator can do, and a destination
+// change is the moment an operator is least sure of what they meant. See
+// docs/design/multi-tenant/gittarget-retarget.md.
 //
-// +kubebuilder:validation:XValidation:rule="self.providerRef == oldSelf.providerRef",message="spec.providerRef is immutable; delete and recreate the GitTarget to change its destination"
-// +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
-// +kubebuilder:validation:XValidation:rule="self.path == oldSelf.path",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
+// providerRef stays immutable: pointing at a different repository is not a move, it is a
+// different object. There is nothing to migrate and nothing to observe.
+//
+// The initial-snapshot gate is preserved by making the destination a thing status
+// OBSERVES rather than a thing the spec cannot change: a successful snapshot is valid for
+// the destination recorded in status.observedDestination. When spec and
+// status.observedDestination disagree, the snapshot is by definition stale, and the
+// GitTarget reports Retargeting=True until the new folder is built.
+//
+// +kubebuilder:validation:XValidation:rule="self.providerRef == oldSelf.providerRef",message="spec.providerRef is immutable; delete and recreate the GitTarget to change its repository (spec.branch and spec.path are mutable — the controller retargets, see docs/design/multi-tenant/gittarget-retarget.md)"
 type GitTargetSpec struct {
 	// ProviderRef references the GitProvider that backs this target.
-	// Immutable: delete and recreate the GitTarget to change its destination.
+	// Immutable: delete and recreate the GitTarget to write to a different repository.
 	// +required
 	ProviderRef GitProviderReference `json:"providerRef"`
 
 	// Branch to use for this target.
 	// Must be one of the allowed branches in the provider.
-	// Immutable: delete and recreate the GitTarget to change its destination.
+	//
+	// Mutable: changing it retargets the GitTarget. The old branch's folder is left
+	// behind as ordinary, unmanaged Git content; the new branch's folder is built from a
+	// fresh full snapshot. status.observedDestination names the destination the current
+	// materialization belongs to.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Branch string `json:"branch"`
@@ -65,7 +75,11 @@ type GitTargetSpec struct {
 	// rejected because it is too easy to leave blank by accident to be a deliberate
 	// root choice. Any leading slash (absolute path) and ".." are rejected, and a
 	// trailing slash is normalized away.
-	// Immutable: delete and recreate the GitTarget to change its destination.
+	//
+	// Mutable: changing it retargets the GitTarget, exactly as changing branch does. The
+	// new path must not overlap another GitTarget on the same provider and branch; a
+	// retarget onto a conflicting path is refused and the target keeps serving its
+	// current destination.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Path string `json:"path"`
@@ -117,11 +131,34 @@ type GitTargetPlacementSpec struct {
 	Default string `json:"default,omitempty"`
 }
 
+// GitTargetDestination is one materialization site: the branch and folder a GitTarget's
+// documents live at.
+type GitTargetDestination struct {
+	// Branch the materialization lives on.
+	// +required
+	Branch string `json:"branch"`
+
+	// Path the materialization lives under, relative to the repository root.
+	// +required
+	Path string `json:"path"`
+}
+
 // GitTargetStatus defines the observed state of GitTarget.
 type GitTargetStatus struct {
 	// ObservedGeneration is the latest generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// ObservedDestination is the destination the current materialization belongs to. It
+	// is written only once a snapshot has actually landed there and the path was
+	// accepted, so it is the answer to "which folder is this GitTarget's content in?" —
+	// which is not always what spec says.
+	//
+	// Absent means nothing has been materialized yet. When it disagrees with spec, the
+	// GitTarget is retargeting and Retargeting=True; the folder it names is the one being
+	// abandoned, so an operator can `git rm` it deliberately once the move settles.
+	// +optional
+	ObservedDestination *GitTargetDestination `json:"observedDestination,omitempty"`
 
 	// Conditions represent the latest available observations of an object's state
 	// +optional
@@ -179,6 +216,8 @@ type GitTargetStreamsStatus struct {
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
 // +kubebuilder:printcolumn:name="GitPathAccepted",type=string,JSONPath=`.status.conditions[?(@.type=="GitPathAccepted")].status`,priority=1
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
+// +kubebuilder:printcolumn:name="Retargeting",type=string,JSONPath=`.status.conditions[?(@.type=="Retargeting")].status`,priority=1
+// +kubebuilder:printcolumn:name="ObservedPath",type=string,JSONPath=`.status.observedDestination.path`,priority=1
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Encryption",type=string,JSONPath=`.spec.encryption.provider`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

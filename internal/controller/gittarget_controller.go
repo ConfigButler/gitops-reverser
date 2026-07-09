@@ -124,6 +124,17 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	target.Status.LastReconcileTime = metav1.Now()
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
 
+	// A destination change is torn down before anything else runs. The writer reads
+	// spec.path fresh per write while the branch worker is bound to the branch the stream
+	// was registered against, so a live event arriving between the spec change and a
+	// completed retarget would land at the new path on the old branch. Nothing may be
+	// written until the new destination has passed its own Validated gate.
+	if destinationMoved(&target) && !retargetAlreadyTornDown(&target) {
+		if err := r.beginRetarget(ctx, &target, log); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	providerNS := target.Namespace
 	validated, validationMsg, validationResult, validationErr := r.evaluateValidatedGate(ctx, &target, providerNS)
 	if validationErr != nil {
@@ -139,6 +150,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		)
 		r.setBlockedDataPlane(&target)
 		r.setGitPathAcceptedUnknown(&target, "Blocked by Validated=False")
+		r.markRetargetingUnknown(&target, "Blocked by Validated=False")
 		r.setStalledConditions(
 			&target,
 			GitTargetReadyReasonValidationFailed,
@@ -160,6 +172,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !encryptionReady {
 		r.setBlockedDataPlane(&target)
 		r.setGitPathAcceptedUnknown(&target, "Blocked by EncryptionConfigured=False")
+		r.markRetargetingUnknown(&target, "Blocked by EncryptionConfigured=False")
 		r.setStalledConditions(
 			&target,
 			GitTargetReadyReasonEncryptionNotConfigured,
@@ -178,6 +191,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !wired {
 		r.setBlockedDataPlane(&target)
 		r.setGitPathAcceptedUnknown(&target, "Blocked by worker wiring failure")
+		r.markRetargetingUnknown(&target, "Blocked by worker wiring failure")
 		r.setStalledConditions(
 			&target,
 			GitTargetReadyReasonWorkerUnavailable,
@@ -220,6 +234,13 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	r.applyDataPlaneConditions(&target, streams, gitPath)
+
+	// The destination is recorded only once a snapshot has actually landed there and the
+	// path was accepted. That is what keeps the invariant honest: a successful snapshot is
+	// valid for the destination named by status.observedDestination, and nothing else.
+	if !streamsSettling {
+		r.settleDestination(&target, log)
+	}
 
 	if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 		return ctrl.Result{}, err

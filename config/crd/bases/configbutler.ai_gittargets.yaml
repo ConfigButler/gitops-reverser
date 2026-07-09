@@ -41,6 +41,14 @@ spec:
       name: StreamsRunning
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Retargeting")].status
+      name: Retargeting
+      priority: 1
+      type: string
+    - jsonPath: .status.observedDestination.path
+      name: ObservedPath
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Status
       priority: 1
@@ -81,7 +89,11 @@ spec:
                 description: |-
                   Branch to use for this target.
                   Must be one of the allowed branches in the provider.
-                  Immutable: delete and recreate the GitTarget to change its destination.
+
+                  Mutable: changing it retargets the GitTarget. The old branch's folder is left
+                  behind as ordinary, unmanaged Git content; the new branch's folder is built from a
+                  fresh full snapshot. status.observedDestination names the destination the current
+                  materialization belongs to.
                 minLength: 1
                 type: string
               encryption:
@@ -159,7 +171,11 @@ spec:
                   rejected because it is too easy to leave blank by accident to be a deliberate
                   root choice. Any leading slash (absolute path) and ".." are rejected, and a
                   trailing slash is normalized away.
-                  Immutable: delete and recreate the GitTarget to change its destination.
+
+                  Mutable: changing it retargets the GitTarget, exactly as changing branch does. The
+                  new path must not overlap another GitTarget on the same provider and branch; a
+                  retarget onto a conflicting path is refused and the target keeps serving its
+                  current destination.
                 minLength: 1
                 type: string
               placement:
@@ -192,7 +208,7 @@ spec:
               providerRef:
                 description: |-
                   ProviderRef references the GitProvider that backs this target.
-                  Immutable: delete and recreate the GitTarget to change its destination.
+                  Immutable: delete and recreate the GitTarget to write to a different repository.
                 properties:
                   group:
                     default: configbutler.ai
@@ -223,14 +239,9 @@ spec:
             type: object
             x-kubernetes-validations:
             - message: spec.providerRef is immutable; delete and recreate the GitTarget
-                to change its destination
+                to change its repository (spec.branch and spec.path are mutable —
+                the controller retargets, see docs/design/multi-tenant/gittarget-retarget.md)
               rule: self.providerRef == oldSelf.providerRef
-            - message: spec.branch is immutable; delete and recreate the GitTarget
-                to change its destination
-              rule: self.branch == oldSelf.branch
-            - message: spec.path is immutable; delete and recreate the GitTarget to
-                change its destination
-              rule: self.path == oldSelf.path
           status:
             description: status defines the observed state of GitTarget
             properties:
@@ -305,6 +316,28 @@ spec:
                   reconcile attempt.
                 format: date-time
                 type: string
+              observedDestination:
+                description: |-
+                  ObservedDestination is the destination the current materialization belongs to. It
+                  is written only once a snapshot has actually landed there and the path was
+                  accepted, so it is the answer to "which folder is this GitTarget's content in?" —
+                  which is not always what spec says.
+
+                  Absent means nothing has been materialized yet. When it disagrees with spec, the
+                  GitTarget is retargeting and Retargeting=True; the folder it names is the one being
+                  abandoned, so an operator can `git rm` it deliberately once the move settles.
+                properties:
+                  branch:
+                    description: Branch the materialization lives on.
+                    type: string
+                  path:
+                    description: Path the materialization lives under, relative to
+                      the repository root.
+                    type: string
+                required:
+                - branch
+                - path
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.
