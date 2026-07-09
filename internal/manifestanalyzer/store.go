@@ -814,7 +814,8 @@ func unsupportedKustomizeFeatureKeys() []string {
 		"generators", "configMapGenerator", "secretGenerator",
 		"helmCharts", "helmGlobals", "helmChartInflationGenerator",
 		"patches", "patchesStrategicMerge", "patchesJson6902",
-		"replacements", "components", "transformers", "configurations",
+		"replacements", "components", "transformers",
+		"configurations", "openapi", "crds",
 		"namePrefix", "nameSuffix",
 	}
 }

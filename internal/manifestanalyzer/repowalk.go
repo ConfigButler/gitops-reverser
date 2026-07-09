@@ -183,10 +183,11 @@ func WalkRepo(ctx context.Context, root string) (RepoReport, error) {
 func walkRepoFS(ctx context.Context, fsys fs.FS) RepoReport {
 	scan := collectFiles(fsys)
 	kusts := parseKustomizations(scan.YAMLFiles)
-	// Structure-only whole-repo store, kustomizations retained (DefaultAllowlist): the
-	// document-count and namespace facts are read from it. Acceptance is decided
+	// Structure-only whole-repo store built with the live writer's allowlist (WriterAllowlist:
+	// kustomization files + the operator's .sops.yaml bootstrap config), so acceptance and the
+	// document counts match what the operator would actually adopt. Acceptance is decided
 	// per-candidate against its own subtree, not from this whole-repo store.
-	store := buildStore(ctx, scan, nil, DefaultAllowlist())
+	store := buildStore(ctx, scan, nil, WriterAllowlist())
 	kustContent := kustomizationContentByDir(scan)
 	ownedFiles := reachedResourceFiles(kusts)
 
@@ -217,6 +218,9 @@ func classifyRenderRoot(
 	store *ManifestStore,
 ) RepoCandidate {
 	c := RepoCandidate{Path: rootDir, RenderRoot: true, InferredNamespace: renderRootNamespace(kusts, rootDir, store)}
+	// rendered/editable count only the documents the kustomization graph actually renders
+	// (its resources: entries), never parked YAML a kustomization does not reference.
+	rendered := reachedResourceFilesFrom(rootDir, kusts)
 
 	if doc := kusts[rootDir]; doc == nil || doc.unsupported {
 		c.Layout = LayoutRefusedStructural
@@ -225,7 +229,7 @@ func classifyRenderRoot(
 			Code:   ReasonRefusedStructural,
 			Detail: refusedStructuralDetail(kustContent[rootDir]),
 		}}
-		c.Resources = countResources(store, rootDir, nil)
+		c.Resources = countResources(store, rootDir, rendered)
 		return c
 	}
 
@@ -238,15 +242,21 @@ func classifyRenderRoot(
 			Code:   ReasonOverlayFanOutNeedsF2,
 			Detail: overlayFanOutDetail(outsideBases[0], kusts),
 		}}
-		c.Resources = countResources(store, rootDir, outsideBases)
+		c.Resources = countResources(store, rootDir, rendered)
 		return c
 	}
 
 	// Self-contained render root: run the same gate the operator runs, scoped to the
-	// subtree. A within-subtree base is reachable, so acceptance is truthful here.
+	// subtree. A within-subtree base is reachable, so acceptance is truthful here; a gate
+	// refusal (duplicate, non-KRM, foreign, unsupported nested kustomization, …) is
+	// surfaced as refusal reasons rather than a bare false.
 	c.Layout = LayoutKustomizeSingle
-	c.AcceptedByOperator = candidateAccepted(ctx, fsys, rootDir)
-	c.Resources = countResources(store, rootDir, nil)
+	acc := candidateAcceptance(ctx, fsys, rootDir)
+	c.AcceptedByOperator = acc.Accepted
+	if !acc.Accepted {
+		c.RefusalReasons = issuesToReasons(acc.Issues)
+	}
+	c.Resources = countResources(store, rootDir, rendered)
 	return c
 }
 
@@ -278,26 +288,53 @@ func plainCandidates(
 
 	out := make([]RepoCandidate, 0, len(dirs))
 	for dir := range dirs {
-		out = append(out, RepoCandidate{
+		acc := candidateAcceptance(ctx, fsys, dir)
+		cand := RepoCandidate{
 			Path:               dir,
 			Layout:             LayoutPlain,
-			AcceptedByOperator: candidateAccepted(ctx, fsys, dir),
+			AcceptedByOperator: acc.Accepted,
 			InferredNamespace:  singleExplicitNamespace(store, dir),
-			Resources:          countResources(store, dir, nil),
-		})
+			// A plain folder is applied directory-wise, so it renders its whole subtree
+			// (renderedFiles nil); no kustomization graph scopes it.
+			Resources: countResources(store, dir, nil),
+		}
+		if !acc.Accepted {
+			cand.RefusalReasons = issuesToReasons(acc.Issues)
+		}
+		out = append(out, cand)
 	}
 	return out
 }
 
-// candidateAccepted runs the structure-only adoption gate over the candidate subtree —
-// the exact gate the operator runs (Scan with the default build-directive allowlist).
-func candidateAccepted(ctx context.Context, fsys fs.FS, dir string) bool {
+// candidateAcceptance runs the structure-only adoption gate over the candidate subtree —
+// the exact gate the operator's live writer runs (Scan with WriterAllowlist, which retains
+// the kustomize build directives and the operator's .sops.yaml bootstrap config). It
+// returns the full acceptance so a refused candidate can carry the gate's issues as
+// refusal reasons rather than collapsing them to a bare boolean.
+func candidateAcceptance(ctx context.Context, fsys fs.FS, dir string) Acceptance {
 	sub, err := fs.Sub(fsys, dir)
 	if err != nil {
-		return false
+		return Acceptance{Issues: []AcceptanceIssue{{Kind: IssueForeignFile, Path: dir, Message: err.Error()}}}
 	}
-	policy := ScanPolicy{Acceptance: AcceptancePolicy{Allowlist: DefaultAllowlist()}}
-	return Scan(ctx, sub, nil, nil, policy).Acceptance.Accepted
+	policy := ScanPolicy{Acceptance: AcceptancePolicy{Allowlist: WriterAllowlist()}}
+	return Scan(ctx, sub, nil, nil, policy).Acceptance
+}
+
+// issuesToReasons projects acceptance-gate issues into refusal reasons so a refused plain
+// or self-contained kustomize candidate reports WHY — duplicate identity, non-KRM YAML, a
+// foreign file, a mixed build-directive file, an unsupported nested kustomization — not
+// just acceptedByOperator: false. The issue Kind is the machine code; the path-qualified
+// message is the detail.
+func issuesToReasons(issues []AcceptanceIssue) []RefusalReason {
+	out := make([]RefusalReason, 0, len(issues))
+	for _, iss := range issues {
+		detail := iss.Message
+		if iss.Path != "" {
+			detail = iss.Path + ": " + iss.Message
+		}
+		out = append(out, RefusalReason{Code: string(iss.Kind), Detail: detail})
+	}
+	return out
 }
 
 // outOfSubtreeBases returns the sorted, MINIMAL base kustomization directories a render
@@ -483,42 +520,70 @@ func singleExplicitNamespace(store *ManifestStore, dir string) string {
 }
 
 // countResources counts the KRM a candidate renders and can edit, plus non-KRM noise in
-// its own subtree. Editable is the managed documents physically under dir; rendered is the
-// managed documents under dir OR any readScope base, counting each file once so a base and
-// a nested base it pulls in never double-count; nonKRM counts non-KRM YAML documents and
-// foreign entries under dir.
-func countResources(store *ManifestStore, dir string, readScope []string) ResourceCounts {
-	rendered := 0
+// its own subtree. renderedFiles is the exact set of resource files the candidate renders —
+// the kustomization resources graph for a render root; a nil set means "every managed file
+// in the candidate's own subtree", the plain-folder case applied directory-wise. rendered
+// counts documents in the rendered files; editable counts the subset physically in the
+// candidate's own subtree (the source the operator would own and write) — a pure overlay
+// renders its base but edits nothing locally (editable = 0). nonKRM counts non-KRM YAML
+// documents and foreign entries under dir.
+func countResources(store *ManifestStore, dir string, renderedFiles map[string]struct{}) ResourceCounts {
+	var rendered, editable int
 	for filePath, fm := range store.FilesByPath {
-		if pathWithinAny(filePath, dir, readScope) {
-			rendered += len(fm.Documents)
+		if !fileIsRendered(filePath, dir, renderedFiles) {
+			continue
 		}
-	}
-	return ResourceCounts{Rendered: rendered, Editable: managedDocsUnder(store, dir), NonKRM: nonKRMUnder(store, dir)}
-}
-
-// pathWithinAny reports whether filePath is under dir or any of the readScope directories.
-func pathWithinAny(filePath, dir string, readScope []string) bool {
-	if pathWithin(filePath, dir) {
-		return true
-	}
-	for _, base := range readScope {
-		if pathWithin(filePath, base) {
-			return true
-		}
-	}
-	return false
-}
-
-// managedDocsUnder counts managed KRM documents in files under dir (its whole subtree).
-func managedDocsUnder(store *ManifestStore, dir string) int {
-	n := 0
-	for filePath, fm := range store.FilesByPath {
+		rendered += len(fm.Documents)
 		if pathWithin(filePath, dir) {
-			n += len(fm.Documents)
+			editable += len(fm.Documents)
 		}
 	}
-	return n
+	return ResourceCounts{Rendered: rendered, Editable: editable, NonKRM: nonKRMUnder(store, dir)}
+}
+
+// fileIsRendered reports whether a managed file counts toward a candidate's rendered set:
+// membership in renderedFiles for a kustomize candidate, or presence in the candidate's own
+// subtree when renderedFiles is nil (a plain folder renders its whole directory).
+func fileIsRendered(filePath, dir string, renderedFiles map[string]struct{}) bool {
+	if renderedFiles == nil {
+		return pathWithin(filePath, dir)
+	}
+	_, ok := renderedFiles[filePath]
+	return ok
+}
+
+// reachedResourceFilesFrom returns the set of resource-file paths a render root actually
+// renders: the non-kustomization targets reached by following the resources graph from
+// rootDir. Each kustomization contributes only the entries it lists, so parked YAML a
+// kustomization does not reference is never counted. The on-path set bounds cycles.
+func reachedResourceFilesFrom(rootDir string, kusts map[string]*kustomizationDoc) map[string]struct{} {
+	files := map[string]struct{}{}
+	onPath := map[string]struct{}{}
+	var walk func(dir string)
+	walk = func(dir string) {
+		cur := kusts[dir]
+		if cur == nil {
+			return
+		}
+		if _, cycling := onPath[dir]; cycling {
+			return
+		}
+		onPath[dir] = struct{}{}
+		for _, entry := range cur.resources {
+			target := cleanJoin(dir, entry)
+			if target == "" {
+				continue
+			}
+			if _, isKust := kusts[target]; isKust {
+				walk(target)
+			} else {
+				files[target] = struct{}{}
+			}
+		}
+		delete(onPath, dir)
+	}
+	walk(rootDir)
+	return files
 }
 
 // nonKRMUnder counts non-KRM YAML documents and foreign entries under dir. Retained

@@ -7,7 +7,7 @@
       "refusalReasons": [
         {
           "code": "refused-structural",
-          "detail": "kustomization uses unsupported feature(s): components, namePrefix, secretGenerator"
+          "detail": "kustomization uses unsupported feature(s): components, crds, namePrefix, openapi, secretGenerator"
         }
       ],
       "renderRoot": true,
@@ -26,7 +26,9 @@
     "refused": 1,
     "unsupportedConstructs": [
       "components",
+      "crds",
       "namePrefix",
+      "openapi",
       "secretGenerator"
     ]
   }

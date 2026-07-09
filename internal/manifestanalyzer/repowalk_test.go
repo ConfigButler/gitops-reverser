@@ -8,11 +8,20 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 )
 
 // updateGolden regenerates the golden reports when UPDATE_GOLDEN=1 is set, the standard
 // golden-file workflow: run once to (re)write the expectations, then review the diff.
 var updateGolden = os.Getenv("UPDATE_GOLDEN") == "1"
+
+// deployYAMLNS is a minimal namespaced manifest for in-memory (fstest) repo-walk tests.
+const deployYAMLNS = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: demo
+`
 
 // TestWalkRepo_Golden drives the whole discovery corpus under testdata/repo-walker.
 // Each fixture is a self-contained repo with a sibling <fixture>.golden.json pinning its
@@ -84,6 +93,7 @@ func TestWalkRepo_RefusalCodesStayDistinct(t *testing.T) {
 		layout   Layout
 	}{
 		{"unsupported/base-overlays", ReasonOverlayFanOutNeedsF2, LayoutKustomizeOverlay},
+		{"unsupported/overlay-parked-base", ReasonOverlayFanOutNeedsF2, LayoutKustomizeOverlay},
 		{"unsupported/helm-inflation", ReasonRefusedStructural, LayoutRefusedStructural},
 		{"unsupported/unsupported-kustomize", ReasonRefusedStructural, LayoutRefusedStructural},
 	}
@@ -136,6 +146,71 @@ func TestWalkRepo_RenderedCountDedupesNestedBase(t *testing.T) {
 	}
 	if len(c.ReadScope) != 1 || c.ReadScope[0] != "base" {
 		t.Errorf("readScope = %v, want [base] (minimal; nested base/common folded in)", c.ReadScope)
+	}
+}
+
+// TestWalkRepo_RenderedExcludesParkedYAML guards that rendered counts only what the
+// kustomization graph reaches: a base holding a parked.yaml its kustomization does not
+// list must not inflate rendered. overlay-parked-base renders 1 (base/deployment), not 2.
+func TestWalkRepo_RenderedExcludesParkedYAML(t *testing.T) {
+	fixture := filepath.Join("testdata", "repo-walker", "unsupported", "overlay-parked-base")
+	rep, err := WalkRepo(context.Background(), fixture)
+	if err != nil {
+		t.Fatalf("WalkRepo: %v", err)
+	}
+	if len(rep.Candidates) != 1 {
+		t.Fatalf("want 1 candidate, got %d: %+v", len(rep.Candidates), rep.Candidates)
+	}
+	if got := rep.Candidates[0].Resources.Rendered; got != 1 {
+		t.Errorf("rendered = %d, want 1 (parked.yaml is not in the resources graph)", got)
+	}
+}
+
+// TestWalkRepo_RefusedPlainSurfacesGateReasons guards that a plain candidate the
+// acceptance gate refuses reports WHY (the gate issues) rather than a bare
+// acceptedByOperator: false. plain-nonkrm holds a non-KRM values.yaml.
+func TestWalkRepo_RefusedPlainSurfacesGateReasons(t *testing.T) {
+	fixture := filepath.Join("testdata", "repo-walker", "unsupported", "plain-nonkrm")
+	rep, err := WalkRepo(context.Background(), fixture)
+	if err != nil {
+		t.Fatalf("WalkRepo: %v", err)
+	}
+	if len(rep.Candidates) != 1 {
+		t.Fatalf("want 1 candidate, got %d", len(rep.Candidates))
+	}
+	c := rep.Candidates[0]
+	if c.AcceptedByOperator {
+		t.Fatal("candidate with a non-KRM file should be refused")
+	}
+	if len(c.RefusalReasons) == 0 {
+		t.Fatalf("a gate refusal must surface reasons, got none (acceptedByOperator=false with no why)")
+	}
+	if c.RefusalReasons[0].Code == "" || c.RefusalReasons[0].Detail == "" {
+		t.Errorf("refusal reason should carry a code and detail, got %+v", c.RefusalReasons[0])
+	}
+}
+
+// TestWalkRepo_SopsBootstrapAcceptedLikeWriter guards that repo-walker's acceptance
+// matches the live writer's allowlist: a folder holding the operator's .sops.yaml
+// bootstrap config is accepted (the writer retains it), not refused as non-KRM, and the
+// .sops.yaml is not counted as non-KRM noise.
+func TestWalkRepo_SopsBootstrapAcceptedLikeWriter(t *testing.T) {
+	fsys := fstest.MapFS{
+		"app/deployment.yaml": {Data: []byte(deployYAMLNS)},
+		"app/.sops.yaml": {Data: []byte(
+			"creation_rules:\n  - path_regex: .*\n    age: age1exampleexampleexampleexampleexampleexampleexample\n")},
+	}
+	rep := walkRepoFS(context.Background(), fsys)
+	if len(rep.Candidates) != 1 {
+		t.Fatalf("want 1 candidate, got %d: %+v", len(rep.Candidates), rep.Candidates)
+	}
+	c := rep.Candidates[0]
+	if !c.AcceptedByOperator {
+		t.Errorf("a folder with the operator .sops.yaml bootstrap should be accepted like the writer, reasons=%+v",
+			c.RefusalReasons)
+	}
+	if c.Resources.NonKRM != 0 {
+		t.Errorf(".sops.yaml is a retained build directive, not non-KRM noise; nonKrm=%d", c.Resources.NonKRM)
 	}
 }
 

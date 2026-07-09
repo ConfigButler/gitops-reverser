@@ -1,0 +1,5 @@
+# valid YAML, but not a Kubernetes manifest
+foo: bar
+baz:
+  - 1
+  - 2

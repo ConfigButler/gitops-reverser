@@ -175,9 +175,10 @@ Two renderings, matching the existing `--format text|json` split. JSON is the
 product's interface. The shape below is what the [first cut](#first-cut-shipped-2026-07-09)
 emits, per candidate — **except `proposedGitTarget`, which is the eventual goal and is
 not emitted yet** (CR proposal is deferred). Do not copy `proposedGitTarget` as if it
-were live output.
+were live output. (The block is fenced `jsonc` because it carries an explanatory
+comment — the shipped report is strict JSON.)
 
-```json
+```jsonc
 {
   "path": "apps/podinfo/overlays/test",
   "layout": "kustomize-overlay",
@@ -250,14 +251,26 @@ followed — the same posture as `ScanDir`, over the whole tree. It reuses `coll
 `inferredNamespace`, `resources`, `overlapsWith[]`.
 
 - **`resources` splits the KRM two ways** instead of the sketch's single `documents.krm`:
-  `{ rendered, editable, nonKrm }`. `rendered` counts everything the candidate renders
-  (its own subtree ∪ `readScope` bases); `editable` counts only the source physically in
-  its own subtree. They are equal for plain / self-contained kustomize candidates and
-  **diverge for an overlay** (e.g. `rendered: 2, editable: 0`) — the overlay renders a
-  base it cannot yet edit, which makes the F2 gap legible at a glance.
+  `{ rendered, editable, nonKrm }`. `rendered` counts the documents the candidate actually
+  renders — for a kustomize candidate that is the **resources graph** (files the
+  kustomization lists, following bases), *not* parked YAML a kustomization does not
+  reference; for a plain folder it is the whole directory. `editable` counts only the
+  rendered source physically in the candidate's own subtree. They are equal for plain /
+  self-contained kustomize candidates and **diverge for an overlay** (e.g. `rendered: 2,
+  editable: 0`) — the overlay renders a base it cannot yet edit, which makes the F2 gap
+  legible at a glance.
 - Repo summary: `candidatesByLayout`, `accepted`, `refused`, `overlapConflicts[]`,
   `fleetRoot`, `unsupportedConstructs[]`.
 - `proposedGitTarget` is **not** emitted yet — CR proposal is deferred.
+
+**Fidelity to the operator.** `acceptedByOperator` runs the live writer's own gate per
+candidate — `Scan` with `WriterAllowlist` (kustomize build directives **plus** the
+operator's `.sops.yaml` bootstrap config), so a folder the writer would adopt is not
+falsely reported refused. A refused plain / self-contained candidate carries the gate's
+issues as `refusalReasons` (`{code, detail}` — duplicate identity, non-KRM YAML, a foreign
+file, an unsupported nested kustomization, …), never a bare `false`. The structural gate
+refuses `openapi`/`crds` alongside `configurations`, matching the
+[support boundary §1](kustomize-support-boundary-and-product-model.md).
 
 **Classification findings.**
 
@@ -282,8 +295,10 @@ generation, the `--mode discovery` rename, and the repo-level `--policy refuse` 
 `internal/manifestanalyzer/testdata/repo-walker/{supported,unsupported}/<fixture>/` with a
 sibling `<fixture>.golden.json` each (regenerate with `UPDATE_GOLDEN=1`), covering
 plain-per-env, kustomize-single, base+overlays, HelmRelease document vs. helm inflation,
-unsupported kustomize, fleet-root, overlapping, and no-krm — the corpus this doc's test
-plan calls for.
+unsupported kustomize (incl. `openapi`/`crds`), fleet-root, overlapping, no-krm, and
+regression fixtures for the counting/acceptance edges — an overlay whose base pulls in a
+nested base (deduped `rendered`), an overlay base holding parked YAML (excluded from
+`rendered`), and a plain folder the gate refuses (issues surfaced as `refusalReasons`).
 
 ## Boundaries and non-goals
 

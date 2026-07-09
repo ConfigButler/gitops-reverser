@@ -7,5 +7,9 @@ secretGenerator:
   - name: creds
     literals:
       - password=s3cret
+openapi:
+  path: openapi/schema.json
+crds:
+  - crds/myresource.yaml
 resources:
   - deployment.yaml
