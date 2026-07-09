@@ -1,0 +1,33 @@
+{
+  "candidates": [
+    {
+      "path": "app",
+      "layout": "refused-structural",
+      "acceptedByOperator": false,
+      "refusalReasons": [
+        {
+          "code": "refused-structural",
+          "detail": "kustomization uses unsupported feature(s): components, namePrefix, secretGenerator"
+        }
+      ],
+      "renderRoot": true,
+      "resources": {
+        "rendered": 1,
+        "editable": 1,
+        "nonKrm": 0
+      }
+    }
+  ],
+  "summary": {
+    "candidatesByLayout": {
+      "refused-structural": 1
+    },
+    "accepted": 0,
+    "refused": 1,
+    "unsupportedConstructs": [
+      "components",
+      "namePrefix",
+      "secretGenerator"
+    ]
+  }
+}

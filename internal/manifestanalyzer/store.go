@@ -802,6 +802,23 @@ func kustomizationUsesUnsupportedFeature(content []byte) bool {
 	return hasUnsupportedKustomizeFeature(raw) || hasRemoteResource(resources) || !imagesOK || !replicasOK
 }
 
+// unsupportedKustomizeFeatureKeys returns the kustomization fields that create resources
+// or mutate resource identity (name/namespace) in ways the contextual-namespace writer
+// cannot map back to an editable source document. Their presence disqualifies a
+// kustomization as a namespace source. It is the single source of truth for both the
+// boolean gate (hasUnsupportedKustomizeFeature) and the repo-walker's per-feature
+// refusal detail (unsupportedKustomizeFeatures). It returns a fresh slice on every call,
+// so no shared state can be mutated.
+func unsupportedKustomizeFeatureKeys() []string {
+	return []string{
+		"generators", "configMapGenerator", "secretGenerator",
+		"helmCharts", "helmGlobals", "helmChartInflationGenerator",
+		"patches", "patchesStrategicMerge", "patchesJson6902",
+		"replacements", "components", "transformers", "configurations",
+		"namePrefix", "nameSuffix",
+	}
+}
+
 // hasUnsupportedKustomizeFeature reports whether a kustomization uses a field that
 // creates resources or mutates resource identity (name/namespace) in ways the
 // contextual-namespace writer cannot map back to an editable source document. Their
@@ -809,14 +826,7 @@ func kustomizationUsesUnsupportedFeature(content []byte) bool {
 // (labels, annotations) do not. images/replicas are parsed separately (overrides.go)
 // and disqualify only when malformed.
 func hasUnsupportedKustomizeFeature(raw map[string]interface{}) bool {
-	unsupported := []string{
-		"generators", "configMapGenerator", "secretGenerator",
-		"helmCharts", "helmGlobals", "helmChartInflationGenerator",
-		"patches", "patchesStrategicMerge", "patchesJson6902",
-		"replacements", "components", "transformers", "configurations",
-		"namePrefix", "nameSuffix",
-	}
-	for _, key := range unsupported {
+	for _, key := range unsupportedKustomizeFeatureKeys() {
 		if v, ok := raw[key]; ok && !isEmptyValue(v) {
 			return true
 		}

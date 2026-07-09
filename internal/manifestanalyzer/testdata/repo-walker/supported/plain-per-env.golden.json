@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "path": "apps/app/prod",
+      "layout": "plain",
+      "acceptedByOperator": true,
+      "renderRoot": false,
+      "inferredNamespace": "app-prod",
+      "resources": {
+        "rendered": 2,
+        "editable": 2,
+        "nonKrm": 0
+      }
+    },
+    {
+      "path": "apps/app/test",
+      "layout": "plain",
+      "acceptedByOperator": true,
+      "renderRoot": false,
+      "inferredNamespace": "app-test",
+      "resources": {
+        "rendered": 2,
+        "editable": 2,
+        "nonKrm": 0
+      }
+    }
+  ],
+  "summary": {
+    "candidatesByLayout": {
+      "plain": 2
+    },
+    "accepted": 2,
+    "refused": 0
+  }
+}
