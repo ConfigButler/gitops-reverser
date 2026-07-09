@@ -84,6 +84,33 @@ type GitTargetSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Path string `json:"path"`
 
+	// SourceCluster names the cluster this GitTarget mirrors FROM. Omitted means the
+	// cluster the operator runs in, which is the single-cluster default and needs no
+	// configuration.
+	//
+	// Setting it separates the two jobs one kubeconfig used to serve: the operator reads
+	// its own CRs and Git credentials from the cluster it runs in (the config plane) and
+	// watches resources on the cluster named here. Nothing but the watched resources then
+	// has to live on the watched cluster — no Secret, no configbutler.ai CRDs at all —
+	// and one operator can mirror many clusters, because each GitTarget carries its own
+	// source. It is deliberately shaped like Flux's `Kustomization.spec.kubeConfig`.
+	//
+	// It sits on GitTarget rather than on WatchRule because a GitTarget already owns
+	// exactly one materialization. Adding the source cluster makes that one
+	// (cluster, provider, branch, folder) — still one owner, one folder, one desired
+	// state. On WatchRule, two rules could name different clusters for one folder and the
+	// mark-and-sweep would alternately delete each cluster's objects.
+	//
+	// WatchRule keeps its meaning: it watches the namespace it lives in, resolved on the
+	// source cluster. A WatchRule in config-plane namespace "team-a" watches namespace
+	// "team-a" on the source cluster. A ClusterWatchRule watches the whole source cluster.
+	//
+	// Mutable: changing it retargets the GitTarget, exactly as changing branch or path
+	// does — the folder's contents would otherwise mean something different. Rotating the
+	// Secret's CONTENTS is transparent and is not a retarget.
+	// +optional
+	SourceCluster *SourceClusterSpec `json:"sourceCluster,omitempty"`
+
 	// Encryption defines encryption settings for Secret resource writes.
 	// +optional
 	Encryption *EncryptionSpec `json:"encryption,omitempty"`
@@ -94,6 +121,32 @@ type GitTargetSpec struct {
 	// change only affects resources created after the change.
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
+}
+
+// SourceClusterSpec names a remote cluster to mirror from, by the Secret holding its
+// kubeconfig. The Secret is read from the GitTarget's own namespace — the config plane —
+// so the credential for a cluster never has to live on that cluster.
+type SourceClusterSpec struct {
+	// KubeConfigSecretRef names the Secret holding the kubeconfig for the source cluster.
+	// +required
+	KubeConfigSecretRef SecretKeyReference `json:"kubeConfigSecretRef"`
+}
+
+// SecretKeyReference points at one key inside a Secret in the referring object's namespace.
+type SecretKeyReference struct {
+	// Name of the Secret, in the same namespace as the referring object.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Key within the Secret's data holding the kubeconfig. Defaults to "value.yaml",
+	// Flux's convention, so a Secret produced for a Flux Kustomization works unchanged.
+	// +optional
+	// +kubebuilder:default="value.yaml"
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Key string `json:"key,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document
@@ -131,8 +184,8 @@ type GitTargetPlacementSpec struct {
 	Default string `json:"default,omitempty"`
 }
 
-// GitTargetDestination is one materialization site: the branch and folder a GitTarget's
-// documents live at.
+// GitTargetDestination is one materialization site: the source cluster whose resources a
+// GitTarget mirrors, and the branch and folder they live at.
 type GitTargetDestination struct {
 	// Branch the materialization lives on.
 	// +required
@@ -141,7 +194,34 @@ type GitTargetDestination struct {
 	// Path the materialization lives under, relative to the repository root.
 	// +required
 	Path string `json:"path"`
+
+	// SourceCluster names the kubeconfig Secret whose cluster this materialization was
+	// mirrored from. Empty means the cluster the operator runs in.
+	// +optional
+	SourceCluster string `json:"sourceCluster,omitempty"`
 }
+
+// SourceClusterID identifies the cluster a GitTarget mirrors from, as the watch data plane
+// keys its per-cluster clients, catalogs, and type registries. The empty string is the
+// cluster the operator runs in.
+//
+// The Secret's key is part of the identity: two GitTargets naming the same Secret under
+// different keys are pointed at different kubeconfigs, and so at different clusters.
+func (g *GitTarget) SourceClusterID() string {
+	if g.Spec.SourceCluster == nil {
+		return ""
+	}
+	ref := g.Spec.SourceCluster.KubeConfigSecretRef
+	key := ref.Key
+	if key == "" {
+		key = DefaultKubeConfigSecretKey
+	}
+	return g.Namespace + "/" + ref.Name + "/" + key
+}
+
+// DefaultKubeConfigSecretKey is the Secret data key a source-cluster kubeconfig is read
+// from when none is given. It matches Flux's convention.
+const DefaultKubeConfigSecretKey = "value.yaml"
 
 // GitTargetStatus defines the observed state of GitTarget.
 type GitTargetStatus struct {

@@ -141,7 +141,14 @@ func TestNotServedResourceProducesNoGVR(t *testing.T) {
 				Resources:   []string{"customresources"},
 			}},
 		},
-	}, "target", "default", "provider", "default", "main", "live")
+	}, rulestore.TargetBinding{
+		GitTargetName:        "target",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "provider",
+		GitProviderNamespace: "default",
+		Branch:               "main",
+		Path:                 "live",
+	})
 	manager := &Manager{RuleStore: store, resourceCatalog: newCommonTestCatalog(t)}
 
 	assert.Empty(t, manager.ComputeRequestedGVRs())

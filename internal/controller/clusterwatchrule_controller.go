@@ -198,14 +198,8 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	// Ready check
 	// TODO: Check GitProvider readiness
 
-	// Add rule to store with GitTarget reference and resolved values
-	r.RuleStore.AddOrUpdateClusterWatchRule(
-		*clusterRule,
-		target.Name, targetNS, // GitTarget reference
-		provider.Name, providerNS, // GitProvider reference
-		target.Spec.Branch,
-		target.Spec.Path,
-	)
+	// Add rule to store with its resolved GitTarget binding (destination + source cluster).
+	r.RuleStore.AddOrUpdateClusterWatchRule(*clusterRule, rulestore.NewTargetBinding(target, provider))
 
 	// Trigger WatchManager reconciliation for new/updated rule
 	if r.WatchManager != nil {

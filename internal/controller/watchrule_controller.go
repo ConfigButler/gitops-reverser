@@ -221,14 +221,8 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	// I added GitProviderStatus with Conditions.
 	// TODO: Check GitProvider readiness. For now assume ready if found.
 
-	// Add rule to store with GitTarget reference and resolved values
-	r.RuleStore.AddOrUpdateWatchRule(
-		*watchRule,
-		target.Name, targetNS, // GitTarget reference (replaces GitDestination)
-		provider.Name, providerNS, // GitProvider reference (replaces GitRepoConfig)
-		target.Spec.Branch,
-		target.Spec.Path,
-	)
+	// Add rule to store with its resolved GitTarget binding (destination + source cluster).
+	r.RuleStore.AddOrUpdateWatchRule(*watchRule, rulestore.NewTargetBinding(target, provider))
 
 	// Trigger WatchManager reconciliation for new/updated rule
 	if r.WatchManager != nil {

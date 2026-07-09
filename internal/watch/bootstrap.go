@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
 // bootstrapRuleStore loads existing WatchRule and ClusterWatchRule objects into the in-memory RuleStore
@@ -57,13 +58,7 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 		return err
 	}
 
-	m.RuleStore.AddOrUpdateWatchRule(
-		rule,
-		target.Name, target.Namespace,
-		provider.Name, provider.Namespace,
-		target.Spec.Branch,
-		target.Spec.Path,
-	)
+	m.RuleStore.AddOrUpdateWatchRule(rule, rulestore.NewTargetBinding(target, provider))
 
 	return nil
 }
@@ -79,13 +74,7 @@ func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1al
 		return err
 	}
 
-	m.RuleStore.AddOrUpdateClusterWatchRule(
-		rule,
-		target.Name, target.Namespace,
-		provider.Name, provider.Namespace,
-		target.Spec.Branch,
-		target.Spec.Path,
-	)
+	m.RuleStore.AddOrUpdateClusterWatchRule(rule, rulestore.NewTargetBinding(target, provider))
 
 	return nil
 }

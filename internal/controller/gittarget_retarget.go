@@ -33,8 +33,9 @@ const (
 // leak an internal comparison key into a user-facing status field.
 func specDestination(target *configbutleraiv1alpha3.GitTarget) configbutleraiv1alpha3.GitTargetDestination {
 	return configbutleraiv1alpha3.GitTargetDestination{
-		Branch: target.Spec.Branch,
-		Path:   displayGitTargetPath(target.Spec.Path),
+		Branch:        target.Spec.Branch,
+		Path:          displayGitTargetPath(target.Spec.Path),
+		SourceCluster: target.SourceClusterID(),
 	}
 }
 
@@ -49,9 +50,13 @@ func displayGitTargetPath(p string) string {
 }
 
 // sameDestination compares two destinations the way the filesystem does: "apps" and
-// "apps/" are the same folder, so a trailing slash is never a move.
+// "apps/" are the same folder, so a trailing slash is never a move. The source cluster is
+// part of the identity — the same folder mirrored from a different cluster holds different
+// content — but rotating that cluster's kubeconfig is not a move.
 func sameDestination(a, b configbutleraiv1alpha3.GitTargetDestination) bool {
-	return a.Branch == b.Branch && normalizeGitTargetPath(a.Path) == normalizeGitTargetPath(b.Path)
+	return a.Branch == b.Branch &&
+		a.SourceCluster == b.SourceCluster &&
+		normalizeGitTargetPath(a.Path) == normalizeGitTargetPath(b.Path)
 }
 
 // destinationMoved reports whether the GitTarget has a materialization at a destination
@@ -165,5 +170,9 @@ func (r *GitTargetReconciler) markRetargetingUnknown(target *configbutleraiv1alp
 }
 
 func destinationString(d configbutleraiv1alpha3.GitTargetDestination) string {
-	return d.Branch + ":" + d.Path
+	out := d.Branch + ":" + d.Path
+	if d.SourceCluster != "" {
+		out += " (from " + d.SourceCluster + ")"
+	}
+	return out
 }

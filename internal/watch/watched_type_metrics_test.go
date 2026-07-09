@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
@@ -18,10 +19,14 @@ func TestRefreshWatchedTypeTables_RecordsResolvedTypeGauge(t *testing.T) {
 	require.NoError(t, err)
 
 	manager, store := makeWatchedTypeManager(t)
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-1", "configmaps"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 
 	manager.refreshWatchedTypeTables()
 

@@ -57,15 +57,16 @@ func (m *Manager) resolveSnapshotGVRForType(
 	gitDest types.ResourceReference,
 	gvr schema.GroupVersionResource,
 ) (snapshotGVR, bool, error) {
-	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
+	clusterID := m.clusterIDForGitTarget(gitDest)
+	if err := m.refreshClusterCatalog(ctx, clusterID); err != nil {
 		return snapshotGVR{}, false, fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
 	}
 	m.refreshWatchedTypeTables()
 
-	if !m.typeRegistryInstance().Ready() {
+	if !m.clusterRegistry(clusterID).Ready() {
 		return snapshotGVR{}, false, fmt.Errorf(
-			"aborting per-type reconcile for %s: the cluster API surface has not been observed yet",
-			gitDest.String())
+			"aborting per-type reconcile for %s: the %s cluster API surface has not been observed yet",
+			gitDest.String(), describeCluster(clusterID))
 	}
 
 	table := m.residentWatchedTypeTable(gitDest)
@@ -80,7 +81,7 @@ func (m *Manager) resolveSnapshotGVRForType(
 		return snapshotGVR{}, false, nil
 	}
 
-	if m.typeWobbling(gvr) {
+	if m.typeWobbling(clusterID, gvr) {
 		return snapshotGVR{}, false, fmt.Errorf(
 			"aborting per-type reconcile for %s: %s within the removal grace (currently unserved); "+
 				"refusing to reconcile a reduced view",
@@ -101,16 +102,17 @@ func (m *Manager) resolveSnapshotGVRs(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 ) ([]snapshotGVR, error) {
-	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
+	clusterID := m.clusterIDForGitTarget(gitDest)
+	if err := m.refreshClusterCatalog(ctx, clusterID); err != nil {
 		return nil, fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
 	}
 	m.refreshWatchedTypeTables()
 
-	if !m.typeRegistryInstance().Ready() {
+	if !m.clusterRegistry(clusterID).Ready() {
 		return nil, fmt.Errorf(
-			"aborting scope resolution for %s: the cluster API surface has not been observed yet; "+
+			"aborting scope resolution for %s: the %s cluster API surface has not been observed yet; "+
 				"refusing to reconcile a partial cluster view",
-			gitDest.String())
+			gitDest.String(), describeCluster(clusterID))
 	}
 
 	table := m.residentWatchedTypeTable(gitDest)
@@ -133,7 +135,7 @@ func (m *Manager) resolveSnapshotGVRs(
 func (m *Manager) retainedWatchedTypes(table WatchedTypeTable) []schema.GroupVersionKind {
 	var out []schema.GroupVersionKind
 	for _, wt := range table.Types {
-		if m.typeWobbling(wt.GVR) {
+		if m.typeWobbling(table.ClusterID, wt.GVR) {
 			out = append(out, wt.GVK)
 		}
 	}
@@ -144,8 +146,8 @@ func (m *Manager) retainedWatchedTypes(table WatchedTypeTable) []schema.GroupVer
 // the removal grace, but not actually served right now (a discovery wobble). It is the single
 // "do not reconcile or sweep this type" predicate, shared by the whole-GitTarget scope resolve
 // and the per-type gate, so both fail closed on exactly the same registry verdict.
-func (m *Manager) typeWobbling(gvr schema.GroupVersionResource) bool {
-	rec, ok := m.typeRegistryInstance().ByGVR(gvr)
+func (m *Manager) typeWobbling(clusterID string, gvr schema.GroupVersionResource) bool {
+	rec, ok := m.clusterRegistry(clusterID).ByGVR(gvr)
 	return ok && rec.Followability.Verdict == typeset.VerdictRetained
 }
 

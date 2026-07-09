@@ -286,6 +286,20 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
 	}
 
+	// The source-cluster kubeconfig is read from the config plane before any watch opens
+	// against it, so a typo'd Secret name says so instead of stalling the data plane.
+	if clusterOK, clusterMsg := r.validateSourceCluster(ctx, target); !clusterOK {
+		r.setCondition(
+			target,
+			GitTargetConditionValidated,
+			metav1.ConditionFalse,
+			GitTargetReasonSourceClusterUnreachable,
+			clusterMsg,
+		)
+		result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
+		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonSourceClusterUnreachable), &result, nil
+	}
+
 	r.setCondition(
 		target,
 		GitTargetConditionValidated,

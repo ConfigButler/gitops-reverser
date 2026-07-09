@@ -36,10 +36,14 @@ func gitDestRef(name string) types.ResourceReference {
 
 func TestRefreshWatchedTypeTables_ClusterWatchRuleResolvesClusterWideType(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-1", "configmaps"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 
 	manager.refreshWatchedTypeTables()
 
@@ -55,14 +59,22 @@ func TestRefreshWatchedTypeTables_ClusterWatchRuleResolvesClusterWideType(t *tes
 
 func TestRefreshWatchedTypeTables_WatchRuleScopesTypeToItsNamespace(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
-	store.AddOrUpdateWatchRule(
-		watchRuleForTarget("rule-a", "wt-ns-target", "ns-a"),
-		"wt-ns-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
-	store.AddOrUpdateWatchRule(
-		watchRuleForTarget("rule-b", "wt-ns-target", "ns-b"),
-		"wt-ns-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateWatchRule(watchRuleForTarget("rule-a", "wt-ns-target", "ns-a"), rulestore.TargetBinding{
+		GitTargetName:        "wt-ns-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
+	store.AddOrUpdateWatchRule(watchRuleForTarget("rule-b", "wt-ns-target", "ns-b"), rulestore.TargetBinding{
+		GitTargetName:        "wt-ns-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 
 	manager.refreshWatchedTypeTables()
 
@@ -75,19 +87,27 @@ func TestRefreshWatchedTypeTables_WatchRuleScopesTypeToItsNamespace(t *testing.T
 
 func TestRefreshWatchedTypeTables_RuleChangeReResolves(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-1", "configmaps"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 	manager.refreshWatchedTypeTables()
 	first, _ := manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
 	require.Len(t, first.Types, 1)
 
 	// A second rule selecting a different resource is reflected on the next refresh.
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "secrets"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-2", "secrets"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 	manager.refreshWatchedTypeTables()
 
 	second, _ := manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
@@ -102,10 +122,14 @@ func TestResolveWatchedTypeTables_NilRuleStoreIsEmpty(t *testing.T) {
 
 func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-1", "configmaps"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 	manager.refreshWatchedTypeTables()
 	manager.watchedTypes.mu.Lock()
 	firstRev := manager.watchedTypes.revision
@@ -122,17 +146,25 @@ func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {
 
 func TestRulesFingerprint_StableUntilRuleChanges(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-1", "configmaps"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 	fp1 := manager.rulesFingerprint()
 	assert.Equal(t, fp1, manager.rulesFingerprint(), "fingerprint must be stable for unchanged rules")
 
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "secrets"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-2", "secrets"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 	assert.NotEqual(t, fp1, manager.rulesFingerprint(), "a new rule must move the fingerprint")
 }
 
@@ -140,10 +172,14 @@ func TestRefreshWatchedTypeTables_KeepsTargetWithUnresolvableRulesAsEmptyTable(t
 	manager, store := makeWatchedTypeManager(t)
 	// "ghosts" is not served by the common catalog: the rule resolves to nothing,
 	// but the GitTarget must still appear as an empty table, not vanish.
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "ghosts"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-1", "ghosts"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 	manager.refreshWatchedTypeTables()
 
 	table, ok := manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
@@ -157,21 +193,25 @@ func TestRefreshWatchedTypeTables_KeepsTargetWithUnresolvableRulesAsEmptyTable(t
 func TestRefreshWatchedTypeTables_ExcludesAmbiguousGVK(t *testing.T) {
 	store := rulestore.NewStore()
 	manager := &Manager{Log: logr.Discard(), RuleStore: store, resourceCatalog: newWidgetConflictCatalog(t)}
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha3.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "rule-widgets"},
-			Spec: configv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha3.NamespacedTargetReference{Name: "test-target", Namespace: "test-ns"},
-				Rules: []configv1alpha3.ClusterResourceRule{{
-					APIGroups:   []string{"example.com"},
-					APIVersions: []string{"v1"},
-					Resources:   []string{"*"},
-					Scope:       configv1alpha3.ResourceScopeNamespaced,
-				}},
-			},
+	store.AddOrUpdateClusterWatchRule(configv1alpha3.ClusterWatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "rule-widgets"},
+		Spec: configv1alpha3.ClusterWatchRuleSpec{
+			TargetRef: configv1alpha3.NamespacedTargetReference{Name: "test-target", Namespace: "test-ns"},
+			Rules: []configv1alpha3.ClusterResourceRule{{
+				APIGroups:   []string{"example.com"},
+				APIVersions: []string{"v1"},
+				Resources:   []string{"*"},
+				Scope:       configv1alpha3.ResourceScopeNamespaced,
+			}},
 		},
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	}, rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 
 	manager.refreshWatchedTypeTables()
 

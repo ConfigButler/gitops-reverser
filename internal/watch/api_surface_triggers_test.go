@@ -154,8 +154,8 @@ func TestEnsureAPISurfaceTriggerInformers_NoOpBeforeStart(t *testing.T) {
 	// triggerCtx is nil until Start runs. Calling in through a controller-driven catalog
 	// refresh before then must not create a factory bound to a dead context.
 	m := &Manager{Log: logr.Discard()}
-	m.ensureAPISurfaceTriggerInformers(m.Log)
+	m.ensureAPISurfaceTriggerInformers(t.Context(), m.localCluster(), m.Log)
 
-	require.Nil(t, m.triggerFactory)
-	require.Empty(t, m.triggersStarted)
+	require.Nil(t, m.localCluster().triggerFactory)
+	require.Empty(t, m.localCluster().triggersStarted)
 }

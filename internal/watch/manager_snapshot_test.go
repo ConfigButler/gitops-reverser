@@ -69,35 +69,43 @@ func gitTargetFixture() *configv1alpha3.GitTarget {
 // addSecretsWatchRule registers a namespaced WatchRule in ns-a for my-target watching secrets —
 // the standard single-namespaced-type fixture the splice/scope/audit-tail tests resolve against.
 func addSecretsWatchRule(store *rulestore.RuleStore) {
-	store.AddOrUpdateWatchRule(
-		configv1alpha3.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "wr-secrets", Namespace: "ns-a"},
-			Spec: configv1alpha3.WatchRuleSpec{
-				TargetRef: configv1alpha3.LocalTargetReference{Name: "my-target"},
-				Rules: []configv1alpha3.ResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
-				}},
-			},
+	store.AddOrUpdateWatchRule(configv1alpha3.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "wr-secrets", Namespace: "ns-a"},
+		Spec: configv1alpha3.WatchRuleSpec{
+			TargetRef: configv1alpha3.LocalTargetReference{Name: "my-target"},
+			Rules: []configv1alpha3.ResourceRule{{
+				APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
+			}},
 		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
+	}, rulestore.TargetBinding{
+		GitTargetName:        "my-target",
+		GitTargetNamespace:   "gitops-reverser",
+		GitProviderName:      "provider",
+		GitProviderNamespace: "gitops-reverser",
+		Branch:               "main",
+		Path:                 "live",
+	})
 }
 
 // addClusterWatchRule registers a cluster-scoped ClusterWatchRule for my-target.
 func addClusterWatchRule(store *rulestore.RuleStore, name, resource string) {
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha3.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec: configv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha3.NamespacedTargetReference{Name: "my-target", Namespace: "gitops-reverser"},
-				Rules: []configv1alpha3.ClusterResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{resource},
-					Scope: configv1alpha3.ResourceScopeCluster,
-				}},
-			},
+	store.AddOrUpdateClusterWatchRule(configv1alpha3.ClusterWatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: configv1alpha3.ClusterWatchRuleSpec{
+			TargetRef: configv1alpha3.NamespacedTargetReference{Name: "my-target", Namespace: "gitops-reverser"},
+			Rules: []configv1alpha3.ClusterResourceRule{{
+				APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{resource},
+				Scope: configv1alpha3.ResourceScopeCluster,
+			}},
 		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
+	}, rulestore.TargetBinding{
+		GitTargetName:        "my-target",
+		GitTargetNamespace:   "gitops-reverser",
+		GitProviderName:      "provider",
+		GitProviderNamespace: "gitops-reverser",
+		Branch:               "main",
+		Path:                 "live",
+	})
 }
 
 func myTargetRef() itypes.ResourceReference {
@@ -172,18 +180,22 @@ func TestResolveSnapshotGVRs_ScopesNamespacedAndClusterWide(t *testing.T) {
 // so the snapshot is not silently narrowed.
 func TestResolveSnapshotGVRs_WildcardResourceExpands(t *testing.T) {
 	store := rulestore.NewStore()
-	store.AddOrUpdateWatchRule(
-		configv1alpha3.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "wr-all", Namespace: "ns-a"},
-			Spec: configv1alpha3.WatchRuleSpec{
-				TargetRef: configv1alpha3.LocalTargetReference{Name: "my-target"},
-				Rules: []configv1alpha3.ResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"*"},
-				}},
-			},
+	store.AddOrUpdateWatchRule(configv1alpha3.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "wr-all", Namespace: "ns-a"},
+		Spec: configv1alpha3.WatchRuleSpec{
+			TargetRef: configv1alpha3.LocalTargetReference{Name: "my-target"},
+			Rules: []configv1alpha3.ResourceRule{{
+				APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"*"},
+			}},
 		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
+	}, rulestore.TargetBinding{
+		GitTargetName:        "my-target",
+		GitTargetNamespace:   "gitops-reverser",
+		GitProviderName:      "provider",
+		GitProviderNamespace: "gitops-reverser",
+		Branch:               "main",
+		Path:                 "live",
+	})
 
 	m := streamingManager(t, gitTargetFixture(), store)
 	gvrs, err := m.resolveSnapshotGVRs(context.Background(), myTargetRef())

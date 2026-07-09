@@ -56,15 +56,17 @@ func (m *Manager) refreshWatchedTypeTables() {
 	m.watchedTypes.refreshMu.Lock()
 	defer m.watchedTypes.refreshMu.Unlock()
 
-	// Lazily populate the registry the first time (unit tests drive this path without
-	// RefreshAPIResourceCatalog); in production the catalog refresh keeps it current, so
-	// the heavy scan→registry rebuild stays off this path.
-	if !m.typeRegistryInstance().Ready() {
-		m.refreshTypeRegistry()
+	// Lazily populate each active cluster's registry the first time (unit tests drive this
+	// path without RefreshAPIResourceCatalog); in production the catalog refresh keeps them
+	// current, so the heavy scan→registry rebuild stays off this path.
+	for _, id := range m.activeClusterIDs() {
+		cc := m.cluster(id)
+		if !cc.registry.Ready() {
+			m.refreshTypeRegistry(cc)
+		}
 	}
 
-	reg := m.typeRegistryInstance()
-	revision := reg.Revision()
+	revision, generation := m.clusterRegistryRevisions()
 	fingerprint := m.rulesFingerprint()
 
 	m.watchedTypes.mu.Lock()
@@ -76,7 +78,7 @@ func (m *Manager) refreshWatchedTypeTables() {
 		return
 	}
 
-	tables := m.resolveWatchedTypeTables(reg.Generation())
+	tables := m.resolveWatchedTypeTables(generation)
 
 	m.watchedTypes.mu.Lock()
 	previous := m.watchedTypes.tables
@@ -87,6 +89,18 @@ func (m *Manager) refreshWatchedTypeTables() {
 	m.watchedTypes.mu.Unlock()
 
 	recordWatchedTypeMetrics(previous, tables)
+}
+
+// clusterRegistryRevisions folds every live cluster registry's revision and generation into
+// one pair, so a discovery change on ANY watched cluster re-resolves the tables. Summing is
+// enough: revisions only ever advance, so any change moves the sum.
+func (m *Manager) clusterRegistryRevisions() (uint64, uint64) {
+	var revision, generation uint64
+	for _, cc := range m.orderedClusters() {
+		revision += cc.registry.Revision()
+		generation += cc.registry.Generation()
+	}
+	return revision, generation
 }
 
 // recordWatchedTypeMetrics publishes the per-GitTarget watched-type count gauge after a
@@ -172,8 +186,11 @@ func (m *Manager) residentWatchedTypeTable(gitDest types.ResourceReference) Watc
 // targetSelections accumulates one GitTarget's selected followable records and write
 // destination while folding that target's rules.
 type targetSelections struct {
-	gitDest    types.ResourceReference
-	dest       string
+	gitDest types.ResourceReference
+	dest    string
+	// clusterID is the source cluster every rule for this GitTarget agrees on: they all
+	// resolved the same GitTarget when they compiled.
+	clusterID  string
 	selections []watchSelection
 }
 
@@ -185,43 +202,55 @@ func (m *Manager) resolveWatchedTypeTables(generation uint64) map[string]Watched
 	if m.RuleStore == nil {
 		return map[string]WatchedTypeTable{}
 	}
-	records := m.typeRegistryInstance().Followable()
 
 	byTarget := map[string]*targetSelections{}
-	get := func(ref types.ResourceReference, providerNS, provider, branch, path string) *targetSelections {
+	get := func(ref types.ResourceReference, binding targetBindingInfo) *targetSelections {
 		key := ref.Key()
 		ts := byTarget[key]
 		if ts == nil {
 			ts = &targetSelections{gitDest: ref}
 			byTarget[key] = ts
 		}
-		ts.dest = watchPlanDest(providerNS, provider, branch, path)
+		ts.dest = watchPlanDest(binding.providerNS, binding.provider, binding.branch, binding.path)
+		ts.clusterID = binding.clusterID
 		return ts
 	}
 
-	m.collectWatchRuleSelections(records, get)
-	m.collectClusterWatchRuleSelections(records, get)
+	m.collectWatchRuleSelections(get)
+	m.collectClusterWatchRuleSelections(get)
 
 	tables := make(map[string]WatchedTypeTable, len(byTarget))
 	for key, ts := range byTarget {
 		table := buildWatchedTypeTable(ts.gitDest, generation, ts.selections)
 		table.Dest = ts.dest
+		table.ClusterID = ts.clusterID
 		tables[key] = table
 	}
 	return tables
 }
 
+// targetBindingInfo is the GitTarget-derived context a rule carries into table resolution.
+type targetBindingInfo struct {
+	providerNS, provider, branch, path string
+	clusterID                          string
+}
+
 // collectWatchRuleSelections folds every namespaced WatchRule into its GitTarget's
 // selected records, scoping each record to the rule's own namespace.
 func (m *Manager) collectWatchRuleSelections(
-	records []typeset.TypeRecord,
-	get func(types.ResourceReference, string, string, string, string) *targetSelections,
+	get func(types.ResourceReference, targetBindingInfo) *targetSelections,
 ) {
 	for _, rule := range m.RuleStore.SnapshotWatchRules() {
 		ts := get(
 			types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace),
-			rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path,
+			targetBindingInfo{
+				providerNS: rule.GitProviderNamespace, provider: rule.GitProviderRef,
+				branch: rule.Branch, path: rule.Path, clusterID: rule.SourceCluster,
+			},
 		)
+		// Types resolve against the cluster this rule's GitTarget mirrors: a CRD installed
+		// only on the source cluster is followable, and one installed only locally is not.
+		records := m.clusterRegistry(rule.SourceCluster).Followable()
 		for _, rr := range rule.ResourceRules {
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
@@ -239,14 +268,17 @@ func (m *Manager) collectWatchRuleSelections(
 // collectClusterWatchRuleSelections folds every ClusterWatchRule into its GitTarget's
 // selected records as cluster-wide streams.
 func (m *Manager) collectClusterWatchRuleSelections(
-	records []typeset.TypeRecord,
-	get func(types.ResourceReference, string, string, string, string) *targetSelections,
+	get func(types.ResourceReference, targetBindingInfo) *targetSelections,
 ) {
 	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
 		ts := get(
 			types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace),
-			rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path,
+			targetBindingInfo{
+				providerNS: rule.GitProviderNamespace, provider: rule.GitProviderRef,
+				branch: rule.Branch, path: rule.Path, clusterID: rule.SourceCluster,
+			},
 		)
+		records := m.clusterRegistry(rule.SourceCluster).Followable()
 		for _, rr := range rule.Rules {
 			matched := matchFollowableRecords(records, rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
 			exclusion := newWriteExclusion(rr.ExcludeFieldManagers, rr.ExcludeUsers)

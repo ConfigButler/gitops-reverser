@@ -130,8 +130,10 @@ func (m *Manager) StreamSummaryForGitTarget(gitDest types.ResourceReference) Str
 
 // StreamSummaryForWatchRule reports stream readiness for one namespaced WatchRule.
 func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) StreamSummary {
-	m.refreshTypeRegistry()
-	records := m.typeRegistryInstance().Followable()
+	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+	cc := m.cluster(m.clusterIDForGitTarget(gitDest))
+	m.refreshTypeRegistry(cc)
+	records := cc.registry.Followable()
 	var keys []targetWatchKey
 	names := map[schema.GroupVersionResource]string{}
 	for _, rr := range rule.Spec.Rules {
@@ -143,17 +145,15 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 			names[rec.Identity.GVR] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
-	return m.streamSummaryForExpectedKeys(
-		types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace),
-		deduplicateTargetWatchKeys(keys),
-		names,
-	)
+	return m.streamSummaryForExpectedKeys(gitDest, deduplicateTargetWatchKeys(keys), names)
 }
 
 // StreamSummaryForClusterWatchRule reports stream readiness for one ClusterWatchRule.
 func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) StreamSummary {
-	m.refreshTypeRegistry()
-	records := m.typeRegistryInstance().Followable()
+	cc := m.cluster(m.clusterIDForGitTarget(
+		types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)))
+	m.refreshTypeRegistry(cc)
+	records := cc.registry.Followable()
 	var keys []targetWatchKey
 	names := map[schema.GroupVersionResource]string{}
 	for _, rr := range rule.Spec.Rules {

@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/dynamic/dynamicinformer"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -27,7 +26,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
-	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // RBAC permissions for dynamic watch manager - read-only access to watch all (also future ones!) resource types
@@ -90,35 +88,38 @@ type Manager struct {
 	// against what git already holds. See routeLiveTargetWatchEvent.
 	liveContentDedup sync.Map
 
-	// resourceCatalog is the shared discovery-backed API surface used by rule planning.
+	// SourceClusters resolves a GitTarget's source-cluster id into a rest.Config, by
+	// reading the kubeconfig Secret it names from the config plane. Nil is the
+	// single-cluster install: every GitTarget mirrors the cluster the operator runs in,
+	// and no GitTarget may name a source.
+	SourceClusters SourceClusterResolver
+
+	// clusters holds one clusterContext per distinct source cluster — its API catalog,
+	// type registry, clients, and trigger informers. LocalClusterID is the cluster the
+	// operator runs in, and the only one a single-cluster install ever creates.
+	clustersMu sync.Mutex
+	clusters   map[string]*clusterContext
+	// clientsMu guards the client/config fields inside every clusterContext, so a
+	// kubeconfig rotation rebuilds them exactly once.
+	clientsMu sync.Mutex
+	// resourceCatalogMu guards every clusterContext's catalog/registry logging state.
 	resourceCatalogMu sync.Mutex
-	resourceCatalog   *APIResourceCatalog
-	// discoveryClient overrides REST-config discovery construction in tests.
+	// discoveryClient overrides REST-config discovery construction for the LOCAL cluster
+	// in tests.
 	discoveryClient func() (apiResourceDiscovery, error)
+	// resourceCatalog seeds the LOCAL cluster's API-resource catalog. Tests set it on a
+	// zero-value Manager to drive resolution without an API server; production leaves it
+	// nil and the cluster context builds its own.
+	resourceCatalog *APIResourceCatalog
 	// catalogRefreshCh coalesces API-surface trigger watch events into manager reconciliation.
 	catalogRefreshCh chan struct{}
-	// triggersMu guards the API-surface trigger informer set below. The informers are
+	// triggersMu guards every clusterContext's trigger informer set. The informers are
 	// (re-)evaluated after every catalog refresh — which controllers drive, not just the
 	// manager's own loop — so this is not a startup-only structure.
 	triggersMu sync.Mutex
 	// triggerCtx is the manager's lifetime context, the stop channel every trigger informer
 	// is started with. Set once by Start; nil before then, which defers informer creation.
 	triggerCtx context.Context
-	// triggerFactory is the shared dynamic informer factory backing the trigger informers.
-	triggerFactory dynamicinformer.DynamicSharedInformerFactory
-	// triggersStarted is the set of trigger resources whose informer is already running.
-	triggersStarted map[schema.GroupVersionResource]struct{}
-	// triggersSkipLogged records which unserved trigger resources have already been logged,
-	// so a permanently absent aggregation layer produces one line, not one per refresh.
-	triggersSkipLogged map[schema.GroupVersionResource]struct{}
-	// catalogReadyOnce guards the one-time "catalog ready" log line, matching the
-	// firstMessage/firstGroupReady sync.Once pattern used by the audit consumer.
-	catalogReadyOnce sync.Once
-	// catalogDegradedLogged is the degraded group/version set last reflected in
-	// the log; logCatalogTransitions diffs against it to log appear/clear
-	// transitions (degradation can recur, so this is not a one-shot). Guarded by
-	// resourceCatalogMu.
-	catalogDegradedLogged map[schema.GroupVersion]struct{}
 
 	// watchedTypes is the resident, per-GitTarget watched-type table set: the single
 	// source of "what each GitTarget watches", a projection of the type registry's
@@ -155,18 +156,6 @@ type Manager struct {
 	// under the same name never inherits its predecessor's cursor.
 	gitTargetUIDsMu sync.Mutex
 	gitTargetUIDs   map[string]string
-
-	// typeRegistry is the followability decision surface (see
-	// docs/design/manifest/version2/type-followability.md): one typeset.TypeRecord
-	// per served type, refreshed from the catalog scan on every catalog refresh. It
-	// is the inventory/status surface ("is this type followable, and if not, why?");
-	// typeRegistryInit guards its lazy construction for zero-value Managers in tests.
-	typeRegistryInit sync.Once
-	typeRegistry     *typeset.Registry
-	// typeRefusalsLogged is the GVK->summary of every type the registry currently
-	// refuses, so the central "why is this not followable?" log is edge-triggered: a
-	// stable refusal is logged once, not on every refresh. Guarded by resourceCatalogMu.
-	typeRefusalsLogged map[string]string
 
 	// excludeUsersWarned records the rules already warned about declaring excludeUsers with
 	// no author attribution configured, so the warning is edge-triggered rather than
@@ -254,26 +243,6 @@ func (m *Manager) initializeManagerState() {
 // NeedLeaderElection ensures only the elected leader runs the watch manager.
 func (m *Manager) NeedLeaderElection() bool {
 	return true
-}
-
-// dynamicClientFromConfig builds a dynamic client from the controller's REST config.
-// If m.dynamicClient is set (e.g. in tests) it is returned directly. It is used by the
-// per-type checkpoint fill (mirrorTypeObjects) — the only API touch on a schedule.
-func (m *Manager) dynamicClientFromConfig(log logr.Logger) dynamic.Interface {
-	if m.dynamicClient != nil {
-		return m.dynamicClient
-	}
-	cfg := m.restConfig()
-	if cfg == nil {
-		log.Info("skipping seed - no rest config available")
-		return nil
-	}
-	dc, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		log.Error(err, "failed to construct dynamic client for seed")
-		return nil
-	}
-	return dc
 }
 
 // ReconcileForRuleChange refreshes the trusted API catalog and the resident watched-type

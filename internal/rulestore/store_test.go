@@ -47,15 +47,14 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	rule.Namespace = "default"
 
 	// Add rule
-	store.AddOrUpdateWatchRule(
-		rule,
-		"test-target",
-		"default",
-		"test-provider",
-		"gitops-system",
-		"main",
-		"clusters/prod",
-	)
+	store.AddOrUpdateWatchRule(rule, TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "clusters/prod",
+	})
 
 	// Verify it was added
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
@@ -88,15 +87,14 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	}
 
 	// Update rule with different values
-	store.AddOrUpdateWatchRule(
-		rule,
-		"test-target",
-		"default",
-		"updated-provider",
-		"gitops-system",
-		"develop",
-		"clusters/staging",
-	)
+	store.AddOrUpdateWatchRule(rule, TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "updated-provider",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "develop",
+		Path:                 "clusters/staging",
+	})
 
 	compiled, exists = store.rules[key]
 	if !exists {
@@ -133,15 +131,14 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 	rule.Name = "test-cluster-rule"
 
 	// Add rule
-	store.AddOrUpdateClusterWatchRule(
-		rule,
-		"test-cluster-target",
-		"gitops-system",
-		"cluster-provider",
-		"gitops-system",
-		"main",
-		"cluster/audit",
-	)
+	store.AddOrUpdateClusterWatchRule(rule, TargetBinding{
+		GitTargetName:        "test-cluster-target",
+		GitTargetNamespace:   "gitops-system",
+		GitProviderName:      "cluster-provider",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "cluster/audit",
+	})
 
 	// Verify it was added
 	key := types.NamespacedName{Name: "test-cluster-rule", Namespace: ""}
@@ -188,7 +185,14 @@ func TestDelete(t *testing.T) {
 	key := types.NamespacedName{Name: "delete-test", Namespace: "default"}
 
 	// Add rule
-	store.AddOrUpdateWatchRule(rule, "test-dest", "default", "test-repo", "gitops-system", "main", "test")
+	store.AddOrUpdateWatchRule(rule, TargetBinding{
+		GitTargetName:        "test-dest",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "test-repo",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "test",
+	})
 
 	// Verify it exists
 	if _, exists := store.rules[key]; !exists {
@@ -223,7 +227,14 @@ func TestDeleteClusterWatchRule(t *testing.T) {
 	key := types.NamespacedName{Name: "delete-cluster-test", Namespace: ""}
 
 	// Add rule
-	store.AddOrUpdateClusterWatchRule(rule, "test-dest", "gitops-system", "test-repo", "gitops-system", "main", "test")
+	store.AddOrUpdateClusterWatchRule(rule, TargetBinding{
+		GitTargetName:        "test-dest",
+		GitTargetNamespace:   "gitops-system",
+		GitProviderName:      "test-repo",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "test",
+	})
 
 	// Verify it exists
 	if _, exists := store.clusterRules[key]; !exists {
@@ -274,8 +285,22 @@ func TestGetMatchingRules(t *testing.T) {
 	rule2.Name = "deployment-rule"
 	rule2.Namespace = "default"
 
-	store.AddOrUpdateWatchRule(rule1, "dest1", "default", "repo1", "gitops-system", "main", "test1")
-	store.AddOrUpdateWatchRule(rule2, "dest2", "default", "repo2", "gitops-system", "main", "test2")
+	store.AddOrUpdateWatchRule(rule1, TargetBinding{
+		GitTargetName:        "dest1",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "repo1",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "test1",
+	})
+	store.AddOrUpdateWatchRule(rule2, TargetBinding{
+		GitTargetName:        "dest2",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "repo2",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "test2",
+	})
 
 	tests := []struct {
 		name            string
@@ -409,15 +434,30 @@ func TestGetMatchingRules_OverlappingRulesUnionOperations(t *testing.T) {
 
 	// Two rules covering the same resource with complementary operations, plus a
 	// second CREATE rule to prove matches are additive rather than first-wins.
-	store.AddOrUpdateWatchRule(
-		podsRule("pod-create", configv1alpha3.OperationCreate),
-		"dest-a", "default", "repo", "gitops-system", "main", "a")
-	store.AddOrUpdateWatchRule(
-		podsRule("pod-update", configv1alpha3.OperationUpdate),
-		"dest-a", "default", "repo", "gitops-system", "main", "a")
-	store.AddOrUpdateWatchRule(
-		podsRule("pod-create-2", configv1alpha3.OperationCreate),
-		"dest-b", "default", "repo", "gitops-system", "main", "b")
+	store.AddOrUpdateWatchRule(podsRule("pod-create", configv1alpha3.OperationCreate), TargetBinding{
+		GitTargetName:        "dest-a",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "repo",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "a",
+	})
+	store.AddOrUpdateWatchRule(podsRule("pod-update", configv1alpha3.OperationUpdate), TargetBinding{
+		GitTargetName:        "dest-a",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "repo",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "a",
+	})
+	store.AddOrUpdateWatchRule(podsRule("pod-create-2", configv1alpha3.OperationCreate), TargetBinding{
+		GitTargetName:        "dest-b",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "repo",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "b",
+	})
 
 	tests := []struct {
 		name          string
@@ -522,24 +562,22 @@ func TestGetMatchingClusterRules(t *testing.T) {
 	}
 	namespacedRule.Name = "pod-cluster-rule"
 
-	store.AddOrUpdateClusterWatchRule(
-		clusterRule,
-		"dest1",
-		"gitops-system",
-		"repo1",
-		"gitops-system",
-		"main",
-		"cluster",
-	)
-	store.AddOrUpdateClusterWatchRule(
-		namespacedRule,
-		"dest2",
-		"gitops-system",
-		"repo2",
-		"gitops-system",
-		"main",
-		"namespaced",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRule, TargetBinding{
+		GitTargetName:        "dest1",
+		GitTargetNamespace:   "gitops-system",
+		GitProviderName:      "repo1",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "cluster",
+	})
+	store.AddOrUpdateClusterWatchRule(namespacedRule, TargetBinding{
+		GitTargetName:        "dest2",
+		GitTargetNamespace:   "gitops-system",
+		GitProviderName:      "repo2",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "namespaced",
+	})
 
 	tests := []struct {
 		name            string
@@ -789,8 +827,22 @@ func TestSnapshotWatchRules(t *testing.T) {
 	rule2.Name = "rule2"
 	rule2.Namespace = "default"
 
-	store.AddOrUpdateWatchRule(rule1, "dest1", "default", "repo1", "gitops-system", "main", "test1")
-	store.AddOrUpdateWatchRule(rule2, "dest2", "default", "repo2", "gitops-system", "main", "test2")
+	store.AddOrUpdateWatchRule(rule1, TargetBinding{
+		GitTargetName:        "dest1",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "repo1",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "test1",
+	})
+	store.AddOrUpdateWatchRule(rule2, TargetBinding{
+		GitTargetName:        "dest2",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "repo2",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "test2",
+	})
 
 	// Get snapshot
 	snapshot := store.SnapshotWatchRules()
@@ -827,7 +879,14 @@ func TestSnapshotClusterWatchRules(t *testing.T) {
 	}
 	rule1.Name = "cluster-rule1"
 
-	store.AddOrUpdateClusterWatchRule(rule1, "dest1", "gitops-system", "repo1", "gitops-system", "main", "cluster")
+	store.AddOrUpdateClusterWatchRule(rule1, TargetBinding{
+		GitTargetName:        "dest1",
+		GitTargetNamespace:   "gitops-system",
+		GitProviderName:      "repo1",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "cluster",
+	})
 
 	snapshot := store.SnapshotClusterWatchRules()
 
@@ -867,7 +926,14 @@ func TestConcurrentAccess(t *testing.T) {
 				rule.Name = "concurrent-rule"
 				rule.Namespace = "default"
 
-				store.AddOrUpdateWatchRule(rule, "dest", "default", "repo", "gitops-system", "main", "test")
+				store.AddOrUpdateWatchRule(rule, TargetBinding{
+					GitTargetName:        "dest",
+					GitTargetNamespace:   "default",
+					GitProviderName:      "repo",
+					GitProviderNamespace: "gitops-system",
+					Branch:               "main",
+					Path:                 "test",
+				})
 			}
 		}(i)
 	}
@@ -914,7 +980,14 @@ func TestMultipleResourceRules(t *testing.T) {
 	rule.Name = "multi-rule"
 	rule.Namespace = "default"
 
-	store.AddOrUpdateWatchRule(rule, "dest", "default", "repo", "gitops-system", "main", "test")
+	store.AddOrUpdateWatchRule(rule, TargetBinding{
+		GitTargetName:        "dest",
+		GitTargetNamespace:   "default",
+		GitProviderName:      "repo",
+		GitProviderNamespace: "gitops-system",
+		Branch:               "main",
+		Path:                 "test",
+	})
 
 	// Should match pod CREATE
 	matches := store.GetMatchingRules(nil, "pods", configv1alpha3.OperationCreate, "", "v1", false)
@@ -955,7 +1028,14 @@ func TestGetMatchingRules_MustFilterByNamespaceForNamespacedWatchRule(t *testing
 	}
 	rule.Name = "playground-wr"
 	rule.Namespace = "tilt-playground"
-	store.AddOrUpdateWatchRule(rule, "target", "tilt-playground", "provider", "tilt-playground", "main", "live")
+	store.AddOrUpdateWatchRule(rule, TargetBinding{
+		GitTargetName:        "target",
+		GitTargetNamespace:   "tilt-playground",
+		GitProviderName:      "provider",
+		GitProviderNamespace: "tilt-playground",
+		Branch:               "main",
+		Path:                 "live",
+	})
 
 	sameNSObject := &unstructured.Unstructured{}
 	sameNSObject.SetNamespace("tilt-playground")
@@ -992,24 +1072,35 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 	}
 	rule.Name = "ns-wr"
 	rule.Namespace = "tilt-playground"
-	store.AddOrUpdateWatchRule(rule, "tgt", "tilt-playground", "prov", "tilt-playground", "main", "live")
+	store.AddOrUpdateWatchRule(rule, TargetBinding{
+		GitTargetName:        "tgt",
+		GitTargetNamespace:   "tilt-playground",
+		GitProviderName:      "prov",
+		GitProviderNamespace: "tilt-playground",
+		Branch:               "main",
+		Path:                 "live",
+	})
 
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha3.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "cluster-services"},
-			Spec: configv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha3.NamespacedTargetReference{Name: "cluster-target", Namespace: "ops"},
-				Rules: []configv1alpha3.ClusterResourceRule{{
-					Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
-					APIGroups:   []string{""},
-					APIVersions: []string{"v1"},
-					Resources:   []string{"services"},
-					Scope:       configv1alpha3.ResourceScopeNamespaced,
-				}},
-			},
+	store.AddOrUpdateClusterWatchRule(configv1alpha3.ClusterWatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-services"},
+		Spec: configv1alpha3.ClusterWatchRuleSpec{
+			TargetRef: configv1alpha3.NamespacedTargetReference{Name: "cluster-target", Namespace: "ops"},
+			Rules: []configv1alpha3.ClusterResourceRule{{
+				Operations:  []configv1alpha3.OperationType{configv1alpha3.OperationAll},
+				APIGroups:   []string{""},
+				APIVersions: []string{"v1"},
+				Resources:   []string{"services"},
+				Scope:       configv1alpha3.ResourceScopeNamespaced,
+			}},
 		},
-		"cluster-target", "ops", "cluster-provider", "ops", "main", "cluster",
-	)
+	}, TargetBinding{
+		GitTargetName:        "cluster-target",
+		GitTargetNamespace:   "ops",
+		GitProviderName:      "cluster-provider",
+		GitProviderNamespace: "ops",
+		Branch:               "main",
+		Path:                 "cluster",
+	})
 
 	t.Run("same namespace matches", func(t *testing.T) {
 		obj := &unstructured.Unstructured{}

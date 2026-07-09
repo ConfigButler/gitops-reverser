@@ -4,7 +4,6 @@ package watch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -14,30 +13,14 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	ctrl "sigs.k8s.io/controller-runtime"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
-
-// restConfig acquires the controller runtime REST config.
-// Returns nil if no config is available (e.g., in unit tests without a cluster).
-func (m *Manager) restConfig() *rest.Config {
-	// ctrl.GetConfig reads KUBECONFIG or in-cluster config. In tests/e2e this is
-	// set up by the test harness/Kind. In unit tests without a cluster it returns
-	// an error, which callers handle gracefully.
-	cfg, err := ctrl.GetConfig()
-	if err != nil {
-		return nil
-	}
-	return cfg
-}
 
 func crdTriggerGVR() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
@@ -55,27 +38,47 @@ func apiServiceTriggerGVR() schema.GroupVersionResource {
 	}
 }
 
-// RefreshAPIResourceCatalog refreshes trusted catalog data from Kubernetes discovery.
+// RefreshAPIResourceCatalog refreshes every active cluster's catalog from its own
+// discovery. It returns the LOCAL cluster's error only: a remote cluster that cannot be
+// reached must fail its own GitTargets (which it does, through its unready registry), never
+// the local cluster's. Remote failures are logged and left for the affected targets to
+// surface.
 func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
-	catalog := m.apiResourceCatalog()
-	disco, err := m.apiResourceDiscovery()
+	localErr := m.refreshClusterCatalog(ctx, LocalClusterID)
+	for _, id := range m.activeClusterIDs() {
+		if id == LocalClusterID {
+			continue
+		}
+		if err := m.refreshClusterCatalog(ctx, id); err != nil {
+			m.Log.V(1).Info("source cluster catalog refresh failed",
+				"clusterID", id, "err", err.Error())
+		}
+	}
+	return localErr
+}
+
+// refreshClusterCatalog refreshes one cluster's trusted catalog data from its discovery,
+// re-derives its followability registry, and re-arms its API-surface trigger informers.
+func (m *Manager) refreshClusterCatalog(ctx context.Context, clusterID string) error {
+	cc := m.cluster(clusterID)
+	disco, err := m.clusterDiscovery(ctx, clusterID)
 	if err != nil {
 		return err
 	}
 	start := time.Now()
-	changed, refreshErr := catalog.Refresh(disco)
+	changed, refreshErr := cc.catalog.Refresh(disco)
 	recordCatalogRefresh(ctx, changed, refreshErr, time.Since(start))
 	if refreshErr == nil {
 		// Re-derive the followability records from the fresh scan before logging, so
 		// the ready line can report how many served types are followable.
-		m.refreshTypeRegistry()
-		stats := catalog.Stats()
+		m.refreshTypeRegistry(cc)
+		stats := cc.catalog.Stats()
 		recordCatalogStats(ctx, stats)
-		m.logCatalogTransitions(catalog, stats)
+		m.logCatalogTransitions(cc, stats)
 		// The fresh scan is the only source of truth for which trigger resources this API
 		// server actually serves, so trigger informers are (re-)armed here rather than once
 		// at startup. An aggregation layer installed later is picked up on its refresh.
-		m.ensureAPISurfaceTriggerInformers(m.Log.WithName("catalog-triggers"))
+		m.ensureAPISurfaceTriggerInformers(ctx, cc, m.Log.WithName("catalog-triggers"))
 	}
 	return refreshErr
 }
@@ -84,18 +87,18 @@ func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
 // only: the first successful build, and when the set of group/versions that
 // discovery cannot serve appears or clears. Steady-state refreshes - which run
 // on every rule change, periodic tick, and CRD/APIService event - stay silent.
-func (m *Manager) logCatalogTransitions(catalog *APIResourceCatalog, stats CatalogStats) {
-	log := m.Log.WithName("catalog")
+func (m *Manager) logCatalogTransitions(cc *clusterContext, stats CatalogStats) {
+	log := m.Log.WithName("catalog").WithValues("cluster", describeCluster(cc.id))
 
-	if catalog.Ready() {
-		m.catalogReadyOnce.Do(func() {
+	if cc.catalog.Ready() {
+		cc.catalogReadyOnce.Do(func() {
 			log.Info("API resource catalog ready",
 				"allowedResources", stats.AllowedResources,
 				"excludedResources", stats.ExcludedResources,
 				"trustedGroupVersions", stats.TrustedGroupVersions,
 				"degradedGroupVersions", stats.DegradedGroupVersions,
-				"followableTypes", len(m.FollowableTypeRecords()),
-				"knownTypes", len(m.TypeRecords()),
+				"followableTypes", len(cc.registry.Followable()),
+				"knownTypes", len(cc.registry.All()),
 				"generation", stats.Generation)
 		})
 	}
@@ -105,19 +108,19 @@ func (m *Manager) logCatalogTransitions(catalog *APIResourceCatalog, stats Catal
 
 	current := make(map[schema.GroupVersion]struct{})
 	var appeared []schema.GroupVersion
-	for _, gv := range catalog.DegradedGroupVersions() {
+	for _, gv := range cc.catalog.DegradedGroupVersions() {
 		current[gv] = struct{}{}
-		if _, known := m.catalogDegradedLogged[gv]; !known {
+		if _, known := cc.catalogDegradedLogged[gv]; !known {
 			appeared = append(appeared, gv)
 		}
 	}
 	var cleared []schema.GroupVersion
-	for gv := range m.catalogDegradedLogged {
+	for gv := range cc.catalogDegradedLogged {
 		if _, still := current[gv]; !still {
 			cleared = append(cleared, gv)
 		}
 	}
-	m.catalogDegradedLogged = current
+	cc.catalogDegradedLogged = current
 
 	if len(appeared) > 0 {
 		log.Info("API discovery degraded - the cluster cannot serve these group/versions; "+
@@ -193,24 +196,22 @@ func recordCatalogStats(ctx context.Context, stats CatalogStats) {
 	}
 }
 
+// apiResourceCatalog returns the LOCAL cluster's catalog. Callers that know which cluster
+// they mean go through m.cluster(id).catalog instead.
 func (m *Manager) apiResourceCatalog() *APIResourceCatalog {
-	m.resourceCatalogMu.Lock()
-	defer m.resourceCatalogMu.Unlock()
-	if m.resourceCatalog == nil {
-		m.resourceCatalog = NewAPIResourceCatalog()
-	}
-	return m.resourceCatalog
+	return m.localCluster().catalog
 }
 
-// typeRegistryInstance returns the lazily-built followability registry, so a
-// zero-value Manager (used widely in tests) needs no explicit setup.
+// typeRegistryInstance returns the LOCAL cluster's followability registry, so a zero-value
+// Manager (used widely in tests) needs no explicit setup. Target-scoped callers go through
+// m.clusterRegistry(clusterID).
 func (m *Manager) typeRegistryInstance() *typeset.Registry {
-	m.typeRegistryInit.Do(func() {
-		if m.typeRegistry == nil {
-			m.typeRegistry = typeset.NewRegistry()
-		}
-	})
-	return m.typeRegistry
+	return m.localCluster().registry
+}
+
+// clusterRegistry is the followability decision surface for one cluster.
+func (m *Manager) clusterRegistry(clusterID string) *typeset.Registry {
+	return m.cluster(clusterID).registry
 }
 
 // refreshTypeRegistry publishes the catalog's latest normalized scan to the typeset
@@ -219,18 +220,17 @@ func (m *Manager) typeRegistryInstance() *typeset.Registry {
 // catalog refresh, so the registry tracks discovery and its grace clocks advance on
 // the same cadence the catalog scans do. It is the "Scan -> Registry" pipeline of
 // docs/design/manifest/version2/type-followability.md.
-func (m *Manager) refreshTypeRegistry() {
+func (m *Manager) refreshTypeRegistry(cc *clusterContext) {
 	// Only publish once the catalog holds trusted data, so the registry's readiness
 	// tracks the catalog's: an unready catalog must leave the registry unready, which
 	// is what makes the live mapper fall closed (CatalogUnavailable) rather than treat
 	// an empty scan as a trusted "nothing is served".
-	scan, ok := m.apiResourceCatalog().Scan(m.SensitiveResources)
+	scan, ok := cc.catalog.Scan(m.SensitiveResources)
 	if !ok {
 		return
 	}
-	reg := m.typeRegistryInstance()
-	reg.UpdateFromScan(scan)
-	m.logTypeRefusals(reg)
+	cc.registry.UpdateFromScan(scan)
+	m.logTypeRefusals(cc)
 }
 
 // logTypeRefusals is the single central place that explains why a served type is not
@@ -239,23 +239,23 @@ func (m *Manager) refreshTypeRegistry() {
 // once rather than on every refresh. The full machine-readable answer always lives on
 // the registry record (TypeRecords / FollowableTypeRecords), so callers that need it
 // read there rather than parse logs.
-func (m *Manager) logTypeRefusals(reg *typeset.Registry) {
-	log := m.Log.WithName("followability")
+func (m *Manager) logTypeRefusals(cc *clusterContext) {
+	log := m.Log.WithName("followability").WithValues("cluster", describeCluster(cc.id))
 	m.resourceCatalogMu.Lock()
 	defer m.resourceCatalogMu.Unlock()
 	current := map[string]string{}
-	for _, rec := range reg.All() {
+	for _, rec := range cc.registry.All() {
 		if rec.Followable() {
 			continue
 		}
 		key := rec.Identity.GVK.String()
 		current[key] = rec.Followability.Summary
-		if prev, known := m.typeRefusalsLogged[key]; !known || prev != rec.Followability.Summary {
+		if prev, known := cc.typeRefusalsLogged[key]; !known || prev != rec.Followability.Summary {
 			log.V(1).Info("type is not followable",
 				"gvk", key, "gvr", rec.Identity.GVR.String(), "reason", rec.Followability.Summary)
 		}
 	}
-	m.typeRefusalsLogged = current
+	cc.typeRefusalsLogged = current
 }
 
 // TypeRegistry returns the live followability registry, the single decision surface
@@ -276,21 +276,6 @@ func (m *Manager) FollowableTypeRecords() []typeset.TypeRecord {
 // for inventory and "why is this type not picked up?" views.
 func (m *Manager) TypeRecords() []typeset.TypeRecord {
 	return m.typeRegistryInstance().All()
-}
-
-func (m *Manager) apiResourceDiscovery() (apiResourceDiscovery, error) {
-	if m.discoveryClient != nil {
-		return m.discoveryClient()
-	}
-	cfg := m.restConfig()
-	if cfg == nil {
-		return nil, errors.New("no REST config available for API resource discovery")
-	}
-	disco, err := discovery.NewDiscoveryClientForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("create API resource discovery client: %w", err)
-	}
-	return disco, nil
 }
 
 // ruleResourceSelector is one rule's (apiGroups, apiVersions, resources, scope) tuple,
@@ -314,7 +299,10 @@ func (m *Manager) ResolveWatchRuleResources(
 			scope: configv1alpha3.ResourceScopeNamespaced,
 		})
 	}
-	return m.resolveRuleResourceStatus(selectors)
+	// A WatchRule resolves its types against the cluster its GitTarget mirrors, so a CRD
+	// installed only on the source cluster counts, and one installed only locally does not.
+	clusterID := m.clusterIDForGitTarget(types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace))
+	return m.resolveRuleResourceStatus(clusterID, selectors)
 }
 
 // ResolveClusterWatchRuleResources reports one ClusterWatchRule's resource-resolution
@@ -329,7 +317,9 @@ func (m *Manager) ResolveClusterWatchRuleResources(
 			groups: rr.APIGroups, versions: rr.APIVersions, resources: rr.Resources, scope: rr.Scope,
 		})
 	}
-	return m.resolveRuleResourceStatus(selectors)
+	clusterID := m.clusterIDForGitTarget(
+		types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace))
+	return m.resolveRuleResourceStatus(clusterID, selectors)
 }
 
 // resolveRuleResourceStatus reports a rule's resource-resolution status from the type
@@ -338,10 +328,14 @@ func (m *Manager) ResolveClusterWatchRuleResources(
 // explain why an individual selector matched nothing: absent, refused, and not-yet-served
 // are all the same to a mirror. Status only reports catalog readiness and how many distinct
 // followable types the rule currently watches.
-func (m *Manager) resolveRuleResourceStatus(selectors []ruleResourceSelector) (bool, string) {
-	m.refreshTypeRegistry()
-	reg := m.typeRegistryInstance()
+func (m *Manager) resolveRuleResourceStatus(clusterID string, selectors []ruleResourceSelector) (bool, string) {
+	cc := m.cluster(clusterID)
+	m.refreshTypeRegistry(cc)
+	reg := cc.registry
 	if !reg.Ready() {
+		if clusterID != LocalClusterID {
+			return false, "the source cluster's API resource catalog is not ready"
+		}
 		return false, "API resource catalog is not ready"
 	}
 	records := reg.Followable()
@@ -364,44 +358,39 @@ func (m *Manager) signalCatalogRefresh() {
 	}
 }
 
-// ensureAPISurfaceTriggerInformers starts the CRD and APIService trigger informers, but
-// only for the resources discovery reports as served with list+watch. Neither is universal:
-// an API server without an aggregation layer serves no apiregistration.k8s.io, and a blind
-// informer on it makes client-go's reflector retry and log forever — benign, endlessly
-// repeated noise that is exactly how a real error gets missed.
+// ensureAPISurfaceTriggerInformers starts one cluster's CRD and APIService trigger
+// informers, but only for the resources ITS discovery reports as served with list+watch.
+// Neither is universal: an API server without an aggregation layer serves no
+// apiregistration.k8s.io, and a blind informer on it makes client-go's reflector retry and
+// log forever — benign, endlessly repeated noise that is exactly how a real error gets
+// missed.
 //
 // It is idempotent and re-evaluated after every successful catalog refresh, so an
 // aggregation layer (or the apiextensions group) installed later is picked up without a
 // restart. Informers already started are never restarted, and a skip is logged once per
-// resource, not once per refresh.
-func (m *Manager) ensureAPISurfaceTriggerInformers(log logr.Logger) {
+// resource per cluster, not once per refresh.
+func (m *Manager) ensureAPISurfaceTriggerInformers(ctx context.Context, cc *clusterContext, log logr.Logger) {
 	m.triggersMu.Lock()
 	defer m.triggersMu.Unlock()
 
-	ctx := m.triggerCtx
-	if ctx == nil {
+	stopCtx := m.triggerCtx
+	if stopCtx == nil {
 		// Start has not run yet; the first refresh happens inside it and re-enters here.
 		return
 	}
-	catalog := m.apiResourceCatalog()
-	if !catalog.Ready() {
-		log.V(1).Info("deferring API surface trigger informers - catalog not ready")
+	if !cc.catalog.Ready() {
+		log.V(1).Info("deferring API surface trigger informers - catalog not ready",
+			"cluster", describeCluster(cc.id))
 		return
 	}
-	if m.triggerFactory == nil {
-		cfg := m.restConfig()
-		if cfg == nil {
-			log.V(1).Info("skipping API surface trigger informers - no REST config available")
-			return
-		}
-		dynamicClient, err := dynamic.NewForConfig(cfg)
+	log = log.WithValues("cluster", describeCluster(cc.id))
+	if cc.triggerFactory == nil {
+		dynamicClient, err := m.clusterDynamicClient(ctx, cc.id)
 		if err != nil {
-			log.Error(err, "failed to create API surface trigger client")
+			log.V(1).Info("skipping API surface trigger informers - no client available", "err", err.Error())
 			return
 		}
-		m.triggerFactory = dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 0)
-		m.triggersStarted = map[schema.GroupVersionResource]struct{}{}
-		m.triggersSkipLogged = map[schema.GroupVersionResource]struct{}{}
+		cc.triggerFactory = dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 0)
 	}
 
 	handler := cache.ResourceEventHandlerFuncs{
@@ -410,25 +399,25 @@ func (m *Manager) ensureAPISurfaceTriggerInformers(log logr.Logger) {
 		DeleteFunc: func(any) { m.signalCatalogRefresh() },
 	}
 
-	start, unserved := selectAPISurfaceTriggers(catalog, m.triggersStarted)
+	start, unserved := selectAPISurfaceTriggers(cc.catalog, cc.triggersStarted)
 	for _, gvr := range unserved {
-		if _, logged := m.triggersSkipLogged[gvr]; logged {
+		if _, logged := cc.triggersSkipLogged[gvr]; logged {
 			continue
 		}
-		m.triggersSkipLogged[gvr] = struct{}{}
+		cc.triggersSkipLogged[gvr] = struct{}{}
 		log.Info("API surface trigger not served by this API server; "+
 			"the catalog refreshes on its periodic tick instead", "gvr", gvr.String())
 	}
 
 	var fresh []cache.SharedIndexInformer
 	for _, gvr := range start {
-		informer := m.triggerFactory.ForResource(gvr).Informer()
+		informer := cc.triggerFactory.ForResource(gvr).Informer()
 		if _, addErr := informer.AddEventHandler(handler); addErr != nil {
 			log.Error(addErr, "failed to add API surface trigger handler", "gvr", gvr.String())
 			continue
 		}
-		m.triggersStarted[gvr] = struct{}{}
-		delete(m.triggersSkipLogged, gvr)
+		cc.triggersStarted[gvr] = struct{}{}
+		delete(cc.triggersSkipLogged, gvr)
 		fresh = append(fresh, informer)
 		log.Info("API surface trigger informer started", "gvr", gvr.String())
 	}
@@ -437,8 +426,8 @@ func (m *Manager) ensureAPISurfaceTriggerInformers(log logr.Logger) {
 	}
 
 	// Start is idempotent per informer: it launches only the ones not yet running.
-	m.triggerFactory.Start(ctx.Done())
-	go waitForAPISurfaceTriggerSync(ctx, log, fresh)
+	cc.triggerFactory.Start(stopCtx.Done())
+	go waitForAPISurfaceTriggerSync(stopCtx, log, fresh)
 }
 
 // apiSurfaceTriggerGVRs are the resources whose changes mean the API surface moved: a CRD

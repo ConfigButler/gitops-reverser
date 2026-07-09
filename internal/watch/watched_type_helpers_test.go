@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
 // clusterRuleForResource builds a "test-target" ClusterWatchRule for one core/v1 namespaced
@@ -54,10 +55,14 @@ func watchRuleForTarget(name, gitTargetName, namespace string) configv1alpha3.Wa
 // table set the splice scope resolution and demand Declare read.
 func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-1", "configmaps"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 
 	var wg sync.WaitGroup
 	for range 8 {
@@ -71,10 +76,14 @@ func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 		}()
 	}
 	// Concurrently add a second rule mid-flight.
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "secrets"),
-		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
-	)
+	store.AddOrUpdateClusterWatchRule(clusterRuleForResource("rule-2", "secrets"), rulestore.TargetBinding{
+		GitTargetName:        "test-target",
+		GitTargetNamespace:   "test-ns",
+		GitProviderName:      "test-provider",
+		GitProviderNamespace: "test-ns",
+		Branch:               "main",
+		Path:                 "test-path",
+	})
 	wg.Wait()
 
 	// A final settled refresh must reflect both rules.

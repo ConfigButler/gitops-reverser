@@ -232,6 +232,57 @@ spec:
                 required:
                 - name
                 type: object
+              sourceCluster:
+                description: |-
+                  SourceCluster names the cluster this GitTarget mirrors FROM. Omitted means the
+                  cluster the operator runs in, which is the single-cluster default and needs no
+                  configuration.
+
+                  Setting it separates the two jobs one kubeconfig used to serve: the operator reads
+                  its own CRs and Git credentials from the cluster it runs in (the config plane) and
+                  watches resources on the cluster named here. Nothing but the watched resources then
+                  has to live on the watched cluster — no Secret, no configbutler.ai CRDs at all —
+                  and one operator can mirror many clusters, because each GitTarget carries its own
+                  source. It is deliberately shaped like Flux's `Kustomization.spec.kubeConfig`.
+
+                  It sits on GitTarget rather than on WatchRule because a GitTarget already owns
+                  exactly one materialization. Adding the source cluster makes that one
+                  (cluster, provider, branch, folder) — still one owner, one folder, one desired
+                  state. On WatchRule, two rules could name different clusters for one folder and the
+                  mark-and-sweep would alternately delete each cluster's objects.
+
+                  WatchRule keeps its meaning: it watches the namespace it lives in, resolved on the
+                  source cluster. A WatchRule in config-plane namespace "team-a" watches namespace
+                  "team-a" on the source cluster. A ClusterWatchRule watches the whole source cluster.
+
+                  Mutable: changing it retargets the GitTarget, exactly as changing branch or path
+                  does — the folder's contents would otherwise mean something different. Rotating the
+                  Secret's CONTENTS is transparent and is not a retarget.
+                properties:
+                  kubeConfigSecretRef:
+                    description: KubeConfigSecretRef names the Secret holding the
+                      kubeconfig for the source cluster.
+                    properties:
+                      key:
+                        default: value.yaml
+                        description: |-
+                          Key within the Secret's data holding the kubeconfig. Defaults to "value.yaml",
+                          Flux's convention, so a Secret produced for a Flux Kustomization works unchanged.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name of the Secret, in the same namespace as
+                          the referring object.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - kubeConfigSecretRef
+                type: object
             required:
             - branch
             - path
@@ -333,6 +384,11 @@ spec:
                   path:
                     description: Path the materialization lives under, relative to
                       the repository root.
+                    type: string
+                  sourceCluster:
+                    description: |-
+                      SourceCluster names the kubeconfig Secret whose cluster this materialization was
+                      mirrored from. Empty means the cluster the operator runs in.
                     type: string
                 required:
                 - branch

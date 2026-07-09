@@ -65,6 +65,11 @@ const (
 	defaultAuditIdleTimeout         = 60 * time.Second
 	defaultAuditShutdownTimeout     = 10 * time.Second
 	defaultBranchBufferMaxSizeStr   = "8Mi"
+	// defaultSourceClusterQPS/Burst bound the operator's request rate against a REMOTE
+	// source cluster. client-go's own defaults (5/10) are far too low for a discovery
+	// refresh plus a watch set; these match controller-runtime's manager defaults.
+	defaultSourceClusterQPS   = 20.0
+	defaultSourceClusterBurst = 30
 )
 
 func init() {
@@ -131,13 +136,21 @@ func main() {
 	workerManager.SetSSHHostKeyConfig(cfg.sshHostKeys)
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
 
-	// Watch ingestion manager (placeholder, will get EventRouter set later)
+	// Watch ingestion manager (placeholder, will get EventRouter set later).
+	//
+	// SourceClusters is what separates the config plane from the watched cluster: the
+	// manager reads its own CRs and Git credentials through mgr.GetClient() (the cluster
+	// this pod runs in) and watches whichever cluster each GitTarget names. A GitTarget
+	// with no spec.sourceCluster watches the local cluster, which is every install that
+	// has not asked for anything else.
 	watchMgr := &watch.Manager{
 		Client:             mgr.GetClient(),
 		Log:                ctrl.Log.WithName("watch"),
 		RuleStore:          ruleStore,
 		EventRouter:        nil, // Will be set below
 		SensitiveResources: cfg.sensitiveResources,
+		SourceClusters: watch.NewSecretSourceClusterResolver(
+			mgr.GetClient(), float32(cfg.sourceClusterQPS), cfg.sourceClusterBurst),
 	}
 
 	// Initialize EventRouter with all dependencies. The streaming-snapshot resync
@@ -156,7 +169,10 @@ func main() {
 	// Inject the live followability registry into the writer, so a GVR-only DELETE
 	// event resolves to a manifest moved off its canonical path (M6 in the writer).
 	// The registry is a stable pointer the watch manager refreshes in place.
-	workerManager.SetMapper(watchMgr.TypeRegistry())
+	// The writer's GVK resolver is a union over every watched cluster's type registry: a
+	// branch worker is shared by GitTargets that may mirror different clusters, so it cannot
+	// hold one target's registry. In a single-cluster install it is exactly the local one.
+	workerManager.SetMapper(watchMgr.TypeLookup())
 
 	// Give the workers a way to surface a refused live write plan. Live events are committed
 	// off a timer with no result channel, so without this a refusal (acceptance gate or a
@@ -356,6 +372,8 @@ type appConfig struct {
 	attributionFactTTL          time.Duration
 	attributionGrace            time.Duration
 	branchBufferMaxBytes        int64
+	sourceClusterQPS            float64
+	sourceClusterBurst          int
 	sensitiveResources          types.SensitiveResourcePolicy
 	sshHostKeys                 git.SSHHostKeyConfig
 	zapOpts                     zap.Options
@@ -470,6 +488,11 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"",
 		"Comma-separated additional sensitive resources in resource or group/resource form.",
 	)
+	fs.Float64Var(&cfg.sourceClusterQPS, "source-cluster-qps", defaultSourceClusterQPS,
+		"Client-side request rate limit per remote source cluster (GitTarget.spec.sourceCluster). "+
+			"A remote cluster is reached over a network the local one is not; 0 disables throttling.")
+	fs.IntVar(&cfg.sourceClusterBurst, "source-cluster-burst", defaultSourceClusterBurst,
+		"Client-side burst allowance per remote source cluster. Ignored when --source-cluster-qps is 0.")
 	fs.StringVar(&cfg.sshHostKeys.DefaultKnownHostsConfigMap, "default-known-hosts-configmap", "",
 		"Optional install-level ConfigMap (in the controller's namespace) supplying SSH known_hosts "+
 			"for Git hosts when neither the credentials Secret nor the GitProvider's knownHostsRef does.")

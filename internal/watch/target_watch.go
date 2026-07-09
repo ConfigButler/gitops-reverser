@@ -60,13 +60,14 @@ func (m *Manager) EnsureGitTargetWatches(
 	if m.EventRouter == nil {
 		return nil
 	}
-	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
+	clusterID := m.clusterIDForGitTarget(gitDest)
+	if err := m.refreshClusterCatalog(ctx, clusterID); err != nil {
 		return fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
 	}
 	m.refreshWatchedTypeTables()
-	if !m.typeRegistryInstance().Ready() {
-		return fmt.Errorf("aborting watch setup for %s: the cluster API surface has not been observed yet",
-			gitDest.String())
+	if !m.clusterRegistry(clusterID).Ready() {
+		return fmt.Errorf("aborting watch setup for %s: the %s cluster API surface has not been observed yet",
+			gitDest.String(), describeCluster(clusterID))
 	}
 
 	table := m.residentWatchedTypeTable(gitDest)
@@ -189,6 +190,9 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 // Live events consult the clauses; the replay/snapshot path consults only ops, because an
 // exclusion suppresses a write, never the state a mark-and-sweep reconciles against.
 type watchFilter struct {
+	// cluster is the source cluster this watch runs against. LocalClusterID is the cluster
+	// the operator runs in.
+	cluster    string
 	ops        OperationSet
 	selections RuleSelections
 }
@@ -252,7 +256,7 @@ func equalTargetWatchSpecs(a, b map[targetWatchKey]string) bool {
 // namespaced type across every namespace.
 func (t WatchedTypeTable) filterFor(key targetWatchKey) watchFilter {
 	selections := t.selectionsFor(key)
-	return watchFilter{ops: selections.Ops(), selections: selections}
+	return watchFilter{cluster: t.ClusterID, ops: selections.Ops(), selections: selections}
 }
 
 func (t WatchedTypeTable) selectionsFor(key targetWatchKey) RuleSelections {
@@ -338,7 +342,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		"target watch replay in progress",
 	)
 	replaying := true
-	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, opts)
+	w, err := m.openTargetWatch(ctx, filter.cluster, key.GVR, key.Namespace, opts)
 	if err != nil {
 		if watchListUnsupported(err) {
 			log.Error(err, "WARNING: sendInitialEvents unsupported; falling back to LIST plus buffered WATCH",
@@ -387,7 +391,7 @@ func (m *Manager) targetWatchResumeAndStream(
 	filter watchFilter,
 	cursor string,
 ) error {
-	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, metav1.ListOptions{
+	w, err := m.openTargetWatch(ctx, filter.cluster, key.GVR, key.Namespace, metav1.ListOptions{
 		ResourceVersion:     cursor,
 		AllowWatchBookmarks: true,
 	})
@@ -429,7 +433,7 @@ func (m *Manager) targetWatchListAndStream(
 	key targetWatchKey,
 	filter watchFilter,
 ) error {
-	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, metav1.ListOptions{
+	w, err := m.openTargetWatch(ctx, filter.cluster, key.GVR, key.Namespace, metav1.ListOptions{
 		AllowWatchBookmarks: true,
 	})
 	if err != nil {
@@ -450,7 +454,7 @@ func (m *Manager) targetWatchListAndStream(
 	buffered := make(chan watch.Event, targetWatchBufferCapacity)
 	go bufferTargetWatchEvents(ctx, w.ResultChan(), buffered)
 
-	list, err := m.openTargetList(ctx, key.GVR, key.Namespace, metav1.ListOptions{})
+	list, err := m.openTargetList(ctx, filter.cluster, key.GVR, key.Namespace, metav1.ListOptions{})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -912,6 +916,7 @@ func (s OperationSet) Match(op string) bool {
 
 func (m *Manager) openTargetWatch(
 	ctx context.Context,
+	clusterID string,
 	gvr schema.GroupVersionResource,
 	namespace string,
 	opts metav1.ListOptions,
@@ -919,9 +924,10 @@ func (m *Manager) openTargetWatch(
 	if m.targetWatchOpen != nil {
 		return m.targetWatchOpen(ctx, gvr, namespace, opts)
 	}
-	dc := m.dynamicClientFromConfig(m.Log)
-	if dc == nil {
-		return nil, errors.New("no dynamic client for target watch")
+	dc, err := m.clusterDynamicClient(ctx, clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("no dynamic client for target watch on cluster %s: %w",
+			describeCluster(clusterID), err)
 	}
 	resource := dc.Resource(gvr)
 	if namespace != "" {
@@ -932,6 +938,7 @@ func (m *Manager) openTargetWatch(
 
 func (m *Manager) openTargetList(
 	ctx context.Context,
+	clusterID string,
 	gvr schema.GroupVersionResource,
 	namespace string,
 	opts metav1.ListOptions,
@@ -939,9 +946,10 @@ func (m *Manager) openTargetList(
 	if m.targetWatchList != nil {
 		return m.targetWatchList(ctx, gvr, namespace, opts)
 	}
-	dc := m.dynamicClientFromConfig(m.Log)
-	if dc == nil {
-		return nil, errors.New("no dynamic client for target watch list")
+	dc, err := m.clusterDynamicClient(ctx, clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("no dynamic client for target list on cluster %s: %w",
+			describeCluster(clusterID), err)
 	}
 	resource := dc.Resource(gvr)
 	if namespace != "" {

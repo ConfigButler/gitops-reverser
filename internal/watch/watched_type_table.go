@@ -110,7 +110,11 @@ type WatchedTypeTable struct {
 	GitDest types.ResourceReference
 	// Dest is the GitTarget's write destination fingerprint (provider/branch/path),
 	// carried so the effective-plan hash can be derived from the table alone.
-	Dest       string
+	Dest string
+	// ClusterID is the source cluster this GitTarget mirrors FROM: the cluster its watches
+	// open against and its types were resolved on. LocalClusterID is the cluster the
+	// operator runs in.
+	ClusterID  string
 	Types      []WatchedType
 	ResolvedAt uint64
 }
