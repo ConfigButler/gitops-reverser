@@ -319,10 +319,13 @@ For the platform-facing behavior behind "valid signature" versus "verified badge
 
 The important fields are:
 
-- `spec.providerRef`: which `GitProvider` backs this target
-- `spec.branch`: which allowed branch to write to
+- `spec.providerRef`: which `GitProvider` backs this target. **Immutable** — a different
+  repository is a different object.
+- `spec.branch`: which allowed branch to write to. Mutable; changing it retargets.
 - `spec.path`: required relative path inside the repository; use `.` only when you deliberately
-  want the repository root
+  want the repository root. Mutable; changing it retargets.
+- `spec.sourceCluster`: optional; the cluster this target mirrors **from**. Omit it for the
+  cluster the operator runs in (see [Mirroring a remote cluster](#mirroring-a-remote-cluster-specsourcecluster))
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
 - `spec.placement`: optional policy for where **new** resources are written (see
   [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it to follow
@@ -365,9 +368,87 @@ The most useful status fields are:
 - `Validated` and `EncryptionConfigured`: control-plane details.
 - `StreamsRunning`: true when the source watches are past initial replay and routing live events.
 - `GitPathAccepted`: true when the target Git path is safe to materialize.
+- `Retargeting`: true while `spec` and `status.observedDestination` disagree — the target is
+  moving (see [Moving a GitTarget](#moving-a-gittarget-retarget)).
+- `status.observedDestination`: the branch, path, and source cluster the current materialization
+  actually belongs to. This, not `spec`, answers "which folder is this target's content in?".
 - `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
 
 Use conditions for automation.
+
+### Moving a `GitTarget` (retarget)
+
+`spec.branch` and `spec.path` are mutable. Changing either is a supported **retarget**: the
+controller tears the old materialization down — its watches, its event stream, and its durable
+watch-resume cursors — and rebuilds the folder from a fresh full snapshot at the new destination.
+`Retargeting=True` while that runs.
+
+Three things are worth knowing before you patch a path:
+
+- **The old folder is never deleted.** It becomes ordinary, unmanaged Git content. Deleting from
+  Git is the one irreversible thing this operator does, and a destination change is the moment you
+  are least sure of what you meant. The `Retargeting=False` message names the abandoned folder, so
+  you can `git rm` it deliberately.
+- **The new folder is rebuilt from a full snapshot**, so the resources that already existed land in
+  it — not only the ones that change afterwards.
+- **A retarget onto a conflicting path is refused** by the ordinary `Validated` gate, and the target
+  keeps serving its current destination until you pick a free one.
+
+`spec.providerRef` stays immutable. Pointing at a different repository is not a move: there is
+nothing to migrate and nothing to observe. Delete and recreate the `GitTarget`.
+
+### Mirroring a remote cluster (`spec.sourceCluster`)
+
+By default a `GitTarget` mirrors the cluster the operator runs in, and nothing needs configuring.
+
+`spec.sourceCluster` separates the two jobs one kubeconfig used to serve: the operator reads its own
+CRs and Git credentials from the cluster it runs in (**the config plane**) and watches the resources
+on the cluster you name here. The shape is deliberately Flux's `Kustomization.spec.kubeConfig`.
+
+```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: acme
+  namespace: team-a
+spec:
+  providerRef:
+    name: acme-provider
+  branch: main
+  path: clusters/acme
+  sourceCluster:
+    kubeConfigSecretRef:
+      name: acme-kubeconfig   # a Secret in namespace team-a, on the config plane
+      key: value.yaml         # optional; defaults to value.yaml, Flux's convention
+```
+
+What this buys:
+
+- The Git write credential — usually scoped far wider than the one repository a `GitTarget` names —
+  never has to live on the cluster you are mirroring.
+- The watched cluster holds only the watched resources. It does not need the `configbutler.ai` CRDs
+  installed at all.
+- **One operator can mirror many clusters**, because each `GitTarget` carries its own source.
+
+Semantics and caveats:
+
+- A `WatchRule` still watches the namespace **it lives in**, resolved on the source cluster. A
+  `WatchRule` in config-plane namespace `team-a` watches namespace `team-a` on the remote. A
+  `ClusterWatchRule` watches the whole source cluster.
+- It sits on `GitTarget`, not `WatchRule`, because a `GitTarget` already owns exactly one
+  materialization. Two `WatchRule`s naming different clusters for one folder would make the
+  mark-and-sweep alternately delete each cluster's objects.
+- Types resolve against the **source cluster's** API surface. A CRD installed only locally is not
+  followable for a remote target.
+- The kubeconfig `Secret` is read on demand, parsed, and dropped; only its `resourceVersion` is
+  kept, so **rotating the Secret's contents is transparent** and rebuilds the clients once.
+- `sourceCluster` is part of the destination identity: repointing it at a *different* cluster
+  retargets the `GitTarget`, exactly as changing the path does.
+- If the Secret is missing, empty at its key, or not a usable kubeconfig, the target reports
+  `Validated=False` with reason `SourceClusterUnreachable` and names the Secret.
+
+The operator throttles its requests to a remote cluster with `--source-cluster-qps` (default `20`)
+and `--source-cluster-burst` (default `30`).
 
 ### Where new resources are written (`spec.placement`)
 
@@ -566,6 +647,9 @@ are:
   across the served API surface.
 - `apiVersions`: a served version such as `v1`; omitted means the preferred served version.
 - `resources`: plural resource names such as `configmaps`, `secrets`, or `*`.
+- `excludeFieldManagers`: field managers whose writes this rule declines to mirror (see
+  [Ignoring a GitOps forward leg's own writes](#ignoring-a-gitops-forward-legs-own-writes)).
+- `excludeUsers`: attributed identities whose writes this rule declines to mirror.
 
 Subresources such as `deployments/scale` are not valid rule resources. GitOps Reverser mirrors
 top-level resources; selected subresource effects are handled separately by the controller.
@@ -589,6 +673,62 @@ spec:
 ```
 
 Use `WatchRule` when the watched resources and the `GitTarget` live in the same namespace.
+
+### Ignoring a GitOps forward leg's own writes
+
+If you run GitOps Reverser **and** a GitOps forward leg (Flux, Argo CD) on the same branch, the
+reverser will commit the forward leg's own applies. The loop is: a human edits a resource, the
+reverser commits it, the forward leg applies the commit back into the cluster — stamping its own
+labels and `managedFields` onto the object — the reverser sees that as a live update, and commits
+again. It terminates only because the content eventually stops changing.
+
+`excludeFieldManagers` breaks it, and is the field to reach for:
+
+```yaml
+rules:
+  - resources: ["configmaps", "deployments"]
+    excludeFieldManagers: ["kustomize-controller"]   # Flux
+    # excludeFieldManagers: ["argocd-controller"]    # Argo CD
+```
+
+It reads `metadata.managedFields` off the live object, so it needs no audit fact, cannot race the
+attribution grace window, and works in configured-author mode. A label selector cannot do this job:
+a GitOps tool's labels *persist* on the object, so a selector would also ignore a human's later edit
+of a tool-managed resource. The last writer is a property of the *write*; the labels are a property
+of the *object*.
+
+Semantics worth knowing:
+
+- **The last writer is the newest `managedFields` entry.** If several entries share that timestamp,
+  the write is excluded only when every tied manager is excluded — when in doubt, it is mirrored.
+- **`DELETE` is never excluded by field manager.** `managedFields` names who last *wrote* an object,
+  not who deleted it, so excluding deletes this way would silently ignore a human deleting a
+  Flux-managed resource. Use `excludeUsers` for deletes.
+- **Exclusions are a veto within their own rule, not a global filter.** Rules are a logical OR, so a
+  second, unrestricted rule for the same type re-admits everything the first excluded.
+- **An exclusion suppresses a *write*, not the *state*.** A replay or resync still lists the object;
+  otherwise the mark-and-sweep would delete its file from Git.
+
+`excludeUsers` matches the identity the audit webhook attributed the write to (the impersonated user
+when impersonation is in play, otherwise the authenticated user):
+
+```yaml
+rules:
+  - resources: ["configmaps"]
+    excludeUsers: ["system:serviceaccount:flux-system:kustomize-controller"]
+```
+
+It therefore requires `--author-attribution` and a working audit webhook, and — unlike
+`excludeFieldManagers` — it *does* apply to deletes. When the author cannot be resolved (attribution
+disabled, or the grace window elapsed with no matching fact) the write is **mirrored, not dropped**:
+losing a human's edit because we could not identify its author is worse than mirroring one machine
+write. The operator logs a warning once per rule when `excludeUsers` is set without attribution.
+
+Dropped events are counted by
+`gitopsreverser_watch_events_excluded_total{gittarget_namespace, gittarget_name, group, resource, reason}`,
+where `reason` is `field_manager` or `user`. A steady non-zero rate is the healthy state for a
+`GitTarget` paired with a forward leg; a rate of zero means the exclusion is not matching — check the
+manager name against the object's `managedFields`.
 
 ## `ClusterWatchRule`
 
@@ -634,6 +774,8 @@ The important fields are:
 - `spec.message`: optional verbatim commit message
 - `spec.closeDelaySeconds`: optional 0-300 second delay before the open window is closed, after the
   request author is known — an extra collect window
+- `spec.author`: optional; name the human this commit is for, instead of deriving them from an
+  apiserver audit fact. **A privilege** — see [Asserting a commit author](#asserting-a-commit-author).
 
 Example:
 
@@ -651,6 +793,62 @@ spec:
 ```
 
 The entire spec is immutable. Create a new `CommitRequest` for each save attempt.
+
+### Asserting a commit author
+
+Commit attribution is normally derived from an apiserver **audit** fact. That is the right default —
+it names the actor who really caused a change, and cannot be forged by anyone who can create a
+`CommitRequest`. But it means attribution is only available where an audit webhook can be configured,
+which excludes every hosted control plane whose apiserver flags you do not own.
+
+`spec.author` lets a trusted client state who a commit is for:
+
+```yaml
+spec:
+  targetRef:
+    name: tenants
+  author:
+    name: "Ada Lovelace"
+    email: "ada@example.com"    # optional; derived from name when omitted
+```
+
+Asserting an author is a **privilege**, not a field anyone may set. It is authorized by an RBAC verb
+on the target, in the style of `bind`, `escalate` and `impersonate`:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitops-api-assert-author
+  namespace: team-a
+rules:
+  - apiGroups: ["configbutler.ai"]
+    resources: ["gittargets"]
+    resourceNames: ["tenants"]     # scoped to one target
+    verbs: ["assert-author"]
+```
+
+The `/validate-operator-types` admission webhook issues a `SubjectAccessReview` for the requester and
+**denies** an unauthorized create, naming the rule that would grant it. But that webhook is
+`failurePolicy: Ignore` by design, so the *controller* is the real gate: it honors `spec.author` only
+when an admission record exists for the object and carries the authorized verdict. If the webhook is
+off, was bypassed, or Redis is not configured, the assertion is **ignored** — the commit is authored
+by the configured committer and the request reports `AuthorAttributed=False` with reason
+`AuthorAssertionUnverified`. Fail-closed, independent of `failurePolicy`.
+
+An authorized assertion reports `AuthorAttributed=True` with reason `AuthorAsserted`, becomes the
+commit's **author** signature, and attaches to any open window for the target — the assertion is a
+statement about the commit being made, not a claim to be the actor the audit stream recorded. The
+**committer** stays the operator's configured identity, so a reader can always tell the reverser
+committed on someone's behalf.
+
+Requirements: the admission webhook enabled (`servers.admission.enabled`, the chart default), Redis
+configured (`queue.redis.addr`), and `create` on `subjectaccessreviews.authorization.k8s.io` for the
+operator's ServiceAccount (in the chart's `ClusterRole` already).
+
+**Treat `assert-author` exactly like `impersonate`.** The asserted `name`/`email` are free text and
+are not verified against a real identity; granting the verb grants the ability to write any author
+into that repository's history.
 
 Progress and outcome are reported through kstatus-compatible **conditions** (no `phase` string).
 `kubectl get commitrequest` surfaces `Ready`, `AuthorAttributed`, and `Pushed`; `kubectl wait
@@ -693,7 +891,32 @@ queue:
     auth:
       existingSecret: "valkey-auth"
       existingSecretKey: "password"
+    keyPrefix: "gitops-reverser"
 ```
+
+### Sharing one Redis between several reversers
+
+Every key this operator writes — watch resume cursors, attribution facts, command author records —
+is rooted at `queue.redis.keyPrefix` (`--redis-key-prefix`, default `gitops-reverser`). Give each
+reverser its own prefix to share one Redis/Valkey between more instances than the 16 logical
+databases `--redis-db` can separate:
+
+```yaml
+queue:
+  redis:
+    addr: "valkey:6379"
+    keyPrefix: "cell-a:tenant-7"
+```
+
+A Valkey ACL can *enforce* the prefix rather than trust it — pair it with `--redis-username` /
+`--redis-password` and a `~<prefix>:*` key pattern.
+
+Allowed characters are `[A-Za-z0-9]`, `-`, `_`, `.` and `:`. Glob metacharacters and `%` are rejected:
+the attribution fact-index gauge `SCAN`s `<prefix>:author:v1:audit:*`, and a glob in the prefix would
+silently make it count the wrong keyspace. A trailing `:` is normalized away.
+
+Changing the prefix orphans the keys written under the previous one. Cursors then cold-replay once,
+which is safe; the orphans expire on their own TTLs.
 
 When attribution is enabled, these flags tune the join:
 

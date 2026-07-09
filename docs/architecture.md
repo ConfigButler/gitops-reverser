@@ -87,6 +87,11 @@ The solution, in the vocabulary used throughout this document:
 * **One `BranchWorker` per Git branch serializes all writes.** Every write to a branch funnels through a
   single worker and a single commit window, which keeps concurrent GitTargets and authors from racing
   each other into a corrupt tree.
+* **The config plane and the watched cluster are separate.** The operator reads its own CRs and
+  credentials from the cluster it runs in; each `GitTarget` may name the cluster it mirrors
+  (`spec.sourceCluster`). Every per-cluster surface — API discovery catalog, type-followability
+  registry, dynamic client, API-surface trigger informers — lives in one `clusterContext` per source
+  cluster. A single-cluster install has exactly one and behaves as it always did.
 
 ***
 
@@ -1108,6 +1113,7 @@ Current limitations:
 | [internal/git/manifestedit/](../internal/git/manifestedit/) | YAML document editor |
 | [internal/giteaclient/](../internal/giteaclient/) | Gitea helper client |
 | [internal/manifestanalyzer/](../internal/manifestanalyzer/) | manifest inventory, acceptance, and resync planning |
+| [pkg/manifestanalyzer/](../pkg/manifestanalyzer/) | **public**, versioned projection of the acceptance gate and repo discovery — the contract the CLI's `--format json` prints |
 | [internal/manifestreport/](../internal/manifestreport/) | projection of Kubernetes objects into comparable manifest reports |
 | [internal/queue/](../internal/queue/) | Redis attribution index (audit facts keyed for the join) and per-watch resume cursors |
 | [internal/reconcile/](../internal/reconcile/) | per-GitTarget event stream (watch event → branch worker) |
@@ -1118,8 +1124,8 @@ Current limitations:
 | [internal/telemetry/](../internal/telemetry/) | metrics and OTLP setup |
 | [internal/types/](../internal/types/) | shared resource identity/reference and sensitivity policy |
 | [internal/typeset/](../internal/typeset/) | type followability registry, lookup model, and the relevance filter (controller-owned → don't mirror) |
-| [internal/watch/](../internal/watch/) | discovery catalog, watch manager, per-`(GVR, scope)` raw watches with `sendInitialEvents` replay + mark-and-sweep, the author resolver, watched type tables, event router |
-| [internal/webhook/](../internal/webhook/) | `/audit-webhook` ingress and attribution fact extraction (no body joiner) |
+| [internal/watch/](../internal/watch/) | per-source-cluster contexts (discovery catalog, type registry, clients), watch manager, per-`(GVR, scope)` raw watches with `sendInitialEvents` replay + mark-and-sweep, the author resolver, write exclusions, watched type tables, event router |
+| [internal/webhook/](../internal/webhook/) | `/audit-webhook` ingress and attribution fact extraction (no body joiner); `/validate-operator-types` command-author capture and the `assert-author` guard |
 
 ***
 

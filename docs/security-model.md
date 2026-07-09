@@ -33,9 +33,46 @@ The controller does not need write access to watched resources. Its only write t
 |---|---|
 | Git credentials Secret | Grants push access to your repository. |
 | SOPS/age key material | Decrypts (and the public key encrypts) Secret data written to Git. |
+| Source-cluster kubeconfig Secret | Grants the operator's read access to a remote cluster. |
 | Redis/Valkey queue | Buffers decoded audit events in transit; not an audit archive. |
 | Audit ingress (`/audit-webhook`) | Accepts audit traffic; protected by mutual TLS via cert-manager. |
 | Generated Secret material | Signing keys and generated age keys live in cluster Secrets. |
+| `assert-author` RBAC verb | Lets a holder write any author into a repository's Git history. |
+
+## Keeping Git credentials off the cluster you watch
+
+Historically the operator built one client and used it for both jobs: reading its own CRs and the Git
+credentials Secret, and watching the resources it mirrors. Nothing chose that; it fell out of having
+one kubeconfig. The consequence is worth stating plainly: because `GitProvider.spec.secretRef` is a
+same-namespace reference, the Git write credential — often scoped far more broadly than the one
+repository a `GitTarget` names — had to live **on the cluster being watched**, one RBAC rule away
+from whoever can read Secrets in that namespace.
+
+`GitTarget.spec.sourceCluster` separates them. The operator reads its own CRs and credentials from the
+cluster it runs in (**the config plane**) and watches whichever cluster each `GitTarget` names. The
+watched cluster then holds only the watched resources — no Git credential, and not even the
+`configbutler.ai` CRDs. See
+[`configuration.md`](configuration.md#mirroring-a-remote-cluster-specsourcecluster).
+
+The source-cluster kubeconfig Secret is read on demand from the config plane, parsed into a
+`rest.Config`, and its bytes are dropped; only the Secret's `resourceVersion` is retained, so a
+rotation rebuilds the clients exactly once. No Secret informer is started.
+
+## Asserting a commit author is a privilege
+
+`CommitRequest.spec.author` lets a trusted client name the human a commit is for, instead of deriving
+them from an apiserver audit fact. It is gated by the `assert-author` verb on the named `GitTarget`
+(checked by a `SubjectAccessReview` at admission, and re-verified by the controller against the
+recorded verdict, so the check does not depend on the webhook's `failurePolicy`).
+
+**Treat `assert-author` exactly like `impersonate`.** The asserted `name` and `email` are free text
+and are not verified against any real identity: they are what the trusted control plane says they are.
+Granting the verb grants the ability to write any author into that repository's history. Scope grants
+with `resourceNames` to the specific `GitTarget`s a caller owns.
+
+The commit's **committer** is always the operator's configured identity, and commit signing (when
+configured) signs as the committer — so a reader can always tell a commit was made by the reverser on
+someone's behalf, whoever the author header names.
 
 ## Secret data the controller writes to Git
 

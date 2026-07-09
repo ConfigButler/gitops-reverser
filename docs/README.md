@@ -21,6 +21,10 @@ If you only want the supported product docs, start with the files below.
 - [`security-model.md`](security-model.md): controller access, trust boundaries, and the Git
   credentials Secret shape
 - [`bi-directional.md`](bi-directional.md): safe shared-path and handoff patterns
+- [`design/multi-tenant/`](design/multi-tenant/): running outside a single cluster — mirroring a
+  remote cluster, ignoring a GitOps forward leg's own writes, sharing one Redis, moving a `GitTarget`
+- [`../pkg/manifestanalyzer/`](../pkg/manifestanalyzer/): the public Go API and JSON contract for
+  "may this folder become a `GitTarget`?"
 - [`alternatives.md`](alternatives.md): nearby tools and when another approach fits better
 - [`UPGRADING.md`](UPGRADING.md): breaking changes and migration steps, newest first
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md): contributor workflow and validation commands
