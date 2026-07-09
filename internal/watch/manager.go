@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -96,6 +97,20 @@ type Manager struct {
 	discoveryClient func() (apiResourceDiscovery, error)
 	// catalogRefreshCh coalesces API-surface trigger watch events into manager reconciliation.
 	catalogRefreshCh chan struct{}
+	// triggersMu guards the API-surface trigger informer set below. The informers are
+	// (re-)evaluated after every catalog refresh — which controllers drive, not just the
+	// manager's own loop — so this is not a startup-only structure.
+	triggersMu sync.Mutex
+	// triggerCtx is the manager's lifetime context, the stop channel every trigger informer
+	// is started with. Set once by Start; nil before then, which defers informer creation.
+	triggerCtx context.Context
+	// triggerFactory is the shared dynamic informer factory backing the trigger informers.
+	triggerFactory dynamicinformer.DynamicSharedInformerFactory
+	// triggersStarted is the set of trigger resources whose informer is already running.
+	triggersStarted map[schema.GroupVersionResource]struct{}
+	// triggersSkipLogged records which unserved trigger resources have already been logged,
+	// so a permanently absent aggregation layer produces one line, not one per refresh.
+	triggersSkipLogged map[schema.GroupVersionResource]struct{}
 	// catalogReadyOnce guards the one-time "catalog ready" log line, matching the
 	// firstMessage/firstGroupReady sync.Once pattern used by the audit consumer.
 	catalogReadyOnce sync.Once
@@ -180,6 +195,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	defer log.Info("watch ingestion manager stopping")
 
 	m.initializeManagerState()
+	// Arm the trigger informers before the first refresh: each successful catalog refresh
+	// re-evaluates which triggers discovery actually serves, and starts the ones that
+	// became available. They are stopped by this context, never by a reconcile's.
+	m.setTriggerContext(ctx)
 
 	if err := m.bootstrapRuleStore(ctx, log.WithName("bootstrap")); err != nil {
 		log.Error(err, "RuleStore bootstrap failed, continuing with current in-memory state")
@@ -189,7 +208,6 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := m.ReconcileForRuleChange(ctx); err != nil {
 		log.Error(err, "Initial reconciliation failed, will retry periodically")
 	}
-	m.startAPISurfaceTriggerInformers(ctx, log.WithName("catalog-triggers"))
 
 	// Periodic reconciliation for CRD detection and missed changes
 	periodicTicker := time.NewTicker(periodicReconcileInterval)

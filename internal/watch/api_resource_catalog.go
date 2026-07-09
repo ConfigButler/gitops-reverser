@@ -101,6 +101,44 @@ func (c *APIResourceCatalog) Scan(sensitive types.SensitiveResourcePolicy) (type
 	return scan, true
 }
 
+// ServesWatchable reports whether the latest scan saw this exact group/version/resource
+// served with both list and watch verbs. It is the precondition for opening an informer
+// on a resource the operator does not require: an API server that does not aggregate does
+// not serve apiregistration.k8s.io at all, and a blind informer on it retries forever.
+// It deliberately ignores the allow/deny watch policy, which governs what the operator
+// mirrors, not what it may inspect. Reports false before the first trusted scan.
+func (c *APIResourceCatalog) ServesWatchable(gvr schema.GroupVersionResource) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.ready {
+		return false
+	}
+	for _, entry := range c.lastScan.Entries {
+		if entry.GVR != gvr {
+			continue
+		}
+		return hasVerbs(entry.Verbs, "list", "watch")
+	}
+	return false
+}
+
+// hasVerbs reports whether every wanted verb is present in the sorted verb list.
+func hasVerbs(verbs []string, wanted ...string) bool {
+	for _, want := range wanted {
+		found := false
+		for _, verb := range verbs {
+			if verb == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 // DegradedGroupVersions returns the group/versions the latest scan reported as
 // failed, sorted for stable logging.
 func (c *APIResourceCatalog) DegradedGroupVersions() []schema.GroupVersion {

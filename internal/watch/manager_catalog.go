@@ -72,6 +72,10 @@ func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
 		stats := catalog.Stats()
 		recordCatalogStats(ctx, stats)
 		m.logCatalogTransitions(catalog, stats)
+		// The fresh scan is the only source of truth for which trigger resources this API
+		// server actually serves, so trigger informers are (re-)armed here rather than once
+		// at startup. An aggregation layer installed later is picked up on its refresh.
+		m.ensureAPISurfaceTriggerInformers(m.Log.WithName("catalog-triggers"))
 	}
 	return refreshErr
 }
@@ -360,37 +364,119 @@ func (m *Manager) signalCatalogRefresh() {
 	}
 }
 
-func (m *Manager) startAPISurfaceTriggerInformers(ctx context.Context, log logr.Logger) {
-	cfg := m.restConfig()
-	if cfg == nil {
-		log.V(1).Info("skipping API surface trigger informers - no REST config available")
+// ensureAPISurfaceTriggerInformers starts the CRD and APIService trigger informers, but
+// only for the resources discovery reports as served with list+watch. Neither is universal:
+// an API server without an aggregation layer serves no apiregistration.k8s.io, and a blind
+// informer on it makes client-go's reflector retry and log forever — benign, endlessly
+// repeated noise that is exactly how a real error gets missed.
+//
+// It is idempotent and re-evaluated after every successful catalog refresh, so an
+// aggregation layer (or the apiextensions group) installed later is picked up without a
+// restart. Informers already started are never restarted, and a skip is logged once per
+// resource, not once per refresh.
+func (m *Manager) ensureAPISurfaceTriggerInformers(log logr.Logger) {
+	m.triggersMu.Lock()
+	defer m.triggersMu.Unlock()
+
+	ctx := m.triggerCtx
+	if ctx == nil {
+		// Start has not run yet; the first refresh happens inside it and re-enters here.
 		return
 	}
-	dynamicClient, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		log.Error(err, "failed to create API surface trigger client")
+	catalog := m.apiResourceCatalog()
+	if !catalog.Ready() {
+		log.V(1).Info("deferring API surface trigger informers - catalog not ready")
 		return
+	}
+	if m.triggerFactory == nil {
+		cfg := m.restConfig()
+		if cfg == nil {
+			log.V(1).Info("skipping API surface trigger informers - no REST config available")
+			return
+		}
+		dynamicClient, err := dynamic.NewForConfig(cfg)
+		if err != nil {
+			log.Error(err, "failed to create API surface trigger client")
+			return
+		}
+		m.triggerFactory = dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 0)
+		m.triggersStarted = map[schema.GroupVersionResource]struct{}{}
+		m.triggersSkipLogged = map[schema.GroupVersionResource]struct{}{}
 	}
 
-	factory := dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 0)
 	handler := cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(any) { m.signalCatalogRefresh() },
 		UpdateFunc: func(any, any) { m.signalCatalogRefresh() },
 		DeleteFunc: func(any) { m.signalCatalogRefresh() },
 	}
-	informers := []cache.SharedIndexInformer{
-		factory.ForResource(crdTriggerGVR()).Informer(),
-		factory.ForResource(apiServiceTriggerGVR()).Informer(),
-	}
-	for _, informer := range informers {
-		if _, addErr := informer.AddEventHandler(handler); addErr != nil {
-			log.Error(addErr, "failed to add API surface trigger handler")
-			return
+
+	start, unserved := selectAPISurfaceTriggers(catalog, m.triggersStarted)
+	for _, gvr := range unserved {
+		if _, logged := m.triggersSkipLogged[gvr]; logged {
+			continue
 		}
+		m.triggersSkipLogged[gvr] = struct{}{}
+		log.Info("API surface trigger not served by this API server; "+
+			"the catalog refreshes on its periodic tick instead", "gvr", gvr.String())
 	}
 
-	factory.Start(ctx.Done())
-	go waitForAPISurfaceTriggerSync(ctx, log, informers)
+	var fresh []cache.SharedIndexInformer
+	for _, gvr := range start {
+		informer := m.triggerFactory.ForResource(gvr).Informer()
+		if _, addErr := informer.AddEventHandler(handler); addErr != nil {
+			log.Error(addErr, "failed to add API surface trigger handler", "gvr", gvr.String())
+			continue
+		}
+		m.triggersStarted[gvr] = struct{}{}
+		delete(m.triggersSkipLogged, gvr)
+		fresh = append(fresh, informer)
+		log.Info("API surface trigger informer started", "gvr", gvr.String())
+	}
+	if len(fresh) == 0 {
+		return
+	}
+
+	// Start is idempotent per informer: it launches only the ones not yet running.
+	m.triggerFactory.Start(ctx.Done())
+	go waitForAPISurfaceTriggerSync(ctx, log, fresh)
+}
+
+// apiSurfaceTriggerGVRs are the resources whose changes mean the API surface moved: a CRD
+// (custom types appear/disappear) and an APIService (an aggregated group appears/goes
+// unhealthy). Neither is guaranteed to be served.
+func apiSurfaceTriggerGVRs() []schema.GroupVersionResource {
+	return []schema.GroupVersionResource{crdTriggerGVR(), apiServiceTriggerGVR()}
+}
+
+// selectAPISurfaceTriggers splits the trigger resources not yet running into the ones
+// discovery says are watchable now (start) and the ones it does not serve (unserved). It
+// is the whole decision behind ensureAPISurfaceTriggerInformers, kept pure so the
+// "no aggregation layer" case is testable without an API server.
+func selectAPISurfaceTriggers(
+	catalog *APIResourceCatalog,
+	started map[schema.GroupVersionResource]struct{},
+) ([]schema.GroupVersionResource, []schema.GroupVersionResource) {
+	var start, unserved []schema.GroupVersionResource
+	for _, gvr := range apiSurfaceTriggerGVRs() {
+		if _, running := started[gvr]; running {
+			continue
+		}
+		if catalog.ServesWatchable(gvr) {
+			start = append(start, gvr)
+			continue
+		}
+		unserved = append(unserved, gvr)
+	}
+	return start, unserved
+}
+
+// setTriggerContext records the manager's lifetime context, the stop channel every
+// trigger informer is started with. Informers must outlive the reconcile call that
+// discovers their resource became available, so they can never use its context.
+func (m *Manager) setTriggerContext(ctx context.Context) {
+	m.triggersMu.Lock()
+	defer m.triggersMu.Unlock()
+	m.triggerCtx = ctx
 }
 
 func waitForAPISurfaceTriggerSync(ctx context.Context, log logr.Logger, informers []cache.SharedIndexInformer) {
