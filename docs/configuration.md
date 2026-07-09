@@ -542,7 +542,7 @@ entry). These fallbacks are recorded as store diagnostics — visible in the ana
 the running operator, in the logs at debug verbosity (`manifest store diagnostic`).
 
 For design details and the exact boundary, see
-[design/gitops-api/f1-images-replicas-edit-through.md](design/gitops-api/f1-images-replicas-edit-through.md).
+[design/gitops-api/finished/f1-images-replicas-edit-through.md](design/gitops-api/finished/f1-images-replicas-edit-through.md).
 
 ## `WatchRule`
 

@@ -4,7 +4,7 @@
 > Captured: 2026-07-06
 > Related:
 > [README.md](README.md),
-> [f1-images-replicas-edit-through.md](f1-images-replicas-edit-through.md),
+> [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md),
 > [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../manifest/contextual-namespace-and-kustomize-folder-editing.md),
 > [../unsupported-folder-refusal-plan.md](../unsupported-folder-refusal-plan.md),
 > [../manifest/version2/gittarget-new-file-placement-rules.md](../manifest/version2/gittarget-new-file-placement-rules.md)

@@ -1,12 +1,13 @@
 # F1: Kustomize `images:` / `replicas:` edit-through
 
-> Status: implemented (phases A–C landed together with this doc; the ambiguity
-> refusal projection into GitTarget status remains future work)
+> Status: shipped ([#198](https://github.com/ConfigButler/gitops-reverser/pull/198)) —
+> phases A–C landed together with this doc; the ambiguity refusal projection into
+> GitTarget status remains future work. Filed under `finished/`.
 > Captured: 2026-07-06
 > Related:
-> [README.md](README.md),
-> [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../manifest/contextual-namespace-and-kustomize-folder-editing.md),
-> [../../../internal/git/manifestedit/DECISION.md](../../../internal/git/manifestedit/DECISION.md)
+> [../README.md](../README.md),
+> [../../manifest/contextual-namespace-and-kustomize-folder-editing.md](../../manifest/contextual-namespace-and-kustomize-folder-editing.md),
+> [../../../../internal/git/manifestedit/DECISION.md](../../../../internal/git/manifestedit/DECISION.md)
 
 ## Problem
 
