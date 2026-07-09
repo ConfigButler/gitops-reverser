@@ -109,3 +109,10 @@ asserting `CommitRequest`.
 - The commit's *committer* remains the operator's configured identity, and
   commit signing (when configured) still signs as the committer. A reader can
   always tell that a commit was made by the reverser on someone's behalf.
+- An **unverified** assertion (`AuthorAssertionUnverified`) degrades to exactly the
+  pre-existing committer-fallback path: the request carries no author, so it finalizes
+  whichever *unattributed* open window exists for its `GitTarget`, with its own message.
+  It cannot reach a window the audit stream attributed to a named actor, and the commit is
+  never signed with the rejected identity. This is the same reach a `CommitRequest` with
+  no `spec.author` from an unattributed submitter has always had — the guard denies the
+  *identity claim*, not the ability to save.
