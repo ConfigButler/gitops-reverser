@@ -158,6 +158,11 @@ subjects:
 	})
 
 	// assertingCommitRequest renders a CommitRequest that asserts an author.
+	//
+	// closeDelaySeconds is an extra collect window, anchored at the moment the worker receives
+	// the attach. Without it a CommitRequest created right after an edit resolves
+	// NoWindowInGrace: the edit's watch event has not reached the branch worker yet, so there
+	// is no open window to attach to.
 	assertingCommitRequest := func(name string) string {
 		return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: CommitRequest
@@ -168,6 +173,7 @@ spec:
   targetRef:
     name: %s
   message: "save: asserted author"
+  closeDelaySeconds: 20
   author:
     name: %q
     email: %q

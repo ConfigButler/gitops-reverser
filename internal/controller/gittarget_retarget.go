@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -25,6 +26,10 @@ const (
 	// GitTargetReasonDestinationSettled marks a completed retarget, or a first
 	// materialization.
 	GitTargetReasonDestinationSettled = "DestinationSettled"
+
+	// GitTargetEventRetargeted is the Kubernetes event emitted when a retarget completes. It
+	// names the abandoned folder, which nothing else deletes.
+	GitTargetEventRetargeted = "Retargeted"
 )
 
 // specDestination is the destination the spec asks for, in the shape status records: the
@@ -130,31 +135,61 @@ func (r *GitTargetReconciler) beginRetarget(
 // destination. It is called only once the new folder actually holds a snapshot the
 // acceptance gate approved — that is what keeps the invariant honest: a successful snapshot
 // is valid for the destination recorded in status.observedDestination.
+//
+// A completed retarget's message names the folder it abandoned, and that message must
+// SURVIVE: it is the only place in status where an operator learns which folder is now
+// unmanaged Git content they may want to remove. So once the condition is settled at the
+// current destination this returns early rather than overwriting the message with a
+// steady-state one on the next periodic reconcile. A Kubernetes event carries the same fact
+// for anyone watching the object rather than reading its status.
 func (r *GitTargetReconciler) settleDestination(target *configbutleraiv1alpha3.GitTarget, log logr.Logger) {
 	want := specDestination(target)
 	observed := target.Status.ObservedDestination
 
-	switch {
-	case observed == nil:
-		r.setCondition(target, GitTargetConditionRetargeting, metav1.ConditionFalse,
-			GitTargetReasonDestinationSettled,
-			"materialized at "+destinationString(want))
-	case !sameDestination(*observed, want):
-		abandoned := *observed
-		log.Info("GitTarget retarget complete; the old folder is now unmanaged Git content",
-			"abandoned", destinationString(abandoned), "current", destinationString(want))
-		r.setCondition(target, GitTargetConditionRetargeting, metav1.ConditionFalse,
-			GitTargetReasonDestinationSettled,
-			fmt.Sprintf("materialized at %s; %s was abandoned and is now unmanaged Git content — "+
-				"remove it by hand if it is no longer wanted",
-				destinationString(want), destinationString(abandoned)))
-	default:
-		r.setCondition(target, GitTargetConditionRetargeting, metav1.ConditionFalse,
-			GitTargetReasonDestinationSettled,
-			"materialized at "+destinationString(want))
+	if observed != nil && sameDestination(*observed, want) && destinationAlreadySettled(target) {
+		return
 	}
 
+	if observed == nil || sameDestination(*observed, want) {
+		r.setCondition(target, GitTargetConditionRetargeting, metav1.ConditionFalse,
+			GitTargetReasonDestinationSettled,
+			"materialized at "+destinationString(want))
+		target.Status.ObservedDestination = &want
+		return
+	}
+
+	abandoned := *observed
+	log.Info("GitTarget retarget complete; the old folder is now unmanaged Git content",
+		"abandoned", destinationString(abandoned), "current", destinationString(want))
+	r.eventf(target, GitTargetEventRetargeted,
+		"materialized at %s; %s was abandoned and is now unmanaged Git content",
+		destinationString(want), destinationString(abandoned))
+	r.setCondition(target, GitTargetConditionRetargeting, metav1.ConditionFalse,
+		GitTargetReasonDestinationSettled,
+		fmt.Sprintf("materialized at %s; %s was abandoned and is now unmanaged Git content — "+
+			"remove it by hand if it is no longer wanted",
+			destinationString(want), destinationString(abandoned)))
 	target.Status.ObservedDestination = &want
+}
+
+// destinationAlreadySettled reports whether the Retargeting condition already records a
+// completed move, or a first materialization, at the current destination.
+func destinationAlreadySettled(target *configbutleraiv1alpha3.GitTarget) bool {
+	c := conditionByType(target.Status.Conditions, GitTargetConditionRetargeting)
+	return c != nil && c.Status == metav1.ConditionFalse && c.Reason == GitTargetReasonDestinationSettled
+}
+
+// eventf records a Kubernetes event on the GitTarget when a recorder is wired. Tests and
+// standalone reconcilers leave it nil.
+func (r *GitTargetReconciler) eventf(
+	target *configbutleraiv1alpha3.GitTarget,
+	reason, messageFmt string,
+	args ...any,
+) {
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Eventf(target, corev1.EventTypeNormal, reason, messageFmt, args...)
 }
 
 // markRetargetingUnknown records that the destination could not be evaluated because a

@@ -193,3 +193,62 @@ func TestDestinationString(t *testing.T) {
 	assert.Equal(t, "main:apps",
 		destinationString(configbutleraiv1alpha3.GitTargetDestination{Branch: "main", Path: "apps"}))
 }
+
+// The abandoned-folder message is the only place in status where an operator learns which
+// folder is now unmanaged Git content they may want to remove. A later reconcile must not
+// overwrite it with a steady-state message.
+func TestSettleDestination_AbandonedMessageSurvivesLaterReconciles(t *testing.T) {
+	t.Parallel()
+
+	target := materializedAtMainApps(targetAt("main", "clusters/acme"))
+	r := &GitTargetReconciler{}
+
+	r.settleDestination(target, logr.Discard())
+	first := conditionByType(target.Status.Conditions, GitTargetConditionRetargeting).Message
+	require.Contains(t, first, "main:apps was abandoned")
+
+	// Two more steady-state reconciles, exactly as the 5-minute requeue produces.
+	r.settleDestination(target, logr.Discard())
+	r.settleDestination(target, logr.Discard())
+
+	after := conditionByType(target.Status.Conditions, GitTargetConditionRetargeting).Message
+	assert.Equal(t, first, after,
+		"a periodic reconcile must not erase the name of the folder the retarget abandoned")
+	assert.Equal(t, "clusters/acme", target.Status.ObservedDestination.Path)
+}
+
+func TestSettleDestination_ReSettlesAfterANewRetarget(t *testing.T) {
+	t.Parallel()
+
+	target := materializedAtMainApps(targetAt("main", "clusters/acme"))
+	r := &GitTargetReconciler{}
+	r.settleDestination(target, logr.Discard())
+
+	// A second move: teardown, then settle. The message must name the freshly abandoned
+	// folder, not the one from the first move.
+	target.Generation = 2
+	target.Spec.Path = "clusters/beta"
+	require.NoError(t, r.beginRetarget(t.Context(), target, logr.Discard()))
+	r.settleDestination(target, logr.Discard())
+
+	msg := conditionByType(target.Status.Conditions, GitTargetConditionRetargeting).Message
+	assert.Contains(t, msg, "main:clusters/acme was abandoned")
+	assert.NotContains(t, msg, "main:apps")
+	assert.Equal(t, "clusters/beta", target.Status.ObservedDestination.Path)
+}
+
+func TestDestinationAlreadySettled(t *testing.T) {
+	t.Parallel()
+
+	target := targetAt("main", "apps")
+	assert.False(t, destinationAlreadySettled(target))
+
+	r := &GitTargetReconciler{}
+	r.setCondition(target, GitTargetConditionRetargeting, metav1.ConditionTrue,
+		GitTargetReasonDestinationChanged, "moving")
+	assert.False(t, destinationAlreadySettled(target))
+
+	r.setCondition(target, GitTargetConditionRetargeting, metav1.ConditionFalse,
+		GitTargetReasonDestinationSettled, "settled")
+	assert.True(t, destinationAlreadySettled(target))
+}

@@ -133,7 +133,9 @@ data:
 		Expect(err).NotTo(HaveOccurred(), "apply as %s should succeed", fieldManager)
 	}
 
-	fileIn := func(targetPath, name string) (relPath, absPath string) {
+	// fileIn returns the ConfigMap's path in a GitTarget's folder, first repo-relative (for
+	// messages) and then absolute (for reads).
+	fileIn := func(targetPath, name string) (string, string) {
 		rel := path.Join(targetPath, fmt.Sprintf("%s/configmaps/%s.yaml", testNs, name))
 		return rel, filepath.Join(repo.CheckoutDir, rel)
 	}

@@ -278,6 +278,7 @@ func main() {
 		Scheme:        mgr.GetScheme(),
 		WorkerManager: workerManager,
 		EventRouter:   eventRouter,
+		Recorder:      mgr.GetEventRecorderFor("gittarget"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)
