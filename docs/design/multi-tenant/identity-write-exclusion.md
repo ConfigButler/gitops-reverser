@@ -85,11 +85,30 @@ the mark-and-sweep desired set that a replay or resync computes: an object a
 GitOps tool manages is still an object the GitTarget mirrors, and dropping it
 from the desired set would make the sweep delete its file from Git.
 
-The practical consequence: the labels a GitOps tool stamps onto an object do
-not reach Git on the live-event path, but they do land the next time that type
-replays (a reconnect, a restart, a rule change). That write is idempotent and
-does not re-trigger the forward leg, because the content it applies is what the
-forward leg already applied. The loop is broken; the reconciliation is not.
+The practical consequence: after the forward leg changes an object, Git keeps the
+content the human last wrote, and the cluster carries the forward leg's. The next
+replay of that type (a reconnect, a restart, a rule change) reconciles the
+difference in Git's favour of the live state — one idempotent write that does not
+re-trigger the forward leg, because the content it commits is what the forward leg
+already applied. The loop is broken; the reconciliation is not.
+
+### What is *not* a change to mirror
+
+`internal/sanitize` already strips a GitOps tool's own bookkeeping from Git
+content: labels and annotations under `kustomize.toolkit.fluxcd.io/`, `kro.run/`
+and `applyset.kubernetes.io/`, along with `managedFields`, `uid`,
+`resourceVersion` and friends.
+
+So an apply that *only* stamps those labels produces no Git-writable change at
+all, and the content dedup drops it before any exclusion is consulted. An
+exclusion decides the case where the forward leg's apply changes real content —
+which is what happens whenever Git and the cluster disagree about a managed field.
+
+This is worth knowing when reading
+`gitopsreverser_watch_events_excluded_total`: a zero rate on a `GitTarget` paired
+with a forward leg does not by itself prove the exclusion is misconfigured. It may
+simply mean the forward leg has not written anything the operator would have
+mirrored.
 
 ## Where it is enforced
 

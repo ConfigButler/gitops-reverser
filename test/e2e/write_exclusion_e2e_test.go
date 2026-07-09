@@ -15,18 +15,23 @@ import (
 
 // Identity-based write exclusion is the fix for the loop a reverser forms with a GitOps
 // forward leg on the same branch: the forward leg applies the branch back into the cluster,
-// stamping its own labels and managedFields onto the object; that is a live UPDATE; the
-// reverser mirrors it; the new commit re-triggers the forward leg.
+// the reverser mirrors that apply as a live update, and the new commit re-triggers the
+// forward leg.
 //
 // These specs stand in for the forward leg with `kubectl apply --server-side
-// --field-manager=kustomize-controller`, plus the labels such a tool stamps. That is exactly
-// what a GitOps tool does, and the field manager is the whole signal excludeFieldManagers
-// reads, so the substitution is faithful and needs no Flux install.
+// --field-manager=kustomize-controller`. That is exactly what a GitOps tool does, and the
+// field manager is the whole signal `excludeFieldManagers` reads, so the substitution is
+// faithful and needs no Flux install.
+//
+// The forward leg's apply changes `data`, not a label: internal/sanitize already strips
+// `kustomize.toolkit.fluxcd.io/*` labels and annotations from Git content, so a stamped
+// label alone would carry no change to mirror and the content dedup would drop it before any
+// exclusion was consulted. A content change is the case the exclusion actually decides.
 //
 // Two GitTargets watch the same ConfigMaps into sibling folders: one whose rule declines the
 // forward leg's writes, one whose rule does not. The control target is what makes the
-// assertion sharp — once the forward leg's labels appear in the mirrored folder, the event
-// has demonstrably been processed, so their absence in the excluded folder is the exclusion
+// assertion sharp — once the forward leg's value appears in the mirrored folder, the event
+// has demonstrably been processed, so its absence in the excluded folder is the exclusion
 // doing its job rather than a race we did not wait long enough for.
 //
 // Not Serial: the spec owns a dedicated Gitea repo, so nothing else writes its branch.
@@ -40,7 +45,6 @@ var _ = Describe("Write exclusion", Label("manager"), Ordered, func() {
 	const (
 		fluxFieldManager  = "kustomize-controller"
 		humanFieldManager = "kubectl-e2e-human"
-		fluxLabel         = "kustomize.toolkit.fluxcd.io/name"
 
 		excludedPath = "e2e/write-exclusion/excluded"
 		mirroredPath = "e2e/write-exclusion/mirrored"
@@ -111,23 +115,17 @@ spec:
 	})
 
 	// applyConfigMap applies a ConfigMap under a named field manager, exactly as a GitOps
-	// tool's server-side apply does. A non-empty label is what a GitOps tool stamps onto every
-	// object it owns, and it is what makes the forward leg's apply a real content change
-	// rather than a no-op the content dedup would drop anyway.
-	applyConfigMap := func(name, fieldManager, flavor, label string) {
+	// tool's server-side apply does.
+	applyConfigMap := func(name, fieldManager, flavor string) {
 		GinkgoHelper()
-		labels := ""
-		if label != "" {
-			labels = fmt.Sprintf("\n  labels:\n    %s: %s", fluxLabel, label)
-		}
 		manifest := fmt.Sprintf(`apiVersion: v1
 kind: ConfigMap
 metadata:
   name: %s
-  namespace: %s%s
+  namespace: %s
 data:
   flavor: %s
-`, name, testNs, labels, flavor)
+`, name, testNs, flavor)
 		_, err := kubectlRunWithStdin(testNs, manifest,
 			"apply", "--server-side", "--force-conflicts", "--field-manager="+fieldManager, "-f", "-")
 		Expect(err).NotTo(HaveOccurred(), "apply as %s should succeed", fieldManager)
@@ -140,52 +138,45 @@ data:
 		return rel, filepath.Join(repo.CheckoutDir, rel)
 	}
 
+	eventuallyContains := func(absPath, want string) {
+		GinkgoHelper()
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+			content, err := os.ReadFile(absPath)
+			g.Expect(err).NotTo(HaveOccurred(), "expected a committed file at %s", absPath)
+			g.Expect(string(content)).To(ContainSubstring(want))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	}
+
 	It("mirrors a human's write, drops the forward leg's, and keeps mirroring the human's next edit", func() {
 		const cmName = "excluded-forward-leg"
 		excludedRel, excludedAbs := fileIn(excludedPath, cmName)
 		_, mirroredAbs := fileIn(mirroredPath, cmName)
 
 		By("a human creates the ConfigMap")
-		applyConfigMap(cmName, humanFieldManager, "vanilla", "")
+		applyConfigMap(cmName, humanFieldManager, "vanilla")
 
 		By("the human's write reaches both folders")
-		Eventually(func(g Gomega) {
-			pullLatestRepoState(g, repo.CheckoutDir)
-			for _, p := range []string{excludedAbs, mirroredAbs} {
-				content, err := os.ReadFile(p)
-				g.Expect(err).NotTo(HaveOccurred(), "the human's ConfigMap must be committed at %s", p)
-				g.Expect(string(content)).To(ContainSubstring("flavor: vanilla"))
-			}
-		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		eventuallyContains(excludedAbs, "flavor: vanilla")
+		eventuallyContains(mirroredAbs, "flavor: vanilla")
 
-		By("the forward leg applies the object back into the cluster, stamping its own label")
-		applyConfigMap(cmName, fluxFieldManager, "vanilla", "demo")
+		By("the forward leg applies a different value back into the cluster, as it would after a Git change")
+		applyConfigMap(cmName, fluxFieldManager, "chocolate")
 
 		By("the unrestricted GitTarget mirrors that apply — which proves the event was processed")
-		Eventually(func(g Gomega) {
-			pullLatestRepoState(g, repo.CheckoutDir)
-			content, err := os.ReadFile(mirroredAbs)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(string(content)).To(ContainSubstring(fluxLabel))
-		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		eventuallyContains(mirroredAbs, "flavor: chocolate")
 
 		By("the excluding GitTarget did not: the forward leg's own apply is never committed back")
 		excludedContent, err := os.ReadFile(excludedAbs)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(string(excludedContent)).NotTo(ContainSubstring(fluxLabel),
+		Expect(string(excludedContent)).To(ContainSubstring("flavor: vanilla"),
 			"the forward leg's apply reached %s but must never reach %s — that is the loop this prevents",
 			mirroredPath, excludedRel)
+		Expect(string(excludedContent)).NotTo(ContainSubstring("flavor: chocolate"))
 
 		By("a later human edit of the same object is still mirrored to the excluding target")
-		applyConfigMap(cmName, humanFieldManager, "chocolate", "demo")
-
-		Eventually(func(g Gomega) {
-			pullLatestRepoState(g, repo.CheckoutDir)
-			content, readErr := os.ReadFile(excludedAbs)
-			g.Expect(readErr).NotTo(HaveOccurred())
-			g.Expect(string(content)).To(ContainSubstring("flavor: chocolate"),
-				"excluding a field manager must never ignore a human's later edit of the object it manages")
-		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		applyConfigMap(cmName, humanFieldManager, "strawberry")
+		eventuallyContains(excludedAbs, "flavor: strawberry")
 
 		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
 	})
@@ -196,17 +187,17 @@ data:
 	It("still mirrors a delete of an object the excluded manager last wrote", func() {
 		const cmName = "deleted-after-forward-leg"
 		excludedRel, excludedAbs := fileIn(excludedPath, cmName)
+		_, mirroredAbs := fileIn(mirroredPath, cmName)
 
 		By("a human creates it, so it reaches Git")
-		applyConfigMap(cmName, humanFieldManager, "strawberry", "")
-		Eventually(func(g Gomega) {
-			pullLatestRepoState(g, repo.CheckoutDir)
-			_, err := os.Stat(excludedAbs)
-			g.Expect(err).NotTo(HaveOccurred())
-		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		applyConfigMap(cmName, humanFieldManager, "vanilla")
+		eventuallyContains(excludedAbs, "flavor: vanilla")
 
 		By("the forward leg applies it, becoming the object's last writer")
-		applyConfigMap(cmName, fluxFieldManager, "strawberry", "demo")
+		applyConfigMap(cmName, fluxFieldManager, "chocolate")
+		// Gate on the control target so the forward leg's write is known to be processed
+		// before the delete, rather than racing it.
+		eventuallyContains(mirroredAbs, "flavor: chocolate")
 
 		By("a human deletes it")
 		_, err := kubectlRunInNamespace(testNs, "delete", "configmap", cmName)

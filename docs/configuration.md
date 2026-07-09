@@ -726,9 +726,16 @@ write. The operator logs a warning once per rule when `excludeUsers` is set with
 
 Dropped events are counted by
 `gitopsreverser_watch_events_excluded_total{gittarget_namespace, gittarget_name, group, resource, reason}`,
-where `reason` is `field_manager` or `user`. A steady non-zero rate is the healthy state for a
-`GitTarget` paired with a forward leg; a rate of zero means the exclusion is not matching — check the
-manager name against the object's `managedFields`.
+where `reason` is `field_manager` or `user`.
+
+A zero rate does **not** by itself mean the exclusion is misconfigured. GitOps Reverser already strips
+a GitOps tool's own bookkeeping from Git content — labels and annotations under
+`kustomize.toolkit.fluxcd.io/`, `kro.run/`, `applyset.kubernetes.io/`, plus `managedFields` and the
+server-generated metadata fields — so an apply that only stamps those carries no change to mirror and
+is dropped as a no-op before any exclusion is consulted. An exclusion decides the case where the
+forward leg's apply changes real content, which happens whenever Git and the cluster disagree about a
+managed field. If you expect drops and see none, check that the manager name matches the object's
+`metadata.managedFields`.
 
 ## `ClusterWatchRule`
 
