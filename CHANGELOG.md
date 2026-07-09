@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.32.0...gitops-reverser-v0.33.0) (2026-07-09)
+
+
+### Features
+
+* **git:** write-boundary L1/L2 preconditions, WriteBoundaryRefused status, and go 1.26.5 refresh ([#216](https://github.com/ConfigButler/gitops-reverser/issues/216)) ([e9a2476](https://github.com/ConfigButler/gitops-reverser/commit/e9a2476d9bc3de9bd97c004a5f3be2ab5f88eb17))
+* **manifest-analyzer:** repo-walker onboarding discovery (F8 first cut) ([22e9e92](https://github.com/ConfigButler/gitops-reverser/commit/22e9e923a904d262a6d067ff49968860d2535925))
+
+
+### Documentation
+
+* **gitops-api:** onboarding repo-discovery design (F8); archive shipped F1/F7 ([#213](https://github.com/ConfigButler/gitops-reverser/issues/213)) ([4469e2b](https://github.com/ConfigButler/gitops-reverser/commit/4469e2be8619ea681f2ee6df2d39c3876d052294))
+
 ## [0.32.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.31.0...gitops-reverser-v0.32.0) (2026-07-08)
 
 
