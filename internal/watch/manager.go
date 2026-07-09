@@ -168,6 +168,11 @@ type Manager struct {
 	// stable refusal is logged once, not on every refresh. Guarded by resourceCatalogMu.
 	typeRefusalsLogged map[string]string
 
+	// excludeUsersWarned records the rules already warned about declaring excludeUsers with
+	// no author attribution configured, so the warning is edge-triggered rather than
+	// re-emitted on every 30s rule resolution.
+	excludeUsersWarned sync.Map
+
 	// declaredGVRsMu guards declaredGVRs: the type-set each GitTarget last Declared. The watch-first
 	// data plane reads it to drive the per-(GitTarget, type) watch set; re-declaring is idempotent.
 	declaredGVRsMu sync.Mutex

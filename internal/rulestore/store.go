@@ -48,6 +48,11 @@ type CompiledResourceRule struct {
 	APIVersions []string
 	// Resources specifies which resource types this rule matches.
 	Resources []string
+	// ExcludeFieldManagers names field managers whose writes this rule declines to mirror.
+	// It is a veto within this rule, not a global filter (rules are a logical OR).
+	ExcludeFieldManagers []string
+	// ExcludeUsers names attributed identities whose writes this rule declines to mirror.
+	ExcludeUsers []string
 }
 
 // CompiledClusterRule represents a fully processed ClusterWatchRule, ready for quick lookups.
@@ -79,6 +84,10 @@ type CompiledClusterResourceRule struct {
 	APIVersions []string
 	// Resources specifies which resource types this rule matches.
 	Resources []string
+	// ExcludeFieldManagers names field managers whose writes this rule declines to mirror.
+	ExcludeFieldManagers []string
+	// ExcludeUsers names attributed identities whose writes this rule declines to mirror.
+	ExcludeUsers []string
 	// Scope indicates whether this rule watches Cluster or Namespaced resources.
 	Scope configv1alpha3.ResourceScope
 }
@@ -141,10 +150,12 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 
 	for _, r := range rule.Spec.Rules {
 		compiled.ResourceRules = append(compiled.ResourceRules, CompiledResourceRule{
-			Operations:  r.Operations,
-			APIGroups:   r.APIGroups,
-			APIVersions: r.APIVersions,
-			Resources:   r.Resources,
+			Operations:           r.Operations,
+			APIGroups:            r.APIGroups,
+			APIVersions:          r.APIVersions,
+			Resources:            r.Resources,
+			ExcludeFieldManagers: r.ExcludeFieldManagers,
+			ExcludeUsers:         r.ExcludeUsers,
 		})
 	}
 
@@ -191,11 +202,13 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 
 	for _, r := range rule.Spec.Rules {
 		compiled.Rules = append(compiled.Rules, CompiledClusterResourceRule{
-			Operations:  r.Operations,
-			APIGroups:   r.APIGroups,
-			APIVersions: r.APIVersions,
-			Resources:   r.Resources,
-			Scope:       r.Scope,
+			Operations:           r.Operations,
+			APIGroups:            r.APIGroups,
+			APIVersions:          r.APIVersions,
+			Resources:            r.Resources,
+			ExcludeFieldManagers: r.ExcludeFieldManagers,
+			ExcludeUsers:         r.ExcludeUsers,
+			Scope:                r.Scope,
 		})
 	}
 

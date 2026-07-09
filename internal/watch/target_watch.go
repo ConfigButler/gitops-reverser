@@ -127,8 +127,7 @@ func (m *Manager) replaceGitTargetWatches(
 
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 	for _, watchKey := range keys {
-		ops := table.operationsFor(watchKey)
-		go m.runTargetWatch(childCtx, log, table.GitDest, watchKey, ops)
+		go m.runTargetWatch(childCtx, log, table.GitDest, watchKey, table.filterFor(watchKey))
 	}
 	log.Info("watch-first target watch set reconciled", "watchCount", len(keys))
 	return nil
@@ -185,18 +184,27 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 	m.dropTargetGitPathAcceptanceLocked(gitDest)
 }
 
+// watchFilter is one watch's admission state: the union operation set the stream must
+// carry, and the per-rule clauses that decide whether a given live event is mirrored.
+// Live events consult the clauses; the replay/snapshot path consults only ops, because an
+// exclusion suppresses a write, never the state a mark-and-sweep reconciles against.
+type watchFilter struct {
+	ops        OperationSet
+	selections RuleSelections
+}
+
 func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
 	out := map[targetWatchKey]string{}
 	for _, wt := range table.Types {
 		namespaces := wt.SnapshotNamespaces()
 		if len(namespaces) == 0 {
 			key := targetWatchKey{GVR: wt.GVR}
-			out[key] = operationSpec(wt.NamespaceOps[""])
+			out[key] = watchSpec(wt.NamespaceSelections[""])
 			continue
 		}
 		for _, ns := range namespaces {
 			key := targetWatchKey{GVR: wt.GVR, Namespace: ns}
-			out[key] = operationSpec(wt.NamespaceOps[ns])
+			out[key] = watchSpec(wt.NamespaceSelections[ns])
 		}
 	}
 	return out
@@ -216,11 +224,15 @@ func sortedTargetWatchSpecKeys(specs map[targetWatchKey]string) []targetWatchKey
 	return out
 }
 
-func operationSpec(ops OperationSet) string {
-	if len(ops) == 0 {
+// watchSpec fingerprints one watch's admission state. It covers the exclusions as well as
+// the operations, so editing a rule's excludeUsers/excludeFieldManagers restarts the
+// affected watch with the new clauses instead of leaving the running goroutine on the old
+// ones.
+func watchSpec(selections RuleSelections) string {
+	if len(selections) == 0 {
 		return "*"
 	}
-	return fmt.Sprint(ops.Sorted())
+	return selections.Key()
 }
 
 func equalTargetWatchSpecs(a, b map[targetWatchKey]string) bool {
@@ -235,16 +247,24 @@ func equalTargetWatchSpecs(a, b map[targetWatchKey]string) bool {
 	return true
 }
 
-func (t WatchedTypeTable) operationsFor(key targetWatchKey) OperationSet {
+// filterFor resolves the admission state for one watch key. A namespaced key falls back
+// to the cluster-wide clauses, matching how a ClusterWatchRule's stream covers a
+// namespaced type across every namespace.
+func (t WatchedTypeTable) filterFor(key targetWatchKey) watchFilter {
+	selections := t.selectionsFor(key)
+	return watchFilter{ops: selections.Ops(), selections: selections}
+}
+
+func (t WatchedTypeTable) selectionsFor(key targetWatchKey) RuleSelections {
 	for _, wt := range t.Types {
 		if wt.GVR != key.GVR {
 			continue
 		}
-		if ops := wt.NamespaceOps[key.Namespace]; ops != nil {
-			return ops
+		if selections := wt.NamespaceSelections[key.Namespace]; selections != nil {
+			return selections
 		}
 		if key.Namespace != "" {
-			return wt.NamespaceOps[""]
+			return wt.NamespaceSelections[""]
 		}
 	}
 	return nil
@@ -255,10 +275,10 @@ func (m *Manager) runTargetWatch(
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	key targetWatchKey,
-	ops OperationSet,
+	filter watchFilter,
 ) {
 	for ctx.Err() == nil {
-		err := m.targetWatchReplayAndStream(ctx, log, gitDest, key, ops)
+		err := m.targetWatchReplayAndStream(ctx, log, gitDest, key, filter)
 		if ctx.Err() != nil {
 			return
 		}
@@ -278,11 +298,11 @@ func (m *Manager) targetWatchReplayAndStream(
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	key targetWatchKey,
-	ops OperationSet,
+	filter watchFilter,
 ) error {
 	cursorExpired := false
 	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, key); ok {
-		err := m.targetWatchResumeAndStream(ctx, log, gitDest, key, ops, cursor)
+		err := m.targetWatchResumeAndStream(ctx, log, gitDest, key, filter, cursor)
 		if !errors.Is(err, errTargetWatchExpired) {
 			return err
 		}
@@ -323,7 +343,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		if watchListUnsupported(err) {
 			log.Error(err, "WARNING: sendInitialEvents unsupported; falling back to LIST plus buffered WATCH",
 				"gvr", key.GVR.String(), "namespace", key.Namespace, "err", err.Error())
-			return m.targetWatchListAndStream(ctx, log, gitDest, key, ops)
+			return m.targetWatchListAndStream(ctx, log, gitDest, key, filter)
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -349,7 +369,7 @@ func (m *Manager) targetWatchReplayAndStream(
 				return errTargetWatchClosed
 			}
 			nextReplaying, err := m.handleTargetWatchSessionEvent(
-				ctx, log, gitDest, key, ops, ev, replaying, &replay,
+				ctx, log, gitDest, key, filter, ev, replaying, &replay,
 			)
 			if err != nil {
 				return err
@@ -364,7 +384,7 @@ func (m *Manager) targetWatchResumeAndStream(
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	key targetWatchKey,
-	ops OperationSet,
+	filter watchFilter,
 	cursor string,
 ) error {
 	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, metav1.ListOptions{
@@ -399,7 +419,7 @@ func (m *Manager) targetWatchResumeAndStream(
 		"target watch resumed from durable cursor",
 	)
 	m.recordTargetReconcileCompleted(gitDest, "cursor_resume")
-	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, ops, w.ResultChan())
+	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, filter, w.ResultChan())
 }
 
 func (m *Manager) targetWatchListAndStream(
@@ -407,7 +427,7 @@ func (m *Manager) targetWatchListAndStream(
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	key targetWatchKey,
-	ops OperationSet,
+	filter watchFilter,
 ) error {
 	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, metav1.ListOptions{
 		AllowWatchBookmarks: true,
@@ -462,7 +482,7 @@ func (m *Manager) targetWatchListAndStream(
 		StreamReasonAllStreamsReady,
 		"target watch list fallback complete",
 	)
-	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, ops, buffered, revision)
+	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, filter, buffered, revision)
 }
 
 func (m *Manager) handleTargetWatchSessionEvent(
@@ -470,13 +490,13 @@ func (m *Manager) handleTargetWatchSessionEvent(
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	key targetWatchKey,
-	ops OperationSet,
+	filter watchFilter,
 	ev watch.Event,
 	replaying bool,
 	replay *[]manifestanalyzer.DesiredResource,
 ) (bool, error) {
 	if !replaying {
-		rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev)
+		rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, filter, ev)
 		if err != nil {
 			return false, err
 		}
@@ -591,7 +611,7 @@ func (m *Manager) streamLiveTargetWatchEvents(
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	key targetWatchKey,
-	ops OperationSet,
+	filter watchFilter,
 	events <-chan watch.Event,
 	floors ...string,
 ) error {
@@ -610,7 +630,7 @@ func (m *Manager) streamLiveTargetWatchEvents(
 			if targetWatchEventAtOrBeforeFloor(ev, floor) {
 				continue
 			}
-			if err := m.processLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev); err != nil {
+			if err := m.processLiveTargetWatchEvent(ctx, log, gitDest, key, filter, ev); err != nil {
 				return err
 			}
 		}
@@ -622,7 +642,7 @@ func (m *Manager) processLiveTargetWatchEvent(
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	key targetWatchKey,
-	ops OperationSet,
+	filter watchFilter,
 	ev watch.Event,
 ) error {
 	if targetWatchExpired(ev) {
@@ -631,7 +651,7 @@ func (m *Manager) processLiveTargetWatchEvent(
 		// fresh replay (overwriting the stale cursor); no explicit delete needed.
 		return errTargetWatchExpired
 	}
-	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev)
+	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, filter, ev)
 	if err != nil {
 		return err
 	}
@@ -643,7 +663,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	log logr.Logger,
 	gitDest types.ResourceReference,
 	key targetWatchKey,
-	ops OperationSet,
+	filter watchFilter,
 	ev watch.Event,
 ) (string, error) {
 	rv := targetWatchEventResourceVersion(ev)
@@ -658,10 +678,16 @@ func (m *Manager) routeLiveTargetWatchEvent(
 			return rv, nil
 		}
 		op := operationForLiveTargetWatchEvent(ev.Type, u)
-		if !ops.Match(op) {
+		if !filter.ops.Match(op) {
 			return rv, nil
 		}
 		event := targetWatchGitEvent(key.GVR, u, op)
+		// Identity exclusion runs before the content dedup, so a write this GitTarget
+		// declines never seeds the dedup cache with content that was not routed to Git.
+		authorAttached, admitted := m.admitLiveTargetWatchEvent(ctx, log, gitDest, key, filter, &event, u, op)
+		if !admitted {
+			return rv, nil
+		}
 		// Drop a no-op UPDATE before it reaches the worker: a /status-only change
 		// sanitizes to identical git content but ships unattributed (its /status audit
 		// is dropped), so routing it would split an open commit window on the author
@@ -672,7 +698,9 @@ func (m *Manager) routeLiveTargetWatchEvent(
 				"resource", event.Identifier.String())
 			return rv, nil
 		}
-		m.attachAuthor(ctx, &event, key.GVR, u)
+		if !authorAttached {
+			m.attachAuthor(ctx, &event, key.GVR, u)
+		}
 		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
 			log.V(1).Info("target watch route failed",
 				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "err", err.Error())
@@ -684,6 +712,54 @@ func (m *Manager) routeLiveTargetWatchEvent(
 	default:
 		return rv, nil
 	}
+}
+
+// admitLiveTargetWatchEvent applies the rules' write exclusions to one live event.
+//
+// It returns authorAttached so the caller does not resolve the author twice: attribution
+// costs a bounded grace-window wait, and it is normally deferred until after the content
+// dedup so that status-only churn never pays for it. Only excludeUsers forces it early,
+// because the identity is the thing being matched.
+//
+// admitted=false means the event is dropped: a GitOps forward leg's own apply, mirrored
+// back into the branch it came from, is the loop this exists to break.
+func (m *Manager) admitLiveTargetWatchEvent(
+	ctx context.Context,
+	log logr.Logger,
+	gitDest types.ResourceReference,
+	key targetWatchKey,
+	filter watchFilter,
+	event *git.Event,
+	u *unstructured.Unstructured,
+	op string,
+) (authorAttached, admitted bool) {
+	if !filter.selections.HasExclusions() {
+		return false, true
+	}
+
+	// Empty for a DELETE: managedFields names the last writer, not the deleter.
+	lastWriters := lastWritersForOperation(op, u)
+
+	username := ""
+	if filter.selections.NeedsAuthor() {
+		m.attachAuthor(ctx, event, key.GVR, u)
+		authorAttached = true
+		// Empty when attribution is off or the grace elapsed with no matching fact, which
+		// makes every excludeUsers clause fail open rather than lose a human's edit.
+		username = event.UserInfo.Username
+	}
+
+	if filter.selections.Admits(op, lastWriters, username) {
+		return authorAttached, true
+	}
+
+	reason := filter.selections.ExclusionReason(op, lastWriters, username)
+	log.V(1).Info("target watch event excluded by rule",
+		"gitDest", gitDest.String(), "gvr", key.GVR.String(),
+		"resource", event.Identifier.String(), "operation", op,
+		"reason", reason, "lastWriters", lastWriters, "user", username)
+	m.recordExcludedWatchEvent(gitDest, key.GVR, reason)
+	return authorAttached, false
 }
 
 // attachAuthor names the commit author for a live watch event from the optional

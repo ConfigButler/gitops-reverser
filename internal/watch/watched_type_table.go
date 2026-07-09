@@ -60,18 +60,28 @@ type WatchedType struct {
 	ServedVersion string
 	Preferred     bool
 
-	// NamespaceOps maps each watched namespace to the union of operation filters
-	// for this type in that namespace. The empty-string key is a cluster-wide
-	// stream: a cluster-scoped resource, or a namespaced resource a ClusterWatchRule
-	// follows across every namespace.
-	NamespaceOps map[string]OperationSet
+	// NamespaceSelections maps each watched namespace to the rule clauses that select
+	// this type there: an operation set plus that rule's write exclusions. The
+	// empty-string key is a cluster-wide stream: a cluster-scoped resource, or a
+	// namespaced resource a ClusterWatchRule follows across every namespace.
+	//
+	// Clauses are kept per-rule rather than merged, because an exclusion vetoes only
+	// within its own rule — a merged view could not express "rule A excludes Flux, rule
+	// B does not", which must admit Flux (rules are a logical OR).
+	NamespaceSelections map[string]RuleSelections
+}
+
+// NamespaceOps is the per-namespace union of operation filters — what each watch must
+// stream, independent of which rule admits a given event.
+func (t WatchedType) NamespaceOps(namespace string) OperationSet {
+	return t.NamespaceSelections[namespace].Ops()
 }
 
 // ClusterWide reports whether this type is gathered with a single cluster-wide
 // stream, true for a cluster-scoped resource and for a namespaced resource a
 // ClusterWatchRule follows across all namespaces.
 func (t WatchedType) ClusterWide() bool {
-	_, ok := t.NamespaceOps[""]
+	_, ok := t.NamespaceSelections[""]
 	return ok
 }
 
@@ -83,8 +93,8 @@ func (t WatchedType) SnapshotNamespaces() []string {
 	if t.ClusterWide() {
 		return nil
 	}
-	out := make([]string, 0, len(t.NamespaceOps))
-	for ns := range t.NamespaceOps {
+	out := make([]string, 0, len(t.NamespaceSelections))
+	for ns := range t.NamespaceSelections {
 		out = append(out, ns)
 	}
 	sort.Strings(out)
@@ -106,65 +116,106 @@ type WatchedTypeTable struct {
 }
 
 // watchSelection is one followable registry record a rule selected for a GitTarget,
-// with the namespace it was selected under ("" = cluster-wide stream) and the rule's
-// operation filters.
+// with the namespace it was selected under ("" = cluster-wide stream), the rule's
+// operation filters, and the rule's write exclusions.
 type watchSelection struct {
 	record    typeset.TypeRecord
 	namespace string
 	ops       []configv1alpha3.OperationType
+	exclusion WriteExclusion
 }
 
-// watchedTypeAccum accumulates one followable record's namespace/operation scope while
-// folding a GitTarget's selections.
+// watchedTypeAccum accumulates one followable record's namespace scope while folding a
+// GitTarget's selections. Within a namespace, clauses are keyed by their exclusion
+// fingerprint so two rules that decline the same writers fold their operations together,
+// while rules that decline different writers stay distinct.
 type watchedTypeAccum struct {
 	record       typeset.TypeRecord
-	namespaceOps map[string]OperationSet
+	namespaces   map[string]map[string]*RuleSelection
+	nsOrder      []string
+	clauseOrders map[string][]string
 }
 
 // buildWatchedTypeTable folds a GitTarget's selected followable records into its
-// watched-type table, unioning each record's per-namespace operation filters. Identity
-// and followability are already settled by the registry, so this is a pure fold with no
-// catalog lookup and no conflict decision.
+// watched-type table. Identity and followability are already settled by the registry, so
+// this is a pure fold with no catalog lookup and no conflict decision.
 func buildWatchedTypeTable(
 	gitDest types.ResourceReference,
 	generation uint64,
 	selections []watchSelection,
 ) WatchedTypeTable {
 	byGVR := map[schema.GroupVersionResource]*watchedTypeAccum{}
+	var gvrOrder []schema.GroupVersionResource
 	for _, sel := range selections {
 		gvr := sel.record.Identity.GVR
 		acc := byGVR[gvr]
 		if acc == nil {
-			acc = &watchedTypeAccum{record: sel.record, namespaceOps: map[string]OperationSet{}}
+			acc = &watchedTypeAccum{
+				record:       sel.record,
+				namespaces:   map[string]map[string]*RuleSelection{},
+				clauseOrders: map[string][]string{},
+			}
 			byGVR[gvr] = acc
+			gvrOrder = append(gvrOrder, gvr)
 		}
-		opSet := acc.namespaceOps[sel.namespace]
-		if opSet == nil {
-			opSet = OperationSet{}
-			acc.namespaceOps[sel.namespace] = opSet
-		}
-		opSet.add(sel.ops)
+		acc.add(sel)
 	}
 
 	table := WatchedTypeTable{GitDest: gitDest, ResolvedAt: generation}
-	for _, acc := range byGVR {
-		table.Types = append(table.Types, watchedTypeFromRecord(acc.record, acc.namespaceOps))
+	for _, gvr := range gvrOrder {
+		acc := byGVR[gvr]
+		table.Types = append(table.Types, watchedTypeFromRecord(acc.record, acc.namespaceSelections()))
 	}
 	sortWatchedTypes(table.Types)
 	return table
 }
 
+// add folds one rule's selection into the accumulator, merging it with any earlier rule
+// that declines exactly the same writers.
+func (a *watchedTypeAccum) add(sel watchSelection) {
+	clauses := a.namespaces[sel.namespace]
+	if clauses == nil {
+		clauses = map[string]*RuleSelection{}
+		a.namespaces[sel.namespace] = clauses
+		a.nsOrder = append(a.nsOrder, sel.namespace)
+	}
+	key := sel.exclusion.Key()
+	clause := clauses[key]
+	if clause == nil {
+		clause = &RuleSelection{Ops: OperationSet{}, Exclusion: sel.exclusion}
+		clauses[key] = clause
+		a.clauseOrders[sel.namespace] = append(a.clauseOrders[sel.namespace], key)
+	}
+	clause.Ops.add(sel.ops)
+}
+
+// namespaceSelections materializes the accumulated clauses in a deterministic order, so
+// the watch-spec fingerprint is stable across reconciles.
+func (a *watchedTypeAccum) namespaceSelections() map[string]RuleSelections {
+	out := make(map[string]RuleSelections, len(a.namespaces))
+	for _, ns := range a.nsOrder {
+		keys := append([]string(nil), a.clauseOrders[ns]...)
+		sort.Strings(keys)
+		selections := make(RuleSelections, 0, len(keys))
+		for _, key := range keys {
+			selections = append(selections, *a.namespaces[ns][key])
+		}
+		out[ns] = selections
+	}
+	return out
+}
+
 // watchedTypeFromRecord copies a followable registry record's identity into a
-// WatchedType, attaching the per-namespace operation scope the rules folded.
-func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceOps map[string]OperationSet) WatchedType {
+// WatchedType, attaching the per-namespace rule clauses the rules folded.
+func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceSelections map[string]RuleSelections) WatchedType {
 	return WatchedType{
-		GVK:           rec.Identity.GVK,
-		GVR:           rec.Identity.GVR,
-		Namespaced:    rec.Identity.Scope == typeset.ScopeNamespaced,
-		Scope:         resourceScopeFor(rec.Identity.Scope),
-		ServedVersion: rec.Identity.GVR.Version,
-		Preferred:     rec.Preferred,
-		NamespaceOps:  namespaceOps,
+		GVK:                 rec.Identity.GVK,
+		GVR:                 rec.Identity.GVR,
+		Namespaced:          rec.Identity.Scope == typeset.ScopeNamespaced,
+		Scope:               resourceScopeFor(rec.Identity.Scope),
+		ServedVersion:       rec.Identity.GVR.Version,
+		Preferred:           rec.Preferred,
+		NamespaceSelections: namespaceSelections,
 	}
 }
 

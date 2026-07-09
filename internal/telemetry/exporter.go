@@ -66,6 +66,17 @@ var (
 	// spec's drain wait; treat the name/labels as a public observability contract.
 	BranchWorkerQueueDepth metric.Int64Gauge
 
+	// WatchEventsExcludedTotal counts live watch events a rule's write exclusion dropped
+	// before they reached a branch worker. Labelled by {gittarget_namespace,
+	// gittarget_name, group, resource, reason} where reason is `field_manager` or `user`.
+	// A steady non-zero rate is the healthy state for a GitTarget paired with a GitOps
+	// forward leg: it is the forward leg's own applies being declined instead of
+	// committed back. A rate of zero on such a GitTarget means the exclusion is not
+	// matching — check the field manager name against the object's managedFields.
+	// The gittarget_ label prefix avoids the reserved Prometheus pod-scrape labels, as
+	// for TargetReconcileCompletedTotal.
+	WatchEventsExcludedTotal metric.Int64Counter
+
 	// ResyncBackgroundFailuresTotal counts rule-change resyncs whose apply failed or
 	// timed out at the worker AFTER being enqueued. Delivery is marked on enqueue (the
 	// resync is fire-and-forget to avoid an unbounded re-gather loop — see
@@ -210,6 +221,7 @@ func registerCounters() error {
 		{"gitopsreverser_commits_total", &CommitsTotal},
 		{"gitopsreverser_resync_sweep_deletes_total", &ResyncSweepDeletesTotal},
 		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
+		{"gitopsreverser_watch_events_excluded_total", &WatchEventsExcludedTotal},
 		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
 		{"gitopsreverser_audit_events_total", &AuditEventsTotal},
 		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},

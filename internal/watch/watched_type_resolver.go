@@ -225,9 +225,11 @@ func (m *Manager) collectWatchRuleSelections(
 		for _, rr := range rule.ResourceRules {
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
+			exclusion := newWriteExclusion(rr.ExcludeFieldManagers, rr.ExcludeUsers)
+			m.warnIfExcludeUsersWithoutAttribution(rule.Source.String(), exclusion)
 			for _, rec := range matched {
 				ts.selections = append(ts.selections, watchSelection{
-					record: rec, namespace: rule.Source.Namespace, ops: rr.Operations,
+					record: rec, namespace: rule.Source.Namespace, ops: rr.Operations, exclusion: exclusion,
 				})
 			}
 		}
@@ -247,9 +249,11 @@ func (m *Manager) collectClusterWatchRuleSelections(
 		)
 		for _, rr := range rule.Rules {
 			matched := matchFollowableRecords(records, rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
+			exclusion := newWriteExclusion(rr.ExcludeFieldManagers, rr.ExcludeUsers)
+			m.warnIfExcludeUsersWithoutAttribution(rule.Source.String(), exclusion)
 			for _, rec := range matched {
 				ts.selections = append(ts.selections, watchSelection{
-					record: rec, namespace: "", ops: rr.Operations,
+					record: rec, namespace: "", ops: rr.Operations, exclusion: exclusion,
 				})
 			}
 		}

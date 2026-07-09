@@ -77,8 +77,8 @@ func TestBuildWatchedTypeTable_ClusterWideOverridesNamedNamespaces(t *testing.T)
 	wt := table.Types[0]
 	assert.True(t, wt.ClusterWide())
 	assert.Empty(t, wt.SnapshotNamespaces())
-	assert.Contains(t, wt.NamespaceOps, "")
-	assert.Contains(t, wt.NamespaceOps, "team-a")
+	assert.Contains(t, wt.NamespaceSelections, "")
+	assert.Contains(t, wt.NamespaceSelections, "team-a")
 }
 
 func TestBuildWatchedTypeTable_OperationsUnionPerNamespace(t *testing.T) {
@@ -93,8 +93,8 @@ func TestBuildWatchedTypeTable_OperationsUnionPerNamespace(t *testing.T) {
 
 	require.Len(t, table.Types, 1)
 	wt := table.Types[0]
-	assert.Equal(t, []string{"CREATE", "UPDATE"}, wt.NamespaceOps["team-a"].Sorted())
-	assert.Equal(t, []string{"*"}, wt.NamespaceOps["team-b"].Sorted())
+	assert.Equal(t, []string{"CREATE", "UPDATE"}, wt.NamespaceOps("team-a").Sorted())
+	assert.Equal(t, []string{"*"}, wt.NamespaceOps("team-b").Sorted())
 }
 
 func TestBuildWatchedTypeTable_EmptyOperationsAreAllOperations(t *testing.T) {
@@ -105,7 +105,7 @@ func TestBuildWatchedTypeTable_EmptyOperationsAreAllOperations(t *testing.T) {
 	table := buildWatchedTypeTable(testGitDest(), 1, selections)
 
 	require.Len(t, table.Types, 1)
-	assert.Equal(t, []string{"*"}, table.Types[0].NamespaceOps["team-a"].Sorted())
+	assert.Equal(t, []string{"*"}, table.Types[0].NamespaceOps("team-a").Sorted())
 }
 
 func TestBuildWatchedTypeTable_ClusterScopedType(t *testing.T) {

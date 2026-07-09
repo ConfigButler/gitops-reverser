@@ -112,6 +112,30 @@ spec:
                       items:
                         type: string
                       type: array
+                    excludeFieldManagers:
+                      description: |-
+                        ExcludeFieldManagers drops a live change whose last writer is one of these field
+                        managers, so a GitOps forward leg applying this branch back into the cluster does
+                        not have its own applies mirrored into Git. It is read from metadata.managedFields
+                        and needs no audit fact. Not evaluated for DELETE. See
+                        ResourceRule.ExcludeFieldManagers for the full semantics.
+                      items:
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                      maxItems: 32
+                      type: array
+                    excludeUsers:
+                      description: |-
+                        ExcludeUsers drops a live change attributed to one of these identities. It requires
+                        author attribution and fails open when the author cannot be resolved. See
+                        ResourceRule.ExcludeUsers for the full semantics.
+                      items:
+                        maxLength: 316
+                        minLength: 1
+                        type: string
+                      maxItems: 32
+                      type: array
                     operations:
                       description: |-
                         Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).

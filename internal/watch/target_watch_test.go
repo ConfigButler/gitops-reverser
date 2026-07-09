@@ -31,10 +31,10 @@ func TestTargetWatchSpecs_UsesOneWatchPerScope(t *testing.T) {
 		Types: []WatchedType{
 			{
 				GVR: configmapsGVR,
-				NamespaceOps: map[string]OperationSet{
+				NamespaceSelections: nsSelections(map[string]OperationSet{
 					"apps": {"CREATE": struct{}{}},
 					"ops":  {"UPDATE": struct{}{}},
-				},
+				}),
 			},
 			{
 				GVR: schema.GroupVersionResource{
@@ -42,9 +42,9 @@ func TestTargetWatchSpecs_UsesOneWatchPerScope(t *testing.T) {
 					Version:  "v1",
 					Resource: "clusterroles",
 				},
-				NamespaceOps: map[string]OperationSet{
+				NamespaceSelections: nsSelections(map[string]OperationSet{
 					"": {"*": struct{}{}},
-				},
+				}),
 			},
 		},
 	}
@@ -52,11 +52,38 @@ func TestTargetWatchSpecs_UsesOneWatchPerScope(t *testing.T) {
 	specs := targetWatchSpecs(table)
 
 	require.Len(t, specs, 3)
-	assert.Equal(t, "[CREATE]", specs[targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}])
-	assert.Equal(t, "[UPDATE]", specs[targetWatchKey{GVR: configmapsGVR, Namespace: "ops"}])
-	assert.Equal(t, "[*]", specs[targetWatchKey{
+	assert.Equal(t, "CREATE", specs[targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}])
+	assert.Equal(t, "UPDATE", specs[targetWatchKey{GVR: configmapsGVR, Namespace: "ops"}])
+	assert.Equal(t, "*", specs[targetWatchKey{
 		GVR: schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
 	}])
+}
+
+// The watch spec is the fingerprint replaceGitTargetWatches compares to decide whether a
+// running watch may be reused. It must therefore cover the exclusions: a rule that starts
+// declining Flux's writes has to restart its watch with the new clauses, not keep the
+// goroutine that captured the old ones.
+func TestTargetWatchSpecs_ExclusionChangeChangesTheSpec(t *testing.T) {
+	specFor := func(selections RuleSelections) string {
+		table := WatchedTypeTable{
+			GitDest: types.NewResourceReference("target", "default"),
+			Types:   []WatchedType{{GVR: configmapsGVR, NamespaceSelections: map[string]RuleSelections{"apps": selections}}},
+		}
+		return targetWatchSpecs(table)[targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}]
+	}
+
+	ops := OperationSet{"UPDATE": struct{}{}}
+	plain := specFor(RuleSelections{{Ops: ops}})
+	excludingFlux := specFor(RuleSelections{{Ops: ops, Exclusion: newWriteExclusion([]string{"kustomize-controller"}, nil)}})
+	excludingArgo := specFor(RuleSelections{{Ops: ops, Exclusion: newWriteExclusion([]string{"argocd-controller"}, nil)}})
+
+	assert.NotEqual(t, plain, excludingFlux)
+	assert.NotEqual(t, excludingFlux, excludingArgo)
+
+	// Declaring the same exclusions in a different order is the same watch.
+	orderA := specFor(RuleSelections{{Ops: ops, Exclusion: newWriteExclusion([]string{"a", "b"}, []string{"x", "y"})}})
+	orderB := specFor(RuleSelections{{Ops: ops, Exclusion: newWriteExclusion([]string{"b", "a"}, []string{"y", "x"})}})
+	assert.Equal(t, orderA, orderB)
 }
 
 func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *testing.T) {
@@ -82,8 +109,8 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 	first := WatchedTypeTable{
 		GitDest: gitDest,
 		Types: []WatchedType{{
-			GVR:          configmapsGVR,
-			NamespaceOps: map[string]OperationSet{"apps": {"CREATE": struct{}{}}},
+			GVR:                 configmapsGVR,
+			NamespaceSelections: nsSelections(map[string]OperationSet{"apps": {"CREATE": struct{}{}}}),
 		}},
 	}
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, first))
@@ -99,8 +126,8 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 	changed := WatchedTypeTable{
 		GitDest: gitDest,
 		Types: []WatchedType{{
-			GVR:          configmapsGVR,
-			NamespaceOps: map[string]OperationSet{"apps": {"UPDATE": struct{}{}}},
+			GVR:                 configmapsGVR,
+			NamespaceSelections: nsSelections(map[string]OperationSet{"apps": {"UPDATE": struct{}{}}}),
 		}},
 	}
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, changed))
@@ -124,7 +151,7 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 		logr.Discard(),
 		gitDest,
 		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"CREATE": struct{}{}},
+		opsFilter(OperationSet{"CREATE": struct{}{}}),
 		watch.Event{Type: watch.Added, Object: obj},
 	)
 
@@ -154,7 +181,7 @@ func TestRouteLiveTargetWatchEvent_RespectsOperationFilters(t *testing.T) {
 		logr.Discard(),
 		gitDest,
 		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"DELETE": struct{}{}},
+		opsFilter(OperationSet{"DELETE": struct{}{}}),
 		watch.Event{Type: watch.Modified, Object: configMapObject("13")},
 	)
 
@@ -189,7 +216,7 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 		logr.Discard(),
 		gitDest,
 		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"CREATE": struct{}{}},
+		opsFilter(OperationSet{"CREATE": struct{}{}}),
 		watch.Event{Type: watch.Added, Object: configMapObject("12")},
 	)
 
@@ -218,7 +245,7 @@ func TestRouteLiveTargetWatchEvent_DeletionTimestampRendersAsDelete(t *testing.T
 		logr.Discard(),
 		gitDest,
 		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"DELETE": struct{}{}},
+		opsFilter(OperationSet{"DELETE": struct{}{}}),
 		watch.Event{Type: watch.Modified, Object: terminatingConfigMapObject("20")},
 	)
 
@@ -247,7 +274,7 @@ func TestRouteLiveTargetWatchEvent_ModifiedWithoutDeletionTimestampRendersAsUpda
 		logr.Discard(),
 		gitDest,
 		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"UPDATE": struct{}{}},
+		opsFilter(OperationSet{"UPDATE": struct{}{}}),
 		watch.Event{Type: watch.Modified, Object: configMapObject("21")},
 	)
 
@@ -273,10 +300,10 @@ func TestRouteLiveTargetWatchEvent_TerminatingThenDeletedAreIdenticalRemovals(t 
 	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 	ops := OperationSet{"DELETE": struct{}{}}
 
-	_, err := manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, key, ops,
+	_, err := manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, key, opsFilter(ops),
 		watch.Event{Type: watch.Modified, Object: terminatingConfigMapObject("20")})
 	require.NoError(t, err)
-	_, err = manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, key, ops,
+	_, err = manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, key, opsFilter(ops),
 		watch.Event{Type: watch.Deleted, Object: configMapObject("22")})
 	require.NoError(t, err)
 
@@ -298,7 +325,7 @@ func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T
 		logr.Discard(),
 		gitDest,
 		key,
-		nil,
+		watchFilter{},
 		watch.Event{Type: watch.Added, Object: configMapObject("10")},
 		true,
 		&replay,
@@ -315,7 +342,7 @@ func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T
 		logr.Discard(),
 		gitDest,
 		key,
-		nil,
+		watchFilter{},
 		watch.Event{Type: watch.Bookmark, Object: bookmark},
 		true,
 		&replay,
@@ -346,7 +373,7 @@ func TestTargetWatchReplayAndStream_ReturnsWhenContextCancels(t *testing.T) {
 			logr.Discard(),
 			types.NewResourceReference("target", "default"),
 			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-			nil,
+			watchFilter{},
 		)
 	}()
 
@@ -399,7 +426,7 @@ func TestTargetWatchReplayAndStream_FallsBackWhenReplayWatchIsForbidden(t *testi
 			logr.Discard(),
 			gitDest,
 			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-			nil,
+			watchFilter{},
 		)
 	}()
 
@@ -459,7 +486,7 @@ func TestTargetWatchReplayAndStream_ResumesFromStoredCursor(t *testing.T) {
 			logr.Discard(),
 			gitDest,
 			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-			nil,
+			watchFilter{},
 		)
 	}()
 
@@ -519,11 +546,11 @@ func TestTargetWatchOperationHelpers(t *testing.T) {
 	}))
 
 	table := WatchedTypeTable{Types: []WatchedType{{
-		GVR:          configmapsGVR,
-		NamespaceOps: map[string]OperationSet{"": {"CREATE": struct{}{}}},
+		GVR:                 configmapsGVR,
+		NamespaceSelections: nsSelections(map[string]OperationSet{"": {"CREATE": struct{}{}}}),
 	}}}
-	assert.True(t, table.operationsFor(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}).Match("CREATE"))
-	assert.False(t, table.operationsFor(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}).Match("UPDATE"))
+	assert.True(t, table.filterFor(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}).ops.Match("CREATE"))
+	assert.False(t, table.filterFor(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}).ops.Match("UPDATE"))
 	assert.True(t, OperationSet(nil).Match("DELETE"))
 	assert.True(t, OperationSet{"*": struct{}{}}.Match("UPDATE"))
 	assert.Equal(t, "DELETE", operationForWatchEvent(watch.Deleted))
@@ -631,7 +658,7 @@ func TestTargetWatchReplayAndStream_ExpiredCursorFallsBackToFreshReplay(t *testi
 	go func() {
 		done <- manager.targetWatchReplayAndStream(
 			ctx, logr.Discard(), gitDest,
-			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil,
+			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, watchFilter{},
 		)
 	}()
 

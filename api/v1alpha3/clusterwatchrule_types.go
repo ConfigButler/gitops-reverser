@@ -108,6 +108,26 @@ type ClusterResourceRule struct {
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 
+	// ExcludeFieldManagers drops a live change whose last writer is one of these field
+	// managers, so a GitOps forward leg applying this branch back into the cluster does
+	// not have its own applies mirrored into Git. It is read from metadata.managedFields
+	// and needs no audit fact. Not evaluated for DELETE. See
+	// ResourceRule.ExcludeFieldManagers for the full semantics.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=128
+	ExcludeFieldManagers []string `json:"excludeFieldManagers,omitempty"`
+
+	// ExcludeUsers drops a live change attributed to one of these identities. It requires
+	// author attribution and fails open when the author cannot be resolved. See
+	// ResourceRule.ExcludeUsers for the full semantics.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=316
+	ExcludeUsers []string `json:"excludeUsers,omitempty"`
+
 	// Scope defines whether this rule watches Cluster-scoped or Namespaced resources.
 	// - "Cluster": For cluster-scoped resources (Nodes, ClusterRoles, CRDs, etc.).
 	// - "Namespaced": For namespaced resources (Pods, Deployments, Secrets, etc.),

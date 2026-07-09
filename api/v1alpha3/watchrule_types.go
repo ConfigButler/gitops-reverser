@@ -52,6 +52,11 @@ type WatchRuleSpec struct {
 	// Rules define which resources to watch within this namespace.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
 	// Each rule can specify operations, API groups, versions, and resource types.
+	//
+	// An exclusion (excludeUsers / excludeFieldManagers) is a veto WITHIN its own rule,
+	// not a global filter: a change is mirrored when at least one rule both selects it
+	// and does not exclude its writer. Adding an unrestricted rule for a type therefore
+	// re-admits everything another rule excluded for that type.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	Rules []ResourceRule `json:"rules"`
@@ -115,6 +120,54 @@ type ResourceRule struct {
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
+
+	// ExcludeFieldManagers drops a live change whose last writer is one of these
+	// field managers, so a GitOps forward leg (Flux, Argo CD) applying this branch
+	// back into the cluster does not have its own applies mirrored into Git.
+	//
+	// Reach for this rather than ExcludeUsers: it reads metadata.managedFields off
+	// the object, so it needs no audit fact, cannot race the attribution grace
+	// window, and works in configured-author mode.
+	//
+	// The "last writer" is the manager of the newest managedFields entry. When
+	// several entries share that timestamp the change is excluded only if every
+	// tied manager is listed — when in doubt, the change is mirrored. An object
+	// with no managedFields is never excluded.
+	//
+	// It is NOT evaluated for DELETE: managedFields names who last wrote an object,
+	// not who deleted it, so excluding a delete this way would silently ignore a
+	// human deleting a Flux-managed resource. Use ExcludeUsers for deletes.
+	//
+	// Examples:
+	//   - ["kustomize-controller"] ignores writes applied by Flux's kustomize-controller
+	//   - ["argocd-controller"] ignores writes applied by Argo CD
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=128
+	ExcludeFieldManagers []string `json:"excludeFieldManagers,omitempty"`
+
+	// ExcludeUsers drops a live change attributed to one of these identities: the
+	// impersonated user when impersonation is in play, otherwise the authenticated
+	// user, exactly as the audit event records it.
+	//
+	// It therefore requires author attribution (--author-attribution) and a working
+	// audit webhook. When the author cannot be resolved — attribution disabled, or the
+	// grace window elapsed with no matching fact — the change is mirrored rather than
+	// dropped: losing a human's edit because we failed to identify its author is worse
+	// than mirroring one machine write. Prefer ExcludeFieldManagers, which has no such
+	// failure mode.
+	//
+	// Unlike ExcludeFieldManagers this does apply to DELETE, because the audit fact
+	// names the actor who issued the delete.
+	//
+	// Example:
+	//   - ["system:serviceaccount:flux-system:kustomize-controller"]
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=316
+	ExcludeUsers []string `json:"excludeUsers,omitempty"`
 }
 
 // WatchRuleStatus defines the observed state of WatchRule.
