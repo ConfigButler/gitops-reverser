@@ -81,6 +81,26 @@ func TestDeriveGitTargetDataPlaneStatus(t *testing.T) {
 			wantStreams:       metav1.ConditionTrue,
 			wantStalledReason: GitTargetReasonUnsupportedContent,
 		},
+		{
+			// A write-boundary refusal is not "this folder holds content we cannot manage";
+			// it is "this edit had nowhere safe to land". It must carry its own reason all
+			// the way through to Stalled, so an operator can tell the two apart.
+			name: "write boundary refused",
+			streams: watch.StreamSummary{
+				Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
+			},
+			gitPath: watch.GitPathAcceptanceStatus{
+				Accepted: false,
+				Reason:   GitTargetReasonWriteBoundaryRefused,
+				Message:  "Git path refused at base/deployment.yaml: write-fan-in must be 1",
+			},
+			wantReady:         metav1.ConditionFalse,
+			wantReconciling:   metav1.ConditionFalse,
+			wantStalled:       metav1.ConditionTrue,
+			wantGitPath:       metav1.ConditionFalse,
+			wantStreams:       metav1.ConditionTrue,
+			wantStalledReason: GitTargetReasonWriteBoundaryRefused,
+		},
 	}
 
 	for _, tt := range tests {

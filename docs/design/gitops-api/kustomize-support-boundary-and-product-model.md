@@ -1,9 +1,12 @@
 # Kustomize support boundary and product model
 
-> Status: direction-setting (no code change; feeds F2/F3 design)
+> Status: direction-setting; feeds F2/F3 design. The §4 fan-in invariant is no
+> longer emergent — it ships as a write-plan refusal (see §1 and
+> [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md)).
 > Captured: 2026-07-06
 > Related:
 > [README.md](README.md),
+> [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md),
 > [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md),
 > [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../manifest/contextual-namespace-and-kustomize-folder-editing.md),
 > [../unsupported-folder-refusal-plan.md](../unsupported-folder-refusal-plan.md),
@@ -61,13 +64,15 @@ Two nuances found while auditing the current gate
   same "dead text shadowed by a transformer" pathology F1 fixed for `images:`.
   A future projection-side subtraction is the F1-style fix; until then the
   support statement should name the limitation.
-- **The fan-out fallback is safe only emergently.** Ambiguous override chains
-  (`ambiguous-images`, `diamond-images` corpora) emit a *warning* and fall
-  back to plain write-through. Write-through into a file consumed by two
-  render roots is the one edit that must never happen. Today the parallel
-  namespace ambiguity (`NamespaceNone`) prevents the live-object match in
-  practice, so no write occurs — but that safety is a side effect, not a
-  stated rule. See [§4](#4-the-invariant).
+- **The fan-out fallback is now an explicit refusal.** Ambiguous override chains
+  (`ambiguous-images`, `diamond-images` corpora) still emit a warning at store
+  build time, but a *planned write* into such a file is refused before any byte
+  is written: write-through into a file consumed by two render roots is the one
+  edit that must never happen, and it no longer depends on the coincidental
+  namespace ambiguity (`NamespaceNone`) that used to block the live-object match.
+  The refusal fails the GitTarget with reason `WriteBoundaryRefused`. See
+  [§4](#4-the-invariant) and
+  [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md).
 
 ## 2. Supported layouts: an allowlist, not field caveats
 
@@ -152,9 +157,13 @@ This single sentence:
 - explains the `diamond-images` refusal (two paths from one root);
 - decides the multi-environment product questions in §9 (the operator cannot
   "add to all environments" *by design*);
-- must be promoted from today's emergent behavior to an explicit, tested rule
-  **before** the F2/F4 launch unit ships (see the fan-out fallback nuance in
-  §1).
+- **has been promoted from emergent behavior to an explicit, tested rule** — a
+  write-plan precondition that refuses the flush (`WriteBoundaryRefused`) rather
+  than writing through. It is paired with the filesystem jail (writes never leave
+  `spec.path`); the two layers are specified in
+  [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md).
+  Generalizing it from "a file two override chains reach" to "any file two render
+  roots reach" is F2 render-root scoping.
 
 ## 5. The overlay model (F2+F4 at launch, F3 completes it)
 

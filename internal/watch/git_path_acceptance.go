@@ -5,8 +5,21 @@ package watch
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
+
+// ReportGitPathRefusal records a write plan the branch worker refused on a live-event path,
+// where no result channel carries the error back to the router. It is installed on the
+// WorkerManager (git.GitPathRefusalReporter) at startup, and applies the same reason mapping
+// the resync path uses, so a refusal reaches the user as GitPathAccepted=False / Stalled=True
+// whether it was a live write or a background resync that hit it.
+func (m *Manager) ReportGitPathRefusal(
+	gitDest types.ResourceReference,
+	refused *manifestanalyzer.AcceptanceRefusedError,
+) {
+	m.MarkTargetGitPathRefused(gitDest, gitPathRefusalReason(refused), refused.BlockMessage())
+}
 
 // MarkTargetGitPathRefused records that the GitTarget path failed the structure-only
 // acceptance gate. The refusal is target-wide, not stream-specific.

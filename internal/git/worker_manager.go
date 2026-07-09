@@ -41,6 +41,11 @@ type WorkerManager struct {
 	// sshHostKeys configures SSH host-key resolution for every worker's credential reads. Set
 	// once at startup (SetSSHHostKeyConfig) before any worker is created.
 	sshHostKeys SSHHostKeyConfig
+
+	// pathRefusal reports a refused live write plan to the GitTarget status surface. Set
+	// once at startup (SetPathRefusalReporter) before any worker is created; nil in the
+	// CLI and in tests that do not assert on the status transition.
+	pathRefusal PathRefusalReporter
 }
 
 // NewWorkerManager creates a new worker manager.
@@ -79,6 +84,15 @@ func (m *WorkerManager) SetSSHHostKeyConfig(cfg SSHHostKeyConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sshHostKeys = cfg
+}
+
+// SetPathRefusalReporter injects the hook every worker calls when a live write plan is
+// refused, so the refusal reaches GitTarget status instead of being logged and dropped. Like
+// SetMapper, it is called once at startup before any worker is created.
+func (m *WorkerManager) SetPathRefusalReporter(reporter PathRefusalReporter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pathRefusal = reporter
 }
 
 // RegisterTarget ensures a worker exists for the target's (provider, branch)
@@ -138,6 +152,7 @@ func (m *WorkerManager) EnsureWorker(
 		// exists) is race-free.
 		worker.mapper = m.mapper
 		worker.sshHostKeys = m.sshHostKeys
+		worker.pathRefusal = m.pathRefusal
 
 		if err := worker.Start(m.ctx); err != nil {
 			return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)

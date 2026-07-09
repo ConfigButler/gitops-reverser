@@ -122,6 +122,11 @@ const (
 	// made explicit; the broader "any file shared by multiple render roots" generalization is
 	// F2 render-root scoping.
 	IssueWriteFanIn IssueKind = "write-fan-in"
+
+	// A refusal made up purely of the two write-boundary kinds above surfaces as the GitTarget
+	// reason WriteBoundaryRefused rather than the umbrella UnsupportedContent: the folder holds
+	// nothing the operator cannot manage, the edit simply had nowhere safe to land. See the
+	// watch package's gitPathRefusalReason.
 )
 
 // Allowlist is the set of build-directive files that are retained on disk but never

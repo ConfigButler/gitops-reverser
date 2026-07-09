@@ -1,7 +1,11 @@
 # GitTarget granularity, the write boundary, and cross-environment edits
 
-> Status: direction-setting / options (no code change; opens two forks that
-> feed F2 and gate the Track-1 write-boundary hardening)
+> Status: direction-setting / options. The two forks are decided (§2 → **A**,
+> §3 → **product promotion**), and the Track-1 write-boundary hardening they
+> gate has **shipped**: L1 and L2 are enforced as write-plan preconditions in
+> `internal/git/plan_flush.go` and surface as the GitTarget reason
+> `WriteBoundaryRefused` (§1). What remains open is F2 render-root scoping and
+> the divergence notification sketched in §6.
 > Captured: 2026-07-09
 > Related:
 > [README.md](README.md),
@@ -34,8 +38,8 @@ These are decided; they frame the forks but are not reopened here.
 - **The write boundary is two layers.** (§1 below.) **L1** — every path the
   operator writes is inside the target's write scope (a filesystem jail).
   **L2** — within the reachable graph, never write a file consumed by more than
-  one render root (fan-in = 1). Both are only *emergent* in today's code; making
-  them explicit and tested is the Track-1 prerequisite.
+  one render root (fan-in = 1). Both *were* only emergent; Track 1 made them
+  explicit write-plan preconditions, checked before any byte is written.
 - **The admission webhook is a fail-open accelerator, not a correctness layer.**
   It rejects unsavable edits at `kubectl apply` time for immediate,
   *atomic* feedback, but it is opt-in, intent-mode-only, and `failurePolicy:
@@ -108,12 +112,48 @@ flowchart TD
   (write scope) and treats siblings as non-overlapping — so it must not later
   fold the wider read scope into ownership.
 
-**Today (Track-1 gap):** L1 holds only because write paths are always built
-relative to the write root, and L2 is not enforced at all — an ambiguous
-override chain *warns and writes through*, and the only thing preventing a
-shared-file clobber is a coincidental namespace-ambiguity block. Track 1 turns
-both into explicit, tested preconditions (L1 alongside the existing
-`.gittargetignore` shadow check; L2 as a refusal instead of a write-through).
+**Before Track 1:** L1 held only because write paths happened to be built
+relative to the write root, and L2 was not enforced at all — an ambiguous
+override chain *warned and wrote through*, and the only thing preventing a
+shared-file clobber was a coincidental namespace-ambiguity block.
+
+**Now (Track 1, shipped):** both are write-plan preconditions in
+`writeBatch.flush`, evaluated at the one moment every planned path is known and
+before any byte is touched, alongside the existing `.gittargetignore` shadow
+check:
+
+| Layer | Precondition | Refusal issue |
+|---|---|---|
+| L1 | `pathScopePrecondition` — no planned write is absolute or climbs out of `spec.path` with `..` | `write-escapes-scope` |
+| L2 | `fanInPrecondition` — no planned write edits a file more than one render path reaches with override entries at stake | `write-fan-in` |
+
+A violation aborts the whole flush, commits nothing, and fails the GitTarget
+with `GitPathAccepted=False` / `Stalled=True`, reason **`WriteBoundaryRefused`**
+— distinct from the umbrella `UnsupportedContent`, because the folder is not
+malformed: the *edit* had nowhere safe to land. This holds on both write paths.
+The resync path carries the refusal back on its result channel; the live-event
+path has no result channel (a commit window is finalized on a timer), so the
+branch worker reports it through a `GitPathRefusalReporter` hook the watch
+manager installs. Without that hook a refused live write would be prevented
+correctly but silently, which is the worse failure: the user's `kubectl apply`
+appears to have taken effect and Git never moves.
+
+Refusal is *target-level and immediate*, not per-edit. That is the only surface
+that exists today, and it is the honest one: the offending shape is a property of
+the folder's render graph, so every subsequent edit that touches the shared file
+will hit it too. Recovery is left to the resync path — once a human fixes the
+layout, the next successful per-type resync clears `GitPathAccepted` back to
+true. A live write never clears it, because a live write that happens to avoid
+the offending file proves nothing about the rest of the subtree. When the Tier-2
+per-edit unreflected-set accounting
+([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md))
+exists, the *individual dropped edit* belongs there; the target-level condition
+still belongs here.
+
+L1 stays *defense-in-depth*: planned write paths are base-relative by
+construction today, so the check should never fire — but it is the invariant the
+base-is-read-only guarantee rests on under granularity option **A**, so it is
+asserted rather than assumed.
 
 ## 2. Fork one — GitTarget granularity
 
@@ -183,12 +223,16 @@ flowchart TB
   is no "read wider than write" machinery and no `../../base` escape to follow.
   The overlap check stays trivially one-owner-per-app.
 - **What it costs:** the base now sits *inside* the write scope, so the *only*
-  thing keeping it read-only is **L2** — the graph fan-in rule we just confirmed
-  is emergent and buggy today. The weaker guarantee becomes load-bearing exactly
-  where the blast radius is highest ("an edit in test writes base → changes
-  prod"). It also dissolves the clean identity: one target spans three
-  namespaces, its watch scope is all of them, and a session branch can mix
-  environments — which muddies RBAC, promotion, and session lifecycle.
+  thing keeping it read-only is **L2** — the graph fan-in rule, which is now
+  enforced but is still the weaker guarantee: it depends on modelling the render
+  graph correctly, where L1 is a path check that cannot be wrong. That weaker
+  guarantee would become load-bearing exactly where the blast radius is highest
+  ("an edit in test writes base → changes prod"), and any future fan-in blind
+  spot (a shared file with no override entries at stake — see §5) is a
+  corruption rather than a refusal. It also dissolves the clean identity: one
+  target spans three namespaces, its watch scope is all of them, and a session
+  branch can mix environments — which muddies RBAC, promotion, and session
+  lifecycle.
 
 ### Option C — Fine + base-as-variant
 
@@ -384,16 +428,24 @@ reverted by hydration in intent mode
 | Option | If the operator ever computed a write into `base/deployment.yaml` from a `podinfo-test` edit |
 |---|---|
 | **A** | impossible — `base/` is outside `overlays/test` (L1 refuses before planning) |
-| **B** | possible in principle — only L2 fan-in stops it, and L2 is the emergent/buggy layer ⚠ |
+| **B** | possible in principle — only L2 fan-in stops it, and L2 is the graph-modelling layer, not the path check ⚠ |
 | **C** | impossible from the test target (L1); the *base* target may write `base/`, but only from a `podinfo-base` edit |
 
 ## 5. Consequences for the ladder and Track 1
 
-- **Granularity is decided (A), which fixes the Track-1 investment.** Because A
-  keeps the base read-only by **L1**, Track 1 builds **L1 as an explicit
-  precondition** (the strong, cheap guarantee) and treats **L2 as a refusal**
+- **Granularity is decided (A), which fixed the Track-1 investment.** Because A
+  keeps the base read-only by **L1**, Track 1 built **L1 as an explicit
+  precondition** (the strong, cheap guarantee) and turned **L2 into a refusal**
   (never write-through a multi-consumer file) — it never leans on L2 to protect
-  the base.
+  the base. Both shipped; see §1.
+- **L2's remaining blind spot is F2's job.** `fanInPrecondition` fires on the
+  signal the store already carries: a file more than one render path reaches
+  *with override entries at stake*. A file shared by two render roots with no
+  competing `images:`/`replicas:` chain is not flagged — under layout A it is
+  also never dirty (a base doc reached by distinct overlays is `NamespaceNone`
+  and never matches a live object), so nothing is written. Generalizing the check
+  to "any file reachable from more than one render root" is F2 render-root
+  scoping, and it is what would be required before layout B could be offered.
 - **F2 scope gains one concrete capability under A/C:** follow `../../base` for
   *reading* (today dropped), while the write jail stays at `spec.path`. Much of
   the read-scope / render-root / out-of-subtree-base logic already exists
@@ -406,7 +458,72 @@ reverted by hydration in intent mode
   contract and pin it with a corpus case (a `HelmRelease` with a floating range:
   accepted; a `kustomization.yaml` with a remote base: refused).
 
-## 6. Decisions and remaining open items
+## 6. Reflecting an edit as a *local override* — and telling the user they diverged
+
+The write boundary refuses an edit that would land in shared context. But most
+edits that *want* to land there have a legal destination one level up: the
+overlay's own `kustomization.yaml`. This is the reflection path F1 already
+implements, and it is worth naming explicitly, because it is the reason the L2
+refusal is a narrow rule rather than a broad one.
+
+Bump `podinfo` to `9.9.9` in the `test` namespace. The container image lives in
+`base/deployment.yaml`, which `prod` also renders — writing it there is exactly
+the edit L2 forbids. Instead the operator edits the overlay's `images:` entry:
+
+```text
+apps/podinfo/
+├── base/deployment.yaml            #  image: podinfo:6.3.0   ← untouched, prod still renders this
+└── overlays/test/kustomization.yaml
+    images:
+      - name: podinfo
+        newTag: "9.9.9"            #  ← the write lands HERE; kustomize gives it precedence
+```
+
+The write stays inside `spec.path` (L1 holds), the shared file is never touched
+(L2 holds), and the render is correct: kustomize applies `images:` *after* the
+base is loaded, so the overlay entry wins. `replicas:` behaves the same way.
+Field-level edits that no override entry can express (an env var, a resource
+limit) have no such destination — they are the F3 patch case, and until F3 they
+are refused or accounted as unreflected
+([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)).
+
+**The cost: the divergence is invisible.** After that write, `test` is pinned to
+`9.9.9` and no longer tracks whatever `base` says. A later bump of the base image
+to `6.4.0` silently does nothing for `test` — the overlay entry shadows it. The
+override *is* the intent, so this is correct behavior, not a bug. But it is a
+fact the user should learn when the override is created, not months later when
+they wonder why a base bump did not reach an environment.
+
+Two shapes are worth distinguishing:
+
+| Shape | What happened | Notable? |
+|---|---|---|
+| **Override updated** | an `images:` entry already existed for this image; the operator changed `newTag` | no — the overlay already diverged; the user is editing their own pin |
+| **Override created** | no entry existed; the overlay rendered the base value, and the operator has now pinned it | **yes** — this is the moment the environment stops tracking base |
+
+**Proposal (not built; own F-item).** On the *create* transition, surface the
+divergence at the point it becomes true. Three candidate surfaces, cheapest
+first, and they are not exclusive:
+
+1. **Commit-message trailer** on the commit that adds the entry — e.g.
+   `Overlay-Diverged: images/podinfo base=6.3.0 overlay=9.9.9`. Free, durable,
+   reviewable, lands in the product PR where a human is already looking. This is
+   the one to build first.
+2. **Kubernetes Event** on the GitTarget (`reason: OverlayDiverged`), so the
+   divergence is visible to `kubectl describe` and to anything watching events.
+3. **Status** — rejected as the primary surface. A `GitTarget` condition is
+   target-scoped and level-triggered; divergence is per-resource and per-edit, so
+   it would either flap or accumulate unbounded. The **unreflected-set
+   accounting** in
+   [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)
+   is the right home for anything per-edit and durable, once it exists.
+
+Note the deliberate asymmetry with §1: a *refused* write is an error the user
+must fix, so it fails the GitTarget. A *divergent* write is a correct write whose
+consequence the user should know about, so it is a notification. Conflating the
+two would make the common, healthy overlay edit look like a failure.
+
+## 7. Decisions and remaining open items
 
 **Decided (2026-07-09) — the user's call:**
 
@@ -418,10 +535,13 @@ reverted by hydration in intent mode
 
 **Still open:**
 
-3. **Write-up placement** — fold the §1 L1/L2 model back into
+3. **Divergence notification (§6)** — build the commit-message trailer on the
+   "override created" transition? Own F-item; nothing depends on it shipping with
+   the write boundary.
+4. **Write-up placement** — fold the §1 L1/L2 model back into
    [kustomize-support-boundary-and-product-model.md §4](kustomize-support-boundary-and-product-model.md)
    (one canonical invariant statement), or keep §4 as the short invariant and let
    this doc own the two-layer detail?
-4. **Option C sub-questions (deferred with C):** the synthetic base namespace's
+5. **Option C sub-questions (deferred with C):** the synthetic base namespace's
    handling of multi-namespace bases and cluster-scoped resources, and the
    separate "global/defaults editor" RBAC role (§3b).

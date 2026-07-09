@@ -172,6 +172,14 @@ func TestGitPathRefusalReason(t *testing.T) {
 		Path: ".gittargetignore",
 	}
 	foreign := manifestanalyzer.AcceptanceIssue{Kind: manifestanalyzer.IssueForeignFile, Path: "notes.txt"}
+	fanIn := manifestanalyzer.AcceptanceIssue{
+		Kind: manifestanalyzer.IssueWriteFanIn,
+		Path: "base/deployment.yaml",
+	}
+	escape := manifestanalyzer.AcceptanceIssue{
+		Kind: manifestanalyzer.IssueWriteEscapesScope,
+		Path: "../escape.yaml",
+	}
 
 	cases := []struct {
 		name   string
@@ -181,6 +189,14 @@ func TestGitPathRefusalReason(t *testing.T) {
 		{"pure shadow refusal", []manifestanalyzer.AcceptanceIssue{shadow}, "IgnoreShadowsManagedPath"},
 		{"foreign content refusal", []manifestanalyzer.AcceptanceIssue{foreign}, "UnsupportedContent"},
 		{"mixed refusal falls back", []manifestanalyzer.AcceptanceIssue{shadow, foreign}, "UnsupportedContent"},
+		{"write fan-in refusal", []manifestanalyzer.AcceptanceIssue{fanIn}, "WriteBoundaryRefused"},
+		{"write scope-escape refusal", []manifestanalyzer.AcceptanceIssue{escape}, "WriteBoundaryRefused"},
+		{"both write-boundary kinds", []manifestanalyzer.AcceptanceIssue{fanIn, escape}, "WriteBoundaryRefused"},
+		{
+			"write boundary mixed with content falls back",
+			[]manifestanalyzer.AcceptanceIssue{fanIn, foreign},
+			"UnsupportedContent",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
