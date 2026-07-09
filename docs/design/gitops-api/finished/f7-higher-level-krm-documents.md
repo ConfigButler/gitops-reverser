@@ -1,14 +1,15 @@
 # F7: Higher-level KRM objects as first-class documents
 
-> Status: implemented — corpus + e2e pins land with this doc; **no product code
-> changed** (the guarantee already held; F7 makes it load-bearing)
+> Status: shipped ([#203](https://github.com/ConfigButler/gitops-reverser/pull/203)) —
+> corpus + e2e pins landed with this doc; **no product code changed** (the guarantee
+> already held; F7 makes it load-bearing). Filed under `finished/`.
 > Captured: 2026-07-07
 > Related:
-> [README.md](README.md),
-> [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md),
+> [../README.md](../README.md),
+> [../kustomize-support-boundary-and-product-model.md](../kustomize-support-boundary-and-product-model.md),
 > [f1-images-replicas-edit-through.md](f1-images-replicas-edit-through.md),
-> [../../future/idea-application-editing.md](../../future/idea-application-editing.md),
-> [../../architecture.md](../../architecture.md)
+> [../../../future/idea-application-editing.md](../../../future/idea-application-editing.md),
+> [../../../architecture.md](../../../architecture.md)
 
 ## Premise: the pipeline is already kind-agnostic
 
@@ -22,22 +23,22 @@ carries a per-kind allowlist**:
   *served* API surface — any served GVR (core, CRD, or aggregated) is watchable.
   A `WatchRule`/`ClusterWatchRule` names plural resources and optional
   `apiGroups`; an omitted group is resolved from discovery
-  ([../../../api/v1alpha3/watchrule_types.go](../../../api/v1alpha3/watchrule_types.go),
+  ([../../../../api/v1alpha3/watchrule_types.go](../../../../api/v1alpha3/watchrule_types.go),
   `ResourceRule` — "resolves the resource name across all served API groups").
   There is no set of "supported kinds."
 - **The in-document editor** (`internal/git/manifestedit`) edits generic
   `yaml.Node` trees keyed only by object identity
   (apiVersion/kind/namespace/name). It has no notion of any specific kind
-  ([../../../internal/git/manifestedit/DECISION.md](../../../internal/git/manifestedit/DECISION.md)).
+  ([../../../../internal/git/manifestedit/DECISION.md](../../../../internal/git/manifestedit/DECISION.md)).
 - **Placement** is GVR-driven: the cold-start default is
   `{namespace}/{group}/{resource}/{name}.yaml`, and sibling inference /
   `spec.placement` are equally generic
-  ([../../architecture.md](../../architecture.md), *What It Writes to Git*).
+  ([../../../architecture.md](../../../architecture.md), *What It Writes to Git*).
 
 The one kind-keyed *filter* in the pipeline is a small **exclusion** list of
 noisy built-ins (`pods`, `events`, `endpoints`, `endpointslices`, `leases`,
 `controllerrevisions`, `flowschemas`, `jobs`, …) — a deny list, never an allow
-list ([../../../internal/watch/resource_policy.go](../../../internal/watch/resource_policy.go)).
+list ([../../../../internal/watch/resource_policy.go](../../../../internal/watch/resource_policy.go)).
 `HelmRelease`, `Application`, and KRO kinds are not on it, so they are
 default-allowed. The remaining kind-specific branches are **write-safety** and
 **override** rules, and higher-level KRM falls through all of them:
@@ -56,7 +57,7 @@ default-allowed. The remaining kind-specific branches are **write-safety** and
 This kind-agnosticism is **already e2e-proven for a generic CRD**: the
 icecream-order lifecycle spec installs an arbitrary CRD and pins
 create→file / update→file / delete→file-removed with `status` never committed
-([../../../test/e2e/crd_lifecycle_e2e_test.go](../../../test/e2e/crd_lifecycle_e2e_test.go)).
+([../../../../test/e2e/crd_lifecycle_e2e_test.go](../../../../test/e2e/crd_lifecycle_e2e_test.go)).
 What F7 adds is the same proof for a **named, real higher-level control-plane
 type** (Flux `HelmRelease`) plus the un-installed kinds at the unit level.
 
@@ -96,7 +97,7 @@ launch-critical for two reasons:
 
 Flux CRDs (`helmreleases.helm.toolkit.fluxcd.io`,
 `kustomizations.kustomize.toolkit.fluxcd.io`) are established during standard
-e2e setup ([../../../test/e2e/Taskfile.yml](../../../test/e2e/Taskfile.yml),
+e2e setup ([../../../../test/e2e/Taskfile.yml](../../../../test/e2e/Taskfile.yml),
 `_flux-installed`), so the live pin uses a `HelmRelease`. The Argo and KRO
 controllers are not in the base cluster; their kinds are pinned at the unit
 level, where the analyzer/editor need only the document bytes — no controller,
@@ -119,7 +120,7 @@ Mirrors launch use case 2 ("roll out a new version — a chart version on a Flux
 4. Patch live `spec.chart.spec.version` → `Y`.
 5. Assert the file shows `Y`, the comment survives, and `X` is gone — an
    in-place, comment-preserving edit of a control-plane CR, identical to the
-   `ConfigMap` case ([inplace_edit_e2e_test.go](../../../test/e2e/inplace_edit_e2e_test.go)).
+   `ConfigMap` case ([inplace_edit_e2e_test.go](../../../../test/e2e/inplace_edit_e2e_test.go)).
 
 ### Unit corpus — `internal/git/manifestedit/testdata/corpus`
 
@@ -154,6 +155,6 @@ field so the gates exercise the properties that matter for these kinds.
   code — the gates already glob `testdata/corpus/*.yaml`.
 - **e2e:** `HelmRelease` mirror + chart-version-bump edit, comment-preserving,
   under the `manager` + `f7-higher-level-krm` labels.
-- **User docs:** [../../installing-apps-as-krm.md](../../installing-apps-as-krm.md)
+- **User docs:** [../../../installing-apps-as-krm.md](../../../installing-apps-as-krm.md)
   — "adding an app is adding a KRM document," with `HelmRelease`/`Application`
   examples and the chart-inflation boundary.

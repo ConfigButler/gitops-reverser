@@ -6,7 +6,7 @@
 > Captured: 2026-07-06
 > Related:
 > [README.md](README.md),
-> [f1-images-replicas-edit-through.md](f1-images-replicas-edit-through.md),
+> [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md),
 > [../unsupported-folder-refusal-plan.md](../unsupported-folder-refusal-plan.md)
 
 ## Problem
