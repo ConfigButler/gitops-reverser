@@ -363,3 +363,22 @@ func resolveOverrides(
 	}
 	return a.overrides, nil
 }
+
+// OverridesAmbiguousAt reports whether the store refused to route a kustomize override chain
+// for a document in the file at the given base-relative (slash) path, because more than one
+// render path reaches it with override entries at stake (reasonAmbiguousOverrides). It is the
+// store-side signal for the writer's write-fan-in precondition: editing such a file in place
+// would write a live change through into source context shared by multiple render roots — the
+// one edit the write-fan-in = 1 invariant forbids — so the flush is refused rather than
+// corrupting what another root renders. Derived from the build-time diagnostics the store
+// already carries, so it needs no extra per-file state.
+func (s *ManifestStore) OverridesAmbiguousAt(rel string) bool {
+	want := filepathToSlash(rel)
+	for i := range s.Diagnostics {
+		d := s.Diagnostics[i]
+		if d.Reason == reasonAmbiguousOverrides && filepathToSlash(d.Path) == want {
+			return true
+		}
+	}
+	return false
+}

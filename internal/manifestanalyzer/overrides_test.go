@@ -93,6 +93,27 @@ func TestKustomizeOverridesCorpus_AmbiguousImages(t *testing.T) {
 	}
 }
 
+// TestOverridesAmbiguousAt pins the store-side signal the writer's write-fan-in precondition
+// consults: the shared document a diamond reaches two ways reports ambiguous, a build
+// directive / unknown path does not, and a store with no ambiguous chain never reports it.
+func TestOverridesAmbiguousAt(t *testing.T) {
+	diamond := corpusStore(t, "unsupported/diamond-images")
+	if !diamond.OverridesAmbiguousAt("base/deployment.yaml") {
+		t.Errorf("the diamond's shared base/deployment.yaml must report an ambiguous override chain")
+	}
+	if diamond.OverridesAmbiguousAt("base/kustomization.yaml") {
+		t.Errorf("a build directive is not an ambiguous managed write path")
+	}
+	if diamond.OverridesAmbiguousAt("no/such/file.yaml") {
+		t.Errorf("an unknown path must not report ambiguity")
+	}
+
+	clean := corpusStore(t, "supported/images-overlay")
+	if clean.OverridesAmbiguousAt("base/deployment.yaml") {
+		t.Errorf("a store with no ambiguous chain must never report ambiguity")
+	}
+}
+
 // TestKustomizeOverridesNestedBaseIsNotARoot pins the render-root rule: a base
 // referenced by another kustomization is not walked as its own root, so the
 // nested layout yields ONE chain (base+parent composed), not two conflicting ones.
