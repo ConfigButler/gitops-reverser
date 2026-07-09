@@ -194,9 +194,12 @@ func main() {
 			AuthValue:  cfg.redisPassword,
 			DB:         cfg.redisDB,
 			TLSEnabled: !cfg.redisInsecure,
+			KeyPrefix:  cfg.redisKeyPrefix,
 		})
 		fatalIfErr(err, "unable to build Redis cursor store")
 		watchMgr.WatchCursorStore = redisStore
+		setupLog.Info("Redis keyspace", "addr", cfg.redisAddr, "db", cfg.redisDB,
+			"keyPrefix", redisStore.KeyPrefix())
 
 		redisGate = newRedisReadinessGate(redisStore)
 		fatalIfErr(mgr.Add(redisGate), "unable to add redis readiness gate")
@@ -346,6 +349,7 @@ type appConfig struct {
 	redisUsername               string
 	redisPassword               string
 	redisDB                     int
+	redisKeyPrefix              string
 	redisInsecure               bool
 	authorAttribution           bool
 	attributionFactTTL          time.Duration
@@ -433,6 +437,12 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Redis password. Prefer setting via REDIS_PASSWORD env var from a Secret.",
 	)
 	fs.IntVar(&cfg.redisDB, "redis-db", 0, "Redis database index (default 0).")
+	fs.StringVar(&cfg.redisKeyPrefix, "redis-key-prefix", queue.DefaultKeyPrefix,
+		"Root namespace for every key this operator writes to Redis/Valkey (cursors, attribution "+
+			"facts, command author records). Give each reverser its own prefix to share one "+
+			"Redis/Valkey between more than the 16 logical databases --redis-db can separate. "+
+			"Allowed characters are [A-Za-z0-9], '-', '_', '.' and ':'; a Valkey ACL can enforce "+
+			"the prefix (~<prefix>:*) rather than trust it.")
 	fs.BoolVar(&cfg.redisInsecure, "redis-insecure", false,
 		"Connect to Redis over plain TCP instead of TLS (default false; TLS). Redis carries each "+
 			"GitTarget's watch cursors and, when attribution is on, the audit facts — prefer TLS. Set "+
@@ -476,6 +486,13 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		return appConfig{}, err
 	}
 	cfg.redisAddr = strings.TrimSpace(cfg.redisAddr)
+	// Validated even when redis-addr is empty: a typo'd prefix is a configuration error
+	// whether or not this run happens to open the connection it names.
+	normalizedKeyPrefix, err := queue.ValidateKeyPrefix(cfg.redisKeyPrefix)
+	if err != nil {
+		return appConfig{}, err
+	}
+	cfg.redisKeyPrefix = normalizedKeyPrefix
 	if err := validateAuditConfig(cfg); err != nil {
 		return appConfig{}, err
 	}

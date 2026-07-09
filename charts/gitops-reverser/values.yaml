@@ -184,6 +184,12 @@ queue:
       # Optional Redis username for ACL-based auth (Redis 6+). Not sensitive; stays as a plain value.
       username: ""
     db: 0
+    # Root namespace for every key this release writes (cursors, attribution facts, command author
+    # records). Give each reverser its own prefix to share one Redis/Valkey between more than the 16
+    # logical databases `db` can separate. A Valkey ACL can enforce it (~<prefix>:*) rather than trust
+    # it. Changing it orphans the keys written under the previous prefix: cursors then cold-replay
+    # once, which is safe. Allowed characters: [A-Za-z0-9], '-', '_', '.' and ':'.
+    keyPrefix: "gitops-reverser"
     tls:
       enabled: false
 
