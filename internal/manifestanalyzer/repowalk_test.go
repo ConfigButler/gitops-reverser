@@ -5,6 +5,7 @@ package manifestanalyzer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -61,8 +62,13 @@ func checkGoldenFixture(t *testing.T, fixture string) {
 	}
 	rep.Root = ""
 
+	// The engine's own report shape, not the published one. pkg/manifestanalyzer owns the
+	// machine-readable contract and pins it separately; this corpus pins the classification
+	// facts (layout, refusal codes, overlaps, namespace inference, rendered/editable split).
 	var buf bytes.Buffer
-	if err := RenderRepoJSON(&buf, rep); err != nil {
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(rep); err != nil {
 		t.Fatalf("render json: %v", err)
 	}
 
