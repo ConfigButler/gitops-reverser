@@ -66,6 +66,13 @@ component is applied to its supplier:
    Distinct chains from multiple roots emit an `ambiguous-kustomize-overrides`
    diagnostic and fall back to today's write-through (no behavior regression;
    F2's render-root scoping resolves this case properly).
+
+   > **Superseded (Track-1 write boundary).** The write-through fallback is gone.
+   > A planned write into a file flagged `ambiguous-kustomize-overrides` now
+   > refuses the flush (`write-fan-in`) and fails the GitTarget with
+   > `WriteBoundaryRefused`; nothing is committed. See
+   > [../gittarget-granularity-and-cross-environment-edits.md §1](../gittarget-granularity-and-cross-environment-edits.md).
+   > F2 render-root scoping still generalizes the check.
 3. **Acceptance tightens only for garbage.** A kustomization whose `images:`
    or `replicas:` value is present but not structurally parseable (not a list
    of maps, missing `name`, non-string image fields, non-integer count) is

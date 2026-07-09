@@ -27,6 +27,12 @@ type PathRefusalReporter func(target itypes.ResourceReference, refused *manifest
 // the caller can log it as a refusal rather than an unexpected write fault. Every other error
 // returns false and keeps its existing handling.
 //
+// An unattributable refusal (either half of the target reference empty) is logged loudly and
+// NOT reported: the acceptance map is keyed by "namespace/name", so an empty half would file
+// the refusal under a key no GitTarget ever reads, and every unattributable refusal would
+// collide on that one key. Refusing to guess keeps a silent mis-attribution from looking like
+// a healthy target elsewhere.
+//
 // Recovery is the resync path's job: once the human fixes the Git path, the next successful
 // per-type resync calls MarkTargetGitPathAccepted and clears the condition. A live write never
 // clears it, because a live write that happens to avoid the offending file proves nothing about
@@ -36,6 +42,13 @@ func (w *BranchWorker) reportPathRefusal(err error, targetName, targetNamespace 
 	if !errors.As(err, &refused) {
 		return false
 	}
+	if targetName == "" || targetNamespace == "" {
+		w.Log.Error(err, "Live write refused but no GitTarget could be attributed; "+
+			"the refusal is NOT surfaced in status",
+			"gitTargetName", targetName, "gitTargetNamespace", targetNamespace,
+			"detail", refused.Error())
+		return true
+	}
 	target := itypes.NewResourceReference(targetName, targetNamespace)
 	w.Log.Info("Live write refused: unsupported GitTarget path content",
 		"gitTarget", target.String(), "detail", refused.Error())
@@ -43,4 +56,22 @@ func (w *BranchWorker) reportPathRefusal(err error, targetName, targetNamespace 
 		w.pathRefusal(target, refused)
 	}
 	return true
+}
+
+// atomicRefusalTarget names the GitTarget an atomic request writes for. Request-level target
+// metadata is authoritative when set — buildAtomicPendingWrite resolves it and stamps it onto
+// every event — but it fills that metadata only when the request carries it, leaving requests
+// whose events name their own target. So fall back to the events rather than reporting a
+// refusal against an empty reference. Returns the target's (name, namespace), both empty when
+// nothing names a target — which reportPathRefusal treats as unattributable.
+func atomicRefusalTarget(request *WriteRequest) (string, string) {
+	if request.GitTargetName != "" && request.GitTargetNamespace != "" {
+		return request.GitTargetName, request.GitTargetNamespace
+	}
+	for _, event := range request.Events {
+		if event.GitTargetName != "" && event.GitTargetNamespace != "" {
+			return event.GitTargetName, event.GitTargetNamespace
+		}
+	}
+	return "", ""
 }

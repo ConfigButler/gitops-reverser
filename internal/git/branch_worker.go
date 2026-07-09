@@ -772,7 +772,8 @@ func (l *branchWorkerEventLoop) handleAtomicRequest(request *WriteRequest) {
 		// A refused write plan is surfaced as a GitTarget status transition rather than
 		// logged as a write fault; nothing was committed either way, so the request is
 		// dropped in both cases.
-		if !l.w.reportPathRefusal(err, request.GitTargetName, request.GitTargetNamespace) {
+		name, namespace := atomicRefusalTarget(request)
+		if !l.w.reportPathRefusal(err, name, namespace) {
 			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(request.Events))
 		}
 		return

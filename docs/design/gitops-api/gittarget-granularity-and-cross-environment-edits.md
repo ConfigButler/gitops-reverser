@@ -43,9 +43,12 @@ These are decided; they frame the forks but are not reopened here.
 - **The admission webhook is a fail-open accelerator, not a correctness layer.**
   It rejects unsavable edits at `kubectl apply` time for immediate,
   *atomic* feedback, but it is opt-in, intent-mode-only, and `failurePolicy:
-  Ignore`. Correctness rests on L1 (base is never written even if the webhook is
-  off) plus the Tier-2 unreflected-set accounting
-  ([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)).
+  Ignore`. Correctness rests entirely on the L1/L2 write-plan preconditions
+  below: with the webhook off, a write that would leave the jail or touch shared
+  context is still refused before any byte is written. The Tier-2 unreflected-set
+  accounting ([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md))
+  is **designed but unbuilt**; it adds per-edit *reporting* on top, and is not
+  what keeps the base safe.
 - **Floating / external sources split by *who renders*.**
   - *An external control plane renders it* — Flux `Kustomization`, Argo CD
     `Application`, Flux `HelmRelease`, KRO. These are opaque **intent** KRM to
@@ -88,13 +91,22 @@ in §2 be a real choice rather than a muddle.
 ```mermaid
 flowchart TD
     W[Planned write to path P for object O] --> L1{L1: is P inside<br/>this target's write scope?}
-    L1 -->|no| RJ[Refuse the flush — never write outside the jail]
+    L1 -->|no| RJ[Refuse — never write outside the jail]
     L1 -->|yes| L2{L2: is P's file consumed<br/>by more than one render root?}
-    L2 -->|yes| RF[Refuse this edit — record in the unreflected set]
+    L2 -->|yes| RF[Refuse — never write through shared context]
     L2 -->|no| OK[Write P]
-    RJ --> REP[Report: GitPathAccepted=False / FullyReflected=False]
+    RJ --> REP["Abort the whole flush, commit nothing<br/>GitPathAccepted=False, Stalled=True<br/>reason: WriteBoundaryRefused"]
     RF --> REP
 ```
+
+Note the granularity of that refusal, because it is the thing most easily
+misread. A violation aborts the **entire flush**, not just the offending edit:
+nothing is committed, and the failure is recorded **once, on the GitTarget**, not
+per-edit. There is no per-edit record of the dropped change today — the
+`FullyReflected` condition and the unreflected set are designed
+([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md))
+and **not built**. Wherever this doc says an edit is "unreflected," read it as
+*the designed future behavior*; what ships today is the hard refusal above.
 
 - **L1 is a filesystem fact.** Cheap (`filepath.Rel` prefix test), robust, and
   independent of how well we model the render graph. It is what makes "the base
@@ -285,14 +297,16 @@ flowchart TB
 additive later step (shared-defaults editing, §3b), and **B rejected as the
 operator write model**.
 
-The decisive safety point stands: B makes the *weaker*, currently broken
-guarantee (L2) the only thing between "edit test" and "change prod", where A and
-C keep the base read-only by L1 — the filesystem guarantee Track 1 is already
-hardening. But the case against B **does not even need L2**: a `GitTarget` should
+The decisive safety point stands: B makes the *weaker* guarantee (L2 — enforced
+now, but only as good as our model of the render graph) the only thing between
+"edit test" and "change prod", where A and C keep the base read-only by L1, the
+filesystem guarantee that cannot be wrong. But the case against B **does not even
+need L2**: a `GitTarget` should
 be a **write partition**. Even with a perfect L2, one target spanning
 test/acceptance/production muddies four things a per-overlay target keeps clean —
 authorization (RBAC per namespace), audit (who changed which environment), status
-(per-environment `Ready`/`FullyReflected`), and session lifecycle (a session
+(per-environment `Ready`, and the planned per-edit `FullyReflected`), and session
+lifecycle (a session
 branch is one environment). "Manage the app as one thing" is a *product grouping*
 concern — an aggregate/app concept the product layer can add over N targets
 later — not a reason to make the operator's write unit span environments.
@@ -399,10 +413,16 @@ Keep **two distinct verbs** and never conflate them:
 
 ## 4. Worked examples: action → expected output
 
-Fixed action set, acting in `podinfo-test` unless noted, launch scope (F2+F4,
-no F3). "Unreflected" = recorded in the unreflected set, `FullyReflected=False`,
-reverted by hydration in intent mode
+Fixed action set, acting in `podinfo-test` unless noted, at the **future** launch
+scope (F2+F4, no F3) — this table describes where the model is headed, not what
+today's binary does.
+
+"Unreflected" here means the *designed* Tier-2 outcome: recorded in the
+unreflected set, `FullyReflected=False`, reverted by hydration in intent mode
 ([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)).
+None of that is built. Until it is, an edit with no legal destination either
+never matches a source document (nothing happens) or trips a write-boundary
+precondition and is refused outright (§1).
 
 ### Common to all options
 
@@ -483,8 +503,9 @@ The write stays inside `spec.path` (L1 holds), the shared file is never touched
 (L2 holds), and the render is correct: kustomize applies `images:` *after* the
 base is loaded, so the overlay entry wins. `replicas:` behaves the same way.
 Field-level edits that no override entry can express (an env var, a resource
-limit) have no such destination — they are the F3 patch case, and until F3 they
-are refused or accounted as unreflected
+limit) have no such destination — they are the F3 patch case. Today they are
+simply refused when they reach a write-boundary precondition; the honest per-edit
+report of *what was dropped* is the unbuilt Tier-2 accounting
 ([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)).
 
 **The cost: the divergence is invisible.** After that write, `test` is pinned to

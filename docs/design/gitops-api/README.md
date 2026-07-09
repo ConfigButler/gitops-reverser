@@ -110,10 +110,13 @@ The scoping move that keeps this launchable: **F2 + F4 are day-one
 Kustomize support; F3 is the deferred hard part.** Adding overlay-local KRM
 and bumping governed versions do not need patch authoring. A per-environment
 edit of a base-owned *field* (the `kubectl set env` case) has no destination
-until F3 — at launch it is honestly reported as unreflected and reverted by
-hydration
+until F3. Today such an edit is *prevented* — the write-boundary preconditions
+refuse it and fail the GitTarget (`WriteBoundaryRefused`), so it is never written
+into the base. Turning that target-level refusal into a per-edit report,
+reverted by hydration and never silently lost, is the **designed but unbuilt**
+unreflected-set accounting
 ([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)),
-never silently lost. Tier-2 metrics on how often users hit that wall are
+a launch prerequisite. Tier-2 metrics on how often users hit that wall are
 exactly what prices F3.
 
 ## Feature ladder
@@ -150,6 +153,16 @@ base"), and the mirror-mode vs. intent-cluster topology — live in
   surface with terminal `Pushed=True` + SHA.
 - Refusals: unsupported kustomize features, duplicate identities, impure or
   foreign content — refuse-first, never mis-edit.
+- The two-layer **write boundary**, enforced as write-plan preconditions before
+  any byte is written: **L1** — no write leaves `spec.path` (reads may, writes
+  never); **L2** — no in-place edit of a source file that more than one kustomize
+  render path reaches with override entries at stake (write-fan-in = 1). A
+  violation aborts the whole flush, commits nothing, and fails the GitTarget with
+  `GitPathAccepted=False` / reason `WriteBoundaryRefused` — on the live-event path
+  as well as on resync. Specified in
+  [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md).
+  The refusal is target-level; the per-edit `FullyReflected` accounting that would
+  name each dropped edit is designed and unbuilt.
 - Higher-level KRM documents (Flux `HelmRelease`, Argo CD `Application`, KRO
   resources) mirror and edit exactly like core resources — the pipeline is
   kind-agnostic, now pinned by F7's corpus + HelmRelease e2e
