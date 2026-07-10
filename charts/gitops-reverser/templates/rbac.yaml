@@ -28,20 +28,28 @@ subjects:
 - kind: ServiceAccount
   name: {{ include "gitops-reverser.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}
-{{- if .Values.rbac.watchAnyResource }}
+{{- $watchTypes := .Values.rbac.watchTypes | default dict }}
+{{- $mode := $watchTypes.mode | default "any" }}
+{{- if not (has $mode (list "any" "selected")) }}
+{{- fail (printf "rbac.watchTypes.mode must be \"any\" or \"selected\", got %q" $mode) }}
+{{- end }}
+{{- $selected := $watchTypes.selected | default list }}
+{{- if and (eq $mode "selected") (not $selected) }}
+{{- fail "rbac.watchTypes.mode=selected needs at least one entry in rbac.watchTypes.selected, or the reverser can watch nothing" }}
+{{- end }}
 ---
-# A WatchRule may name any type, including types installed later, so this cannot be derived
-# from the code. It is a separate ClusterRole because RBAC is additive: folded into the
-# manager role, this wildcard would grant cluster-wide Secret list/watch however narrow the
-# Secret rule beside it is. Set rbac.watchAnyResource=false and grant the types you actually
-# mirror. See docs/rbac.md.
+# The read access a WatchRule needs. Separate from the manager role because RBAC is additive:
+# folded in, a wildcard here would grant cluster-wide Secret list/watch however narrow the
+# Secret rule beside it is. Verbs are always get/list/watch — the reverser never writes to a
+# watched type. See docs/rbac.md.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-watch-any-resource
+  name: {{ include "gitops-reverser.fullname" . }}-watch-{{ $mode }}
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 rules:
+{{- if eq $mode "any" }}
 - apiGroups:
   - '*'
   resources:
@@ -50,20 +58,40 @@ rules:
   - get
   - list
   - watch
+{{- else }}
+{{- range $i, $rule := $selected }}
+{{- if not $rule.apiGroups }}
+{{- fail (printf "rbac.watchTypes.selected[%d] needs apiGroups (use [\"\"] for the core group)" $i) }}
+{{- end }}
+{{- if not $rule.resources }}
+{{- fail (printf "rbac.watchTypes.selected[%d] needs resources" $i) }}
+{{- end }}
+{{- if $rule.verbs }}
+{{- fail (printf "rbac.watchTypes.selected[%d] must not set verbs; the reverser only ever reads a watched type" $i) }}
+{{- end }}
+- apiGroups:
+    {{- toYaml $rule.apiGroups | nindent 4 }}
+  resources:
+    {{- toYaml $rule.resources | nindent 4 }}
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-watch-any-resource
+  name: {{ include "gitops-reverser.fullname" . }}-watch-{{ $mode }}
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "gitops-reverser.fullname" . }}-watch-any-resource
+  name: {{ include "gitops-reverser.fullname" . }}-watch-{{ $mode }}
 subjects:
 - kind: ServiceAccount
   name: {{ include "gitops-reverser.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}
-{{- end }}
 {{- end }}

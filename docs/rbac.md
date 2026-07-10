@@ -11,11 +11,47 @@ credential we own".
 | ClusterRole | Contents | Where it comes from |
 |---|---|---|
 | `<release>-manager-role` | Exactly what the binary calls: its own CRs, `namespaces`, `customresourcedefinitions`, `apiservices`, and `secrets` with **`get`, `create`, `update`** | Generated from the kubebuilder markers into [`config/rbac/role.yaml`](../config/rbac/role.yaml). Never edit by hand. |
-| `<release>-watch-any-resource` | `apiGroups: ["*"], resources: ["*"], verbs: ["get","list","watch"]` | Hand-maintained: [`config/rbac/watch-any-resource-role.yaml`](../config/rbac/watch-any-resource-role.yaml), or the chart's `rbac.watchAnyResource` (default `true`). |
+| `<release>-watch-any` **or** `<release>-watch-selected` | The types a `WatchRule` may read, `get`/`list`/`watch` only | The chart's `rbac.watchTypes`; for kustomize, [`config/rbac/watch-any-role.yaml`](../config/rbac/watch-any-role.yaml). |
 
 They are separate because **RBAC is additive**. A wildcard read folded into the manager role
 would grant cluster-wide Secret `list`/`watch` no matter how narrow the Secret rule beside
-it is, and no chart value could take it back. Split out, the wildcard can be dropped whole.
+it is, and no chart value could take it back. Split out, the wildcard can be replaced.
+
+## Choosing what the reverser may read
+
+```yaml
+rbac:
+  create: true
+  watchTypes:
+    mode: any # any | selected
+    selected: []
+```
+
+**`mode: any`** (default) grants cluster-wide read on every resource. A `WatchRule` can name
+any type, including one installed after the operator, and it will just work. The price is
+that the reverser **can read every Secret in the cluster** — every git credential, every
+token — even though it never asks for one it was not pointed at.
+
+**`mode: selected`** grants read on exactly the types you list, and nothing else:
+
+```yaml
+rbac:
+  watchTypes:
+    mode: selected
+    selected:
+      - apiGroups: [""] # core group
+        resources: ["configmaps"]
+      - apiGroups: ["apps"]
+        resources: ["deployments"]
+```
+
+Verbs are always `get`, `list`, `watch` — the reverser never writes to a watched type, so
+the chart refuses a `verbs:` key rather than let you grant one by accident. It also refuses
+`mode: selected` with an empty list, which would leave the operator able to watch nothing.
+
+Do **not** restate `namespaces`, `customresourcedefinitions` or `apiservices`: the manager
+role already carries them. A `WatchRule` naming a type you did not grant will fail to watch
+it, so the list must cover every type your rules name.
 
 ## The operator does not read Secrets wholesale
 
@@ -28,31 +64,9 @@ That is why the manager role asks for `get`, `create`, `update` and nothing more
 
 ## Running least-privilege
 
-Set `rbac.watchAnyResource: false` and grant read on the types you actually mirror:
-
-```yaml
-# helm values
-rbac:
-  create: true
-  watchAnyResource: false
-```
-
-```yaml
-# your own ClusterRole, bound to the reverser's ServiceAccount
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: gitops-reverser-watched-types
-rules:
-  # exactly the types your WatchRules name
-  - apiGroups: ["gitops-api.configbutler.ai"]
-    resources: ["tenants", "reposelections"]
-    verbs: ["get", "list", "watch"]
-```
-
-The manager role already carries `namespaces`, `customresourcedefinitions` and `apiservices`,
-so you do not restate them. Bind your role to the same ServiceAccount, alongside the manager
-role's binding.
+Set `mode: selected` and list your types. The chart renders the ClusterRole and its binding
+for you — there is no hand-written role to maintain, and no way to drift from the
+ServiceAccount the operator actually runs as.
 
 Result: `GitProvider` Ready, `ClusterWatchRule` Ready with its streams, commits flowing, and
 **zero cluster-wide Secret access**.

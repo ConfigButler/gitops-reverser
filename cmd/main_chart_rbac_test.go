@@ -21,6 +21,27 @@ var rbacChartInputs = []string{
 	"../charts/gitops-reverser/config/role.yaml",
 }
 
+// selectedConfigMapsAndDeployments is the least-privilege example the chart ships commented
+// out: the core group's configmaps plus apps/deployments, and nothing else.
+var selectedConfigMapsAndDeployments = []string{
+	"rbac.watchTypes.mode=selected",
+	"rbac.watchTypes.selected[0].apiGroups[0]=", // "" is the core group
+	"rbac.watchTypes.selected[0].resources[0]=configmaps",
+	"rbac.watchTypes.selected[1].apiGroups[0]=apps",
+	"rbac.watchTypes.selected[1].resources[0]=deployments",
+}
+
+func helmTemplateRBAC(setValues ...string) ([]byte, error) {
+	args := []string{
+		"template", "gitops-reverser", "../charts/gitops-reverser",
+		"--show-only", "templates/rbac.yaml",
+	}
+	for _, sv := range setValues {
+		args = append(args, "--set", sv)
+	}
+	return exec.Command("helm", args...).CombinedOutput()
+}
+
 // renderClusterRoles renders the chart's RBAC and returns every ClusterRole it produces.
 func renderClusterRoles(t *testing.T, setValues ...string) []rbacv1.ClusterRole {
 	t.Helper()
@@ -30,14 +51,7 @@ func renderClusterRoles(t *testing.T, setValues ...string) []rbacv1.ClusterRole 
 		require.NoErrorf(t, err, "%s missing; `task helm-sync` generates it", path)
 	}
 
-	args := []string{
-		"template", "gitops-reverser", "../charts/gitops-reverser",
-		"--show-only", "templates/rbac.yaml",
-	}
-	for _, sv := range setValues {
-		args = append(args, "--set", sv)
-	}
-	out, err := exec.Command("helm", args...).CombinedOutput()
+	out, err := helmTemplateRBAC(setValues...)
 	require.NoErrorf(t, err, "helm template failed: %s", out)
 
 	var roles []rbacv1.ClusterRole
@@ -89,14 +103,14 @@ func roleNamed(t *testing.T, roles []rbacv1.ClusterRole, suffix string) (rbacv1.
 	return rbacv1.ClusterRole{}, false
 }
 
-// The whole point of splitting the wildcard out: turning it off must leave a role that
-// cannot enumerate Secrets. A reverser mirroring two CRDs on a management cluster would
+// The whole point of splitting the wildcard out: `selected` mode must leave a role set that
+// cannot enumerate Secrets. A reverser mirroring two types on a management cluster would
 // otherwise hold read access to every credential in it.
-func TestChartRBAC_WithoutWildcardTheOperatorCannotEnumerateSecrets(t *testing.T) {
-	roles := renderClusterRoles(t, "rbac.watchAnyResource=false")
+func TestChartRBAC_SelectedModeCannotEnumerateSecrets(t *testing.T) {
+	roles := renderClusterRoles(t, selectedConfigMapsAndDeployments...)
 
-	_, found := roleNamed(t, roles, "-watch-any-resource")
-	require.False(t, found, "the wildcard ClusterRole must not render when disabled")
+	_, found := roleNamed(t, roles, "-watch-any")
+	require.False(t, found, "the wildcard ClusterRole must not render in selected mode")
 
 	for _, role := range roles {
 		require.Emptyf(t, grantsSecretListOrWatch(role),
@@ -104,28 +118,57 @@ func TestChartRBAC_WithoutWildcardTheOperatorCannotEnumerateSecrets(t *testing.T
 	}
 }
 
+// selected grants exactly the listed types, read-only. Anything more is a privilege the user
+// did not ask for; anything less and the WatchRule cannot do its job.
+func TestChartRBAC_SelectedModeGrantsOnlyTheListedTypes(t *testing.T) {
+	roles := renderClusterRoles(t, selectedConfigMapsAndDeployments...)
+
+	selected, found := roleNamed(t, roles, "-watch-selected")
+	require.True(t, found, "selected mode must render its ClusterRole")
+	require.Len(t, selected.Rules, 2)
+
+	require.Equal(t, []string{""}, selected.Rules[0].APIGroups)
+	require.Equal(t, []string{"configmaps"}, selected.Rules[0].Resources)
+	require.Equal(t, []string{"apps"}, selected.Rules[1].APIGroups)
+	require.Equal(t, []string{"deployments"}, selected.Rules[1].Resources)
+
+	for _, rule := range selected.Rules {
+		require.ElementsMatch(t, []string{"get", "list", "watch"}, rule.Verbs,
+			"a watched type is only ever read")
+		require.NotContains(t, rule.Resources, "*")
+		require.NotContains(t, rule.APIGroups, "*")
+	}
+}
+
 // The manager role is generated from the kubebuilder markers. It must never carry the
 // wildcard itself: RBAC is additive, so a wildcard there would re-grant Secret list/watch
 // and no chart value could take it away.
 func TestChartRBAC_ManagerRoleNeverCarriesTheWildcard(t *testing.T) {
-	for _, values := range [][]string{{"rbac.watchAnyResource=true"}, {"rbac.watchAnyResource=false"}} {
-		roles := renderClusterRoles(t, values...)
-		manager, found := roleNamed(t, roles, "-manager-role")
-		require.True(t, found, "manager ClusterRole must always render")
+	modes := map[string][]string{
+		"any":      {"rbac.watchTypes.mode=any"},
+		"selected": selectedConfigMapsAndDeployments,
+	}
+	for name, values := range modes {
+		t.Run(name, func(t *testing.T) {
+			roles := renderClusterRoles(t, values...)
+			manager, found := roleNamed(t, roles, "-manager-role")
+			require.True(t, found, "manager ClusterRole must always render")
 
-		for _, rule := range manager.Rules {
-			require.NotContains(t, rule.Resources, "*",
-				"manager role must not grant wildcard resources (%v)", rule.APIGroups)
-		}
-		require.Empty(t, grantsSecretListOrWatch(manager),
-			"the manager role must never enumerate Secrets; it reads the ones it is pointed at")
+			for _, rule := range manager.Rules {
+				require.NotContains(t, rule.Resources, "*",
+					"manager role must not grant wildcard resources (%v)", rule.APIGroups)
+			}
+			require.Empty(t, grantsSecretListOrWatch(manager),
+				"the manager role must never enumerate Secrets; it reads the ones it is pointed at")
+		})
 	}
 }
 
-// The API-resource catalog and its trigger informers read these two. Without them a
-// least-privilege install 403s on every reflector retry.
+// The API-resource catalog and its trigger informers read these three. Without them a
+// least-privilege install 403s on every reflector retry, which is why a `selected` user must
+// not have to restate them.
 func TestChartRBAC_ManagerRoleGrantsTheAPISurfaceReads(t *testing.T) {
-	roles := renderClusterRoles(t, "rbac.watchAnyResource=false")
+	roles := renderClusterRoles(t, selectedConfigMapsAndDeployments...)
 	manager, found := roleNamed(t, roles, "-manager-role")
 	require.True(t, found)
 
@@ -146,14 +189,64 @@ func TestChartRBAC_ManagerRoleGrantsTheAPISurfaceReads(t *testing.T) {
 	}
 }
 
-// Default installs keep working: a WatchRule may name any type, so the wildcard ships on.
+// Default installs keep working: a WatchRule may name any type, so `any` is the default.
 func TestChartRBAC_WildcardRoleShipsByDefault(t *testing.T) {
 	roles := renderClusterRoles(t)
 
-	wildcard, found := roleNamed(t, roles, "-watch-any-resource")
+	wildcard, found := roleNamed(t, roles, "-watch-any")
 	require.True(t, found, "the wildcard ClusterRole must render by default")
 	require.Len(t, wildcard.Rules, 1)
 	require.Equal(t, []string{"*"}, wildcard.Rules[0].APIGroups)
 	require.Equal(t, []string{"*"}, wildcard.Rules[0].Resources)
 	require.ElementsMatch(t, []string{"get", "list", "watch"}, wildcard.Rules[0].Verbs)
+}
+
+// A mis-set watchTypes must fail the render, not silently grant the wrong thing. Granting
+// nothing is as bad as granting everything: one breaks the operator, the other the cluster.
+func TestChartRBAC_MisconfiguredWatchTypesFailsTheRender(t *testing.T) {
+	tests := map[string]struct {
+		setValues []string
+		wantErr   string
+	}{
+		"unknown mode": {
+			setValues: []string{"rbac.watchTypes.mode=readonly"},
+			wantErr:   `rbac.watchTypes.mode must be "any" or "selected"`,
+		},
+		"selected with no entries": {
+			setValues: []string{"rbac.watchTypes.mode=selected"},
+			wantErr:   "needs at least one entry",
+		},
+		"entry without resources": {
+			setValues: []string{
+				"rbac.watchTypes.mode=selected",
+				"rbac.watchTypes.selected[0].apiGroups[0]=apps",
+			},
+			wantErr: "selected[0] needs resources",
+		},
+		"entry without apiGroups": {
+			setValues: []string{
+				"rbac.watchTypes.mode=selected",
+				"rbac.watchTypes.selected[0].resources[0]=deployments",
+			},
+			wantErr: "selected[0] needs apiGroups",
+		},
+		// Verbs are not the user's to choose: the reverser mirrors a type, it never writes one.
+		"entry setting verbs": {
+			setValues: []string{
+				"rbac.watchTypes.mode=selected",
+				"rbac.watchTypes.selected[0].apiGroups[0]=apps",
+				"rbac.watchTypes.selected[0].resources[0]=deployments",
+				"rbac.watchTypes.selected[0].verbs[0]=create",
+			},
+			wantErr: "must not set verbs",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplateRBAC(tc.setValues...)
+			require.Errorf(t, err, "render should have failed, got:\n%s", out)
+			require.Contains(t, string(out), tc.wantErr)
+		})
+	}
 }

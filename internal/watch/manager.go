@@ -40,9 +40,9 @@ import (
 // code. It is deliberately NOT a marker: controller-gen would fold `groups=*,resources=*`
 // into this ClusterRole, and RBAC is additive — a wildcard read grants cluster-wide Secret
 // list/watch no matter how narrow the Secret rule beside it is. The wildcard therefore lives
-// in its own opt-out ClusterRole (config/rbac/watch-any-resource-role.yaml,
-// `rbac.watchAnyResource` in the chart), so an operator that mirrors two CRDs can be denied
-// every other object in the cluster. See docs/rbac.md.
+// in a ClusterRole of its own (config/rbac/watch-any-role.yaml, `rbac.watchTypes.mode: any` in
+// the chart), so an operator that mirrors two CRDs can be told the exact types it may read and
+// be denied every other object in the cluster. See docs/rbac.md.
 
 // Manager is a controller-runtime Runnable that keeps the followability registry and the
 // demand-driven materialization axis fresh and drives the per-type splice reconcile. It
