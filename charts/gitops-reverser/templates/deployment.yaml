@@ -68,7 +68,7 @@ spec:
             {{- end }}
             - --redis-addr={{ .Values.queue.redis.addr }}
             {{- with .Values.queue.redis.auth.username }}
-            - --redis-username={{ . | quote }}
+            - {{ printf "--redis-username=%s" . | quote }}
             {{- end }}
             - --redis-db={{ .Values.queue.redis.db }}
             {{- with .Values.queue.redis.keyPrefix }}

@@ -64,6 +64,7 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 		wantKeyPrefix  string
 		wantRedisAddr  string
 		wantRedisDBSet int
+		wantUsername   string
 	}{
 		"chart defaults": {
 			wantKeyPrefix: "gitops-reverser",
@@ -82,6 +83,7 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			wantKeyPrefix:  "tenant-7",
 			wantRedisAddr:  "redis.example.com:6379",
 			wantRedisDBSet: 3,
+			wantUsername:   "reverser",
 		},
 	}
 
@@ -96,6 +98,10 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			if tc.wantRedisAddr != "" {
 				require.Equal(t, tc.wantRedisAddr, cfg.redisAddr)
 				require.Equal(t, tc.wantRedisDBSet, cfg.redisDB)
+			}
+			if tc.wantUsername != "" {
+				// A quoted-value render would reach Redis as `"reverser"` and fail ACL auth.
+				require.Equal(t, tc.wantUsername, cfg.redisUsername)
 			}
 		})
 	}
