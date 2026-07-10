@@ -85,8 +85,34 @@ flowchart LR
     class PRIV,SEC secret
 ```
 
-The private identity never crosses into the left two boxes. That is the whole
-design, and it already holds.
+The private identity never reaches the *write path*. That is the whole design, and
+it already holds.
+
+### Two custody models, and only one of them is a hard guarantee
+
+The diagram above is the **user-supplied recipient** model: someone else generated
+the age identity, only the public recipient was ever configured, and no amount of
+compromise makes decryption possible here. The guarantee is cryptographic.
+
+There is a second model in the codebase, and honesty requires naming it.
+`GitTargetReconciler` calls `generateAgeIdentity()`
+([`internal/controller/gittarget_controller.go`](../../../internal/controller/gittarget_controller.go)),
+mints a keypair, stores the private half in a `Secret` — annotated *"Back up the
+private key and remove warning annotation"* — and publishes the recipient. The
+[bi-directional e2e](../../../test/e2e/bi_directional_e2e_test.go) then hands that
+same `Secret` to Flux as its `decryption` key, which is how Flux reconciles the
+encrypted `Secret` this operator wrote.
+
+In that bootstrap model the operator **had** the private key, for as long as it
+took to write it down. The write path still never reads it back: `Encrypt` is the
+only method, and `ResolvedEncryptionConfig` carries recipients only. So the
+property is preserved by construction — but it is preserved by *design discipline*,
+not by cryptography.
+
+The distinction matters for the security claim below, and it matters for
+[hydration](intent-cluster-hydration.md): an operator that can read that `Secret`
+*could* decrypt. The rule that it must not is a rule, and it should be written
+down as one.
 
 ## The constraint that shapes the API: the MAC
 
@@ -259,8 +285,13 @@ counting as `editable` — the fix already named in the boundary doc.
   "we support SOPS folders, and we cannot read your secrets." The second sentence
   is a *feature*, and it is the one a security reviewer wants to hear.
 - **The blast radius of a compromised operator shrinks to what it can encrypt.**
-  It cannot exfiltrate a secret it has never been able to decrypt. That claim is
-  auditable: no `Decrypt` exists in the binary.
+  It cannot exfiltrate a secret it cannot decrypt, and that claim is auditable:
+  no `Decrypt` exists in the binary. Under the **user-supplied recipient** model
+  that is cryptographic. Under the **bootstrap** model it is a design rule
+  enforced by a code shape, because the operator minted the identity and could
+  read the `Secret` it stored — a compromised operator with that RBAC could
+  decrypt. State which model an install is in; do not claim the stronger one by
+  default.
 - **It composes with the existing least-privilege direction.** The Secret grant is
   namespace-local, and the operator holds a public key. Both are the same
   argument, made at different layers.
@@ -271,9 +302,10 @@ counting as `editable` — the fix already named in the boundary doc.
 
 ## What this is not
 
-- **Not a decryption feature.** No `Decrypt`, no private key, no `--ignore-mac`,
-  not now and not behind a flag. The moment the operator can read, the security
-  argument above evaporates.
+- **Not a decryption feature.** No `Decrypt`, no `--ignore-mac`, not now and not
+  behind a flag — not even in the bootstrap model, where the key material is
+  reachable and the restraint is therefore ours to keep. The moment the operator
+  reads, the security argument above evaporates.
 - **Not a secret manager.** Rotation policy, generation, and vault integration are
   the product layer's business.
 - **Not a merge.** A per-key patch of an encrypted document is impossible without

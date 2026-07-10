@@ -4,6 +4,8 @@
 > intent cluster?", ships no code.
 > Captured: 2026-07-10
 > Related:
+> [../../bi-directional.md](../../bi-directional.md) — the operating models and the
+> proven Flux handshake this doc builds on,
 > [resource-capability-model.md](resource-capability-model.md),
 > [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md),
 > [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md),
@@ -20,51 +22,105 @@ can edit an object, that object has to **exist** in the intent cluster. Somethin
 must run the other direction — **Git → live** — at least once.
 
 That direction is exactly what Argo CD and Flux do for a living, and the obvious
-move is to point one of them at the repository. This doc argues against that, on
-two independent grounds, and lands on a rule that is much simpler than either
-tool.
+move is to point one of them at the repository. That move is **right**, with one
+qualification that has already been designed, documented and proven in this
+repository — and one that has not.
 
-## Ground one: a reconciler would fight the user
+## Ground one: an *autonomous* reconciler fights the user. A triggered one does not.
 
-Argo CD and Flux do not hydrate. They **reconcile**. Their job, their entire
-value, is that when live state diverges from Git, they *put it back*.
+Argo CD and Flux do not hydrate. They **reconcile**. Their value is that when live
+state diverges from Git, they *put it back*.
 
-In the intent cluster, live state diverging from Git is not drift. **It is the
-user's edit.** It is the product.
+In an editing cluster, live state diverging from Git is not drift. **It is the
+user's edit.** So a reconciler left to run on its own interval is a hazard, and
+[`docs/bi-directional.md`](../../bi-directional.md) already names it exactly: the
+problem is **causality, not YAML**.
 
 ```mermaid
 sequenceDiagram
     actor User
-    participant K8s as Intent cluster
-    participant Recon as Flux or Argo CD
+    participant K8s as Editing cluster
+    participant Recon as autonomous Flux or Argo CD
     participant Rev as GitOps Reverser
     participant Git
 
-    Recon->>K8s: apply desired state from Git
+    Note over Recon: has applied revision A
     User->>K8s: edit replicas 3 to 5
-    Note over Recon: sees "drift"
-    Recon->>K8s: revert replicas to 3
-    Note over Rev: may never observe the edit at all
-    Rev-->>Git: nothing to commit
+    Rev->>Git: commit revision B
+    Note over Recon: has not refreshed its source yet
+    Recon->>K8s: re-apply stale revision A
+    K8s-->>Rev: looks like another live change
+    Rev->>Git: commit again
 ```
 
-At best this is a race the user loses. At worst — with `prune: true`, or Argo CD
-`selfHeal` — the edit is reverted before the watch even fires. Turning
-self-healing off leaves a reconciler that still owns fields, still prunes, and
-still re-applies on every interval.
+Stale replay, extra commits, possible loops. The failure is a **race window**
+between the commit and the reconciler's source refresh — not a fundamental
+incompatibility.
 
-> **The intent cluster must never have a controller reconciling it toward Git.**
-> Hydration is a one-shot apply, not a reconciliation.
+### The fix is an acknowledgment handshake, and it works
 
-This conclusion holds for every resource kind, and has nothing to do with secrets.
+`bi-directional.md` prescribes it: treat the GitOps controller as a **deliberately
+triggered applier**. Publish the commit, trigger the applier, and wait until it
+reports that it applied *that exact revision*.
 
-## Ground two: a SOPS Secret cannot be applied at all
+GitOps Reverser already exposes the primitive the handshake needs — a
+`CommitRequest` reaching `Pushed=True` with `status.sha` and `status.branch`.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant K8s as Cluster
+    participant Rev as GitOps Reverser
+    participant Git
+    participant Flux
+
+    User->>K8s: edit through the Kubernetes API
+    K8s-->>Rev: watch event
+    Rev->>Git: commit, push
+    Rev-->>K8s: CommitRequest Pushed=True, status.sha
+    Note over Flux: long interval. Not racing anybody.
+    Rev->>Flux: trigger source refresh, then reconcile
+    Flux->>Git: fetch the exact sha
+    Flux->>K8s: apply revision sha
+    Flux-->>Rev: Kustomization reports revision sha applied
+    Note over Rev: applied state equals committed state,<br/>so nothing new to commit. The loop is closed.
+```
+
+This is not a proposal. [`test/e2e/bi_directional_e2e_test.go`](../../../test/e2e/bi_directional_e2e_test.go)
+runs it against real Flux with `prune: true`, and asserts the hard part — that
+GitOps Reverser produces **exactly one commit** for a live edit and Flux converges
+without a second one. It also covers a SOPS-encrypted `Secret` written by the
+operator and reconciled by Flux, and a revert. The Flux `Kustomization` and
+`GitRepository` both carry a `30m` interval, and the test drives
+`flux reconcile source` / `flux reconcile kustomization` explicitly, then waits for
+the expected SHA. That long interval *is* the discipline: it is what makes the
+reconciler an applier rather than a competitor.
+
+So the rule is narrower and better than "no controllers":
+
+> **No *autonomous* reconciler on a shared path.** A reconciler driven by an
+> acknowledgment handshake is not merely permitted — it is how the loop closes.
+
+Hydration is then simply the **degenerate case of that handshake**: apply revision
+X into a cluster that holds nothing yet, and wait until it is reported applied.
+Same operation, empty starting state.
+
+The genuinely open part is the second half of `bi-directional.md`'s status list:
+the handshake is proven with Flux and **not yet with Argo CD**, which has no
+`suspend` + `flux reconcile` equivalent — its analogue is a `Refresh` annotation
+plus `syncPolicy.automated.selfHeal: false`, and nothing here has tested it.
+
+## Ground two: a SOPS Secret cannot be applied *without a decryption key*
 
 The user's instinct — *"SOPS is by default not a good KRM object, so will Flux
-ignore it, or fail?"* — is right, and the answer is **fail**, deterministically.
+ignore it, or fail?"* — is right, and the answer is **fail**, deterministically,
+whenever the applier cannot decrypt.
 
-Verified against a real API server (Kubernetes v1.36,
-`kubectl apply --dry-run=server`):
+Flux's answer, when it *is* the real cluster, is `spec.decryption` with the
+private age identity, and that path is exercised in the bi-directional e2e above.
+The question that matters here is what happens in a cluster that deliberately
+holds **no** key. There, the document is applied as written, and verified against
+a real API server (Kubernetes v1.36, `kubectl apply --dry-run=server`):
 
 | Document | Result |
 |---|---|
@@ -79,32 +135,43 @@ the failure happens at **deserialization**, before validation. No amount of
 lenient decoding rescues it. Any applier — `kubectl`, Argo CD, Flux's
 kustomize-controller — hits the same wall.
 
-So Flux does not ignore a SOPS Secret. It fails the whole `Kustomization`, and the
-apply error is the only thing the user sees. Flux's own answer is
-`spec.decryption`, which needs the **private** age identity — precisely the thing
-[we will never hold](write-only-encrypted-secrets.md).
+So a keyless Flux does not ignore a SOPS Secret. It fails the whole
+`Kustomization`, and the apply error is the only thing the user sees. The escape
+is `spec.decryption` and the private age identity, which is exactly the material
+an editing cluster should not be handed
+([why](write-only-encrypted-secrets.md)).
 
 The last row is the nightmare: a lenient applier stores the ciphertext *as the
 value*, and an application reads its password as the literal string
 `ENC[AES256_GCM,...]`. Nothing errors. **Hydration must use strict decoding.**
 
+This is the one place where hydration genuinely cannot be "just run the applier",
+and it is a property of one document class, not of the tool.
+
 ## The rule that falls out
 
-Hydration is not "run a GitOps tool against a small cluster." It is:
+> **Always install the CRDs. Install a controller only if it is an applier you
+> drive, and never one that materialises secrets.**
 
-> **Install the CRDs. Never install the controllers.**
+The intent cluster is primarily a **schema surface**: it exists so `kubectl` can
+validate, store and serve intent. A reconciler is welcome in it only in the
+handshake role above — triggered, SHA-acknowledged, on a long interval — and the
+two secret-materialising controllers are never welcome at all, for reasons that
+have nothing to do with reconciliation.
 
-The intent cluster is a **schema surface**, not a reconciliation surface. It exists
-so that `kubectl` can validate, store, and serve intent — nothing more. Every
-controller you install has a job, and in this cluster every one of those jobs is
-wrong:
-
-| Controller | What it would do here | Verdict |
+| Controller | What it does here | Verdict |
 |---|---|---|
-| Flux / Argo CD | revert the user's edit as drift | fatal |
-| sealed-secrets | try to unseal without the private key | fails, noisily |
-| External Secrets Operator | fetch real secrets from the real Vault into a throwaway cluster | a security regression |
-| any workload controller | schedule Pods nobody asked for | pointless |
+| Flux / Argo CD, **autonomous** | re-applies a stale revision over the user's edit | hazard — see [bi-directional.md](../../bi-directional.md) |
+| Flux, **triggered + SHA-acknowledged** | applies exactly the revision we published | **the intended design**, proven in e2e |
+| Argo CD, triggered | the same shape, `Refresh` + `selfHeal: false` | untested |
+| sealed-secrets | tries to unseal without the private key | fails noisily; the object is inert, which is what we want |
+| External Secrets Operator | fetches **real** secrets from the **real** Vault into a throwaway cluster | a security regression |
+| any workload controller | schedules Pods nobody asked for | pointless, and it will fight `status` |
+
+The two secret controllers are the interesting rows. Neither is excluded because
+it reconciles; both are excluded because of what they would *pull into* a cluster
+that is supposed to hold intent and nothing else. Leave them out and their objects
+sit there inert and editable — which is precisely the goal.
 
 Install their **CRDs**, and every one of those kinds becomes storable, editable
 and `kubectl`-validatable. Install nothing else.
@@ -147,8 +214,19 @@ A SOPS `Secret` cannot hydrate as itself, because it is not a valid `Secret`. Th
 
 ## Who hydrates, then?
 
-Not Argo CD. Not Flux. GitOps Reverser already parses the repository into a
-document store to answer `ScanRepo`. Hydration is that store, applied once:
+Two answers, and the choice turns on one question: **does this subtree contain a
+document an applier cannot apply?**
+
+**A triggered Flux `Kustomization`** is the better answer whenever the subtree is
+all schema-conformant. It is the real applier with real semantics, it is already
+the acknowledgment step in the handshake above, and it is proven. Point it at the
+revision, trigger it, wait for the SHA, leave it on a long interval. Nothing new
+is built.
+
+**GitOps Reverser applies the document store itself** when the subtree contains
+documents no applier can accept — today, exactly the SOPS class. It already parses
+the repository into a document store to answer `ScanRepo`, so hydration is that
+store, applied once:
 
 1. Walk the `GitTarget` subtree, exactly as `ScanDir` does.
 2. For each document, ask the [capability registry](resource-capability-model.md).
