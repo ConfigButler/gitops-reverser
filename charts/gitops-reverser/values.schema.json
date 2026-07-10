@@ -1,0 +1,532 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gitops-reverser values",
+  "description": "Helm validates these on template, lint, install and upgrade. Objects the chart owns are closed (additionalProperties: false) so a typo fails the install instead of silently doing nothing; Kubernetes pass-through objects (securityContext, affinity, resources, volumes, ...) stay open, because their shape belongs to Kubernetes and not to this chart.",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Go duration, e.g. 30s, 10m, 87600h."
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "secretNameOverride": {
+      "type": "string",
+      "description": "Leave empty to use the chart-generated Secret name."
+    },
+    "intOrString": {
+      "type": ["integer", "string"]
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "objectList": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  },
+  "properties": {
+    "global": {
+      "type": "object",
+      "description": "Helm's cross-chart values. Free-form: this chart reads none of it, but a parent chart may set it."
+    },
+
+    "replicaCount": { "type": "integer", "minimum": 0 },
+
+    "deploymentStrategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["RollingUpdate", "Recreate"] },
+        "rollingUpdate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxSurge": { "$ref": "#/$defs/intOrString" },
+            "maxUnavailable": { "$ref": "#/$defs/intOrString" }
+          }
+        }
+      }
+    },
+
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] },
+        "tag": { "type": "string" }
+      }
+    },
+
+    "imagePullSecrets": { "$ref": "#/$defs/objectList" },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "createNamespace": { "type": "boolean" },
+
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "annotations": { "$ref": "#/$defs/stringMap" },
+        "name": { "type": "string" }
+      }
+    },
+
+    "podAnnotations": { "$ref": "#/$defs/stringMap" },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+
+    "env": {
+      "$ref": "#/$defs/objectList",
+      "description": "Extra container env vars, as Kubernetes EnvVar entries."
+    },
+    "volumes": { "$ref": "#/$defs/objectList" },
+    "volumeMounts": { "$ref": "#/$defs/objectList" },
+
+    "controllerManager": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "additionalSensitiveResources": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Resource or group/resource, e.g. core.cozystack.io/tenantsecrets."
+        }
+      }
+    },
+
+    "certManager": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "issuer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "kind": { "enum": ["Issuer", "ClusterIssuer"] },
+            "create": { "type": "boolean" }
+          }
+        }
+      }
+    },
+
+    "servers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enableHTTP2": {
+          "type": "boolean",
+          "description": "Serve HTTP/2 on the TLS servers. Off by default: it mitigates the HTTP/2 Rapid-Reset CVE class."
+        },
+        "healthProbe": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bindAddress": { "type": "string" },
+            "port": { "$ref": "#/$defs/port" }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bindAddress": { "type": "string" },
+            "port": { "$ref": "#/$defs/port" },
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "certManager": { "type": "boolean" },
+                "certPath": { "type": "string" },
+                "certName": { "type": "string" },
+                "certKey": { "type": "string" },
+                "secretNameOverride": { "$ref": "#/$defs/secretNameOverride" }
+              }
+            }
+          }
+        },
+        "admission": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "bindAddress": { "type": "string" },
+            "port": { "$ref": "#/$defs/port" },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30,
+              "description": "The apiserver rejects a webhook timeout outside 1-30s."
+            },
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "certManager": { "type": "boolean" },
+                "certPath": { "type": "string" },
+                "certName": { "type": "string" },
+                "certKey": { "type": "string" },
+                "secretNameOverride": { "$ref": "#/$defs/secretNameOverride" }
+              }
+            }
+          }
+        },
+        "audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bindAddress": { "type": "string" },
+            "port": { "$ref": "#/$defs/port" },
+            "timeouts": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "read": { "$ref": "#/$defs/duration" },
+                "write": { "$ref": "#/$defs/duration" },
+                "idle": { "$ref": "#/$defs/duration" }
+              }
+            },
+            "maxRequestBodyBytes": { "type": "integer", "minimum": 1 },
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "certManager": { "type": "boolean" },
+                "certPath": { "type": "string" },
+                "certName": { "type": "string" },
+                "certKey": { "type": "string" },
+                "clientCAPath": { "type": "string" },
+                "clientCAName": { "type": "string" },
+                "secretNameOverride": { "$ref": "#/$defs/secretNameOverride" },
+                "rootCA": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretNameOverride": { "$ref": "#/$defs/secretNameOverride" }
+                  }
+                },
+                "client": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "duration": { "$ref": "#/$defs/duration" },
+                    "renewBefore": { "$ref": "#/$defs/duration" },
+                    "secretNameOverride": { "$ref": "#/$defs/secretNameOverride" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "queue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "redis": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "addr": { "type": "string", "description": "host:port. Empty runs without Redis." },
+            "auth": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "existingSecret": { "type": "string" },
+                "existingSecretKey": { "type": "string" },
+                "username": { "type": "string" }
+              }
+            },
+            "db": { "type": "integer", "minimum": 0 },
+            "keyPrefix": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]*$",
+              "description": "Root of every key this release writes. The binary validates it too, and rejects a prefix that is empty once trailing ':' is trimmed."
+            },
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "enabled": { "type": "boolean" } }
+            }
+          }
+        }
+      }
+    },
+
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ttl": { "$ref": "#/$defs/duration" },
+        "grace": { "$ref": "#/$defs/duration" }
+      }
+    },
+
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Create the manager ClusterRole and its binding."
+        },
+        "watchTypes": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Which types a WatchRule may read. The reverser never writes to a watched type.",
+          "properties": {
+            "mode": {
+              "enum": ["any", "selected"],
+              "description": "any: cluster-wide read on everything, including every Secret. selected: read only the types listed below."
+            },
+            "selected": {
+              "type": "array",
+              "description": "Types to grant when mode is selected. Verbs are always get/list/watch.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["apiGroups", "resources"],
+                "properties": {
+                  "apiGroups": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string" },
+                    "description": "API groups; use [\"\"] for the core group."
+                  },
+                  "resources": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "if": {
+            "properties": { "mode": { "const": "selected" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "required": ["selected"],
+            "properties": {
+              "selected": {
+                "minItems": 1,
+                "description": "mode=selected with no entries would leave the reverser able to watch nothing."
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "resources": { "type": "object" },
+    "nodeSelector": { "$ref": "#/$defs/stringMap" },
+    "tolerations": { "$ref": "#/$defs/objectList" },
+    "affinity": { "type": "object" },
+
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": { "$ref": "#/$defs/intOrString" },
+        "maxUnavailable": { "$ref": "#/$defs/intOrString" }
+      }
+    },
+
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "namespace": { "type": "string" },
+            "labels": { "$ref": "#/$defs/stringMap" },
+            "interval": { "$ref": "#/$defs/duration" },
+            "scrapeTimeout": { "$ref": "#/$defs/duration" },
+            "path": { "type": "string" },
+            "port": { "type": "string" },
+            "scheme": {
+              "enum": ["http", "https"],
+              "description": "Must match servers.metrics.tls.enabled."
+            }
+          }
+        }
+      }
+    },
+
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clusterIP": { "type": "string" },
+        "ports": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "audit": { "$ref": "#/$defs/port" },
+            "metrics": { "$ref": "#/$defs/port" }
+          }
+        }
+      }
+    },
+
+    "auditService": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 },
+        "clusterIP": { "type": "string" }
+      }
+    },
+
+    "auditKubeconfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "insecureSkipTLSVerify": { "type": "boolean" } }
+    },
+
+    "quickstart": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "namespace": { "type": "string" },
+        "createNamespace": { "type": "boolean" },
+        "gitProvider": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "url": { "type": "string" },
+            "allowedBranches": { "type": "array", "items": { "type": "string" } },
+            "secretRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "name": { "type": "string" } }
+            },
+            "push": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "commitWindow": { "$ref": "#/$defs/duration" } }
+            }
+          }
+        },
+        "gitTarget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "branch": { "type": "string" },
+            "path": { "type": "string", "minLength": 1 },
+            "encryption": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "provider": { "type": "string" },
+                "age": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "generateWhenMissing": { "type": "boolean" }
+                  }
+                },
+                "secretRef": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": { "name": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "watchRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "operations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "enum": ["CREATE", "UPDATE", "DELETE"] }
+                  },
+                  "apiGroups": { "type": "array", "items": { "type": "string" } },
+                  "apiVersions": { "type": "array", "items": { "type": "string" } },
+                  "resources": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": { "enabled": { "const": true } },
+        "required": ["enabled"]
+      },
+      "then": {
+        "properties": {
+          "gitProvider": {
+            "properties": { "url": { "minLength": 1 } },
+            "required": ["url"]
+          }
+        },
+        "required": ["gitProvider"]
+      }
+    },
+
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "enum": ["debug", "info", "error", "panic"],
+          "description": "zap levels. `warn` is NOT one of them: the binary rejects it and the pod crash-loops."
+        },
+        "development": { "type": "boolean" },
+        "encoder": { "enum": ["json", "console"] },
+        "stacktraceLevel": {
+          "enum": ["info", "error", "panic"],
+          "description": "zap stacktrace levels; `debug` is not accepted here."
+        }
+      }
+    },
+
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "managedBy": {
+          "type": "string",
+          "description": "Set to kubectl only for the generated install.yaml; leave as Helm otherwise."
+        }
+      }
+    }
+  }
+}

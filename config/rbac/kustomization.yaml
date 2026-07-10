@@ -3,6 +3,10 @@ kind: Kustomization
 resources:
   - sa.yaml
   - role.yaml
+  # The wildcard read a WatchRule may need, kept out of role.yaml so it can be dropped whole.
+  # See docs/rbac.md; the Helm chart renders the same pair from `rbac.watchTypes`.
+  - watch-any-role.yaml
+  - watch-any-rolebinding.yaml
   - cluster-role-jane-aggregated.yaml
   - cluster-rolebinding.yaml
   - cluster-rolebinding-jane.yaml   # E2E-only helper: allows impersonated user jane@acme.com writes in tests.

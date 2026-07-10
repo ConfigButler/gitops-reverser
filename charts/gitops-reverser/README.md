@@ -162,6 +162,9 @@ nodeSelector:
 |-----------|-------------|---------|
 | `replicaCount` | Number of controller replicas (can't be higher than 1 for now, sorry) | `1` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
+| `env` | Extra container env vars, as Kubernetes `EnvVar` entries | `[]` |
+| `volumes` / `volumeMounts` | Extra pod volumes and their mounts, appended as-is | `[]` |
+| `servers.enableHTTP2` | Serve HTTP/2 on the TLS servers. Off by default: disabling it mitigates the HTTP/2 Rapid-Reset CVE class | `false` |
 | `servers.audit.bindAddress` | host:port the audit ingress server binds to (`--audit-bind-address`) | `0.0.0.0:9444` |
 | `servers.audit.port` | Audit container/Service port; must match the port in `bindAddress` | `9444` |
 | `servers.audit.tls.enabled` | Serve audit ingress with TLS | `true` |
@@ -185,11 +188,16 @@ nodeSelector:
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password (only used when `queue.redis.addr` is set) | `""` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
+| `queue.redis.db` | Redis logical database index. Redis offers 16; use `queue.redis.keyPrefix` to go past that | `0` |
+| `queue.redis.keyPrefix` | Root of every key this release writes (watch cursors, attribution facts, command author records). Give each reverser its own prefix to share one Redis/Valkey between more reversers than `db` can separate. Changing it orphans the previous prefix's keys: cursors cold-replay once, which is safe. Allowed: `[A-Za-z0-9]`, `-`, `_`, `.`, `:` | `gitops-reverser` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
 | `attribution.enabled` | Run audit ingress and name mirrored-resource commit authors from matching kube-apiserver audit facts | `false` |
 | `attribution.ttl` | How long an attribution fact is retained waiting for the matching watch event to join it | `10m` |
 | `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
 | `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
+| `rbac.create` | Create the manager ClusterRole and its binding | `true` |
+| `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything — convenient, but the reverser can then read every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only, so the reverser cannot list or watch Secrets (it keeps `get` on named Secrets it is pointed at). See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
+| `rbac.watchTypes.selected` | Types to grant when `mode: selected`, as `{apiGroups, resources}` entries (verbs are always `get,list,watch`). Required and non-empty in that mode; `namespaces`, `customresourcedefinitions` and `apiservices` come from the manager role and must not be restated | `[]` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |

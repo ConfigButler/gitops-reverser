@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: gitops-reverser
+  name: gitops-reverser-watch-any
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gitops-reverser-watch-any
+subjects:
+- kind: ServiceAccount
+  name: gitops-reverser
+  namespace: sut

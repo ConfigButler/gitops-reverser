@@ -38,6 +38,19 @@ var (
 	errTargetWatchExpired = errors.New("target watch resourceVersion expired")
 )
 
+// targetWatchClosedErr distinguishes a watch that died under us from one that closed because
+// we are shutting down. Teardown closes the result channel and cancels the context, leaving
+// BOTH select cases ready — and select picks among ready cases at random, so the shutdown
+// path returned a spurious error roughly half the time. The context is the authority.
+func targetWatchClosedErr(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+		return errTargetWatchClosed
+	}
+}
+
 type targetWatchSet struct {
 	cancel context.CancelFunc
 	specs  map[targetWatchKey]string
@@ -346,7 +359,7 @@ func (m *Manager) targetWatchReplayAndStream(
 			return nil
 		case ev, ok := <-w.ResultChan():
 			if !ok {
-				return errTargetWatchClosed
+				return targetWatchClosedErr(ctx)
 			}
 			nextReplaying, err := m.handleTargetWatchSessionEvent(
 				ctx, log, gitDest, key, ops, ev, replaying, &replay,
@@ -605,7 +618,7 @@ func (m *Manager) streamLiveTargetWatchEvents(
 			return nil
 		case ev, ok := <-events:
 			if !ok {
-				return errTargetWatchClosed
+				return targetWatchClosedErr(ctx)
 			}
 			if targetWatchEventAtOrBeforeFloor(ev, floor) {
 				continue

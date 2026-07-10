@@ -28,4 +28,61 @@ subjects:
 - kind: ServiceAccount
   name: {{ include "gitops-reverser.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}
+{{/*
+  mode, the shape of each `selected` entry, and "selected must not be empty" are all enforced
+  by values.schema.json, which helm checks on template, lint, install and upgrade. Keeping the
+  rules there rather than as `fail` calls means one statement of the contract, and errors that
+  name the offending path.
+*/}}
+{{- $watchTypes := .Values.rbac.watchTypes | default dict }}
+{{- $mode := $watchTypes.mode | default "any" }}
+{{- $selected := $watchTypes.selected | default list }}
+---
+# The read access a WatchRule needs. Separate from the manager role because RBAC is additive:
+# folded in, a wildcard here would grant cluster-wide Secret list/watch however narrow the
+# Secret rule beside it is. Verbs are always get/list/watch — the reverser never writes to a
+# watched type. See docs/rbac.md.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-watch-{{ $mode }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+rules:
+{{- if eq $mode "any" }}
+- apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - watch
+{{- else }}
+{{- range $rule := $selected }}
+- apiGroups:
+    {{- toYaml $rule.apiGroups | nindent 4 }}
+  resources:
+    {{- toYaml $rule.resources | nindent 4 }}
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-watch-{{ $mode }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gitops-reverser.fullname" . }}-watch-{{ $mode }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "gitops-reverser.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
 {{- end }}

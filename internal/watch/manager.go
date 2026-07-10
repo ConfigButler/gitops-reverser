@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/dynamic/dynamicinformer"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -30,8 +29,20 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// RBAC permissions for dynamic watch manager - read-only access to watch all (also future ones!) resource types
-// +kubebuilder:rbac:groups=*,resources=*,verbs=get;list;watch
+// The API-resource catalog reads the two resources that describe the API surface itself, so
+// it can tell a type that vanished from one the operator was never allowed to see. These are
+// the trigger informers' resources too; without them a least-privilege install gets a 403 on
+// every reflector retry, which is why the trigger error handler stops on Forbidden.
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=get;list;watch
+
+// A WatchRule may name ANY type, so the watch manager's read access cannot be derived from
+// code. It is deliberately NOT a marker: controller-gen would fold `groups=*,resources=*`
+// into this ClusterRole, and RBAC is additive — a wildcard read grants cluster-wide Secret
+// list/watch no matter how narrow the Secret rule beside it is. The wildcard therefore lives
+// in a ClusterRole of its own (config/rbac/watch-any-role.yaml, `rbac.watchTypes.mode: any` in
+// the chart), so an operator that mirrors two CRDs can be told the exact types it may read and
+// be denied every other object in the cluster. See docs/rbac.md.
 
 // Manager is a controller-runtime Runnable that keeps the followability registry and the
 // demand-driven materialization axis fresh and drives the per-type splice reconcile. It
@@ -101,16 +112,23 @@ type Manager struct {
 	// (re-)evaluated after every catalog refresh — which controllers drive, not just the
 	// manager's own loop — so this is not a startup-only structure.
 	triggersMu sync.Mutex
-	// triggerCtx is the manager's lifetime context, the stop channel every trigger informer
-	// is started with. Set once by Start; nil before then, which defers informer creation.
+	// triggerCtx is the manager's lifetime context, the parent of every trigger informer's
+	// own context. Set once by Start; nil before then, which defers informer creation.
 	triggerCtx context.Context
-	// triggerFactory is the shared dynamic informer factory backing the trigger informers.
-	triggerFactory dynamicinformer.DynamicSharedInformerFactory
+	// triggerClient is the dynamic client the trigger informers list and watch through.
+	// Built once from the REST config, or injected by tests.
+	triggerClient dynamic.Interface
 	// triggersStarted is the set of trigger resources whose informer is already running.
 	triggersStarted map[schema.GroupVersionResource]struct{}
+	// triggerStops cancels one trigger informer without touching the others. Each informer
+	// gets its own context so a single forbidden resource can be stopped and later re-armed.
+	triggerStops map[schema.GroupVersionResource]context.CancelFunc
 	// triggersSkipLogged records which unserved trigger resources have already been logged,
 	// so a permanently absent aggregation layer produces one line, not one per refresh.
 	triggersSkipLogged map[schema.GroupVersionResource]struct{}
+	// triggersForbiddenLogged records which trigger resources RBAC has already denied, so a
+	// permanently unauthorized resource produces one line per denial, not one per retry.
+	triggersForbiddenLogged map[schema.GroupVersionResource]struct{}
 	// catalogReadyOnce guards the one-time "catalog ready" log line, matching the
 	// firstMessage/firstGroupReady sync.Once pattern used by the audit consumer.
 	catalogReadyOnce sync.Once

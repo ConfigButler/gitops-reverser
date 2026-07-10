@@ -33,7 +33,7 @@ is and is not the cause, then the design direction.
 > 5-minute `RequeueSteadyInterval`, so the happy-path GitTarget reconcile requeues after
 > **5 minutes, not 10** (§1.5, §2). The projection-race analysis and its GitPath-channel fix
 > are otherwise unaffected. See
-> [`../../future/secret-value-retention-plan.md`](../../future/secret-value-retention-plan.md).
+> [`../../security-model.md`](../../security-model.md).
 
 ### 1.1 The failure
 

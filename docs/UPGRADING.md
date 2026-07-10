@@ -7,6 +7,56 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — the wildcard cluster read moved to its own, droppable ClusterRole (next minor; behavior change)
+
+The shipped RBAC now says what the binary actually does. Nothing is taken away from a default
+install; what changes is that the parts can be separated.
+
+**The manager ClusterRole no longer contains `apiGroups: ["*"], resources: ["*"]`.** The types a
+`WatchRule` may read now come from a ClusterRole of their own, rendered from the new
+`rbac.watchTypes` and bound to the same ServiceAccount. The default (`mode: any`) reproduces the old
+wildcard exactly, so the default install keeps the same effective permissions. The split exists
+because RBAC is additive: while the wildcard sat in the manager role, no chart value could remove the
+cluster-wide Secret read it implied.
+
+**The manager role's `secrets` rule narrowed from `get,list,watch,create,update,patch` to
+`get,create,update`.** The operator has held no Secret informer since `v0.31.0` — Secrets are
+excluded from the manager cache, so every read is a direct `get` of a Secret a `GitProvider` or
+`GitTarget` names — but the marker was never updated to match. It never used `list`, `watch` or
+`patch`.
+
+**The manager role gained explicit `get,list,watch` on `customresourcedefinitions` and
+`apiservices`.** They were previously reachable only through the wildcard. The API-resource catalog
+and its trigger informers read both.
+
+**Migration**
+
+- Default installs (`rbac.watchTypes` unset): no action. Helm creates `<release>-watch-any` and its
+  binding; `kubectl apply` of `dist/install.yaml` includes the same pair.
+- To run least-privilege, set `rbac.watchTypes.mode: selected` and list the types your `WatchRule`s
+  name. The chart renders the ClusterRole; verbs are always `get,list,watch`. See [`rbac.md`](rbac.md).
+
+  ```yaml
+  rbac:
+    watchTypes:
+      mode: selected
+      selected:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+        - apiGroups: ["apps"]
+          resources: ["deployments"]
+  ```
+
+- If you hand-wrote a role because the shipped one was too broad, you can now drop it along with the
+  parts that duplicate `<release>-manager-role`.
+
+**Related behavior change.** A trigger informer (`customresourcedefinitions`, `apiservices`) that
+the API server serves but RBAC denies is now **stopped** after the first `403`, logged once, and
+re-armed automatically on a later catalog refresh if the permission is granted. Previously the
+reflector retried the denial forever. Discovery reports what the server serves, not what the caller
+may read, so a narrowed role reached this path — which is exactly the path this release makes easy
+to enter.
+
 ## Unreleased — `manifest-analyzer` scan modes renamed, and `--format json` now emits a versioned contract (next minor; breaking)
 
 The analyzer's machine-readable output moved to the new public

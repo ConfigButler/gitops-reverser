@@ -423,8 +423,9 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.StringVar(&cfg.redisAddr, "redis-addr", "valkey:6379",
 		"Redis/Valkey address (host:port). Holds each GitTarget's watch resume cursors (state continuity) "+
 			"and, when author attribution is enabled, the attribution facts. Leave empty to run without "+
-			"Redis: watches cold-replay on restart instead of resuming. Incompatible with "+
-			"--author-attribution=true or --admission-webhook.")
+			"Redis: watches cold-replay on restart instead of resuming. Required by "+
+			"--author-attribution=true. --admission-webhook still runs without it, but command-author "+
+			"capture is a no-op: CommitRequests commit as the configured committer.")
 	fs.BoolVar(&cfg.authorAttribution, "author-attribution", true,
 		"Name the real actor (human or service account) who caused each change as the Git commit author, "+
 			"resolved from matching audit facts; this runs the audit webhook ingress (default true). When "+

@@ -156,6 +156,6 @@ func TestEnsureAPISurfaceTriggerInformers_NoOpBeforeStart(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 	m.ensureAPISurfaceTriggerInformers(m.Log)
 
-	require.Nil(t, m.triggerFactory)
+	require.Nil(t, m.triggerClient)
 	require.Empty(t, m.triggersStarted)
 }

@@ -36,7 +36,7 @@ Facts first, then the fix, then the gaps, then the toolbox.
 > Secrets, so out-of-band credential/age-key changes are picked up on this unified steady
 > cadence instead of via a Secret informer. Where the narrative below says "up to 10
 > minutes," read 5 minutes. See
-> [`future/secret-value-retention-plan.md`](../future/secret-value-retention-plan.md).
+> [`security-model.md`](../security-model.md).
 
 ### 1.2 Per-controller triggers
 
@@ -162,7 +162,7 @@ until the 5-minute steady requeue, so `Ready=False (ConnectionFailed)` lingers t
 > reads credential and age-key Secrets directly by name and relies on the 5-minute
 > `RequeueSteadyInterval` to pick up rotations; the GitTarget's former encryption-Secret watch
 > was also removed. Adding a Secret watch would reintroduce cluster-wide Secret retention. See
-> [`future/secret-value-retention-plan.md`](../future/secret-value-retention-plan.md). The
+> [`security-model.md`](../security-model.md). The
 > §5 recommendation to "watch the auth Secret" below is retained only as historical context.
 
 ---

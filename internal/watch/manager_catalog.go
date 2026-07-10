@@ -13,6 +13,8 @@ import (
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -388,7 +390,7 @@ func (m *Manager) ensureAPISurfaceTriggerInformers(log logr.Logger) {
 		log.V(1).Info("deferring API surface trigger informers - catalog not ready")
 		return
 	}
-	if m.triggerFactory == nil {
+	if m.triggerClient == nil {
 		cfg := m.restConfig()
 		if cfg == nil {
 			log.V(1).Info("skipping API surface trigger informers - no REST config available")
@@ -399,9 +401,13 @@ func (m *Manager) ensureAPISurfaceTriggerInformers(log logr.Logger) {
 			log.Error(err, "failed to create API surface trigger client")
 			return
 		}
-		m.triggerFactory = dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 0)
+		m.triggerClient = dynamicClient
+	}
+	if m.triggersStarted == nil {
 		m.triggersStarted = map[schema.GroupVersionResource]struct{}{}
 		m.triggersSkipLogged = map[schema.GroupVersionResource]struct{}{}
+		m.triggersForbiddenLogged = map[schema.GroupVersionResource]struct{}{}
+		m.triggerStops = map[schema.GroupVersionResource]context.CancelFunc{}
 	}
 
 	handler := cache.ResourceEventHandlerFuncs{
@@ -420,25 +426,100 @@ func (m *Manager) ensureAPISurfaceTriggerInformers(log logr.Logger) {
 			"the catalog refreshes on its periodic tick instead", "gvr", gvr.String())
 	}
 
-	var fresh []cache.SharedIndexInformer
 	for _, gvr := range start {
-		informer := m.triggerFactory.ForResource(gvr).Informer()
-		if _, addErr := informer.AddEventHandler(handler); addErr != nil {
-			log.Error(addErr, "failed to add API surface trigger handler", "gvr", gvr.String())
-			continue
-		}
-		m.triggersStarted[gvr] = struct{}{}
-		delete(m.triggersSkipLogged, gvr)
-		fresh = append(fresh, informer)
-		log.Info("API surface trigger informer started", "gvr", gvr.String())
+		m.startAPISurfaceTriggerInformer(ctx, log, gvr, handler)
 	}
-	if len(fresh) == 0 {
+}
+
+// startAPISurfaceTriggerInformer runs one trigger informer under its own context. Each gets
+// a private informer rather than a share of a dynamicSharedInformerFactory: the factory
+// records an informer as started forever, so a resource stopped for one reason could never
+// be re-armed through it. Own informer, own context, own stop.
+func (m *Manager) startAPISurfaceTriggerInformer(
+	ctx context.Context,
+	log logr.Logger,
+	gvr schema.GroupVersionResource,
+	handler cache.ResourceEventHandlerFuncs,
+) {
+	informer := dynamicinformer.NewFilteredDynamicInformer(
+		m.triggerClient, gvr, metav1.NamespaceAll, 0, cache.Indexers{}, nil,
+	).Informer()
+
+	if _, addErr := informer.AddEventHandler(handler); addErr != nil {
+		log.Error(addErr, "failed to add API surface trigger handler", "gvr", gvr.String())
+		return
+	}
+	// Must precede Run. A forbidden LIST reaches this handler too: the reflector routes every
+	// ListAndWatch error through it, not only watch errors.
+	if setErr := informer.SetWatchErrorHandlerWithContext(m.triggerWatchErrorHandler(gvr, log)); setErr != nil {
+		log.Error(setErr, "failed to install API surface trigger error handler", "gvr", gvr.String())
 		return
 	}
 
-	// Start is idempotent per informer: it launches only the ones not yet running.
-	m.triggerFactory.Start(ctx.Done())
-	go waitForAPISurfaceTriggerSync(ctx, log, fresh)
+	gvrCtx, cancel := context.WithCancel(ctx)
+	m.triggersStarted[gvr] = struct{}{}
+	m.triggerStops[gvr] = cancel
+	delete(m.triggersSkipLogged, gvr)
+	// A denial that clears and returns must be logged again; the once-only guard covers a
+	// single denial, not the resource's whole lifetime.
+	delete(m.triggersForbiddenLogged, gvr)
+	log.Info("API surface trigger informer started", "gvr", gvr.String())
+
+	// cancel is also held in triggerStops so a forbidden reflector can stop just this one;
+	// releasing it here as well keeps the context from outliving the informer it belongs to.
+	go func() {
+		defer cancel()
+		informer.RunWithContext(gvrCtx)
+	}()
+	go waitForAPISurfaceTriggerSync(gvrCtx, log, gvr, informer)
+}
+
+// triggerWatchErrorHandler tears down a trigger informer the operator is not authorized to
+// read, and leaves every other error to the reflector's own backoff.
+//
+// Discovery answers what the API server SERVES, which is not what this ServiceAccount may
+// READ: a cluster can serve apiregistration.k8s.io while a least-privilege ClusterRole omits
+// apiservices. The informer then starts and its LIST is denied on every retry, forever —
+// the same benign, endlessly repeated noise the unserved-resource gate exists to remove,
+// and exactly how a real error gets missed. These resources are conveniences (they only
+// make the catalog refresh sooner than its periodic tick), so failing closed and quiet is
+// the honest response to "you may not read this".
+//
+// A 403 is authoritative and will not resolve by retrying, but it CAN be granted later, so
+// the resource is un-started rather than blacklisted: the next catalog refresh re-arms it.
+func (m *Manager) triggerWatchErrorHandler(
+	gvr schema.GroupVersionResource,
+	log logr.Logger,
+) cache.WatchErrorHandlerWithContext {
+	return func(ctx context.Context, r *cache.Reflector, err error) {
+		if !apierrors.IsForbidden(err) {
+			cache.DefaultWatchErrorHandler(ctx, r, err)
+			return
+		}
+		m.stopForbiddenTrigger(gvr, log, err)
+	}
+}
+
+// stopForbiddenTrigger cancels the informer's context and forgets it was started, so the
+// next successful catalog refresh can try again. Called from the reflector's goroutine.
+func (m *Manager) stopForbiddenTrigger(gvr schema.GroupVersionResource, log logr.Logger, err error) {
+	m.triggersMu.Lock()
+	defer m.triggersMu.Unlock()
+
+	if cancel, ok := m.triggerStops[gvr]; ok {
+		cancel()
+		delete(m.triggerStops, gvr)
+	}
+	delete(m.triggersStarted, gvr)
+
+	if _, logged := m.triggersForbiddenLogged[gvr]; logged {
+		// The reflector can report the denial more than once before its context unwinds.
+		return
+	}
+	m.triggersForbiddenLogged[gvr] = struct{}{}
+	log.Info("not authorized to watch an API surface trigger; informer stopped and the catalog "+
+		"refreshes on its periodic tick instead. Grant get/list/watch to re-arm it without a restart",
+		"gvr", gvr.String(), "reason", err.Error())
 }
 
 // apiSurfaceTriggerGVRs are the resources whose changes mean the API surface moved: a CRD
@@ -479,14 +560,18 @@ func (m *Manager) setTriggerContext(ctx context.Context) {
 	m.triggerCtx = ctx
 }
 
-func waitForAPISurfaceTriggerSync(ctx context.Context, log logr.Logger, informers []cache.SharedIndexInformer) {
-	syncFns := make([]cache.InformerSynced, 0, len(informers))
-	for _, informer := range informers {
-		syncFns = append(syncFns, informer.HasSynced)
-	}
-	if !cache.WaitForCacheSync(ctx.Done(), syncFns...) {
-		log.Info("API surface trigger informer sync stopped before completion")
+// waitForAPISurfaceTriggerSync watches one informer's initial sync. It takes that informer's
+// own context, so a trigger stopped for being forbidden ends this wait instead of leaving a
+// goroutine blocked on a cache that will never sync.
+func waitForAPISurfaceTriggerSync(
+	ctx context.Context,
+	log logr.Logger,
+	gvr schema.GroupVersionResource,
+	informer cache.SharedIndexInformer,
+) {
+	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+		log.V(1).Info("API surface trigger informer sync stopped before completion", "gvr", gvr.String())
 		return
 	}
-	log.V(1).Info("API surface trigger informers synced")
+	log.V(1).Info("API surface trigger informer synced", "gvr", gvr.String())
 }

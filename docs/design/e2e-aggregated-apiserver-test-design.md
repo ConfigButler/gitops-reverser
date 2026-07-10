@@ -280,7 +280,10 @@ are published per Kubernetes release; newer k3s versions may require building fr
 
 ### gitops-reverser RBAC: no changes needed
 
-The existing ClusterRole at `config/rbac/role.yaml` already grants wildcard read access:
+The default kustomize install still binds a wildcard read, but it no longer sits in
+`config/rbac/role.yaml`: it moved to a ClusterRole of its own,
+[`config/rbac/watch-any-role.yaml`](../../config/rbac/watch-any-role.yaml) (the Helm equivalent is
+`rbac.watchTypes.mode: any`).
 
 ```yaml
 - apiGroups: ['*']
@@ -288,8 +291,9 @@ The existing ClusterRole at `config/rbac/role.yaml` already grants wildcard read
   verbs: [get, list, watch]
 ```
 
-This covers `wardle.example.com` flunders and fischers. No additional RBAC overlay is needed for
-the gitops-reverser controller.
+This covers `wardle.example.com` flunders and fischers, so no additional RBAC overlay is needed. An
+install that narrowed `watchTypes` to `selected` would have to name them explicitly; the e2e setup
+does not.
 
 ### Integration into `prepare-e2e`
 

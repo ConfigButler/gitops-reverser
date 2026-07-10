@@ -233,6 +233,7 @@ Start with the stable docs surface:
 - [`docs/configuration.md`](docs/configuration.md)
 - [`docs/attribution-setup-guide.md`](docs/attribution-setup-guide.md)
 - [`docs/security-model.md`](docs/security-model.md)
+- [`docs/rbac.md`](docs/rbac.md): the two ClusterRoles, and how to stop the reverser enumerating Secrets
 - [`docs/commit-signing.md`](docs/commit-signing.md)
 - [`docs/github-setup-guide.md`](docs/github-setup-guide.md)
 - [`docs/sops-age-guide.md`](docs/sops-age-guide.md)
