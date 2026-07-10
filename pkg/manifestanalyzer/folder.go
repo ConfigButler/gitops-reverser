@@ -12,12 +12,14 @@ import (
 )
 
 // SchemaVersion identifies the JSON contract [FolderReport] and [RepoReport] marshal to.
-// It bumps only on a breaking change — a field removed, renamed, or given a new meaning.
-// Adding a field is not breaking, so consumers must ignore fields they do not know.
+// It is a marker, not a promise: while the project is pre-1.0 the contract may change
+// under a consumer, with or without a bump. Adding a field never bumps it, so consumers
+// must ignore fields they do not know.
 const SchemaVersion = "v1"
 
 // IssueKind classifies why a folder was not accepted. The values are the operator's own
-// refusal codes, stable across releases.
+// refusal codes. They are the part of an [Issue] worth matching on, and they change less
+// often than the surrounding shape — but pre-1.0 they can still change.
 type IssueKind string
 
 const (

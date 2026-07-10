@@ -93,7 +93,8 @@ The JSON documents also gained a `schemaVersion` field, and one field was droppe
 
 - Replace `--mode scan` with `--mode scan-folder`, and `--mode repo-walker` with `--mode scan-repo`.
   A stale invocation fails loudly rather than falling back to the default `analyze` mode.
-- Read `schemaVersion` and ignore fields you do not know; new fields are added within a schema major.
+- Read `schemaVersion` and ignore fields you do not know; new fields get added. The report is
+  pre-1.0 and carries no compatibility guarantee — pin a version.
 - If you exec'd the binary only to reach the acceptance verdict, prefer importing
   `pkg/manifestanalyzer` and calling `ScanFolder` / `ScanRepo`. They run the same acceptance gate the
   operator's writer enforces, so a tool built on them cannot drift from the operator that will later

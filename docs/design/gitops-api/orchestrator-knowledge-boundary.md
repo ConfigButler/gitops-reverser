@@ -238,16 +238,21 @@ fingerprint: a `flux-system/` directory containing `gotk-sync.yaml`. Until
 Tier 2 exists, that is a one-function change that both fixes the false negative
 on `09-flux-monorepo` and stops the false positives.
 
-### 3. A public field with a clock on it
+### 3. A public field worth renaming early
 
-`RepoSummary.FleetRoot` is exported from `pkg/manifestanalyzer`, whose
-[`doc.go`](../../../pkg/manifestanalyzer/doc.go) promises that *"fields are added,
-never repurposed or removed within a schema major."* `SchemaVersion` is `v1`.
+`RepoSummary.FleetRoot` is exported from
+[`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer). It should become something
+honest — `clusterEntryPoints []string`, or a `NotAnEditingTarget` claim carrying a
+reason.
 
-Renaming it to something honest — `clusterEntryPoints []string`, or folding it
-into a `NotAnEditingTarget` claim carrying a reason — is **free today and a
-schema major bump once anything depends on it**. Nothing does yet. This decision
-should be made before the write path hardens around the name, not after.
+That package used to promise that fields are added and never repurposed or removed.
+It no longer does: the project is pre-1.0, and
+[`doc.go`](../../../pkg/manifestanalyzer/doc.go) now says so plainly, so a rename
+costs nothing on paper.
+
+The real clock is **adoption, not the doc comment**. Every consumer that reads
+`fleetRoot` before the rename is a consumer that has to change. Nothing does yet.
+The decision should be made before the write path hardens around the name.
 
 ### 4. Onboarding, not refusal, for foreign files
 
