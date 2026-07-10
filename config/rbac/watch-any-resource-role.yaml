@@ -1,0 +1,24 @@
+# The read access the watch manager needs for the types a WatchRule names.
+#
+# A WatchRule may name any type in the cluster, including types installed after this role, so
+# this cannot be derived from the code the way every other rule in config/rbac/role.yaml is.
+# It is kept OUT of that role on purpose: RBAC is additive, so a wildcard read here would
+# grant cluster-wide Secret list/watch no matter how narrow the Secret rule beside it is.
+#
+# Drop this role (Helm: `rbac.watchAnyResource: false`) when you know which types the
+# reverser will mirror, and grant get/list/watch on exactly those instead. The operator
+# needs nothing else from it: it holds no long-lived informers on watched types, and it
+# never reads a Secret it was not pointed at by name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitops-reverser-watch-any-resource
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - get
+      - list
+      - watch

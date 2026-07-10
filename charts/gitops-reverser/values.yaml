@@ -211,6 +211,17 @@ attribution:
 # RBAC configuration
 rbac:
   create: true
+  # Grant cluster-wide read (get/list/watch) on every resource, in a ClusterRole of its own.
+  # A WatchRule may name any type, including one installed after this release, so the set
+  # cannot be derived from the code — and RBAC is additive, so this wildcard grants read on
+  # Secrets too, whatever the manager role says. The operator itself never lists or watches
+  # Secrets; it reads only the ones a GitProvider/GitTarget names.
+  #
+  # Set false once you know which types you mirror, and grant get/list/watch on exactly
+  # those. The reverser then runs with zero cluster-wide Secret access. It still needs
+  # namespaces, customresourcedefinitions and apiservices, which the manager role already
+  # carries. See docs/rbac.md.
+  watchAnyResource: true
 
 # Resource limits and requests
 resources:

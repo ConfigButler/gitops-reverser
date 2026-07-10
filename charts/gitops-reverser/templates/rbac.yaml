@@ -28,4 +28,42 @@ subjects:
 - kind: ServiceAccount
   name: {{ include "gitops-reverser.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}
+{{- if .Values.rbac.watchAnyResource }}
+---
+# A WatchRule may name any type, including types installed later, so this cannot be derived
+# from the code. It is a separate ClusterRole because RBAC is additive: folded into the
+# manager role, this wildcard would grant cluster-wide Secret list/watch however narrow the
+# Secret rule beside it is. Set rbac.watchAnyResource=false and grant the types you actually
+# mirror. See docs/rbac.md.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-watch-any-resource
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-watch-any-resource
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gitops-reverser.fullname" . }}-watch-any-resource
+subjects:
+- kind: ServiceAccount
+  name: {{ include "gitops-reverser.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- end }}

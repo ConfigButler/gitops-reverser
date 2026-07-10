@@ -107,7 +107,7 @@ type GitTargetReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 
 // Reconcile validates GitTarget references and drives startup lifecycle gates.
 //
