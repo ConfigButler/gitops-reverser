@@ -1,0 +1,47 @@
+# Document 1 of 4: a real apps/v1 Deployment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/example-org/frontend:1.8.3
+          ports:
+            - containerPort: 8080
+---
+# Document 2 of 4: plain configuration, NOT a Kubernetes object. No apiVersion,
+# no kind. A YAML stream may carry arbitrary documents between the KRM ones.
+settings:
+  logLevel: info
+  featureFlags:
+    - canary
+    - new-ui
+---
+# Document 3 of 4: an empty document. Valid YAML; it yields a null node and
+# contributes no object. A splitter that assumes every `---` chunk is KRM breaks here.
+---
+# Document 4 of 4: a real v1 Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 8080

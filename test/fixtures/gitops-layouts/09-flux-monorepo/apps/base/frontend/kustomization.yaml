@@ -1,0 +1,8 @@
+# This is a kustomization.yaml: a Kustomize build file (kustomize.config.k8s.io),
+# NOT a cluster object. The API server never stores a Kustomization of this kind.
+# Do not confuse it with the Flux Kustomization CRs in clusters/*/apps.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - service.yaml

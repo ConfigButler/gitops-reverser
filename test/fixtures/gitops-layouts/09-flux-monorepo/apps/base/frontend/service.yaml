@@ -1,0 +1,13 @@
+# Plain checked-in Kubernetes object: the base Service for the frontend app.
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 8080

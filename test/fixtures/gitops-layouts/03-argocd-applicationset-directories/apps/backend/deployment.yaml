@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: backend
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+    spec:
+      containers:
+        - name: backend
+          image: ghcr.io/example-org/backend:2.4.0
+          ports:
+            - name: http
+              containerPort: 9090
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

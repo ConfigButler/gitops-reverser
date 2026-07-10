@@ -1,0 +1,25 @@
+# COLLISION WARNING: despite the file being named apps.yaml (and NOT
+# kustomization.yaml), the object below is a Flux Kustomization CUSTOM RESOURCE
+# (kustomize.toolkit.fluxcd.io/v1) that the API server stores and the
+# kustomize-controller reconciles. It is NOT the same kind as the
+# kustomize.config.k8s.io/v1beta1 kustomization.yaml build files elsewhere in
+# this repo. This CR points the controller at the ./apps/production directory,
+# which is where the real kustomize.config.k8s.io Kustomization lives.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: apps
+  namespace: flux-system
+spec:
+  # apps reconcile only after infrastructure is Ready: controllers before apps.
+  dependsOn:
+    - name: infrastructure
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/production
+  prune: true
+  targetNamespace: production

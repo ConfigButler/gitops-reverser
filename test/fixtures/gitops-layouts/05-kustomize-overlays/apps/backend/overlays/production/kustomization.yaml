@@ -1,0 +1,16 @@
+# Production overlay build instructions (NOT a cluster object).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # REMOTE base: this base is NOT in this repository. Kustomize fetches it over
+  # the network from another repo at a pinned ref. The desired-state inputs for
+  # this environment therefore live partly outside this checkout entirely.
+  - github.com/example-org/gitops//apps/backend/base?ref=v1.4.0
+namespace: backend-production
+# images: override applied on top of the remotely fetched base.
+images:
+  - name: ghcr.io/example-org/backend
+    newTag: 2.4.0
+replicas:
+  - name: backend
+    count: 3

@@ -1,0 +1,14 @@
+# KRM with a `.yml` extension (not `.yaml`). A tool that globs only `*.yaml`
+# misses a real Kubernetes object. Extension does not imply presence/absence of KRM.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    app: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 80
+      targetPort: 8080

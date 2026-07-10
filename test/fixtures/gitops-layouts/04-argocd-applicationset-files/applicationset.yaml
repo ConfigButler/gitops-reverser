@@ -1,0 +1,55 @@
+# This IS a Kubernetes object: an Argo CD ApplicationSet.
+# Its git "files" generator reads the config files under deployments/**/*.yaml,
+# which are themselves NOT Kubernetes objects (see deployments/<env>/<app>.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tenant-apps
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    - git:
+        repoURL: https://github.com/example-org/gitops.git
+        revision: main
+        # Each matched file is parsed and its top-level keys become template
+        # parameters. The files below are plain data, not KRM.
+        files:
+          - path: deployments/**/*.yaml
+  template:
+    metadata:
+      # One Application per matched generator file, e.g. dev-frontend.
+      name: '{{.namespace}}-{{.name}}'
+      namespace: argocd
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/example-org/gitops.git
+        targetRevision: main
+        # The rendered Application deploys the Helm chart under chart/,
+        # NOT the generator input file that produced it.
+        path: chart
+        helm:
+          releaseName: '{{.name}}'
+          parameters:
+            - name: nameOverride
+              value: '{{.name}}'
+            - name: image
+              value: '{{.values.image}}'
+            - name: replicas
+              value: '{{.values.replicas}}'
+          # chartVersion is carried as a parameter so downstream tooling can pin
+          # the rendered chart even though the source path is a directory.
+          valuesObject:
+            chartVersion: '{{.chartVersion}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{.namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

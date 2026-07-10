@@ -1,0 +1,33 @@
+# Staging overlay build instructions (NOT a cluster object).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # Relative path to the in-repo base, rendered fresh on every build.
+  - ../../base
+# namespace: transformation - rewrites .metadata.namespace on every object.
+namespace: frontend-staging
+# namePrefix: mutates object identity - the Deployment "frontend" becomes
+# "staging-frontend", and every reference to it is rewritten to match.
+namePrefix: staging-
+# replicas: override of the base Deployment's replica count.
+replicas:
+  - name: frontend
+    count: 2
+# images: override - swap the tag on the base image (newTag).
+images:
+  - name: ghcr.io/example-org/frontend
+    newTag: 1.8.3-rc2
+# patches: strategic-merge patch changing an existing object.
+patches:
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: frontend
+# configMapGenerator: builds a ConfigMap from a non-YAML env file. The output
+# name gets a content-hash suffix (e.g. frontend-config-abc12), so there is no
+# single checked-in document for the generated object.
+configMapGenerator:
+  - name: frontend-config
+    behavior: create
+    envs:
+      - config.properties

@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: apps
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    - git:
+        repoURL: https://github.com/example-org/gitops.git
+        revision: main
+        # Each directory matching apps/* becomes one Application.
+        # apps/* matches only ONE level deep: apps/frontend, apps/backend,
+        # apps/worker, apps/empty, apps/disabled-example, apps/platform.
+        # It does NOT match apps/platform/monitoring (that is two levels deep).
+        directories:
+          - path: apps/*
+          # Excluded: this directory is skipped and never becomes an Application.
+          - path: apps/disabled-example
+            exclude: true
+  template:
+    metadata:
+      # The directory's basename becomes the Application name.
+      name: '{{.path.basename}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/example-org/gitops.git
+        targetRevision: main
+        path: '{{.path.path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{.path.basename}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

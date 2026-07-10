@@ -1,0 +1,12 @@
+# YAML, not KRM. A Docker Compose file. `services:` looks structural but these
+# are Compose services, not Kubernetes Services. No apiVersion/kind.
+version: "3.9"
+services:
+  frontend:
+    image: ghcr.io/example-org/frontend:1.8.3
+    ports:
+      - "8080:8080"
+  backend:
+    image: ghcr.io/example-org/backend:2.4.0
+    depends_on:
+      - frontend

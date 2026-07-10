@@ -1,0 +1,14 @@
+# Per-cluster override values for frontend on the staging cluster.
+# This is plain YAML, NOT a Kubernetes object: no apiVersion, no kind.
+# The matrix is sparse: there is deliberately no backend.yaml for staging. Note also that
+# the staging cluster is not selected by the ApplicationSet (environment=production), so
+# this file describes an override for a pairing the matrix never renders.
+replicaCount: 1
+image:
+  tag: 1.8.3
+ingress:
+  host: frontend.staging.example.com
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi

@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+spec:
+  project: default
+  # Multi-source: the chart comes from the upstream Helm repo, and the value file
+  # is the values.yaml sitting next to this Application in the same folder.
+  sources:
+    - repoURL: https://charts.jetstack.io
+      chart: cert-manager
+      targetRevision: v1.16.2
+      helm:
+        valueFiles:
+          - $values/platform/cert-manager/values.yaml
+    - repoURL: https://github.com/example-org/gitops.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

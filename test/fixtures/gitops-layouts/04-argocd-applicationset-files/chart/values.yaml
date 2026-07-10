@@ -1,0 +1,8 @@
+# Default Helm values. Plain YAML data, NOT a Kubernetes object. The
+# ApplicationSet overrides nameOverride/image/replicas per generated Application.
+nameOverride: ""
+replicas: 1
+image: ghcr.io/example-org/frontend:1.8.3
+service:
+  port: 80
+  targetPort: 8080

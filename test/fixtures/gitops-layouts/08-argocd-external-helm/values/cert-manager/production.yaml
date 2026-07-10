@@ -1,0 +1,13 @@
+# Helm values for the cert-manager chart (production overlay) -- NOT a Kubernetes object.
+# Present in the repo but not referenced by applications/cert-manager.yaml, which
+# instead carries its values inline. Rendered by Helm when a chart consumes it.
+installCRDs: true
+replicaCount: 2
+prometheus:
+  enabled: true
+webhook:
+  replicaCount: 2
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi

@@ -1,0 +1,42 @@
+# COLLISION WARNING: named infrastructure.yaml, but these are Flux Kustomization
+# CUSTOM RESOURCES (kustomize.toolkit.fluxcd.io/v1), not kustomize.config.k8s.io
+# build files. Two of them, in one multi-doc file.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure
+  namespace: flux-system
+spec:
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/controllers
+  prune: true
+  wait: true
+  # healthChecks gate readiness on a specific applied object before dependents.
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: ingress-nginx
+      namespace: ingress-nginx
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infra-configs
+  namespace: flux-system
+spec:
+  # cluster-issuers need the cert-manager CRDs from the controllers layer first.
+  dependsOn:
+    - name: infrastructure
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/configs
+  prune: true

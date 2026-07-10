@@ -1,0 +1,6 @@
+# This file marks gitops-staging/ as a standalone repository root.
+# In the real world this directory would be cloned as its own Git repository,
+# with its own history and its own access control, separate from dev/production.
+.env
+*.tmp
+.DS_Store

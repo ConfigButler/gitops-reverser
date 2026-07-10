@@ -1,0 +1,27 @@
+# TRAP: Go template syntax with NO Chart.yaml anywhere in this repo. The `{{ }}`
+# actions make this INVALID YAML until a templating engine renders it. A YAML
+# parser fails on `replicas: {{ .Values.replicaCount }}`. A `templates/` dir
+# does not imply a Helm chart, and `.yaml` here does not imply parseable YAML.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          ports:
+            - containerPort: 8080
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

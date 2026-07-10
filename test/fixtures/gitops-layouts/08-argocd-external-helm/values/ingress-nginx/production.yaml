@@ -1,0 +1,21 @@
+# Helm values for the ingress-nginx chart (production overlay) -- NOT a Kubernetes object.
+# Rendered by Argo CD via Helm; there is no apiVersion or kind here.
+controller:
+  replicaCount: 4
+  service:
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: nlb
+      service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 4
+    maxReplicas: 12
+    targetCPUUtilizationPercentage: 70

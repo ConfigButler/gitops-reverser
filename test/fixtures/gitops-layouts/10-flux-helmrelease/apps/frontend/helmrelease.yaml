@@ -1,0 +1,24 @@
+# HelmRelease for the frontend app, installed from the podinfo chart pinned by
+# the OCIRepository in infrastructure/sources (referenced via spec.chartRef).
+# No metadata.namespace is set on purpose: the Flux Kustomization in
+# clusters/production/apps.yaml injects targetNamespace, so where this object
+# (and its values ConfigMap) land is decided OUTSIDE this folder.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: frontend
+spec:
+  interval: 15m
+  releaseName: frontend
+  chartRef:
+    kind: OCIRepository
+    name: podinfo
+    namespace: flux-system
+  valuesFrom:
+    # MECHANISM 5: consume a ConfigMap that does NOT exist as a checked-in
+    # object. apps/frontend/kustomization.yaml's configMapGenerator builds
+    # frontend-values from the plain values.yaml file next to it. That values
+    # file is not a Kubernetes object until kustomize turns it into one.
+    - kind: ConfigMap
+      name: frontend-values
+      valuesKey: values.yaml

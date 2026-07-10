@@ -1,0 +1,25 @@
+# Helm chart metadata. This is a well-formed YAML document, but it is a Helm
+# Chart.yaml, not a Kubernetes API object (there is no `kind: Chart` in the API).
+apiVersion: v2
+name: frontend
+description: A Helm chart for the example-org frontend web application.
+type: application
+version: 1.4.2
+appVersion: "1.8.3"
+keywords:
+  - frontend
+  - web
+home: https://github.com/example-org/gitops
+sources:
+  - https://github.com/example-org/gitops
+maintainers:
+  - name: Platform Team
+    email: platform@example-org.test
+dependencies:
+  # A real subchart pulled from an external Helm repository. It is only rendered
+  # when redis.enabled is true, so its presence in the chart does not guarantee
+  # the resulting release contains any Redis objects.
+  - name: redis
+    version: ~20.6.0
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled

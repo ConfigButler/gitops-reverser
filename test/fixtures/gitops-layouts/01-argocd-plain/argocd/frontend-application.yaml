@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: frontend
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/example-org/gitops.git
+    targetRevision: main
+    path: apps/frontend
+    directory:
+      recurse: true
+      # include/exclude are glob patterns evaluated against files under path.
+      # ci-metadata.yaml is plain build metadata, not a Kubernetes object, so
+      # it is excluded to stop Argo CD trying to apply it to the cluster.
+      include: '*.yaml'
+      exclude: 'ci-metadata.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false

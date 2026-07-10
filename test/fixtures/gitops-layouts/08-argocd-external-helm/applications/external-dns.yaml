@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-dns
+  namespace: argocd
+spec:
+  project: default
+  # Single source. Values are carried as `helm.valuesObject`: a structured
+  # mapping (not a string), so ordinary YAML tooling can parse them in place.
+  source:
+    repoURL: https://kubernetes-sigs.github.io/external-dns
+    chart: external-dns
+    targetRevision: 1.15.0
+    helm:
+      valuesObject:
+        provider: aws
+        policy: sync
+        registry: txt
+        txtOwnerId: example-org
+        domainFilters:
+          - example-org.com
+          - internal.example-org.com
+        sources:
+          - service
+          - ingress
+        serviceAccount:
+          create: true
+          annotations:
+            eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/external-dns
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-dns
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,12 @@
+# Kustomize build file (kustomize.config.k8s.io), NOT a cluster object.
+# This is the staging overlay: it renders ../base/frontend and patches it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: staging
+resources:
+  - ../base/frontend
+patches:
+  - path: frontend-patch.yaml
+    target:
+      kind: Deployment
+      name: frontend

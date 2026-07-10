@@ -1,0 +1,16 @@
+# Production-only overrides. NOT a Kubernetes object. Overrides a subset of keys
+# on top of common.yaml. image.tag is deliberately omitted; the production
+# Argo CD Application pins it inline via helm.parameters so image promotion is a
+# one-line change in one place.
+replicaCount: 4
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+ingress:
+  host: frontend.example-org.test

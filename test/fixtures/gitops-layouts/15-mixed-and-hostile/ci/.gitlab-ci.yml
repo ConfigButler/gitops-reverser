@@ -1,0 +1,17 @@
+# YAML, not KRM. A GitLab CI pipeline definition. No apiVersion/kind; the
+# top-level keys are reserved words (stages) and job names (build-image, deploy).
+stages:
+  - build
+  - deploy
+
+build-image:
+  stage: build
+  image: gcr.io/kaniko-project/executor:latest
+  script:
+    - /kaniko/executor --context . --destination ghcr.io/example-org/frontend:$CI_COMMIT_SHORT_SHA
+
+deploy:
+  stage: deploy
+  image: alpine/k8s:1.29.0
+  script:
+    - kubectl apply -f rendered/

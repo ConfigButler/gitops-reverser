@@ -1,0 +1,62 @@
+# Default configuration values for the frontend chart. This file is NOT a
+# Kubernetes object: it has no apiVersion/kind. Its keys are consumed by the
+# templates as `.Values.*` and can be overridden at install/upgrade time.
+replicaCount: 2
+
+image:
+  repository: ghcr.io/example-org/frontend
+  # Defaults to .Chart.AppVersion (1.8.3) when left empty; see deployment.yaml.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: frontend.example-org.test
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+config:
+  # Rendered verbatim into a ConfigMap by templates/configmap.yaml.
+  LOG_LEVEL: info
+  BACKEND_URL: http://backend
+
+# Values for the redis subchart. Disabled by default; the Chart.yaml condition
+# `redis.enabled` gates whether the subchart renders at all.
+redis:
+  enabled: false
+  architecture: standalone

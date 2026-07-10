@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "frontend chart values",
+  "description": "Schema for the values consumed by the frontend Helm chart.",
+  "type": "object",
+  "required": ["replicaCount", "image", "service"],
+  "additionalProperties": true,
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of pod replicas when autoscaling is disabled."
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "description": "Container image repository, without the tag."
+        },
+        "tag": {
+          "type": "string",
+          "description": "Image tag; empty string falls back to Chart.appVersion."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": ["port"],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "targetPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    }
+  }
+}

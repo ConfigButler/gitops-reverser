@@ -1,0 +1,14 @@
+# SOPS creation-rules file. This is CONFIGURATION for the `sops` CLI, not a
+# Kubernetes object: it has no apiVersion/kind and the API server never sees it.
+# The `age` recipient below is a FAKE but correctly-shaped age public key
+# (bech32, `age1` prefix). NOT A REAL KEY.
+creation_rules:
+  # Any file whose path ends in `.enc.yaml` is encrypted to the age recipient.
+  - path_regex: .*\.enc\.yaml$
+    # Fake age recipient. NOT A REAL KEY.
+    age: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+  # Only values under `data`/`stringData` are encrypted; keys and structure
+  # (apiVersion, kind, metadata) stay cleartext so the file is still valid KRM.
+  - encrypted_regex: ^(data|stringData)$
+    # Fake age recipient. NOT A REAL KEY.
+    age: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p

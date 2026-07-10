@@ -1,0 +1,14 @@
+# Shared value overrides applied to EVERY environment. This is NOT a Kubernetes
+# object; it is a Helm values file, layered on top of the chart's own
+# values.yaml and below the per-environment file.
+image:
+  repository: ghcr.io/example-org/frontend
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true

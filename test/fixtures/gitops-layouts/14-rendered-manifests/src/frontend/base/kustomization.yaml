@@ -1,0 +1,12 @@
+# kustomize config (not a cluster object). The configMapGenerator makes the
+# rendered ConfigMap name gain a content-hash suffix.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - service.yaml
+configMapGenerator:
+  - name: frontend-config
+    literals:
+      - LOG_LEVEL=info
+      - FEATURE_FLAGS=canary

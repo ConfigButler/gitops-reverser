@@ -1,0 +1,15 @@
+# Dev-only overrides. NOT a Kubernetes object. Overrides a subset of keys on top
+# of common.yaml. Note image.tag is intentionally omitted here: the Argo CD
+# Application for dev sets it inline via helm.parameters instead.
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+
+ingress:
+  host: dev.frontend.example-org.test

@@ -1,0 +1,21 @@
+# A Helm test hook. Only created when `helm test` runs, not on install/upgrade,
+# because of the helm.sh/hook annotation. It is a real Pod once rendered.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "frontend.fullname" . }}-test-connection"
+  labels:
+    {{- include "frontend.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: wget
+      image: busybox:1.36
+      command:
+        - wget
+      args:
+        - "--spider"
+        - "{{ include "frontend.fullname" . }}:{{ .Values.service.port }}"

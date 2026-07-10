@@ -1,0 +1,39 @@
+# COLLISION WARNING: named apps.yaml, but this is a Flux Kustomization CUSTOM
+# RESOURCE (kustomize.toolkit.fluxcd.io/v1), not a kustomize.config.k8s.io build
+# file. It reconciles the ./apps/frontend directory - AND rewrites the result.
+#
+# OUT-OF-BAND TRANSFORM: this CR injects configuration the app folder never
+# declares. targetNamespace decides where every rendered object lands, and
+# postBuild.substitute / substituteFrom expand ${var} tokens (e.g. the
+# ${cluster_domain} in apps/frontend/values.yaml) AFTER kustomize build. The
+# folder's rendered desired state therefore depends on values defined here.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: apps
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: infra-sources
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/frontend
+  prune: true
+  targetNamespace: production
+  postBuild:
+    # Inline variables spliced into every ${var} token in the build output.
+    substitute:
+      cluster_env: production
+      cluster_domain: prod.example-org.dev
+    # Additional variables merged from objects created out of band (NOT in this
+    # repo): a ConfigMap and a Secret in flux-system.
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+      - kind: Secret
+        name: cluster-secret-vars
+        optional: true

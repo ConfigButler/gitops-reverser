@@ -7,6 +7,9 @@
 bin/*
 Dockerfile.cross
 *.env
+# The GitOps layout fixtures check in a kustomize secretGenerator env file on purpose.
+# Its contents are placeholder text, never a real credential.
+!test/fixtures/gitops-layouts/**/*.env
 
 # Test binary, built with `go test -c`
 *.test

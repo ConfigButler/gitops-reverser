@@ -1,0 +1,33 @@
+# NESTED application directory: this lives at apps/platform/monitoring, two
+# levels below apps/. The generator's apps/* pattern matches apps/platform but
+# NOT apps/platform/monitoring, so these manifests are not selected on their own.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: monitoring
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: monitoring
+    spec:
+      containers:
+        - name: monitoring
+          image: ghcr.io/example-org/worker:0.9.1
+          ports:
+            - name: metrics
+              containerPort: 9091
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

@@ -1,0 +1,12 @@
+# Per-cluster override values for frontend on the us-production cluster.
+# This is plain YAML, NOT a Kubernetes object: no apiVersion, no kind.
+# The matrix is sparse: there is deliberately no backend.yaml for us-production.
+replicaCount: 3
+image:
+  tag: 1.8.3
+ingress:
+  host: frontend.us.example.com
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi

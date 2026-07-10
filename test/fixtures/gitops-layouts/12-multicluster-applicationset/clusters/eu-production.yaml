@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: eu-production
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+    environment: production
+    region: eu-west-1
+type: Opaque
+stringData:
+  name: eu-production
+  server: https://eu-production.k8s.example.com:6443
+  # The bearerToken below is intentionally fake — this is a fixture, never a real credential.
+  config: |
+    {
+      "bearerToken": "not-a-real-token",
+      "tlsClientConfig": {
+        "insecure": false,
+        "caData": "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t"
+      }
+    }

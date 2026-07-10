@@ -1,0 +1,12 @@
+# Per-cluster override values for frontend on the eu-production cluster.
+# This is plain YAML, NOT a Kubernetes object: no apiVersion, no kind.
+# It is consumed out-of-band (Helm values / config-management plugin), not applied directly.
+replicaCount: 4
+image:
+  tag: 1.8.3
+ingress:
+  host: frontend.eu.example.com
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi

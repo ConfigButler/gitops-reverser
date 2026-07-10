@@ -1,0 +1,11 @@
+# Production overlay input. Adds a namePrefix and namespace and pins the image
+# tag. `kustomize build` on this directory produces rendered/production/frontend.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namePrefix: prod-
+namespace: frontend-production
+resources:
+  - ../../base
+images:
+  - name: ghcr.io/example-org/frontend
+    newTag: 1.8.3

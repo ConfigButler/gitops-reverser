@@ -1,0 +1,15 @@
+# Kustomize build file (kustomize.config.k8s.io), NOT a cluster object. It turns
+# a non-object (values.yaml) INTO an object (a ConfigMap) via configMapGenerator.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrelease.yaml
+configMapGenerator:
+  # Builds ConfigMap "frontend-values" from the plain values.yaml file. The
+  # HelmRelease references it by that exact name, so the content-hash name
+  # suffix is disabled - otherwise the generated name would not match.
+  - name: frontend-values
+    files:
+      - values.yaml
+generatorOptions:
+  disableNameSuffixHash: true

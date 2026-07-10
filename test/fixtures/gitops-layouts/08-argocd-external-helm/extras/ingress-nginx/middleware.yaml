@@ -1,0 +1,35 @@
+# Plain Kubernetes manifests that accompany the ingress-nginx chart.
+# Unlike everything under values/, both documents below ARE Kubernetes objects
+# (they have apiVersion + kind). This is a multi-document file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-nginx-custom-snippets
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/part-of: ingress-nginx
+data:
+  # Injected into the NGINX http{} block via the controller's main-snippet key.
+  custom-headers.conf: |
+    more_set_headers "X-Content-Type-Options: nosniff";
+    more_set_headers "X-Frame-Options: SAMEORIGIN";
+    more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: default-backend
+  namespace: ingress-nginx
+  annotations:
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location = /healthz {
+        return 200 'ok';
+      }
+spec:
+  ingressClassName: nginx
+  # A catch-all Ingress that routes anything unmatched to a maintenance backend.
+  defaultBackend:
+    service:
+      name: default-http-backend
+      port:
+        number: 80

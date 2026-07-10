@@ -1,0 +1,53 @@
+# TRAP: KRM whose spec embeds templated KRM. A kro ResourceGraphDefinition:
+# each spec.resources[].template is a full Kubernetes object with ${schema.spec.*}
+# expressions resolved by the kro controller at instantiation. KRM nesting
+# templated KRM; the `${...}` values are plain YAML scalars until kro resolves them.
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: frontend
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: Frontend
+    spec:
+      replicas: integer | default=2
+      image: string | default="ghcr.io/example-org/frontend:1.8.3"
+  resources:
+    - id: deployment
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: frontend
+          labels:
+            app: frontend
+        spec:
+          replicas: ${schema.spec.replicas}
+          selector:
+            matchLabels:
+              app: frontend
+          template:
+            metadata:
+              labels:
+                app: frontend
+            spec:
+              containers:
+                - name: frontend
+                  image: ${schema.spec.image}
+                  ports:
+                    - containerPort: 8080
+    - id: service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: frontend
+          labels:
+            app: frontend
+        spec:
+          selector:
+            app: frontend
+          ports:
+            - port: 80
+              targetPort: 8080

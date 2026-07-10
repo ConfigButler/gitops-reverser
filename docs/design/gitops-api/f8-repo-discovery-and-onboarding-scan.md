@@ -359,6 +359,13 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
 - Reuse existing corpora where they fit
   (`internal/manifestanalyzer/testdata/contextual-namespace`, the `ambiguous-*`
   folders) rather than duplicating fixtures.
+- A **descriptive** corpus of real-world layouts lives at
+  [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/): Argo CD plain
+  directories, App of Apps, both ApplicationSet generators, kustomize overlays, Helm charts
+  and per-environment values, the Flux monorepo and `HelmRelease` shapes,
+  repo-per-environment, a cluster×app matrix, SOPS, committed rendered manifests, and a
+  hostile mixed folder. It records **no verdicts** — it is the input to deciding them. When a
+  layout there graduates into a decision, it gains a golden report under `scan-repo/` above.
 
 ## Open questions
 

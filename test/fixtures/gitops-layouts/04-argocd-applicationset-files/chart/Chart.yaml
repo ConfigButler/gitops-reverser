@@ -1,0 +1,8 @@
+# Helm chart metadata. This IS a well-formed YAML document, but it is a Helm
+# Chart.yaml, not a Kubernetes API object (kind Chart does not exist in the API).
+apiVersion: v2
+name: tenant-app
+description: A minimal Helm chart deployed by the ApplicationSet above.
+type: application
+version: 1.4.2
+appVersion: "1.8.3"

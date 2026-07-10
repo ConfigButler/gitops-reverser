@@ -1,0 +1,12 @@
+# Helm values for the external-dns chart (production overlay) -- NOT a Kubernetes object.
+# Present in the repo but not referenced by applications/external-dns.yaml, which
+# instead carries its values inline as valuesObject. Rendered by Helm.
+provider: aws
+policy: sync
+registry: txt
+txtOwnerId: example-org
+domainFilters:
+  - example-org.com
+sources:
+  - service
+  - ingress

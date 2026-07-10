@@ -1,0 +1,30 @@
+# Source input, NOT what the GitOps tool applies. `kustomize build` consumes
+# this; the plain output is written under rendered/ and only that is deployed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/example-org/frontend:1.8.3
+          envFrom:
+            - configMapRef:
+                name: frontend-config
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi

@@ -1,0 +1,18 @@
+# Strategic-merge patch (partial object). Merged onto the base Deployment
+# "frontend"; production asks for larger resource limits than staging.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  template:
+    spec:
+      containers:
+        - name: frontend
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
