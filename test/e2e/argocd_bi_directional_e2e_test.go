@@ -45,11 +45,11 @@ const (
 	argoSelfHealTimeout = 90 * time.Second
 	argoSyncTimeout     = 120 * time.Second
 	// Bounded so it can only pass via the webhook: comfortably longer than webhook
-	// delivery + refresh + auto-sync (a few seconds), but well under Argo's 180s
-	// timed reconciliation. If the webhook path is broken, this times out.
-	argoWebhookSyncTimeout = 90 * time.Second
-	// Long enough that a self-heal (2s backoff) would certainly have fired.
-	argoNoSelfHealWindow = 20 * time.Second
+	// delivery + refresh + auto-sync, but well under Argo's 180s timed
+	// reconciliation. If the webhook path is broken, this times out.
+	argoWebhookSyncTimeout = 20 * time.Second // measured ~4s end-to-end in the corner runs
+	// Long enough that a self-heal would certainly have fired if the field were not ignored.
+	argoNoSelfHealWindow = 10 * time.Second // measured: self-heal reverts a non-ignored field in ~1s
 )
 
 // argoBiDirectionalRepo holds the file-local repo fixtures for this describe block.
