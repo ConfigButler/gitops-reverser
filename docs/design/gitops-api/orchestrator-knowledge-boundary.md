@@ -185,6 +185,12 @@ The analyzer already knows — `Encrypted` and `CauseEncrypted` exist in
 The bug is that `scan-repo` never surfaces it (see below). Ownership has two
 sources: the document itself, and a claim about it.
 
+Ownership is also not always exclusive, and SOPS is the case that proves it: the
+key holder owns *reading* while we can still own *writing*, because encrypting to
+an `age` recipient needs only the public key that `.sops.yaml` publishes. That
+turns a refusal into a capability, and it is designed in
+[write-only-encrypted-secrets.md](write-only-encrypted-secrets.md).
+
 ## Architecture rules
 
 **Never depend on `argoproj/argo-cd` or `fluxcd/*` Go modules.** They pull very
@@ -273,7 +279,7 @@ Neither is designed here beyond the shape above.
 
 | Proposed | Scope |
 |---|---|
-| **Ownership axis** | `Encrypted`/non-editable in `ResourceCounts`; a core write-gate that refuses a machine-owned or generated destination; `Generated` detection from headers and `config.kubernetes.io/origin`. Delivers the three false accepts. |
+| **Ownership axis** | `Encrypted`/non-editable in `ResourceCounts`; a core write-gate that refuses a machine-owned or generated destination; `Generated` detection from headers and `config.kubernetes.io/origin`. Delivers the three false accepts. Its first API surface is [`EncryptedSecret`](write-only-encrypted-secrets.md). |
 | **Orchestrator interpreters** | `internal/gitops` claim vocabulary + registry; `argocd` and `flux` interpreters; `fleetRoot` re-expressed as `NotAnEditingTarget`; role classification (workload / control-plane / generated / machine-written) in the F8 report. |
 
 The ownership axis is the one with a correctness argument behind it and should go
