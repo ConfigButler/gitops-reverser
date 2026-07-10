@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,22 +19,16 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const (
-	biPollInterval          = time.Second
-	biEventuallyTimeout     = 45 * time.Second
-	biFluxReconcileTimeout  = "90s"
-	biStableCountShortWait  = 3 * time.Second
-	biStableCountMediumWait = 5 * time.Second
-	biStableCountLongWait   = 6 * time.Second
-)
+const biFluxReconcileTimeout = "90s"
 
 type biDirectionalRun struct {
+	// Git operations shared with the Argo CD spec; see bi_directional_common_test.go.
+	gitCheckout
+
 	testID                     string
 	testNs                     string
 	repoName                   string
-	checkoutDir                string
 	repoURL                    string
-	localGitRepoURL            string
 	fluxSecretName             string
 	fluxGitRepositoryName      string
 	fluxCRDsName               string
@@ -79,6 +72,14 @@ type iceCreamScoop struct {
 // biDirectionalRepo holds the file-local repo fixtures for the Bi Directional describe block.
 var biDirectionalRepo *RepoArtifacts
 
+// Flux half of the bi-directional corner (docs/design/e2e-bi-directional-corner.md).
+// Opt-in: `task test-e2e-bi-directional`, not `task test-e2e`. The corner is the
+// only place Argo CD is installed, and the two specs share that one cluster.
+//
+// Exact commit counts are safe here because Flux is driven as a *manually
+// triggered applier* — every reconcile in this spec is explicit. The Argo CD
+// spec cannot assert counts the same way; see the note on its selfHeal phase.
+//
 // Not Serial: a whole-cluster bidirectional behavioral test (Flux applies from
 // git while gitops-reverser mirrors live state back) that asserts on *exact*
 // commit counts to prove no commit loop. It owns a dedicated Gitea repo and its
@@ -89,11 +90,13 @@ var biDirectionalRepo *RepoArtifacts
 // only re-reconciles when its *resolved* plan hash changes (manager.go) — so a
 // foreign catalog refresh no longer perturbs this repo's commit count. See
 // docs/design/e2e-serial-registry.md.
-var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
+var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Ordered, func() {
 	var run biDirectionalRun
 	var testNs string
 
 	BeforeAll(func() {
+		skipUnlessBiDirectionalEnabled()
+
 		By("creating test namespace")
 		testNs = testNamespaceFor("bi-directional")
 		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
@@ -110,12 +113,15 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
 		applySOPSAgeKeyToNamespace(testNs)
 
-		run = newBiDirectionalRun()
-		run.testNs = testNs
+		run = newBiDirectionalRun(testNs)
 		run.assertCheckoutReady()
 	})
 
 	AfterAll(func() {
+		if !biDirectionalEnabled() {
+			// BeforeAll skipped before creating anything; `run` and `testNs` are zero.
+			return
+		}
 		run.cleanupFluxResources()
 		run.cleanupReverseResources()
 		// Namespace deletion is enough for ordinary namespaced leftovers like test Secrets and
@@ -332,14 +338,14 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 	})
 })
 
-func newBiDirectionalRun() biDirectionalRun {
+func newBiDirectionalRun(testNs string) biDirectionalRun {
 	testID := strconv.FormatInt(time.Now().UnixNano(), 10)
 	return biDirectionalRun{
+		gitCheckout:                newGitCheckout(biDirectionalRepo, testNs),
 		testID:                     testID,
+		testNs:                     testNs,
 		repoName:                   biDirectionalRepo.RepoName,
-		checkoutDir:                biDirectionalRepo.CheckoutDir,
 		repoURL:                    biDirectionalRepo.RepoURLHTTP,
-		localGitRepoURL:            fmt.Sprintf("http://localhost:13000/testorg/%s.git", biDirectionalRepo.RepoName),
 		fluxSecretName:             fmt.Sprintf("bi-flux-auth-%s", testID),
 		fluxGitRepositoryName:      fmt.Sprintf("bi-repo-%s", testID),
 		fluxCRDsName:               fmt.Sprintf("bi-crds-%s", testID),
@@ -367,12 +373,6 @@ func newBiDirectionalRun() biDirectionalRun {
 	}
 }
 
-func (r biDirectionalRun) assertCheckoutReady() {
-	_, err := os.Stat(filepath.Join(r.checkoutDir, ".git"))
-	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist at checkoutDir")
-	Expect(r.configureCheckoutAuth()).To(Succeed())
-}
-
 func (r biDirectionalRun) waitForCRDEstablished() {
 	Eventually(func(g Gomega) {
 		output, err := kubectlRun(
@@ -385,11 +385,6 @@ func (r biDirectionalRun) waitForCRDEstablished() {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(output).To(Equal("True"))
 	}, 20*time.Second, biPollInterval).Should(Succeed())
-}
-
-func (r biDirectionalRun) repoPath(parts ...string) string {
-	all := append([]string{r.checkoutDir}, parts...)
-	return filepath.Join(all...)
 }
 
 func (r biDirectionalRun) liveOrderPath(name string) string {
@@ -462,57 +457,6 @@ func (r biDirectionalRun) writeLiveOrder(order iceCreamOrderFile) {
 	Expect(os.WriteFile(r.liveOrderPath(order.Name), []byte(content), 0o644)).To(Succeed())
 }
 
-func (r biDirectionalRun) commitAllAndPush(message string) error {
-	if err := r.runGit("checkout", "-B", "main"); err != nil {
-		return err
-	}
-	if err := r.runGit("add", "."); err != nil {
-		return err
-	}
-	if err := r.runGit("commit", "--allow-empty", "-m", message); err != nil {
-		return err
-	}
-	return r.runGit("push", "--set-upstream", "origin", "main")
-}
-
-func (r biDirectionalRun) revertHEADAndPush() error {
-	if err := r.runGit("checkout", "-B", "main"); err != nil {
-		return err
-	}
-	if err := r.runGit("revert", "--no-edit", "HEAD"); err != nil {
-		return err
-	}
-	return r.runGit("push", "origin", "main")
-}
-
-func (r biDirectionalRun) configureCheckoutAuth() error {
-	username, password := r.readGitCredentialSecretDataDecoded()
-	authURL, err := r.authenticatedLocalGitURL(username, password)
-	if err != nil {
-		return err
-	}
-	return r.runGit("remote", "set-url", "origin", authURL)
-}
-
-func (r biDirectionalRun) authenticatedLocalGitURL(username, password string) (string, error) {
-	parsedURL, err := url.Parse(r.localGitRepoURL)
-	if err != nil {
-		return "", fmt.Errorf("parse local Git repo URL: %w", err)
-	}
-	parsedURL.User = url.UserPassword(username, password)
-	return parsedURL.String(), nil
-}
-
-func (r biDirectionalRun) runGit(args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = r.checkoutDir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
 func (r biDirectionalRun) runFlux(args ...string) error {
 	fluxArgs := make([]string, 0, len(args)+2)
 	if ctx := strings.TrimSpace(kubectlContext()); ctx != "" {
@@ -526,58 +470,6 @@ func (r biDirectionalRun) runFlux(args ...string) error {
 		return fmt.Errorf("flux %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return nil
-}
-
-func (r biDirectionalRun) gitPull() error {
-	return r.runGit("pull", "--ff-only")
-}
-
-func (r biDirectionalRun) gitMainCommitCount() (int, error) {
-	if err := r.runGit("rev-parse", "--verify", "refs/heads/main"); err != nil {
-		if strings.Contains(err.Error(), "unknown revision") ||
-			strings.Contains(err.Error(), "Needed a single revision") {
-			return 0, nil
-		}
-		return 0, err
-	}
-
-	cmd := exec.Command("git", "rev-list", "--count", "refs/heads/main")
-	cmd.Dir = r.checkoutDir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return 0, fmt.Errorf("git rev-list --count refs/heads/main: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil {
-		return 0, fmt.Errorf("parse git commit count %q: %w", strings.TrimSpace(string(output)), err)
-	}
-	return count, nil
-}
-
-func (r biDirectionalRun) gitHEAD() string {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = r.checkoutDir
-	output, err := cmd.CombinedOutput()
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to get git HEAD: %s", strings.TrimSpace(string(output))))
-	return strings.TrimSpace(string(output))
-}
-
-func (r biDirectionalRun) expectRemoteCommitCount(expected int) {
-	Eventually(func(g Gomega) {
-		g.Expect(r.gitPull()).To(Succeed())
-		count, err := r.gitMainCommitCount()
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(count).To(Equal(expected))
-	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
-}
-
-func (r biDirectionalRun) consistentlyExpectRemoteCommitCount(expected int, duration time.Duration) {
-	Consistently(func(g Gomega) {
-		g.Expect(r.gitPull()).To(Succeed())
-		count, err := r.gitMainCommitCount()
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(count).To(Equal(expected))
-	}, duration, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) applyFluxGitRepository() {
@@ -602,26 +494,6 @@ func (r biDirectionalRun) applyFluxGitRepository() {
 		Password:   password,
 	}, "flux-system")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply Flux GitRepository")
-}
-
-func (r biDirectionalRun) waitForStableRemoteCommitCount(duration time.Duration) int {
-	var stableCount int
-
-	Eventually(func(g Gomega) {
-		g.Expect(r.gitPull()).To(Succeed())
-		count, err := r.gitMainCommitCount()
-		g.Expect(err).NotTo(HaveOccurred())
-		stableCount = count
-
-		Consistently(func(inner Gomega) {
-			inner.Expect(r.gitPull()).To(Succeed())
-			currentCount, currentErr := r.gitMainCommitCount()
-			inner.Expect(currentErr).NotTo(HaveOccurred())
-			inner.Expect(currentCount).To(Equal(count))
-		}, duration, biPollInterval).Should(Succeed())
-	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
-
-	return stableCount
 }
 
 func (r biDirectionalRun) applyFluxDecryptionSecretFromControllerSecret() {
@@ -726,37 +598,6 @@ func (r biDirectionalRun) applyFluxLiveKustomization() {
 		DecryptionSecretName: r.fluxDecryptionSecret,
 	}, "flux-system")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply Flux live Kustomization")
-}
-
-func (r biDirectionalRun) readGitCredentialSecretDataBase64() (string, string) {
-	output, err := kubectlRunInNamespace(r.testNs, "get", "secret", biDirectionalRepo.GitSecretHTTP, "-o", "json")
-	Expect(err).NotTo(HaveOccurred(), "failed to read git credential Secret for Flux")
-
-	var obj unstructured.Unstructured
-	Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
-
-	data, found, err := unstructured.NestedStringMap(obj.Object, "data")
-	Expect(err).NotTo(HaveOccurred(), "failed to parse Secret data")
-	Expect(found).To(BeTrue(), "git credential Secret data not found")
-
-	username := strings.TrimSpace(data["username"])
-	password := strings.TrimSpace(data["password"])
-	Expect(username).NotTo(BeEmpty(), "git credential Secret username must be present")
-	Expect(password).NotTo(BeEmpty(), "git credential Secret password must be present")
-
-	return username, password
-}
-
-func (r biDirectionalRun) readGitCredentialSecretDataDecoded() (string, string) {
-	usernameB64, passwordB64 := r.readGitCredentialSecretDataBase64()
-
-	username, err := base64.StdEncoding.DecodeString(usernameB64)
-	Expect(err).NotTo(HaveOccurred(), "failed to decode git credential Secret username")
-
-	password, err := base64.StdEncoding.DecodeString(passwordB64)
-	Expect(err).NotTo(HaveOccurred(), "failed to decode git credential Secret password")
-
-	return strings.TrimSpace(string(username)), strings.TrimSpace(string(password))
 }
 
 func (r biDirectionalRun) waitForFluxGitRepositoryRevision(head string) {

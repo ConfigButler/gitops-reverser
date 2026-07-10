@@ -1,0 +1,6 @@
+# The specs create Application objects directly; no ApplicationSet generators.
+$patch: delete
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-applicationset-controller

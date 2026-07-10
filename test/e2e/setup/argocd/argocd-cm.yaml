@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+data:
+  # Make Argo's *spontaneous* refresh slow, not fast.
+  #
+  # Two clocks drive Argo, and the gap between them is what the bi-directional
+  # specs measure:
+  #   - self-heal reacts to live drift on a ~2s backoff, informer-driven;
+  #   - a NEW GIT REVISION is only noticed on this timed refresh.
+  #
+  # The specs drive refresh and sync explicitly (annotation + `.operation`), so
+  # they never wait on this interval. Shortening it would not speed them up — it
+  # would make the selfHeal spec FLAKY, by letting a spontaneous refresh pick up
+  # the Reverser's commit and converge to it before self-heal replays the stale
+  # revision. Keep this comfortably longer than any single spec.
+  timeout.reconciliation: 180s
+
+  # NOTE: `application.resourceTrackingMethod` is deliberately NOT set.
+  #
+  # Argo's default is `annotation` (argocd.argoproj.io/tracking-id), and the
+  # argocd bi-directional spec asserts that default explicitly. Pinning it here
+  # would make the spec assert our own config instead of Argo's behaviour, and an
+  # upstream default flip would then pass silently. Leave it unset so a bump of
+  # ARGOCD_VERSION breaks the spec loudly.

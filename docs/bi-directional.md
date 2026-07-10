@@ -120,6 +120,100 @@ This turns the workflow into:
 
 That is a much safer model than two always-on reconcilers.
 
+## Argo CD Recommendation
+
+Argo CD behaves differently enough from Flux that the Flux advice does not carry
+over unchanged. Everything below is exercised against a real Argo CD in
+[`../test/e2e/argocd_bi_directional_e2e_test.go`](../test/e2e/argocd_bi_directional_e2e_test.go).
+
+### Never enable `selfHeal` on a shared path
+
+Argo CD runs on two clocks:
+
+- **self-heal** reacts to live drift on a **~2 second** backoff
+- a **new Git revision** is only noticed on the timed refresh, **120 seconds** by default
+
+So on a shared path, `syncPolicy.automated.selfHeal: true` does not merely risk a
+stale replay — it guarantees one. Argo will overwrite the cluster from its cached
+revision long before it ever looks at what GitOps Reverser has just committed. The
+interactive change is destroyed, and Git history records the change followed by its
+own revert.
+
+This is the causality failure described [above](#why-shared-automatic-ownership-breaks-down),
+with the timing weighted heavily against you.
+
+### Prefer `ignoreDifferences` for split ownership
+
+The clean way to share a resource with Argo CD is to hand Argo an explicit list of
+fields it does not own:
+
+```yaml
+spec:
+  syncPolicy:
+    automated:
+      selfHeal: true          # safe now — the field below is invisible to drift detection
+    syncOptions:
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - group: example.com
+      kind: IceCreamOrder
+      jsonPointers:
+        - /spec/scoops        # owned by the Kubernetes API, published by GitOps Reverser
+```
+
+The ignored field never registers as drift, so self-heal never fires on it, and
+GitOps Reverser is free to publish the live value to Git. `RespectIgnoreDifferences=true`
+additionally stops a *legitimate* sync — triggered by some unrelated Git change —
+from resetting the field on its way past.
+
+This is [split ownership](#3-split-ownership), made enforceable by the tool rather
+than by convention.
+
+### Argo CD writes bookkeeping onto your objects
+
+Argo CD's default resource-tracking method is `annotation`. Its repo-server stamps
+every non-CRD object it applies with:
+
+```yaml
+metadata:
+  annotations:
+    argocd.argoproj.io/tracking-id: my-app:example.com/IceCreamOrder:my-ns/order-1
+```
+
+That annotation is controller state, not intent, and GitOps Reverser strips it
+before writing to Git — as it already did for Flux's `kustomize.toolkit.fluxcd.io/*`
+labels and for `kubectl.kubernetes.io/last-applied-configuration`.
+
+This matters more than it looks. Argo CD **never validates a tracking-id against
+the object that carries it**. If a manifest carrying a foreign tracking-id is
+applied to a cluster by anything other than Argo's own repo-server — `kubectl apply`,
+Flux, a promotion pipeline — then the next Argo CD Application to manage that object
+sees it as belonging to someone else, raises `SharedResourceWarning`, and **fails to
+sync**. Committing the annotation to Git is what arms that trap, which is why it is
+stripped.
+
+Sibling annotations under the same prefix — `sync-wave`, `sync-options`,
+`compare-options`, `hook` — *are* user intent and are preserved.
+
+### Keep Argo CD on `annotation` tracking
+
+If you set `application.resourceTrackingMethod` to `label` or `annotation+label`,
+Argo CD stamps the label `app.kubernetes.io/instance` instead. That key is
+indistinguishable from the standard recommended label that Helm and Kustomize set
+for entirely legitimate reasons, so GitOps Reverser cannot strip it — and it will be
+committed to Git.
+
+For any Reverser-managed path, leave Argo CD on its default `annotation` tracking.
+
+### No encrypted Secrets with Argo CD
+
+Flux `Kustomization` has native `spec.decryption.provider: sops`, so an encrypted
+Secret can round-trip: written by GitOps Reverser, decrypted and applied by Flux.
+
+Argo CD has no built-in SOPS decryption; it requires a Config Management Plugin
+(ksops, argocd-vault-plugin, …). Encrypted-Secret round-trip is therefore a
+**Flux-only capability** in this repository today.
+
 ## Practical Platform Guidance
 
 If you are evaluating this as a platform engineer, start with these rules:
@@ -162,14 +256,18 @@ Today the repository already supports the foundation for this direction:
 
 - reverse writes are optimized for frequent live changes
 - the Git path notices when the tracked branch moved externally
-- e2e coverage exists for a controlled shared-resource scenario
-- known Flux operational metadata is sanitized so tests focus on meaningful diffs
+- e2e coverage exists for a controlled shared-resource scenario, against both
+  Flux and Argo CD
+- known Flux **and** Argo CD operational metadata is sanitized so tests focus on
+  meaningful diffs
 
 What is not complete yet:
 
 - a stable, well-shaped product story for bi-directional usage
 - a finished first-class product surface for manual Flux acknowledgment
-- equivalent alignment patterns for Argo CD or other GitOps operators
+- an equivalent acknowledgment surface for Argo CD (the `ignoreDifferences`
+  recipe above is a configuration pattern, not a product feature)
+- alignment patterns for GitOps operators other than Flux and Argo CD
 - HA support for the controller
 - full production hardening for all shared-ownership edge cases
 
@@ -188,7 +286,14 @@ This keeps the simplest and most understandable workflows as the default.
 
 For the concrete exercised behavior, see:
 
-- [`../test/e2e/bi_directional_e2e_test.go`](../test/e2e/bi_directional_e2e_test.go)
+- [`../test/e2e/flux_bi_directional_e2e_test.go`](../test/e2e/flux_bi_directional_e2e_test.go)
+- [`../test/e2e/argocd_bi_directional_e2e_test.go`](../test/e2e/argocd_bi_directional_e2e_test.go)
+
+Both live in the opt-in bi-directional e2e corner — the only place Argo CD is
+installed. Run them with `task test-e2e-bi-directional`, and browse the resulting
+Argo CD state with `task argocd-ui`. See:
+
+- [`design/e2e-bi-directional-corner.md`](design/e2e-bi-directional-corner.md)
 
 For broader controller and repository lifecycle background, see:
 

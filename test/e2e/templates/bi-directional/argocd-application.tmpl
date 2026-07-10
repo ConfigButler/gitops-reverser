@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .ArgoNamespace }}
+spec:
+  project: default
+  source:
+    repoURL: {{ .RepoURL }}
+    targetRevision: {{ .Branch }}
+    path: {{ .Path }}
+    directory:
+      # gitops-reverser mirrors into <path>/<namespace>/<group>/<plural>/<name>.yaml,
+      # so Argo must walk subdirectories to see anything at all.
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .DestinationNamespace }}
+{{- if or .Automated .SyncOptions }}
+  syncPolicy:
+{{- if .Automated }}
+    automated:
+      prune: {{ .Prune }}
+      selfHeal: {{ .SelfHeal }}
+{{- end }}
+{{- if .SyncOptions }}
+    syncOptions:
+{{- range .SyncOptions }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .IgnoreJSONPointers }}
+  ignoreDifferences:
+    - group: {{ .IgnoreGroup }}
+      kind: {{ .IgnoreKind }}
+      jsonPointers:
+{{- range .IgnoreJSONPointers }}
+        - {{ . }}
+{{- end }}
+{{- end }}
