@@ -135,18 +135,96 @@ the failure happens at **deserialization**, before validation. No amount of
 lenient decoding rescues it. Any applier — `kubectl`, Argo CD, Flux's
 kustomize-controller — hits the same wall.
 
-So a keyless Flux does not ignore a SOPS Secret. It fails the whole
-`Kustomization`, and the apply error is the only thing the user sees. The escape
-is `spec.decryption` and the private age identity, which is exactly the material
-an editing cluster should not be handed
-([why](write-only-encrypted-secrets.md)).
-
 The last row is the nightmare: a lenient applier stores the ciphertext *as the
 value*, and an application reads its password as the literal string
-`ENC[AES256_GCM,...]`. Nothing errors. **Hydration must use strict decoding.**
+`ENC[AES256_GCM,...]`. Nothing errors. **Any hydrator must use strict decoding.**
 
-This is the one place where hydration genuinely cannot be "just run the applier",
-and it is a property of one document class, not of the tool.
+### Flux is kinder than the API server, and says so
+
+Flux never reaches that base64 error, because kustomize-controller checks first.
+Run against real Flux (kustomize-controller, `spec.decryption` unset, the
+[fixture 13](../../../test/fixtures/gitops-layouts/13-sops-encrypted/) Secret plus
+an ordinary `ConfigMap` in one folder):
+
+```
+Kustomization Ready=False
+  Secret/fluxsops/frontend-credentials is SOPS encrypted,
+  configuring decryption is required for this secret to be reconciled
+```
+
+Note that `kustomize build` itself is perfectly happy — it passes the document
+through untouched, `sops:` stanza and all. The guard is kustomize-controller's,
+and it is explicit.
+
+But the failure is **all-or-nothing**: the ordinary `ConfigMap` in the same folder
+was *not* applied. Flux does not ignore the encrypted Secret and proceed. It
+refuses the whole `Kustomization`.
+
+So the question becomes: can Flux be *told* to skip it?
+
+## Yes — and the mechanism depends on the folder layout
+
+Four attempts, all run against real Flux (v1 `Kustomization`, kustomize-controller,
+no decryption key), on a folder holding one plain `ConfigMap` and one SOPS `Secret`:
+
+| Attempt | Mechanism | Outcome |
+|---|---|---|
+| do nothing | — | `Ready=False`, *"is SOPS encrypted, configuring decryption is required"*. **The ConfigMap is not applied either.** |
+| ignore the *fields* | `Kustomization.spec.ignore` with `paths: ["/data", "/sops"]` | `Ready=False`, same message. The SOPS guard runs **before** the ignore rules. |
+| drop the *file* at the source | `GitRepository.spec.ignore` (`.sourceignore` syntax) excluding `**/*.enc.yaml` | `Ready=False` — `kustomize build failed: accumulating resources from 'secret.enc.yaml': no such file`. The `kustomization.yaml` still lists it. |
+| drop the *resource* from the build | `Kustomization.spec.patches` with `$patch: delete` | ✅ **`Ready=True`.** ConfigMap applied, Secret never created. |
+| plain folder + drop the file | no `kustomization.yaml`, plus `GitRepository.spec.ignore` | ✅ **`Ready=True`.** |
+
+Two mechanisms work, and **which one you need is decided by the folder layout** —
+the same plain-versus-kustomize split the analyzer already reports:
+
+- **Plain KRM folder** (the product's first-class target): exclude the file at the
+  source with `GitRepository.spec.ignore`. kustomize-controller synthesises a
+  kustomization from the files it finds, so an absent file is simply absent.
+- **Kustomize folder**: the file is named in `resources:`, so removing it from the
+  artifact breaks the build. Remove the *resource from the build output* instead,
+  with a `$patch: delete` entry per encrypted document.
+
+`Kustomization.spec.ignore` looks like the obvious answer and is not: it excludes
+JSON-pointer paths from **drift detection and apply**, and the SOPS guard fires
+before it ever runs.
+
+```mermaid
+flowchart TD
+    F["folder to hydrate"] --> K{"kustomization.yaml<br/>lists the encrypted file?"}
+    K -- no --> SI["GitRepository.spec.ignore<br/>drop the file from the artifact"]
+    K -- yes --> PD["Kustomization.spec.patches<br/>one delete per encrypted doc"]
+    SI --> OK["Ready=True<br/>everything else applied"]
+    PD --> OK
+    OK --> PROJ["GitOps Reverser projects an<br/>EncryptedSecret for each excluded doc"]
+
+    classDef good fill:#dfd,stroke:#3a3
+    class OK,PROJ good
+```
+
+### This is generatable, not hand-written
+
+The exclusion is not something a user should maintain. The analyzer **already
+knows** which documents are encrypted (`CauseEncrypted`) and whether a folder is
+plain or a kustomize render root. So the hydrator can emit the right exclusion for
+the right layout, and project an `EncryptedSecret` for every document it excluded.
+
+The user gets a cluster holding everything that could be hydrated, plus an honest
+description of everything that could not.
+
+Two operational caveats:
+
+- `GitRepository.spec.ignore` is a property of the **source**, shared by every
+  `Kustomization` that references it. An intent cluster wants its own
+  `GitRepository`, not the production one.
+- Excluded resources are never applied, so `prune` will never delete them. That is
+  correct here, and it is worth stating because it looks like a leak.
+
+**Argo CD is untested.** Its analogues exist — `directory.exclude` for a plain
+folder, `kustomize.patches` for a kustomize source — but Argo CD ships no SOPS
+awareness at all, so an unexcluded document would not meet a friendly guard. It
+would be sent to the API server and hit `illegal base64 data` from the table
+above. Same outcome, worse message.
 
 ## The rule that falls out
 
@@ -214,28 +292,31 @@ A SOPS `Secret` cannot hydrate as itself, because it is not a valid `Secret`. Th
 
 ## Who hydrates, then?
 
-Two answers, and the choice turns on one question: **does this subtree contain a
-document an applier cannot apply?**
+**A triggered Flux `Kustomization` can do all of it**, including subtrees that
+contain SOPS documents, provided the exclusion above is generated for it. It is the
+real applier with real semantics, it is already the acknowledgment step in the
+handshake, and it is proven. Point it at the revision, trigger it, wait for the
+SHA, leave it on a long interval.
 
-**A triggered Flux `Kustomization`** is the better answer whenever the subtree is
-all schema-conformant. It is the real applier with real semantics, it is already
-the acknowledgment step in the handshake above, and it is proven. Point it at the
-revision, trigger it, wait for the SHA, leave it on a long interval. Nothing new
-is built.
-
-**GitOps Reverser applies the document store itself** when the subtree contains
-documents no applier can accept — today, exactly the SOPS class. It already parses
-the repository into a document store to answer `ScanRepo`, so hydration is that
-store, applied once:
+The hydration step is then:
 
 1. Walk the `GitTarget` subtree, exactly as `ScanDir` does.
 2. For each document, ask the [capability registry](resource-capability-model.md).
-3. `schemaConformant` → apply it, **strictly**.
-4. Not `schemaConformant` → do not apply it. Create its projection instead.
-5. Never prune. Never re-apply on an interval. Never watch Git.
+3. For every non-`schemaConformant` document, emit an exclusion — a
+   `GitRepository.spec.ignore` pattern for a plain folder, a `$patch: delete` for a
+   kustomize root — and project an `EncryptedSecret` for it.
+4. Hand the source and the `Kustomization` to Flux. Trigger. Wait for the SHA.
+5. Never prune what was excluded. Never leave the interval short.
 
-No Git-host knowledge is added, no orchestrator is emulated, and the operator
-gains a capability it half has already.
+GitOps Reverser contributes the one thing Flux cannot know — *which documents are
+unhydratable, and why* — and Flux contributes everything else. No orchestrator is
+emulated, no Git-host knowledge is added, and the operator does not grow an apply
+loop of its own.
+
+Applying the document store directly, strictly, without Flux remains the fallback
+for an environment with no GitOps controller at all. It is a smaller thing to build
+than it looked before this section was written, because it is no longer the only
+way to hydrate a repository that uses SOPS.
 
 The intent cluster is disposable. If it drifts from Git for reasons other than the
 user's edit, the answer is to throw it away and hydrate a fresh one — not to
