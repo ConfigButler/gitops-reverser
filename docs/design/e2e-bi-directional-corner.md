@@ -395,7 +395,7 @@ race, and the commit window may coalesce the two events. The terminal state is
 deterministic; the intermediate count is not. This is the difference between the
 Flux spec (manual applier, exact counts are safe) and this one.
 
-### Spec C — the safe Argo CD recipe
+### Spec C — split ownership (NOT bi-directional; see the caveat below)
 
 `syncPolicy.automated: {selfHeal: true}` **plus**:
 
@@ -416,10 +416,17 @@ syncOptions: ["RespectIgnoreDifferences=true"]
 6. After an Argo refresh, assert still `Synced`, still `MintChip`, commit count stable.
 
 This is the Argo CD analogue of split ownership (mode 3 in
-[`bi-directional.md`](../bi-directional.md#3-split-ownership)) and the concrete
-answer to the "equivalent alignment patterns for Argo CD" gap. Contrast with
-Spec B — *the only difference is `ignoreDifferences`, and it is the difference
-between losing the change and keeping it.*
+[`bi-directional.md`](../bi-directional.md#3-split-ownership)) — and it is **not**
+bi-directional, which the spec asserts precisely so no one mistakes it for one.
+`ignoreDifferences` removes `/spec/scoops` from Argo's comparison in *both*
+directions: the API can now own it, but a **Git-side** change to `/spec/scoops`
+would no longer reach the cluster either. That is the whole point of split
+ownership, and the whole reason it is not the bi-directional answer. The genuine
+bi-directional configuration is `selfHeal: false` + the webhook (see
+[`argocd-bi-directional.md`](gitops-api/argocd-bi-directional.md)); Spec C exists
+to pin the *contrast* — the difference from Spec B is one `ignoreDifferences`
+stanza, and it is the difference between the cluster losing the change and the
+cluster keeping it by taking the field out of GitOps.
 
 `RespectIgnoreDifferences=true` is belt-and-braces rather than load-bearing here:
 because the Reverser keeps Git current, target and live agree anyway. It closes

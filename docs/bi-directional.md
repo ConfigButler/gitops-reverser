@@ -122,97 +122,55 @@ That is a much safer model than two always-on reconcilers.
 
 ## Argo CD Recommendation
 
-Argo CD behaves differently enough from Flux that the Flux advice does not carry
-over unchanged. Everything below is exercised against a real Argo CD in
-[`../test/e2e/argocd_bi_directional_e2e_test.go`](../test/e2e/argocd_bi_directional_e2e_test.go).
+The whole trick with Argo CD is one flag: **turn `selfHeal` off.** Self-heal
+reverts any live change back to Git in well under a second — it is the exact
+opposite of capturing that change. With it on, the interactive edit is destroyed
+before GitOps Reverser can commit it, and history flaps between the change and its
+revert. With it off, the loop is clean:
 
-### Never enable `selfHeal` on a shared path
-
-Argo CD runs on two clocks:
-
-- **self-heal** reacts to live drift on a **~2 second** backoff
-- a **new Git revision** is only noticed on the timed refresh, **120 seconds** by default
-
-So on a shared path, `syncPolicy.automated.selfHeal: true` does not merely risk a
-stale replay — it guarantees one. Argo will overwrite the cluster from its cached
-revision long before it ever looks at what GitOps Reverser has just committed. The
-interactive change is destroyed, and Git history records the change followed by its
-own revert.
-
-This is the causality failure described [above](#why-shared-automatic-ownership-breaks-down),
-with the timing weighted heavily against you.
-
-### Prefer `ignoreDifferences` for split ownership
-
-The clean way to share a resource with Argo CD is to hand Argo an explicit list of
-fields it does not own:
-
-```yaml
-spec:
-  syncPolicy:
-    automated:
-      selfHeal: true          # safe now — the field below is invisible to drift detection
-    syncOptions:
-      - RespectIgnoreDifferences=true
-  ignoreDifferences:
-    - group: example.com
-      kind: IceCreamOrder
-      jsonPointers:
-        - /spec/scoops        # owned by the Kubernetes API, published by GitOps Reverser
+```mermaid
+flowchart LR
+  api(["API / operator edit"]) --> cluster[("Cluster")]
+  cluster -- watch --> gr["GitOps Reverser"]
+  gr -- commit --> git[("Git")]
+  git -- "push webhook" --> argo["Argo CD<br/>(selfHeal OFF)"]
+  argo -- "apply new commits" --> cluster
 ```
 
-The ignored field never registers as drift, so self-heal never fires on it, and
-GitOps Reverser is free to publish the live value to Git. `RespectIgnoreDifferences=true`
-additionally stops a *legitimate* sync — triggered by some unrelated Git change —
-from resetting the field on its way past.
+- **Cluster → Git**: the live edit is captured by GitOps Reverser. Nothing reverts
+  it, so you can take all the time you need.
+- **Git → cluster**: a push webhook (Gitea/GitHub → `argocd-server /api/webhook`)
+  makes Argo apply new commits within seconds — including a change to the *same
+  field* from the Git side.
 
-This is [split ownership](#3-split-ownership), made enforceable by the tool rather
-than by convention.
+That two-way loop, with no reverting controller in the middle, is what
+bi-directional means.
 
-### Argo CD writes bookkeeping onto your objects
+### `ignoreDifferences` and three-way merge are a distraction
 
-Argo CD's default resource-tracking method is `annotation`. Its repo-server stamps
-every non-CRD object it applies with:
+You will be tempted by `ignoreDifferences`, `managedFieldsManagers`, or "just use
+the three-way merge." **Don't** — none of them is bi-directional. They all work by
+removing a field from Argo's comparison, which removes it in *both* directions: the
+field you carve out to protect an API edit is now a field Argo will **never apply
+from Git** either. That is [split ownership](#3-split-ownership) — a fine, separate
+mode where one side owns a field outright — not the shared, both-ways behaviour we
+are building. Presenting it as "safe self-heal" hides that it only became safe by
+opting the field out of GitOps.
 
-```yaml
-metadata:
-  annotations:
-    argocd.argoproj.io/tracking-id: my-app:example.com/IceCreamOrder:my-ns/order-1
-```
+The full reasoning — including why PreSync hooks and self-heal timers can't rescue
+it either — is in
+[`design/gitops-api/argocd-bi-directional.md`](design/gitops-api/argocd-bi-directional.md).
 
-That annotation is controller state, not intent, and GitOps Reverser strips it
-before writing to Git — as it already did for Flux's `kustomize.toolkit.fluxcd.io/*`
-labels and for `kubectl.kubernetes.io/last-applied-configuration`.
+### Two Argo-specific footnotes
 
-This matters more than it looks. Argo CD **never validates a tracking-id against
-the object that carries it**. If a manifest carrying a foreign tracking-id is
-applied to a cluster by anything other than Argo's own repo-server — `kubectl apply`,
-Flux, a promotion pipeline — then the next Argo CD Application to manage that object
-sees it as belonging to someone else, raises `SharedResourceWarning`, and **fails to
-sync**. Committing the annotation to Git is what arms that trap, which is why it is
-stripped.
-
-Sibling annotations under the same prefix — `sync-wave`, `sync-options`,
-`compare-options`, `hook` — *are* user intent and are preserved.
-
-### Keep Argo CD on `annotation` tracking
-
-If you set `application.resourceTrackingMethod` to `label` or `annotation+label`,
-Argo CD stamps the label `app.kubernetes.io/instance` instead. That key is
-indistinguishable from the standard recommended label that Helm and Kustomize set
-for entirely legitimate reasons, so GitOps Reverser cannot strip it — and it will be
-committed to Git.
-
-For any Reverser-managed path, leave Argo CD on its default `annotation` tracking.
-
-### No encrypted Secrets with Argo CD
-
-Flux `Kustomization` has native `spec.decryption.provider: sops`, so an encrypted
-Secret can round-trip: written by GitOps Reverser, decrypted and applied by Flux.
-
-Argo CD has no built-in SOPS decryption; it requires a Config Management Plugin
-(ksops, argocd-vault-plugin, …). Encrypted-Secret round-trip is therefore a
-**Flux-only capability** in this repository today.
+- **Tracking metadata is stripped.** Argo's default `annotation` tracking stamps
+  `argocd.argoproj.io/tracking-id` on every object; GitOps Reverser strips it (it is
+  controller state, and committing it can make another Application fail to sync).
+  Keep Argo on the default `annotation` tracking — `label` tracking stamps
+  `app.kubernetes.io/instance`, which is indistinguishable from a normal Helm label
+  and so cannot be stripped.
+- **No encrypted Secrets.** Flux decrypts SOPS natively; Argo CD needs a plugin, so
+  encrypted-Secret round-trip is Flux-only here today.
 
 ## Practical Platform Guidance
 
@@ -265,8 +223,10 @@ What is not complete yet:
 
 - a stable, well-shaped product story for bi-directional usage
 - a finished first-class product surface for manual Flux acknowledgment
-- an equivalent acknowledgment surface for Argo CD (the `ignoreDifferences`
-  recipe above is a configuration pattern, not a product feature)
+- a first-class Argo CD surface: today the "selfHeal off + webhook" loop is a
+  configuration pattern, not a product feature, and it has no way to distinguish
+  sanctioned bi-directional edits from unsanctioned drift (that decision belongs at
+  an admission gate — see the design note)
 - alignment patterns for GitOps operators other than Flux and Argo CD
 - HA support for the controller
 - full production hardening for all shared-ownership edge cases
