@@ -38,7 +38,6 @@ docs surface:
   kept for historical context
 - [`ci/`](ci/): CI/devcontainer rationale and troubleshooting
 - [`future/`](future/): ideas that are intentionally deferred
-- [`serious-bug/`](serious-bug/): worked bug reports against upstream projects
 - [`audit-setup/`](audit-setup/): cluster-specific audit delivery notes and examples
 
 These root-level files are also working notes rather than polished user docs:

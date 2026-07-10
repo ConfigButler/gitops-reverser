@@ -695,6 +695,11 @@ queue:
       existingSecretKey: "password"
 ```
 
+Every key this operator writes is rooted at `queue.redis.keyPrefix` (`--redis-key-prefix`, default
+`gitops-reverser`). Give each reverser its own prefix when several share one Redis/Valkey: `--redis-db`
+separates only 16 logical databases, and one reverser per tenant or per branch environment passes that
+long before it reaches any real Redis limit.
+
 When attribution is enabled, these flags tune the join:
 
 - `--author-attribution-ttl` (default `10m`): how long an attribution fact is retained waiting for the

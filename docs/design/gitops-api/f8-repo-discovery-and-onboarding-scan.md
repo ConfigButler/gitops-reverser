@@ -257,7 +257,7 @@ followed — the same posture as `ScanDir`, over the whole tree. It reuses `coll
 A product layer consuming this from Go imports [`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer)
 — `ScanRepo` and `ScanFolder` — rather than exec'ing the binary. That package is the
 supported, versioned projection of the reports below; the engine above stays internal and
-free to move. See [../multi-tenant/README.md](../multi-tenant/README.md) item 4.
+free to move.
 
 **Report shape as shipped**, refining the sketch above. Per candidate: `path`, `layout`,
 `acceptedByOperator`, `refusalReasons[]` (`{code, detail}`), `renderRoot`, `readScope[]`,

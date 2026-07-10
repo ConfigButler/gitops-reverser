@@ -185,11 +185,15 @@ nodeSelector:
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password (only used when `queue.redis.addr` is set) | `""` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
+| `queue.redis.db` | Redis logical database index. Redis offers 16; use `queue.redis.keyPrefix` to go past that | `0` |
+| `queue.redis.keyPrefix` | Root of every key this release writes (watch cursors, attribution facts, command author records). Give each reverser its own prefix to share one Redis/Valkey between more reversers than `db` can separate. Changing it orphans the previous prefix's keys: cursors cold-replay once, which is safe. Allowed: `[A-Za-z0-9]`, `-`, `_`, `.`, `:` | `gitops-reverser` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
 | `attribution.enabled` | Run audit ingress and name mirrored-resource commit authors from matching kube-apiserver audit facts | `false` |
 | `attribution.ttl` | How long an attribution fact is retained waiting for the matching watch event to join it | `10m` |
 | `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
 | `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
+| `rbac.create` | Create the manager ClusterRole and its binding | `true` |
+| `rbac.watchAnyResource` | Also create `<release>-watch-any-resource`, a ClusterRole granting `get,list,watch` on every resource. A `WatchRule` may name any type, so this ships on. Set `false` and grant only the types you mirror to run with zero cluster-wide Secret access — see [`docs/rbac.md`](../../docs/rbac.md) | `true` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |

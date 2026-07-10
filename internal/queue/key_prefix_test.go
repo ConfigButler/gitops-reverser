@@ -108,6 +108,20 @@ func TestRedisStore_DefaultPrefixIsUnchanged(t *testing.T) {
 	require.Equal(t, "gitops-reverser:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
 }
 
+// A store built without NewRedisStore — a zero-value struct in a test, a future constructor
+// that forgets to normalize — must still write under the default root rather than into an
+// unprefixed keyspace indistinguishable from another tool's keys. Every key family resolves
+// the prefix at use, not only at construction; watch cursors were the one that did not.
+func TestRedisStore_ZeroValueStoreStillWritesPrefixedKeys(t *testing.T) {
+	t.Parallel()
+
+	var store RedisStore // keyPrefix == ""
+	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
+		store.watchCursorKey("gtuid-3", coreConfigmapsGVR(), ""))
+	require.Equal(t, "gitops-reverser:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
+	require.Equal(t, "gitops-reverser:author:v1:audit:", store.AttributionIndex(0).factKeyBase(""))
+}
+
 // Two reversers sharing one Redis/Valkey and one logical database must not read each
 // other's cursors. Sixteen databases is the only separator Redis offers; a prefix is not
 // bounded that way.

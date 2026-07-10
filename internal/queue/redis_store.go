@@ -150,6 +150,6 @@ func (s *RedisStore) watchCursorKey(
 	if namespace != "" {
 		scope = "namespace:" + escapeKeyField(namespace)
 	}
-	return s.keyPrefix + watchCursorKeySuffix + "target:" + escapeKeyField(gitTargetUID) + ":" +
+	return resolveKeyPrefix(s.keyPrefix) + watchCursorKeySuffix + "target:" + escapeKeyField(gitTargetUID) + ":" +
 		groupResourceKey(gvr.Group, gvr.Resource) + ":" + scope + ":last-rv"
 }

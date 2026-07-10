@@ -60,11 +60,13 @@ func renderManagerArgs(t *testing.T, setValues ...string) []string {
 // lints and packages cleanly. Parse what the chart actually emits.
 func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 	tests := map[string]struct {
-		setValues      []string
-		wantKeyPrefix  string
-		wantRedisAddr  string
-		wantRedisDBSet int
-		wantUsername   string
+		setValues        []string
+		wantKeyPrefix    string
+		wantRedisAddr    string
+		wantRedisDBSet   int
+		wantUsername     string
+		wantAttribution  bool
+		wantAuditTLSCert string
 	}{
 		"chart defaults": {
 			wantKeyPrefix: "gitops-reverser",
@@ -85,6 +87,29 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			wantRedisDBSet: 3,
 			wantUsername:   "reverser",
 		},
+		// Attribution renders a whole block of audit-server flags the default path never emits,
+		// and it is the mode that validateAuditConfig scrutinises. Render it and parse it too.
+		"attribution enabled with audit TLS": {
+			setValues: []string{
+				"attribution.enabled=true",
+				"queue.redis.addr=redis.example.com:6379",
+			},
+			wantKeyPrefix:    "gitops-reverser",
+			wantRedisAddr:    "redis.example.com:6379",
+			wantAttribution:  true,
+			wantAuditTLSCert: "/tmp/k8s-audit-server/audit-server-certs",
+		},
+		// Attribution without audit TLS takes the --audit-insecure branch instead.
+		"attribution enabled without audit TLS": {
+			setValues: []string{
+				"attribution.enabled=true",
+				"queue.redis.addr=redis.example.com:6379",
+				"servers.audit.tls.enabled=false",
+			},
+			wantKeyPrefix:   "gitops-reverser",
+			wantRedisAddr:   "redis.example.com:6379",
+			wantAttribution: true,
+		},
 	}
 
 	for name, tc := range tests {
@@ -102,6 +127,10 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			if tc.wantUsername != "" {
 				// A quoted-value render would reach Redis as `"reverser"` and fail ACL auth.
 				require.Equal(t, tc.wantUsername, cfg.redisUsername)
+			}
+			require.Equal(t, tc.wantAttribution, cfg.authorAttribution)
+			if tc.wantAuditTLSCert != "" {
+				require.Equal(t, tc.wantAuditTLSCert, cfg.auditCertPath)
 			}
 		})
 	}
