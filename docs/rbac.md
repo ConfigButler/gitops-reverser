@@ -79,12 +79,27 @@ for you — there is no hand-written role to maintain, and no way to drift from 
 ServiceAccount the operator actually runs as.
 
 Result: `GitProvider` Ready, `ClusterWatchRule` Ready with its streams, commits flowing, and
-**zero cluster-wide Secret access**.
+the reverser **cannot enumerate Secrets** — no `list`, no `watch`, on any namespace.
 
-If the reverser needs a Git credentials Secret in its own namespace, that is a namespaced
-`Role`, not a `ClusterRole` — the manager role's `get` on `secrets` is cluster-scoped only
-because a `GitProvider` may point at any namespace. A namespaced binding is enough when it
-does not.
+### What `selected` does not remove
+
+Be precise about what is left, because RBAC is additive and the manager role is still bound:
+
+| Verb on `secrets` | Still granted? | Why |
+|---|---|---|
+| `list`, `watch` | **No** | The operator never enumerates Secrets. Removed from the manager role, and `selected` adds no wildcard to put them back. |
+| `get` | Yes, cluster-scoped | It reads the git-creds and age-key Secrets a `GitProvider`/`GitTarget` names — and those may live in any namespace. |
+| `create`, `update` | Yes, cluster-scoped | It generates the signing key and, with `generateWhenMissing`, the age key. |
+
+So a `selected` install can still **read a Secret whose name and namespace it already
+knows**. It cannot discover one. That is a real reduction — enumeration is what turns a
+mirroring operator into a credential-harvesting one — but it is not zero Secret access, and
+this page will not pretend otherwise.
+
+Scoping `get`/`create`/`update` down to the namespaces a `GitProvider` actually references
+needs a namespaced `Role` the chart does not yet render. Until then the escape hatch is
+`rbac.create: false` plus your own role set. See
+[`future/least-privilege-remaining-work.md`](future/least-privilege-remaining-work.md).
 
 ## What happens if a read is denied
 

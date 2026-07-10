@@ -196,7 +196,7 @@ nodeSelector:
 | `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
 | `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
 | `rbac.create` | Create the manager ClusterRole and its binding | `true` |
-| `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything — convenient, but the reverser can then read every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only: zero cluster-wide Secret access. See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
+| `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything — convenient, but the reverser can then read every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only, so the reverser cannot list or watch Secrets (it keeps `get` on named Secrets it is pointed at). See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
 | `rbac.watchTypes.selected` | Types to grant when `mode: selected`, as `{apiGroups, resources}` entries (verbs are always `get,list,watch`). Required and non-empty in that mode; `namespaces`, `customresourcedefinitions` and `apiservices` come from the manager role and must not be restated | `[]` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |

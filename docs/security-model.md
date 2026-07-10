@@ -2,30 +2,78 @@
 
 What GitOps Reverser can access, why, and which pieces are sensitive. Read this before installing.
 
-## Why the controller has broad access
+## What the controller is allowed to read
 
-GitOps Reverser writes the live state of watched resource types into Git. To do that it must:
+The ServiceAccount is bound to **two** ClusterRoles, and keeping them apart is the whole point:
+Kubernetes RBAC is additive, so a wildcard read folded in beside a narrow Secret rule silently
+widens it.
 
-- **Read watched resources cluster-wide.** WatchRule and ClusterWatchRule decide which types are
-  followed, but the controller needs read (get/list/watch) access to those types to materialize
-  them. Broad WatchRules imply broad read access.
-- **Read referenced Secrets.** It reads the Git credentials Secret (and, when encryption is
-  configured, the SOPS/age key Secret) named by a GitProvider/GitTarget. At **runtime** the
-  control-plane code paths read these controller-owned input Secrets **directly by name** (`get`):
-  they no longer `list` or `watch` Secrets and never cache Secret values in memory. Out-of-band
-  credential or age-key rotations are picked up on the direct read the next time work happens, and
-  at the latest by the 5-minute periodic reconcile. **This is a runtime-behavior change, not (yet)
-  an RBAC change:** the default install still *grants* `secrets get;list;watch` (and the
-  dynamic-watch wildcard), so the ServiceAccount's effective Secret permission is unchanged until
-  the separate RBAC-narrowing track lands. Mirrored Secrets selected by a WatchRule are a separate
-  concern and still use the watched-resource read path above. See
-  [`future/secret-value-retention-plan.md`](future/secret-value-retention-plan.md) and
-  [`future/scoped-rbac-least-privilege-plan.md`](future/scoped-rbac-least-privilege-plan.md).
-- **Receive audit events.** The kube-apiserver audit webhook posts events to the controller's
-  audit ingress. Those events carry object metadata and, for some resources, request/response
-  bodies.
+```mermaid
+flowchart LR
+    SA["ServiceAccount<br/>gitops-reverser"]
 
-The controller does not need write access to watched resources. Its only write target is Git.
+    subgraph M["manager-role (generated from the code)"]
+        M1["its own CRDs and status"]
+        M2["namespaces, CRDs, apiservices<br/>get, list, watch"]
+        M3["secrets<br/>get, create, update<br/>no list, no watch"]
+    end
+
+    subgraph W["watch-any or watch-selected (you choose)"]
+        W1["mode any<br/>every resource: get, list, watch"]
+        W2["mode selected<br/>only the types you name"]
+    end
+
+    SA --> M
+    SA --> W
+```
+
+To mirror live state into Git the controller must:
+
+- **Read the watched types.** `WatchRule`/`ClusterWatchRule` pick them; the controller needs
+  `get,list,watch` on each. `rbac.watchTypes.mode: any` grants that for every type at once —
+  convenient, and it means the reverser can enumerate **every Secret in the cluster**. `mode:
+  selected` grants only the types you name. See [`rbac.md`](rbac.md).
+- **Read referenced Secrets.** The git-creds Secret, and the SOPS/age key Secret when encryption
+  is configured, both named by a `GitProvider`/`GitTarget`. This is a `get` by name — never a
+  `list` or a `watch`.
+- **Receive audit events.** The kube-apiserver audit webhook posts events to the audit ingress.
+  Those carry object metadata and, for some resources, request/response bodies.
+
+The controller never writes to a watched type. Its only write target is Git, plus the Secrets it
+generates itself (the signing key, and the age key under `generateWhenMissing`).
+
+## The controller does not hold Secret values
+
+There is **no Secret informer**. The manager is built with `Client.Cache.DisableFor:
+corev1.Secret` ([`cmd/main.go`](../cmd/main.go)), so a typed Secret read bypasses the cache and
+goes straight to the API server. No control-plane Secret watch exists; the `GitTarget` one was
+removed.
+
+```mermaid
+flowchart TB
+    Timer["5-minute steady reconcile<br/>RequeueSteadyInterval"]
+    Work["work happens:<br/>a push, a flush, a reconcile"]
+    Read["direct GET<br/>one Secret, by name and namespace"]
+    API["kube-apiserver"]
+    Cache["controller cache<br/>never holds Secret values"]
+
+    Timer --> Work
+    Work --> Read
+    Read --> API
+    Read -.->|bypasses| Cache
+```
+
+The trade is deliberate: no instant reaction to a rotated credential, in exchange for a process
+that cannot leak Secret values it was never asked to hold. A rotated git credential or age key is
+picked up by the next direct read when work happens, and at the latest by the 5-minute reconcile.
+
+This is why the manager role asks for `secrets: get, create, update` and nothing more — the
+runtime genuinely does not need `list` or `watch`. What it does **not** do is scope those verbs to
+a namespace: a `GitProvider` may reference a Secret anywhere, so the grant is cluster-scoped. A
+`selected` install therefore cannot *discover* a Secret, but can still read one whose name and
+namespace it already knows. Narrowing that further is
+[remaining work](future/least-privilege-remaining-work.md).
+
 
 ## Sensitive trust boundaries
 
@@ -41,11 +89,17 @@ The controller does not need write access to watched resources. Its only write t
 
 Without encryption, a watched `Secret` is committed as-is (its data is plain in the repository). With
 SOPS + age (`GitTarget.spec.encryption`), Secret values are encrypted before commit using the age
-recipients, and the private key never leaves the cluster. Because the write path only encrypts, it
-uses **public age recipients only**: the private age identity is never written to disk or passed to
-the `sops` process, even when the recipient is derived from a cluster age-key Secret. So: only watch
-`Secret` types you intend to commit, and prefer encryption. Secret-shaped custom resource types can opt into the same
-encryption path at controller startup. See [`sops-age-guide.md`](sops-age-guide.md).
+recipients, and the private key never leaves the cluster.
+
+The write path **only encrypts** — nothing in the operator decrypts Git content — so it needs
+**public age recipients only**. Concretely: no private identity is written to disk, `SOPS_AGE_KEY_FILE`
+is never set, and Secret `data` is never handed to the `sops` process as environment. That holds even
+when the recipient is derived from a cluster age-key Secret, which the controller reads once to take
+the public half.
+
+So: only watch `Secret` types you intend to commit, and prefer encryption. Secret-shaped custom
+resource types can opt into the same encryption path at controller startup. See
+[`sops-age-guide.md`](sops-age-guide.md).
 
 ## Git credentials Secret shape
 

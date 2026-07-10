@@ -221,11 +221,13 @@ rbac:
   # get/list/watch. Shape is enforced by values.schema.json; see docs/rbac.md.
   #
   #   any      cluster-wide read on everything, so a WatchRule can name any type — including
-  #            one installed later. It also means the reverser can read every Secret in the
-  #            cluster, credentials that have nothing to do with it included.
-  #   selected read only the types below. Zero cluster-wide Secret access. A WatchRule naming
-  #            a type you did not grant will fail to watch it. namespaces, CRDs and
-  #            apiservices come from the manager role — do not restate them.
+  #            one installed later. It also means the reverser can list and read every Secret
+  #            in the cluster, credentials that have nothing to do with it included.
+  #   selected read only the types below, so the reverser cannot list or watch Secrets at all.
+  #            (The manager role keeps `get` on Secrets: it still reads the git-creds and
+  #            age-key Secrets a GitProvider/GitTarget names.) A WatchRule naming a type you
+  #            did not grant will fail to watch it. namespaces, CRDs and apiservices come from
+  #            the manager role — do not restate them.
   watchTypes:
     mode: any # any | selected
     selected: []
