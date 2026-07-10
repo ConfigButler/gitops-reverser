@@ -152,7 +152,7 @@ type RepoSummary struct {
 // RepoReport is the whole-repo discovery report: the machine-readable contract the
 // product layer consumes.
 type RepoReport struct {
-	// Root is the scanned repository root as passed to WalkRepo. It is informational.
+	// Root is the scanned repository root as passed to ScanRepo. It is informational.
 	Root string `json:"root,omitempty"`
 	// Candidates are the enumerated subtrees, sorted by path.
 	Candidates []RepoCandidate `json:"candidates"`
@@ -160,12 +160,12 @@ type RepoReport struct {
 	Summary RepoSummary `json:"summary"`
 }
 
-// WalkRepo is the F8 whole-repo discovery pass (the library entry point; the CLI
-// --mode repo-walker is a thin wrapper). It is read-only, writes nothing, needs no
+// ScanRepo is the F8 whole-repo discovery pass (the library entry point; the CLI
+// --mode scan-repo is a thin wrapper). It is read-only, writes nothing, needs no
 // cluster, and never follows symlinks — the same posture as ScanDir, just over the
 // whole tree rather than one subtree. It verifies root is a directory, then walks
 // os.DirFS(root).
-func WalkRepo(ctx context.Context, root string) (RepoReport, error) {
+func ScanRepo(ctx context.Context, root string) (RepoReport, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return RepoReport{}, err
@@ -173,13 +173,13 @@ func WalkRepo(ctx context.Context, root string) (RepoReport, error) {
 	if !info.IsDir() {
 		return RepoReport{}, fmt.Errorf("not a directory: %s", root)
 	}
-	rep := walkRepoFS(ctx, os.DirFS(root))
+	rep := scanRepoFS(ctx, os.DirFS(root))
 	rep.Root = root
 	return rep, nil
 }
 
-// walkRepoFS is WalkRepo over an fs.FS, so it is testable against an in-memory tree.
-func walkRepoFS(ctx context.Context, fsys fs.FS) RepoReport {
+// scanRepoFS is ScanRepo over an fs.FS, so it is testable against an in-memory tree.
+func scanRepoFS(ctx context.Context, fsys fs.FS) RepoReport {
 	scan := collectFiles(fsys)
 	kusts := parseKustomizations(scan.YAMLFiles)
 	// Structure-only whole-repo store built with the live writer's allowlist (WriterAllowlist:

@@ -314,10 +314,10 @@ later — not a reason to make the operator's write unit span environments.
 A is also where the code and docs already point: the product model fixes
 environment = GitTarget = watch scope = write scope with shared read-only bases
 ([kustomize-support-boundary-and-product-model.md §5](kustomize-support-boundary-and-product-model.md#L208)),
-and the repo-walker already classifies an out-of-subtree base as a
+and the repo scan already classifies an out-of-subtree base as a
 forward-looking F2 gap (`overlay-fan-out-needs-f2`), not permanent unsupported
 structure
-([repowalk.go](../../../internal/manifestanalyzer/repowalk.go#L37)). A is the
+([scan_repo.go](../../../internal/manifestanalyzer/scan_repo.go#L37)). A is the
 direction of travel; this decision commits to it.
 
 **Onboarding UX is not a reason to pick B.** A produces N targets per app, but
@@ -469,7 +469,7 @@ precondition and is refused outright (§1).
 - **F2 scope gains one concrete capability under A/C:** follow `../../base` for
   *reading* (today dropped), while the write jail stays at `spec.path`. Much of
   the read-scope / render-root / out-of-subtree-base logic already exists
-  read-only in the F8 repo-walker and can be promoted into the live analyzer.
+  read-only in the F8 repo scan and can be promoted into the live analyzer.
 - **Cross-environment editing is decided:** product promotion at launch; Option
   C (base-as-variant) later and only for editing *shared defaults*, not as the
   "every environment" answer. Neither reopens the fan-in invariant.

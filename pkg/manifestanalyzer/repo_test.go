@@ -19,7 +19,7 @@ import (
 // package reads the same fixtures rather than growing a second copy: the point of this
 // package is that it cannot disagree with the engine, and a duplicated corpus is the
 // first way that guarantee rots. Tests run with the package directory as cwd.
-const corpusRoot = "../../internal/manifestanalyzer/testdata/repo-walker"
+const corpusRoot = "../../internal/manifestanalyzer/testdata/scan-repo"
 
 func fixture(t *testing.T, group, name string) string {
 	t.Helper()

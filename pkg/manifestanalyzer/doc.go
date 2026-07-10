@@ -18,8 +18,8 @@
 // Everything under internal/ is not covered by that promise and is not importable from
 // another module.
 //
-// The command-line equivalents are `manifest-analyzer --mode scan --format json` and
-// `--mode repo-walker --format json`, which emit exactly the documents [FolderReport]
+// The command-line equivalents are `manifest-analyzer --mode scan-folder --format json` and
+// `--mode scan-repo --format json`, which emit exactly the documents [FolderReport]
 // and [RepoReport] marshal to. Exec the binary if Go is not your language; import this
 // package if it is.
 //

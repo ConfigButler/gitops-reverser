@@ -111,7 +111,7 @@ type RepoReport struct {
 // GitTargets, classifying each one's layout and reporting why a folder is refused. It is
 // read-only, needs no cluster, and never follows symlinks.
 func ScanRepo(ctx context.Context, root string) (RepoReport, error) {
-	rep, err := internalanalyzer.WalkRepo(ctx, root)
+	rep, err := internalanalyzer.ScanRepo(ctx, root)
 	if err != nil {
 		return RepoReport{}, err
 	}
@@ -119,7 +119,7 @@ func ScanRepo(ctx context.Context, root string) (RepoReport, error) {
 }
 
 // WriteJSON writes the report as indented JSON — byte-for-byte what
-// `manifest-analyzer --mode repo-walker --format json` prints.
+// `manifest-analyzer --mode scan-repo --format json` prints.
 func (r RepoReport) WriteJSON(w io.Writer) error {
 	if r.Candidates == nil {
 		r.Candidates = []Candidate{}

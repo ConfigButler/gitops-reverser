@@ -132,7 +132,7 @@ func ScanFolderFS(ctx context.Context, fsys fs.FS) FolderReport {
 }
 
 // WriteJSON writes the report as indented JSON — byte-for-byte what
-// `manifest-analyzer --mode scan --format json` prints.
+// `manifest-analyzer --mode scan-folder --format json` prints.
 func (r FolderReport) WriteJSON(w io.Writer) error {
 	if r.Issues == nil {
 		r.Issues = []Issue{}
@@ -143,7 +143,7 @@ func (r FolderReport) WriteJSON(w io.Writer) error {
 }
 
 // folderScanPolicy is the structure-only adoption gate: the default allowlist, no
-// followability lookup, and no desired state. It is the same policy the CLI's scan mode
+// followability lookup, and no desired state. It is the same policy the CLI's scan-folder mode
 // applies, kept in one place so the two can never disagree.
 func folderScanPolicy() internalanalyzer.ScanPolicy {
 	return internalanalyzer.ScanPolicy{

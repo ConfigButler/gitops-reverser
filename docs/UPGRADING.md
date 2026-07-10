@@ -7,18 +7,32 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
-## Unreleased — `manifest-analyzer --format json` now emits a versioned contract (next minor; breaking)
+## Unreleased — `manifest-analyzer` scan modes renamed, and `--format json` now emits a versioned contract (next minor; breaking)
 
 The analyzer's machine-readable output moved to the new public
 [`pkg/manifestanalyzer`](../pkg/manifestanalyzer), which is a supported Go API and the single
-definition of the JSON documents the CLI prints. Both affected modes gained a `schemaVersion`
-field, and one field was dropped:
+definition of the JSON documents the CLI prints. Freezing that contract is also the moment to name
+the CLI modes after the question each answers, so the CLI, the Go API and the docs use one pair of
+nouns — **folder** and **repo**.
 
-- `--mode scan --format json` no longer carries `plan`. In scan mode the analyzer has no cluster
-  state and no desired resources, so `plan` was structurally always `{"counts":{},"actions":null}` —
-  it never carried information. The meaningful fields (`accepted`, `issues`, `retained`) are
-  unchanged, and `issues` now marshals as `[]` rather than `null` when there are none.
-- `--mode repo-walker --format json` is otherwise unchanged.
+**Modes renamed. There are no back-compat aliases: the old names now exit 2 (usage error).**
+
+| Before | After | Answers |
+|---|---|---|
+| `--mode scan` | `--mode scan-folder` | May **this folder** become a `GitTarget`? (`ScanFolder`) |
+| `--mode repo-walker` | `--mode scan-repo` | Which folders under **this repo root** could? (`ScanRepo`) |
+
+`repo-walker` named an internal traversal phase rather than a contract, and a bare `scan` was
+asymmetric once a repo-level scan existed. `--mode analyze` and `--mode discovery` are unchanged.
+
+The JSON documents also gained a `schemaVersion` field, and one field was dropped:
+
+- `--mode scan-folder --format json` no longer carries `plan`. In folder-scan mode the analyzer has
+  no cluster state and no desired resources, so `plan` was structurally always
+  `{"counts":{},"actions":null}` — it never carried information. The meaningful fields (`accepted`,
+  `issues`, `retained`) are unchanged, and `issues` now marshals as `[]` rather than `null` when
+  there are none.
+- `--mode scan-repo --format json` is otherwise unchanged.
 - Retained entries now omit `identity` for a whole-file retention (an ordinary
   `kustomization.yaml`, which names no resource) instead of emitting a zero-valued object. It is
   still present for the refused mixed-file case, where a named resource hides inside a build
@@ -27,12 +41,14 @@ field, and one field was dropped:
 
 **Migration**
 
+- Replace `--mode scan` with `--mode scan-folder`, and `--mode repo-walker` with `--mode scan-repo`.
+  A stale invocation fails loudly rather than falling back to the default `analyze` mode.
 - Read `schemaVersion` and ignore fields you do not know; new fields are added within a schema major.
 - If you exec'd the binary only to reach the acceptance verdict, prefer importing
   `pkg/manifestanalyzer` and calling `ScanFolder` / `ScanRepo`. They run the same acceptance gate the
   operator's writer enforces, so a tool built on them cannot drift from the operator that will later
   adopt (or refuse) the folder.
-- If you parsed `plan` from scan mode, you were reading an empty object; drop the field.
+- If you parsed `plan` from folder-scan mode, you were reading an empty object; drop the field.
 
 ## Unreleased — chart defaults now run Redis-free (next minor; behavior change)
 
