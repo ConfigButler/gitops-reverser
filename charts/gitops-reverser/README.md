@@ -162,6 +162,9 @@ nodeSelector:
 |-----------|-------------|---------|
 | `replicaCount` | Number of controller replicas (can't be higher than 1 for now, sorry) | `1` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
+| `env` | Extra container env vars, as Kubernetes `EnvVar` entries | `[]` |
+| `volumes` / `volumeMounts` | Extra pod volumes and their mounts, appended as-is | `[]` |
+| `servers.enableHTTP2` | Serve HTTP/2 on the TLS servers. Off by default: disabling it mitigates the HTTP/2 Rapid-Reset CVE class | `false` |
 | `servers.audit.bindAddress` | host:port the audit ingress server binds to (`--audit-bind-address`) | `0.0.0.0:9444` |
 | `servers.audit.port` | Audit container/Service port; must match the port in `bindAddress` | `9444` |
 | `servers.audit.tls.enabled` | Serve audit ingress with TLS | `true` |

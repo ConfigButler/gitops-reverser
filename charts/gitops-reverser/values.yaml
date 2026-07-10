@@ -33,6 +33,12 @@ serviceAccount:
 
 podAnnotations: {}
 
+# Extension points the Deployment appends as-is. Declared here because the template already
+# reads them; without an entry they are invisible to anyone reading values.yaml.
+env: [] # Kubernetes EnvVar entries, e.g. [{name: REDIS_PASSWORD, valueFrom: {...}}]
+volumes: []
+volumeMounts: []
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532

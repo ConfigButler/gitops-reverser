@@ -67,9 +67,17 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 		wantUsername     string
 		wantAttribution  bool
 		wantAuditTLSCert string
+		wantHTTP2        bool
 	}{
 		"chart defaults": {
 			wantKeyPrefix: "gitops-reverser",
+		},
+		// servers.enableHTTP2 was a value no template read: setting it changed nothing, while
+		// its comment promised an HTTP/2 Rapid-Reset mitigation. Assert it reaches the binary.
+		"http2 enabled": {
+			setValues:     []string{"servers.enableHTTP2=true"},
+			wantKeyPrefix: "gitops-reverser",
+			wantHTTP2:     true,
 		},
 		"nested tenant prefix": {
 			setValues:     []string{"queue.redis.keyPrefix=cell-a:tenant-7"},
@@ -132,6 +140,8 @@ func TestChartRendersArgsTheBinaryAccepts(t *testing.T) {
 			if tc.wantAuditTLSCert != "" {
 				require.Equal(t, tc.wantAuditTLSCert, cfg.auditCertPath)
 			}
+			require.Equal(t, tc.wantHTTP2, cfg.enableHTTP2,
+				"servers.enableHTTP2 must reach the binary, and default to off")
 		})
 	}
 }
