@@ -306,8 +306,15 @@ counting as `editable` — the fix already named in the boundary doc.
    cluster sees whatever plaintext they last wrote — which may be stale relative
    to Git if someone edited the ciphertext by hand. Is the live `Secret`
    authoritative, or is that drift we must detect and cannot see?
-6. **Does this extend to SealedSecrets and ExternalSecrets?** Both are
-   "a Secret that is not the Secret." A `SealedSecret` is also write-only under an
-   asymmetric key — the same shape, a different controller. An `ExternalSecret`
-   holds no ciphertext at all, only a reference, which is a *third* ownership
-   shape. Worth one abstraction, or three kinds?
+6. **Does this extend to SealedSecrets and ExternalSecrets?** — *answered, in
+   [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md).*
+   Neither one abstraction nor three kinds: one
+   [capability model](resource-capability-model.md), and exactly one new kind.
+   SOPS needs `EncryptedSecret` because a SOPS `Secret` is **not schema-conformant**
+   — an API server rejects it — and not because it is encrypted. A `SealedSecret`
+   holds the same sort of ciphertext in a CRD field typed `string`, so it is
+   ordinary KRM, and it seals each value independently, so it supports per-key
+   writes that SOPS cannot. An `ExternalSecret` holds no ciphertext at all and
+   needs no support: it already works. What both make urgent is a gate this
+   design does not have — **never mirror an object carrying a controller
+   `ownerReference`**.

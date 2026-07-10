@@ -5,7 +5,10 @@
 > Related:
 > [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md),
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md),
+> [resource-capability-model.md](resource-capability-model.md),
 > [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md),
+> [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md),
+> [intent-cluster-hydration.md](intent-cluster-hydration.md),
 > [../../future/idea-application-editing.md](../../future/idea-application-editing.md),
 > [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../manifest/contextual-namespace-and-kustomize-folder-editing.md),
 > [../manifest/file-agnostic-placement.md](../manifest/file-agnostic-placement.md),

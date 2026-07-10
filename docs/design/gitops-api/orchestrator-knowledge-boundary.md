@@ -120,13 +120,27 @@ heuristic can ever see it.
 
 ## The tiering
 
-Three tiers of knowledge. Only the third is the one to isolate.
+Four tiers of knowledge. Only the last is the one to isolate.
 
 ### Tier 0 — KRM facts
 
 Is this document a Kubernetes object? Is it encrypted? Is this file YAML but not
 KRM? Do two documents claim the same identity? Zero tool knowledge. This is the
 core, and it is the only tier permitted in the acceptance gate's hot path.
+
+### Tier 0b — Resource semantics
+
+*What may I do to this document?* A value may be unreadable, may live in another
+system, or may be owned by a controller. Every such fact is asserted by **the
+document itself** — a `sops:` stanza, a `SealedSecret`'s `encryptedData`, an
+`ExternalSecret`'s `remoteRef` — which is what separates this from Tier 2, where
+the fact is asserted by *another* object.
+
+Four knobs and a lookup table, designed in
+[resource-capability-model.md](resource-capability-model.md). The discriminator
+turns out not to be encryption but **schema conformance**: a real API server
+rejects a SOPS `Secret` and accepts the identical ciphertext inside a CRD field
+typed `string`.
 
 ### Tier 1 — Renderer facts
 
@@ -178,7 +192,7 @@ The vocabulary is not invented — it is read straight off the corpus. `WrittenB
 is fixtures 16 and 05. `Generated` is 14. `TransformedOutOfBand` is 10.
 `OverriddenBy` is 05 and 07. `NotAnEditingTarget` is the honest `fleetRoot`.
 
-Note that **encryption is Tier 0, not Tier 2.** A SOPS document is
+Note that **encryption is Tier 0b, not Tier 2.** A SOPS document is
 self-describing: the `sops:` stanza is in the file. No orchestrator asserts it.
 The analyzer already knows — `Encrypted` and `CauseEncrypted` exist in
 [`internal/manifestanalyzer/analyzer.go`](../../../internal/manifestanalyzer/analyzer.go).
@@ -281,10 +295,19 @@ Neither is designed here beyond the shape above.
 |---|---|
 | **Ownership axis** | `Encrypted`/non-editable in `ResourceCounts`; a core write-gate that refuses a machine-owned or generated destination; `Generated` detection from headers and `config.kubernetes.io/origin`. Delivers the three false accepts. Its first API surface is [`EncryptedSecret`](write-only-encrypted-secrets.md). |
 | **Orchestrator interpreters** | `internal/gitops` claim vocabulary + registry; `argocd` and `flux` interpreters; `fleetRoot` re-expressed as `NotAnEditingTarget`; role classification (workload / control-plane / generated / machine-written) in the F8 report. |
+| **Resource capability registry** | Tier 0b: four knobs, three classifiers ([design](resource-capability-model.md)). Carries the day-1 gate below. |
+| **Derived-object gate** | Never mirror an object carrying a controller `ownerReference` — it is a controller's output, not desired state. Live-state, Tier 0, no orchestrator knowledge. Today [`sanitize`](../../../internal/sanitize/sanitize.go) *deletes* that field without ever gating on it, so an ESO- or sealed-secrets-derived `Secret` would be committed as a second source of truth. See [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md). |
 
-The ownership axis is the one with a correctness argument behind it and should go
-first. Interpreters are what make it complete, and what make the F8 report an
-onboarding answer rather than a folder census.
+The derived-object gate is the smallest and the most urgent: it is a few lines,
+it needs nothing else in this doc, and it protects far more than secrets. The
+ownership axis is next, being the one with a correctness argument behind it.
+Interpreters are what make it complete, and what make the F8 report an onboarding
+answer rather than a folder census.
+
+A fifth thing falls out of hydration rather than from ownership: `RepoReport`
+should report `requiredCRDs`, the group/kind pairs a repository needs installed
+before an intent cluster can hold its documents. See
+[intent-cluster-hydration.md](intent-cluster-hydration.md).
 
 ## Why the F8 report is not yet an onboarding answer
 
