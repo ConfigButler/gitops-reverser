@@ -121,7 +121,7 @@ Explicitly **out of scope**, and worth saying in user docs:
   much-later feature, not part of this boundary.)
 
 This allowlist is a **write** contract, not a discovery one. The read-only
-onboarding scanner ([F8 repo-walker](f8-repo-discovery-and-onboarding-scan.md))
+onboarding scanner ([F8 repo scan](f8-repo-discovery-and-onboarding-scan.md))
 walks a whole repo and classifies each folder against *exactly* this boundary
 — `plain` / `kustomize-single` (accepted), `kustomize-overlay` (forward-looking,
 needs F2), `refused-structural` (the permanent wall above) — without widening

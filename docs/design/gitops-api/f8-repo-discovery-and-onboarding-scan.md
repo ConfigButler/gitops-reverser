@@ -62,7 +62,7 @@ layer — exactly the division already recorded in
 
 Scanning every folder sounds like it re-opens every kustomize question. It does not,
 because **discovery is broad and read-only while the write contract stays narrow and
-principled** — they are deliberately different jobs. repo-walker classifies what a folder
+principled** — they are deliberately different jobs. scan-repo classifies what a folder
 *is*; it never widens what the operator will *write*. The write boundary is not a
 hand-maintained feature allowlist but a **consequence of one rule**: every edit must have a
 single writable Git destination that round-trips
@@ -84,7 +84,7 @@ share one engine (`Scan` is documented as "the one planner shared by the
 manifest-analyzer CLI and the controller's scan path",
 `internal/manifestanalyzer/scan.go`), and `manifest-analyzer` already scans a
 **single** folder read-only with no cluster:
-`ScanDir(ctx, dir, nil, nil, policy)` (`--mode scan`).
+`ScanDir(ctx, dir, nil, nil, policy)` (`--mode scan-folder`).
 
 The building blocks a repo-wide pass needs all exist:
 
@@ -212,7 +212,7 @@ why rendered and editable diverge for overlays). Plus a repo-level summary:
 `exitUsage=2`). The eventual design: `--policy report` always exits 0 (pure report);
 `--policy refuse` exits 1 when **zero** candidates are acceptable — i.e. "is this repo
 onboardable at all?", the useful CI/onboarding gate. **The first cut does not yet apply
-`--policy` in repo-walker mode** — it always exits 0 (or 2 on an I/O error); the refuse
+`--policy` in scan-repo mode** — it always exits 0 (or 2 on an I/O error); the refuse
 gate is deferred.
 
 ## CLI surface
@@ -220,15 +220,23 @@ gate is deferred.
 A new mode on `manifest-analyzer` (shipped form):
 
 ```
-manifest-analyzer --mode repo-walker --format json <repo-root>
+manifest-analyzer --mode scan-repo --format json <repo-root>
 ```
 
-Naming note: the existing `--mode discovery` is **Kubernetes API discovery** (a
-served-GVR dump against a kubeconfig), unrelated to repo discovery. The first cut
-named the new mode `repo-walker` (not `repo`) to stay clear of it; renaming the
-existing mode to `--mode api-discovery` so "discovery" is not overloaded remains a
-possible follow-up. `--policy` is accepted for symmetry but the repo-level refuse gate
-is deferred (see [First cut](#first-cut-shipped-2026-07-09)).
+Naming note: the modes are named after the product question they answer, matching the
+public [`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer) entry points —
+`scan-folder` asks "may **this folder** become a GitTarget?" (`ScanFolder`) and
+`scan-repo` asks "which folders under **this repo root** could?" (`ScanRepo`). The first
+cut shipped these as `scan` and `repo-walker`; both were renamed when the package became
+a supported contract, with no back-compat aliases. `repo-walker` named an internal
+traversal phase rather than a contract, and a bare `scan` was asymmetric once a
+repo-level scan existed.
+
+The existing `--mode discovery` is **Kubernetes API discovery** (a served-GVR dump
+against a kubeconfig), unrelated to repo discovery; renaming it to `--mode api-discovery`
+so "discovery" is not overloaded remains a possible follow-up. `--policy` is accepted for
+symmetry but the repo-level refuse gate is deferred (see
+[First cut](#first-cut-shipped-2026-07-09)).
 
 The report should also be exposed as a **library function** (the product is
 likely part of the same Go binary family), with the CLI mode as the thin wrapper
@@ -239,12 +247,17 @@ likely part of the same Go binary family), with the CLI mode as the thin wrapper
 A lean first slice landed on branch `feat/gitops-api-f8`. It **reports**; it does not
 yet **propose**. Library-first, as recommended above.
 
-**Surface.** `WalkRepo(ctx, root) (RepoReport, error)` in
-`internal/manifestanalyzer/repowalk.go`, with `--mode repo-walker <root>`
+**Surface.** `ScanRepo(ctx, root) (RepoReport, error)` in
+`internal/manifestanalyzer/scan_repo.go`, with `--mode scan-repo <root>`
 (`--format text|json`) as a thin CLI wrapper. Read-only, no cluster, symlinks never
 followed — the same posture as `ScanDir`, over the whole tree. It reuses `collectFiles`,
 `parseKustomizations`/`renderRoots`, the `Scan`/acceptance gate, and mirrors
 `gittarget_path_overlap` for nesting.
+
+A product layer consuming this from Go imports [`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer)
+— `ScanRepo` and `ScanFolder` — rather than exec'ing the binary. That package is the
+supported, versioned projection of the reports below; the engine above stays internal and
+free to move. See [../multi-tenant/README.md](../multi-tenant/README.md) item 4.
 
 **Report shape as shipped**, refining the sketch above. Per candidate: `path`, `layout`,
 `acceptedByOperator`, `refusalReasons[]` (`{code, detail}`), `renderRoot`, `readScope[]`,
@@ -292,7 +305,7 @@ generation, the `--mode discovery` rename, and the repo-level `--policy refuse` 
 (exit codes stay simple — `exitOK`, or `exitUsage` on an I/O error).
 
 **Corpus.** Golden reports under
-`internal/manifestanalyzer/testdata/repo-walker/{supported,unsupported}/<fixture>/` with a
+`internal/manifestanalyzer/testdata/scan-repo/{supported,unsupported}/<fixture>/` with a
 sibling `<fixture>.golden.json` each (regenerate with `UPDATE_GOLDEN=1`), covering
 plain-per-env, kustomize-single, base+overlays, HelmRelease document vs. helm inflation,
 unsupported kustomize (incl. `openapi`/`crds`), fleet-root, overlapping, no-krm, and
@@ -349,9 +362,10 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
 
 ## Open questions
 
-1. **Mode naming / the `discovery` collision** — _partly settled:_ the new mode shipped
-   as `repo-walker` (no collision). Whether to also rename the K8s-API mode to
-   `api-discovery` is still open.
+1. **Mode naming / the `discovery` collision** — _partly settled:_ the repo mode is
+   `scan-repo` and the folder mode is `scan-folder`, mirroring `ScanRepo` / `ScanFolder`
+   (no collision). Whether to also rename the K8s-API mode to `api-discovery` is still
+   open.
 2. **Stop at `GitTarget`, or also propose `WatchRule`s?** — moot for now: the first cut
    proposes neither (reports only).
 3. **Read-scope depth for overlays pre-F2** — how far up the tree to follow
@@ -361,7 +375,7 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
    double-counts a shared nested base). How many levels the product should *display*
    remains a presentation choice.
 4. **Library vs. CLI as the product's integration point** — _settled:_ library-first
-   (`WalkRepo`), CLI (`--mode repo-walker`) as the thin wrapper + CI gate.
+   (`ScanRepo`), CLI (`--mode scan-repo`) as the thin wrapper + CI gate.
 5. **`overlay-fan-out-needs-f2` naming** — the reason code reads as if *fan-out* (a base
    shared by several overlays) is the trigger, but the real trigger is a base **escaping
    the render root's own subtree**, true even at fan-out = 1. The first cut carries the
@@ -370,5 +384,5 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
    and rely on the detail. _Not settled._
 6. **Repo-level `--policy refuse` gate** — the eventual "zero acceptable candidates → exit
    1" onboarding gate (see [Exit codes](#the-report-contract)) is **deferred**: the first
-   cut always exits 0 (or 2 on an I/O error) and `--policy` is not applied in repo-walker
+   cut always exits 0 (or 2 on an I/O error) and `--policy` is not applied in scan-repo
    mode. Open: implement it as the CI/onboarding gate when the product needs it.

@@ -21,6 +21,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
 
 func TestParseFlagsWithArgs_Defaults(t *testing.T) {
@@ -97,6 +99,7 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--redis-username=user",
 		"--redis-password=pass",
 		"--redis-db=2",
+		"--redis-key-prefix=cell-a:tenant-7:",
 		"--redis-insecure",
 		"--author-attribution-ttl=20m",
 		"--author-attribution-grace=750ms",
@@ -119,9 +122,35 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, "user", cfg.redisUsername)
 	assert.Equal(t, "pass", cfg.redisPassword)
 	assert.Equal(t, 2, cfg.redisDB)
+	// The trailing colon is normalized away, so "tenant-7:" and "tenant-7" name one keyspace.
+	assert.Equal(t, "cell-a:tenant-7", cfg.redisKeyPrefix)
 	assert.True(t, cfg.redisInsecure)
 	assert.Equal(t, 20*time.Minute, cfg.attributionFactTTL)
 	assert.Equal(t, 750*time.Millisecond, cfg.attributionGrace)
+}
+
+func TestParseFlagsWithArgs_RedisKeyPrefixDefault(t *testing.T) {
+	fs := flag.NewFlagSet("test-redis-key-prefix-default", flag.ContinueOnError)
+	cfg, err := parseFlagsWithArgs(fs, []string{"--author-attribution=false"})
+	require.NoError(t, err)
+	// An upgrade that sets nothing must keep writing the keys the previous release wrote.
+	assert.Equal(t, queue.DefaultKeyPrefix, cfg.redisKeyPrefix)
+}
+
+func TestParseFlagsWithArgs_RedisKeyPrefixRejectsGlob(t *testing.T) {
+	fs := flag.NewFlagSet("test-redis-key-prefix-glob", flag.ContinueOnError)
+	// A glob metacharacter would corrupt the attribution fact-index SCAN pattern.
+	_, err := parseFlagsWithArgs(fs, []string{"--redis-key-prefix=tenant-*"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "redis-key-prefix")
+}
+
+func TestParseFlagsWithArgs_RedisKeyPrefixRejectsEmpty(t *testing.T) {
+	fs := flag.NewFlagSet("test-redis-key-prefix-empty", flag.ContinueOnError)
+	// Rejected even without Redis: an empty prefix silently un-namespaces the keyspace.
+	_, err := parseFlagsWithArgs(fs, []string{"--author-attribution=false", "--redis-addr=", "--redis-key-prefix="})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-empty")
 }
 
 func TestParseFlagsWithArgs_RedisAddrRequiredWhenAttributionEnabled(t *testing.T) {

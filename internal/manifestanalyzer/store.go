@@ -806,7 +806,7 @@ func kustomizationUsesUnsupportedFeature(content []byte) bool {
 // or mutate resource identity (name/namespace) in ways the contextual-namespace writer
 // cannot map back to an editable source document. Their presence disqualifies a
 // kustomization as a namespace source. It is the single source of truth for both the
-// boolean gate (hasUnsupportedKustomizeFeature) and the repo-walker's per-feature
+// boolean gate (hasUnsupportedKustomizeFeature) and the repo scan's per-feature
 // refusal detail (unsupportedKustomizeFeatures). It returns a fresh slice on every call,
 // so no shared state can be mutated.
 func unsupportedKustomizeFeatureKeys() []string {

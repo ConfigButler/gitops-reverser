@@ -99,7 +99,7 @@ func TestRun_ScanTextRefuses(t *testing.T) {
 	// fixtureDir contains a non-KRM values.yaml, so scan mode refuses under --policy
 	// refuse and prints the acceptance verdict and the (empty, structure-only) plan.
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"--mode", "scan", "--policy", "refuse", fixtureDir(t)}, &out, &errBuf); code != 1 {
+	if code := run([]string{"--mode", "scan-folder", "--policy", "refuse", fixtureDir(t)}, &out, &errBuf); code != 1 {
 		t.Fatalf("scan refuse with issues: exit = %d, want 1 (stderr=%s)", code, errBuf.String())
 	}
 	for _, want := range []string{"Acceptance: REFUSED", "Plan: no changes"} {
@@ -114,7 +114,7 @@ func TestRun_ScanCleanPasses(t *testing.T) {
 	write(t, clean, "deploy.yaml", deployYAML)
 
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"--mode", "scan", "--policy", "refuse", clean}, &out, &errBuf); code != 0 {
+	if code := run([]string{"--mode", "scan-folder", "--policy", "refuse", clean}, &out, &errBuf); code != 0 {
 		t.Fatalf("scan refuse on clean tree: exit = %d, want 0 (stderr=%s)", code, errBuf.String())
 	}
 	if !strings.Contains(out.String(), "Acceptance: accepted") {
@@ -124,7 +124,7 @@ func TestRun_ScanCleanPasses(t *testing.T) {
 
 func TestRun_ScanJSON(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	code := run([]string{"--mode", "scan", "--format", "json", fixtureDir(t)}, &out, &errBuf)
+	code := run([]string{"--mode", "scan-folder", "--format", "json", fixtureDir(t)}, &out, &errBuf)
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr=%s", code, errBuf.String())
 	}
@@ -137,10 +137,10 @@ func TestRun_ScanJSON(t *testing.T) {
 	}
 }
 
-// repoWalkFixture builds a tiny two-folder repo: a plain KRM app folder and a kustomize
-// overlay reaching an out-of-subtree base, so repo-walker reports both an accepted plain
+// scanRepoFixture builds a tiny two-folder repo: a plain KRM app folder and a kustomize
+// overlay reaching an out-of-subtree base, so scan-repo reports both an accepted plain
 // candidate and a refused kustomize-overlay one.
-func repoWalkFixture(t *testing.T) string {
+func scanRepoFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	write(t, mkdir(t, root, "plain"), "deploy.yaml", deployYAML)
@@ -162,21 +162,21 @@ func mkdir(t *testing.T, dir, sub string) string {
 	return full
 }
 
-func TestRun_RepoWalkText(t *testing.T) {
+func TestRun_ScanRepoText(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"--mode", "repo-walker", repoWalkFixture(t)}, &out, &errBuf); code != 0 {
+	if code := run([]string{"--mode", "scan-repo", scanRepoFixture(t)}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
 	}
 	for _, want := range []string{"candidates:", "kustomize-overlay", "overlay-fan-out-needs-f2"} {
 		if !strings.Contains(out.String(), want) {
-			t.Errorf("repo-walker text missing %q:\n%s", want, out.String())
+			t.Errorf("scan-repo text missing %q:\n%s", want, out.String())
 		}
 	}
 }
 
-func TestRun_RepoWalkJSON(t *testing.T) {
+func TestRun_ScanRepoJSON(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	args := []string{"--mode", "repo-walker", "--format", "json", repoWalkFixture(t)}
+	args := []string{"--mode", "scan-repo", "--format", "json", scanRepoFixture(t)}
 	if code := run(args, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
 	}
@@ -188,13 +188,13 @@ func TestRun_RepoWalkJSON(t *testing.T) {
 		Summary map[string]any `json:"summary"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
-		t.Fatalf("repo-walker JSON invalid: %v\n%s", err, out.String())
+		t.Fatalf("scan-repo JSON invalid: %v\n%s", err, out.String())
 	}
 	if len(parsed.Candidates) != 2 {
 		t.Fatalf("want 2 candidates, got %d: %s", len(parsed.Candidates), out.String())
 	}
 	if parsed.Summary == nil {
-		t.Errorf("repo-walker JSON missing summary: %s", out.String())
+		t.Errorf("scan-repo JSON missing summary: %s", out.String())
 	}
 }
 
@@ -274,9 +274,13 @@ func TestRun_Errors(t *testing.T) {
 		{"bad policy", []string{"--policy", "delete", "x"}, 2},
 		{"discovery rejects dir", []string{"--mode", "discovery", "x"}, 2},
 		{"missing dir", []string{filepath.Join("definitely", "missing", "dir")}, 2},
-		{"scan missing dir", []string{"--mode", "scan", filepath.Join("definitely", "missing")}, 2},
-		{"repo-walker missing dir", []string{"--mode", "repo-walker", filepath.Join("definitely", "missing")}, 2},
-		{"repo-walker no args", []string{"--mode", "repo-walker"}, 2},
+		{"scan-folder missing dir", []string{"--mode", "scan-folder", filepath.Join("definitely", "missing")}, 2},
+		{"scan-repo missing dir", []string{"--mode", "scan-repo", filepath.Join("definitely", "missing")}, 2},
+		{"scan-repo no args", []string{"--mode", "scan-repo"}, 2},
+		// The pre-freeze names carry no back-compat alias: they are usage errors, not
+		// silent fallbacks onto the default analyze mode.
+		{"retired scan mode", []string{"--mode", "scan", "x"}, 2},
+		{"retired repo-walker mode", []string{"--mode", "repo-walker", "x"}, 2},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

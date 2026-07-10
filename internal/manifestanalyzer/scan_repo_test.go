@@ -5,6 +5,7 @@ package manifestanalyzer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,16 +24,16 @@ metadata:
   namespace: demo
 `
 
-// TestWalkRepo_Golden drives the whole discovery corpus under testdata/repo-walker.
+// TestScanRepo_Golden drives the whole discovery corpus under testdata/scan-repo.
 // Each fixture is a self-contained repo with a sibling <fixture>.golden.json pinning its
 // report, so layout classification, refusal codes, overlap detection, namespace
 // inference, and the rendered/editable split are all fixed by real layouts rather than
 // prose. The corpus is split supported/ vs unsupported/ mirroring the
 // contextual-namespace corpus. See
 // docs/design/gitops-api/f8-repo-discovery-and-onboarding-scan.md.
-func TestWalkRepo_Golden(t *testing.T) {
+func TestScanRepo_Golden(t *testing.T) {
 	for _, group := range []string{"supported", "unsupported"} {
-		base := filepath.Join("testdata", "repo-walker", group)
+		base := filepath.Join("testdata", "scan-repo", group)
 		entries, err := os.ReadDir(base)
 		if err != nil {
 			t.Fatalf("read corpus %s: %v", base, err)
@@ -52,17 +53,22 @@ func TestWalkRepo_Golden(t *testing.T) {
 // golden is path-independent.
 func checkGoldenFixture(t *testing.T, fixture string) {
 	t.Helper()
-	rep, err := WalkRepo(context.Background(), fixture)
+	rep, err := ScanRepo(context.Background(), fixture)
 	if err != nil {
-		t.Fatalf("WalkRepo(%s): %v", fixture, err)
+		t.Fatalf("ScanRepo(%s): %v", fixture, err)
 	}
 	if rep.Root != fixture {
 		t.Errorf("Root = %q, want %q", rep.Root, fixture)
 	}
 	rep.Root = ""
 
+	// The engine's own report shape, not the published one. pkg/manifestanalyzer owns the
+	// machine-readable contract and pins it separately; this corpus pins the classification
+	// facts (layout, refusal codes, overlaps, namespace inference, rendered/editable split).
 	var buf bytes.Buffer
-	if err := RenderRepoJSON(&buf, rep); err != nil {
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(rep); err != nil {
 		t.Fatalf("render json: %v", err)
 	}
 
@@ -82,11 +88,11 @@ func checkGoldenFixture(t *testing.T, fixture string) {
 	}
 }
 
-// TestWalkRepo_RefusalCodesStayDistinct pins the load-bearing distinction the design
+// TestScanRepo_RefusalCodesStayDistinct pins the load-bearing distinction the design
 // calls out: a forward-looking overlay-fan-out-needs-f2 must never collapse into the
 // permanent refused-structural boundary. base-overlays is the former; helm-inflation and
 // unsupported-kustomize are the latter.
-func TestWalkRepo_RefusalCodesStayDistinct(t *testing.T) {
+func TestScanRepo_RefusalCodesStayDistinct(t *testing.T) {
 	cases := []struct {
 		fixture  string
 		wantCode string
@@ -99,9 +105,9 @@ func TestWalkRepo_RefusalCodesStayDistinct(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
-			rep, err := WalkRepo(context.Background(), filepath.Join("testdata", "repo-walker", tc.fixture))
+			rep, err := ScanRepo(context.Background(), filepath.Join("testdata", "scan-repo", tc.fixture))
 			if err != nil {
-				t.Fatalf("WalkRepo: %v", err)
+				t.Fatalf("ScanRepo: %v", err)
 			}
 			if len(rep.Candidates) == 0 {
 				t.Fatalf("expected at least one candidate")
@@ -127,15 +133,15 @@ func assertRefused(t *testing.T, fixture string, c RepoCandidate, layout Layout,
 	}
 }
 
-// TestWalkRepo_RenderedCountDedupesNestedBase guards the double-count: an overlay whose
+// TestScanRepo_RenderedCountDedupesNestedBase guards the double-count: an overlay whose
 // out-of-subtree base pulls in a nested base must count each rendered document exactly
 // once (rendered=2 here: base/deployment + base/common/configmap), and readScope must be
 // the minimal [base] rather than [base, base/common]. A regression would report 3.
-func TestWalkRepo_RenderedCountDedupesNestedBase(t *testing.T) {
-	fixture := filepath.Join("testdata", "repo-walker", "unsupported", "overlay-nested-base")
-	rep, err := WalkRepo(context.Background(), fixture)
+func TestScanRepo_RenderedCountDedupesNestedBase(t *testing.T) {
+	fixture := filepath.Join("testdata", "scan-repo", "unsupported", "overlay-nested-base")
+	rep, err := ScanRepo(context.Background(), fixture)
 	if err != nil {
-		t.Fatalf("WalkRepo: %v", err)
+		t.Fatalf("ScanRepo: %v", err)
 	}
 	if len(rep.Candidates) != 1 {
 		t.Fatalf("want 1 candidate, got %d: %+v", len(rep.Candidates), rep.Candidates)
@@ -149,14 +155,14 @@ func TestWalkRepo_RenderedCountDedupesNestedBase(t *testing.T) {
 	}
 }
 
-// TestWalkRepo_RenderedExcludesParkedYAML guards that rendered counts only what the
+// TestScanRepo_RenderedExcludesParkedYAML guards that rendered counts only what the
 // kustomization graph reaches: a base holding a parked.yaml its kustomization does not
 // list must not inflate rendered. overlay-parked-base renders 1 (base/deployment), not 2.
-func TestWalkRepo_RenderedExcludesParkedYAML(t *testing.T) {
-	fixture := filepath.Join("testdata", "repo-walker", "unsupported", "overlay-parked-base")
-	rep, err := WalkRepo(context.Background(), fixture)
+func TestScanRepo_RenderedExcludesParkedYAML(t *testing.T) {
+	fixture := filepath.Join("testdata", "scan-repo", "unsupported", "overlay-parked-base")
+	rep, err := ScanRepo(context.Background(), fixture)
 	if err != nil {
-		t.Fatalf("WalkRepo: %v", err)
+		t.Fatalf("ScanRepo: %v", err)
 	}
 	if len(rep.Candidates) != 1 {
 		t.Fatalf("want 1 candidate, got %d: %+v", len(rep.Candidates), rep.Candidates)
@@ -166,14 +172,14 @@ func TestWalkRepo_RenderedExcludesParkedYAML(t *testing.T) {
 	}
 }
 
-// TestWalkRepo_RefusedPlainSurfacesGateReasons guards that a plain candidate the
+// TestScanRepo_RefusedPlainSurfacesGateReasons guards that a plain candidate the
 // acceptance gate refuses reports WHY (the gate issues) rather than a bare
 // acceptedByOperator: false. plain-nonkrm holds a non-KRM values.yaml.
-func TestWalkRepo_RefusedPlainSurfacesGateReasons(t *testing.T) {
-	fixture := filepath.Join("testdata", "repo-walker", "unsupported", "plain-nonkrm")
-	rep, err := WalkRepo(context.Background(), fixture)
+func TestScanRepo_RefusedPlainSurfacesGateReasons(t *testing.T) {
+	fixture := filepath.Join("testdata", "scan-repo", "unsupported", "plain-nonkrm")
+	rep, err := ScanRepo(context.Background(), fixture)
 	if err != nil {
-		t.Fatalf("WalkRepo: %v", err)
+		t.Fatalf("ScanRepo: %v", err)
 	}
 	if len(rep.Candidates) != 1 {
 		t.Fatalf("want 1 candidate, got %d", len(rep.Candidates))
@@ -190,17 +196,17 @@ func TestWalkRepo_RefusedPlainSurfacesGateReasons(t *testing.T) {
 	}
 }
 
-// TestWalkRepo_SopsBootstrapAcceptedLikeWriter guards that repo-walker's acceptance
+// TestScanRepo_SopsBootstrapAcceptedLikeWriter guards that scan-repo's acceptance
 // matches the live writer's allowlist: a folder holding the operator's .sops.yaml
 // bootstrap config is accepted (the writer retains it), not refused as non-KRM, and the
 // .sops.yaml is not counted as non-KRM noise.
-func TestWalkRepo_SopsBootstrapAcceptedLikeWriter(t *testing.T) {
+func TestScanRepo_SopsBootstrapAcceptedLikeWriter(t *testing.T) {
 	fsys := fstest.MapFS{
 		"app/deployment.yaml": {Data: []byte(deployYAMLNS)},
 		"app/.sops.yaml": {Data: []byte(
 			"creation_rules:\n  - path_regex: .*\n    age: age1exampleexampleexampleexampleexampleexampleexample\n")},
 	}
-	rep := walkRepoFS(context.Background(), fsys)
+	rep := scanRepoFS(context.Background(), fsys)
 	if len(rep.Candidates) != 1 {
 		t.Fatalf("want 1 candidate, got %d: %+v", len(rep.Candidates), rep.Candidates)
 	}
@@ -214,10 +220,10 @@ func TestWalkRepo_SopsBootstrapAcceptedLikeWriter(t *testing.T) {
 	}
 }
 
-// TestWalkRepo_NotADirectory covers the usage error path: a missing or non-directory
+// TestScanRepo_NotADirectory covers the usage error path: a missing or non-directory
 // root is an error, not an empty report.
-func TestWalkRepo_NotADirectory(t *testing.T) {
-	if _, err := WalkRepo(context.Background(), filepath.Join("testdata", "does-not-exist")); err == nil {
+func TestScanRepo_NotADirectory(t *testing.T) {
+	if _, err := ScanRepo(context.Background(), filepath.Join("testdata", "does-not-exist")); err == nil {
 		t.Fatal("expected an error for a missing root")
 	}
 }

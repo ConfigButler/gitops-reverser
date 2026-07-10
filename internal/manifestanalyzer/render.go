@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
-	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // RenderJSON writes the report as indented JSON. It is the machine-readable form
@@ -196,103 +195,4 @@ func planActionTarget(a PlanAction) string {
 		return a.Resource.ToGitPath()
 	}
 	return fmt.Sprintf("%s#%d", a.Ref.FilePath, a.Ref.DocumentIndex)
-}
-
-// RenderScanJSON writes the scan as indented JSON: the machine-readable form shared
-// by the CLI and the GitTarget status path. It omits the live desired objects, which
-// are unbounded; it carries only the decided plan.
-func RenderScanJSON(w io.Writer, result ScanResult) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(scanToJSON(result))
-}
-
-// scanJSON is the compact, bounded JSON projection of a ScanResult.
-type scanJSON struct {
-	Accepted bool              `json:"accepted"`
-	Issues   []AcceptanceIssue `json:"issues"`
-	Retained []retainedJSON    `json:"retained,omitempty"`
-	Plan     planJSON          `json:"plan"`
-}
-
-type retainedJSON struct {
-	Path          string                `json:"path"`
-	DocumentIndex int                   `json:"documentIndex"`
-	Identity      manifestedit.Identity `json:"identity"`
-}
-
-type planJSON struct {
-	Counts      map[string]int            `json:"counts"`
-	Actions     []planActionJSON          `json:"actions"`
-	Diagnostics []manifestedit.Diagnostic `json:"diagnostics,omitempty"`
-}
-
-type planActionJSON struct {
-	Kind string `json:"kind"`
-	Path string `json:"path,omitempty"`
-	// DocumentIndex is a pointer so that index 0 — a real, common target for a patch
-	// or drop on a file's first document — is preserved, while a create (which has no
-	// existing document location) omits it. A plain int with omitempty would drop the
-	// meaningful 0 and weaken the machine-readable contract.
-	DocumentIndex *int                  `json:"documentIndex,omitempty"`
-	Identity      manifestedit.Identity `json:"identity"`
-	Resource      string                `json:"resource,omitempty"`
-	Reason        string                `json:"reason,omitempty"`
-}
-
-// scanToJSON builds the compact JSON projection.
-func scanToJSON(result ScanResult) scanJSON {
-	out := scanJSON{
-		Accepted: result.Acceptance.Accepted,
-		Issues:   result.Acceptance.Issues,
-		Plan: planJSON{
-			Counts:      planCounts(result.Plan),
-			Diagnostics: result.Plan.Diagnostics,
-		},
-	}
-	for _, rd := range result.Acceptance.Retained {
-		out.Retained = append(out.Retained, retainedJSON{
-			Path: rd.Location.Path, DocumentIndex: rd.Location.DocumentIndex, Identity: rd.Identity,
-		})
-	}
-	for _, a := range result.Plan.Actions {
-		out.Plan.Actions = append(out.Plan.Actions, planActionJSON{
-			Kind:          string(a.Kind),
-			Path:          planActionTarget(a),
-			DocumentIndex: documentIndexJSON(a),
-			Identity:      a.Identity,
-			Resource:      resourceString(a.Resource),
-			Reason:        a.Reason,
-		})
-	}
-	return out
-}
-
-// documentIndexJSON returns the action's document index as a pointer: nil for a
-// create (no existing document location, so the field is omitted), otherwise the
-// real index — including a meaningful 0.
-func documentIndexJSON(a PlanAction) *int {
-	if a.Kind == PlanCreate {
-		return nil
-	}
-	i := a.Ref.DocumentIndex
-	return &i
-}
-
-// planCounts converts the plan's per-kind counts to string keys for JSON.
-func planCounts(plan Plan) map[string]int {
-	out := map[string]int{}
-	for kind, n := range plan.Counts() {
-		out[string(kind)] = n
-	}
-	return out
-}
-
-// resourceString renders a resolved resource identity, or "" when it is the zero
-// value (a document a structure-only store never resolved).
-func resourceString(r types.ResourceIdentifier) string {
-	if r == (types.ResourceIdentifier{}) {
-		return ""
-	}
-	return r.Key()
 }

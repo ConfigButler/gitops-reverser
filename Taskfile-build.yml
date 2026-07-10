@@ -132,6 +132,10 @@ tasks:
       - fmt
       - vet
       - setup-envtest
+      # cmd's chart-args test runs `helm template`, which evaluates every template —
+      # including rbac.yaml, which reads the gitignored chart/config/role.yaml this
+      # syncs. Without it a fresh checkout fails the unit suite.
+      - helm-sync
     cmds:
       - |
         export KUBEBUILDER_ASSETS="$({{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir "$(pwd)/bin" -p path)"
