@@ -170,7 +170,7 @@ sequenceDiagram
     DP->>DP: first resync sees secrets.txt
     DP->>Map: MarkTargetGitPathRefused
     Note right of DP: map updated, but the<br/>controller is NOT enqueued
-    Note over CP,DP: condition stays True until the next requeue (10m);<br/>e2e gives up at 150s → failure
+    Note over CP,DP: condition stays True until the next requeue (10m)<br/>e2e gives up at 150s → failure
 ```
 
 ## 3. What is and is not the cause

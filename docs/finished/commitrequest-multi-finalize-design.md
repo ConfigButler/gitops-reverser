@@ -197,7 +197,7 @@ sequenceDiagram
 
     CRC1->>FC: Enqueue({rv_C=100, types, author1, msg1})
     CRC2->>FC: Enqueue({rv_C=110, types, author2, msg2})
-    Note over FC: channel is FIFO; CR-1 was enqueued first
+    Note over FC: channel is FIFO, CR-1 was enqueued first
 
     Note over FC: START processing CR-1
     FC->>Tails: DrainTailsToWatermark(rv_C=100)

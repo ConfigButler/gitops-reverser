@@ -221,7 +221,7 @@ sequenceDiagram
     Rev->>Rev: sops --encrypt (fresh data key, new mac)
     Rev->>Git: commit secret.enc.yaml on a branch
     Rev-->>K8s: CommitRequest Pushed=True, sha, branch
-    Note over Git: Product layer opens the PR; a human merges.
+    Note over Git: Product layer opens the PR, then a human merges.
     Git-->>Flux: reconcile
     Flux->>Flux: decrypt with private age identity
     Flux->>Prod: apply Secret frontend-db

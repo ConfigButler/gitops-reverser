@@ -342,7 +342,7 @@ sequenceDiagram
     WH-->>Streams: mirror cm@101, deploy@102
     Author->>API: CREATE CommitRequest (rv_C = 105)
     API-->>CRC: watch event (phase=="")
-    CRC->>CRC: capture rv_C=105; stamp WaitingForAuditEvent
+    CRC->>CRC: capture rv_C=105, stamp WaitingForAuditEvent
     Streams-->>Tails: deliver 101,102
     Tails->>BW: enqueue upserts cm/a, deploy/b
     CRC->>Tails: BARRIER: wait each G-tail applied past rv_C (105)
