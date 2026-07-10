@@ -34,12 +34,20 @@ const (
 	// `kubectl.kubernetes.io/` prefix strip; asserted here against a real Argo.
 	kubectlLastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
 
-	argoRefreshAnnotation = "argocd.argoproj.io/refresh"
+	// Shared secret for the Gitea -> Argo CD webhook. Gitea sends a Gogs-style
+	// X-Gogs-Signature (Gitea emits X-Gogs-* headers next to its native X-Gitea-*
+	// ones), which argocd-server validates against `webhook.gogs.secret` in
+	// argocd-secret; the Gitea hook is created with the same value.
+	argoWebhookSecret = "e2e-argocd-webhook-secret"
 
 	// Self-heal reacts to live drift on a ~2s backoff, so 90s is generous. The
 	// spec never waits on Argo's 180s timed refresh (see setup/argocd/argocd-cm.yaml).
 	argoSelfHealTimeout = 90 * time.Second
 	argoSyncTimeout     = 120 * time.Second
+	// Bounded so it can only pass via the webhook: comfortably longer than webhook
+	// delivery + refresh + auto-sync (a few seconds), but well under Argo's 180s
+	// timed reconciliation. If the webhook path is broken, this times out.
+	argoWebhookSyncTimeout = 90 * time.Second
 	// Long enough that a self-heal (2s backoff) would certainly have fired.
 	argoNoSelfHealWindow = 20 * time.Second
 )
@@ -50,10 +58,11 @@ var argoBiDirectionalRepo *RepoArtifacts
 type argoBiDirectionalRun struct {
 	gitCheckout
 
-	testID  string
-	testNs  string
-	argoNs  string
-	repoURL string
+	testID   string
+	testNs   string
+	argoNs   string
+	repoName string
+	repoURL  string
 
 	appName        string
 	repoSecretName string
@@ -125,6 +134,10 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 
 		By("registering the Gitea repository with Argo CD")
 		run.applyArgoRepoSecret()
+
+		By("wiring a Gitea -> Argo CD webhook so pushes reconcile without waiting for the poll")
+		run.configureArgoWebhookSecret()
+		run.ensureArgoWebhook()
 	})
 
 	AfterAll(func() {
@@ -226,7 +239,6 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		Expect(committed).NotTo(ContainSubstring("resourceVersion"))
 
 		By("re-syncing Argo CD with no Git change and expecting no churn")
-		run.hardRefresh()
 		run.syncToRevision(syncedHead)
 		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+1, biStableCountMediumWait)
 
@@ -261,10 +273,17 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 			Toppings:     []string{"WhippedCream"},
 		})
 		Expect(run.commitAllAndPush("argo bi-directional: add self-heal icecream order")).To(Succeed())
-		selfHealHead := run.gitHEAD()
-		run.hardRefresh()
-		run.syncToRevision(selfHealHead)
-		run.waitForOrderContainer(run.selfHealOrderName, "Cone")
+
+		By("letting the Gitea -> Argo CD webhook drive the sync — no manual refresh, no manual sync")
+		// The push notifies argocd-server, which refreshes the automated app and
+		// auto-syncs the new commit. This lands well inside argoWebhookSyncTimeout,
+		// far below Argo's 180s poll — so it can only pass via the webhook.
+		Eventually(func(g Gomega) {
+			value, err := run.orderContainer(run.selfHealOrderName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(value).To(Equal("Cone"))
+		}, argoWebhookSyncTimeout, biPollInterval).Should(Succeed(),
+			"the webhook should drive Argo CD to auto-sync the new commit")
 
 		By("changing that IceCreamOrder through the Kubernetes API")
 		run.patchOrderContainer(run.selfHealOrderName, "WaffleBowl")
@@ -323,10 +342,14 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 			Toppings:     []string{"HotFudge"},
 		})
 		Expect(run.commitAllAndPush("argo bi-directional: add split-ownership icecream order")).To(Succeed())
-		ignoredHead := run.gitHEAD()
-		run.hardRefresh()
-		run.syncToRevision(ignoredHead)
-		run.waitForOrderScoopFlavor(run.ignoredOrderName, "Vanilla")
+
+		By("letting the webhook drive the sync of the third order")
+		Eventually(func(g Gomega) {
+			value, err := run.orderScoopFlavor(run.ignoredOrderName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(value).To(Equal("Vanilla"))
+		}, argoWebhookSyncTimeout, biPollInterval).Should(Succeed(),
+			"the webhook should drive Argo CD to auto-sync the third commit")
 
 		By("changing the ignored field through the Kubernetes API")
 		run.patchOrderScoop(run.ignoredOrderName, "MintChip", 4)
@@ -380,6 +403,7 @@ func newArgoBiDirectionalRun(testNs string) argoBiDirectionalRun {
 		testID:            testID,
 		testNs:            testNs,
 		argoNs:            argoNamespace(),
+		repoName:          argoBiDirectionalRepo.RepoName,
 		repoURL:           argoBiDirectionalRepo.RepoURLHTTP,
 		appName:           fmt.Sprintf("argo-bi-app-%s", testID),
 		repoSecretName:    fmt.Sprintf("argo-bi-repo-%s", testID),
@@ -477,13 +501,49 @@ func (r argoBiDirectionalRun) applyArgoApp(cfg argoAppConfig) {
 		To(Succeed(), "failed to apply Argo CD Application")
 }
 
-// hardRefresh forces Argo to re-fetch the repo instead of serving its cached
-// manifests. The controller deletes the annotation once it has acted on it.
-func (r argoBiDirectionalRun) hardRefresh() {
+// configureArgoWebhookSecret sets the Gogs webhook secret on the cluster-global
+// argocd-secret. argocd-server watches that Secret and reloads within seconds; a
+// merge patch leaves the server-generated TLS keys and session key untouched.
+// Idempotent, so re-running the corner on a warm cluster is harmless.
+func (r argoBiDirectionalRun) configureArgoWebhookSecret() {
 	GinkgoHelper()
-	_, err := kubectlRunInNamespace(r.argoNs, "annotate", "application.argoproj.io", r.appName,
-		fmt.Sprintf("%s=hard", argoRefreshAnnotation), "--overwrite")
-	Expect(err).NotTo(HaveOccurred(), "failed to request an Argo CD hard refresh")
+	patch := fmt.Sprintf(`{"stringData":{"webhook.gogs.secret":%q}}`, argoWebhookSecret)
+	_, err := kubectlRunInNamespace(r.argoNs, "patch", "secret", "argocd-secret",
+		"--type=merge", "--patch", patch)
+	Expect(err).NotTo(HaveOccurred(), "failed to set webhook.gogs.secret on argocd-secret")
+}
+
+// ensureArgoWebhook registers a Gitea webhook that notifies argocd-server on push,
+// so Argo refreshes immediately instead of waiting for its timed reconciliation.
+// This mirrors the Flux receiver webhook wiring (ensureRepoWebhook), but Argo has
+// a single /api/webhook endpoint rather than a per-repo Receiver CR.
+//
+// The match is exact host+path: Argo compiles a regex from the payload's
+// repository HTMLURL (derived from Gitea's ROOT_URL) and tests it against the
+// Application's spec.source.repoURL. Gitea's ROOT_URL host equals the in-cluster
+// repo host, and the regex tolerates the :13000 port and .git suffix, so it hits.
+func (r argoBiDirectionalRun) ensureArgoWebhook() {
+	GinkgoHelper()
+	gitea := giteaTestInstance()
+	ctx, cancel := gitea.Context()
+	defer cancel()
+
+	// argocd-server serves plain HTTP on :80 (server.insecure=true).
+	callbackURL := fmt.Sprintf("http://argocd-server.%s.svc.cluster.local/api/webhook", r.argoNs)
+
+	// Idempotent: drop any prior Argo-targeted hook before recreating it.
+	hooks, err := gitea.Client().ListRepoHooks(ctx, gitea.Org, r.repoName)
+	Expect(err).NotTo(HaveOccurred(), "failed to list repo webhooks")
+	for _, hook := range hooks {
+		if strings.Contains(hook.Config.URL, "/api/webhook") {
+			Expect(gitea.Client().DeleteRepoHook(ctx, gitea.Org, r.repoName, hook.ID)).
+				To(Succeed(), "failed to delete a stale Argo CD webhook")
+		}
+	}
+
+	_, err = gitea.Client().CreateGiteaWebhook(
+		ctx, gitea.Org, r.repoName, callbackURL, argoWebhookSecret, []string{"push"})
+	Expect(err).NotTo(HaveOccurred(), "failed to create the Gitea -> Argo CD webhook")
 }
 
 // syncToRevision drives a sync through the Application's `.operation` field —
@@ -642,15 +702,6 @@ func (r argoBiDirectionalRun) waitForOrderContainer(name, container string) {
 		value, err := r.orderContainer(name)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(value).To(Equal(container))
-	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
-}
-
-func (r argoBiDirectionalRun) waitForOrderScoopFlavor(name, flavor string) {
-	GinkgoHelper()
-	Eventually(func(g Gomega) {
-		value, err := r.orderScoopFlavor(name)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(value).To(Equal(flavor))
 	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 

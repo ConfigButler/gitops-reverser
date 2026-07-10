@@ -8,7 +8,9 @@ Implemented. This document is the design for:
 2. moving the existing Flux bi-directional spec into it,
 3. a new Argo CD bi-directional spec that pins Argo's *exact* observed behaviour
    when combined with GitOps Reverser,
-4. a resulting change to `internal/sanitize`.
+4. a resulting change to `internal/sanitize`,
+5. a Gitea → Argo CD **webhook** so pushes reconcile without waiting for the poll
+   (see [Push-triggered reconciliation](#5-push-triggered-reconciliation-the-webhook)).
 
 ## Motivation
 
@@ -259,12 +261,13 @@ Password stays **generated**, never committed — `argocd-server` writes it to
 TLS, so the port-forward works without `--insecure` gymnastics in the browser.
 
 `argocd-ui` is *not* wired into `prepare-e2e` or the CI leg. The specs drive Argo
-entirely through `kubectl`, so **no `argocd` CLI is added to the devcontainer**:
+entirely through `kubectl` (and the webhook), so **no `argocd` CLI is added to the
+devcontainer**:
 
 | Operation | kubectl equivalent |
 | --- | --- |
-| refresh | annotate `argocd.argoproj.io/refresh=hard` |
-| sync | patch `.operation.sync` on the `Application` |
+| refresh | a push fires the webhook (§5); no manual refresh needed |
+| sync | patch `.operation.sync` on the `Application` (manual-sync phase only) |
 | read state | `.status.sync.status`, `.status.sync.revision`, `.status.operationState.phase`, `.status.conditions` |
 
 ### 4. What moves
@@ -282,6 +285,42 @@ suite's CRD pre-clean loop (`e2e_suite_test.go:225`).
 
 The Flux spec's body does not change. It keeps its exact-commit-count discipline,
 which works because it drives Flux as a manually triggered applier.
+
+### 5. Push-triggered reconciliation (the webhook)
+
+Mirrors the Flux receiver webhook (`ensureRepoWebhook` in `repo_setup.go`) so
+Argo notices a push immediately instead of waiting for its timed reconciliation.
+Argo's model is simpler than Flux's — one endpoint, no per-repo `Receiver` CR:
+
+- `argocd-server` exposes `POST /api/webhook`
+  (`server/server.go`, `util/webhook/webhook.go`).
+- The corner sets `webhook.gogs.secret` on the cluster-global `argocd-secret`
+  (a merge patch; argocd-server watches the Secret and reloads), and creates a
+  Gitea webhook on the repo pointing at
+  `http://argocd-server.argocd.svc.cluster.local/api/webhook` with the same
+  secret and the `push` event. Both live in the spec (`configureArgoWebhookSecret`,
+  `ensureArgoWebhook`), not the Taskfile, so no install-stamp staleness.
+- Gitea's `type: "gitea"` hook emits `X-Gogs-*` headers (including an
+  HMAC-SHA256 `X-Gogs-Signature`) alongside its native `X-Gitea-*` ones, so
+  Argo's **Gogs** parser accepts the payload and validates the signature against
+  `webhook.gogs.secret`.
+
+**The one load-bearing prerequisite — host match.** Argo decides which
+Applications to refresh with an anchored **host + path** regex, compiled from the
+payload's `repository.html_url` (derived from Gitea's `ROOT_URL`) and tested
+against `app.spec.source.repoURL` (`util/webhook/webhook.go`, `GetWebURLRegex` /
+`sourceUsesURL`). The regex tolerates the `:13000` port and `.git` suffix but the
+**host must be identical**. The e2e Gitea sets
+`ROOT_URL: http://gitea-http.gitea-e2e.svc.cluster.local:13000/`
+(`test/e2e/setup/flux/values/gitea-values.yaml`), which is exactly the app repo
+host — so it matches. A `localhost` ROOT_URL would silently fail to match and no
+app would refresh; that is why this is called out.
+
+A matched webhook triggers a **`normal`** refresh (`argo.RefreshApp` with
+`RefreshTypeNormal`). For an automated app that is `OutOfSync`, that refresh then
+auto-syncs — which is how phases 2 and 3 apply the new commit with no `kubectl`
+sync at all. For the manual-sync app in phase 1 the webhook only refreshes; the
+apply is still an explicit `.operation` patch.
 
 ## Test design: `argocd_bi_directional_e2e_test.go`
 
