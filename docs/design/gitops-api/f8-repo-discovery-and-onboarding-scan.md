@@ -363,9 +363,16 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
   [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/): Argo CD plain
   directories, App of Apps, both ApplicationSet generators, kustomize overlays, Helm charts
   and per-environment values, the Flux monorepo and `HelmRelease` shapes,
-  repo-per-environment, a cluster×app matrix, SOPS, committed rendered manifests, and a
-  hostile mixed folder. It records **no verdicts** — it is the input to deciding them. When a
-  layout there graduates into a decision, it gains a golden report under `scan-repo/` above.
+  repo-per-environment, a cluster×app matrix, SOPS, committed rendered manifests, Flux image
+  automation, and a hostile mixed folder. It records **no verdicts** — it is the input to
+  deciding them. When a layout there graduates into a decision, it gains a golden report
+  under `scan-repo/` above.
+- Two of those fixtures raise a question this design does not yet answer: **the repository has
+  other writers.** Flux's `ImageUpdateAutomation` and Argo CD Image Updater both commit to the
+  same branch a `GitTarget` writes, and both depend on constructs a naive rewrite destroys — a
+  `# {"$imagepolicy": ...}` setter comment on the image line, and a hidden
+  `.argocd-source-<app>.yaml` that outranks the kustomization. Comment-preserving in-place
+  editing is necessary but may not be sufficient; concurrent writers need a story of their own.
 
 ## Open questions
 

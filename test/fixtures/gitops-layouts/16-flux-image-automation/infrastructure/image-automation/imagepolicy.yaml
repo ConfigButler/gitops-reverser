@@ -1,0 +1,21 @@
+# Chooses ONE tag out of everything the ImageRepository scanned. The chosen tag
+# is what gets written into apps/frontend/deployment.yaml by the automation.
+#
+# The name here (flux-system:frontend) is exactly the string referenced by the
+# `$imagepolicy` setter comment in that Deployment. Rename this object and the
+# marker silently stops matching.
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: frontend
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: frontend
+  # Ignore release-candidate and nightly tags, then pick the highest 1.x semver.
+  filterTags:
+    pattern: '^(?P<version>\d+\.\d+\.\d+)$'
+    extract: '$version'
+  policy:
+    semver:
+      range: '>=1.8.0 <2.0.0'

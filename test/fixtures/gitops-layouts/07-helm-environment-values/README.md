@@ -16,6 +16,7 @@ environment — the environments differ only in which values get layered on top.
 07-helm-environment-values/
 ├── README.md
 ├── chart/
+│   ├── .argocd-source.yaml     # HIDDEN Argo CD source override (NOT a K8s object)
 │   ├── Chart.yaml              # chart metadata (NOT a K8s object)
 │   ├── values.yaml             # chart defaults, lowest merge layer
 │   └── templates/
@@ -39,6 +40,15 @@ environment — the environments differ only in which values get layered on top.
 - **Layer order is precedence.** In `valueFiles`, later wins over earlier, and
   every file wins over the chart's own `values.yaml`. `helm.parameters` wins over
   all of them. The order of the two lines under `valueFiles` is load-bearing.
+- **A hidden dotfile is the outermost layer.** `chart/.argocd-source.yaml` is an
+  Argo CD *source override*: Argo CD reads it from the Application's source path
+  and merges it over `spec.source`. It therefore beats the `helm.parameters`
+  written in `argocd/production.yaml`, and the image tag that actually deploys is
+  the `1.8.4` in the dotfile, not the `1.8.3` in the Application. It carries no
+  `apiVersion`/`kind`; its top-level keys are Application `spec.source` fields.
+  A sibling `.argocd-source-<appname>.yaml` targets one named Application and
+  wins over the path-wide file. A directory listing that hides dotfiles shows
+  none of this.
 - **The same key is deliberately set in more than one layer.** `image.tag`
   appears in `chart/values.yaml` but is intentionally omitted from the
   environment value files and instead pinned inline per environment
@@ -80,3 +90,9 @@ they differ only in where the override files sit relative to the chart.
 - The flat `values-dev.yaml` and the in-chart nested `values/` conventions carry
   the same intent as this layout — should all three be recognized as the same
   pattern, or treated as structurally different sources?
+- `.argocd-source.yaml` is deployment-affecting configuration that a scanner
+  ignoring dotfiles never sees, and that a scanner treating all YAML as KRM would
+  misclassify as a malformed object. Which is the worse failure?
+- Reporting the effective image tag for this folder requires knowing that a
+  hidden file overrides the Application. Can that be discovered structurally, or
+  only by encoding Argo CD's precedence rules?

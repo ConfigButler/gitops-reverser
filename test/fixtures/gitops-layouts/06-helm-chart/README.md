@@ -59,6 +59,15 @@ The chart here is `frontend`, with a conditional `redis` subchart dependency.
 - **`Chart.yaml` and `Chart.lock` are metadata, not objects.** There is no
   `kind: Chart` in the Kubernetes API. `Chart.lock` is machine-managed and pins
   the `redis` dependency to a resolved version and digest.
+- **The chart is valid but not renderable offline.** `helm lint` passes; `helm
+  template` fails with "found in Chart.yaml, but missing in charts/ directory:
+  redis" until `helm dependency build` fetches the subchart over the network.
+  This is the normal state of a real chart repository, which vendors `charts/`
+  rarely if ever — so a folder's object set is not derivable from its bytes alone.
+- **A template action inside a YAML comment is still a template action.** Helm
+  parses the whole file, comments included, so a `#` comment containing example
+  braces is a parse error, not documentation. The template comments here are
+  worded to avoid it.
 - **`_helpers.tpl` and `NOTES.txt` render no object.** The `_`-prefixed partial
   is a template library included by other files; `NOTES.txt` is plain text shown
   after install. Neither becomes a resource.

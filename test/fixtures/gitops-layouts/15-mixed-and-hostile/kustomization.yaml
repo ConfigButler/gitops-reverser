@@ -10,8 +10,14 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m
-  path: ./apps
+  # Points at ./mixed, a directory that does exist here, so the only trap in this
+  # file is the filename collision above - not a dangling path.
+  path: ./mixed
   prune: true
+  # The GitRepository named `gitops` is NOT defined anywhere in this fixture. That
+  # is deliberate and realistic: a Flux Kustomization names a source object that
+  # lives in the cluster, created from some other folder or out of band entirely.
+  # A reference resolving outside the folder is normal, not a defect.
   sourceRef:
     kind: GitRepository
     name: gitops

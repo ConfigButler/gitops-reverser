@@ -4,7 +4,13 @@ metadata:
   name: cluster-matrix
   namespace: argocd
 spec:
-  goTemplate: false
+  # The template below uses dotted Go-template variables such as {{.path.basename}},
+  # so goTemplate MUST be true. Under the legacy (fasttemplate) engine the parameter
+  # names are flat - {{path.basename}} - and the dotted form never resolves. The two
+  # syntaxes are not interchangeable.
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
   generators:
     # Matrix = Cartesian product of the two nested generators below.
     # Rendered Applications = (selected clusters) x (app directories), a product not a sum.

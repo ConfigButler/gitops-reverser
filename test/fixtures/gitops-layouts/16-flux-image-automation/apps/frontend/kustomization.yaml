@@ -1,0 +1,7 @@
+# Kustomize build config (kustomize.config.k8s.io), not the Flux Kustomization CR.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: frontend
+resources:
+  - deployment.yaml
+  - service.yaml

@@ -1,0 +1,14 @@
+# Scans a container registry on an interval and records the tags it finds.
+# It reads the registry, never the Git repository.
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: frontend
+  namespace: flux-system
+spec:
+  image: ghcr.io/example-org/frontend
+  interval: 5m
+  # Credentials for a private registry are created out of band; the Secret is not
+  # checked into this repository.
+  secretRef:
+    name: ghcr-credentials

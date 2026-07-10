@@ -1,0 +1,14 @@
+# Argo CD source override, scoped to the Application named `frontend-production`.
+# Written and rewritten by Argo CD Image Updater, which commits it back to this
+# repository whenever it selects a newer tag - the Argo CD analogue of Flux's
+# ImageUpdateAutomation (fixture 16). Git is an output here, not only an input.
+#
+# NOT a Kubernetes object: no apiVersion, no kind. It is a fragment of an Argo CD
+# Application's `spec.source`, merged over whatever the Application declares.
+#
+# The `images` entry below silently overrides the `images:` transformer in this
+# folder's kustomization.yaml, so the rendered image is decided by this hidden
+# dotfile rather than by the kustomization a reader would naturally inspect.
+kustomize:
+  images:
+    - ghcr.io/example-org/frontend-hardened:1.8.4

@@ -1,0 +1,34 @@
+# THE WRITER. This object gives a controller commit access to this repository.
+#
+# On every interval it clones the repo, walks `update.path`, rewrites every image
+# value carrying a `$imagepolicy` setter comment, commits, and pushes to the
+# branch named below. Git is not only the source of truth here - it is also an
+# output of the cluster.
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: frontend
+  namespace: flux-system
+spec:
+  interval: 30m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: fluxcdbot
+        email: fluxcdbot@users.noreply.github.com
+      messageTemplate: |
+        chore(images): update {{range .Updated.Images}}{{println .}}{{end}}
+    # Pushing to a branch other than the checkout branch turns automation into a
+    # pull-request flow rather than a direct commit to main.
+    push:
+      branch: flux-image-updates
+  update:
+    # Only this subtree is rewritten. Setter comments outside it are ignored.
+    path: ./apps/frontend
+    strategy: Setters

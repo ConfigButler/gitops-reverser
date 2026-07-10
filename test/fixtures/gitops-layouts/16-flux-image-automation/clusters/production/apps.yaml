@@ -1,0 +1,16 @@
+# A Flux Kustomization CUSTOM RESOURCE (kustomize.toolkit.fluxcd.io/v1), not a
+# kustomize.config.k8s.io build file. Same collision as fixture 09.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: apps
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: image-automation
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/frontend
+  prune: true

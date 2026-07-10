@@ -26,6 +26,9 @@ overlay instead builds on a **remote** base fetched from another repository.
     │       │   ├── deployment-patch.yaml# partial object (strategic merge)
     │       │   └── config.properties    # NOT YAML - key=value env file
     │       └── production/
+    │           ├── .argocd-source-frontend-production.yaml
+    │           │                        # HIDDEN Argo CD override, written by
+    │           │                        #   Image Updater (NOT a K8s object)
     │           ├── kustomization.yaml   # namespace, nameSuffix, replicas,
     │           │                        #   images(newName+newTag), patch,
     │           │                        #   cmGenerator, secretGenerator
@@ -72,6 +75,15 @@ overlay instead builds on a **remote** base fetched from another repository.
   `apps/backend/overlays/production/kustomization.yaml` references
   `github.com/example-org/gitops//apps/backend/base?ref=v1.4.0`. That base is not
   in this checkout; kustomize fetches it over the network at a pinned ref.
+- **A hidden dotfile overrides the kustomization, and a controller writes it.**
+  `.argocd-source-frontend-production.yaml` is an Argo CD source override scoped
+  to the Application named `frontend-production`. Its `kustomize.images` entry
+  beats the `images:` transformer in the sibling `kustomization.yaml`, so the
+  image that actually deploys is decided by a file a reader inspecting the
+  kustomization never opens. Argo CD Image Updater *writes and commits* this file
+  on its own, which makes Git an output of the cluster here, exactly as Flux's
+  `ImageUpdateAutomation` does in [16-flux-image-automation](../16-flux-image-automation/).
+  It is not a Kubernetes object: no `apiVersion`, no `kind`.
 
 ## Open questions
 - Which files could a tool safely edit in place and round-trip? The base
@@ -81,9 +93,13 @@ overlay instead builds on a **remote** base fetched from another repository.
 - If a tool observes a running `ConfigMap` named `frontend-config-abc12`, how
   would it map that hash-suffixed name back to `config.properties`, and what
   does it write when the desired content changes (the hash then changes too)?
-- Where does an image bump belong: the base `deployment.yaml` `image:` field, or
-  the overlay `images:` override? For production the override uses `newName`, so
-  the running image string appears in *no* base file.
+- Where does an image bump belong: the base `deployment.yaml` `image:` field, the
+  overlay `images:` override, or the `.argocd-source-*.yaml` that outranks both?
+  For production the override uses `newName`, so the running image string appears
+  in *no* base file.
+- If a controller commits `.argocd-source-frontend-production.yaml` on its own
+  schedule, is that file safe for anything else to edit — and how should a tool
+  that does not know Argo CD's precedence rules report the effective image?
 - For `backend` production, the base is remote and pinned to `ref=v1.4.0`. Can a
   tool reason about, or edit, desired state it does not have checked out — and is
   bumping `ref` the only in-repo change available?

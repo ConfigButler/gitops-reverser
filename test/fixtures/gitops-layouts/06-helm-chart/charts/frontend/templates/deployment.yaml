@@ -1,5 +1,7 @@
 # A Helm template, NOT plain KRM. As stored this file does not parse as a valid
-# Deployment: the {{ ... }} actions must be rendered against .Values first.
+# Deployment: its template actions must be rendered against .Values first.
+# This comment spells out no example action on purpose - Helm parses actions
+# inside YAML comments too, so an example here would fail to parse the chart.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

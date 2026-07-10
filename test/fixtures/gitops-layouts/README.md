@@ -53,6 +53,7 @@ Each fixture directory holds a self-contained example repository plus a
 | 13 | [13-sops-encrypted](13-sops-encrypted/) | A file that is simultaneously a valid Kubernetes object and unreadable: cleartext `metadata`, opaque `data` |
 | 14 | [14-rendered-manifests](14-rendered-manifests/) | Git holds generated output, not sources; hash-suffixed names with no stable origin |
 | 15 | [15-mixed-and-hostile](15-mixed-and-hostile/) | Every naive assumption broken at once — filename implies kind, extension implies format, YAML implies KRM, KRM never nests KRM |
+| 16 | [16-flux-image-automation](16-flux-image-automation/) | A controller that **commits to the repo**; a `$imagepolicy` comment is load-bearing, so Git is an output as well as an input |
 
 ## The layout dimensions underneath
 
@@ -71,6 +72,20 @@ bootstrap` reinforces (`clusters/<cluster>/flux-system/`). **Argo CD** has no
 canonical structure at all — its common shapes emerge from App of Apps,
 ApplicationSets, Kustomize, and Helm value-file patterns.
 
+## Two things worth knowing before you read any fixture
+
+**Some comments are load-bearing.** A `# {"$imagepolicy": ...}` setter in
+[16](16-flux-image-automation/) is the only marker that makes a field automated;
+a `{{ ... }}` action inside a *YAML comment* in a Helm template is still parsed by
+Helm and will break the chart. Comments are not presentation.
+
+**Some hidden dotfiles decide what deploys.** `.argocd-source.yaml` (path-wide) and
+`.argocd-source-<appname>.yaml` (per-Application) are merged over an Argo CD
+Application's `spec.source`, so they outrank the values and transformers a reader
+would naturally inspect. They appear in [05](05-kustomize-overlays/) — written and
+committed by Argo CD Image Updater — and in [07](07-helm-environment-values/).
+They carry no `apiVersion`/`kind`.
+
 ## Deliberately absent
 
 Two hostile cases cannot be represented as committed files, and are described in
@@ -79,8 +94,15 @@ prose inside [15-mixed-and-hostile](15-mixed-and-hostile/) instead:
 - a **symlink** escaping the folder
 - a genuinely **empty directory** (git cannot store one; the fixtures use `.gitkeep`)
 
-Also out of scope for now: Jsonnet sources, Argo CD config-management plugins,
-and Kustomize `components`.
+Out of scope for now, roughly in the order they deserve to graduate:
+
+- **Kustomize `components`** — common enough to be worth a fixture soon. Already
+  represented as an assertion in
+  [`contextual-namespace/unsupported/components/`](../../../internal/manifestanalyzer/testdata/contextual-namespace/unsupported/components/).
+- **SealedSecrets and ExternalSecrets** — two more shapes of "a Secret that is not
+  the Secret", alongside the SOPS case in [13](13-sops-encrypted/).
+- **Jsonnet / Tanka sources**, and **Argo CD config-management plugins** — arbitrary
+  programs that emit KRM.
 
 ## Conventions
 
@@ -95,6 +117,23 @@ structurally correct with placeholder ciphertext.
 `05-kustomize-overlays` checks in a `secrets.env` file on purpose, so the root
 [`.gitignore`](../../../.gitignore) carries a scoped `!test/fixtures/gitops-layouts/**/*.env`
 negation for it.
+
+## Checking the fixtures are real
+
+The three Helm charts are genuine charts, not sketches:
+
+```bash
+helm lint 04-argocd-applicationset-files/chart
+helm lint 06-helm-chart/charts/frontend      # renders after `helm dependency build`
+helm lint 07-helm-environment-values/chart
+```
+
+All three lint clean. `04` and `07` also `helm template` offline; `06` declares an
+unvendored `redis` subchart, so rendering it needs `helm dependency build` first —
+which is the normal state of a real chart repository.
+
+Every other YAML in the corpus parses, except where a fixture states it must not:
+Helm `templates/`, and `15-mixed-and-hostile/templates/deployment.yaml`.
 
 ## Relationship to the other corpora
 

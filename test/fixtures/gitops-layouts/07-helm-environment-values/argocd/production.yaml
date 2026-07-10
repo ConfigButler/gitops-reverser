@@ -11,7 +11,7 @@ spec:
   source:
     repoURL: https://github.com/example-org/gitops.git
     targetRevision: main
-    path: 07-helm-environment-values/chart
+    path: chart
     helm:
       valueFiles:
         - ../values/common.yaml
