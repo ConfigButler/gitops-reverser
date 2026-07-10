@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.33.0...gitops-reverser-v0.34.0) (2026-07-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **rbac:** least-privilege RBAC, a strict chart values schema, and informers that stop on 403 ([#223](https://github.com/ConfigButler/gitops-reverser/issues/223))
+
+### Features
+
+* API-surface trigger gating, Redis key prefix, pkg/manifestanalyzer + scan-folder/scan-repo rename ([#221](https://github.com/ConfigButler/gitops-reverser/issues/221)) ([0a940b3](https://github.com/ConfigButler/gitops-reverser/commit/0a940b358a53543f1565f0feb4a8ac58525fe499))
+* **rbac:** least-privilege RBAC, a strict chart values schema, and informers that stop on 403 ([#223](https://github.com/ConfigButler/gitops-reverser/issues/223)) ([21a0565](https://github.com/ConfigButler/gitops-reverser/commit/21a0565fef08bf4c80f376fbcfa75dc5d70d6071))
+
 ## [0.33.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.32.0...gitops-reverser-v0.33.0) (2026-07-09)
 
 
