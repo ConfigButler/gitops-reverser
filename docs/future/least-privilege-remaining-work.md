@@ -42,16 +42,24 @@ permission is granted — but watched types still churn.
 
 ## 3. Scope the Secret grant, and an RBAC generator
 
-`secrets: get,create,update` is cluster-scoped because a `GitProvider` may reference a Secret in any
-namespace. A `selected` install therefore cannot *enumerate* Secrets but can still read one it can
-name. Closing that needs a namespaced `Role` per referenced namespace, which the chart cannot render
-without knowing the manifests.
+`secrets: get,create,update` is cluster-scoped because the packaged manager role is one ClusterRole.
+The API references themselves are local: `GitProvider.spec.secretRef`,
+`GitProvider.spec.commit.signing.secretRef`, and `GitTarget.spec.encryption.secretRef` name Secrets
+in the same namespace as the owning `GitProvider` or `GitTarget`. A `selected` install therefore
+cannot *enumerate* Secrets but can still read one if it already knows a name and namespace. Closing
+that needs a namespaced `Role` per referenced namespace, which the chart cannot render without
+knowing the manifests.
 
 Which is the same input an **RBAC generator** needs: read `GitProvider`, `GitTarget`, `WatchRule`
 and `ClusterWatchRule` manifests and emit the narrow role set — fixed controller grants, Secret
 `get` scoped to referenced namespaces, Secret write grants only where `generateWhenMissing` or
 signing-key generation applies, and one `get,list,watch` per selected GVR. Manifest input first: it
 is reviewable in CI and needs no cluster access.
+
+Future direction: keep the CRD references namespace-local by default. If cross-namespace Secret use
+ever becomes necessary, make it an explicit access-grant feature rather than adding a `namespace`
+field to these refs. The normal path should be one credentials/signing/encryption Secret beside the
+object that uses it, and generated or hand-written RBAC should follow that locality.
 
 Until it exists, the escape hatch is `rbac.create: false` with a hand-written role set.
 
