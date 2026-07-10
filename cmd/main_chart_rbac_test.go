@@ -17,6 +17,7 @@ import (
 // the chart in a subprocess the test log cannot see.
 var rbacChartInputs = []string{
 	"../charts/gitops-reverser/values.yaml",
+	"../charts/gitops-reverser/values.schema.json",
 	"../charts/gitops-reverser/templates/rbac.yaml",
 	"../charts/gitops-reverser/config/role.yaml",
 }
@@ -203,6 +204,10 @@ func TestChartRBAC_WildcardRoleShipsByDefault(t *testing.T) {
 
 // A mis-set watchTypes must fail the render, not silently grant the wrong thing. Granting
 // nothing is as bad as granting everything: one breaks the operator, the other the cluster.
+//
+// values.schema.json is what rejects these, and helm applies it to template, lint, install
+// and upgrade alike. The template carries no equivalent `fail` guards, so these cases are the
+// only thing standing between a typo and a ClusterRole nobody meant to create.
 func TestChartRBAC_MisconfiguredWatchTypesFailsTheRender(t *testing.T) {
 	tests := map[string]struct {
 		setValues []string
@@ -210,25 +215,25 @@ func TestChartRBAC_MisconfiguredWatchTypesFailsTheRender(t *testing.T) {
 	}{
 		"unknown mode": {
 			setValues: []string{"rbac.watchTypes.mode=readonly"},
-			wantErr:   `rbac.watchTypes.mode must be "any" or "selected"`,
+			wantErr:   "at '/rbac/watchTypes/mode': value must be one of 'any', 'selected'",
 		},
 		"selected with no entries": {
 			setValues: []string{"rbac.watchTypes.mode=selected"},
-			wantErr:   "needs at least one entry",
+			wantErr:   "at '/rbac/watchTypes/selected': minItems: got 0, want 1",
 		},
 		"entry without resources": {
 			setValues: []string{
 				"rbac.watchTypes.mode=selected",
 				"rbac.watchTypes.selected[0].apiGroups[0]=apps",
 			},
-			wantErr: "selected[0] needs resources",
+			wantErr: "at '/rbac/watchTypes/selected/0': missing property 'resources'",
 		},
 		"entry without apiGroups": {
 			setValues: []string{
 				"rbac.watchTypes.mode=selected",
 				"rbac.watchTypes.selected[0].resources[0]=deployments",
 			},
-			wantErr: "selected[0] needs apiGroups",
+			wantErr: "at '/rbac/watchTypes/selected/0': missing property 'apiGroups'",
 		},
 		// Verbs are not the user's to choose: the reverser mirrors a type, it never writes one.
 		"entry setting verbs": {
@@ -238,7 +243,12 @@ func TestChartRBAC_MisconfiguredWatchTypesFailsTheRender(t *testing.T) {
 				"rbac.watchTypes.selected[0].resources[0]=deployments",
 				"rbac.watchTypes.selected[0].verbs[0]=create",
 			},
-			wantErr: "must not set verbs",
+			wantErr: "at '/rbac/watchTypes/selected/0': additional properties 'verbs' not allowed",
+		},
+		// A typo in a key name is the likeliest way to think you narrowed access when you did not.
+		"unknown key under watchTypes": {
+			setValues: []string{"rbac.watchTypes.modes=selected"},
+			wantErr:   "additional properties 'modes' not allowed",
 		},
 	}
 

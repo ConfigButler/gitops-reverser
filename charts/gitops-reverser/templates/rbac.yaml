@@ -28,15 +28,15 @@ subjects:
 - kind: ServiceAccount
   name: {{ include "gitops-reverser.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}
+{{/*
+  mode, the shape of each `selected` entry, and "selected must not be empty" are all enforced
+  by values.schema.json, which helm checks on template, lint, install and upgrade. Keeping the
+  rules there rather than as `fail` calls means one statement of the contract, and errors that
+  name the offending path.
+*/}}
 {{- $watchTypes := .Values.rbac.watchTypes | default dict }}
 {{- $mode := $watchTypes.mode | default "any" }}
-{{- if not (has $mode (list "any" "selected")) }}
-{{- fail (printf "rbac.watchTypes.mode must be \"any\" or \"selected\", got %q" $mode) }}
-{{- end }}
 {{- $selected := $watchTypes.selected | default list }}
-{{- if and (eq $mode "selected") (not $selected) }}
-{{- fail "rbac.watchTypes.mode=selected needs at least one entry in rbac.watchTypes.selected, or the reverser can watch nothing" }}
-{{- end }}
 ---
 # The read access a WatchRule needs. Separate from the manager role because RBAC is additive:
 # folded in, a wildcard here would grant cluster-wide Secret list/watch however narrow the
@@ -59,16 +59,7 @@ rules:
   - list
   - watch
 {{- else }}
-{{- range $i, $rule := $selected }}
-{{- if not $rule.apiGroups }}
-{{- fail (printf "rbac.watchTypes.selected[%d] needs apiGroups (use [\"\"] for the core group)" $i) }}
-{{- end }}
-{{- if not $rule.resources }}
-{{- fail (printf "rbac.watchTypes.selected[%d] needs resources" $i) }}
-{{- end }}
-{{- if $rule.verbs }}
-{{- fail (printf "rbac.watchTypes.selected[%d] must not set verbs; the reverser only ever reads a watched type" $i) }}
-{{- end }}
+{{- range $rule := $selected }}
 - apiGroups:
     {{- toYaml $rule.apiGroups | nindent 4 }}
   resources:

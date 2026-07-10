@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gitops-reverser values",
+  "description": "Partial schema. Only the values whose shape is load-bearing are constrained here; everything else is free-form until it needs a rule.",
+  "type": "object",
+  "properties": {
+    "rbac": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Create the manager ClusterRole and its binding."
+        },
+        "watchTypes": {
+          "type": "object",
+          "description": "Which types a WatchRule may read. The reverser never writes to a watched type.",
+          "properties": {
+            "mode": {
+              "enum": ["any", "selected"],
+              "description": "any: cluster-wide read on everything, including every Secret. selected: read only the types listed below."
+            },
+            "selected": {
+              "type": "array",
+              "description": "Types to grant when mode is selected. Verbs are always get/list/watch.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "apiGroups": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string" },
+                    "description": "API groups; use [\"\"] for the core group."
+                  },
+                  "resources": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string" }
+                  }
+                },
+                "required": ["apiGroups", "resources"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false,
+          "if": {
+            "properties": { "mode": { "const": "selected" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "selected": {
+                "minItems": 1,
+                "description": "mode=selected with no entries would leave the reverser able to watch nothing."
+              }
+            },
+            "required": ["selected"]
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

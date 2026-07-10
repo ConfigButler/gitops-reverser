@@ -45,9 +45,19 @@ rbac:
         resources: ["deployments"]
 ```
 
-Verbs are always `get`, `list`, `watch` — the reverser never writes to a watched type, so
-the chart refuses a `verbs:` key rather than let you grant one by accident. It also refuses
-`mode: selected` with an empty list, which would leave the operator able to watch nothing.
+Verbs are always `get`, `list`, `watch` — the reverser never writes to a watched type, so a
+`verbs:` key is rejected rather than letting you grant one by accident. So is `mode:
+selected` with an empty list, which would leave the operator able to watch nothing, and an
+unknown key under `rbac`, which is how you think you narrowed access when you did not.
+
+Those rules live in the chart's
+[`values.schema.json`](../charts/gitops-reverser/values.schema.json), which Helm enforces on
+`template`, `lint`, `install` and `upgrade`, naming the offending path:
+
+```
+Error: values don't meet the specifications of the schema(s) in the following chart(s):
+- at '/rbac/watchTypes/selected/0': additional properties 'verbs' not allowed
+```
 
 Do **not** restate `namespaces`, `customresourcedefinitions` or `apiservices`: the manager
 role already carries them. A `WatchRule` naming a type you did not grant will fail to watch
