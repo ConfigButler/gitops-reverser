@@ -95,11 +95,17 @@ func isOperationalLabel(key string) bool {
 // that belongs in Git, and stripping them would silently drop a user's sync
 // ordering. Hence the exact-key match.
 //
+// `kcp.io/cluster` is matched exactly for the same reason. kcp stamps it on every
+// object to name the logical cluster the object was read from, so it is an address
+// rather than intent: committed to Git it would pin a manifest to one workspace and
+// travel with it into every other. Sibling `kcp.io/` keys are not assumed to be
+// bookkeeping too, so this is not a prefix strip either.
+//
 // Exercised end-to-end against a real Argo CD in
 // test/e2e/argocd_bi_directional_e2e_test.go.
 func isOperationalAnnotation(key string) bool {
 	switch key {
-	case "argocd.argoproj.io/tracking-id", "argocd.argoproj.io/installation-id":
+	case "argocd.argoproj.io/tracking-id", "argocd.argoproj.io/installation-id", "kcp.io/cluster":
 		return true
 	}
 
