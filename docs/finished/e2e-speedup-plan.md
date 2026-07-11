@@ -1,5 +1,7 @@
 # E2E Speedup Plan
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 Make `task test-e2e*` faster for the three audiences that pay the cost: local
 devs, AI agents, and CI. Phases 0–3 below have **shipped**; this doc keeps the
 baseline, the outcomes, and the rationale for what was deliberately *not* done.

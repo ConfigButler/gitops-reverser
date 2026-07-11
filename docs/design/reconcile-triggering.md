@@ -9,6 +9,8 @@ related:
 
 # Reconcile triggering — how our controllers wake up
 
+> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+
 A controller is only as good as the events that wake it. Periodic requeue is a
 **safety net**, not a mechanism: if state changes and nothing enqueues the owner,
 the change is invisible until the next periodic tick — up to 10 minutes here. This

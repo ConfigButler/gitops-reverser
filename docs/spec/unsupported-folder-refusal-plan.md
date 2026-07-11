@@ -1,6 +1,10 @@
 # Refuse unsupported folder content — design + implementation plan
 
-> Status: PROPOSAL — 2026-06-26, **revised 2026-06-27**. The mechanics (refuse a GitTarget path the
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
+> Status: IMPLEMENTED — shipped as `GitPathAccepted` (internal/git/git_path_refusal.go,
+> test/e2e/unsupported_folder_e2e_test.go). Originally written 2026-06-26, revised 2026-06-27;
+> the "PROPOSAL" label was stale and was corrected 2026-07-11. The mechanics (refuse a GitTarget path the
 > operator cannot safely manage) are settled. The **status surface** is reopened: this revision records the
 > back-and-forth that turned a single overloaded `StreamsReady=Blocked` refusal into a deliberate
 > two-sided status model, and then — after the `k8s-crd-design-review` skill grew a `kstatus-readiness`

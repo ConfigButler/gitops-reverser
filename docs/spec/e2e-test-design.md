@@ -1,5 +1,7 @@
 # E2E Test Design
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 ## Overview
 
 The e2e tests exercise `gitops-reverser` against a real k3d cluster, real Flux installs, a real Gitea instance,

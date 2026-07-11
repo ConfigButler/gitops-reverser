@@ -1,5 +1,7 @@
 # Fact: Kubernetes resourceVersion semantics
 
+> **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
+
 Reference: [Kubernetes API concepts — resource versions](https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions)
 
 This is a standing reference for how GitOps Reverser may and may not rely on

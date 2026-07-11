@@ -1,5 +1,7 @@
 # GitTarget path stringency — refuse foreign content, own the subtree
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: IMPLEMENTED — 2026-06-27. The structural foreign-content refusal, the
 > `.gittargetignore` filter + parse-time denylist, the write-plan invariant (D-foreign-6), the
 > bootstrap template, and the distinct `IgnoreShadowsManagedPath` status reason have all

@@ -1,5 +1,7 @@
 # Implementation Plan: Startup Sensitive Resource Classification
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 Tracks [#147](https://github.com/ConfigButler/gitops-reverser/issues/147) —
 support CozyStack's `tenantsecrets.core.cozystack.io` so Secret-shaped custom
 resources are encrypted before they land in Git.

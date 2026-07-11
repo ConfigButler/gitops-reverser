@@ -1,5 +1,7 @@
 # Kubernetes Subresources
 
+> **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
+
 A factual reference on what subresources are in the Kubernetes API, which ones
 exist, how they behave, and how `configbutler.ai` resources use them.
 

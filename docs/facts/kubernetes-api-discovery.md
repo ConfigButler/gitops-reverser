@@ -1,5 +1,7 @@
 # Kubernetes API Discovery and Watching in GitOps Reverser
 
+> **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
+
 This document explains how GitOps Reverser decides what it can watch, and gives Kubernetes API background for
 learning.
 

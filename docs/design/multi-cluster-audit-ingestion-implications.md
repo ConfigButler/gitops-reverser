@@ -1,5 +1,7 @@
 # Multi-Cluster Audit Ingestion: Implications and Configuration Mapping
 
+> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+
 ## 1. Purpose
 
 This document describes what changes are implied by supporting audit ingestion from multiple clusters, how this maps to

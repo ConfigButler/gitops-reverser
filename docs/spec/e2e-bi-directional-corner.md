@@ -1,5 +1,7 @@
 # E2E Design: The Bi-Directional Corner (Flux + Argo CD)
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 ## Status
 
 Implemented. This document is the design for:

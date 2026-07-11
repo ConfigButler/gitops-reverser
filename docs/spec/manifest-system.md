@@ -1,5 +1,7 @@
 # The manifest system: how it works today
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: reference — describes shipped behaviour.
 > Captured: 2026-07-11.
 > Replaces the whole of `docs/design/manifest/`, which was 19 documents of

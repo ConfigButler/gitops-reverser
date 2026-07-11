@@ -1,5 +1,7 @@
 # Follow-up: Sensitive Resource Diagnostics
 
+> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+
 This follow-up builds on
 [sensitive-resource-classification-plan.md](../finished/sensitive-resource-classification-plan.md).
 The first increment only adds explicit startup classification to the Git write

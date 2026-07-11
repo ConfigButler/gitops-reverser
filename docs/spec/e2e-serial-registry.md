@@ -1,5 +1,7 @@
 # E2E Serial Registry
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 This is a **living document**. It is the authoritative list of e2e test
 containers that must run `Serial` (i.e. never concurrently with any other spec)
 under bounded Ginkgo parallelism (Phase 2.5 of

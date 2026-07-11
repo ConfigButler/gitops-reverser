@@ -1,5 +1,7 @@
 # Kubernetes API Resource Catalog for GitOps Reverser
 
+> **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
+
 ## Purpose
 
 GitOps Reverser needs to know which Kubernetes resource types the API server

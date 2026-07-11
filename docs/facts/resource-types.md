@@ -1,3 +1,5 @@
+> **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
+
 schemaVersion: 1
 kind: KubernetesResourceTypeFacts
 title: Kubernetes resource type read API facts

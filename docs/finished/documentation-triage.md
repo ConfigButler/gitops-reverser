@@ -1,8 +1,14 @@
 # Documentation triage: what binds, what is history, what to do
 
-> Status: proposal; no files moved yet.
-> Captured: 2026-07-11
-> Scope: all 180 markdown files under `docs/` (~55,000 lines).
+> **finished** — this plan was executed on 2026-07-11. Kept as the record of *why* the
+> tree looks the way it does. For what to read now, see [`../INDEX.md`](../INDEX.md).
+>
+> Outcome: 180 documents -> 117. `docs/spec/` created (25 docs the code depends on),
+> `docs/design/manifest/` deleted (19 -> 1 summary + 4 promoted specs), ~50 dead documents
+> removed, and every dangling citation repaired — including the 17 that were already broken
+> before this started.
+>
+> Scope as surveyed: all 180 markdown files under `docs/` (~55,000 lines).
 
 ## The headline
 
@@ -79,7 +85,7 @@ works *today* or what is being decided *now*.
 ### The live workstream (13) — `docs/design/gitops-api/`
 
 All of it. This is the branch you are on. My separate proposal
-([expansion-boundary-and-corpus-organisation.md](gitops-api/expansion-boundary-and-corpus-organisation.md))
+([expansion-boundary-and-corpus-organisation.md](../design/gitops-api/expansion-boundary-and-corpus-organisation.md))
 recommends adding a `support-contract.md` front door and folding four restatements
 of the fan-in rule into one.
 
@@ -241,7 +247,7 @@ facts first (noted above). Git keeps everything; nothing is lost that a
 ### Phase 5 — the gitops-api consolidation
 
 Separately proposed in
-[expansion-boundary-and-corpus-organisation.md](gitops-api/expansion-boundary-and-corpus-organisation.md):
+[expansion-boundary-and-corpus-organisation.md](../design/gitops-api/expansion-boundary-and-corpus-organisation.md):
 add a `support-contract.md` front door, fold the four restatements of the fan-in
 invariant into one, and de-duplicate the `--dry-run=server` evidence table.
 

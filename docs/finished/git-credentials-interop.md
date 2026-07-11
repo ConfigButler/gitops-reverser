@@ -1,5 +1,7 @@
 # Git config interop: rollout plan
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 Status: **this is the plan we execute in one go.** We are pre-1.0 with no existing users, so there
 are no migration shims, compatibility windows, or deprecation steps — we change the schema and the
 credentials reader directly and ship them as one change set. The rollout plan section lists the

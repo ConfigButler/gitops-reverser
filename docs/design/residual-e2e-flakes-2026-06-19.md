@@ -1,5 +1,7 @@
 # Residual e2e flakes after the first-event-loss fix (2026-06-19)
 
+> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+
 Status: ACTIVE FOR FLAKE B; FLAKE A CLOSED BY THE 2026-06-20 ATTRIBUTION FIX. After the
 capture-before-baseline fix
 (`first-event-loss-on-reclaim-plan.md`, committed in `5d85e7d`),

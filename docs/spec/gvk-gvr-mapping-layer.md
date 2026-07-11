@@ -1,5 +1,7 @@
 # Manifest GVK/GVR Mapping Layer
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: design, captured 2026-06-04
 > Related:
 > [current-manifest-support-review.md](current-manifest-support-review.md),

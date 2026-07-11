@@ -1,5 +1,7 @@
 # Startup robustness: the audit-cert mount race & the CRD-discovery wobble
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 This document describes two distinct, pre-existing reliability hazards that surface as a single
 intermittent e2e failure, explains the mechanisms precisely, and sketches candidate fixes with
 trade-offs. Both are **independent of the api-source-of-truth / R3 work** — they predate it and

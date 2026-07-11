@@ -1,5 +1,7 @@
 # E2E Test Design: Aggregated API Server (Extension API Server)
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 > Last updated: April 2026
 
 ## Motivation

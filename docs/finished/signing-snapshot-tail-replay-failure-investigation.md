@@ -1,5 +1,7 @@
 # Signing reconcile E2E failure: per-type tail replay creates event commits
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: investigation note. The chosen fix is a per-target coverage watermark.
 > Captured 2026-06-12, refreshed 2026-06-13 after the materialization-healing and
 > GitTarget status work landed.

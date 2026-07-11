@@ -151,6 +151,14 @@ the minimal expression of the change **in the right variant**."
 > root.** (Write fan-in = 1. Base files and shared components are read-only
 > context, always.)
 
+> **This rule has one home:**
+> [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md)
+> specifies it as the two-layer write boundary (L1 filesystem jail, L2 fan-in = 1)
+> and names its enforcement — a write-plan precondition that aborts the whole flush
+> and fails the GitTarget with `GitPathAccepted=False` / `WriteBoundaryRefused`.
+> The paragraph above states the rule; it does not redefine it. If the two ever
+> disagree, §1 wins.
+
 This single sentence:
 
 - makes "operator edits base" structurally impossible — nothing observed in

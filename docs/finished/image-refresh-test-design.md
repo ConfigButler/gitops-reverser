@@ -1,5 +1,7 @@
 # Image Refresh Test Design
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 ## What This Tests
 
 The Task-driven image-refresh dependency chain is load-bearing infrastructure. When it breaks,

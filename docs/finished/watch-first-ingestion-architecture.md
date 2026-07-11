@@ -1,5 +1,7 @@
 # Watch-first ingestion architecture
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: **accepted direction — big-bang rewrite**
 > Date: 2026-06-25
 >

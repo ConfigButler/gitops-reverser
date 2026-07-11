@@ -1,5 +1,7 @@
 # Audit Webhook TLS Design
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 ## The two operator questions
 
 This design needs to answer two practical questions before anything else:

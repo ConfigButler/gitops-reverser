@@ -1,5 +1,7 @@
 # Playground Plan
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 ## Goal
 
 Make the local Tilt loop feel like a small, reliable playground for GitOps Reverser:

@@ -1,5 +1,7 @@
 # Current Manifest Support Review
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: architecture review, captured 2026-06-04
 > Related:
 > `implementation-plan.md`,

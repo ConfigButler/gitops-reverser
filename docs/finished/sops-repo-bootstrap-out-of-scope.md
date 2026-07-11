@@ -1,5 +1,7 @@
 # SOPS Repo Bootstrap: Out of Scope (Current Increment)
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 This file tracks explicit non-goals and deferred items, so the main architecture plan stays small and execution-focused.
 
 ## Explicitly Not Doing Now

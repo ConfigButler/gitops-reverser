@@ -1,5 +1,7 @@
 # E2E CI Runner Sharding Plan
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 ## Question
 
 We are now allowed **up to 20 concurrent GitHub-hosted runners** (previously this

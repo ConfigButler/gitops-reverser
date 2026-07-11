@@ -13,6 +13,8 @@ related:
 
 # CommitRequest authorship from admission
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 > **Thesis.** A `CommitRequest` is a **command** ("save now, as me"), not a piece of
 > mirrored state. Its author should be captured where the command is issued — a
 > **validating admission webhook** dedicated to our own command kinds (the

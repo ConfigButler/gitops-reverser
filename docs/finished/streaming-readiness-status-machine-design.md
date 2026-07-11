@@ -1,5 +1,7 @@
 # Stream-readiness status machine — design
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: design · Branch: `investigate` · Date: 2026-06-26
 >
 > Implements the direction in

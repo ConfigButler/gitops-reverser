@@ -1,5 +1,7 @@
 # E2E Signing Overview
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 This document is the short status summary for the e2e signing work.
 
 ## What The Signing Suite Proves

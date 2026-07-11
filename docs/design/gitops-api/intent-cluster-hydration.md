@@ -119,25 +119,25 @@ whenever the applier cannot decrypt.
 Flux's answer, when it *is* the real cluster, is `spec.decryption` with the
 private age identity, and that path is exercised in the bi-directional e2e above.
 The question that matters here is what happens in a cluster that deliberately
-holds **no** key. There, the document is applied as written, and verified against
-a real API server (Kubernetes v1.36, `kubectl apply --dry-run=server`):
+holds **no** key. There, the document is applied as written — and it does not
+survive contact with a real API server.
 
-| Document | Result |
-|---|---|
-| `Secret` with `data:` holding `ENC[AES256_GCM,...]` | `BadRequest: illegal base64 data at input byte 3` |
-| …the same, with validation disabled | **same error** |
-| `Secret` with valid base64 plus a top-level `sops:` field | `BadRequest: strict decoding error: unknown field "sops"` |
-| …the same, with validation disabled | created, `sops:` silently dropped |
-| `Secret` with `stringData:` ciphertext, validation disabled | created, value stored as the literal text `ENC[AES256_GCM,...]` |
+> The evidence (a `kubectl apply --dry-run=server` matrix against Kubernetes
+> v1.36) lives once, in
+> [resource-capability-model.md § The evidence](resource-capability-model.md).
+> It is not repeated here.
 
-The first two rows are the load-bearing ones. `data` is typed as base64 bytes, so
-the failure happens at **deserialization**, before validation. No amount of
-lenient decoding rescues it. Any applier — `kubectl`, Argo CD, Flux's
-kustomize-controller — hits the same wall.
+Two of its rows drive everything below:
 
-The last row is the nightmare: a lenient applier stores the ciphertext *as the
-value*, and an application reads its password as the literal string
-`ENC[AES256_GCM,...]`. Nothing errors. **Any hydrator must use strict decoding.**
+- A `Secret` whose `data:` holds `ENC[AES256_GCM,...]` fails with
+  `illegal base64 data`, **even with validation disabled** — `data` is typed as
+  base64 bytes, so the failure happens at *deserialization*, before validation. No
+  lenient decoding rescues it, and every applier — `kubectl`, Argo CD, Flux's
+  kustomize-controller — hits the same wall.
+- With validation disabled, a `stringData:` ciphertext **is created**, storing the
+  value as the literal text `ENC[AES256_GCM,...]`. An application then reads its
+  password as that string, and nothing errors anywhere. **Any hydrator must use
+  strict decoding.**
 
 ### Flux is kinder than the API server, and says so
 

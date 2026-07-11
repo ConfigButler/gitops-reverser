@@ -1,5 +1,7 @@
 # Audit Webhook API Server Connectivity
 
+> **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
+
 GitOps Reverser relies on the Kubernetes [audit webhook backend](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend): the kube-apiserver POSTs audit events to an HTTPS endpoint using a kubeconfig file written on the control-plane node(s). This works best on clusters you fully control — k3s, k3d, Talos, Kamaji. Managed platforms (EKS, GKE, AKS) restrict access to apiserver configuration; running on them requires switching to a self-managed control plane or a platform that does expose it.
 
 ## The problem

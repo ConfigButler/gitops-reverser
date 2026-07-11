@@ -1,5 +1,7 @@
 # C-B2: per-GitTarget finalize coordinator (Option A design)
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: **superseded in part — C-B2 LANDED 2026-06-11 in a simpler form; see §12.**
 > The per-type snapshot analysis (§3) and the ordering invariant (§1) are the parts that
 > shipped; the coordinator goroutine, the annotation persistence, and the requeue-poll

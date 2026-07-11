@@ -1,5 +1,7 @@
 # SOPS Repo Bootstrap and Key Management Architecture
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 ## Scope for This Increment
 
 This document is intentionally narrow. It defines only what we will implement now.

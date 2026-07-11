@@ -1,5 +1,7 @@
 # Reconcile via WatchList + Mark-and-Sweep
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: design direction, captured 2026-06-04.
 > Related:
 > [current-manifest-support-review.md](current-manifest-support-review.md),

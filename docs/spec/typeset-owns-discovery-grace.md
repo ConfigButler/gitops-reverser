@@ -1,5 +1,7 @@
 # Typeset owns discovery grace: thinning the API-resource catalog
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 **Status: S1–S3 IMPLEMENTED (2026-06-11); S4 open.** As-built deltas from the plan below
 (all minor, same shape):
 

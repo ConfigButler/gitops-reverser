@@ -1,5 +1,7 @@
 # Redis key schema v3 — author and watch namespaces
 
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: **IMPLEMENTED** — 2026-06-29. The `v2 → v3` key-format bump landed for the live Redis families:
 > the audit author index, the watch-resume cursor, and the new command-author **store** (storage
 > mechanics only — the CommitRequest admission/controller rewrite in

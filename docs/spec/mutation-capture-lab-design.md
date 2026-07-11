@@ -1,5 +1,7 @@
 # Mutation Capture Lab
 
+> **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
+
 The mutation-capture lab is a small, standalone application that records the *exact* structures
 Kubernetes exposes through native **watches**, **audit webhooks**, and **validating admission
 webhooks** — at every interesting moment — and commits those structures as a normalized, versioned

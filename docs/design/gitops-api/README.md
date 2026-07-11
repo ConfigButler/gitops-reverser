@@ -1,18 +1,25 @@
 # GitOps API: editing existing GitOps folders as a product surface
 
-> Status: active workstream
-> Captured: 2026-07-06
-> Related:
-> [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md),
-> [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md),
-> [resource-capability-model.md](resource-capability-model.md),
-> [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md),
-> [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md),
-> [intent-cluster-hydration.md](intent-cluster-hydration.md),
-> [../../future/idea-application-editing.md](../../future/idea-application-editing.md),
-> [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../../spec/contextual-namespace-and-kustomize-folder-editing.md),
-> [../manifest/file-agnostic-placement.md](../../spec/gittarget-new-file-placement-rules.md),
-> [../../finished/current-manifest-support-review.md](../../spec/current-manifest-support-review.md)
+> **design** — the active workstream. Captured 2026-07-06.
+>
+> **New here? Read [support-contract.md](support-contract.md) first** — it is the one
+> page that says what we support, what we refuse, and why. This README is the *plan*
+> (the feature ladder); that one is the *boundary*.
+
+## The folder, by topic
+
+| Topic | Docs |
+|---|---|
+| **The boundary** | [support-contract.md](support-contract.md) — the single statement · [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md) — field taxonomy + layout allowlist · [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md) — **the write boundary; the one home of fan-in = 1** |
+| **Orchestrators & expansion** | [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) — renderability vs ownership; claims about paths · [expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md) — provenance; ApplicationSet vs ResourceSet; Helm · [argocd-bi-directional.md](argocd-bi-directional.md) — why `selfHeal` is incompatible |
+| **Documents & secrets** | [resource-capability-model.md](resource-capability-model.md) — what may I do to this document · [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md) — SOPS · [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md) |
+| **Topology** | [intent-cluster-hydration.md](intent-cluster-hydration.md) — how objects get into the cluster to be edited |
+| **Edits with no home** | [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) |
+| **Onboarding** | [f8-repo-discovery-and-onboarding-scan.md](f8-repo-discovery-and-onboarding-scan.md) |
+| **Shipped** | [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md) · [finished/f7-higher-level-krm-documents.md](finished/f7-higher-level-krm-documents.md) |
+| **Evidence** | [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/) — the corpus of real-world repo shapes |
+| **Origin** | [../../future/idea-application-editing.md](../../future/idea-application-editing.md) — the product seed |
+| **Foundations** | [current-manifest-support-review.md](../../spec/current-manifest-support-review.md) · [contextual-namespace-and-kustomize-folder-editing.md](../../spec/contextual-namespace-and-kustomize-folder-editing.md) · [gittarget-new-file-placement-rules.md](../../spec/gittarget-new-file-placement-rules.md) |
 
 ## Goal
 

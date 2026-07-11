@@ -1,5 +1,7 @@
 # Kubernetes API Priority and Fairness — and How to Tune It for High Concurrency
 
+> **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
+
 When you throw a sudden burst of requests at a Kubernetes API server — say, 300 clients all authenticating simultaneously — it doesn't just pass everything through. It applies a two-layer traffic control system: a hard concurrency ceiling called **max-requests-inflight**, and a sophisticated queuing layer called **API Priority and Fairness (APF)**. Understanding both is the key to making high-concurrency workloads reliable without adding more hardware.
 
 ---
