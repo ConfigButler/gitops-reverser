@@ -310,11 +310,36 @@ func TestCleanAnnotations(t *testing.T) {
 			},
 		},
 		{
+			// kcp names the logical cluster an object was read from. It is an address,
+			// not intent: in Git it would pin the manifest to one workspace and travel
+			// with it into every other.
+			name: "remove kcp logical-cluster annotation",
+			input: map[string]string{
+				"kcp.io/cluster":  "root:org:team",
+				"user-annotation": "kept",
+			},
+			expected: map[string]string{
+				"user-annotation": "kept",
+			},
+		},
+		{
+			// Exact-key, not a `kcp.io/` prefix strip: sibling keys under the prefix are
+			// not assumed to be bookkeeping.
+			name: "keep other kcp annotations",
+			input: map[string]string{
+				"kcp.io/path": "kept",
+			},
+			expected: map[string]string{
+				"kcp.io/path": "kept",
+			},
+		},
+		{
 			name: "all annotations operational - return nil",
 			input: map[string]string{
 				"kubectl.kubernetes.io/last-applied-configuration": "removed",
 				"control-plane.alpha.kubernetes.io/leader":         "removed",
 				"argocd.argoproj.io/tracking-id":                   "removed",
+				"kcp.io/cluster":                                   "removed",
 			},
 			expected: nil,
 		},
