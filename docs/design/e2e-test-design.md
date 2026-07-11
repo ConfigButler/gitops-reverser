@@ -104,7 +104,8 @@ These are the canonical Task entry points on the current worktree:
 
 | Command | Purpose |
 |---|---|
-| `task test-e2e` | Standard e2e package, excluding CI-only workflow checks |
+| `task test-e2e` | Standard e2e package, excluding CI-only workflow checks and the bi-directional corner |
+| `task test-e2e-bi-directional` | Bi-directional corner (Flux + Argo CD); the only lane that installs Argo CD |
 | `task test-image-refresh` | Image rebuild / reload invalidation chain |
 | `task test-e2e-quickstart-helm` | Quickstart framework with Helm install |
 | `task test-e2e-quickstart-manifest` | Quickstart framework with manifest install |
@@ -120,7 +121,7 @@ The intended interpretation of these entry points is:
 - `task test-image-refresh` validates the rebuild/reload workflow and is run explicitly by CI rather than as part of the normal `task test-e2e` path
 - `task test-e2e-quickstart-helm` is the important validation for the Helm install path
 - `task test-e2e-quickstart-manifest` is the important validation for the single-file manifest install path
-- `task test-e2e` is a broad spec run that includes the bi-directional scenario, but it is not the primary way to validate every install mode
+- `task test-e2e` is a broad spec run but **excludes** the bi-directional corner (its label filter defaults to `!image-refresh && !bi-directional`), because that corner needs an Argo CD install `task prepare-e2e` does not perform — run it with `task test-e2e-bi-directional`
 
 ## Lifecycle Layers
 
@@ -246,7 +247,8 @@ Each repo-using e2e file owns its own repo:
 | `commit_window_batching_e2e_test.go` / `commit_request_e2e_test.go` | `testNamespaceFor("audit-consumer")` via shared helper; per-spec producer namespaces | `e2e-audit-consumer-<seed>` |
 | `commit_author_attribution_e2e_test.go` | `testNamespaceFor("commit-author")` | `e2e-commit-author-<seed>` |
 | `quickstart_framework_e2e_test.go` | `testNamespaceFor("quickstart-framework")` | `e2e-quickstart-framework-<seed>` |
-| `bi_directional_e2e_test.go` | `testNamespaceFor("bi-directional")` | `e2e-bi-directional-<seed>` |
+| `flux_bi_directional_e2e_test.go` | `testNamespaceFor("bi-directional")` | `e2e-bi-directional-<seed>` |
+| `argocd_bi_directional_e2e_test.go` | `testNamespaceFor("argo-bi-directional")` | `e2e-argo-bi-directional-<seed>` |
 | `demo_e2e_test.go` | fixed `vote` | fixed `demo` |
 | `image_refresh_test.go` | install namespace only | no repo |
 
@@ -366,7 +368,8 @@ The e2e package currently contains:
 | `commit_author_attribution_e2e_test.go` | `manager` | OIDC claim to Git author attribution |
 | `image_refresh_test.go` | `image-refresh` | Build/load/restart invalidation chain |
 | `quickstart_framework_e2e_test.go` | `quickstart-framework` | Installer-level quickstart flow |
-| `bi_directional_e2e_test.go` | `bi-directional` | Flux plus gitops-reverser shared ownership |
+| `flux_bi_directional_e2e_test.go` | `bi-directional`, `flux` | Flux plus gitops-reverser shared ownership |
+| `argocd_bi_directional_e2e_test.go` | `bi-directional`, `argocd` | Argo CD plus gitops-reverser shared ownership |
 | `demo_e2e_test.go` | `demo` | Demo repo preparation, intentionally leaves resources |
 
 ## Suite Definition

@@ -1,0 +1,72 @@
+# Argo CD Helm chart values for the bi-directional e2e corner.
+#
+# This is the ONLY Argo CD install in the repository. It is applied by the
+# `_argocd-installed` Taskfile node (helm upgrade --install), which only
+# `task test-e2e-bi-directional` and `task argocd-ui` depend on. The
+# chart version is pinned in ARGOCD_CHART_VERSION (test/e2e/Taskfile.yml); its
+# appVersion is the Argo CD release the specs pin behaviour against.
+#
+# Design: docs/design/e2e-bi-directional-corner.md. README.md lists what to
+# re-verify on a bump.
+
+# CRDs travel with the chart (crds.install: true by default). Keep them on chart
+# removal is irrelevant here — the cluster is disposable.
+
+# The specs assert Argo CD's DEFAULTS — the `annotation` resource-tracking method,
+# the exact tracking-id value, client-side apply. So this file deliberately does
+# NOT set `application.resourceTrackingMethod` (it stays the built-in `annotation`)
+# and does NOT enable server-side apply globally. A drift in either would turn a
+# real behavioural regression into a silent pass.
+configs:
+  cm:
+    # Make Argo's *spontaneous* refresh slow, not fast. Two clocks drive Argo and
+    # the gap between them is what the specs measure: self-heal reacts to live
+    # drift sub-second, while a NEW GIT REVISION is only noticed on this timed
+    # refresh. The specs drive refresh/sync explicitly, so they never wait on this;
+    # shortening it would make the selfHeal spec flaky. Longer than the 120s default.
+    timeout.reconciliation: 180s
+  params:
+    # Plain-HTTP UI behind the port-forward (task argocd-ui); no TLS gymnastics.
+    server.insecure: true
+
+# Trim to the components the corner needs. dex (SSO — local admin login works
+# without it) and notifications (nothing subscribes) stay off; the ApplicationSet
+# controller is deployed (chart default) and kept on deliberately.
+dex:
+  enabled: false
+notifications:
+  enabled: false
+
+# Prometheus metrics + ServiceMonitors for every running component. The corner's
+# cluster runs the Prometheus operator; its shared instance selects ServiceMonitors
+# by `monitoring.configbutler.ai/instance: gitops-reverser`
+# (test/e2e/setup/manifests/prometheus/instance.yaml), so that label is what makes
+# these actually scraped rather than merely created.
+controller:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        monitoring.configbutler.ai/instance: gitops-reverser
+server:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        monitoring.configbutler.ai/instance: gitops-reverser
+repoServer:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        monitoring.configbutler.ai/instance: gitops-reverser
+applicationSet:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        monitoring.configbutler.ai/instance: gitops-reverser

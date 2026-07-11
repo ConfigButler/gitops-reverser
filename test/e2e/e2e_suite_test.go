@@ -222,13 +222,7 @@ func prepareE2EClusterOnce() {
 	// (see test/e2e/icecream.go). Remove all of them, plus the legacy shared
 	// group, so a warm/reused cluster starts clean.
 	By("ensuring IceCreamOrder CRDs are removed before tests")
-	for _, group := range []string{
-		crdGroupCRDLifecycle,
-		crdGroupRestartReconcile,
-		crdGroupBiDirectional,
-		crdGroupWildcardRule,
-		"shop.example.com", // legacy pre-isolation group
-	} {
+	for _, group := range iceCreamCRDGroups() {
 		output, err = kubectlRun(
 			"delete", "crd", iceCreamCRDName(group),
 			"--ignore-not-found=true",

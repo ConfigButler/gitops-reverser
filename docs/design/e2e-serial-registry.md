@@ -76,7 +76,7 @@ target runs its own commit window), so events for other GitTargets cannot enter
 this spec's grouped commit. The retired `sync.Once` helper (`audit_helpers_test.go`)
 was deleted.
 
-`Bi Directional` ([bi_directional_e2e_test.go](../../test/e2e/bi_directional_e2e_test.go))
+`Bi Directional (Flux)` ([flux_bi_directional_e2e_test.go](../../test/e2e/flux_bi_directional_e2e_test.go))
 was de-serialized too. It already owned a dedicated repo and per-file CRD group;
 its historical "+2 commits only under parallelism" came from cluster-wide GVR
 catalog churn (another spec installing/deleting a CRD) dragging unrelated targets

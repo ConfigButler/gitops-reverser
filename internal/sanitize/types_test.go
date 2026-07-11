@@ -155,6 +155,26 @@ func TestCleanLabels(t *testing.T) {
 			expected: nil,
 		},
 		{
+			name: "remove kro labels",
+			input: map[string]string{
+				"kro.run/owned-by": "removed",
+				"user-label":       "kept",
+			},
+			expected: map[string]string{
+				"user-label": "kept",
+			},
+		},
+		{
+			name: "remove applyset labels",
+			input: map[string]string{
+				"applyset.kubernetes.io/part-of": "removed",
+				"user-label":                     "kept",
+			},
+			expected: map[string]string{
+				"user-label": "kept",
+			},
+		},
+		{
 			name: "keep user labels",
 			input: map[string]string{
 				"app.kubernetes.io/name": "kept",
@@ -163,6 +183,20 @@ func TestCleanLabels(t *testing.T) {
 			expected: map[string]string{
 				"app.kubernetes.io/name": "kept",
 				"example.com/custom":     "kept",
+			},
+		},
+		{
+			// Argo CD's `label` / `annotation+label` tracking methods stamp
+			// app.kubernetes.io/instance, but so do Helm and Kustomize for entirely
+			// legitimate reasons. The sanitizer cannot tell them apart, so it must
+			// keep the label. docs/bi-directional.md tells users to leave Argo CD on
+			// its default `annotation` tracking for reverser-managed paths.
+			name: "keep app.kubernetes.io/instance even though Argo CD may own it",
+			input: map[string]string{
+				"app.kubernetes.io/instance": "kept",
+			},
+			expected: map[string]string{
+				"app.kubernetes.io/instance": "kept",
 			},
 		},
 	}
@@ -233,10 +267,54 @@ func TestCleanAnnotations(t *testing.T) {
 			},
 		},
 		{
+			name: "remove applyset annotations",
+			input: map[string]string{
+				"applyset.kubernetes.io/tooling": "removed",
+				"user-annotation":                "kept",
+			},
+			expected: map[string]string{
+				"user-annotation": "kept",
+			},
+		},
+		{
+			// Argo CD's repo-server stamps tracking-id onto every non-CRD object it
+			// applies. It is controller bookkeeping; committing it to Git makes a
+			// second Application fail to sync with "Shared resource found", because
+			// Argo never validates a tracking-id against the object carrying it.
+			name: "remove Argo CD resource-tracking bookkeeping",
+			input: map[string]string{
+				"argocd.argoproj.io/tracking-id":     "my-app:example.com/IceCreamOrder:ns/order-1",
+				"argocd.argoproj.io/installation-id": "removed",
+				"user-annotation":                    "kept",
+			},
+			expected: map[string]string{
+				"user-annotation": "kept",
+			},
+		},
+		{
+			// The exact-key set exists precisely so these survive. A blanket
+			// `argocd.argoproj.io/` prefix strip would silently drop a user's sync
+			// ordering and hook declarations.
+			name: "keep Argo CD annotations that are user intent",
+			input: map[string]string{
+				"argocd.argoproj.io/sync-wave":       "kept",
+				"argocd.argoproj.io/sync-options":    "kept",
+				"argocd.argoproj.io/compare-options": "kept",
+				"argocd.argoproj.io/hook":            "kept",
+			},
+			expected: map[string]string{
+				"argocd.argoproj.io/sync-wave":       "kept",
+				"argocd.argoproj.io/sync-options":    "kept",
+				"argocd.argoproj.io/compare-options": "kept",
+				"argocd.argoproj.io/hook":            "kept",
+			},
+		},
+		{
 			name: "all annotations operational - return nil",
 			input: map[string]string{
 				"kubectl.kubernetes.io/last-applied-configuration": "removed",
 				"control-plane.alpha.kubernetes.io/leader":         "removed",
+				"argocd.argoproj.io/tracking-id":                   "removed",
 			},
 			expected: nil,
 		},

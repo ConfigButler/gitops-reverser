@@ -66,13 +66,43 @@ func cleanAnnotations(annotations map[string]string) map[string]string {
 	return cleaned
 }
 
+// isOperationalLabel reports whether a label is controller bookkeeping.
+//
+// Note the asymmetry with Argo CD: its `label` and `annotation+label` tracking
+// methods stamp `app.kubernetes.io/instance`, which is indistinguishable from the
+// standard recommended label that Helm and Kustomize set for legitimate reasons.
+// It is therefore NOT stripped, and reverser-managed paths must leave Argo CD on
+// its default `annotation` tracking method. See docs/bi-directional.md.
 func isOperationalLabel(key string) bool {
 	return strings.HasPrefix(key, "kustomize.toolkit.fluxcd.io/") ||
 		strings.HasPrefix(key, "kro.run/") ||
 		strings.HasPrefix(key, "applyset.kubernetes.io/")
 }
 
+// isOperationalAnnotation reports whether an annotation is controller bookkeeping.
+//
+// Argo CD's tracking annotations are matched EXACTLY, not by prefix. Its
+// repo-server stamps `argocd.argoproj.io/tracking-id` onto every non-CRD object it
+// applies (the default tracking method is `annotation`), with the value
+// `<app>:<group>/<Kind>:<ns>/<name>`, plus `installation-id` when an installation
+// ID is configured. That is controller state, not user intent, and committing it
+// to Git is actively harmful: Argo never validates a tracking-id against the
+// object it reads it from, so a manifest carrying a foreign one makes another
+// Application fail to sync with "Shared resource found".
+//
+// This CANNOT be an `argocd.argoproj.io/` prefix strip. Sibling annotations under
+// that prefix — sync-wave, sync-options, compare-options, hook — are user intent
+// that belongs in Git, and stripping them would silently drop a user's sync
+// ordering. Hence the exact-key match.
+//
+// Exercised end-to-end against a real Argo CD in
+// test/e2e/argocd_bi_directional_e2e_test.go.
 func isOperationalAnnotation(key string) bool {
+	switch key {
+	case "argocd.argoproj.io/tracking-id", "argocd.argoproj.io/installation-id":
+		return true
+	}
+
 	return strings.HasPrefix(key, "kubectl.kubernetes.io/") ||
 		strings.HasPrefix(key, "control-plane.alpha.kubernetes.io/") ||
 		strings.HasPrefix(key, "deployment.kubernetes.io/") ||

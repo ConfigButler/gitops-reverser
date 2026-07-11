@@ -734,11 +734,31 @@ jobs:
             k3d_agent_count: "0"
           - name: full-core
             script: "task test-e2e"
-            e2e_label_filter: "!manager && !image-refresh"
+            # `bi-directional` moved out to its own leg (it needs an Argo CD
+            # install that `task prepare-e2e` does not perform), so this filter is
+            # now a strict subset of what it used to run.
+            e2e_label_filter: "!manager && !image-refresh && !bi-directional"
             e2e_report_name: "full-core"
             needs_artifact: false
             coverage: "1"
             e2e_ginkgo_procs: "4"
+            k3d_agent_count: "0"
+          # The bi-directional corner: the only leg that installs Argo CD, and the
+          # only place gitops-reverser shares a path with a foreign GitOps engine.
+          # Its own runner (hence its own cluster) is what keeps the Argo CD
+          # install off the other three legs.
+          # docs/design/e2e-bi-directional-corner.md.
+          #
+          # `task test-e2e-bi-directional` pins its own label filter and Ginkgo
+          # procs (BI_DIRECTIONAL_GINKGO_PROCS), so e2e_label_filter and
+          # e2e_ginkgo_procs are deliberately absent here rather than set to values
+          # the task would ignore. It uses the default config-dir install, so it
+          # carries the GOCOVERDIR overlay and its coverage unions with the others'.
+          - name: bi-directional
+            script: "task test-e2e-bi-directional"
+            e2e_report_name: "bi-directional"
+            needs_artifact: false
+            coverage: "1"
             k3d_agent_count: "0"
           # Quickstart chain, sharded across two runners (was the single
           # `quickstart` lane). quickstart-install runs the two install-mode

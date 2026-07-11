@@ -131,6 +131,24 @@ vars:
   # longer trips cross-target snapshot coupling.
   E2E_GINKGO_PROCS: '{{.E2E_GINKGO_PROCS | default "4"}}'
   FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'
+  # Argo CD — installed ONLY for the bi-directional corner
+  # (docs/design/e2e-bi-directional-corner.md). Unlike Flux, which is load-bearing
+  # for every cluster (Gitea/Valkey/Prometheus arrive as Flux HelmReleases), Argo
+  # CD is needed by two specs, so it hangs off _argocd-installed and nothing else.
+  #
+  # Installed from the official argo-helm chart (test/e2e/setup/argocd/values.yaml).
+  # ARGOCD_CHART_VERSION is the single place to bump it — the chart carries the
+  # Argo CD release (its appVersion) the specs pin behaviour against. Unlike
+  # FLUX_VERSION it is not a devcontainer env var: nothing outside the cluster needs
+  # an argocd binary — the specs drive Argo through kubectl alone — so pinning it
+  # here avoids a container rebuild. test/e2e/setup/argocd/README.md lists what to
+  # re-verify when bumping.
+  ARGOCD_CHART_VERSION: '{{.ARGOCD_CHART_VERSION | default "10.1.3"}}'
+  ARGOCD_HELM_REPO: '{{.ARGOCD_HELM_REPO | default "https://argoproj.github.io/argo-helm"}}'
+  ARGOCD_NAMESPACE: '{{.ARGOCD_NAMESPACE | default "argocd"}}'
+  ARGOCD_DIR: '{{.ARGOCD_DIR | default "test/e2e/setup/argocd"}}'
+  ARGOCD_PORT: '{{.ARGOCD_PORT | default "18080"}}'
+  ARGOCD_WAIT_TIMEOUT: '{{.ARGOCD_WAIT_TIMEOUT | default "300s"}}'
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'
   DEMO_PULL_SECRET: '{{.DEMO_MANIFESTS_DIR}}/vote/pull-secret.yaml'
@@ -219,12 +237,14 @@ tasks:
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
         # E2E_LABEL_FILTER lets CI shard the suite across runners (e.g.
-        # 'manager' vs '!manager && !image-refresh'); it defaults to the whole
-        # non-image-refresh suite so a plain `task test-e2e` still runs it all.
+        # 'manager' vs '!manager && !image-refresh && !bi-directional'); it
+        # defaults to the whole suite minus the two opt-in corners.
+        # `bi-directional` is excluded because it needs an Argo CD install that
+        # `task prepare-e2e` does not perform — run `task test-e2e-bi-directional`.
         # E2E_REPORT_NAME keeps each shard's Ginkgo JSON report distinct.
         go run github.com/onsi/ginkgo/v2/ginkgo \
           --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
-          --label-filter='{{.E2E_LABEL_FILTER | default "!image-refresh"}}' \
+          --label-filter='{{.E2E_LABEL_FILTER | default "!image-refresh && !bi-directional"}}' \
           --output-dir="{{.CS}}/{{.NAMESPACE}}" \
           --json-report=ginkgo-report-{{.E2E_REPORT_NAME | default "full"}}.json \
           ./test/e2e/
@@ -270,6 +290,42 @@ tasks:
         go tool covdata textfmt -i="${covdir}" -o=e2e-cover.out
         echo "✅ Wrote e2e-cover.out"
         go tool cover -func=e2e-cover.out | tail -1
+
+  test-e2e-bi-directional:
+    desc: Run the bi-directional corner (Flux + Argo CD). Installs Argo CD into the cluster.
+    vars:
+      # Two heavy Ordered specs, each driving a real GitOps controller through
+      # several reconcile round-trips. They own separate Gitea repos and separate
+      # IceCreamOrder CRD groups, and neither is Serial, so they run side by side.
+      BI_DIRECTIONAL_GINKGO_PROCS: '{{.BI_DIRECTIONAL_GINKGO_PROCS | default "2"}}'
+      BI_DIRECTIONAL_TIMEOUT: '{{.BI_DIRECTIONAL_TIMEOUT | default "25m"}}'
+    cmds:
+      # Sequential, not deps: _prepare-e2e-ready restarts the k3d server node when
+      # it injects the webhook TLS cert, which would break an Argo CD install
+      # running concurrently. Same reason prepare-e2e-demo chains rather than fans.
+      - task: prepare-e2e
+      - task: _argocd-installed
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        export E2E_ENABLE_BI_DIRECTIONAL=true
+        export ARGOCD_NAMESPACE="{{.ARGOCD_NAMESPACE}}"
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.BI_DIRECTIONAL_GINKGO_PROCS}} --timeout="{{.BI_DIRECTIONAL_TIMEOUT}}" -v \
+          --label-filter='bi-directional' \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" \
+          --json-report=ginkgo-report-{{.E2E_REPORT_NAME | default "bi-directional"}}.json \
+          ./test/e2e/
+
+  argocd-ui:
+    desc: Install Argo CD if needed, port-forward its UI, and print the admin password
+    cmds:
+      - task: _argocd-installed
+      - |
+        CTX="{{.CTX}}" ARGOCD_NAMESPACE="{{.ARGOCD_NAMESPACE}}" ARGOCD_PORT="{{.ARGOCD_PORT}}" \
+          bash hack/e2e/argocd-port-forward.sh
 
   test-e2e-aggregated-api:
     desc: Run aggregated API server e2e scenarios
@@ -642,6 +698,7 @@ tasks:
       - pkill -f "kubectl.*port-forward.*{{.PROMETHEUS_PORT}}" 2>/dev/null || true
       - pkill -f "kubectl.*port-forward.*{{.VALKEY_PORT}}" 2>/dev/null || true
       - pkill -f "kubectl.*port-forward.*{{.FLUX_WEB_PORT}}" 2>/dev/null || true
+      - pkill -f "kubectl.*port-forward.*{{.ARGOCD_PORT}}" 2>/dev/null || true
       - echo "Port-forwards stopped"
 
   clean-cluster:
@@ -833,6 +890,72 @@ tasks:
           --timeout=180s
         kubectl --context "{{.CTX}}" apply -k test/e2e/setup/manifests
         touch "{{.CS}}/services.ready"
+
+  _argocd-installed:
+    # Argo CD for the bi-directional corner. NOT a dependency of prepare-e2e —
+    # only test-e2e-bi-directional and argocd-ui pull it in, so the other CI legs
+    # never install it. See docs/design/e2e-bi-directional-corner.md.
+    #
+    # _services-ready, because the Argo Application sources from Gitea, which
+    # arrives as a Flux HelmRelease.
+    method: timestamp
+    deps:
+      - _services-ready
+    sources:
+      - '{{.CS}}/services.ready'
+      - '{{.ARGOCD_DIR}}/**/*.yaml'
+    generates:
+      - '{{.CS}}/argocd.installed'
+    status:
+      - test -f "{{.CS}}/argocd.installed"
+      - test -z "$(find "{{.ARGOCD_DIR}}" -type f -name '*.yaml' -newer "{{.CS}}/argocd.installed" -print -quit)"
+      # Re-install when the pinned chart version or the helm repo changes. Neither
+      # is a file under ARGOCD_DIR, so the -newer check above cannot see a bump —
+      # the stamp records both (written by the cmds below) and we match them here.
+      # Without this, a warm cluster keeps running the old Argo CD after a bump, or
+      # after switching to a different repo/mirror at the same version.
+      - grep -qxF '{{.ARGOCD_CHART_VERSION}}' "{{.CS}}/argocd.installed"
+      - grep -qxF '{{.ARGOCD_HELM_REPO}}' "{{.CS}}/argocd.installed"
+      - |
+        kubectl --context "{{.CTX}}" -n "{{.ARGOCD_NAMESPACE}}" get deployment argocd-server >/dev/null
+    cmds:
+      - |
+        set -euo pipefail
+        # helm, not `kubectl apply`, because the chart's redis-secret-init is a
+        # pre-install hook that must finish before redis and the controllers start
+        # (they read REDIS_PASSWORD from the secret it writes), and because helm sees
+        # the cluster's monitoring.coreos.com API — the gate the chart puts on
+        # rendering the ServiceMonitors.
+        rendered="{{.CS}}/argocd"
+        mkdir -p "$rendered"
+        echo "⬇️  Fetching Argo CD chart {{.ARGOCD_CHART_VERSION}}…"
+        for attempt in 1 2 3; do
+          if helm pull argo-cd --repo "{{.ARGOCD_HELM_REPO}}" \
+              --version "{{.ARGOCD_CHART_VERSION}}" --destination "$rendered"; then
+            break
+          fi
+          [ "$attempt" -eq 3 ] && {
+            echo "ERROR: could not fetch the argo-cd {{.ARGOCD_CHART_VERSION}} chart from {{.ARGOCD_HELM_REPO}}" >&2
+            echo "       Argo CD is only needed by the bi-directional corner; check network/proxy." >&2
+            exit 1
+          }
+          sleep 2
+        done
+        helm upgrade --install argocd "$rendered/argo-cd-{{.ARGOCD_CHART_VERSION}}.tgz" \
+          --kube-context "{{.CTX}}" \
+          --namespace "{{.ARGOCD_NAMESPACE}}" --create-namespace \
+          --values "{{.ARGOCD_DIR}}/values.yaml" \
+          --wait --timeout "{{.ARGOCD_WAIT_TIMEOUT}}"
+        # helm --wait covers workload readiness but not CRD establishment; the specs
+        # create Applications immediately, so gate on it explicitly.
+        kubectl --context "{{.CTX}}" wait --for=condition=Established \
+          crd/applications.argoproj.io \
+          crd/appprojects.argoproj.io \
+          crd/applicationsets.argoproj.io \
+          --timeout=120s
+        # Record the chart version and helm repo so the status gate above can detect
+        # a bump or a repo/mirror switch.
+        printf '%s\n%s\n' "{{.ARGOCD_CHART_VERSION}}" "{{.ARGOCD_HELM_REPO}}" > "{{.CS}}/argocd.installed"
 
   _aggregated-api-ready:
     method: timestamp
