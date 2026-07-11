@@ -1,6 +1,6 @@
 # Argo CD (bi-directional e2e corner)
 
-The only Argo CD installation in this repository. Applied by the
+The only Argo CD installation in this repository. Installed by the
 `_argocd-installed` node in [`test/e2e/Taskfile.yml`](../../Taskfile.yml), which
 only `task test-e2e-bi-directional` and `task argocd-ui` depend on — so the other
 CI legs never pay for it.
@@ -9,60 +9,53 @@ Design: [`docs/design/e2e-bi-directional-corner.md`](../../../../docs/design/e2e
 
 ## Shape
 
-Upstream `manifests/install.yaml` at a pinned release tag, minus three workloads:
+The official [`argo-helm`](https://github.com/argoproj/argo-helm) `argo-cd` chart,
+rendered with [`values.yaml`](values.yaml):
 
-| Workload | Kept? | Why |
+| Workload | On? | Why |
 | --- | --- | --- |
 | `argocd-application-controller` | yes | syncs `Application`s |
 | `argocd-repo-server` | yes | renders manifests; stamps the tracking annotation |
 | `argocd-redis` | yes | required by both of the above |
 | `argocd-server` | yes | the web UI (`task argocd-ui`) |
-| `argocd-dex-server` | no | SSO; local `admin` login works without it |
-| `argocd-notifications-controller` | no | nothing subscribes |
-| `argocd-applicationset-controller` | no | specs create `Application`s directly |
+| `argocd-applicationset-controller` | **yes** | on by default in the chart; kept on deliberately |
+| `argocd-dex-server` | no | SSO; local `admin` login works without it (`dex.enabled: false`) |
+| `argocd-notifications-controller` | no | nothing subscribes (`notifications.enabled: false`) |
 
-Argo's own `core-install.yaml` is lighter still, but drops `argocd-server` — no
-UI — so it is not usable here.
-
-The `$patch: delete` patches remove only the Deployments. Their ServiceAccounts,
-Services, and RBAC remain; they are inert without a pod, and deleting each would
-triple the patch count for no benefit.
-
-Patch targets carry **no** `metadata.namespace`: upstream's manifests are
-namespace-less, and the kustomization's `namespace:` transformer runs *after*
-patching. Adding one makes the patch fail to find its target.
+Prometheus **metrics + ServiceMonitors** are enabled for the four Argo components
+(`{controller,server,repoServer,applicationSet}.metrics`). The ServiceMonitors
+carry `monitoring.configbutler.ai/instance: gitops-reverser` so the corner's shared
+Prometheus (`test/e2e/setup/manifests/prometheus/instance.yaml`) actually selects
+them.
 
 ## Layout
 
-`install.yaml` is **not** in this directory. `_argocd-installed` copies these
-files into the cluster stamp dir and `curl`s the pinned upstream release next to
-them — the same shape as `_flux-installed` rendering into `{{.CS}}/flux-operator`.
-
-So `kustomize build` against *this* directory fails by design (missing
-`install.yaml`). Build the stamp copy instead:
+The chart is **not** vendored. `_argocd-installed` `helm pull`s the pinned chart
+into the cluster stamp dir and `helm upgrade --install`s it with `values.yaml`:
 
 ```sh
-kustomize build .stamps/cluster/k3d-gitops-reverser-test-e2e/argocd
+helm upgrade --install argocd .stamps/cluster/k3d-gitops-reverser-test-e2e/argocd/argo-cd-<ver>.tgz \
+  -n argocd --create-namespace -f test/e2e/setup/argocd/values.yaml --wait
 ```
 
-kustomize cannot consume a bare remote file as a resource — it resolves
-`raw.githubusercontent.com` URLs as git repositories and fails. Fetching it into
-the stamp dir sidesteps that, and has the side benefit of pinning the *released*
-`install.yaml`, whose image refs are `quay.io/argoproj/argocd:<tag>`. The
-kustomize-native remote base (`github.com/argoproj/argo-cd/manifests/cluster-install?ref=<tag>`)
-would instead render `argocd:latest`, because `manifests/base/kustomization.yaml`
-carries `newTag: latest` and only the release pipeline overrides it.
+**Why `helm`, not a flat `kubectl apply`:** `redis-secret-init` runs as a
+**pre-install hook** that must finish before redis and the controllers start — they
+read `REDIS_PASSWORD` from the secret it writes, and helm's hook ordering handles
+that. Helm also sees the live cluster's API surface, so the chart emits the
+ServiceMonitors (it gates them on `monitoring.coreos.com` being present).
 
-## Why the tag is pinned
+## Why the versions are pinned
 
 The specs in `test/e2e/argocd_bi_directional_e2e_test.go` assert Argo CD's
 *defaults* — the `annotation` resource-tracking method, the exact `tracking-id`
-value format, client-side apply. A floating ref would let an upstream default
+value format, client-side apply. A floating version would let an upstream default
 change turn a real behavioural regression into a silent pass.
 
-The tag lives in `ARGOCD_VERSION` in [`test/e2e/Taskfile.yml`](../../Taskfile.yml).
-When bumping it, re-verify against the upstream source at that tag (a checkout of
-`master` lives at `external-sources/argo-cd`, but read the tag, not master):
+`ARGOCD_CHART_VERSION` lives in [`test/e2e/Taskfile.yml`](../../Taskfile.yml) and
+pins the chart, which carries a specific Argo CD release (its appVersion; e.g.
+chart `10.1.3` ships `v3.4.5`). When bumping, re-verify against the upstream source
+**at the appVersion the chart ships** (a checkout lives at
+`external-sources/argo-cd`; read the tag, not master):
 
 1. `util/settings/settings.go`, `GetTrackingMethod()` — does an empty
    `application.resourceTrackingMethod` still return `TrackingMethodAnnotation`?
@@ -76,27 +69,24 @@ When bumping it, re-verify against the upstream source at that tag (a checkout o
    2s initial (vs. the 120s reconciliation default)? The `selfHeal` spec depends
    on that gap.
 
+Also re-check that the **chart** did not start pinning
+`configs.cm.application.resourceTrackingMethod` or enabling server-side apply by
+default — `values.yaml` relies on both staying unset.
+
 If any of those move, the specs fail loudly. That is intended.
 
 ## Config
 
-- [`argocd-cmd-params-cm.yaml`](argocd-cmd-params-cm.yaml) — `server.insecure: "true"`
-  so the UI is plain HTTP behind the port-forward.
-- [`argocd-cm.yaml`](argocd-cm.yaml) — `timeout.reconciliation: 30s`, shortened
-  from the 120s default. Deliberately does **not** pin the tracking method.
+Everything is in [`values.yaml`](values.yaml):
+
+- `configs.params."server.insecure": true` — plain-HTTP UI behind the port-forward.
+- `configs.cm."timeout.reconciliation": 180s` — deliberately **longer** than the
+  120s default so Argo's spontaneous timed refresh never races the specs, which
+  drive refresh and sync explicitly. Deliberately does **not** pin the tracking
+  method (the chart leaves `resourceTrackingMethod` unset → default `annotation`).
 
 ## Credentials
 
 The admin password is generated by `argocd-server` on first start into the
 `argocd-initial-admin-secret` Secret. Nothing is committed. `task argocd-ui`
 prints it.
-
-## Applying by hand
-
-`kubectl apply --server-side` is required, not optional: Argo's `applications`
-CRD exceeds the 262144-byte limit on the client-side
-`kubectl.kubernetes.io/last-applied-configuration` annotation.
-
-```sh
-kubectl apply --server-side --force-conflicts -k <stamp-dir>/argocd
-```

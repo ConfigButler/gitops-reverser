@@ -136,6 +136,13 @@ Two knobs, one per requirement:
 - a push webhook (Gitea/GitHub → `argocd-server /api/webhook`) so Argo applies the
   fresh commit within seconds — requirement 2.
 
+This exact loop — `selfHeal: false` + webhook, one shared field changing from
+*both* sides — is exercised end-to-end in the bi-directional corner (the
+`selfHeal`-off phase of
+[`argocd_bi_directional_e2e_test.go`](../test/e2e/argocd_bi_directional_e2e_test.go)),
+alongside its foil: the same field with `selfHeal: true`, where the API edit is
+lost and Git history flaps.
+
 ```mermaid
 flowchart LR
   api(["API / operator edit"]) --> cluster[("Cluster")]
@@ -201,7 +208,9 @@ The foundation already exists:
 - reverse writes are optimized for frequent live changes;
 - the Git path notices when the tracked branch moved externally;
 - e2e coverage exists for a controlled shared-resource scenario against **both**
-  Flux and Argo CD;
+  Flux and Argo CD — including, for Argo CD, the recommended `selfHeal: false` +
+  webhook loop with a field changing from both sides, and its `selfHeal: true`
+  foil where the edit is lost;
 - known Flux **and** Argo CD operational metadata is sanitized, so tests focus on
   meaningful diffs.
 

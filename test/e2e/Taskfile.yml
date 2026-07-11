@@ -136,17 +136,19 @@ vars:
   # for every cluster (Gitea/Valkey/Prometheus arrive as Flux HelmReleases), Argo
   # CD is needed by two specs, so it hangs off _argocd-installed and nothing else.
   #
-  # ARGOCD_VERSION is pinned to an exact release tag and is the single place to
-  # bump it. It is deliberately NOT a devcontainer env var (unlike FLUX_VERSION):
-  # nothing outside the cluster needs an argocd binary — the specs drive Argo
-  # through kubectl alone — so pinning it here avoids a container rebuild.
-  # test/e2e/setup/argocd/README.md lists what to re-verify when bumping.
-  ARGOCD_VERSION: '{{.ARGOCD_VERSION | default "v3.4.5"}}'
+  # Installed from the official argo-helm chart (test/e2e/setup/argocd/values.yaml).
+  # ARGOCD_CHART_VERSION is the single place to bump it — the chart carries the
+  # Argo CD release (its appVersion) the specs pin behaviour against. Unlike
+  # FLUX_VERSION it is not a devcontainer env var: nothing outside the cluster needs
+  # an argocd binary — the specs drive Argo through kubectl alone — so pinning it
+  # here avoids a container rebuild. test/e2e/setup/argocd/README.md lists what to
+  # re-verify when bumping.
+  ARGOCD_CHART_VERSION: '{{.ARGOCD_CHART_VERSION | default "10.1.3"}}'
+  ARGOCD_HELM_REPO: '{{.ARGOCD_HELM_REPO | default "https://argoproj.github.io/argo-helm"}}'
   ARGOCD_NAMESPACE: '{{.ARGOCD_NAMESPACE | default "argocd"}}'
   ARGOCD_DIR: '{{.ARGOCD_DIR | default "test/e2e/setup/argocd"}}'
   ARGOCD_PORT: '{{.ARGOCD_PORT | default "18080"}}'
   ARGOCD_WAIT_TIMEOUT: '{{.ARGOCD_WAIT_TIMEOUT | default "300s"}}'
-  ARGOCD_INSTALL_URL: '{{.ARGOCD_INSTALL_URL | default (printf "https://raw.githubusercontent.com/argoproj/argo-cd/%s/manifests/install.yaml" (.ARGOCD_VERSION | default "v3.4.5"))}}'
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'
   DEMO_PULL_SECRET: '{{.DEMO_MANIFESTS_DIR}}/vote/pull-secret.yaml'
@@ -907,42 +909,53 @@ tasks:
     status:
       - test -f "{{.CS}}/argocd.installed"
       - test -z "$(find "{{.ARGOCD_DIR}}" -type f -name '*.yaml' -newer "{{.CS}}/argocd.installed" -print -quit)"
+      # Re-install when the pinned chart version or the helm repo changes. Neither
+      # is a file under ARGOCD_DIR, so the -newer check above cannot see a bump —
+      # the stamp records both (written by the cmds below) and we match them here.
+      # Without this, a warm cluster keeps running the old Argo CD after a bump, or
+      # after switching to a different repo/mirror at the same version.
+      - grep -qxF '{{.ARGOCD_CHART_VERSION}}' "{{.CS}}/argocd.installed"
+      - grep -qxF '{{.ARGOCD_HELM_REPO}}' "{{.CS}}/argocd.installed"
       - |
         kubectl --context "{{.CTX}}" -n "{{.ARGOCD_NAMESPACE}}" get deployment argocd-server >/dev/null
     cmds:
       - |
         set -euo pipefail
-        # kustomize cannot take a bare remote file as a resource (it resolves
-        # raw.githubusercontent.com URLs as git repos and fails). So fetch the
-        # pinned release next to our overlay in the cluster stamp dir and build
-        # from there — the same copy-then-apply shape as _flux-installed.
-        #
-        # Fetching the *released* install.yaml also pins the image to
-        # quay.io/argoproj/argocd:{{.ARGOCD_VERSION}}. The kustomize-native remote
-        # base would render `argocd:latest` instead, because upstream's
-        # manifests/base carries `newTag: latest`.
+        # helm, not `kubectl apply`, because the chart's redis-secret-init is a
+        # pre-install hook that must finish before redis and the controllers start
+        # (they read REDIS_PASSWORD from the secret it writes), and because helm sees
+        # the cluster's monitoring.coreos.com API — the gate the chart puts on
+        # rendering the ServiceMonitors.
         rendered="{{.CS}}/argocd"
         mkdir -p "$rendered"
-        cp "{{.ARGOCD_DIR}}"/*.yaml "$rendered/"
-        echo "⬇️  Fetching Argo CD {{.ARGOCD_VERSION}} install manifest…"
-        curl -fsSL --retry 3 --retry-delay 2 "{{.ARGOCD_INSTALL_URL}}" -o "$rendered/install.yaml" || {
-          echo "ERROR: could not fetch {{.ARGOCD_INSTALL_URL}}" >&2
-          echo "       Argo CD is only needed by the bi-directional corner; check network/proxy." >&2
-          exit 1
-        }
-        # --server-side is required, not a preference: Argo's `applications` CRD
-        # exceeds the 262144-byte limit on the client-side last-applied annotation.
-        kubectl --context "{{.CTX}}" apply --server-side --force-conflicts -k "$rendered"
+        echo "⬇️  Fetching Argo CD chart {{.ARGOCD_CHART_VERSION}}…"
+        for attempt in 1 2 3; do
+          if helm pull argo-cd --repo "{{.ARGOCD_HELM_REPO}}" \
+              --version "{{.ARGOCD_CHART_VERSION}}" --destination "$rendered"; then
+            break
+          fi
+          [ "$attempt" -eq 3 ] && {
+            echo "ERROR: could not fetch the argo-cd {{.ARGOCD_CHART_VERSION}} chart from {{.ARGOCD_HELM_REPO}}" >&2
+            echo "       Argo CD is only needed by the bi-directional corner; check network/proxy." >&2
+            exit 1
+          }
+          sleep 2
+        done
+        helm upgrade --install argocd "$rendered/argo-cd-{{.ARGOCD_CHART_VERSION}}.tgz" \
+          --kube-context "{{.CTX}}" \
+          --namespace "{{.ARGOCD_NAMESPACE}}" --create-namespace \
+          --values "{{.ARGOCD_DIR}}/values.yaml" \
+          --wait --timeout "{{.ARGOCD_WAIT_TIMEOUT}}"
+        # helm --wait covers workload readiness but not CRD establishment; the specs
+        # create Applications immediately, so gate on it explicitly.
         kubectl --context "{{.CTX}}" wait --for=condition=Established \
           crd/applications.argoproj.io \
           crd/appprojects.argoproj.io \
+          crd/applicationsets.argoproj.io \
           --timeout=120s
-        for workload in deployment/argocd-redis deployment/argocd-repo-server \
-                        deployment/argocd-server statefulset/argocd-application-controller; do
-          kubectl --context "{{.CTX}}" -n "{{.ARGOCD_NAMESPACE}}" rollout status "$workload" \
-            --timeout="{{.ARGOCD_WAIT_TIMEOUT}}"
-        done
-        printf '%s\n' "{{.ARGOCD_VERSION}}" > "{{.CS}}/argocd.installed"
+        # Record the chart version and helm repo so the status gate above can detect
+        # a bump or a repo/mirror switch.
+        printf '%s\n%s\n' "{{.ARGOCD_CHART_VERSION}}" "{{.ARGOCD_HELM_REPO}}" > "{{.CS}}/argocd.installed"
 
   _aggregated-api-ready:
     method: timestamp

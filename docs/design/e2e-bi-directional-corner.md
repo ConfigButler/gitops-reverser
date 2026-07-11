@@ -82,18 +82,15 @@ except Argo's numbers make it a near-certainty rather than a race.
 
 ### Install shape
 
-`manifests/install.yaml` deploys 7 workloads: `argocd-application-controller`
+The full Argo CD control plane is 7 workloads: `argocd-application-controller`
 (StatefulSet), `argocd-repo-server`, `argocd-server`, `argocd-redis`,
 `argocd-applicationset-controller`, `argocd-dex-server`,
 `argocd-notifications-controller`.
 
-`manifests/core-install.yaml` deploys 4 — but **omits `argocd-server`**, i.e. no
-web UI. Since a browsable GUI is a requirement here, core-install is out.
-
-Minimal set that syncs `Application`s *and* serves the UI:
-`application-controller` + `repo-server` + `redis` + `server`. Drop `dex`
-(SSO only; local admin login works without it), `notifications`, and
-`applicationset`.
+The corner runs six of them — everything except `dex` (SSO only; local admin login
+works without it) and `notifications` (nothing subscribes), both switched off in
+`values.yaml`. The **ApplicationSet controller stays on** (the chart's default),
+and every running component exports Prometheus metrics via a ServiceMonitor.
 
 Other keys, verified:
 
@@ -197,31 +194,35 @@ Filter changes so the default suite stops paying for it:
 
 ### 2. Argo CD installation
 
-New directory `test/e2e/setup/argocd/`, applied by a new Taskfile node
-`_argocd-installed`. It mirrors `_flux-installed` exactly, including the
-`envsubst` version-pinning trick:
+Directory `test/e2e/setup/argocd/` (just `values.yaml` + `README.md`), installed by
+the Taskfile node `_argocd-installed` using the official **`argo-helm` `argo-cd`
+chart**. `_argocd-installed` `helm pull`s the pinned chart into
+`.stamps/cluster/<ctx>/argocd/` (retryable network step) and `helm upgrade
+--install`s it with `values.yaml` and `--wait`, then gates on CRD establishment.
 
-```
-test/e2e/setup/argocd/
-  kustomization.yaml      # remote base pinned to v${ARGOCD_VERSION}
-  namespace.yaml
-  cmd-params-cm.yaml      # server.insecure: "true"
-  argocd-cm.yaml          # timeout.reconciliation: 30s
-  remove-dex.yaml         # $patch: delete
-  remove-notifications.yaml
-  remove-applicationset.yaml
-```
-
-- `ARGOCD_VERSION=3.5.0` joins `FLUX_VERSION` / `FLUX_OPERATOR_VERSION` in
-  [`.devcontainer/Dockerfile`](../../.devcontainer/Dockerfile). Per the comment
-  already in `test/e2e/Taskfile.yml`, the container env is the single source of
-  truth for in-cluster versions.
-- `_argocd-installed` renders `*.yaml` through `envsubst '${ARGOCD_VERSION}'`
-  into `.stamps/cluster/<ctx>/argocd/`, runs `kubectl apply -k`, then waits on
-  the four workloads' rollouts. Stamped at `.stamps/cluster/<ctx>/argocd.installed`,
-  so a warm cluster re-runs it for free.
-- `deps: [_services-ready]` — the Argo `Application` sources from Gitea, which
-  Flux installs.
+- `ARGOCD_CHART_VERSION` (e.g. `10.1.3`) lives in `test/e2e/Taskfile.yml` and pins
+  the chart, which carries the Argo CD release the specs pin behaviour against (its
+  appVersion, e.g. `v3.4.5`). Unlike `FLUX_VERSION` it is not a devcontainer env
+  var: nothing outside the cluster needs an `argocd` binary — the specs drive Argo
+  through `kubectl` alone — so pinning it in the Taskfile avoids a container rebuild.
+- **Why `helm`, not a flat `kubectl apply`.** The chart's `redis-secret-init` runs
+  as a pre-install **hook** that must complete before redis and the controllers
+  start (they read `REDIS_PASSWORD` from the secret it writes); helm's hook ordering
+  handles that. Helm also sees the live cluster's API surface, so the chart emits
+  the ServiceMonitors (it gates them on `monitoring.coreos.com` being present).
+- **Components.** `values.yaml` disables `dex` (SSO; local admin works without it)
+  and `notifications` (nothing subscribes); the **ApplicationSet controller stays
+  on** (chart default). Prometheus metrics + ServiceMonitors are enabled for the
+  four Argo components, labelled `monitoring.configbutler.ai/instance: gitops-reverser`
+  so the corner's shared Prometheus selects them.
+- **Defaults are load-bearing.** `values.yaml` deliberately does not set
+  `application.resourceTrackingMethod` (stays `annotation`) nor enable server-side
+  apply globally — the specs assert those defaults.
+- The stamp `.stamps/cluster/<ctx>/argocd.installed` records the chart version, so
+  a bump re-installs; a warm cluster otherwise re-runs it for free.
+- `deps: [_services-ready]` — the Argo `Application` sources from Gitea, which Flux
+  installs; `_services-ready` also guarantees the `monitoring.coreos.com` CRDs that
+  the ServiceMonitors need.
 - **Only** `test-e2e-bi-directional` depends on `_argocd-installed`. `prepare-e2e`
   does not. The suite's own in-process `task prepare-e2e` call
   (`e2e_suite_test.go:197`) stays untouched and no-ops on the warm stamp.
@@ -229,8 +230,8 @@ test/e2e/setup/argocd/
 Deliberately **not** a Flux `HelmRelease` alongside gitea/valkey, even though that
 is the local idiom: `hack/e2e/wait-flux-services.sh` waits on every `HelmRelease`
 in every namespace, which would drag Argo CD into `_flux-setup-ready` — i.e. back
-into every cluster. A standalone kustomize dir keeps the blast radius at one node
-of the graph.
+into every cluster. A standalone `helm` install off one Taskfile node keeps the
+blast radius at one node of the graph.
 
 Repository credentials are created by the spec at runtime (not committed): a
 Secret in the `argocd` namespace labelled
@@ -327,9 +328,10 @@ apply is still an explicit `.operation` patch.
 Four scenarios, sharing one Gitea repo and one `IceCreamOrder` CRD applied via
 `applyIceCreamCRD(crdGroupArgoBiDirectional)`.
 
-**They are implemented as three phases of a single `Ordered` `It`, driving one
+**They are implemented as four phases of a single `Ordered` `It`, driving one
 Application whose `syncPolicy` is re-applied between phases — not as separate
-specs with an Application each.** Two Applications pointed at the same live path
+specs with an Application each.** (Specs A–C plus Spec E below; Spec D remains
+unimplemented — see [Not done](#not-done).) Two Applications pointed at the same live path
 would each stamp their own tracking-id on the same objects, and by the very
 mechanism this spec documents, each would then see the other's id as foreign and
 raise `SharedResourceWarning`. The specs would fight. One Application, one order
@@ -383,17 +385,22 @@ stripped too, so its applies are commit-neutral.)
 4. `Eventually` assert the committed file is back to `Cone`; then `Consistently`
    assert the commit count is stable.
 
-Expected timeline, from the verified constants: Reverser commits `WaffleBowl` in
-well under a second; self-heal fires at ~2s and replays the stale cached revision;
-Reverser then observes the revert and commits `Cone`; at the 120s refresh Argo
-finds `Cone` in Git and is already Synced. **The user's change is lost, and Git
-history flaps.**
+Expected timeline, from the verified constants: self-heal's **first** revert is
+sub-second (backoff is zero on attempt 0;
+[`argocd-bi-directional.md`](gitops-api/argocd-bi-directional.md)), replaying the
+stale cached revision. The Reverser commits `WaffleBowl`, then observes the revert
+and commits `Cone`. At the 180s refresh Argo finds `Cone` in Git and is already
+Synced. **The user's change is lost, and Git history flaps.**
 
-Assert only the terminal invariant, never commit counts. Whether the Reverser
-catches the transient `WaffleBowl` before self-heal overwrites it is a genuine
-race, and the commit window may coalesce the two events. The terminal state is
-deterministic; the intermediate count is not. This is the difference between the
-Flux spec (manual applier, exact counts are safe) and this one.
+The flap is **exactly two commits, deterministically** — and the spec asserts that
+`+2`. It is *not* a race, despite self-heal being sub-second: the Reverser watches
+the object through the Kubernetes API **watch**, which delivers every edit in order
+and never collapses them, so it observes both the `WaffleBowl` edit and the `Cone`
+revert; with `commitWindow=0` each observed edit finalizes as its own commit. So the
+self-heal round trip writes precisely two commits (the change, then its revert),
+which the spec asserts alongside the terminal `Cone` state. (This differs from the
+Flux spec only in that Flux is driven as a manual applier; both assert exact
+counts.)
 
 ### Spec C — split ownership (NOT bi-directional; see the caveat below)
 
@@ -433,6 +440,40 @@ because the Reverser keeps Git current, target and live agree anyway. It closes
 the window in which an unrelated Git change triggers a sync *between* the API
 patch and the Reverser's commit, which would otherwise reset the field
 (`controller/sync.go:250-261`). Documented, not separately asserted.
+
+### Spec E — the recommended shared-field loop (`selfHeal: false` + webhook)
+
+`syncPolicy.automated: {prune: true, selfHeal: false}`, no `ignoreDifferences`.
+
+This is the genuine bi-directional configuration from
+[`argocd-bi-directional.md`](gitops-api/argocd-bi-directional.md): the field stays
+fully GitOps-managed (unlike Spec C, which carves it out) and changes from **both**
+sides. It is the deterministic counterpart to Spec B — nothing reverts live drift,
+so every step can be asserted directly, with no timing race.
+
+1. Git holds `order-4` with `container: Cone`. The webhook drives the auto-sync;
+   live = `Cone`.
+2. **API side.** Patch the live object: `container: WaffleBowl`.
+3. `Consistently` assert live **stays** `WaffleBowl` — with `selfHeal: false`,
+   Argo marks the app `OutOfSync` but does not revert. (Contrast Spec B, where
+   `selfHeal: true` reverts within a second.) The Reverser committing `WaffleBowl`
+   fires the webhook, which only ever converges Argo *to* `WaffleBowl`.
+4. Assert the Reverser commits `WaffleBowl`.
+5. **Git side of the same field.** Commit `container: Cup` (a different valid enum
+   value — `spec.container` is constrained to `{Cup, Cone, WaffleBowl}`) and push.
+6. Assert the webhook drives automated sync to apply it: live becomes `Cup`. This
+   is the step `ignoreDifferences` (Spec C) would have silently blocked — proof the
+   shared field is still driven from Git. (Confirmed against Argo's own logs:
+   `Received push event … touchedHead: true` → `Updated sync status: Synced ->
+   OutOfSync` → `Initiated automated sync`. The webhook re-resolves the fresh
+   commit and auto-sync applies it, exactly as the recommended mode promises.)
+7. Assert both loops settle in agreement (`Cup` live and committed, commit count
+   stable).
+
+Spec B and Spec E together are the payoff of the whole corner: the *only*
+difference between them is the `selfHeal` flag, and it is the difference between
+the cluster losing a shared-field edit and keeping it while Git can still drive
+the same field.
 
 ### Spec D — arming the landmine (phase 2)
 
@@ -541,11 +582,11 @@ neither is `Serial`.
 
 | Risk | Mitigation |
 | --- | --- |
-| `_argocd-installed` fetches `manifests/install.yaml` from `raw.githubusercontent.com` at install time — a network dependency | `curl --retry 3` plus an explicit error message. If CI flakes, mirror the `_ghcr-preflight` node as an `_argocd-preflight`, or vendor the pinned manifest |
-| ~~`install.yaml` ships `NetworkPolicy` objects, and k3s enforces them~~ | **Resolved.** Every Argo NetworkPolicy declares `policyTypes: [Ingress]` only, so egress is unrestricted and repo-server reaches Gitea. Port-forward goes kubelet→pod and bypasses NP anyway |
+| `_argocd-installed` `helm pull`s the chart from the argo-helm repo at install time — a network dependency | Retried 3× with an explicit error message. If CI flakes, mirror the `_ghcr-preflight` node as an `_argocd-preflight`, or vendor the chart tarball |
+| The chart could ship `NetworkPolicy` objects that k3s enforces | `global.networkPolicy.create` is off by default (we do not enable it), so no NPs are created. Port-forward goes kubelet→pod and bypasses NP anyway |
 | Argo's app-controller watches cluster-wide and will observe the Flux spec's objects | Only objects carrying a tracking-id are compared. Harmless, but confirm no `SharedResourceWarning` noise across specs |
-| Spec B is timing-derived | Asserts terminal invariants only, never commit counts. See Spec B rationale |
-| Argo CD 3.5.0 is recent; a bump may move the tracking defaults | The defaults are asserted directly in Spec A. A behaviour change breaks the spec loudly, which is the point |
+| Spec B asserts an exact `+2` commit delta | Deterministic, not timing-derived: the Kubernetes watch delivers every edit and `commitWindow=0` makes each its own commit. See Spec B |
+| A chart bump may move the tracking defaults | The defaults are asserted directly in Spec A. A behaviour change breaks the spec loudly, which is the point. README lists the re-verify checklist |
 
 ## Decisions
 
@@ -553,12 +594,12 @@ neither is `Serial`.
    and matches `docs/bi-directional.md`. If the corner later hosts
    non-bi-directional Argo work (layout discovery, `Application` mirroring),
    `interop` would age better — rename then.
-2. **Fetch, don't vendor.** `_argocd-installed` `curl`s the pinned release into
-   the cluster stamp dir. Vendoring 34k lines would bloat every diff, and
-   kustomize cannot consume a bare remote file as a resource (it resolves
-   `raw.githubusercontent.com` as a git repo). Fetching the *released*
-   `install.yaml` also pins the image tag, which the kustomize-native remote base
-   would not — upstream's `manifests/base` carries `newTag: latest`.
+2. **Official Helm chart, don't vendor.** `_argocd-installed` `helm pull`s the
+   pinned `argo-helm`/`argo-cd` chart into the cluster stamp dir and `helm upgrade
+   --install`s it with `values.yaml`. Vendoring the chart would bloat every diff.
+   Helm is required rather than a flat `kubectl apply`: the `redis-secret-init`
+   pre-install hook must run before redis. It also makes
+   `dex`/`notifications`/ApplicationSet/metrics one-line toggles.
    See `test/e2e/setup/argocd/README.md`.
 3. **Specs and fix ship together.** The two-commit story (specs assert the leak,
    then the fix flips them) was collapsed: the e2e now asserts the fixed
@@ -580,5 +621,5 @@ neither is `Serial`.
 - [`docs/bi-directional.md`](../bi-directional.md) — the product-level guidance this closes gaps in
 - [`docs/design/e2e-serial-registry.md`](e2e-serial-registry.md) — parallelism and shared cluster state
 - [`docs/design/e2e-ci-runner-sharding-plan.md`](e2e-ci-runner-sharding-plan.md) — leg membership and rebalancing
-- [`test/e2e/bi_directional_e2e_test.go`](../../test/e2e/bi_directional_e2e_test.go) — the Flux spec being moved
+- [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go) — the two specs in this corner
 - [`internal/sanitize/types.go`](../../internal/sanitize/types.go) — the strip lists

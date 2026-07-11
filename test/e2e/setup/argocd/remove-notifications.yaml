@@ -1,6 +1,0 @@
-# Nothing in the corner subscribes to Argo CD notifications.
-$patch: delete
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: argocd-notifications-controller

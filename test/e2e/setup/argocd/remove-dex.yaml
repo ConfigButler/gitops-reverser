@@ -1,7 +1,0 @@
-# Dex provides SSO against an external identity provider. Local `admin` login —
-# which is all the e2e corner and `task argocd-ui` need — works without it.
-$patch: delete
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: argocd-dex-server
