@@ -10,7 +10,7 @@ those. If a document is not on this page, it is either a user guide (see
 
 | Folder | Means | Binds? |
 |---|---|---|
-| [`spec/`](spec/) | **This is true now, and the code depends on it.** Every doc here is cited from Go source. Change the behaviour, change the doc. | **yes** |
+| [`spec/`](spec/) | **This is true now, and the code depends on it.** Most are cited by path from Go source. Change the behaviour, change the doc. | **yes** |
 | [`design/`](design/) | **We are still deciding.** Open questions, proposals, unbuilt work. | yes — it is the roadmap |
 | [`facts/`](facts/) | Durable reference: how Kubernetes behaves, and what we discovered about it. | yes, as reference |
 | [`finished/`](finished/) | **This happened.** Shipped plans, closed investigations. Kept for context. | **no** |

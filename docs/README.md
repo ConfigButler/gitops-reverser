@@ -38,7 +38,7 @@ The maintainer folders are organised by **lifecycle**, not by topic. Pick a fold
 
 | Folder | Means | Binds? |
 |---|---|---|
-| [`spec/`](spec/) | **This is true now, and the code depends on it.** Every doc is cited from Go source. Change the behaviour, change the doc. | **yes** |
+| [`spec/`](spec/) | **This is true now, and the code depends on it.** Most are cited by path from Go source. Change the behaviour, change the doc. | **yes** |
 | [`design/`](design/) | **We are still deciding.** Open questions and unbuilt work. | yes — it is the roadmap |
 | [`facts/`](facts/) | Durable reference: how Kubernetes behaves, and what we learned about it. | yes, as reference |
 | [`finished/`](finished/) | **This happened.** Shipped plans and closed investigations. | **no** |
@@ -46,8 +46,8 @@ The maintainer folders are organised by **lifecycle**, not by topic. Pick a fold
 | [`ci/`](ci/) | CI/devcontainer rationale and troubleshooting. | as reference |
 | [`audit-setup/`](audit-setup/) | Cluster-specific audit delivery notes. | as reference |
 
-The one rule that keeps this working: **a document in `spec/` is cited from the code.** If you
-move or rename one, fix the citation in the same commit. Not doing that is what made the previous
-tree unreadable — 17 citations were pointing at files that no longer existed.
+The one rule that keeps this working: **most documents in `spec/` are cited by path from the Go
+source.** If you move or rename one, fix the citation in the same commit. Not doing that is what
+made the previous tree unreadable — 17 citations were pointing at files that no longer existed.
 
 [`TODO.md`](TODO.md) is a scratch list, not a plan.

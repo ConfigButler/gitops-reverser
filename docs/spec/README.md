@@ -8,8 +8,13 @@ Three folders, three meanings. This is the one that binds.
 | **`spec/`** (here) | **this is true now.** The code implements it and cites it. Change the code, change the doc. |
 | [`../finished/`](../finished/) | **this happened.** Shipped plans and closed investigations, kept for `git log`-grade context. Nothing here binds. |
 
-Everything in this folder is cited from Go source. If you change one of these
-contracts, the citation is how the next person finds out.
+Everything in this folder states **current behaviour that the code relies on**, and
+most of it is cited by path from Go source — that citation is how the next person
+finds out you changed a contract. The handful that are not Go-cited
+(`gvk-gvr-mapping-layer`, `sops-single-file-no-multidoc`, `e2e-test-design`) are
+here because they are the only written record of a rule the code still obeys.
+
+If you change one of these behaviours, change the document in the same commit.
 
 ## Start here
 
