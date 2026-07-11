@@ -3,7 +3,7 @@
 /*
 Package manifestanalyzer is a runtime-independent analyzer for a folder of
 Kubernetes manifests. It is the proof-of-concept core described in
-docs/design/manifest/current-manifest-support-review.md: build the manifest model
+docs/spec/current-manifest-support-review.md: build the manifest model
 once, classify every file, and report what we know about it — without any
 controller runtime, and without writing anything.
 

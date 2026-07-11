@@ -1082,7 +1082,7 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 		// that touches the remote (PrepareBranch fetches the tip). Later commits in the
 		// same cycle build on the local repo and never use auth, so re-reading the
 		// credentials Secret here would be a wasted API GET per commit now that the
-		// Secret cache is disabled. See docs/future/secret-value-retention-plan.md §5.
+		// Secret cache is disabled. See docs/rbac.md §5.
 		auth, err := getAuthFromSecret(w.ctx, w.Client, provider, w.sshHostKeys)
 		if err != nil {
 			return fmt.Errorf("resolve auth: %w", err)

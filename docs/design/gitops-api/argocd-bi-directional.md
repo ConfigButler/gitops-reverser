@@ -27,7 +27,7 @@ All citations are against the Argo CD tree vendored at
 line, which is materially identical for these paths). Exercised end-to-end in
 [`../../../test/e2e/argocd_bi_directional_e2e_test.go`](../../../test/e2e/argocd_bi_directional_e2e_test.go);
 corner design in
-[`../e2e-bi-directional-corner.md`](../e2e-bi-directional-corner.md).
+[`../e2e-bi-directional-corner.md`](../../spec/e2e-bi-directional-corner.md).
 
 ## How fast is self-heal, and why it cannot be slowed
 
@@ -200,6 +200,6 @@ forgotten.
 ## References
 
 - User-facing guidance: [`../../bi-directional.md`](../../bi-directional.md)
-- E2E corner design: [`../e2e-bi-directional-corner.md`](../e2e-bi-directional-corner.md)
+- E2E corner design: [`../e2e-bi-directional-corner.md`](../../spec/e2e-bi-directional-corner.md)
 - Exercised behavior: [`../../../test/e2e/argocd_bi_directional_e2e_test.go`](../../../test/e2e/argocd_bi_directional_e2e_test.go)
 - Argo CD source (vendored): `external-sources/argo-cd` — cited inline by file:line.

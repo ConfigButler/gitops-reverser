@@ -277,7 +277,7 @@ add `--redis-insecure`** — otherwise startup fails on a TLS handshake.
 ## Unreleased — Git credentials interop (next minor; breaking)
 
 Two user-visible breaking changes land together. Both come from
-[`design/git-credentials-interop.md`](design/git-credentials-interop.md).
+[`design/git-credentials-interop.md`](finished/git-credentials-interop.md).
 
 ### 1. `providerRef` no longer advertises a Flux `GitRepository`
 

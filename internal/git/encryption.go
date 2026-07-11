@@ -47,7 +47,7 @@ const (
 //
 // It carries public age recipients only. The write path encrypts, it never decrypts, so no
 // private age identity is retained, written to disk, or passed to the sops process. See
-// docs/future/secret-value-retention-plan.md.
+// docs/rbac.md.
 type ResolvedEncryptionConfig struct {
 	Provider      string
 	AgeRecipients []string

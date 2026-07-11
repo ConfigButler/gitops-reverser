@@ -44,7 +44,7 @@ type FinalizeResult struct {
 
 // AttachCommitRequest is the "bind this CommitRequest's message to the author's
 // open window, then finalize that window after the grace" work item (§6.4 of
-// docs/design/stream/commitrequest-design.md). It rides the same per-worker FIFO
+// docs/spec/commitrequest-design.md). It rides the same per-worker FIFO
 // event queue as resource events, so by audit-stream ordering it is processed
 // after every earlier write for that worker. Re-sends are idempotent: the worker
 // keys pending requests by identity and keeps the first finalize deadline.

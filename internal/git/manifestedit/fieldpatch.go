@@ -10,7 +10,7 @@ import (
 )
 
 // Field patches are the editing primitive behind subresource audit resolution
-// (docs/design/manifest/version2/scale-subresource-audit-rehydration.md). A
+// (docs/spec/scale-subresource-audit-rehydration.md). A
 // mutating subresource such as deployments/scale does not carry a full parent
 // object, only a bounded set of changed field paths ("spec.replicas: 3"). Rather
 // than hydrate the parent, carry those assignments to Git and set exactly them on

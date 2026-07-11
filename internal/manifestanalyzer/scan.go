@@ -13,7 +13,7 @@ import (
 
 // Scan is the M5 dry-run: the one planner shared by the manifest-analyzer CLI and
 // the controller's scan path, described in
-// docs/design/manifest/current-manifest-support-review.md ("Scan Mode (Dry-Run)").
+// docs/spec/current-manifest-support-review.md ("Scan Mode (Dry-Run)").
 // It builds the store (applying the policy's allowlist), runs the acceptance gate,
 // and computes the full plan against the desired set — then stops. It writes
 // nothing.

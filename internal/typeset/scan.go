@@ -8,7 +8,7 @@ import "k8s.io/apimachinery/pkg/runtime/schema"
 // produces, with no judgement attached. The catalog stays a thin normalizer; ALL
 // cross-scan judgement ("additions fast, removals slow": retain-on-error, the removal
 // grace for omissions) is applied by Registry.UpdateFromScan. See
-// docs/design/typeset-owns-discovery-grace.md.
+// docs/spec/typeset-owns-discovery-grace.md.
 type Scan struct {
 	// Entries are the resources this scan served, policy-annotated. All are trusted
 	// facts: a failed group/version contributes no entries (the registry carries its

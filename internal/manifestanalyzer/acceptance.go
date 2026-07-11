@@ -13,7 +13,7 @@ import (
 
 // Acceptance is the M4 adoption gate: the distinct step between "build the store"
 // and "use it as the planning model", described in
-// docs/design/manifest/current-manifest-support-review.md ("Acceptance Checks On
+// docs/spec/current-manifest-support-review.md ("Acceptance Checks On
 // First Materialization"). A GitTarget folder is adopted only when it passes; any
 // blocking refusal stops it and reconciles nothing until a human cleans the folder.
 //
@@ -93,7 +93,7 @@ const (
 	IssueUnsupportedKustomize IssueKind = "unsupported-kustomize"
 	// IssueForeignFile marks a non-YAML regular file under spec.path that matches no
 	// recognized role — the operator-exclusive subtree refuses content it cannot manage
-	// (docs/design/gitpath-foreign-content-stringency.md §3). Foreign YAML is already
+	// (docs/spec/gitpath-foreign-content-stringency.md §3). Foreign YAML is already
 	// refused as IssueNonKRM; this is the non-YAML case the gate was previously blind to.
 	IssueForeignFile IssueKind = "foreign-file"
 	// IssueForeignSymlink marks any symlink under spec.path. A writer could follow it out

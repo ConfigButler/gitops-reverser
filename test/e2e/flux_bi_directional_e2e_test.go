@@ -72,7 +72,7 @@ type iceCreamScoop struct {
 // biDirectionalRepo holds the file-local repo fixtures for the Bi Directional describe block.
 var biDirectionalRepo *RepoArtifacts
 
-// Flux half of the bi-directional corner (docs/design/e2e-bi-directional-corner.md).
+// Flux half of the bi-directional corner (docs/spec/e2e-bi-directional-corner.md).
 // Opt-in: `task test-e2e-bi-directional`, not `task test-e2e`. The corner is the
 // only place Argo CD is installed, and the two specs share that one cluster.
 //
@@ -89,7 +89,7 @@ var biDirectionalRepo *RepoArtifacts
 // dragging unrelated targets into a re-reconcile; that is fixed — a target now
 // only re-reconciles when its *resolved* plan hash changes (manager.go) — so a
 // foreign catalog refresh no longer perturbs this repo's commit count. See
-// docs/design/e2e-serial-registry.md.
+// docs/spec/e2e-serial-registry.md.
 var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Ordered, func() {
 	var run biDirectionalRun
 	var testNs string

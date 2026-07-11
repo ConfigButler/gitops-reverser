@@ -19,7 +19,7 @@ import (
 // into a parent-manifest field patch (redis_audit_consumer.routeScaleFieldPatch). "Newer?" is now
 // answered by the audit stream's RV ordering and "changed?" by the writer's no-op detection
 // (manifestedit.Decide at the commit boundary), so no hash is computed here. See
-// docs/design/stream/api-source-of-truth-reconcile.md (DEC-6, DEC-7).
+// docs/architecture.md (DEC-6, DEC-7).
 type GitTargetEventStream struct {
 	gitTargetName      string
 	gitTargetNamespace string

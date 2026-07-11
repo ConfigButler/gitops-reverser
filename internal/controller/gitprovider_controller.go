@@ -386,7 +386,7 @@ func (r *GitProviderReconciler) setCondition(
 
 // updateStatusAndRequeue updates the status and requeues on the unified control-plane steady
 // interval. The control plane no longer watches Secrets, so every status outcome falls back to
-// this single cadence; see docs/future/secret-value-retention-plan.md.
+// this single cadence; see docs/rbac.md.
 func (r *GitProviderReconciler) updateStatusAndRequeue(
 	ctx context.Context,
 	gitProvider *configbutleraiv1alpha3.GitProvider,

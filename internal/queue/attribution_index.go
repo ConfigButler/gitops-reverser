@@ -224,7 +224,7 @@ func (a *AttributionIndex) writeFactKeys(ctx context.Context, gr, uid, rv string
 // dead. Finalizer-pending items are NOT skipped — under the deletion-as-intent rule a
 // deletionTimestamp already removes the file, so the actor who ran the collection delete
 // is credited with that removal even while Kubernetes finalization is still in flight.
-// See docs/design/deletecollection-attribution-expander.md.
+// See docs/spec/deletecollection-attribution-expander.md.
 func (a *AttributionIndex) RecordDeleteCollectionFacts(ctx context.Context, event auditv1.Event) error {
 	if !strings.EqualFold(event.Verb, "deletecollection") || event.ObjectRef == nil || event.ObjectRef.Resource == "" {
 		return nil

@@ -3,7 +3,7 @@
 // manifest-analyzer is a standalone, read-only CLI that analyzes a folder of
 // Kubernetes manifests. It is the proof-of-concept consumer of the
 // internal/manifestanalyzer library described in
-// docs/design/manifest/current-manifest-support-review.md. It writes nothing; it
+// docs/spec/current-manifest-support-review.md. It writes nothing; it
 // only reports what it finds.
 //
 // Usage:

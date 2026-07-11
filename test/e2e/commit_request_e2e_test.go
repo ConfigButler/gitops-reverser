@@ -25,7 +25,7 @@ import (
 // branch is its own GitTarget, fed exclusively by audit events from its own
 // namespace. The HEAD/SHA assertions below therefore read back only this spec's
 // own commit; concurrent audit traffic for other GitTargets lands in other
-// repos and cannot move this repo's HEAD. See docs/design/e2e-serial-registry.md.
+// repos and cannot move this repo's HEAD. See docs/spec/e2e-serial-registry.md.
 var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Ordered, func() {
 	var (
 		testNs        string
@@ -214,7 +214,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	// validating admission runs, so the validate-operator-types webhook records the
 	// submitter keyed by uid with no response-body name recovery (the old audit
 	// generateName headache is gone, see
-	// docs/design/commitrequest-admission-authorship.md §8). This spec proves a
+	// docs/spec/commitrequest-admission-authorship.md §8). This spec proves a
 	// generateName CommitRequest still finalizes and becomes Ready. It is skipped in
 	// configured-author mode, where the edit's window is committer-authored and the
 	// named admission author would not match it end to end.
@@ -267,7 +267,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 
 // The UC2 suite exercises a `kubectl apply` bundle that includes a CommitRequest
 // as its FIRST document — the deliberately-hard ordering where the save intent
-// arrives before the work it is meant to save (docs/design/stream/commitrequest-design.md
+// arrives before the work it is meant to save (docs/spec/commitrequest-design.md
 // §2 UC2, §6.2, §8.2). A non-zero spec.closeDelaySeconds is the close-delay collect
 // window that lets the bundle's resources arrive and join the same window after the
 // CommitRequest is attributed, so the whole bundle lands in ONE commit carrying

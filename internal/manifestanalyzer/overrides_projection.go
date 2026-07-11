@@ -18,7 +18,7 @@ import (
 // governing override chain, it splits the live state into what the SOURCE FILE
 // should hold and what the KUSTOMIZATION ENTRIES should hold — "the edit lands
 // where the value lives". See
-// docs/design/gitops-api/f1-images-replicas-edit-through.md.
+// docs/design/gitops-api/finished/f1-images-replicas-edit-through.md.
 
 // OverrideEdit routes one live-value change to a field of an existing
 // kustomization override entry.

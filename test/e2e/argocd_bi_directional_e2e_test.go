@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// Argo CD half of the bi-directional corner (docs/design/e2e-bi-directional-corner.md).
+// Argo CD half of the bi-directional corner (docs/spec/e2e-bi-directional-corner.md).
 //
 // Argo CD is only installed for this corner, by the `_argocd-installed` Taskfile
 // node. `task test-e2e` skips these specs; `task test-e2e-bi-directional` runs them.

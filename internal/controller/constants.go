@@ -46,7 +46,7 @@ const (
 	// validate-operator-types webhook recorded the submitter, False (CommitterFallback) when
 	// no admission record exists — the webhook is not configured — and the commit is
 	// authored by the configured committer. False is not a failure and does not affect
-	// Ready (docs/design/commitrequest-admission-authorship.md §5).
+	// Ready (docs/spec/commitrequest-admission-authorship.md §5).
 	ConditionTypeAuthorAttributed = "AuthorAttributed"
 	// ConditionTypePushed indicates whether a CommitRequest's commit reached the
 	// remote repository.
@@ -57,7 +57,7 @@ const (
 	MsgSnapshotCompleted = "Initial snapshot reconciliation completed"
 
 	// RequeueSteadyInterval is the unified control-plane periodic reconcile fallback.
-	// The control plane no longer watches Secrets (docs/future/secret-value-retention-plan.md),
+	// The control plane no longer watches Secrets (docs/rbac.md),
 	// so out-of-band credential and age-key changes are picked up on this steady cadence
 	// instead of via a Secret informer. It replaces the former split of a 2-minute
 	// transient-retry, a 5-minute auth/secret, and a 10-minute revalidation interval with

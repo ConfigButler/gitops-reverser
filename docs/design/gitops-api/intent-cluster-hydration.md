@@ -86,7 +86,7 @@ sequenceDiagram
     Note over Rev: applied state equals committed state,<br/>so nothing new to commit. The loop is closed.
 ```
 
-This is not a proposal. [`test/e2e/bi_directional_e2e_test.go`](../../../test/e2e/bi_directional_e2e_test.go)
+This is not a proposal. `test/e2e/bi_directional_e2e_test.go`
 runs it against real Flux with `prune: true`, and asserts the hard part — that
 GitOps Reverser produces **exactly one commit** for a live edit and Flux converges
 without a second one. It also covers a SOPS-encrypted `Secret` written by the

@@ -60,7 +60,7 @@ type CommandAuthorRecorder interface {
 // submitter into the CommandAuthorStore and always allows — pure observation with a
 // single side effect (a Redis upsert), never a rejection, so a user's command never
 // depends on it succeeding (a missed capture degrades to a committer-authored commit;
-// see docs/design/commitrequest-admission-authorship.md §2, §4). It dispatches on the
+// see docs/spec/commitrequest-admission-authorship.md §2, §4). It dispatches on the
 // resource (isCommandKind today), so a future config-validation branch for non-command
 // kinds slots in alongside without disturbing this one.
 type ValidateOperatorTypesHandler struct {

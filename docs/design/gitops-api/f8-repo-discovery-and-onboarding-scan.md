@@ -11,8 +11,8 @@
 > [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md),
 > [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md),
 > [finished/f7-higher-level-krm-documents.md](finished/f7-higher-level-krm-documents.md),
-> [../manifest/file-agnostic-placement.md](../manifest/file-agnostic-placement.md),
-> [../../finished/current-manifest-support-review.md](../../finished/current-manifest-support-review.md)
+> [../manifest/file-agnostic-placement.md](../../spec/gittarget-new-file-placement-rules.md),
+> [../../finished/current-manifest-support-review.md](../../spec/current-manifest-support-review.md)
 
 ## Why this exists
 
@@ -49,7 +49,7 @@ Repo-wide target discovery is therefore a **new axis**, not a new operator
 feature. Putting it in the operator would fight both the simplicity goal and the
 one-owner invariant. It belongs in the CLI/library and, above that, the product
 layer — exactly the division already recorded in
-[file-agnostic-placement.md](../manifest/file-agnostic-placement.md) and the
+[file-agnostic-placement.md](../../spec/gittarget-new-file-placement-rules.md) and the
 [README](README.md) responsibilities table:
 
 | Layer | Owns | Gains repo-wide discovery? |

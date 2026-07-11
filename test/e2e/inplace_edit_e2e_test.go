@@ -21,7 +21,7 @@ import (
 // document in Git carries hand-authored formatting (here a YAML comment) that the
 // operator did not produce, a later cluster update is applied as a minimal
 // in-place edit that preserves the comment, rather than a wholesale rewrite. See
-// docs/design/manifest/manifestedit-integration-readonly-reconcile.md.
+// docs/spec/manifest-system.md.
 var _ = Describe("Manager In-Place Manifest Editing", Label("manager", "inplace-edit"), Ordered, func() {
 	var (
 		testNs   string

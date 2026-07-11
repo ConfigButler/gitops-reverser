@@ -7,11 +7,9 @@ two pieces of policy manifestedit deliberately refuses to own — the Git
 projection and the canonical renderer — and provides a read-only reconcile that
 reports what it would add, remove, or update.
 
-It is the seam described in step 6 of
-docs/design/manifest/manifestedit-abstraction-plan.md and detailed in
-docs/design/manifest/manifestedit-integration-readonly-reconcile.md. It depends on
-internal/sanitize (the projection/renderer) and internal/git/manifestedit (the
-mechanism); manifestedit itself stays free of both.
+It is the read-only reconcile seam described in docs/spec/manifest-system.md. It
+depends on internal/sanitize (the projection/renderer) and
+internal/git/manifestedit (the mechanism); manifestedit itself stays free of both.
 */
 package manifestreport
 
@@ -46,7 +44,7 @@ func Render(obj *unstructured.Unstructured) ([]byte, error) {
 //     strategy — keyed matching needs a path/GVK-aware policy that does not exist
 //     yet, and a blanket KeyField would change every named list's behavior;
 //   - Owns: nil = whole-object truth (API-first), the only supported policy
-//     (docs/design/manifest/manifestedit-field-ownership-spike.md).
+//     (docs/spec/manifestedit-field-ownership-spike.md).
 func EditOptions() manifestedit.EditOptions {
 	return manifestedit.EditOptions{Render: Render}
 }

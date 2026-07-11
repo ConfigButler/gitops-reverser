@@ -25,7 +25,7 @@ import (
 )
 
 // flushEventsToWorktree is the plan-then-flush write path (M7), described in
-// docs/design/manifest/current-manifest-support-review.md ("Writer Model: Plan,
+// docs/spec/current-manifest-support-review.md ("Writer Model: Plan,
 // Apply, Dirty Flush"). It replaces the per-event locate+write loop: it builds the
 // byte-free structure model for the GitTarget subtree once, resolves each coalesced
 // event to a single-identity action over that model, applies the actions to
@@ -34,7 +34,7 @@ import (
 // removed.
 //
 // This is the steady-state half of the design's "Two Paths, One Plan Type"
-// (docs/design/manifest/reconcile-via-watchlist-mark-and-sweep.md): every event is
+// (docs/spec/reconcile-via-watchlist-mark-and-sweep.md): every event is
 // a single-identity intent — an upsert (create/patch/replace) for an object-bearing
 // event, or a delete-document for a DELETE — and the writer NEVER mark-and-sweeps a
 // batch. Whole-folder mark-and-sweep is the resync mechanism (M8), not steady state.
@@ -85,7 +85,7 @@ type writeBatch struct {
 	// and therefore cannot see coming — form one deterministic, resource-identity-
 	// sorted multi-document file instead of each writeWholeFile call silently
 	// discarding the one before it. See
-	// docs/design/manifest/version2/gittarget-new-file-placement-rules.md,
+	// docs/spec/gittarget-new-file-placement-rules.md,
 	// "Collision and append behavior": "if several new plaintext resources in one
 	// plan render to the same path, write a multi-document file in deterministic
 	// resource-identity order."
@@ -245,7 +245,7 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 
 // createNew resolves the placement of a resource with no existing document —
 // declared policy (Option B), sibling inference (Option C), or the canonical
-// fallback — per docs/design/manifest/version2/gittarget-new-file-placement-rules.md,
+// fallback — per docs/spec/gittarget-new-file-placement-rules.md,
 // adds the kustomize resources: entry the placement may require, and writes the new
 // document: a brand-new file, or an additional document appended to an existing
 // accepted plaintext bundle. A placement LocateNew cannot honour safely (today, only
@@ -573,7 +573,7 @@ func (wb *writeBatch) resolveFieldPatchTarget(event Event) (string, manifestedit
 // When the document is governed by a kustomize images/replicas override chain, the
 // desired projection is first split: values the chain produces are restored to their
 // source form (so the file keeps its bytes) and the divergence is routed to the
-// override entries instead — see docs/design/gitops-api/f1-images-replicas-edit-through.md.
+// override entries instead — see docs/design/gitops-api/finished/f1-images-replicas-edit-through.md.
 func (wb *writeBatch) patchExisting(
 	ctx context.Context,
 	event Event,
@@ -817,7 +817,7 @@ func currentDocIndex(filePath string, content []byte, id manifestedit.Identity) 
 // least one file was written or removed.
 //
 // Before touching a single byte it enforces the write-plan precondition (§4.3 of
-// docs/design/gitpath-foreign-content-stringency.md): no path the operator is about to
+// docs/spec/gitpath-foreign-content-stringency.md): no path the operator is about to
 // write, edit, or delete may be shadowed by the active .gittargetignore. The check is a
 // precondition, not a post-hoc detector, so the unrecoverable state (an ignored file the
 // operator can no longer see) is never reached — the flush is refused and the GitTarget

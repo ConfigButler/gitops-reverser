@@ -7,7 +7,7 @@ import (
 )
 
 // This file holds the worker-loop side of CommitRequest eager attach (§6.4 of
-// docs/design/stream/commitrequest-design.md). All methods run on the single event
+// docs/spec/commitrequest-design.md). All methods run on the single event
 // loop goroutine, so pendingCRs needs no locking; only the resolved-outcome table
 // (BranchWorker.crOutcomes) crosses goroutines and is mutex-guarded.
 //

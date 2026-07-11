@@ -4,7 +4,7 @@
 // of recorders (native watch, audit webhook, validating admission webhook) whose
 // output is a versioned corpus of the exact structures Kubernetes emits. It is
 // deliberately NOT a second GitOps Reverser; see
-// docs/design/mutation-capture-lab-design.md.
+// docs/spec/mutation-capture-lab-design.md.
 //
 // It deliberately serves the SAME webhook URLs as the product
 // (/validate-all, /audit-webhook) so a lab deployment can swap the product image

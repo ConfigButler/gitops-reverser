@@ -24,7 +24,7 @@ type apiResourceDiscovery interface {
 // typeset registry: it turns one ServerGroupsAndResources() result into a
 // policy-annotated typeset.Scan. It holds NO judgement and no time-sensitive state —
 // retain-on-error and the removal grace for omissions both live in
-// typeset.Registry.UpdateFromScan (see docs/design/typeset-owns-discovery-grace.md).
+// typeset.Registry.UpdateFromScan (see docs/spec/typeset-owns-discovery-grace.md).
 // The only state kept is mechanical bookkeeping: the last normalized scan (the change
 // fingerprint, and the registry's re-derive source for refreshes without a discovery
 // round-trip), the scan generation, and readiness.

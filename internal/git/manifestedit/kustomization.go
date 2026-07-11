@@ -11,7 +11,7 @@ import (
 
 // Kustomization override sections the editor accepts. The editor is the
 // mechanism half of the F1 images/replicas edit-through
-// (docs/design/gitops-api/f1-images-replicas-edit-through.md): it updates the
+// (docs/design/gitops-api/finished/f1-images-replicas-edit-through.md): it updates the
 // scalar value of a field that ALREADY EXISTS on an entry that ALREADY EXISTS,
 // and nothing else — it never adds or removes entries, keys, or files.
 const (
@@ -128,7 +128,7 @@ func applyKustomizationEdit(root *yaml.Node, e KustomizationEdit) error {
 
 // AppendKustomizationResource adds one entry to an existing kustomization.yaml's
 // resources: sequence — the mechanism half of F4's "add to the right kustomize
-// file" (docs/design/manifest/version2/gittarget-new-file-placement-rules.md): a
+// file" (docs/spec/gittarget-new-file-placement-rules.md): a
 // new sibling file placed inside a kustomize-governed directory must also be named
 // in that directory's resources: list, or kustomize never renders it.
 //

@@ -7,7 +7,7 @@
 > Related:
 > [README.md](README.md),
 > [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md),
-> [../unsupported-folder-refusal-plan.md](../unsupported-folder-refusal-plan.md)
+> [../unsupported-folder-refusal-plan.md](../../spec/unsupported-folder-refusal-plan.md)
 
 ## Problem
 

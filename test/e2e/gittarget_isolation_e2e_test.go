@@ -12,7 +12,7 @@ import (
 )
 
 // This spec is the e2e regression for GitTarget isolation on rule changes (see
-// docs/design/gittarget-isolation-on-rule-change.md). The original symptom was a
+// docs/spec/gittarget-isolation-on-rule-change.md). The original symptom was a
 // parallel-run flake: one GitTarget's ConfigMap event commit ("[CREATE] ...")
 // was replaced by a reconcile commit ("reconciled N <type>") because an
 // unrelated spec changed a *different* target's rules at the same time, dragging
@@ -121,7 +121,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 					"target A's commit message must name the resource path")
 				g.Expect(msg).NotTo(ContainSubstring("reconciled"),
 					"target A must not enter reconcile mode because of target B's unrelated rule change "+
-						"(GitTarget isolation — see docs/design/gittarget-isolation-on-rule-change.md)")
+						"(GitTarget isolation — see docs/spec/gittarget-isolation-on-rule-change.md)")
 			}
 			Eventually(assertEventCommit).Should(Succeed())
 		}

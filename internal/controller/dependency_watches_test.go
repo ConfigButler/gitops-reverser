@@ -390,7 +390,7 @@ func TestDependencyMapFunctionsTolerateListErrors(t *testing.T) {
 // TestRequeueSteadyIntervalIsFiveMinutes locks the unified control-plane periodic reconcile
 // fallback at 5 minutes. After the secret-value-retention change the control plane no longer
 // watches Secrets, so out-of-band credential and age-key rotations are picked up on this steady
-// cadence rather than by a Secret informer. See docs/future/secret-value-retention-plan.md.
+// cadence rather than by a Secret informer. See docs/rbac.md.
 func TestRequeueSteadyIntervalIsFiveMinutes(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, RequeueSteadyInterval)
 }

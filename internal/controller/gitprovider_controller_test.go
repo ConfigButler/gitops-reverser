@@ -401,7 +401,7 @@ var _ = Describe("GitProvider Controller", func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			// Control-plane reconciles now share one steady fallback cadence; see
-			// docs/future/secret-value-retention-plan.md.
+			// docs/rbac.md.
 			Expect(result.RequeueAfter).To(Equal(RequeueSteadyInterval))
 
 			// Verify the resource was updated with failure condition

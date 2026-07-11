@@ -12,7 +12,7 @@
 > [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md)
 > (§4 invariant, §5 overlay model, §9 three arrows),
 > [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md),
-> [../gitpath-foreign-content-stringency.md](../gitpath-foreign-content-stringency.md)
+> [../gitpath-foreign-content-stringency.md](../../spec/gitpath-foreign-content-stringency.md)
 
 ## Purpose
 

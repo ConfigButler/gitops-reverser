@@ -3,7 +3,7 @@
 // Liveness and readiness wiring for the controller. Liveness (/healthz) stays a bare process
 // ping; readiness (/readyz) reflects the audit-serving preconditions so the kube-apiserver — which
 // dials this pod through a Service — only routes audit events here once the pod can actually
-// receive and enqueue them. See docs/design/audit-readiness-probe-plan.md.
+// receive and enqueue them. See docs/spec/audit-readiness-probe-plan.md.
 
 package main
 
@@ -46,7 +46,7 @@ type redisPinger interface {
 // endpoints — but once it has connected, transient Redis blips are handled at the request layer
 // (the audit handler returns HTTP 500 and the apiserver retries the batch), NOT by flapping
 // readiness, which would yank every replica out of endpoints at once. See
-// docs/design/audit-readiness-probe-plan.md §4.
+// docs/spec/audit-readiness-probe-plan.md §4.
 type redisReadinessGate struct {
 	pinger   redisPinger
 	timeout  time.Duration
@@ -152,7 +152,7 @@ func combineReadyChecks(checks ...healthz.Checker) healthz.Checker {
 // reflects the locally-checkable audit-serving preconditions (listener up, TLS cert loaded, first
 // Redis connection made) so the kube-apiserver, which dials this pod through a Service, only routes
 // audit events here once the pod can actually receive and enqueue them. See
-// docs/design/audit-readiness-probe-plan.md.
+// docs/spec/audit-readiness-probe-plan.md.
 func addHealthChecks(
 	mgr ctrl.Manager,
 	auditProbe auditReadinessProbe,

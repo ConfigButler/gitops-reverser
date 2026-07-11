@@ -2,7 +2,7 @@
 
 Last updated: 2026-06-02
 
-Recent investigation: [E2E full-suite shared-state flake](../design/e2e-full-suite-shared-state-investigation.md)
+Recent investigation: [E2E full-suite shared-state flake](../spec/e2e-serial-registry.md)
 
 This folder documents why the repository uses its current devcontainer and CI behavior, especially around Go caches, workspace paths, and k3d cluster access from inside the container.
 

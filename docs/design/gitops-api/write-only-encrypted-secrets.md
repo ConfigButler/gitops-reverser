@@ -99,7 +99,7 @@ There is a second model in the codebase, and honesty requires naming it.
 ([`internal/controller/gittarget_controller.go`](../../../internal/controller/gittarget_controller.go)),
 mints a keypair, stores the private half in a `Secret` — annotated *"Back up the
 private key and remove warning annotation"* — and publishes the recipient. The
-[bi-directional e2e](../../../test/e2e/bi_directional_e2e_test.go) then hands that
+bi-directional e2e then hands that
 same `Secret` to Flux as its `decryption` key, which is how Flux reconciles the
 encrypted `Secret` this operator wrote.
 

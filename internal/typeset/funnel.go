@@ -12,7 +12,7 @@ import "strings"
 // assignment) is gated on the scale subresource's own verbs via the scale
 // requirement, not on the parent carrying patch. This is a deliberate simplification
 // of the design doc's get/list/watch/patch list — see
-// docs/design/manifest/version2/type-followability-implementation.md.
+// docs/spec/type-followability.md.
 func requiredVerbs() []string { return []string{"get", "list", "watch"} }
 
 // Observation is the raw per-type facts the funnel reduces into a Followability. It

@@ -42,7 +42,7 @@ This file is meant to track the smaller current backlog, not historical notes.
 - [ ] Fix recurring full e2e flakiness around WatchRule/snapshot convergence.
   This has shown up more than once as timeout-based failures in manager SOPS bootstrap and
   signing snapshot-message specs, then passed on rerun. Capture and mitigation notes live in
-  [docs/design/e2e-watchrule-cross-spec-interference.md](design/e2e-watchrule-cross-spec-interference.md).
+  [docs/design/e2e-watchrule-cross-spec-interference.md](spec/e2e-serial-registry.md).
   This should be addressed before the next feature that expands commit-message, snapshot, or
   write-window behavior, otherwise new failures will be hard to separate from existing timing debt.
 
@@ -77,7 +77,7 @@ This file is meant to track the smaller current backlog, not historical notes.
 - [ ] Handle resources whose GVK cannot be resolved against the live cluster.
   A manifest may reference a `apiVersion`/`kind` whose CRD is not installed, so the RESTMapper
   cannot map it to a GVR. This is already a problem today and also blocks the manifest-inventory
-  work in [docs/design/manifest/manifest-inventory-file-agnostic-placement.md](design/manifest/manifest-inventory-file-agnostic-placement.md):
+  work in [docs/design/manifest/manifest-inventory-file-agnostic-placement.md](spec/manifest-system.md):
   indexing must record the manifest identity and defer rather than fail the whole scan.
 
 

@@ -19,7 +19,7 @@ import (
 )
 
 // ManifestStore is the byte-free, in-memory structure model of a GitTarget folder
-// described in docs/design/manifest/current-manifest-support-review.md ("Concrete
+// described in docs/spec/current-manifest-support-review.md ("Concrete
 // Data Structures"). It is the backbone the live writer, scan mode, the CLI, and
 // status all consume; the analyzer Report is rendered as a projection over it.
 //
@@ -81,7 +81,7 @@ type ManifestStore struct {
 	// Foreign lists the filesystem entries under spec.path that matched no recognized role
 	// (non-YAML files, symlinks, submodules) and survived the .gittargetignore filter. The
 	// acceptance gate refuses each one (foreignContentRefusals); the path is an
-	// operator-exclusive subtree. See docs/design/gitpath-foreign-content-stringency.md.
+	// operator-exclusive subtree. See docs/spec/gitpath-foreign-content-stringency.md.
 	Foreign []ForeignEntry
 
 	// Ignore is the active root .gittargetignore matcher (nil when the path carries none).
@@ -155,7 +155,7 @@ func (f *FileModel) Deleted() bool { return f.Current == nil && f.Original != ni
 // without storing a fragile mutable field. The M4 acceptance gate additionally
 // refuses any managed file that is not entirely valid KRM (Decision #2), so an
 // accepted file is contiguous anyway. manifestedit is given the position only at
-// apply time. See docs/design/manifest/current-manifest-support-review.md ("Concrete
+// apply time. See docs/spec/current-manifest-support-review.md ("Concrete
 // Data Structures") and the M4 acceptance gate (acceptance.go).
 type DocumentModel struct {
 	// ManifestIdentity is the EFFECTIVE content identity (apiVersion + kind +
@@ -175,7 +175,7 @@ type DocumentModel struct {
 	// ambiguous-kustomize-overrides diagnostic). The writer routes a live change
 	// produced by one of these entries back to the entry instead of writing it
 	// through into the source document. See
-	// docs/design/gitops-api/f1-images-replicas-edit-through.md.
+	// docs/design/gitops-api/finished/f1-images-replicas-edit-through.md.
 	Overrides *KustomizeOverrides
 
 	// ResourceIdentity is the API-side identity (GVR + namespace + name). It is set
@@ -206,7 +206,7 @@ type DocumentModel struct {
 // It replaces an earlier "namespace came from kustomize" boolean so the store can also
 // explain the no-context and ambiguous cases to status, duplicate diagnostics, and
 // future placement — see
-// docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md.
+// docs/spec/contextual-namespace-and-kustomize-folder-editing.md.
 type NamespaceSourceKind string
 
 const (
@@ -647,7 +647,7 @@ func kustomizationInfos(kusts map[string]*kustomizationDoc) map[string]*Kustomiz
 // namespace transformer, its resources/bases graph entries, and whether it uses any
 // feature outside the supported contextual-namespace subset (which disqualifies it as
 // a namespace source). See the "Kustomize subset proposal" in
-// docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md.
+// docs/spec/contextual-namespace-and-kustomize-folder-editing.md.
 type kustomizationDoc struct {
 	path        string            // kustomization file path (slash)
 	namespace   string            // the namespace: transformer value

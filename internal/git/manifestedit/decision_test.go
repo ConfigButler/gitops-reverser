@@ -179,7 +179,7 @@ func TestApply_PatchAndDeleteNeedNoRenderer(t *testing.T) {
 
 // The product policy is API-first, whole-object truth: production always passes
 // Owns == nil, so a field absent from the desired projection is deleted from Git
-// (see docs/design/manifest/manifestedit-field-ownership-spike.md). This is the only
+// (see docs/spec/manifestedit-field-ownership-spike.md). This is the only
 // supported behavior, pinned here.
 func TestApply_WholeObjectTruth_AbsentFieldIsDeleted(t *testing.T) {
 	content := []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\ndata:\n  color: blue\nextra: drop\n")

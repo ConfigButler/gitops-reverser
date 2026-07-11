@@ -3,7 +3,7 @@
 Status: **proposed** (not started)
 
 > **Reconciliation note (watch-first rewrite).** This plan predates
-> [watch-first ingestion](../design/watch-first-ingestion-architecture.md), which removed the
+> [watch-first ingestion](../finished/watch-first-ingestion-architecture.md), which removed the
 > audit-as-correctness pipeline. The **branch-ownership core is unchanged and remains the HA target**:
 > the `BranchWriteShard` model, the shard-ownership leases (HA-0 → HA-2), durable per-shard write
 > queues, and the `PushAtomic` compare-and-swap fence. What changed is the **ingress half**: object
@@ -368,7 +368,7 @@ API server's compaction horizon returns `410 Gone` and must fall back to a fresh
 relist.
 
 This matches the low-risk path already sketched in
-[design-snapshot-engine-evolution.md](design-snapshot-engine-evolution.md#34-multi-pod--ha).
+[design-snapshot-engine-evolution.md](../architecture.md#34-multi-pod--ha).
 
 ### Phase HA-5: Active/Active Tracking Shards
 
@@ -383,7 +383,7 @@ absence/deletion facts.
 
 ## Relationship To WatchRule Wildcards
 
-[WatchRule wildcard support](watchrule-wildcard-support-plan.md) increases the
+[WatchRule wildcard support](../spec/type-followability.md) increases the
 number of GVRs a single target may watch. That stresses informer scale and
 snapshot completeness, but it should not be the first distributed-systems
 problem solved.

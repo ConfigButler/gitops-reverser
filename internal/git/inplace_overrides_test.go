@@ -19,7 +19,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// The F1 edit-through scenarios (docs/design/gitops-api/f1-images-replicas-edit-through.md):
+// The F1 edit-through scenarios (docs/design/gitops-api/finished/f1-images-replicas-edit-through.md):
 // a live change produced by a kustomization's images:/replicas: entry lands on
 // the entry, and the source manifest keeps its bytes.
 

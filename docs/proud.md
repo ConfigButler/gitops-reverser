@@ -13,7 +13,7 @@ to capture.
 ## 1. You can start programming in one click
 
 Open the repo in VS Code, **Reopen in Container**, and everything is already there. No "install
-these twelve tools first" README. The [devcontainer](.devcontainer/devcontainer.json) ships every
+these twelve tools first" README. The [devcontainer](../.devcontainer/devcontainer.json) ships every
 pinned tool the project needs — Go, `kubectl`, k3d, Helm, Kustomize, Kubebuilder, Flux, Tilt,
 `golangci-lint`, Delve, `valkey-cli`, `actionlint` — plus Go module/build caches on named volumes
 and SSH commit signing auto-synced from your host agent.
@@ -51,7 +51,7 @@ The build isn't a `Makefile` — it's a real **DAG** expressed in [Task](https:/
 step from source file to a running controller under e2e declares its real `sources`, `generates`,
 and `deps`, so **only what changed re-runs**. A cold e2e bring-up is ~5–6 minutes; a warm re-run of
 the *same* suite is ready in **seconds**, because every stamp is still up to date. The whole graph,
-and why it pays off, is written up in [docs/tasks-overview.md](docs/tasks-overview.md).
+and why it pays off, is written up in [docs/tasks-overview.md](tasks-overview.md).
 
 ## 6. An e2e harness that respects your time — and helps when it breaks
 
@@ -97,7 +97,7 @@ be **SSH-signed**. It even captures resources served by an **aggregated API serv
 - **Three install modes** — config-dir, Helm, and plain manifests — all exercised by e2e.
 - A **mutation-capture lab** (`lab-e2e`) for stress-testing capture correctness.
 - `actionlint` on the CI workflows, Conventional Commits driving `release-please`.
-- A genuinely deep [docs/architecture.md](docs/architecture.md) that answers the "but how does it
+- A genuinely deep [docs/architecture.md](architecture.md) that answers the "but how does it
   actually…" questions instead of hand-waving.
 
 ---

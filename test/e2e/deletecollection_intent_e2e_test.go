@@ -36,7 +36,7 @@ import (
 // The state correctness of collection deletes is solved by construction in watch-first
 // (one watch event per object); this spec adds the intent semantics and the attribution
 // that the headline claim depends on. See
-// docs/design/deletecollection-attribution-expander.md.
+// docs/spec/deletecollection-attribution-expander.md.
 //
 // Not Serial: the GitProvider uses a 0s commit window, so every watched event commits
 // immediately as its own commit, and every assertion reads the author/state scoped to a

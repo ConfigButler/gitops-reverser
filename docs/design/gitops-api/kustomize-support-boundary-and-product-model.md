@@ -8,9 +8,9 @@
 > [README.md](README.md),
 > [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md),
 > [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md),
-> [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../manifest/contextual-namespace-and-kustomize-folder-editing.md),
-> [../unsupported-folder-refusal-plan.md](../unsupported-folder-refusal-plan.md),
-> [../manifest/version2/gittarget-new-file-placement-rules.md](../manifest/version2/gittarget-new-file-placement-rules.md)
+> [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../../spec/contextual-namespace-and-kustomize-folder-editing.md),
+> [../unsupported-folder-refusal-plan.md](../../spec/unsupported-folder-refusal-plan.md),
+> [../manifest/version2/gittarget-new-file-placement-rules.md](../../spec/gittarget-new-file-placement-rules.md)
 
 ## Purpose
 

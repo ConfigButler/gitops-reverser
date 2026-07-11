@@ -5,7 +5,7 @@
 // next has started; clearing between scenarios is therefore not enough. The store
 // keeps every record attributed to its scenario and serves reads filtered by
 // scenario, so the test driver isolates scenarios instead of trusting a clean
-// slate (see docs/design/mutation-capture-lab-design.md, "Isolated Test Setup").
+// slate (see docs/spec/mutation-capture-lab-design.md, "Isolated Test Setup").
 package store
 
 import (

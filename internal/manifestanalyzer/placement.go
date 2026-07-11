@@ -14,7 +14,7 @@ import (
 )
 
 // PlacementPolicy is a resolved GitTarget placement declaration (Option B2 of
-// docs/design/manifest/version2/gittarget-new-file-placement-rules.md): a single
+// docs/spec/gittarget-new-file-placement-rules.md): a single
 // exact-type map plus a fallback default template, consulted for every resource
 // regardless of sensitivity. It mirrors api/v1alpha3.GitTargetPlacementSpec
 // field-for-field but is defined locally so this analyzer package stays free of any
@@ -92,7 +92,7 @@ type PlacementResult struct {
 }
 
 // LocateNew resolves the placement of a resource with no existing document, per
-// docs/design/manifest/version2/gittarget-new-file-placement-rules.md: a declared
+// docs/spec/gittarget-new-file-placement-rules.md: a declared
 // template (Option B) wins when present; otherwise an existing sibling cohort
 // decides (Option C, steps 1/2 — same type+namespace, then same type+any
 // namespace); otherwise the canonical path.

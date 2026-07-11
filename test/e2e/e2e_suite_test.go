@@ -84,7 +84,7 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 // audit delivery, recovered by the next checkpoint) are expected and deliberately NOT gated. The
 // counter resets when the controller restarts (the restart-reconcile spec does this), but
 // Prometheus retains the pre-restart samples, so max_over_time over the run window catches any
-// error that ever happened, on any pod. See docs/design/stream/audit-diagnostic-streams-plan.md.
+// error that ever happened, on any pod. See docs/architecture.md.
 func assertNoAnomalousAuditOutcomes() {
 	By("verifying no audit event ended in an error outcome (audit-outcome invariant)")
 	ensurePrometheusClient()

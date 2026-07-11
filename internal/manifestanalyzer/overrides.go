@@ -15,7 +15,7 @@ import (
 // kustomization.yaml and attributing an unambiguous override chain to every
 // resource file a render root reaches. The write-side projection consumes the
 // attached KustomizeOverrides. See
-// docs/design/gitops-api/f1-images-replicas-edit-through.md.
+// docs/design/gitops-api/finished/f1-images-replicas-edit-through.md.
 
 // reasonAmbiguousOverrides marks a build-time diagnostic for a resource file that
 // more than one render root reaches with differing override chains. The store

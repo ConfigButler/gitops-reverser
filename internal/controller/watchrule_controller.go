@@ -371,7 +371,7 @@ func conditionIsFalse(conditions []metav1.Condition, conditionType string) bool 
 
 // updateStatusAndRequeue updates the status and requeues on the unified control-plane steady
 // interval. The control plane no longer watches Secrets, so every status outcome falls back to
-// this single cadence; see docs/future/secret-value-retention-plan.md.
+// this single cadence; see docs/rbac.md.
 func (r *WatchRuleReconciler) updateStatusAndRequeue(
 	ctx context.Context, watchRule *configbutleraiv1alpha3.WatchRule) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, watchRule); err != nil {

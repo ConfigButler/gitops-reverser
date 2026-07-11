@@ -85,7 +85,7 @@ task fuzz-smoke    # short active-fuzz smoke of each target
 If fuzzing finds a crash, Go writes the reproducer under
 `<package>/testdata/fuzz/<Target>/`. Commit it: it fixes the input as a permanent
 regression case, replayed by `task test` thereafter. See
-[`docs/design/dynamic-analysis-fuzzing-plan.md`](docs/design/dynamic-analysis-fuzzing-plan.md).
+[`docs/finished/dynamic-analysis-fuzzing-plan.md`](docs/finished/dynamic-analysis-fuzzing-plan.md).
 
 ## E2E tests
 
@@ -133,7 +133,7 @@ The Tilt UI keeps build/deploy work on the existing `task prepare-e2e` path, the
 - `playground-status` prints the current starter resources and the recent repo commit log
 
 The design note for the playground flow lives in
-[`docs/design/tilt-playground-plan.md`](docs/design/tilt-playground-plan.md).
+[`docs/finished/tilt-playground-plan.md`](docs/finished/tilt-playground-plan.md).
 
 **Troubleshooting:**
 - envtest errors: run `task setup-envtest` then retry

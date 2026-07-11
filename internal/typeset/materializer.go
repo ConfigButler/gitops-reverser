@@ -11,7 +11,7 @@ import (
 )
 
 // The Materializer is the second axis from
-// docs/design/stream/demand-driven-type-materialization-lifecycle.md: a sibling state
+// docs/spec/type-followability.md: a sibling state
 // machine to the Registry, in the same leaf package. The Registry answers the supply
 // question ("can we follow this type?"); the Materializer answers the demand-met
 // question ("has anyone claimed it, and have we listed it?"). A type is materialized —
@@ -31,9 +31,9 @@ import (
 // resourceVersionMatch=NotOlderThan, allowWatchBookmarks=true, fold the initial ADDED events, and
 // pin the initial-events-end bookmark's resourceVersion as R, falling back to the consistent LIST
 // only when the server rejects sendInitialEvents — is a planned optimisation, not yet built (Gap 5 /
-// Rec 6 in docs/design/stream/materialization-tail-and-live-readiness-review.md). This leaf is
+// Rec 6 in docs/finished/materialization-tail-and-live-readiness-review.md). This leaf is
 // agnostic to which path produced the rv; it owns only the phase machine and the lease GC, never the
-// fill. See docs/design/manifest/reconcile-via-watchlist-mark-and-sweep.md.
+// fill. See docs/spec/reconcile-via-watchlist-mark-and-sweep.md.
 
 // Phase is where a type sits on the materialization axis. It is orthogonal to the
 // followability Verdict: a Followable type may be Dormant (unclaimed) and a claimed type
@@ -599,7 +599,7 @@ type TypeMaterialization struct {
 // type that has a prior checkpoint. It is false for Dormant/Requested/Syncing and for a
 // Failing type that never landed a first checkpoint. This is the single predicate the
 // status roll-up buckets on, so a periodic re-anchor (Synced→Resyncing→Synced) never flaps
-// the derived liveness signal. See docs/design/status-design-git-target.md §3.2.
+// the derived liveness signal. See docs/spec/status-conditions-guide.md §3.2.
 func (t TypeMaterialization) Serviceable() bool {
 	return t.CheckpointRV != ""
 }

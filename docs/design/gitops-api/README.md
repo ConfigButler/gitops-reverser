@@ -10,9 +10,9 @@
 > [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md),
 > [intent-cluster-hydration.md](intent-cluster-hydration.md),
 > [../../future/idea-application-editing.md](../../future/idea-application-editing.md),
-> [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../manifest/contextual-namespace-and-kustomize-folder-editing.md),
-> [../manifest/file-agnostic-placement.md](../manifest/file-agnostic-placement.md),
-> [../../finished/current-manifest-support-review.md](../../finished/current-manifest-support-review.md)
+> [../manifest/contextual-namespace-and-kustomize-folder-editing.md](../../spec/contextual-namespace-and-kustomize-folder-editing.md),
+> [../manifest/file-agnostic-placement.md](../../spec/gittarget-new-file-placement-rules.md),
+> [../../finished/current-manifest-support-review.md](../../spec/current-manifest-support-review.md)
 
 ## Goal
 
@@ -25,7 +25,7 @@ operator writes the changes to a branch. The product layer then opens the pull
 request through the Git host's API.
 
 The division of responsibility is deliberate and already a recorded decision
-([file-agnostic-placement.md](../manifest/file-agnostic-placement.md)):
+([file-agnostic-placement.md](../../spec/gittarget-new-file-placement-rules.md)):
 
 - **GitOps Reverser**: watch live state, edit the folder the way a careful
   human would (in place, comment-preserving, refusing what it cannot own),
@@ -140,7 +140,7 @@ base"), and the mirror-mode vs. intent-cluster topology — live in
 | F1 | Kustomize `images:` / `replicas:` edit-through — a live change produced by an override entry is written back to that entry, never through into the source manifest | [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md) | implemented ([#198](https://github.com/ConfigButler/gitops-reverser/pull/198)) |
 | F7 | Higher-level KRM objects as first-class documents — corpus + e2e pinning that Flux `HelmRelease`/`Kustomization`, Argo CD `Application`, KRO resources, and core resources mirror and edit like any KRM document (they should already; F7 *proves* it), plus "install an app = add KRM" user docs | [finished/f7-higher-level-krm-documents.md](finished/f7-higher-level-krm-documents.md) | implemented (manifestedit corpus for HelmRelease/Application/KRO; HelmRelease mirror+edit e2e; [installing-apps-as-krm.md](../../installing-apps-as-krm.md) user docs) |
 | F2 | Render-root scoping — a GitTarget declares its render root (e.g. `overlays/env1`); base files reached through `../../base` become read-only context, dissolving overlay fan-out ambiguity. Launch scope: overlay `images:`/`replicas:` entries + overlay-local documents, shipped **with** the per-edit `FullyReflected` accounting | — | not designed — **launch-critical** |
-| F4 | New-file placement rules — sibling inference + `spec.placement` template so new resources land in the folder's convention, not the canonical REST path; includes creating the `resources:` entry when the target folder carries a kustomization | designed in [version2/gittarget-new-file-placement-rules.md](../manifest/version2/gittarget-new-file-placement-rules.md) | implemented (v1: declared policy + sibling inference steps 1/2/4 + kustomize `resources:` entry; step 3 and ordered-rule Option A deferred) |
+| F4 | New-file placement rules — sibling inference + `spec.placement` template so new resources land in the folder's convention, not the canonical REST path; includes creating the `resources:` entry when the target folder carries a kustomization | designed in [version2/gittarget-new-file-placement-rules.md](../../spec/gittarget-new-file-placement-rules.md) | implemented (v1: declared policy + sibling inference steps 1/2/4 + kustomize `resources:` entry; step 3 and ordered-rule Option A deferred) |
 | F5 | Branch/session ergonomics — base-branch selection, opt-in remote branch cleanup, a GitTarget-level quiescence condition | — | not designed — **launch-critical** |
 | F3 | Restricted patch authoring — write/update scalar-field strategic-merge patches in an overlay ("live drift lands in the environment's overlay"); turns the launch-time unreflected class (per-env edits of base-owned fields) into reflected edits | — | post-launch; priced by tier-2 metrics |
 | F6 | Admission preflight gate — opt-in intent-cluster webhook rejecting edits that cannot be reflected into the folder (fail-open; the underlying per-edit `FullyReflected` accounting ships with the F2/F4 launch unit) | [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) | designed, unbuilt — value highest while F3 is absent |

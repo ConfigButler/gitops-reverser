@@ -11,8 +11,8 @@ import (
 )
 
 // This spec is the e2e for the GitTarget non-overlap topology guard (design:
-// docs/design/manifest/current-manifest-support-review.md, milestone C1 in
-// docs/design/manifest/implementation-plan.md). Within one provider+branch, no
+// docs/spec/current-manifest-support-review.md, milestone C1 in
+// docs/spec/current-manifest-support-review.md). Within one provider+branch, no
 // GitTarget path may be equal to, an ancestor of, or a descendant of another's.
 // Sibling folders are fine; nesting is rejected at the Validated gate so every
 // materialized folder has exactly one owner. The reject path surfaces as a

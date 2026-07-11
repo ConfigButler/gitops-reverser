@@ -233,7 +233,7 @@ creates the GitTarget + a ConfigMap WatchRule, and asserts:
 - the kstatus surface reports a human-fixable block: `Ready=False`, `Reconciling=False`, `Stalled=True`, and
 - the operator **commits nothing** on top of the seed — the remote tip is unchanged.
 
-The implementation design is in [unsupported-folder-refusal-plan.md](unsupported-folder-refusal-plan.md);
+The implementation design is in [unsupported-folder-refusal-plan.md](../spec/unsupported-folder-refusal-plan.md);
 the structure-only refusals (duplicate identity, impure managed file, standalone non-KRM/invalid YAML,
 mixed managed+allowlisted) are unit-proven in `internal/manifestanalyzer/acceptance_test.go`, so the e2e
 focuses on the headline hard-Kustomize case and the status surface.
@@ -250,12 +250,12 @@ These came out of the investigation and are genuine forks — capturing them her
    managed file, standalone non-KRM / invalid YAML, mixed managed+allowlisted), wire the gate into the
    write path, surface it on GitTarget status, and stop committing until the folder is cleaned. Test D
    then proves it. The implementation design lives in
-   [unsupported-folder-refusal-plan.md](unsupported-folder-refusal-plan.md).
+   [unsupported-folder-refusal-plan.md](../spec/unsupported-folder-refusal-plan.md).
    - ~~(b) Keep current behavior and document it.~~ Rejected.
    - ~~(c) Defer.~~ Rejected.
 2. **If we implement refusal — what's the signal?** A new `Synced` reason (e.g. `UnsupportedContent`) vs.
    a dedicated condition vs. a `failingTypes`-style count + event. Needs to fit the two-axis status
-   design in [status-design-git-target.md](status-design-git-target.md).
+   design in [status-design-git-target.md](../spec/status-conditions-guide.md).
 3. **If we implement refusal — is it whole-GitTarget or scoped?** Refuse the entire GitTarget subtree, or
    only the offending `(group, resource)` while other types keep syncing? The resync is already
    type-scoped (`ScopeGVR`), so per-type refusal may be the more consistent shape.
@@ -266,7 +266,7 @@ These came out of the investigation and are genuine forks — capturing them her
    contract, or a limitation to revisit? The answer decides whether Test C asserts "dropped" or
    "preserved."
 6. **Coverage vs. e2e wall-clock.** The suite is already large and the team has active e2e-speedup work
-   ([e2e-speedup-plan.md](e2e-speedup-plan.md)). Tests A and B each need a controller restart/scale
+   ([e2e-speedup-plan.md](../finished/e2e-speedup-plan.md)). Tests A and B each need a controller restart/scale
    cycle (slow). Can they fold into the existing `restart-reconcile` `Serial` ordering to share one
    restart, rather than each paying its own?
 
@@ -305,4 +305,4 @@ These came out of the investigation and are genuine forks — capturing them her
 - Test D, if pursued via §4.1(a), is the first consumer of the acceptance gate
   ([acceptance.go](../../internal/manifestanalyzer/acceptance.go)) inside the running controller, and
   would extend the GitTarget status design in
-  [status-design-git-target.md](status-design-git-target.md).
+  [status-design-git-target.md](../spec/status-conditions-guide.md).

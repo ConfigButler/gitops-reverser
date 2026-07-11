@@ -22,7 +22,7 @@ import (
 )
 
 // CommitRequestFinalizer is the EventRouter seam the reconciler drives, using the
-// attach-then-poll protocol (docs/design/stream/commitrequest-design.md §6.4.3):
+// attach-then-poll protocol (docs/spec/commitrequest-design.md §6.4.3):
 // ServiceCommitRequest registers the attach idempotently on the GitTarget's branch
 // worker (bind the message to the author's open window, finalize after the grace)
 // and returns the request's current outcome — resolved=false means keep polling.
@@ -39,7 +39,7 @@ type CommitRequestFinalizer interface {
 // CommandAuthorLookup resolves the author of a CommitRequest from the submitter
 // captured at admission by the validate-operator-types webhook, keyed by the persisted
 // object's UID. *queue.CommandAuthorStore satisfies it without adaptation. The lookup
-// is present-or-never (docs/design/commitrequest-admission-authorship.md §2): a miss is
+// is present-or-never (docs/spec/commitrequest-admission-authorship.md §2): a miss is
 // immediate and final — the webhook is not configured (or a best-effort write missed) —
 // and the controller finalizes as the committer with no wait.
 type CommandAuthorLookup interface {
@@ -71,8 +71,8 @@ const (
 )
 
 // CommitRequestReconciler drives a CommitRequest through its state machine
-// (docs/design/stream/commitrequest-design.md §6.4 and
-// docs/design/commitrequest-admission-authorship.md §5):
+// (docs/spec/commitrequest-design.md §6.4 and
+// docs/spec/commitrequest-admission-authorship.md §5):
 //
 //  1. ATTRIBUTE — a single synchronous read of the submitter captured at admission
 //     (present-or-never, §2). A hit names that submitter as the author
@@ -341,7 +341,7 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 // multi-CommitRequest ordering design — concurrent CommitRequests for the same
 // GitTarget are serialized exactly as a dedicated finalize-coordinator
 // goroutine would serialize them, without the extra moving parts (see
-// docs/design/stream/commitrequest-multi-finalize-design.md).
+// docs/spec/commitrequest-multi-finalize-design.md).
 //
 // Restart recovery is best-effort by design (commitrequest-design.md §6.6): the
 // message is durable in spec.message, so on restart any non-terminal request is

@@ -5,7 +5,7 @@ package e2e
 // Per-file IceCreamOrder CRD groups. Every e2e file that installs the
 // IceCreamOrder CRD owns its own API group so the files no longer share
 // cluster-scoped state and can run on parallel Ginkgo processes (Phase 2.5 of
-// docs/design/e2e-speedup-plan.md). The kind, plural and singular stay the same
+// docs/finished/e2e-speedup-plan.md). The kind, plural and singular stay the same
 // across all of them; only the group differs. Because the plural
 // ("icecreamorders") is shared, kubectl resource references MUST be qualified as
 // "icecreamorders.<group>" (see iceCreamCRDName) to avoid ambiguity when more
