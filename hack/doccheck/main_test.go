@@ -140,12 +140,70 @@ func doThing() string {
 	}
 }
 
+// A Go comment linking to the published docs site is not a repo-relative citation.
+// doccheck's own package doc contains such a URL, and reported itself as broken.
+func TestCheckGoComments_IgnoresDocsPathsInsideURLs(t *testing.T) {
+	root := t.TempDir()
+	src := write(t, root, "pkg/thing.go", `// Package thing is described at
+// https://github.com/ConfigButler/gitops-reverser/blob/main/docs/spec/gone.md
+// and its contract is docs/spec/gone.md.
+package thing
+`)
+
+	got := targets(checkGoComments(root, src))
+	if len(got) != 1 || got[0] != "docs/spec/gone.md" {
+		t.Errorf("the URL must not be reported and the bare citation must be; got %v", got)
+	}
+}
+
 func TestCheckGoComments_UnparseableFileIsNotAFinding(t *testing.T) {
 	root := t.TempDir()
 	src := write(t, root, "broken.go", "this is not go source at all, and cites docs/spec/missing.md\n")
 
 	if got := checkGoComments(root, src); got != nil {
 		t.Errorf("a file that does not parse is golangci-lint's problem, not ours; got %v", got)
+	}
+}
+
+// The surface that was missing: a docs reorg repointed every Markdown link and Go
+// comment, and left eight citations dangling in Taskfiles, workflows and scripts.
+func TestCheckTextCitations_ResolvesYAMLAndShellCitations(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "docs/spec/real.md", "# real\n")
+
+	yml := write(t, root, "Taskfile.yml", `version: '3'
+tasks:
+  build:
+    # The contract lives in docs/spec/real.md.
+    # This one moved: docs/design/moved.md
+    cmds:
+      - echo docs/spec/also-missing.md
+`)
+
+	got := targets(checkTextCitations(root, yml, "yaml"))
+	want := []string{"docs/design/moved.md", "docs/spec/also-missing.md"}
+	if len(got) != len(want) {
+		t.Fatalf("want %v, got %v", want, got)
+	}
+	for i, target := range got {
+		if target != want[i] {
+			t.Errorf("finding %d: want %q, got %q", i, want[i], target)
+		}
+	}
+}
+
+// A docs path at the tail of a URL is a rendered page, not a file in this repo.
+// Without this, every link to the published docs would be reported as dangling.
+func TestCheckTextCitations_IgnoresDocsPathsInsideURLs(t *testing.T) {
+	root := t.TempDir()
+	sh := write(t, root, "hack/thing.sh", `#!/usr/bin/env bash
+# See https://github.com/ConfigButler/gitops-reverser/blob/main/docs/spec/gone.md
+# but this one is a real citation: docs/spec/gone.md
+`)
+
+	got := targets(checkTextCitations(root, sh, "shell"))
+	if len(got) != 1 || got[0] != "docs/spec/gone.md" {
+		t.Errorf("the URL must not be reported and the bare path must be; got %v", got)
 	}
 }
 

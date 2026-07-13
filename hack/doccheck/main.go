@@ -3,7 +3,7 @@
 // Command doccheck verifies that every documentation reference in the repository
 // resolves to a file that exists.
 //
-// It checks two surfaces that nothing off-the-shelf covers together:
+// It checks three surfaces that nothing off-the-shelf covers together:
 //
 //  1. Relative links in Markdown — `[text](../spec/foo.md)`, including links that
 //     point at source files. External URLs and pure `#anchor` links are skipped.
@@ -14,10 +14,20 @@
 //     comment keeps pointing at the old path, and nothing notices. Seventeen of
 //     them were dangling before this check existed.
 //
+//  3. The same repo-relative paths cited in **YAML and shell** — Taskfiles, CI
+//     workflows, chart values, hack scripts. This surface was added after a docs
+//     reorg left eight of them dangling: the Markdown and Go citations had all been
+//     repointed, and nothing was looking at the Taskfiles.
+//
 // The Go side parses the AST and reads only comments, never string literals. That
 // distinction matters: the gittargetignore tests build in-memory filesystems whose
 // entries are named like documentation paths. Those are fixtures, not citations. A
 // regex cannot tell the two apart; the parser can.
+//
+// YAML and shell have no comparable parser worth carrying, so they are scanned as
+// plain text. The one distinction that must be made there is a docs path in a URL
+// (`https://github.com/…/docs/spec/foo.md`), which names a rendered page rather
+// than a repo-relative file; those are skipped.
 //
 // Only git-tracked files are scanned, so gitignored scratch notes and the local
 // upstream checkouts under external-sources/ are out of scope for free.
@@ -79,7 +89,7 @@ func main() {
 	}
 
 	var findings []finding
-	var mdFiles, goFiles int
+	var mdFiles, goFiles, textFiles int
 
 	for _, name := range tracked {
 		path := filepath.Join(abs, name)
@@ -90,6 +100,12 @@ func main() {
 		case strings.HasSuffix(name, ".go"):
 			goFiles++
 			findings = append(findings, checkGoComments(abs, path)...)
+		case strings.HasSuffix(name, ".yml"), strings.HasSuffix(name, ".yaml"):
+			textFiles++
+			findings = append(findings, checkTextCitations(abs, path, "yaml")...)
+		case strings.HasSuffix(name, ".sh"):
+			textFiles++
+			findings = append(findings, checkTextCitations(abs, path, "shell")...)
 		}
 	}
 
@@ -101,8 +117,8 @@ func main() {
 	})
 
 	if len(findings) == 0 {
-		fmt.Printf("doccheck: OK — %d markdown files, %d Go files, every reference resolves\n",
-			mdFiles, goFiles)
+		fmt.Printf("doccheck: OK — %d markdown files, %d Go files, %d YAML/shell files, "+
+			"every reference resolves\n", mdFiles, goFiles, textFiles)
 		return
 	}
 
@@ -182,7 +198,7 @@ func checkGoComments(root, path string) []finding {
 	var out []finding
 	for _, group := range file.Comments {
 		for _, c := range group.List {
-			for _, target := range docPath.FindAllString(c.Text, -1) {
+			for _, target := range citationsIn(c.Text) {
 				if _, err := os.Stat(filepath.Join(root, target)); err != nil {
 					out = append(out, finding{
 						file:   rel(root, path),
@@ -191,6 +207,50 @@ func checkGoComments(root, path string) []finding {
 						kind:   "go-comment",
 					})
 				}
+			}
+		}
+	}
+	return out
+}
+
+// urlPrefix matches a URL running right up to the end of the text before a match,
+// i.e. the match is the tail of that URL rather than a repo-relative path.
+var urlPrefix = regexp.MustCompile(`https?://\S*$`)
+
+// citationsIn returns the docs/**.md paths cited in text, skipping any that are the
+// tail of a URL. `https://github.com/…/docs/spec/foo.md` names a rendered page on a
+// website; only a bare repo-relative path is ours to resolve. Both the Go and the
+// YAML/shell surfaces need this, so it lives here rather than in either of them.
+func citationsIn(text string) []string {
+	var out []string
+	for _, loc := range docPath.FindAllStringIndex(text, -1) {
+		if urlPrefix.MatchString(text[:loc[0]]) {
+			continue
+		}
+		out = append(out, text[loc[0]:loc[1]])
+	}
+	return out
+}
+
+// checkTextCitations resolves docs/**.md citations in a file with no parser worth
+// carrying — YAML and shell, where these paths live in comments. kind names the
+// surface so the report says which one broke.
+func checkTextCitations(root, path, kind string) []finding {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	var out []finding
+	for i, line := range strings.Split(string(data), "\n") {
+		for _, target := range citationsIn(line) {
+			if _, err := os.Stat(filepath.Join(root, target)); err != nil {
+				out = append(out, finding{
+					file:   rel(root, path),
+					line:   i + 1,
+					target: target,
+					kind:   kind,
+				})
 			}
 		}
 	}

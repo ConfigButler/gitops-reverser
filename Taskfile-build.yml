@@ -213,28 +213,19 @@ tasks:
     # from markdown -- they never look inside a Go comment for a repo-relative doc path.
     # Those are the references that rot silently, and seventeen of them were dangling
     # before this check was written.
-    # These globs are scoped per top-level tree on purpose. An unrooted '**/*.go'
-    # makes Task walk every path under the repo root -- including the 1.2 GB of
-    # upstream checkouts in external-sources/ and the build output in bin/ -- and
-    # fingerprinting that tree costs tens of GB of RAM inside the Task process
-    # itself, which is enough to OOM the host. doccheck only ever reads git-tracked
-    # files (it shells out to `git ls-files`), so these mirror the trees that hold
-    # them. Add a tree here if tracked .md/.go ever lands outside these.
-    sources:
-      - '*.md'
-      - .devcontainer/**/*.md
-      - .github/**/*.md
-      - charts/**/*.md
-      - config/**/*.md
-      - docs/**/*.md
-      - internal/**/*.md
-      - test/**/*.md
-      - api/**/*.go
-      - cmd/**/*.go
-      - hack/**/*.go
-      - internal/**/*.go
-      - pkg/**/*.go
-      - test/**/*.go
+    # Deliberately un-fingerprinted: this task has no `sources:`, so it always runs.
+    #
+    # Its real input is "every git-tracked .md, .go, .yml, .yaml and .sh", which Task
+    # cannot express. Approximating it with globs went wrong twice. An unrooted
+    # '**/*.go' makes Task walk every path under the repo root -- including the 1.2 GB
+    # of upstream checkouts in external-sources/ -- and fingerprinting that costs tens
+    # of GB inside the Task process, enough to OOM the host. (`exclude:` does not help:
+    # Task expands the glob first and filters afterwards, so the walk still happens.)
+    # A hand-maintained per-tree list avoids that, but then silently drifts out of sync
+    # with the file types doccheck scans, and a stale "up to date" means the check
+    # never runs -- which is how a non-compiling file reached a commit here once.
+    #
+    # The whole check takes ~0.2s. That is not worth a cache that can be wrong.
     cmds:
       - go run ./hack/doccheck
 
