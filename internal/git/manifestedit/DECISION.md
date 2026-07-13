@@ -1,7 +1,7 @@
 # Decision record: in-document YAML editor
 
 > Outcome of the POC specified in
-> [docs/design/manifest/manifest-parser-poc.md](../../../docs/design/manifest/manifest-parser-poc.md).
+> [docs/design/manifest/manifest-parser-poc.md](../../../docs/spec/manifest-system.md).
 > This package is the throw-away prototype that POC asked for.
 
 ## Decision

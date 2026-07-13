@@ -81,7 +81,32 @@ kubectl config view --minify | sed -n '/server:/p;/tls-server-name:/p'
 kubectl get nodes
 ```
 
-### 6) Related docs in this folder
+### 6) kind does not run in this devcontainer — do not retry it
+
+A `kind` cluster cannot be started from inside this devcontainer, and no amount of
+kind-version bumping fixes it. The host's `fs.inotify.max_user_instances` is 128,
+which is too low for kind's systemd + kubelet + CRI to all allocate watchers, and
+`/proc/sys/fs/inotify` is mounted **read-only** because the Docker-in-Docker setup
+does not share a writable sysctl namespace with the host:
+
+| Attempt | Result |
+| --- | --- |
+| `sudo sysctl fs.inotify.max_user_instances=8192` | `permission denied on key` |
+| `sudo sh -c 'echo 8192 > /proc/sys/fs/inotify/...'` | `Read-only file system` |
+| kind v0.24.0 → v0.27.0 (newer node image) | same inotify failure — a newer kind does not fix a host limit |
+
+Raising the limit needs changes to the *outer* host or the devcontainer feature
+config. **Use k3d, which is what the e2e suite already does.**
+
+Recorded 2026-07-11 from a since-deleted scratch investigation
+(`hack/audit-kind-check/`), which tried to stand up kind to compare aggregated-API
+audit richness against k3s. That question was ultimately answered by reading the
+upstream kube source in `external-sources/kubernetes/` instead — strictly more
+conclusive, since a single kind run proves behaviour for one kube version whereas
+the source shows it is structural. The aggregated-API e2e now ships against k3d
+(`test/e2e/aggregated_apiserver_e2e_test.go`).
+
+### 7) Related docs in this folder
 
 - `go-module-permissions.md` - why `/go` permissions are managed with shared group + ACLs
 - `windows-devcontainer.md` - Windows-specific mount behavior and expected differences

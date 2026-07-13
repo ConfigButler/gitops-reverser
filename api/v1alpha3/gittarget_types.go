@@ -85,7 +85,7 @@ type GitTargetSpec struct {
 // GitTargetPlacementSpec declares where NEW resources are written when no document
 // for their identity exists yet in Git — one exact-type map plus a fallback
 // default template (Option B2 of
-// docs/design/manifest/version2/gittarget-new-file-placement-rules.md). There is
+// docs/spec/gittarget-new-file-placement-rules.md). There is
 // deliberately no separate "sensitive" placement block: sensitivity is a
 // write-safety classification the controller owns (encrypt the content, keep the
 // path identity-complete, never append or co-mingle), not a second placement

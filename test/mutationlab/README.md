@@ -3,7 +3,7 @@
 A small, separate application that records the exact structures Kubernetes
 exposes through native watches, audit webhooks, and validating admission
 webhooks, and commits them as a versioned corpus. It is **not** a second
-GitOps Reverser — see [the design](../../docs/design/mutation-capture-lab-design.md).
+GitOps Reverser — see [the design](../../docs/spec/mutation-capture-lab-design.md).
 
 ## Layout
 
@@ -18,10 +18,10 @@ GitOps Reverser — see [the design](../../docs/design/mutation-capture-lab-desi
 
 ## Scenario index
 
-Each captured row of the [Difficult Cases Catalog](../../docs/design/mutation-capture-lab-design.md#difficult-cases-catalog)
+Each captured row of the [Difficult Cases Catalog](../../docs/spec/mutation-capture-lab-design.md#difficult-cases-catalog)
 maps to one driver test and one corpus directory. The "Sources" column is what the
 corpus commits — a **silence** (no audit / no admission) is itself the finding, not a
-gap (see [Capturing Intent, Not State](../../docs/design/mutation-capture-lab-design.md#capturing-intent-not-state)).
+gap (see [Capturing Intent, Not State](../../docs/spec/mutation-capture-lab-design.md#capturing-intent-not-state)).
 
 | Row | Scenario | Test (`e2e/…`) | Corpus dir (`corpus/…`) | Sources committed |
 |---|---|---|---|---|
@@ -46,7 +46,7 @@ gap (see [Capturing Intent, Not State](../../docs/design/mutation-capture-lab-de
 All seventeen catalogued scenarios are now captured. Rows 16 and 17 test the watch
 transport itself; the driver uses the lab's targeted `/watch-probe` endpoint so
 transport-only events can be scenario-attributed — see the
-[watch-first ingestion architecture](../../docs/design/watch-first-ingestion-architecture.md)
+[watch-first ingestion architecture](../../docs/finished/watch-first-ingestion-architecture.md)
 design notes.
 
 ## How it integrates: swap the image, reuse the wiring

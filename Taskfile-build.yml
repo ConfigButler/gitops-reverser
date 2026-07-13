@@ -195,12 +195,30 @@ tasks:
         done
 
   lint:
-    desc: Run all linters (Go, Dockerfiles, workflows, Helm chart); deps run in parallel where safe
+    desc: Run all linters (Go, Dockerfiles, workflows, Helm chart, doc links); deps run in parallel where safe
     deps:
       - lint-golang
       - lint-dockerfiles
       - lint-actions
       - lint-helm
+      - lint-docs
+
+  lint-docs:
+    desc: Check that every doc reference resolves — markdown links, and docs/**.md cited in Go comments
+    # Re-run whenever a doc moves or a Go comment changes. Task fingerprints these
+    # under .task/ and skips the run otherwise.
+    #
+    # This exists because nothing off the shelf covers the second surface: markdownlint
+    # does not check links, and link checkers (lychee, markdown-link-check) extract URLs
+    # from markdown -- they never look inside a Go comment for a repo-relative doc path.
+    # Those are the references that rot silently, and seventeen of them were dangling
+    # before this check was written.
+    sources:
+      - '**/*.md'
+      - '**/*.go'
+      - hack/doccheck/main.go
+    cmds:
+      - go run ./hack/doccheck
 
   lint-golang:
     desc: Run golangci-lint
