@@ -86,7 +86,7 @@ flowchart TD
     U -- yes --> K["writeUnit: key"]
     U -- "no, one MAC spans all" --> W["writeUnit: document"]
 
-    D --> OWN{"controller ownerReference?"}
+    D --> OWN{"derived?<br/>(Tier 2 provenance:<br/>which controller, what source)"}
     OWN -- yes --> DER["derived: true<br/>never mirror it"]
 
     classDef bad fill:#fdd,stroke:#c33
@@ -112,11 +112,29 @@ independently. `none` means the document is not ours to write at all.
 
 **4. `derived`** — this object was produced by a controller from another object.
 It is an *output*, not desired state, and mirroring it to Git creates a second
-source of truth. Evidence: a controller `ownerReference` on the live object.
+source of truth.
 
-That last knob is not hypothetical. `internal/sanitize/sanitize.go` **deletes**
-`ownerReferences` before a document reaches Git, and nothing gates on them
-first — so the evidence that an object was derived is destroyed rather than used.
+> ⚠️ **The evidence for this knob is NOT a controller `ownerReference`.** That was
+> this doc's claim, and it is empirically false. Measured against live controllers,
+> an `ownerReference` catches **one expansion producer in five**: objects rendered
+> by a Flux `HelmRelease` and objects expanded by a flux-operator `ResourceSet` —
+> both of which have no home in Git and must be refused — carry **none at all**.
+> A gate keyed on `ownerReference` would mirror both.
+>
+> `derived` is a **Tier 2 provenance claim**, not a Tier 0 field check: the answer
+> depends on *which controller applied the object and what that controller's source
+> is* — a folder of files (has a home) or a template inside a CR (no home). The
+> measured evidence table is in
+> [`../../facts/expansion-provenance-markers.md`](../../facts/expansion-provenance-markers.md);
+> the argument is in
+> [expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md).
+
+That knob is not hypothetical, and the sanitizer makes it worse.
+`internal/sanitize/sanitize.go` **deletes** `ownerReferences` before a document
+reaches Git, and nothing gates on them first — so what evidence there is gets
+destroyed rather than used. The best signal, the applying field manager, lives in
+`metadata.managedFields` and never reaches the sanitized document at all. **The gate
+must run on the live object, before the sanitizer.**
 See [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md)
 for what that costs.
 
@@ -129,7 +147,7 @@ for what that costs.
 | `Secret` + `sops:` stanza | ❌ | `opaque` | `document` | **yes** — `EncryptedSecret` |
 | `SealedSecret` | ✅ | `opaque` | `key` | no |
 | `ExternalSecret` | ✅ | `elsewhere` | `document` | no |
-| any object with a controller `ownerReference` | ✅ | — | `none` (`derived`) | no |
+| any object a controller **expanded** (no home file in Git) | ✅ | — | `none` (`derived`) | no |
 | a file claimed by `ImageUpdateAutomation` | ✅ | `plain` | `none` | no (a Tier 2 claim) |
 
 The punchline of the whole exercise:

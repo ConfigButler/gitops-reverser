@@ -30,6 +30,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"go/parser"
@@ -57,6 +58,10 @@ type finding struct {
 	kind   string // "markdown" | "go-comment"
 }
 
+// exitUsage is the exit code for doccheck failing to run at all, as distinct from
+// exit 1, which means it ran and found broken references.
+const exitUsage = 2
+
 func main() {
 	root := flag.String("root", ".", "repository root to scan")
 	flag.Parse()
@@ -64,13 +69,13 @@ func main() {
 	abs, err := filepath.Abs(*root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "doccheck: %v\n", err)
-		os.Exit(2)
+		os.Exit(exitUsage)
 	}
 
-	tracked, err := trackedFiles(abs)
+	tracked, err := trackedFiles(context.Background(), abs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "doccheck: %v\n", err)
-		os.Exit(2)
+		os.Exit(exitUsage)
 	}
 
 	var findings []finding
@@ -113,8 +118,8 @@ func main() {
 // rather than a filesystem walk means .gitignore is honoured for free: scratch
 // notes and the local upstream checkouts under external-sources/ are never scanned,
 // and we never have to maintain a skip-list that drifts.
-func trackedFiles(root string) ([]string, error) {
-	cmd := exec.Command("git", "-C", root, "ls-files", "-z")
+func trackedFiles(ctx context.Context, root string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "ls-files", "-z")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w (is %s a git repository?)", err, root)

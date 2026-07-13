@@ -209,6 +209,26 @@ by `ReplicaSet`s, `Endpoint`s, and every CR any operator generates.
 Today `sanitize` *deletes* that field. The fix is to **gate on it before deleting
 it** — the evidence must be consumed before it is discarded.
 
+> ⚠️ **This gate is correct and necessary — but it is not sufficient, and the
+> sentence "every derived object in Kubernetes already sets it" is false.**
+>
+> It holds for everything this doc is about: ESO- and sealed-secrets-derived
+> `Secret`s, `ReplicaSet`s, `Pod`s, `Endpoint`s. Keep it.
+>
+> It does **not** hold for the *GitOps expansion* family. Measured against live
+> controllers, objects rendered by a Flux `HelmRelease` and objects expanded by a
+> flux-operator `ResourceSet` carry **no `ownerReference` at all** — they are tracked
+> by labels and a status inventory. Both have no home in Git; both must be refused;
+> neither is caught here.
+>
+> So this gate is the **Tier 0 half** of the answer. The other half is a **Tier 2
+> provenance claim** keyed on which controller applied the object and what its source
+> is. See
+> [`../../facts/expansion-provenance-markers.md`](../../facts/expansion-provenance-markers.md)
+> for the measurements and
+> [expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md)
+> for the argument.
+
 That single gate is the entire day-1 cost of supporting External Secrets safely,
 and it is not really about External Secrets at all.
 

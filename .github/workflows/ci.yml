@@ -717,7 +717,7 @@ jobs:
           # equals what `full` ran — so no spec is added or dropped, the work is
           # just split across two clusters. The membership is a provisional
           # first cut; rebalance from the e2e-ginkgo-reports-* per-spec timings
-          # (docs/design/e2e-ci-runner-sharding-plan.md, "balance from real data").
+          # (docs/finished/e2e-ci-runner-sharding-plan.md, "balance from real data").
           # Each shard runs config-dir installs (GOCOVERDIR overlay) and collects
           # coverage; Codecov unions same-flag `e2e` uploads, so merged coverage
           # is the union of both shards — the non-regression ratchet still holds.
@@ -729,7 +729,7 @@ jobs:
             coverage: "1"
             # Bumped 1 -> 4: the full suite was serialized to avoid the
             # cross-target rule-change snapshot coupling, now fixed (per-target
-            # effective watch plan — docs/design/gittarget-isolation-on-rule-change.md).
+            # effective watch plan — docs/spec/gittarget-isolation-on-rule-change.md).
             e2e_ginkgo_procs: "4"
             k3d_agent_count: "0"
           - name: full-core
@@ -747,7 +747,7 @@ jobs:
           # only place gitops-reverser shares a path with a foreign GitOps engine.
           # Its own runner (hence its own cluster) is what keeps the Argo CD
           # install off the other three legs.
-          # docs/design/e2e-bi-directional-corner.md.
+          # docs/spec/e2e-bi-directional-corner.md.
           #
           # `task test-e2e-bi-directional` pins its own label filter and Ginkgo
           # procs (BI_DIRECTIONAL_GINKGO_PROCS), so e2e_label_filter and

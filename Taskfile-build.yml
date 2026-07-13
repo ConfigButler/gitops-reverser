@@ -19,7 +19,7 @@ vars:
   ENVTEST_STAMP: '.stamps/envtest-{{.ENVTEST_K8S_VERSION}}.ready'
   # Fuzzing (dynamic analysis) targets, one "package:FuzzTarget" pair per line.
   # `go test -fuzz` fuzzes exactly one target per invocation, so the fuzz tasks
-  # loop over these. See docs/design/dynamic-analysis-fuzzing-plan.md.
+  # loop over these. See docs/finished/dynamic-analysis-fuzzing-plan.md.
   FUZZ_TARGETS: >-
     ./internal/git/manifestedit:FuzzManifestEdit
     ./internal/webhook:FuzzDecodeEventList
@@ -184,7 +184,7 @@ tasks:
     desc: >-
       Release-time dynamic analysis — longer fuzz discovery run per target under the race
       detector. Crash reproducers land under <pkg>/testdata/fuzz/<Target>/ (commit them).
-      See docs/design/dynamic-analysis-fuzzing-plan.md.
+      See docs/finished/dynamic-analysis-fuzzing-plan.md.
     cmds:
       - |
         set -eu
@@ -213,10 +213,28 @@ tasks:
     # from markdown -- they never look inside a Go comment for a repo-relative doc path.
     # Those are the references that rot silently, and seventeen of them were dangling
     # before this check was written.
+    # These globs are scoped per top-level tree on purpose. An unrooted '**/*.go'
+    # makes Task walk every path under the repo root -- including the 1.2 GB of
+    # upstream checkouts in external-sources/ and the build output in bin/ -- and
+    # fingerprinting that tree costs tens of GB of RAM inside the Task process
+    # itself, which is enough to OOM the host. doccheck only ever reads git-tracked
+    # files (it shells out to `git ls-files`), so these mirror the trees that hold
+    # them. Add a tree here if tracked .md/.go ever lands outside these.
     sources:
-      - '**/*.md'
-      - '**/*.go'
-      - hack/doccheck/main.go
+      - '*.md'
+      - .devcontainer/**/*.md
+      - .github/**/*.md
+      - charts/**/*.md
+      - config/**/*.md
+      - docs/**/*.md
+      - internal/**/*.md
+      - test/**/*.md
+      - api/**/*.go
+      - cmd/**/*.go
+      - hack/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+      - test/**/*.go
     cmds:
       - go run ./hack/doccheck
 
@@ -232,7 +250,9 @@ tasks:
     sources:
       - api/**/*.go
       - cmd/**/*.go
+      - hack/**/*.go
       - internal/**/*.go
+      - pkg/**/*.go
       - test/**/*.go
       - .golangci.yml
       - go.mod
@@ -293,6 +313,21 @@ tasks:
     desc: Count lines of project code with scc (excludes vendored external-sources)
     cmds:
       - '{{.SCC}} --exclude-dir external-sources,vendor,bin,dist {{.CLI_ARGS}}'
+
+  gitops-layouts-baseline:
+    desc: Regenerate the GitOps layout corpus behavioural baseline (test/fixtures/gitops-layouts/support-today.md)
+    # The baseline is generated, never hand-edited, so that a change to the
+    # acceptance boundary shows up in review as a diff of exactly which fixtures
+    # moved and in which direction. See test/fixtures/gitops-layouts/README.md.
+    sources:
+      - test/fixtures/gitops-layouts/**/*
+      - internal/manifestanalyzer/**/*.go
+      - cmd/manifest-analyzer/**/*.go
+      - hack/gitops-layouts-baseline.sh
+    generates:
+      - test/fixtures/gitops-layouts/support-today.md
+    cmds:
+      - bash hack/gitops-layouts-baseline.sh
 
   build:
     desc: Build manager binary

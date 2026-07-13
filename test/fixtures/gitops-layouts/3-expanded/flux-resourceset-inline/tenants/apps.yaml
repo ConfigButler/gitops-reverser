@@ -1,0 +1,62 @@
+# A flux-operator ResourceSet: the whole of a tenant fan-out in ONE document.
+#
+# This is the layout the flux-operator guides present as a replacement for
+# apps/<app>/{base,overlays/tenant1,overlays/tenant2} — i.e. exactly the tree
+# that 2-rendered/kustomize-overlays represents. There, each tenant's Deployment
+# is a real file. Here, NO tenant has a file: the Deployment below is a template
+# inside spec.resources, rendered once per entry in spec.inputs.
+#
+# Note the << >> delimiters — flux-operator uses Go text/template with custom
+# delimiters, not Helm's {{ }} and not Argo's fasttemplate.
+apiVersion: fluxcd.controlplane.io/v1
+kind: ResourceSet
+metadata:
+  name: tenant-apps
+  namespace: flux-system
+spec:
+  inputs:
+    - tenant: tenant1
+      replicas: "1"
+      image: ghcr.io/example-org/frontend:1.4.2
+    - tenant: tenant2
+      replicas: "3"
+      image: ghcr.io/example-org/frontend:1.4.2
+    - tenant: tenant3
+      replicas: "5"
+      image: ghcr.io/example-org/frontend:1.3.9
+  resources:
+    - apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: << inputs.tenant >>
+    - apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: frontend
+        namespace: << inputs.tenant >>
+      spec:
+        replicas: << inputs.replicas >>
+        selector:
+          matchLabels:
+            app: frontend
+        template:
+          metadata:
+            labels:
+              app: frontend
+          spec:
+            containers:
+              - name: frontend
+                image: << inputs.image | quote >>
+                ports:
+                  - containerPort: 8080
+    - apiVersion: v1
+      kind: Service
+      metadata:
+        name: frontend
+        namespace: << inputs.tenant >>
+      spec:
+        selector:
+          app: frontend
+        ports:
+          - port: 80
+            targetPort: 8080

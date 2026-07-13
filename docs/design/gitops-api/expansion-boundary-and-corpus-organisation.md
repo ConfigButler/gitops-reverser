@@ -1,14 +1,36 @@
 # The expansion boundary, and how to organise this material
 
-> Status: proposal; ships no code. Reorganisation + one new axis.
-> Captured: 2026-07-11
+> Status: **partly executed.** The corpus reorganisation and the generated baseline
+> shipped (2026-07-13); the provenance gate remains unbuilt. The catalogue below is
+> no longer inferred — every marker in it has now been **measured against live
+> controllers**, and one of its central assumptions did not survive.
+> Captured: 2026-07-11 · Measured: 2026-07-13
 > Related:
 > [README.md](README.md),
+> [support-contract.md](support-contract.md),
+> [the-layer-above-and-the-expansion-graph.md](the-layer-above-and-the-expansion-graph.md) — **the architecture this axis serves**,
+> [../../facts/expansion-provenance-markers.md](../../facts/expansion-provenance-markers.md) — **the measurements**,
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md),
 > [resource-capability-model.md](resource-capability-model.md),
 > [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md),
 > [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md),
 > the layout corpus at [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/)
+
+## What the measurements changed
+
+This doc was written from upstream source reading. It has since been checked against
+real Flux, flux-operator, and Argo CD, and the results are pinned as a runnable e2e
+spec ([`test/e2e/provenance_markers_e2e_test.go`](../../../test/e2e/provenance_markers_e2e_test.go),
+`task test-e2e-bi-directional`). Three things moved:
+
+1. **The structural claim held, and is now proven** — ApplicationSet generates
+   *pointers into Git*, ResourceSet generates *the KRM itself*. See
+   [the graph](the-layer-above-and-the-expansion-graph.md).
+2. **The `ownerReference` gate is worse than "incomplete" — it catches one producer
+   in five.** Neither HelmRelease-rendered objects nor ResourceSet children carry an
+   `ownerReference` *at all*. Defect 1 below is stronger than it was written.
+3. **`EnumeratedBy` is proven.** `mkdir` + commit, with no CR authored, deployed an
+   app; authoring the CR as well produced exactly the predicted duplicate fight.
 
 ## What this proposes
 
@@ -26,7 +48,7 @@ Three things, in order of importance:
 3. **A topical spine for the corpus and the docs**, so new material has an obvious
    home instead of a new number.
 
-The corpus's 16 fixtures raise 95 open questions. They are not 95 decisions. They
+The corpus's fixtures raise 95 open questions. They are not 95 decisions. They
 compress to five, and the fifth is the one we have never written down.
 
 ## The finding: expansion is a third axis
@@ -80,7 +102,9 @@ produces — which is also what the tools themselves tell users not to do.
 
 ## The expansion catalogue
 
-Verified against the upstream checkouts in `external-sources/`, not from memory.
+Originally verified against the upstream checkouts in `external-sources/`. Since
+2026-07-13 the first three rows are **measured on live objects** — see
+[`expansion-provenance-markers.md`](../../facts/expansion-provenance-markers.md).
 
 ### The structural asymmetry that decides everything
 
@@ -135,43 +159,51 @@ objects that exist only in the cluster:
 
 | Authored document (intent) | Controller | Expansion (live only) | Ownership evidence on the child |
 |---|---|---|---|
-| Argo CD `ApplicationSet` | applicationset-controller | `Application` CRs | `ownerReference` ✅ verified |
-| flux-operator `ResourceSet` | flux-operator | `spec.resources` × inputs | `resourceset.fluxcd.controlplane.io/{name,namespace}` labels + `status.inventory`; **no `ownerReference`** ✅ verified |
-| Flux `HelmRelease` | helm-controller | the chart's rendered objects | labels, not an `ownerReference` — exact keys **unverified**, see below |
-| KRO `ResourceGraphDefinition` + instance | kro | the graph's objects | `kro.run/*` labels (inferred from our own `sanitize` strip list) |
-| Crossplane `Composition` + XR | crossplane | composed resources | `ownerReference` (unverified) |
+| Argo CD `ApplicationSet` | applicationset-controller | `Application` CRs | `ownerReference` — **measured** |
+| flux-operator `ResourceSet` | flux-operator | `spec.resources` × inputs | `resourceset.fluxcd.controlplane.io/{name,namespace}` labels + `status.inventory`; **no `ownerReference`** — **measured** |
+| Flux `HelmRelease` | helm-controller | the chart's rendered objects | `helm.toolkit.fluxcd.io/{name,namespace}` labels + `meta.helm.sh/release-*` annotations; **no `ownerReference`** — **measured** |
+| KRO `ResourceGraphDefinition` + instance | kro | the graph's objects | `kro.run/*` labels (inferred from our own `sanitize` strip list — still unmeasured) |
+| Crossplane `Composition` + XR | crossplane | composed resources | `ownerReference` (still unmeasured) |
 | `ExternalSecret` | external-secrets | a `Secret` | `ownerReference` (per `sealed-secrets-and-external-secrets.md`) |
 | `SealedSecret` | sealed-secrets | a `Secret` | `ownerReference` (per `sealed-secrets-and-external-secrets.md`) |
 
 Consistent rule, at least three different kinds of evidence. Which is exactly the
-problem.
+problem — and the measurements made it worse than this table originally admitted.
 
-Only the first two rows are verified against upstream source in this pass —
-`external-sources/` carries argo-cd and flux-operator, but not helm-controller,
-kro, or crossplane. **Confirming the exact provenance marker for each remaining row
-is a prerequisite for building the gate**, and is the first task this proposal
-implies. The structural claim ("no home file, therefore never mirror it") does not
-depend on which marker it turns out to be; the *implementation* of the gate depends
-on it entirely.
+The top three rows are now **observed on live objects**, not read from source; the
+full evidence, including the field-manager signal this doc never considered, is in
+[`expansion-provenance-markers.md`](../../facts/expansion-provenance-markers.md).
+KRO and Crossplane remain unmeasured and are the obvious next lab.
+
+The structural claim ("no home file, therefore never mirror it") never depended on
+which marker it turned out to be. The *implementation* of the gate depends on it
+entirely — and it turns out the markers are three incompatible vocabularies with one
+trap in the middle of them (defect 1).
 
 ## Three defects this exposes
 
-### 1. The derived-object gate keys on evidence that half these controllers do not emit
+### 1. The derived-object gate keys on evidence that four of these five controllers do not emit
 
 [resource-capability-model.md](resource-capability-model.md) knob 4 and
 [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md)
 both define `derived` as *"Evidence: a controller `ownerReference` on the live
-object."* Against the table above, that test:
+object."*
 
-- **catches** ApplicationSet children (verified: the controller calls
-  `controllerutil.SetControllerReference` on every generated `Application`), and —
-  per the secrets doc — ESO- and sealed-secrets-derived `Secret`s;
-- **misses ResourceSet children entirely** — flux-operator uses owner labels plus a
-  status inventory, never an `ownerReference` (verified: no `SetControllerReference`
-  anywhere in `resourceset_controller.go` or `internal/builder/`);
-- **probably misses HelmRelease-rendered objects**, which are labelled rather than
-  owner-referenced (the exact keys need confirming against helm-controller, which is
-  not checked out).
+**Measured against live controllers, that test catches one producer in five.**
+
+| Producer | Sets an `ownerReference`? |
+|---|---|
+| Argo CD `ApplicationSet` → `Application` | **yes** |
+| Argo CD `Application` → workload | no |
+| Flux `Kustomization` → workload | no |
+| Flux `HelmRelease` → workload | **no** — and this one must be refused |
+| flux-operator `ResourceSet` → anything | **no** — and this one must be refused |
+
+The two rows in bold are the failure. Both are objects with **no home in Git**, both
+are objects the gate exists to refuse, and **neither carries a single
+`ownerReference`**. A gate keyed on one would mirror both — which is precisely the
+outcome it was designed to prevent. (ESO- and sealed-secrets-derived `Secret`s *do*
+carry one, per the secrets doc; they are not the problem.)
 
 An `ownerReference` is neither necessary nor sufficient. And a label alone is not
 sufficient either, which is the subtle half:
@@ -179,6 +211,19 @@ sufficient either, which is the subtle half:
 > A `Deployment` applied by a Flux `Kustomization` also carries a controller's
 > label (`kustomize.toolkit.fluxcd.io/name`). It is **not** derived — it has a
 > home file, and mirroring it is exactly right.
+
+The measurements sharpen that into a trap with a name:
+
+```
+kustomize.toolkit.fluxcd.io/name   → source is a folder of files → MIRROR IT
+helm.toolkit.fluxcd.io/name        → source is a chart           → NEVER MIRROR
+```
+
+**Sibling prefixes. Same vendor. Opposite verdicts.** Any rule of the form "gate on
+`*.toolkit.fluxcd.io/`" gets exactly one of these two backwards, and it is a coin
+flip which. This is the empirical core of the argument that provenance cannot be
+collapsed into a field check: *the field is the same in both rows, and the answer is
+not.*
 
 So the real test is not "did a controller touch this object?" but:
 
@@ -190,20 +235,27 @@ That is a **Tier 2 claim**, not a Tier 0 field check. It belongs in the interpre
 registry the [boundary doc](orchestrator-knowledge-boundary.md) already proposes,
 as a small table keyed by provenance marker:
 
-| Provenance marker on the live object | What the controller's source is | Verdict |
-|---|---|---|
-| `kustomize.toolkit.fluxcd.io/name` | a folder in Git | has a home → **mirror it** |
-| `argocd.argoproj.io/tracking-id` | a folder in Git | has a home → **mirror it** |
-| `resourceset.fluxcd.controlplane.io/name` | a CR's `spec.resources` | no home → **never mirror** |
-| `helm.toolkit.fluxcd.io/name` (keys to confirm) | a chart | no home → **never mirror** |
-| `kro.run/*` | a `ResourceGraphDefinition` | no home → **never mirror** |
-| controller `ownerReference` | another object | no home → **never mirror** |
+| Provenance marker on the live object | Applying manager | What the controller's source is | Verdict |
+|---|---|---|---|
+| `kustomize.toolkit.fluxcd.io/name` | `kustomize-controller` | a folder in Git | has a home → **mirror it** |
+| `argocd.argoproj.io/tracking-id` | `argocd-controller` | a folder in Git | has a home → **mirror it** |
+| `resourceset.fluxcd.controlplane.io/name` | `flux-operator` | a CR's `spec.resources` | no home → **never mirror** |
+| `helm.toolkit.fluxcd.io/name` | `helm-controller` | a chart | no home → **never mirror** |
+| `kro.run/*` | (unmeasured) | a `ResourceGraphDefinition` | no home → **never mirror** |
+| controller `ownerReference` | — | another object | no home → **never mirror** |
 
 Note the first two rows: these objects are *applied by a controller* and must still
 be mirrored, because the controller's source is a folder of files. That is why
 "was a controller involved?" is the wrong question and "does it have a home in
 Git?" is the right one — and why this table cannot be replaced by a single field
 check.
+
+The **applying manager** column is new, and it is the one genuinely encouraging
+result of the measurements: `metadata.managedFields[].manager` is the only channel
+that speaks *one* vocabulary across all five producers, where the labels and
+owner-references speak three. It is not a sole primary key — managers accumulate, so
+it is evidence about who applied a field rather than a unique owner — but it is the
+strongest single signal available and no design here had considered it.
 
 ### 2. We destroy the provenance evidence before anything gates on it
 
@@ -221,19 +273,33 @@ is thrown away by the code whose job is to decide what a document looks like onc
 we have already decided to write it. **The gate must run before the sanitizer, on
 the live object, not on the sanitized document.**
 
-### 3. ResourceSet owner labels would leak into Git today
+### 3. Three families of controller bookkeeping would leak into Git today
 
 `isOperationalLabel` strips `kustomize.toolkit.fluxcd.io/`, `kro.run/`, and
-`applyset.kubernetes.io/`. It does **not** strip
-`resourceset.fluxcd.controlplane.io/{name,namespace}`. Our code contains **zero**
-occurrences of `ResourceSet`, `ApplicationSet`, or `fluxcd.controlplane.io` — we
-know nothing about these kinds.
+`applyset.kubernetes.io/`. Measured against live objects, it does **not** strip any
+of these — and all three were observed on real workloads:
+
+| Key | Stamped by | Observed on |
+|---|---|---|
+| `helm.toolkit.fluxcd.io/{name,namespace}` (labels) | helm-controller | every chart-rendered object |
+| `resourceset.fluxcd.controlplane.io/{name,namespace}` (labels) | flux-operator | every ResourceSet child |
+| `meta.helm.sh/release-{name,namespace}` (annotations) | Helm, via helm-controller | every chart-rendered object |
+
+Our code contains **zero** occurrences of `ResourceSet`, `ApplicationSet`, or
+`fluxcd.controlplane.io` — we know nothing about these kinds.
 
 This is the same family as the Argo CD `tracking-id` hazard already documented in
-`types.go`: controller bookkeeping committed to Git, where it is read back as
-intent. It is currently moot only because the gate above would refuse the object
-outright — but if the gate lands keyed on `ownerReference`, the object is mirrored
-*and* the labels leak.
+`types.go`: controller bookkeeping committed to Git, where it is read back as intent.
+It is currently moot only because the gate above would refuse these objects
+outright — but the gate is unbuilt, and if it lands keyed on `ownerReference`
+(defect 1) the objects are mirrored **and** the labels leak. The two defects
+compound.
+
+Deliberately *not* on that list: `app.kubernetes.io/managed-by: Helm` and
+`helm.sh/chart`. Both are chart-authored labels a user may legitimately want in Git,
+and both are indistinguishable from the same labels set by hand — the same trap as
+Argo CD's `app.kubernetes.io/instance` under `label` tracking. Stripping them would
+delete intent.
 
 ## The construct catalogue — the support statement
 
@@ -308,7 +374,7 @@ applies:
 | ApplicationSet `git.directories`, ResourceSetInputProvider | add the manifests / an input **and author no CR** — the generator picks it up | a **duplicate** `Application` that fights the generator |
 
 The third row is why the corpus keeps asking *"is creating a folder itself a
-deployment operation?"* (fixtures 03, 04). It is. The directory listing is a field
+deployment operation?"* (the two ApplicationSet fixtures). It is. The directory listing is a field
 of desired state.
 
 This needs exactly **one new claim** in the vocabulary the
@@ -348,7 +414,7 @@ template" does not, and never will.
 
 The honest caveat: a fan-in-1 edit into `spec.resources[i]` is an edit to a KRM
 document **nested inside another KRM document**, and the writer has no concept of
-that today. Fixture 15's "KRM never nests KRM" assumption-breaker is exactly this,
+that today. The `mixed-and-hostile` fixture's "KRM never nests KRM" assumption-breaker is exactly this,
 and ResourceSet/KRO/Crossplane make it mainstream rather than hostile.
 
 ## The strategic note worth recording
@@ -365,61 +431,54 @@ mean the ResourceSet answer ("edit the CR, edit its inputs, never its children")
 a **launch-relevant** story rather than a future one, and it is a story we can tell
 well and cheaply, because the CR is one editable document.
 
-## Proposed organisation
+## The organisation — done (2026-07-13)
 
-### The corpus: group by axis, not by number
+### The corpus: grouped by axis, not by number
 
-The fixture numbers `01`–`16` carry no meaning and related shapes sit far apart
-(05 and 14 are both "Git holds a renderer's output"; 03, 04, and 12 are all
-ApplicationSet). The corpus drives no test and nothing depends on the paths, so
-regrouping is cheap **now** and expensive after the first golden report pins a path.
+Shipped. The fixture numbers `01`–`16` carried no meaning and related shapes sat far
+apart. The corpus drives no test and nothing depended on the paths, so the regroup
+was cheap — and is now done, before the first golden report could pin a path.
 
-```text
-test/fixtures/gitops-layouts/
-├── README.md                  # the map: axis → family → fixture
-├── support-today.md           # GENERATED baseline, not pasted (see below)
-├── 1-desired-state/           # the files ARE the objects — first-class target
-│   ├── argocd-plain/                      (01)
-│   └── repo-per-environment/              (11)
-├── 2-rendered/                # the files are INPUTS to an offline renderer
-│   ├── kustomize-overlays/                (05)
-│   ├── helm-chart/                        (06)
-│   ├── helm-environment-values/           (07)
-│   ├── argocd-external-helm/              (08)
-│   └── rendered-manifests/                (14)
-├── 3-expanded/                # a CONTROLLER materialises the objects  ← the new family
-│   ├── argocd-app-of-apps/                (02)
-│   ├── argocd-applicationset-directories/ (03)
-│   ├── argocd-applicationset-files/       (04)
-│   ├── argocd-multicluster-matrix/        (12)
-│   ├── flux-monorepo/                     (09)
-│   ├── flux-helmrelease/                  (10)
-│   ├── flux-resourceset-inline/           NEW — inline KRM + inputs, << >> templating
-│   ├── flux-resourceset-pull-requests/    NEW — ResourceSetInputProvider; inputs not in Git
-│   └── kro-and-crossplane/                NEW — extracted from 15; KRM nested in KRM
-├── 4-machine-written/         # Git is an OUTPUT
-│   ├── flux-image-automation/             (16)
-│   └── argocd-image-updater/              NEW — extracted from 05's .argocd-source dotfile
-├── 5-opaque/                  # the object is not the object
-│   ├── sops-encrypted/                    (13)
-│   ├── sealed-secrets/                    NEW
-│   └── external-secrets/                  NEW
-└── 6-hostile/                 # parser edges
-    └── mixed-and-hostile/                 (15)
-```
+The tree is in [the corpus README](../../../test/fixtures/gitops-layouts/README.md).
+Six families, one per decision the corpus forces, and `ls` now shows the model
+instead of hiding it.
 
-Six families, one per decision the corpus actually forces. A new fixture now has an
-obvious home, and `ls` shows the model instead of hiding it.
+**One correction to the proposal, and the axis is what caught it.** This doc
+originally filed `argocd-app-of-apps` (02) and `flux-monorepo` (09) under
+`3-expanded`. That is wrong, and it is exactly the mistake the provenance axis exists
+to prevent:
 
-If the rename is judged too much churn, the fallback is to keep the flat numbering
-and carry `family` + `axis` in a `fixtures.yaml` manifest — but I would rather pay
-the churn once, while nothing depends on the paths.
+- an app-of-apps' child `Application`s are **files a human wrote and committed**;
+- a Flux `Kustomization` points at a **folder of real files**, and the measurements
+  confirm its applied objects carry `kustomize.toolkit.fluxcd.io/*` — the marker that
+  means *has a home → mirror it*.
 
-**Also**: `support-today.md` should be **generated** by a task target, not pasted.
-That turns the corpus from documentation into a behavioural baseline, so any change
-to the acceptance gate shows up in the pull request as a diff of exactly which
-fixtures moved and in which direction. The boundary doc already argues this; it is
-the single cheapest thing on this list.
+Nothing in either is synthesised. Both involve a controller; neither is expansion.
+They live in `1-desired-state`, and `3-expanded` is reserved for what the name
+says: **a controller materialises objects that have no home file.** The authored CR
+in those fixtures is itself ordinary editable intent; it is its *output* that has
+nowhere to go.
+
+Two of the proposed new fixtures shipped —
+[`flux-resourceset-inline`](../../../test/fixtures/gitops-layouts/3-expanded/flux-resourceset-inline/)
+(nine live objects, zero files) and
+[`flux-resourceset-pull-requests`](../../../test/fixtures/gitops-layouts/3-expanded/flux-resourceset-pull-requests/)
+(the input set is not in the repository at all). `kro-and-crossplane`,
+`argocd-image-updater`, `sealed-secrets`, and `external-secrets` remain wanted, and
+are now named as gaps in the corpus README rather than left as oversights.
+
+### The baseline is generated now
+
+`support-today.md` is generated by `task gitops-layouts-baseline`, not pasted. It
+carries no interpretation: when it disagrees with the support contract, that
+disagreement is the backlog.
+
+It earned its keep immediately. Both new ResourceSet fixtures report **"All reported
+candidates accepted"** — the analyzer sees an ordinary editable plain folder and says
+so. It would onboard, as fully supported, a repository whose nine workloads have no
+files, and one whose object set cannot be determined without a GitHub token. The gap
+was invisible while ResourceSet was absent from the corpus; it is now a line in a
+checked-in baseline.
 
 ### The docs: one new page, one new topic, and stop restating
 
@@ -539,7 +598,7 @@ Read that table and the honest headline is not "no Helm." It is:
 ### The one real gap, and the precedent that closes it
 
 The genuine hole is the **free-standing values file** — `values/production.yaml`,
-`values/common.yaml` — which fixtures 07, 08, and 12 are all built around. It is
+`values/common.yaml` — which `helm-environment-values`, `argocd-external-helm`, and `argocd-multicluster-matrix` are all built around. It is
 not KRM, so nothing hydrates it into the intent cluster, so there is no object for
 a user to edit.
 
@@ -577,17 +636,35 @@ report, not a standard, and it is achievable.
 
 ## Residual open questions
 
-1. **Argo CD's triggered-hydration handshake is still unproven in e2e.** Decision 1
-   guarantees Argo CD will be *available*; it does not prove the `Refresh` +
-   `selfHeal: false` handshake converges the way the Flux one does
-   ([bi-directional.md](../../bi-directional.md) says the same). Still the largest
-   untested assumption under the intent cluster.
+1. ~~**Argo CD's triggered-hydration handshake is still unproven in e2e.**~~
+   **Closed.** The `selfHeal: false` + push-webhook loop, with a shared field changing
+   from *both* sides, is exercised against a real Argo CD in the bi-directional corner
+   ([`argocd_bi_directional_e2e_test.go`](../../../test/e2e/argocd_bi_directional_e2e_test.go)),
+   alongside its `selfHeal: true` foil where the edit is lost. What remains untested is
+   not the handshake but its *target*: whether either engine can drive a **kcp
+   workspace** rather than a real cluster. That is now the largest untested assumption,
+   and it has moved to
+   [the-layer-above-and-the-expansion-graph.md](the-layer-above-and-the-expansion-graph.md).
 2. **What exactly makes a chart a chart?** Decision 4 says "recognisable folder
-   structure." `Chart.yaml` + `templates/` is the obvious test, but fixture 15
+   structure." `Chart.yaml` + `templates/` is the obvious test, but `mixed-and-hostile`
    plants a `templates/` directory with **no** `Chart.yaml` and unparseable content
    precisely to break it. Which signal is load-bearing, and what happens to a chart
    vendored under `charts/` inside another chart?
 3. **Does the provenance gate run on the live object or the sanitized document?**
-   The evidence (`ownerReferences`, `kro.run/` labels) is destroyed by `sanitize`,
-   so the gate must run first — but nothing in the pipeline is structured that way
-   today. This is the one decision that blocks implementation.
+   Still the one decision that blocks implementation, and the measurements make it
+   sharper: `sanitize` destroys `ownerReferences` and `kro.run/` labels, and the gate's
+   *best* signal — the applying field manager — lives in `metadata.managedFields`,
+   which is stripped even earlier and is not in the sanitized document at all. **The
+   gate must run on the live object, before the sanitizer**, and nothing in the
+   pipeline is structured that way today.
+4. **Is the gate worth building at all?** New, and it follows from the architecture: in
+   a kcp intent workspace there are no expansion controllers, so nothing derives
+   anything and the gate is answered by the topology. The gate is mandatory only for
+   the *production-cluster* topology, which decision 1 lists as supported. Whether that
+   topology is a launch commitment or an eventual one is what prices this entire
+   workstream — see
+   [the-layer-above-and-the-expansion-graph.md](the-layer-above-and-the-expansion-graph.md).
+5. **KRO and Crossplane are still unmeasured.** Their markers are inferred (from our own
+   strip list, in KRO's case). Given that three of the five measured producers
+   contradicted what was assumed about them, inference is not good enough here. They are
+   the obvious next lab, and the corpus has no fixture for either.

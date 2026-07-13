@@ -62,7 +62,10 @@ misled. Full list in [`spec/README.md`](spec/README.md); the ones that carry a
 existing GitOps folders through the Kubernetes API. Start at its
 [README](design/gitops-api/README.md) for the feature ladder (F1–F8), then
 [`support-contract.md`](design/gitops-api/support-contract.md) — **the single page that
-says what we support and refuse**.
+says what we support and refuse** — and
+[`the-layer-above-and-the-expansion-graph.md`](design/gitops-api/the-layer-above-and-the-expansion-graph.md),
+which draws the architecture the product is heading for (kcp + Flux + Argo CD above
+this operator) and names the one question every layer must agree on.
 
 Nine other open items:
 

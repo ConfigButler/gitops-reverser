@@ -172,10 +172,41 @@ dedicated CI leg:
 | Piece | Value |
 | --- | --- |
 | Category label | `bi-directional` (already exists on the Flux spec) |
-| Sub-labels | `flux`, `argocd` |
+| Sub-labels | `flux`, `argocd`, `provenance` |
 | Env gate | `E2E_ENABLE_BI_DIRECTIONAL` |
 | Task | `task test-e2e-bi-directional` |
 | CI leg | `bi-directional` |
+
+### The third spec: `provenance_markers_e2e_test.go`
+
+The corner hosts a third spec, and it is the reason the corner is worth more than the
+two bi-directional ones. Because this is the only cluster carrying **Flux,
+flux-operator, and Argo CD at once**, it is the only place that can ask what each
+GitOps producer stamps on the objects it creates — and therefore the only place that
+can answer *"does this live object have a home in Git?"* empirically rather than by
+reading upstream source.
+
+[`provenance_markers_e2e_test.go`](../../test/e2e/provenance_markers_e2e_test.go)
+drives five producers off **one Gitea repo and one commit**, and asserts the marker,
+the (absent) `ownerReference`, and the applying field manager on each result:
+
+| Producer | Marker | Source | Home in Git? |
+| --- | --- | --- | --- |
+| Flux `Kustomization` | `kustomize.toolkit.fluxcd.io/*` | a folder | **yes** |
+| Argo CD `Application` | `argocd.argoproj.io/tracking-id` | a folder | **yes** |
+| Flux `HelmRelease` | `helm.toolkit.fluxcd.io/*` | a chart | no |
+| flux-operator `ResourceSet` | `resourceset.fluxcd.controlplane.io/*` | a template in the CR | no |
+| Argo CD `ApplicationSet` | **`ownerReference`** | a generator | no |
+
+It found that the `derived`-object gate the design docs specify — *"evidence: a
+controller `ownerReference`"* — catches **one of those five**. It drives no
+`GitTarget` and no `WatchRule`: the reverser is not under test, the ecosystem is. The
+results are written up in
+[`../facts/expansion-provenance-markers.md`](../facts/expansion-provenance-markers.md).
+
+It shares the `argocd` namespace with the Argo CD spec but never patches
+`argocd-secret` and owns its own repo, namespace, and resource names, so it runs in
+parallel with both. `BI_DIRECTIONAL_GINKGO_PROCS` is therefore `3`.
 
 Filter changes so the default suite stops paying for it:
 

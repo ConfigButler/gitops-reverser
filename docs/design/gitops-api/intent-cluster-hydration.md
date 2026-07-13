@@ -143,7 +143,7 @@ Two of its rows drive everything below:
 
 Flux never reaches that base64 error, because kustomize-controller checks first.
 Run against real Flux (kustomize-controller, `spec.decryption` unset, the
-[fixture 13](../../../test/fixtures/gitops-layouts/13-sops-encrypted/) Secret plus
+[fixture 13](../../../test/fixtures/gitops-layouts/5-opaque/sops-encrypted/) Secret plus
 an ordinary `ConfigMap` in one folder):
 
 ```
@@ -335,10 +335,10 @@ up. It sits naturally beside `unsupportedConstructs`, which already answers the
 neighbouring question "what does this repo use that we do not manage?"
 
 For the layout corpus, `requiredCRDs` would report `HelmRelease` and
-`Kustomization` for [`09-flux-monorepo`](../../../test/fixtures/gitops-layouts/09-flux-monorepo/),
+`Kustomization` for [`09-flux-monorepo`](../../../test/fixtures/gitops-layouts/1-desired-state/flux-monorepo/),
 `Application` for the Argo CD fixtures, and `Composition` plus
 `ResourceGraphDefinition` for
-[`15-mixed-and-hostile`](../../../test/fixtures/gitops-layouts/15-mixed-and-hostile/).
+[`15-mixed-and-hostile`](../../../test/fixtures/gitops-layouts/6-hostile/mixed-and-hostile/).
 
 ## Open questions
 

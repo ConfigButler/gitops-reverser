@@ -1,0 +1,20 @@
+apiVersion: fluxcd.controlplane.io/v1
+kind: ResourceSet
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  inputs:
+    - tenant: {{ .TenantOne }}
+    - tenant: {{ .TenantTwo }}
+  resources:
+    # Arbitrary KRM embedded in the CR body and rendered once per input.
+    # There is no `path` and no `sourceRef`: nothing here has a home file.
+    # flux-operator templates with Go text/template and << >> delimiters.
+    - apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: << inputs.tenant >>
+        namespace: {{ .TargetNamespace }}
+      data:
+        producer: flux-operator

@@ -7,7 +7,7 @@
 > [README.md](README.md),
 > [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md),
 > [f8-repo-discovery-and-onboarding-scan.md](f8-repo-discovery-and-onboarding-scan.md),
-> fixture [`13-sops-encrypted`](../../../test/fixtures/gitops-layouts/13-sops-encrypted/)
+> fixture [`13-sops-encrypted`](../../../test/fixtures/gitops-layouts/5-opaque/sops-encrypted/)
 
 ## The idea
 

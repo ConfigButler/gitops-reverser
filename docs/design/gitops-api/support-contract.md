@@ -124,6 +124,8 @@ we can store — and is argued in
 
 | Doc | What it settles |
 |---|---|
+| [the-layer-above-and-the-expansion-graph.md](the-layer-above-and-the-expansion-graph.md) | **the architecture: kcp + Flux + Argo CD above this operator, and the graph these verdicts are a property of** |
+| [`../../facts/expansion-provenance-markers.md`](../../facts/expansion-provenance-markers.md) | **the measured evidence each producer leaves behind** — and why the `ownerReference` gate catches one producer in five |
 | [README.md](README.md) | the feature ladder F1–F8, and the launch path |
 | [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md) | the kustomization field taxonomy and the supported-layout allowlist |
 | [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md) | **the write boundary (L1/L2) — the one home of fan-in = 1** |

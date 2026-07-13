@@ -1,0 +1,57 @@
+# Ephemeral preview environments, one per OPEN pull request.
+#
+# The load-bearing fact: the input set is NOT in this repository. It is queried
+# live from the Git host's API by the ResourceSetInputProvider below. The set of
+# objects that *should* exist depends on which pull requests happen to be open
+# right now. No scan of these files can ever enumerate it — not because the scan
+# is weak, but because the answer is not here.
+apiVersion: fluxcd.controlplane.io/v1
+kind: ResourceSetInputProvider
+metadata:
+  name: frontend-pull-requests
+  namespace: flux-system
+spec:
+  type: GitHubPullRequest
+  url: https://github.com/example-org/frontend
+  secretRef:
+    name: github-token          # a real token; the provider calls the GitHub API
+  filter:
+    labels:
+      - preview
+  defaultValues:
+    role: preview
+---
+apiVersion: fluxcd.controlplane.io/v1
+kind: ResourceSet
+metadata:
+  name: frontend-previews
+  namespace: flux-system
+spec:
+  inputsFrom:
+    - apiVersion: fluxcd.controlplane.io/v1
+      kind: ResourceSetInputProvider
+      name: frontend-pull-requests
+  resources:
+    - apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: preview-<< inputs.id >>
+    - apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: frontend
+        namespace: preview-<< inputs.id >>
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: frontend
+        template:
+          metadata:
+            labels:
+              app: frontend
+          spec:
+            containers:
+              - name: frontend
+                # the image tag is the PR's head commit — also not in this repo
+                image: ghcr.io/example-org/frontend:<< inputs.sha >>

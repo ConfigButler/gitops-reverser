@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .ArgoNamespace }}
+spec:
+  # goTemplate is load-bearing. Without it the template engine is `fasttemplate`,
+  # which leaves Go-template syntax literal, so every element renders the SAME
+  # name and Argo rejects the set with "contains applications with duplicate name".
+  goTemplate: true
+  generators:
+    - list:
+        elements:
+          - app: {{ .AppSuffix }}
+  template:
+    metadata:
+      name: '{{ "{{" }}.app{{ "}}" }}'
+    spec:
+      project: default
+      source:
+        repoURL: {{ .RepoURL }}
+        targetRevision: {{ .Branch }}
+        # The generated Application points at a REAL PATH IN GIT. That is the
+        # structural asymmetry with a ResourceSet: the Application CR itself has
+        # no home file, but the workloads beneath it do.
+        path: {{ .Path }}
+        directory:
+          recurse: true
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: {{ .DestinationNamespace }}
+      # Deliberately no syncPolicy: this Application must never sync. The spec
+      # asserts only what the applicationset-controller stamps on the CR it
+      # generates; syncing it would fight the standalone Application above over
+      # the same objects.
