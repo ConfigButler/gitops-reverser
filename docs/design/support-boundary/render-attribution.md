@@ -8,43 +8,26 @@
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) — what shipped ·
 > [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)
 
-> **Status: §7 is done — stages 1 through 3 are shipped.** `renderRootWith` is the
-> counterfactual primitive; verification is a real re-render (`VerifyBatchRenders`), and
-> `simulateImageRender` is gone; attribution is the dye (`dye.go`,
-> `overrides_attribution.go`), and `renderImage`, `imageSuppliers` and `isReplicaKind` are
-> gone with **B1, B2 and B3**. The 12 `TestSplitDesired_*` tests are rebuilt against real
-> kustomize fixtures, and the corpus differential is now the stronger claim that **an in-sync
-> folder projects to a complete no-op**. Stage 4 (chain → set) is not done.
+> **Status: shipped (§7 stages 1-3).** `renderRootWith` is the counterfactual primitive;
+> verification is a real re-render (`VerifyBatchRenders`); attribution is the dye (`dye.go`,
+> `overrides_attribution.go`). `renderImage`, `imageSuppliers`, `simulateImageRender` and
+> `isReplicaKind` are deleted, and **B1, B2 and B3** with them. Stage 4 (chain to set) is not
+> done.
 >
-> Two things the building corrected, both recorded below where they belong:
+> Building it corrected two things, both marked below: **B4 is worse than recorded** (a
+> rendered object is not a valid `unstructured` at all; `DeepCopyJSON` *panics* on the Go
+> `int` kustomize returns), and **the rename-chain guard must use kustomize's compiled regex,
+> not the string equality §3 proposed** (an entry `name:` is a regex, so `mirror/ap.` matches
+> `mirror/app` without equalling it).
 >
-> - **B4 is worse than stated.** A rendered object is not merely awkward to read a number off
->   — it is **not a valid `unstructured` at all**. `DeepCopyJSON` **panics** on one (*"cannot
->   deep copy int"*), so a rendered object must be normalised through JSON before any
->   apimachinery helper touches it.
-> - **The rename-chain guard must use kustomize's regex, not string equality** (§3 proposed
->   equality). An entry's `name:` is a regex, so `mirror/ap.` matches `mirror/app` without
->   equalling it, and an equality guard would dye the name, kill the next entry, and
->   mis-attribute the tag.
->
-> §5's verdict — *attribution may be heuristic, verification may not* — survived contact
-> intact, and it is what made the rest safe to delete. But see
-> *patching-kustomize.md* (ConfigButler/kustomize-tracer, `plans/`): the dye is now the **fallback** for an
-> unpatched build, not the destination.
+> §5's verdict, *attribution may be heuristic, verification may not*, is what made the rest
+> safe to delete. But see *patching-kustomize.md* (ConfigButler/kustomize-tracer, `plans/`):
+> the dye is now the **fallback** for an unpatched build, not the destination.
 
-The workstream that replaced our hand-written kustomize with the real one has one step
-left, and it is the load-bearing one: **deleting the re-implemented transformers the
-write path still uses to decide which file an edit belongs in** —
-[`renderImage`, `imageSuppliers`, `simulateImageRender`, `isReplicaKind`](../../../internal/manifestanalyzer/overrides_projection.go),
-~400 lines.
-
-That needs an answer to a question the renderer does not answer. This document states
-the approach we had settled on, a second approach that is better, and a third that keeps
-getting proposed and cannot work — each **measured against kustomize v0.21.1**, not
-argued from its source.
-
-Everything marked *measured* was run. §6 is the bug ledger the measuring produced; it is
-longer than expected, and one of its entries blocks the PR that is currently open.
+This document is the record of how attribution was decided: the approach we had settled on,
+a second that is better, and a third that keeps getting proposed and cannot work. Each is
+**measured against kustomize v0.21.1**, not argued from its source. §6 is the bug ledger the
+measuring produced.
 
 ---
 
@@ -134,11 +117,11 @@ collide.** Attribution by "what changed" is blind to a writer whose write is inv
 because something else wrote the same bytes — and "the overlay pins the tag the base
 already has" is not a corner case, it is the steady state of a GitOps repo.
 
-Today's [`renderImage`](../../../internal/manifestanalyzer/overrides_projection.go) gets
-both right, because it attributes by *position in the chain* (last matching entry wins) and
-never compares values. So Approach A is not merely imperfect — **shipping it would regress
-behaviour that works today**, in exchange for deleting the code that makes it work. Worth
-saying plainly, because the design was settled before the measurement contradicted it.
+The `renderImage` this replaced got both right, because it attributed by *position in the
+chain* (last matching entry wins) and never compared values. So Approach A was not merely
+imperfect: **shipping it would have regressed behaviour that already worked**, in exchange
+for deleting the code that made it work. Worth saying plainly, because the design was settled
+before the measurement contradicted it.
 
 ---
 
@@ -251,9 +234,9 @@ this field"**. A `patches:` entry (or a `replacements:` block) that clobbers the
 field *erases the dye*. No dye, and the value differs from source → an unmodelled owner
 exists → refuse, don't route.
 
-Today's code cannot make that distinction. `simulateImageRender` "verifies" the inversion
-against a simulation that **shares its own blind spot**, so a value owned by a patch is
-confidently written into a file that does not own it. That is invisible only because
+The code this replaced could not make that distinction. `simulateImageRender` "verified" the
+inversion against a simulation that **shared its own blind spot**, so a value owned by a patch
+was confidently written into a file that does not own it. That is invisible only because
 `patches:` currently refuses the whole folder — and
 [render-root-scoping.md §6](render-root-scoping.md) is a plan to **stop doing that**:
 tolerate patches as read-only context, refuse per *field* instead of per folder. Per-field
