@@ -104,6 +104,21 @@ type imageSuppliers struct {
 // renderImage runs the override chain over a source image, kustomize-style:
 // each entry whose name matches the image's CURRENT name rewrites the
 // components it declares, in chain order.
+//
+// Tag and digest are MUTUALLY EXCLUSIVE, and this is the part that is easy to get
+// wrong — we did. Quoting kustomize's own image transformer
+// (filters/imagetag/updater.go, SetImageValue):
+//
+//	// overriding tag or digest will replace both original tag and digest values
+//	case NewTag != "" && Digest != "": tag = NewTag; digest = Digest
+//	case NewTag != "":                 tag = NewTag; digest = ""
+//	case Digest != "":                 tag = "";     digest = Digest
+//
+// Setting the two components independently makes us believe a folder renders to
+// `web:1.0@sha256:abc` where kustomize renders `web@sha256:abc`. The projection
+// then reads the difference as a user removing the tag and rewrites the tag out of
+// the source file — silent corruption, on every reconcile. Pinned against a real
+// `kustomize build` by TestRenderImage_MatchesKustomizeOnTheHardCases.
 func renderImage(src imageRef, entries []ImageOverride) (imageRef, imageSuppliers) {
 	cur := src
 	var sup imageSuppliers
@@ -116,13 +131,16 @@ func renderImage(src imageRef, entries []ImageOverride) (imageRef, imageSupplier
 			cur.name = e.NewName
 			sup.name = e
 		}
-		if e.HasNewTag {
-			cur.tag = e.NewTag
-			sup.tag = e
-		}
-		if e.HasDigest {
-			cur.digest = e.Digest
-			sup.digest = e
+		switch {
+		case e.HasNewTag && e.HasDigest:
+			cur.tag, cur.digest = e.NewTag, e.Digest
+			sup.tag, sup.digest = e, e
+		case e.HasNewTag:
+			cur.tag, cur.digest = e.NewTag, ""
+			sup.tag, sup.digest = e, e
+		case e.HasDigest:
+			cur.tag, cur.digest = "", e.Digest
+			sup.tag, sup.digest = e, e
 		}
 	}
 	return cur, sup
@@ -277,27 +295,59 @@ func invertImage(slot containerSlot, src string, entries []ImageOverride) (slotP
 		}
 	}
 	if live.tag != rendered.tag {
-		switch {
-		case sup.tag == nil:
-			newSrc.tag = live.tag
-		case live.tag == "":
-			return plan, false // tag removal cannot be expressed on an entry
-		default:
-			route(sup.tag, "newTag", live.tag)
+		if !routeComponent(sup.tag, declaresNewTag, live.tag,
+			func(v string) { newSrc.tag = v },
+			func(e *ImageOverride, v string) { route(e, "newTag", v) }) {
+			return plan, false
 		}
 	}
 	if live.digest != rendered.digest {
-		switch {
-		case sup.digest == nil:
-			newSrc.digest = live.digest
-		case live.digest == "":
-			return plan, false // digest removal cannot be expressed on an entry
-		default:
-			route(sup.digest, "digest", live.digest)
+		if !routeComponent(sup.digest, declaresDigest, live.digest,
+			func(v string) { newSrc.digest = v },
+			func(e *ImageOverride, v string) { route(e, "digest", v) }) {
+			return plan, false
 		}
 	}
 	plan.fileImage = newSrc.String()
 	return plan, true
+}
+
+// declaresNewTag / declaresDigest report whether an entry actually carries the key
+// the writer would have to set. An entry can GOVERN a component without declaring
+// it: a digest entry clears the tag, and a newTag entry clears the digest.
+func declaresNewTag(e *ImageOverride) bool { return e.HasNewTag }
+func declaresDigest(e *ImageOverride) bool { return e.HasDigest }
+
+// routeComponent decides where one changed image component (tag or digest) goes:
+// into the source file when no entry supplies it, onto the supplying entry when
+// that entry declares the key, or nowhere at all. It reports false when the change
+// is unroutable, which abandons routing for the whole object (write-through).
+//
+// The two unroutable cases are worth naming:
+//
+//   - a REMOVAL of a component an entry supplies — there is no way to say "no tag"
+//     on an entry that sets one; and
+//   - a change to a component an entry governs but does not declare — a digest entry
+//     clears the tag, so setting a tag has no key to land in, and writing it into the
+//     source file would be undone by the very next render.
+func routeComponent(
+	sup *ImageOverride,
+	declares func(*ImageOverride) bool,
+	live string,
+	setSource func(string),
+	route func(*ImageOverride, string),
+) bool {
+	switch {
+	case sup == nil:
+		setSource(live) // the source file supplies it; the change flows into the file
+	case live == "":
+		return false
+	case !declares(sup):
+		return false
+	default:
+		route(sup, live)
+	}
+	return true
 }
 
 // collectConsistentEdits dedupes the per-container edits, refusing when two

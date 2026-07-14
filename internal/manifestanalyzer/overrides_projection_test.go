@@ -149,9 +149,15 @@ func TestSplitDesired_NameChangeRoutedToNewName(t *testing.T) {
 
 // TestSplitDesired_DigestRoutedToEntry: a live digest change whose supplier is a
 // digest entry updates the entry; tag and name keep their source form.
+//
+// Note the live image carries NO tag. A digest entry replaces the tag as well as
+// the digest (kustomize: "overriding tag or digest will replace both original tag
+// and digest values"), so `app@sha256:...` is the only thing this folder can
+// render. This test used to assert `app:1.0.0@sha256:ccc` — a live state kustomize
+// cannot produce — because renderImage set the two components independently.
 func TestSplitDesired_DigestRoutedToEntry(t *testing.T) {
 	git := deploymentObj("app:1.0.0", nil)
-	desired := desiredOf(deploymentObj("app:1.0.0@sha256:ccc", nil))
+	desired := desiredOf(deploymentObj("app@sha256:ccc", nil))
 	ov := &KustomizeOverrides{Images: []ImageOverride{
 		imgEntry("app", map[string]string{"digest": "sha256:bbb"}),
 	}}
@@ -166,6 +172,33 @@ func TestSplitDesired_DigestRoutedToEntry(t *testing.T) {
 			EntryName: "app", Field: "digest", Value: "sha256:ccc",
 		}) {
 		t.Fatalf("want one digest edit to sha256:ccc, got %+v", edits)
+	}
+}
+
+// TestSplitDesired_DigestEntryDoesNotStripTheSourceTag pins the corruption that a
+// hand-written image transformer caused, so it cannot come back.
+//
+// Source `app:1.0.0`, an entry supplying only a digest. kustomize renders
+// `app@sha256:bbb` — the digest REPLACES the tag. We used to believe the render was
+// `app:1.0.0@sha256:bbb`, so on seeing the real live object (no tag) the projection
+// concluded the user had removed the tag and rewrote `app:1.0.0` to `app` in the
+// source file. On every reconcile, silently.
+//
+// The source document must come back untouched.
+func TestSplitDesired_DigestEntryDoesNotStripTheSourceTag(t *testing.T) {
+	git := deploymentObj("app:1.0.0", nil)
+	// What the folder actually renders to, mirrored back unchanged by the user.
+	desired := desiredOf(deploymentObj("app@sha256:bbb", nil))
+	ov := &KustomizeOverrides{Images: []ImageOverride{
+		imgEntry("app", map[string]string{"digest": "sha256:bbb"}),
+	}}
+
+	out, edits := SplitDesiredForOverrides(git, desired, ov)
+	if got := desiredImage(t, out); got != "app:1.0.0" {
+		t.Errorf("source image = %q, want it untouched at app:1.0.0 — the tag must not be stripped", got)
+	}
+	if len(edits) != 0 {
+		t.Errorf("live matches the render, so nothing should be routed; got %+v", edits)
 	}
 }
 
