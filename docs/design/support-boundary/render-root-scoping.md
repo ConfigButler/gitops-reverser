@@ -291,6 +291,29 @@ Three things the corpus makes visible that no design doc had said out loud:
 
 ## 6. Why a patch still blocks the folder — and why it should not
 
+> **Shipped, and the corpus said something the plan did not expect.**
+>
+> A `patches:` entry naming a strategic-merge document by `path:` is now **tolerated**: the folder
+> is accepted, the render is mirrored, the patch file is retained as read-only build context (never
+> managed, never mirrored over, never swept), and nothing is routed into it. Inline patches,
+> JSON6902, and paths outside the tree are refused **by name**. `images:`/`replicas:` edit-through
+> works in a patched folder, which is the point: a patch on a replica count has nothing to do with
+> an image tag, and refusing the folder refused both.
+>
+> **It accepted zero new candidates in the corpus, and that is the finding.** Every patched overlay
+> in the corpus *also* reads a base from outside its own folder, so `patches` was **masking the real
+> refusal**. `flux-monorepo/apps/{staging,production}` now report
+> `overlay-fan-out-unsupported` — the verdict §5 records as *never having been observed*, because
+> `refused-structural` always fired first and hid it. The single blocker on the corpus's most
+> tractable layout is therefore §4 (render-root scoping), not patches.
+>
+> The prerequisite named at the end of this section turned out to be a different one, and a
+> load-bearing one: **the writer was mirroring the build's own output back into the build's input**
+> (§2). A patched base would have absorbed one environment's values, and *no re-render can catch
+> that* — the patch re-imposes its value, so the render comes out identical either way. That is
+> fixed first ([`sourceForm`](../../../internal/manifestanalyzer/source_form.go)), and tolerating
+> patches without it would have been silent corruption.
+
 Patch authoring is deferred, and this document does not un-defer it. Writing a
 strategic-merge patch means modelling merge keys, `$patch` directives, and CRD fallback
 behaviour, and it is priced against the tier-2 metrics for a reason.

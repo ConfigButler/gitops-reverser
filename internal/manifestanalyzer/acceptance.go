@@ -87,9 +87,14 @@ const (
 	IssueOutOfScope IssueKind = "out-of-scope"
 	// IssueUnsupportedKustomize marks a retained kustomization.yaml that uses a feature
 	// the contextual-namespace writer cannot map back to editable source documents
-	// (generators / patches / components / helm / replacements / transformers /
-	// name(pre|suf)fix / remote bases). The folder is refused rather than written,
-	// because the operator cannot take responsibility for content produced this way.
+	// (generators / components / helm / replacements / transformers / name(pre|suf)fix /
+	// remote bases). The folder is refused rather than written, because the operator cannot
+	// take responsibility for content produced this way.
+	//
+	// `patches:` is NOT on that list any more: a strategic-merge patch named by path is
+	// tolerated as read-only build context (the render is mirrored, the patch file is never
+	// managed, and nothing is routed into it). The shapes we cannot read still refuse by name —
+	// an inline patch, a JSON6902 op list, a path outside the tree.
 	IssueUnsupportedKustomize IssueKind = "unsupported-kustomize"
 	// IssueForeignFile marks a non-YAML regular file under spec.path that matches no
 	// recognized role — the operator-exclusive subtree refuses content it cannot manage
@@ -276,7 +281,8 @@ func unsupportedKustomizeRefusals(store *ManifestStore) []AcceptanceIssue {
 			Path:          rd.Location.Path,
 			DocumentIndex: rd.Location.DocumentIndex,
 			Message: "kustomization " + rd.Location.Path + " uses an unsupported feature " +
-				"(generators/patches/components/helm/replacements/transformers/namePrefix/nameSuffix/remote bases), " +
+				"(generators/components/helm/replacements/transformers/namePrefix/nameSuffix/remote bases, " +
+				"or a patch that is not a strategic-merge document named by path), " +
 				"declares malformed images/replicas overrides, or is a render root kustomize cannot build; " +
 				"the operator cannot map it back to editable source documents and will not write into this folder " +
 				"(a kustomize-build-failed diagnostic on this path carries the build error)",

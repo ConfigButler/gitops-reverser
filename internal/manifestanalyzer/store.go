@@ -400,23 +400,13 @@ func buildStore(
 		Kustomizations: kustomizationInfos(kusts),
 	}
 
-	// inv.Records are exactly the KRM documents (editable or not), in stable scan
-	// order (path, then document index), so each managed file's Documents slice is
-	// built in document order and first-occurrence-wins is deterministic.
-	hasNamedRecord := map[string]bool{}
-	for _, r := range inv.Records {
-		if allowlist.Allows(r.Location.Path) {
-			// A named KRM record inside an allowlisted build-directive file (a managed
-			// resource hiding in kustomization.yaml). We must not silently un-manage it,
-			// so retain it WITH its identity for the mixed-file refusal; never materialise.
-			hasNamedRecord[r.Location.Path] = true
-			store.Retained = append(store.Retained, RetainedDocument{
-				Location: r.Location, Identity: r.Identity, GVK: gvkOf(r.Identity),
-			})
-			continue
-		}
-		store.materialize(ctx, r, lookup, nsAssignments, ovAssignments)
-	}
+	hasNamedRecord := store.materializeRecords(ctx, inv.Records, materializeInputs{
+		lookup:        lookup,
+		allowlist:     allowlist,
+		patchFiles:    patchFilesOf(kusts),
+		nsAssignments: nsAssignments,
+		ovAssignments: ovAssignments,
+	})
 
 	// Record every allowlisted file with no named record as a whole-file retention,
 	// so it is known to acceptance (and shown) but never becomes a FileModel.
@@ -428,10 +418,11 @@ func buildStore(
 			// the only honest answer — and a silent pass would disarm the
 			// write-fan-in guard, which needs the render to see the shared file.
 			_, buildFailed := renderFailures[filepathToSlash(f.Path)]
+			doc := kusts[slashDir(f.Path)]
 			store.Retained = append(store.Retained, RetainedDocument{
 				Location: manifestedit.Location{Path: f.Path},
 				Unsupported: isKustomizationFile(f.Path) &&
-					(kustomizationUsesUnsupportedFeature(f.Content) || buildFailed),
+					((doc != nil && doc.unsupported) || buildFailed),
 			})
 		}
 	}
@@ -493,6 +484,63 @@ func BuildStoreFromScan(
 // identity to its RecordRef.
 func (s *ManifestStore) DocumentLocations() map[*DocumentModel]RecordRef {
 	return documentLocations(s)
+}
+
+// materializeInputs are the scan-wide facts every record is judged against.
+type materializeInputs struct {
+	lookup    typeset.Lookup
+	allowlist Allowlist
+	// patchFiles are the files some kustomization reads as a patch.
+	patchFiles    map[string]struct{}
+	nsAssignments map[string]namespaceAssignment
+	ovAssignments map[chainKey]*overrideAssignment
+}
+
+// materializeRecords sorts every KRM document into one of three fates — retained as a build
+// directive, retained as a patch, or materialised as a managed manifest — and returns the files
+// that were retained rather than managed.
+//
+// records arrive in stable scan order (path, then document index), so each managed file's
+// Documents slice is built in document order and first-occurrence-wins is deterministic.
+//
+// A PATCH FILE IS A BUILD INPUT, NOT A MANIFEST, and nothing else in the store would know that:
+// a strategic-merge patch IS a KRM document. Materialised, it would be indexed as a manifest,
+// matched to a live object, mirrored over (a whole Deployment written where a sparse patch used to
+// be), or swept as an orphan when nothing in the cluster answers to it. It is retained exactly as
+// kustomization.yaml is: known, never managed.
+func (s *ManifestStore) materializeRecords(
+	ctx context.Context,
+	records []manifestedit.DocumentRecord,
+	in materializeInputs,
+) map[string]bool {
+	retained := map[string]bool{}
+	for _, r := range records {
+		switch {
+		case in.allowlist.Allows(r.Location.Path):
+			// A named KRM record inside an allowlisted build-directive file (a managed
+			// resource hiding in kustomization.yaml). We must not silently un-manage it,
+			// so retain it WITH its identity for the mixed-file refusal; never materialise.
+			retained[r.Location.Path] = true
+			s.Retained = append(s.Retained, RetainedDocument{
+				Location: r.Location, Identity: r.Identity, GVK: gvkOf(r.Identity),
+			})
+		case isPatchFile(in.patchFiles, r.Location.Path):
+			// A patch's identity is NOT retained, and that is the difference from a resource
+			// hiding in a kustomization: this document is not a resource that must be refused,
+			// it is a patch doing exactly its job. Naming it would refuse the folder as a mixed
+			// file for holding precisely what it is supposed to hold. One retention per file,
+			// however many documents the patch carries.
+			if !retained[r.Location.Path] {
+				s.Retained = append(s.Retained, RetainedDocument{
+					Location: manifestedit.Location{Path: r.Location.Path},
+				})
+			}
+			retained[r.Location.Path] = true
+		default:
+			s.materialize(ctx, r, in.lookup, in.nsAssignments, in.ovAssignments)
+		}
+	}
+	return retained
 }
 
 // materialize adds one managed KRM record to the store: its FileModel, the GVK
@@ -687,12 +735,18 @@ func kustomizationInfos(kusts map[string]*kustomizationDoc) map[string]*Kustomiz
 // a namespace source). See the "Kustomize subset proposal" in
 // docs/spec/contextual-namespace-and-kustomize-folder-editing.md.
 type kustomizationDoc struct {
-	path        string            // kustomization file path (slash)
-	namespace   string            // the namespace: transformer value
-	resources   []string          // resources + bases entries, raw and relative to the file's dir
-	images      []ImageOverride   // parsed images: entries, in listed order
-	replicas    []ReplicaOverride // parsed replicas: entries, in listed order
-	unsupported bool              // uses generators/patches/components/remote bases/name(pre|suf)fix/...
+	path      string            // kustomization file path (slash)
+	namespace string            // the namespace: transformer value
+	resources []string          // resources + bases entries, raw and relative to the file's dir
+	images    []ImageOverride   // parsed images: entries, in listed order
+	replicas  []ReplicaOverride // parsed replicas: entries, in listed order
+	// patches are the files this kustomization reads as strategic-merge patches, resolved against
+	// the scan root. They are BUILD INPUTS, not resources: retained outside the managed model, so
+	// no live object is ever mirrored over one and no sweep ever deletes one.
+	patches []string
+	// features names every unmodelled feature, sorted — the refusal, in the user's own words.
+	features    []string
+	unsupported bool // uses generators/components/remote bases/name(pre|suf)fix/an unauthorable patch/...
 }
 
 // kustomizeNamespaceAssignments walks each supported kustomization as a render root and
@@ -859,6 +913,12 @@ func slashDir(filePath string) string {
 
 func filepathToSlash(filePath string) string {
 	return strings.ReplaceAll(filePath, "\\", "/")
+}
+
+// isPatchFile reports whether a scanned file is read by some kustomization as a patch.
+func isPatchFile(patchFiles map[string]struct{}, filePath string) bool {
+	_, found := patchFiles[filepathToSlash(filePath)]
+	return found
 }
 
 func isKustomizationFile(filePath string) bool {
