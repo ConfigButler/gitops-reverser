@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.35.0...gitops-reverser-v0.36.0) (2026-07-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **kustomize:** attribute overrides with a dyed render, verify by re-render, delete the re-implementation ([#233](https://github.com/ConfigButler/gitops-reverser/issues/233))
+* **kustomize:** read kustomization.yaml with kustomize, not a hand-written parser ([#229](https://github.com/ConfigButler/gitops-reverser/issues/229))
+
+### Features
+
+* **kustomize:** attribute overrides with a dyed render, verify by re-render, delete the re-implementation ([#233](https://github.com/ConfigButler/gitops-reverser/issues/233)) ([61ed1e7](https://github.com/ConfigButler/gitops-reverser/commit/61ed1e7a78f42372ef82e53e13e9d55f93df3fd1))
+* **kustomize:** read kustomization.yaml with kustomize, not a hand-written parser ([#229](https://github.com/ConfigButler/gitops-reverser/issues/229)) ([6b3f202](https://github.com/ConfigButler/gitops-reverser/commit/6b3f202c7c8ed4c482fcdd9ecdf29b6c34dc4050))
+
+
+### Bug Fixes
+
+* **kustomize:** a digest: override no longer strips the tag out of the source file ([#231](https://github.com/ConfigButler/gitops-reverser/issues/231)) ([8a835f0](https://github.com/ConfigButler/gitops-reverser/commit/8a835f094682e66688102c7b44877f38954537fc))
+* **kustomize:** refuse a folder kustomize cannot build, and read the override chain from the renderer ([#232](https://github.com/ConfigButler/gitops-reverser/issues/232)) ([960e3bd](https://github.com/ConfigButler/gitops-reverser/commit/960e3bd0f03dfeb9f5e2552d743eaa42aba49cee))
+
 ## [0.35.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.34.0...gitops-reverser-v0.35.0) (2026-07-14)
 
 
