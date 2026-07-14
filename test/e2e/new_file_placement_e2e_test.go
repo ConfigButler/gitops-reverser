@@ -12,33 +12,33 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Validates F4 new-file placement end-to-end: a brand-new resource with no
+// Validates new-file placement end-to-end: a brand-new resource with no
 // existing document in Git — the "install something extra in test" launch use
 // case (docs/spec/gittarget-new-file-placement-rules.md,
 // docs/design/support-boundary/README.md) — lands inside the kustomize-managed overlay
 // directory it belongs to, not the canonical GVR-tree path, and the overlay's
 // kustomization.yaml gains the resources: entry so kustomize actually renders it.
-var _ = Describe("Manager F4 New-File Placement", Label("manager", "f4-placement"), Ordered, func() {
+var _ = Describe("Manager New-File Placement", Label("manager", "new-file-placement"), Ordered, func() {
 	var (
 		testNs       string
 		repo         *RepoArtifacts
-		providerName = "f4-placement-provider"
-		destName     = "f4-placement-dest"
-		ruleName     = "f4-placement-rule"
-		gitPath      = "e2e/f4-placement"
+		providerName = "new-file-placement-provider"
+		destName     = "new-file-placement-dest"
+		ruleName     = "new-file-placement-rule"
+		gitPath      = "e2e/new-file-placement"
 	)
 
 	const (
-		fixtureRoot     = "test/e2e/fixtures/f4-placement-folder"
+		fixtureRoot     = "test/e2e/fixtures/new-file-placement-folder"
 		newConfigMap    = "debug-toolbox"
 		newFileRepoPath = "debug-toolbox.yaml"
 		kustRepoPath    = "kustomization.yaml"
-		repoName        = "e2e-f4-placement"
+		repoName        = "e2e-new-file-placement"
 	)
 
 	BeforeAll(func() {
-		By("creating the f4-placement test namespace")
-		testNs = testNamespaceFor("manager-f4-placement")
+		By("creating the new-file-placement test namespace")
+		testNs = testNamespaceFor("manager-new-file-placement")
 		_, _ = kubectlRun("create", "namespace", testNs)
 
 		By("setting up Gitea repo and credentials")

@@ -95,7 +95,7 @@ two reasons:
 | Flux `HelmRelease` (`helm.toolkit.fluxcd.io/v2`) | ✅ CRD in base e2e cluster | ✅ |
 | Argo CD `Application` (`argoproj.io/v1alpha1`) | — (CRD not in cluster) | ✅ |
 | KRO instance, e.g. `PodInfoApp` (`kro.run` group) | — (KRO is demo-only) | ✅ |
-| core (`ConfigMap`/`Deployment`) | already pinned (e2e labels `inplace-edit`, `f4-placement`, `scale`) | already pinned |
+| core (`ConfigMap`/`Deployment`) | already pinned (e2e labels `inplace-edit`, `new-file-placement`, `scale`) | already pinned |
 
 Flux CRDs (`helmreleases.helm.toolkit.fluxcd.io`,
 `kustomizations.kustomize.toolkit.fluxcd.io`) are established during standard
@@ -156,7 +156,7 @@ field so the gates exercise the properties that matter for these kinds.
   (round-trip byte-identical, convergence perturb-then-settle) with no new test
   code — the gates already glob `testdata/corpus/*.yaml`.
 - **e2e:** `HelmRelease` mirror + chart-version-bump edit, comment-preserving,
-  under the `manager` + `f7-higher-level-krm` labels.
+  under the `manager` + `higher-level-krm` labels.
 - **User docs:** [../../../installing-apps-as-krm.md](../../../installing-apps-as-krm.md)
   — "adding an app is adding a KRM document," with `HelmRelease`/`Application`
   examples and the chart-inflation boundary.

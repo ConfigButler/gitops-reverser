@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// F7: higher-level KRM objects are first-class documents. This spec proves the
+// Higher-level KRM objects are first-class documents. This spec proves the
 // mirror/edit pipeline treats a Flux HelmRelease — a control-plane custom
 // resource, the canonical "install an app" object — exactly like a core
 // resource: it is mirrored to Git on create, and a live field edit (a chart
@@ -21,8 +21,8 @@ import (
 // preserving hand-authored formatting. The generic-CRD case is already pinned by
 // crd_lifecycle_e2e_test.go; this pins a real, named higher-level type.
 // See docs/design/support-boundary/finished/higher-level-krm-documents.md.
-var _ = Describe("Manager F7 Higher-Level KRM (HelmRelease)",
-	Label("manager", "f7-higher-level-krm"), Ordered, func() {
+var _ = Describe("Manager Higher-Level KRM (HelmRelease)",
+	Label("manager", "higher-level-krm"), Ordered, func() {
 		var (
 			testNs       string
 			repo         *RepoArtifacts
