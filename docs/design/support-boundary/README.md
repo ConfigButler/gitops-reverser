@@ -4,7 +4,9 @@
 >
 > **New here? Read [support-contract.md](support-contract.md) first** — it is the one
 > page that states what we support, what we refuse, and why. Every other doc in this
-> folder *argues for* one of those verdicts. This README is the index and the summary.
+> folder *argues for* one of those verdicts. This README separates shipped behaviour
+> from the target boundary; the provenance and Helm-chart detection gates described
+> below are not implemented yet.
 
 ## The folder, by topic
 
@@ -43,14 +45,15 @@ need no cluster — see
 
 ## The governing rule
 
-Every decision in this folder answers one question:
+The target boundary answers one question:
 
 > **Does this live object have exactly one home in Git?**
 
 If yes, GitOps Reverser mirrors it and writes edits back to that home. If no, the object
 is expansion output, shared context, machine-written Git, or opaque content — and the
-operator refuses or withholds it for a specific, named reason. That refusal is the
-support contract, not a gap.
+target operator behaviour is to refuse or withhold it for a specific, named reason.
+The provenance gate required for controller-expanded objects is not implemented yet;
+the current runtime can still mirror them after sanitization removes their evidence.
 
 ```mermaid
 flowchart LR
@@ -169,12 +172,12 @@ with `WriteBoundaryRefused`.
 
 The expansion boundary is separate from the Kustomize boundary. A `HelmRelease`,
 `ApplicationSet`, `ResourceSet`, KRO graph, or Crossplane composition can itself be an
-editable KRM document, but the objects it materialises are **not mirrored** unless they
-have their own file home in Git. The derived-object gate cannot key on `ownerReference`
-alone; measured Flux and Argo evidence shows it must be a provenance claim over live
-objects, taken before sanitization
+editable KRM document, but its materialised objects are **intended not to be mirrored**
+unless they have their own file home in Git. That is not enforced yet: the derived-object
+gate cannot key on `ownerReference` alone, and must instead be a provenance claim over
+live objects taken before sanitization
 ([`../../facts/expansion-provenance-markers.md`](../../facts/expansion-provenance-markers.md)).
 
-Helm charts are skipped as a unit, including `crds/`, once recognised by chart folder
-structure. Reporting a chart's incidental `crds/` directory as "one supported folder" is
-a report bug, not a capability.
+Helm charts should be skipped as a unit, including `crds/`, once chart-folder detection
+lands. Today `scan-repo` can report a chart's incidental `crds/` directory as "one
+supported folder"; that known report bug is captured in the layout corpus.
