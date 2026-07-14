@@ -554,7 +554,10 @@ jobs:
               git config --global --add safe.directory "$PWD"
               task gitops-layouts-baseline --force
               if ! git diff --quiet -- test/fixtures/gitops-layouts/support-today.md; then
-                echo "::error file=test/fixtures/gitops-layouts/support-today.md::The GitOps layout baseline is stale: the analyzer now reports something different for the corpus. If the acceptance boundary moved on purpose, run `task gitops-layouts-baseline` and commit the result."
+                # No backticks in the message below. It is a double-quoted string inside a
+                # bash -lc block, where backticks are command substitution: the echo would
+                # RUN the task a second time and splice its stdout into the annotation.
+                echo "::error file=test/fixtures/gitops-layouts/support-today.md::The GitOps layout baseline is stale: the analyzer now reports something different for the corpus. If the acceptance boundary moved on purpose, run task gitops-layouts-baseline and commit the result."
                 git --no-pager diff -- test/fixtures/gitops-layouts/support-today.md
                 exit 1
               fi
