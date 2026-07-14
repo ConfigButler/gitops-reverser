@@ -7,6 +7,34 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — a `patches:` block no longer refuses the folder (next minor; more folders accepted)
+
+A kustomization declaring `patches:` used to refuse the whole `GitTarget`. Not the edit — the
+**target**. A folder whose patch touched a replica count also lost `images:`/`replicas:`
+edit-through, which the patch had nothing to do with.
+
+A patch is now **tolerated as read-only build context**:
+
+- the folder is **accepted**, and what it renders is mirrored;
+- the patch file is **retained, never managed** — it is a build input, not a manifest. (It is a KRM
+  document, so without this the operator would index it as one: match a live object to it, mirror a
+  whole Deployment over the sparse patch, or sweep it away as an orphan.)
+- `images:` / `replicas:` edit-through works in a patched folder exactly as it does anywhere else;
+- an edit to a field **the patch owns** is refused *per object* — `WriteBoundaryRefused`, naming the
+  file and the object — because authoring a patch is still not supported.
+
+**Tolerating a patch is not authoring one.** Nothing is ever written into a patch file.
+
+Exactly one shape is tolerated. The rest are refused **by name**, so the message says what to fix:
+
+| Shape | Verdict |
+|---|---|
+| `patches: [{path: patch.yaml}]` — a sparse KRM document inside the tree | **tolerated** |
+| `patches: [{patch: "..."}]` — inline (including an inline JSON6902 op list) | refused: `patches-inline` |
+| `patches: [{path: json-patch.yaml}]` where the file is an `op`/`path`/`value` list | refused: `patches-json6902` |
+| a `path:` naming no file in the tree, or escaping it | refused: `patches-outside-tree` |
+| `patchesStrategicMerge:`, `patchesJson6902:` (deprecated spellings) | refused under their own names |
+
 ## Unreleased — the build's output stops leaking into the build's input (next minor; bug fix + behavior change)
 
 **If your kustomization declares `labels:`, `commonLabels:`, `commonAnnotations:` or `namespace:`,

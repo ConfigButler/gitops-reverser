@@ -227,8 +227,9 @@ func TestKustomizationOverrideParsing(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := kustomizationUsesUnsupportedFeature([]byte(tc.content)); got != tc.unsupported {
-				t.Errorf("kustomizationUsesUnsupportedFeature = %v, want %v", got, tc.unsupported)
+			_, features := parseKustomization([]byte(tc.content), "kustomization.yaml", nil)
+			if got := len(features) > 0; got != tc.unsupported {
+				t.Errorf("unsupported = %v (%v), want %v", got, features, tc.unsupported)
 			}
 		})
 	}
