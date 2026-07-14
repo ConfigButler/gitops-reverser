@@ -5,6 +5,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -74,6 +75,10 @@ type writeBatch struct {
 	docLoc        map[*manifestanalyzer.DocumentModel]manifestanalyzer.RecordRef
 	contentByPath map[string][]byte
 	buffers       map[string]*fileBuffer
+	// intents records what each document this flush writes must render to, so the
+	// render precondition can tell a change the flush MEANT from one it merely caused.
+	// Anything not named here has to come out of the re-render untouched.
+	intents []manifestanalyzer.WriteIntent
 	// policy is the GitTarget's declared new-file placement policy, consulted
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to sibling inference and then the canonical path.
@@ -356,6 +361,7 @@ func (wb *writeBatch) writeColdBundleMember(
 		rebuilt = appendYAMLDocument(rebuilt, m.content)
 	}
 	wb.buffer(rel).current = rebuilt
+	wb.intend(markUnchecked(intentFor(event, rel, false), sensitive))
 	return upsertCreated, nil
 }
 
@@ -384,6 +390,7 @@ func (wb *writeBatch) appendNewDocument(ctx context.Context, event Event, rel st
 	}
 	buf := wb.buffer(rel)
 	buf.current = appendYAMLDocument(buf.current, content)
+	wb.intend(intentFor(event, rel, false))
 	return upsertCreated, nil
 }
 
@@ -469,8 +476,16 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 	}
 
 	assignments := event.FieldPatch.Assignments
-	if dm := wb.store.ByManifestIdentity[id]; dm != nil && dm.Overrides != nil {
+	dm := wb.store.ByManifestIdentity[id]
+	governed := dm != nil && dm.Overrides != nil
+	if governed {
 		assignments = wb.routeGovernedFieldAssignments(ctx, event, dm, assignments)
+		// A routed scale changes only the kustomization entry, which still moves what this
+		// document renders to — so it must be declared, or the oracle would read its own
+		// intended write as collateral damage. It is UNCHECKED because a field patch carries
+		// a few audited assignments, never a whole object to compare the render against: the
+		// oracle can still prove the write disturbs nothing else, but not that it landed.
+		wb.intend(fieldPatchIntent(filePath, id, governed))
 		if len(assignments) == 0 {
 			return nil
 		}
@@ -489,6 +504,9 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 	switch res.Mode {
 	case manifestedit.EditPatched:
 		buf.current = res.Content
+		if !governed {
+			wb.intend(fieldPatchIntent(filePath, id, false))
+		}
 	case manifestedit.EditNoChange, manifestedit.EditDeleted:
 		// No-op: the audited value already matched (or, impossible here, a delete).
 	case manifestedit.EditSkipped, manifestedit.EditWholeReplace:
@@ -622,7 +640,152 @@ func (wb *writeBatch) patchExisting(
 	if wb.applyOverrideEdits(ctx, event, overrideEdits) {
 		outcome = upsertUpdated
 	}
+
+	// Declare what this document must render to. Attribution above decided WHERE the edit
+	// goes and is allowed to be wrong; the render precondition adjudicates it once the whole
+	// plan is known (see renderPrecondition).
+	//
+	// A GOVERNED document declares its intent even when its own bytes did not change, and
+	// that is not belt-and-braces — it is the difference between the oracle working and the
+	// oracle refusing perfectly good writes. An images: entry is shared: when two Deployments
+	// run the same image and are bumped together, the FIRST event's entry edit already moves
+	// what the second one renders to, so by the time the second is processed there is nothing
+	// left to write. Its render still moves, and it moves onto its own live state — that is
+	// the resource converging, not collateral damage, and only its declared intent says so.
+	if outcome == upsertUpdated || dm.Overrides != nil {
+		wb.intend(intentFor(event, filePath, dm.Overrides != nil))
+	}
 	return outcome, nil
+}
+
+// renderPrecondition is the oracle, and it is a write-plan precondition like the three
+// above it: it runs at the one moment the whole plan is known and before a single byte is
+// touched, so a refusal aborts the flush and commits nothing.
+//
+// It only runs when the flush actually routed something through a kustomization. A repo
+// with no override chain pays nothing, and a flush that changed no governed document has
+// nothing for kustomize to adjudicate.
+//
+// A refusal is an AcceptanceRefusedError, which is the seam that carries it to the user as
+// GitPathAccepted=False / Stalled=True with the file and object named. That is deliberate:
+// render-attribution.md §7 is explicit that a proposal the renderer cannot vouch for
+// "becomes a refused flush — that is the correct outcome and it must be reported, not
+// absorbed." A resource we silently stop mirroring is the failure this path exists to
+// prevent, so it must not be the failure this path introduces.
+func (wb *writeBatch) renderPrecondition() error {
+	governed := false
+	for _, in := range wb.intents {
+		if in.Governed {
+			governed = true
+			break
+		}
+	}
+	if !governed {
+		return nil
+	}
+
+	before := make([]manifestedit.FileContent, 0, len(wb.contentByPath))
+	for _, path := range sortedContentKeys(wb.contentByPath) {
+		before = append(before, manifestedit.FileContent{Path: path, Content: wb.contentByPath[path]})
+	}
+
+	var refused *manifestanalyzer.RenderRefusedError
+	if err := manifestanalyzer.VerifyBatchRenders(before, wb.files(), wb.intents); err != nil {
+		if errors.As(err, &refused) {
+			issues := make([]manifestanalyzer.AcceptanceIssue, 0, len(refused.Reasons))
+			for _, reason := range refused.Reasons {
+				issues = append(issues, manifestanalyzer.AcceptanceIssue{
+					Kind:    manifestanalyzer.IssueRenderRefused,
+					Message: reason,
+				})
+			}
+			return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
+		}
+		return err
+	}
+	return nil
+}
+
+// intend records what one document of this flush must render to, so the oracle can tell a
+// change the flush MEANT from a change it merely caused. Everything not intended has to
+// come out of the render untouched.
+func (wb *writeBatch) intend(in manifestanalyzer.WriteIntent) {
+	if in.Kind == "" || in.Name == "" {
+		return // nothing addressable to check; the render comparison keys on kind+name
+	}
+	wb.intents = append(wb.intents, in)
+}
+
+// intentFor builds the intent for an ordinary object-bearing write: the document must
+// render to exactly the live object.
+func intentFor(event Event, filePath string, governed bool) manifestanalyzer.WriteIntent {
+	desired := manifestreport.Project(event.Object)
+	return manifestanalyzer.WriteIntent{
+		SourcePath: filePath,
+		Kind:       desired.GetKind(),
+		Name:       desired.GetName(),
+		Desired:    desired,
+		Governed:   governed,
+	}
+}
+
+// unchecked marks a write whose rendered form cannot be predicted, so the oracle lets the
+// object move without comparing it (but still holds the write to disturbing nothing else).
+func markUnchecked(in manifestanalyzer.WriteIntent, unchecked bool) manifestanalyzer.WriteIntent {
+	if unchecked {
+		in.Unchecked = true
+		in.Desired = nil
+	}
+	return in
+}
+
+// fieldPatchIntent declares a bounded field patch. It is always unchecked: the event carries
+// a handful of audited assignments, not a whole object, so there is nothing to require the
+// render to equal.
+func fieldPatchIntent(filePath string, id manifestedit.Identity, governed bool) manifestanalyzer.WriteIntent {
+	return manifestanalyzer.WriteIntent{
+		SourcePath: filePath,
+		Kind:       id.Kind,
+		Name:       id.Name,
+		Unchecked:  true,
+		Governed:   governed,
+	}
+}
+
+// files is the batch's complete tree as the flush would leave it: the worktree bytes with
+// every buffer folded over them, and deleted files removed. Sorted, so the render is
+// reproducible.
+func (wb *writeBatch) files() []manifestedit.FileContent {
+	byPath := make(map[string][]byte, len(wb.contentByPath)+len(wb.buffers))
+	for path, content := range wb.contentByPath {
+		byPath[path] = content
+	}
+	for path, b := range wb.buffers {
+		if b.current == nil {
+			delete(byPath, path) // the flush deletes this file
+			continue
+		}
+		byPath[path] = b.current
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	out := make([]manifestedit.FileContent, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, manifestedit.FileContent{Path: path, Content: byPath[path]})
+	}
+	return out
+}
+
+func sortedContentKeys(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // applyOverrideEdits folds routed override edits into their kustomization file
@@ -722,6 +885,11 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 		}
 	}
 	buf.current = content
+	// A SENSITIVE document is written encrypted, so kustomize renders the SOPS ciphertext
+	// and no plaintext live object can ever equal it. Declare the write so the oracle does
+	// not read it as collateral damage, but mark it unchecked: we can still prove it
+	// disturbs nothing else, which is the half that protects other environments.
+	wb.intend(markUnchecked(intentFor(event, rel, false), wb.writer.isSensitiveIdentifier(event.Identifier)))
 	if isNew {
 		return upsertCreated, nil
 	}
@@ -747,6 +915,12 @@ func (wb *writeBatch) applyDelete(event Event) {
 	if !ok {
 		return
 	}
+	wb.intend(manifestanalyzer.WriteIntent{
+		SourcePath: target.filePath,
+		Kind:       target.id.Kind,
+		Name:       target.id.Name,
+		Removed:    true,
+	})
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if res.FileEmpty {
 		buf.current = nil
@@ -839,6 +1013,9 @@ func (wb *writeBatch) flush(ctx context.Context, worktree *gogit.Worktree, root,
 		return false, err
 	}
 	if err := wb.fanInPrecondition(); err != nil {
+		return false, err
+	}
+	if err := wb.renderPrecondition(); err != nil {
 		return false, err
 	}
 	logger := log.FromContext(ctx)

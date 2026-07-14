@@ -223,9 +223,13 @@ type slotPlan struct {
 // projectImages inverts the image chain for every container the live object and
 // the Git document share. It mutates out's container images to their
 // source-file form and returns the entry edits — or routes nothing (leaving the
-// live values in out, today's write-through) when the inversion is unsafe:
-// conflicting edits to one entry field, a removal an entry supplies, or a
-// simulation that fails to reproduce live.
+// live values in out) when the inversion is unsafe: conflicting edits to one entry
+// field, or a removal an entry supplies.
+//
+// Nothing here is trusted. The proposal it produces is put to kustomize before it can
+// become a commit (VerifyWriteProposal), so this only has to be a candidate that is
+// usually right — and routing nothing is always a legal answer, because the re-render
+// then adjudicates whatever the source document alone can carry.
 func projectImages(
 	gitRaw map[string]interface{},
 	out *unstructured.Unstructured,
@@ -252,7 +256,7 @@ func projectImages(
 		plans = append(plans, plan)
 	}
 	edits, ok := collectConsistentEdits(plans)
-	if !ok || !simulateImageRender(plans, entries, edits) {
+	if !ok {
 		return nil
 	}
 	for _, p := range plans {
@@ -388,37 +392,6 @@ func collectConsistentEdits(plans []slotPlan) ([]OverrideEdit, bool) {
 		return a.Edit.Field < b.Edit.Field
 	})
 	return out, true
-}
-
-// simulateImageRender verifies the whole inversion: with the edits applied to a
-// copy of the entries, every planned source image must render exactly to its
-// live image. Chained entries can interact (a newName edit can change which
-// later entry matches), so this closes the loop the per-component logic cannot.
-func simulateImageRender(plans []slotPlan, entries []ImageOverride, edits []OverrideEdit) bool {
-	sim := make([]ImageOverride, len(entries))
-	copy(sim, entries)
-	for _, oe := range edits {
-		for i := range sim {
-			if sim[i].Source != oe.KustomizationPath || sim[i].Index != oe.Edit.EntryIndex {
-				continue
-			}
-			switch oe.Edit.Field {
-			case "newName":
-				sim[i].NewName = oe.Edit.Value
-			case "newTag":
-				sim[i].NewTag = oe.Edit.Value
-			case "digest":
-				sim[i].Digest = oe.Edit.Value
-			}
-		}
-	}
-	for _, p := range plans {
-		rendered, _ := renderImage(parseImageRef(p.fileImage), sim)
-		if rendered != p.live {
-			return false
-		}
-	}
-	return true
 }
 
 // replicaKinds are the kinds the builtin replica transformer touches.
