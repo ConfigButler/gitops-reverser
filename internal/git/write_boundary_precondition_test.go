@@ -101,7 +101,11 @@ func diamondOverlayKust(newTag string) string {
 // override chains (write-fan-in > 1). Ordered so seeding it into Git produces stable commits.
 func diamondFiles() []struct{ rel, content string } {
 	return []struct{ rel, content string }{
-		{"kustomization.yaml", "resources:\n  - a\n  - b\n"},
+		// No root kustomization: a/ and b/ are two SEPARATE render roots that both
+		// read ../base. A true diamond (one root reaching base through both) is not
+		// buildable by kustomize at all — "may not add resource with an already
+		// registered id" — so it is refused at the acceptance gate and never reaches
+		// the write-boundary preconditions this test is about.
 		{"a/kustomization.yaml", diamondOverlayKust("1.0.0")},
 		{"b/kustomization.yaml", diamondOverlayKust("2.0.0")},
 		{"base/kustomization.yaml", "resources:\n  - deployment.yaml\n"},

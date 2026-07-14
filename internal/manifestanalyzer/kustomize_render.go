@@ -98,8 +98,18 @@ func renderRoot(files []manifestedit.FileContent, rootDir string) ([]renderedObj
 	if err != nil {
 		return nil, err
 	}
+	// LoadRestrictionsNone is what Flux itself builds with, and it is safe here for
+	// the same reason it is safe there: THE FILESYSTEM IS THE JAIL. The in-memory
+	// filesystem contains only the scanned tree, so "unrestricted" loading cannot
+	// reach the real disk, and a remote base is refused before we get here.
+	//
+	// RootOnly would be the wrong kind of strict. It forbids loading a FILE from
+	// outside the render root — `resources: [../shared.yaml]` — which Flux renders
+	// happily. We would then fail to build a root that deploys in production, see no
+	// chain for it, and quietly stop enforcing write-fan-in on the file it shares.
+	// Refusing to look is not a safety property.
 	k := krusty.MakeKustomizer(&krusty.Options{
-		LoadRestrictions: kustypes.LoadRestrictionsRootOnly,
+		LoadRestrictions: kustypes.LoadRestrictionsNone,
 		PluginConfig:     kustypes.DisabledPluginConfig(), // no exec, no Go plugins
 	})
 	resMap, err := k.Run(fSys, path.Join(renderMountPoint, rootDir))

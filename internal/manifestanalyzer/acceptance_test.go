@@ -5,6 +5,7 @@ package manifestanalyzer
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -35,7 +36,7 @@ func snapMapper() typeset.Lookup {
 // acceptanceOf builds a store with the given allowlist and runs the gate.
 func acceptanceOf(
 	t *testing.T,
-	fsys fstest.MapFS,
+	fsys fs.FS,
 	mapper typeset.Lookup,
 	policy AcceptancePolicy,
 ) (*ManifestStore, Acceptance) {
@@ -224,9 +225,13 @@ func TestAccept_MultipleRefusalsSorted(t *testing.T) {
 }
 
 func TestAccept_MultipleRetainedSorted(t *testing.T) {
+	// Both kustomizations must actually BUILD: a render root whose resources: entry
+	// does not resolve is refused now (kustomize cannot build it, so neither can
+	// Flux), where the old structural parse simply never looked.
+	sharedKust := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../deploy.yaml\n"
 	fsys := fstest.MapFS{
-		"b/kustomization.yaml": {Data: []byte(kustomizationY)},
-		"a/kustomization.yaml": {Data: []byte(kustomizationY)},
+		"b/kustomization.yaml": {Data: []byte(sharedKust)},
+		"a/kustomization.yaml": {Data: []byte(sharedKust)},
 		"deploy.yaml":          {Data: []byte(deployYAML)},
 	}
 	store, acc := acceptanceOf(t, fsys, snapMapper(), AcceptancePolicy{Allowlist: DefaultAllowlist()})

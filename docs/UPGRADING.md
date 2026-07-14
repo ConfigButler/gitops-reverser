@@ -7,6 +7,32 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — a folder kustomize cannot build is now refused (next minor; behavior change)
+
+The analyzer now **builds** every render root with kustomize, instead of only parsing the
+kustomization structurally. A root that fails to build refuses the `GitTarget`, quoting
+kustomize's own error.
+
+This refuses folders that were previously accepted, and all of them were folders no GitOps
+controller could deploy:
+
+- a `resources:` entry that does not resolve (a manifest that was moved or renamed);
+- a **diamond** — one render root reaching a shared base through two overlays — which
+  kustomize rejects outright with *"may not add resource with an already registered id"*.
+
+**Why this is a safety fix, not just strictness.** The override chain, and therefore the
+write-fan-in guard, is derived from the render. A root that does not build yields no chain,
+so no ambiguity is recorded, so the fan-in precondition never fires — and the operator would
+write straight through into a base shared by two render paths, which is the one edit
+`fan-in = 1` exists to forbid. Silently accepting an unbuildable folder disarmed the guard
+protecting it.
+
+**Migration**
+
+- Run `kustomize build` on the folder your `GitTarget` points at. If it fails, the operator
+  now fails the target with `GitPathAccepted=False` / `UnsupportedContent` instead of writing
+  into a folder whose render it cannot know. Fix the build.
+
 ## Unreleased — a `digest:` override no longer strips the tag out of your source file (next patch; bug fix)
 
 **If any of your kustomizations use `images:` with `digest:`, or `newTag:` on an image
