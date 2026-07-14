@@ -523,7 +523,7 @@ jobs:
               # awk, not `grep -qv`: the CI image ships ugrep as grep, whose -q -v returns
               # 1 even when -c reports a selected line. That would make this assertion
               # silently pass whatever it was handed.
-              uncached="$(awk '/^task: \[/ && !/^task: \[lint-docs\]/' "${cache_log}")"
+              uncached="$(awk "/^task: \\[/ && !/^task: \\[lint-docs\\]/" "${cache_log}")"
               if [ -n "${uncached}" ]; then
                 echo "Expected second task lint dry-run to be fully cached apart from lint-docs, but these would run:" >&2
                 printf '%s\n' "${uncached}" >&2
