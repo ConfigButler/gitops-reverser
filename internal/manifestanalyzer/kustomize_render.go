@@ -223,7 +223,6 @@ func unbuildable(k *kustomizationDoc) error {
 // for provenance.
 func renderFilesystem(files []manifestedit.FileContent, rootDir string) (filesys.FileSystem, error) {
 	fSys := filesys.MakeFsInMemory()
-	rootKust := path.Join(rootDir, "kustomization.yaml")
 
 	for _, f := range files {
 		rel := filepathToSlash(f.Path)
@@ -231,7 +230,15 @@ func renderFilesystem(files []manifestedit.FileContent, rootDir string) (filesys
 
 		// Only the root needs to ask for provenance: the annotations describe the
 		// whole build, bases included.
-		if rel == rootKust {
+		//
+		// The root is matched the way the rest of the analyzer matches one —
+		// isKustomizationFile, which accepts kustomization.yml as well. Comparing
+		// against the literal "kustomization.yaml" instead left a .yml root building
+		// happily with NO buildMetadata: no origin, no transformations, so every
+		// object came back with an empty OriginPath and an empty override chain, and
+		// a governed image was written into the source manifest for the overlay to
+		// shadow straight back.
+		if slashDir(rel) == rootDir && isKustomizationFile(rel) {
 			var k kustypes.Kustomization
 			if err := k.Unmarshal(content); err != nil {
 				return nil, fmt.Errorf("%s: %w", rel, err)

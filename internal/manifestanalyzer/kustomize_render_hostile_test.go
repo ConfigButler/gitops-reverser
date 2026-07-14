@@ -45,6 +45,22 @@ func TestRenderRoot_ValidRegexImageNameStillBuilds(t *testing.T) {
 	require.Equal(t, "nginx:2.0", slots[0].image)
 }
 
+// kustomization.yml is a build directive everywhere else in the analyzer, so it has to be
+// one here too. Matching the root against the literal "kustomization.yaml" left a .yml root
+// building with no buildMetadata at all: the objects came back with no origin and no
+// transformations, which reads downstream as "this file is governed by nothing".
+func TestRenderRoot_KustomizationYMLCarriesProvenance(t *testing.T) {
+	files := imageFixture("nginx:v1", "  - name: nginx\n    newTag: v2\n")
+	files[1].Path = "kustomization.yml"
+
+	rendered, err := renderRoot(files, ".")
+
+	require.NoError(t, err)
+	require.Len(t, rendered, 1)
+	require.Equal(t, "deployment.yaml", rendered[0].OriginPath, "the source file must be attributable")
+	require.NotEmpty(t, rendered[0].TransformedBy, "the override chain must be readable")
+}
+
 // The net under krusty: whatever panics in there, the caller gets an error and the process
 // keeps its footing. Driven straight at build(), because the refusal above means the panic
 // we know about can no longer reach it.
