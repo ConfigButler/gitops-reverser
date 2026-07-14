@@ -15,6 +15,12 @@
 > measurement below is why: the change is ~30 lines in one file, it cannot alter rendered
 > output, and it yields the field-level attribution the dye was invented to approximate.
 
+> **Status: built and measured**, on branch `feat/build-trace-observer` in
+> `external-sources/kustomize` (commit `290d04199`, on top of upstream `79bb1aa2b`).
+> **638 lines added, 9 changed, across 11 files.** The full upstream `api` test suite passes:
+> the only six failures are identical on the unpatched base commit (they need a container
+> runtime, the network, or version stamping). See §9 for what the measurement changed.
+
 Three routes to "make kustomize tell us more": **(a)** upstream it, **(b)** carry a patch,
 **(c)** stay outside and be clever. This doc measures all three against the checkout in
 `external-sources/kustomize`.
@@ -229,9 +235,9 @@ So: propose it, but do not plan around it landing.
 
 ## 8. Recommendation
 
-1. **Carry the patch** (`replace` directive, ~30–50 lines in `multitransformer.go`),
-   emitting a per-(entry, resource) changed-field-path trace. It cannot alter rendered
-   content (§5), and it is the only route to tier 4 (§3).
+1. **Carry the patch** (`replace` directive) — an *additive* observer, not a change to the
+   annotation's semantics (§9). It cannot alter rendered content (§5), and it is the only
+   route to tier 4 (§3).
 2. **Ship the loud probe** (§6) in the same change. Silent degradation to no-attribution is
    worse than not having the feature.
 3. **Keep the oracle regardless** — re-render and require byte-identical reproduction
@@ -245,6 +251,60 @@ So: propose it, but do not plan around it landing.
    forward-compatible with its own obsolescence.
 5. **Demote the dye** from *the* attribution mechanism to the fallback for an unpatched
    build — and keep its verification half permanently.
+
+## 9. What building it changed
+
+Three things the argument above got wrong, or only half-right.
+
+**The patch should be additive, not a semantics change.** §2 proposed making the transformer
+annotation *mean* "changed". That was the wrong instinct: it rewrites goldens, it changes
+`kubectl kustomize` output, and it turns a cheap patch into a standards fight (§7) — all to
+deliver strictly *less* than the alternative. What shipped instead is a new
+`krusty.Options.Observer`, called once per (transformer instance, resource) pair that the
+transformer actually altered. It changes **no** existing behaviour, so the entire upstream
+test suite passes untouched, and it carries the field paths and entry index that the
+annotation could never carry anyway. **The annotation is left exactly as it is** — we simply
+stop needing it. That also collapses §7's hardest objection: an additive option with no
+golden churn is a far easier upstream conversation than a semantics change to an alpha
+annotation vendored into `kubectl`.
+
+**The zero-cost gate is real, and it fell out for free.** An observer needs origins (they
+carry the `ConfiguredIn` path), so setting one turns origin tracking on internally — and
+`Kustomizer.Run` *already* strips the origin and transformer annotations unless
+`buildMetadata` asked for them. So an observed build renders byte-identically to an
+unobserved one with no extra work, and an unobserved build does no snapshotting and no
+diffing at all (one nil check per transformer). §5 argued this was *safe*; it is in fact
+*structural*, and it is now asserted by a test that fails loudly if it ever stops being
+true (`TestBuildTraceDoesNotChangeTheBuild`).
+
+**Two facts only the running code produced:**
+
+- **Renames need a normalised key.** Matching a resource across a transformer by
+  `ResId.String()` does not work. `StorePreviousId` records a resource's *effective*
+  namespace (`default`), while `CurId` on an unnamespaced resource has *none* (`[noNs]`) —
+  so the id a resource had before a rename and the id it has after disagree on how to spell
+  "no namespace", and a `namePrefix` reads as a deletion plus a creation rather than a
+  rename. Normalising both sides through `EffectiveNamespace` fixes it. Nothing in the
+  source says this; the first test run did.
+- **`ConfiguredIn` is relative to the build root, not the repo root.** An overlay's own
+  kustomization comes back as plain `kustomization.yaml`. Any consumer building several
+  roots must re-root these paths itself.
+
+And the headline claim of §3 now has a test rather than an argument behind it. For a base
+pinned at `web:v1` with an overlay carrying `images: [web→v2, redis→6.2]` and
+`replicas: [web→3]`, the observed trace is exactly two events:
+
+```
+kustomization.yaml ReplicaCountTransformer[0]  Deployment/web  spec.replicas: 1 -> 3
+kustomization.yaml ImageTagTransformer[0]      Deployment/web  spec.template.spec.containers[0].image: web:v1 -> web:v2
+```
+
+The `Service` is not mentioned, though the annotation names both transformers on it. The
+sidecar container is not mentioned. And `images[1]` — the **idempotent pin**, `redis:6.2`
+over a base already at `redis:6.2` — produces **no event at all**, because it changed
+nothing. That is the honest answer, it is the one leave-one-out probing structurally cannot
+give ([render-attribution.md](render-attribution.md) §2), and it is the case that motivated
+the dye.
 
 ## Still open
 
