@@ -38,7 +38,7 @@ func TestEnqueueResync_ReportsEnqueueOutcome(t *testing.T) {
 }
 
 // TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync pins the
-// stranded-write fix (docs/design/stream/commitrequest-design.md §6.4.2, §9.5): a
+// stranded-write fix (docs/spec/commitrequest-design.md §6.4.2, §9.5): a
 // resync that closes a live commit window but commits nothing of its own must
 // still schedule the window's commit for push. Before the fix maybeSchedulePush
 // ran only when the resync itself committed, so a window the resync closed was

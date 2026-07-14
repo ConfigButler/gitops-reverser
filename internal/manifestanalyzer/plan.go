@@ -13,7 +13,7 @@ import (
 )
 
 // Plan is the first-class, cross-layer contract described in
-// docs/design/manifest/current-manifest-support-review.md ("Writer Model: Plan,
+// docs/spec/current-manifest-support-review.md ("Writer Model: Plan,
 // Apply, Dirty Flush"). It is a pure function of (ManifestStore, desired set,
 // policy): the same value the live writer applies, scan mode renders, the CLI
 // prints, and GitTarget status summarizes. M3 builds the model and its
@@ -116,7 +116,7 @@ func (p Plan) Counts() map[PlanActionKind]int {
 // the mapping.
 //
 // This is a full-snapshot input — the "Resync" path of the design's "Two Paths, One
-// Plan Type" (docs/design/manifest/reconcile-via-watchlist-mark-and-sweep.md). It is
+// Plan Type" (docs/spec/reconcile-via-watchlist-mark-and-sweep.md). It is
 // NOT a per-event PendingChange: BuildPlan mark-and-sweeps every watched document
 // absent from this set as a managed drop, so the set must be the whole desired state
 // (scan mode / resync), never a partial batch. Steady-state, per-event planning that
@@ -192,7 +192,7 @@ func allInScope(types.ResourceIdentifier) bool { return true }
 //
 // With allInScope this is exactly BuildPlan — the full-snapshot mark-and-sweep — so the two
 // share one implementation and one set of safety guarantees. See
-// docs/design/manifest/version2/type-lifecycle-events-and-wobble-settling.md (Proposal 3 / M12).
+// docs/spec/type-lifecycle-events-and-wobble-settling.md (Proposal 3 / M12).
 func BuildScopedPlan(
 	store *ManifestStore,
 	files []manifestedit.FileContent,

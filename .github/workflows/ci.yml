@@ -513,10 +513,55 @@ jobs:
                 fi
               done
 
-              if grep -Eq "^task: \[[^]]+\]" "${cache_log}"; then
-                echo "Expected second task lint dry-run to be fully cached, but a command would run" >&2
+              # lint-docs is exempt on purpose. It carries no `sources:` (see
+              # Taskfile-build.yml), because its real input is "every tracked .md, .go,
+              # .yml and .sh" — which Task cannot express: an unrooted `**` glob walks
+              # external-sources/ and has OOMed the host, and a hand-maintained file list
+              # silently drifts out of sync with what doccheck scans. A stale "up to date"
+              # there means the check never runs, so it always runs. It costs ~0.2s.
+              #
+              # awk, not `grep -qv`: the CI image ships ugrep as grep, whose -q -v returns
+              # 1 even when -c reports a selected line. That would make this assertion
+              # silently pass whatever it was handed.
+              uncached="$(awk "/^task: \\[/ && !/^task: \\[lint-docs\\]/" "${cache_log}")"
+              if [ -n "${uncached}" ]; then
+                echo "Expected second task lint dry-run to be fully cached apart from lint-docs, but these would run:" >&2
+                printf "%s\n" "${uncached}" >&2
                 exit 1
               fi
+            '
+
+      - name: GitOps layout baseline is current
+        # test/fixtures/gitops-layouts/support-today.md is generated from a live
+        # manifest-analyzer scan of the corpus. Regenerating it here and failing on a
+        # diff is what makes a change to the acceptance boundary show up in review as
+        # "exactly which fixtures moved, and in which direction". Without this check the
+        # baseline silently goes stale, and the corpus stops being evidence of anything.
+        #
+        # A failure is not necessarily a bug: if the boundary moved on purpose, run
+        # `task gitops-layouts-baseline` and commit the regenerated file. Review the diff.
+        #
+        # Kept out of `task lint` deliberately: the lint step above asserts that a second
+        # dry-run is fully cached, and this task's fingerprint would have to be threaded
+        # through that assertion for no benefit.
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -w "${{ env.CI_WORKDIR }}" \
+            "${CI_CONTAINER}" \
+            bash -lc '
+              set -e
+              git config --global --add safe.directory "$PWD"
+              task gitops-layouts-baseline --force
+              if ! git diff --quiet -- test/fixtures/gitops-layouts/support-today.md; then
+                # No backticks in the message below. It is a double-quoted string inside a
+                # bash -lc block, where backticks are command substitution: the echo would
+                # RUN the task a second time and splice its stdout into the annotation.
+                echo "::error file=test/fixtures/gitops-layouts/support-today.md::The GitOps layout baseline is stale: the analyzer now reports something different for the corpus. If the acceptance boundary moved on purpose, run task gitops-layouts-baseline and commit the result."
+                git --no-pager diff -- test/fixtures/gitops-layouts/support-today.md
+                exit 1
+              fi
+              echo "baseline is current"
             '
 
   test:
@@ -717,7 +762,7 @@ jobs:
           # equals what `full` ran — so no spec is added or dropped, the work is
           # just split across two clusters. The membership is a provisional
           # first cut; rebalance from the e2e-ginkgo-reports-* per-spec timings
-          # (docs/design/e2e-ci-runner-sharding-plan.md, "balance from real data").
+          # (docs/finished/e2e-ci-runner-sharding-plan.md, "balance from real data").
           # Each shard runs config-dir installs (GOCOVERDIR overlay) and collects
           # coverage; Codecov unions same-flag `e2e` uploads, so merged coverage
           # is the union of both shards — the non-regression ratchet still holds.
@@ -729,7 +774,7 @@ jobs:
             coverage: "1"
             # Bumped 1 -> 4: the full suite was serialized to avoid the
             # cross-target rule-change snapshot coupling, now fixed (per-target
-            # effective watch plan — docs/design/gittarget-isolation-on-rule-change.md).
+            # effective watch plan — docs/spec/gittarget-isolation-on-rule-change.md).
             e2e_ginkgo_procs: "4"
             k3d_agent_count: "0"
           - name: full-core
@@ -747,7 +792,7 @@ jobs:
           # only place gitops-reverser shares a path with a foreign GitOps engine.
           # Its own runner (hence its own cluster) is what keeps the Argo CD
           # install off the other three legs.
-          # docs/design/e2e-bi-directional-corner.md.
+          # docs/spec/e2e-bi-directional-corner.md.
           #
           # `task test-e2e-bi-directional` pins its own label filter and Ginkgo
           # procs (BI_DIRECTIONAL_GINKGO_PROCS), so e2e_label_filter and

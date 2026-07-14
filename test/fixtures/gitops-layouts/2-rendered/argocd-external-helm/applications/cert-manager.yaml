@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+spec:
+  project: default
+  # Single source. Values are carried inline as `helm.values`: a YAML document
+  # embedded as a plain string inside this Kubernetes object.
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.16.2
+    helm:
+      values: |
+        installCRDs: true
+        replicaCount: 2
+        global:
+          leaderElection:
+            namespace: cert-manager
+        prometheus:
+          enabled: true
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

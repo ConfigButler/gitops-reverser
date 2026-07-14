@@ -1,0 +1,16 @@
+# Strategic-merge patch. This is a PARTIAL object, not a full manifest: it only
+# carries the fields that change and relies on the base for everything else.
+# Merged onto the base Deployment "frontend" by the overlay's patches: entry.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  template:
+    spec:
+      containers:
+        - name: frontend
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi

@@ -1,0 +1,7 @@
+# Kustomize build file (kustomize.config.k8s.io), NOT a cluster object. Written
+# by flux bootstrap to bundle the two generated files into the flux-system dir.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - gotk-components.yaml
+  - gotk-sync.yaml

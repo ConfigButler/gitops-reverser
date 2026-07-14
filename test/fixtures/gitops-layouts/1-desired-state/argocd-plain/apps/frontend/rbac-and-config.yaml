@@ -1,0 +1,20 @@
+# Multi-document file: two unrelated Kubernetes objects separated by '---'.
+# The filename says nothing about which kinds live inside.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: frontend
+  namespace: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  namespace: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+data:
+  LOG_LEVEL: info
+  BACKEND_URL: http://backend.backend.svc.cluster.local

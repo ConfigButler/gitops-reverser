@@ -9,12 +9,12 @@ import (
 // PlanDelete resolves a steady-state DELETE watch event to a single delete-document
 // plan action over the store, or no action when Git holds no managed document for the
 // resource. It is the M6 milestone: closing the delete-identity gap the review names
-// (docs/design/manifest/current-manifest-support-review.md, "Cons And Gaps") so a
+// (docs/spec/current-manifest-support-review.md, "Cons And Gaps") so a
 // moved manifest is still deleted, and the writer (M7) deletes by RecordRef instead of
 // regenerating a canonical path.
 //
 // This is the per-event delete path of the design's "Two Paths, One Plan Type"
-// (docs/design/manifest/reconcile-via-watchlist-mark-and-sweep.md). Unlike BuildPlan's
+// (docs/spec/reconcile-via-watchlist-mark-and-sweep.md). Unlike BuildPlan's
 // full-snapshot mark-and-sweep, it targets exactly ONE identity and NEVER sweeps, so a
 // lone delete intent can never be mistaken for "every other document is now an orphan".
 // M7's steady-state loop folds this over its coalesced PendingChanges (a delete is a

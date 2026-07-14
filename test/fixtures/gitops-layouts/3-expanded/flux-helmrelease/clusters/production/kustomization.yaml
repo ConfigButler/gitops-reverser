@@ -1,0 +1,9 @@
+# Kustomize build file (kustomize.config.k8s.io), NOT a cluster object. The
+# cluster ROOT that the flux-system Kustomization (gotk-sync.yaml) points at.
+# Its resources are themselves Flux Kustomization CRs plus the bootstrap dir.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - flux-system
+  - infrastructure.yaml
+  - apps.yaml

@@ -1,0 +1,41 @@
+# COLLISION WARNING: named infrastructure.yaml, but these are Flux Kustomization
+# CUSTOM RESOURCES (kustomize.toolkit.fluxcd.io/v1), not kustomize.config.k8s.io
+# build files. Sources must exist before the HelmReleases that reference them.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infra-sources
+  namespace: flux-system
+spec:
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/sources
+  prune: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infra-controllers
+  namespace: flux-system
+spec:
+  # HelmReleases need their HelmRepository/OCIRepository sources to exist first.
+  dependsOn:
+    - name: infra-sources
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/controllers
+  prune: true
+  wait: true
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: ingress-nginx
+      namespace: flux-system

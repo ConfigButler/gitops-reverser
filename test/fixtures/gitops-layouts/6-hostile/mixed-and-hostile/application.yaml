@@ -1,0 +1,28 @@
+# TRAP: the filename `application.yaml` suggests an Argo CD Application
+# (argoproj.io/v1alpha1). It is an ordinary apps/v1 Deployment.
+# Filename does not imply kind.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    app: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: ghcr.io/example-org/backend:2.4.0
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi

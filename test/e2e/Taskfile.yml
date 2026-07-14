@@ -124,15 +124,15 @@ vars:
   ALLURE_CONTAINER_IMAGE: '{{.ALLURE_CONTAINER_IMAGE | default "eclipse-temurin:17-jre"}}'
   ALLURE_PORT: '{{.ALLURE_PORT | default "19081"}}'
   # Number of parallel Ginkgo processes for the e2e suite. >1 enables Ginkgo
-  # parallelism (Phase 2.5 of docs/design/e2e-speedup-plan.md). Files that touch
-  # shared cluster-scoped state are marked Serial (see docs/design/e2e-serial-registry.md).
+  # parallelism (Phase 2.5 of docs/finished/e2e-speedup-plan.md). Files that touch
+  # shared cluster-scoped state are marked Serial (see docs/spec/e2e-serial-registry.md).
   # Default 4 locally: GitTarget isolation on rule changes is now per-target
-  # (docs/design/gittarget-isolation-on-rule-change.md), so higher parallelism no
+  # (docs/spec/gittarget-isolation-on-rule-change.md), so higher parallelism no
   # longer trips cross-target snapshot coupling.
   E2E_GINKGO_PROCS: '{{.E2E_GINKGO_PROCS | default "4"}}'
   FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'
   # Argo CD — installed ONLY for the bi-directional corner
-  # (docs/design/e2e-bi-directional-corner.md). Unlike Flux, which is load-bearing
+  # (docs/spec/e2e-bi-directional-corner.md). Unlike Flux, which is load-bearing
   # for every cluster (Gitea/Valkey/Prometheus arrive as Flux HelmReleases), Argo
   # CD is needed by two specs, so it hangs off _argocd-installed and nothing else.
   #
@@ -294,10 +294,13 @@ tasks:
   test-e2e-bi-directional:
     desc: Run the bi-directional corner (Flux + Argo CD). Installs Argo CD into the cluster.
     vars:
-      # Two heavy Ordered specs, each driving a real GitOps controller through
-      # several reconcile round-trips. They own separate Gitea repos and separate
-      # IceCreamOrder CRD groups, and neither is Serial, so they run side by side.
-      BI_DIRECTIONAL_GINKGO_PROCS: '{{.BI_DIRECTIONAL_GINKGO_PROCS | default "2"}}'
+      # Three Ordered specs, each driving real GitOps controllers through several
+      # reconcile round-trips. They own separate Gitea repos, separate namespaces,
+      # and separate resource names (the two bi-directional ones also own separate
+      # IceCreamOrder CRD groups), and none is Serial, so they run side by side.
+      # The provenance spec drives no GitTarget and never patches argocd-secret, so
+      # it shares the argocd namespace with the Argo CD spec without racing it.
+      BI_DIRECTIONAL_GINKGO_PROCS: '{{.BI_DIRECTIONAL_GINKGO_PROCS | default "3"}}'
       BI_DIRECTIONAL_TIMEOUT: '{{.BI_DIRECTIONAL_TIMEOUT | default "25m"}}'
     cmds:
       # Sequential, not deps: _prepare-e2e-ready restarts the k3d server node when
@@ -894,7 +897,7 @@ tasks:
   _argocd-installed:
     # Argo CD for the bi-directional corner. NOT a dependency of prepare-e2e —
     # only test-e2e-bi-directional and argocd-ui pull it in, so the other CI legs
-    # never install it. See docs/design/e2e-bi-directional-corner.md.
+    # never install it. See docs/spec/e2e-bi-directional-corner.md.
     #
     # _services-ready, because the Argo Application sources from Gitea, which
     # arrives as a Flux HelmRelease.
@@ -1398,7 +1401,7 @@ tasks:
         touch "{{.CS}}/demo.ready"
 
   # ----------------------------------------------------------------------------
-  # Mutation-capture lab (docs/design/mutation-capture-lab-design.md).
+  # Mutation-capture lab (docs/spec/mutation-capture-lab-design.md).
   #
   # Opt-in and SERIAL. These targets are NOT invoked by `task test-e2e` and are
   # NOT part of the default CI lane. The lab deliberately reuses the product's

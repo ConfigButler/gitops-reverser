@@ -18,7 +18,7 @@ import (
 
 // Not Serial: the wardle APIService is installed once at cluster setup and only
 // read here; everything this spec mutates is name-isolated. See
-// docs/design/e2e-serial-registry.md.
+// docs/spec/e2e-serial-registry.md.
 var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func() {
 	var (
 		testNs         string

@@ -5,7 +5,7 @@
 # wait. Narrow by construction: one rule per command kind. failurePolicy is Ignore and
 # the handler always allows, so a user's CommitRequest never depends on this webhook —
 # a miss degrades to a committer-authored commit (AuthorAttributed=False).
-# See docs/design/commitrequest-admission-authorship.md §4.
+# See docs/spec/commitrequest-admission-authorship.md §4.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:

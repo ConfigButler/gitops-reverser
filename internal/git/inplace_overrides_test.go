@@ -19,7 +19,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// The F1 edit-through scenarios (docs/design/gitops-api/f1-images-replicas-edit-through.md):
+// The edit-through scenarios (docs/design/support-boundary/finished/images-and-replicas-edit-through.md):
 // a live change produced by a kustomization's images:/replicas: entry lands on
 // the entry, and the source manifest keeps its bytes.
 
@@ -137,7 +137,7 @@ func TestPlanFlush_RoutesImageTagToKustomizationEntry(t *testing.T) {
 
 // Live state equal to the overlay's render is a full no-op: the source file's
 // "stale" tag is dead text the entry shadows, and must NOT be overwritten
-// (the write-through fix F1 exists for).
+// (the write-through fix the edit-through exists for).
 func TestPlanFlush_LiveMatchingOverlayRenderIsNoOp(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)

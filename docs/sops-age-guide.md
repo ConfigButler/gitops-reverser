@@ -190,5 +190,5 @@ The bootstrap template currently contains a static recipient in
 
 - For install and starter resource setup: [`../README.md`](../README.md)
 - For chart quickstart values: [`configuration.md`](configuration.md)
-- For the deeper bootstrap/encryption architecture: [`design/sops-repo-bootstrap-and-key-management-architecture.md`](design/sops-repo-bootstrap-and-key-management-architecture.md)
-- For explicit non-goals and deferred work: [`design/sops-repo-bootstrap-out-of-scope.md`](design/sops-repo-bootstrap-out-of-scope.md)
+- For the deeper bootstrap/encryption architecture: [`design/sops-repo-bootstrap-and-key-management-architecture.md`](finished/sops-repo-bootstrap-and-key-management-architecture.md)
+- For explicit non-goals and deferred work: [`design/sops-repo-bootstrap-out-of-scope.md`](finished/sops-repo-bootstrap-out-of-scope.md)

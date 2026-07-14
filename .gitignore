@@ -6,7 +6,14 @@
 *.dylib
 bin/*
 Dockerfile.cross
+# `go build ./hack/doccheck` drops the binary here by default, and a 4 MB ELF was
+# committed once already. Root-anchored on purpose: a bare `doccheck` would also
+# match the hack/doccheck/ SOURCE directory and untrack it.
+/doccheck
 *.env
+# The GitOps layout fixtures check in a kustomize secretGenerator env file on purpose.
+# Its contents are placeholder text, never a real credential.
+!test/fixtures/gitops-layouts/**/*.env
 
 # Test binary, built with `go test -c`
 *.test

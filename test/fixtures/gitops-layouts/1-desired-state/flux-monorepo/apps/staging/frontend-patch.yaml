@@ -1,0 +1,16 @@
+# Strategic-merge patch: a PARTIAL object, not a full manifest. It carries only
+# the fields that differ in staging and relies on the base for everything else.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/example-org/frontend:1.8.3
+          env:
+            - name: LOG_LEVEL
+              value: debug

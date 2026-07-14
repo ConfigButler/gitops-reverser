@@ -1,0 +1,11 @@
+# Staging overlay input. Adds a namePrefix and namespace and pins the image
+# tag. `kustomize build` on this directory produces rendered/staging/frontend.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namePrefix: staging-
+namespace: frontend-staging
+resources:
+  - ../../base
+images:
+  - name: ghcr.io/example-org/frontend
+    newTag: 1.9.0-rc.2

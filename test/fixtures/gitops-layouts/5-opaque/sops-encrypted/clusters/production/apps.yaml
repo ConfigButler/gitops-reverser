@@ -1,0 +1,32 @@
+# Flux Kustomization CR that reconciles the apps and decrypts SOPS-encrypted
+# resources in-cluster. The `decryption` block names a Secret (`sops-age`) that
+# holds the private age key; the key is NOT in this repo. Without it the
+# encrypted values stay opaque.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: apps
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./apps/frontend
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: gitops
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+---
+# The Git source the Kustomization above reconciles from.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: gitops
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: https://github.com/example-org/gitops.git
+  ref:
+    branch: main

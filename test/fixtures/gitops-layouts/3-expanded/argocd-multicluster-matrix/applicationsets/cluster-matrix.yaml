@@ -1,0 +1,47 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: cluster-matrix
+  namespace: argocd
+spec:
+  # The template below uses dotted Go-template variables such as {{.path.basename}},
+  # so goTemplate MUST be true. Under the legacy (fasttemplate) engine the parameter
+  # names are flat - {{path.basename}} - and the dotted form never resolves. The two
+  # syntaxes are not interchangeable.
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+  generators:
+    # Matrix = Cartesian product of the two nested generators below.
+    # Rendered Applications = (selected clusters) x (app directories), a product not a sum.
+    - matrix:
+        generators:
+          - clusters:
+              selector:
+                matchLabels:
+                  # Selects only production clusters. The staging cluster Secret is
+                  # registered but deliberately NOT matched by this selector.
+                  environment: production
+          - git:
+              repoURL: https://github.com/example-org/gitops-multicluster.git
+              revision: main
+              directories:
+                - path: apps/*
+  template:
+    metadata:
+      # e.g. eu-production-frontend, us-production-backend
+      name: '{{.name}}-{{.path.basename}}'
+      namespace: argocd
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/example-org/gitops-multicluster.git
+        targetRevision: main
+        path: '{{.path.path}}'
+      destination:
+        server: '{{.server}}'
+        namespace: '{{.path.basename}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true

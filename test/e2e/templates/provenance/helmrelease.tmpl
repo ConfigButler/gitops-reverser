@@ -1,0 +1,24 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  interval: {{ .Interval }}
+  releaseName: {{ .Name }}
+  targetNamespace: {{ .TargetNamespace }}
+  storageNamespace: {{ .TargetNamespace }}
+  chart:
+    spec:
+      # The chart is a folder of files in the SAME Git repository the Flux
+      # Kustomization reads. Same source, same commit — and yet the objects the
+      # helm-controller renders from it have no home file, while the ones the
+      # kustomize-controller applies do. That contrast is the point of this spec.
+      chart: {{ .ChartPath }}
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: {{ .SourceName }}
+      interval: {{ .Interval }}
+  install:
+    createNamespace: false

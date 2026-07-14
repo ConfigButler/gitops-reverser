@@ -1,0 +1,24 @@
+# Plain Helm values file. On its own it is NOT a Kubernetes object: no
+# apiVersion, no kind. It becomes the data of a ConfigMap only after the
+# configMapGenerator in kustomization.yaml processes it.
+#
+# The ingress host below is deliberately left as an unresolved ${cluster_domain}
+# token. It is NOT valid until the Flux Kustomization in
+# clusters/production/apps.yaml rewrites it via postBuild.substitute - a
+# transform declared in a different directory entirely.
+image:
+  repository: ghcr.io/example-org/frontend
+  tag: 1.8.3
+replicaCount: 3
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: frontend.${cluster_domain}
+      paths:
+        - path: /
+          pathType: Prefix
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi

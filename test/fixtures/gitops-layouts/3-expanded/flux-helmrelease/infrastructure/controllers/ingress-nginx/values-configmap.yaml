@@ -1,0 +1,31 @@
+# Two ConfigMaps consumed by the ingress-nginx HelmRelease's valuesFrom. These
+# ARE cluster objects. Note the two shapes of value delivery they back:
+#
+# ingress-nginx-values carries a WHOLE Helm values document under a single
+# values.yaml key (a YAML string), merged by valuesFrom mechanism 2.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-nginx-values
+  namespace: flux-system
+data:
+  values.yaml: |
+    controller:
+      replicaCount: 2
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+      admissionWebhooks:
+        enabled: true
+---
+# ingress-nginx-tuning carries a single SCALAR under the replicas key, spliced
+# to controller.replicaCount by valuesFrom mechanism 4 (valuesKey + targetPath).
+# It overrides the replicaCount that ingress-nginx-values set above.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-nginx-tuning
+  namespace: flux-system
+data:
+  replicas: "3"

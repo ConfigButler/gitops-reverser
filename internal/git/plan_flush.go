@@ -25,7 +25,7 @@ import (
 )
 
 // flushEventsToWorktree is the plan-then-flush write path (M7), described in
-// docs/design/manifest/current-manifest-support-review.md ("Writer Model: Plan,
+// docs/spec/current-manifest-support-review.md ("Writer Model: Plan,
 // Apply, Dirty Flush"). It replaces the per-event locate+write loop: it builds the
 // byte-free structure model for the GitTarget subtree once, resolves each coalesced
 // event to a single-identity action over that model, applies the actions to
@@ -34,7 +34,7 @@ import (
 // removed.
 //
 // This is the steady-state half of the design's "Two Paths, One Plan Type"
-// (docs/design/manifest/reconcile-via-watchlist-mark-and-sweep.md): every event is
+// (docs/spec/reconcile-via-watchlist-mark-and-sweep.md): every event is
 // a single-identity intent — an upsert (create/patch/replace) for an object-bearing
 // event, or a delete-document for a DELETE — and the writer NEVER mark-and-sweeps a
 // batch. Whole-folder mark-and-sweep is the resync mechanism (M8), not steady state.
@@ -74,7 +74,7 @@ type writeBatch struct {
 	docLoc        map[*manifestanalyzer.DocumentModel]manifestanalyzer.RecordRef
 	contentByPath map[string][]byte
 	buffers       map[string]*fileBuffer
-	// policy is the GitTarget's declared new-file placement policy (F4), consulted
+	// policy is the GitTarget's declared new-file placement policy, consulted
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to sibling inference and then the canonical path.
 	policy *manifestanalyzer.PlacementPolicy
@@ -85,7 +85,7 @@ type writeBatch struct {
 	// and therefore cannot see coming — form one deterministic, resource-identity-
 	// sorted multi-document file instead of each writeWholeFile call silently
 	// discarding the one before it. See
-	// docs/design/manifest/version2/gittarget-new-file-placement-rules.md,
+	// docs/spec/gittarget-new-file-placement-rules.md,
 	// "Collision and append behavior": "if several new plaintext resources in one
 	// plan render to the same path, write a multi-document file in deterministic
 	// resource-identity order."
@@ -200,7 +200,7 @@ const (
 	// sensitive and a plaintext document, or would overwrite a multi-document file.
 	// It is distinct from upsertNoChange (a genuine no-op) so the resync path can
 	// count it and surface it, rather than have a not-mirrored resource vanish with
-	// no signal (F4 Option B2's fail-safe skips — see createNew/writeWholeFile).
+	// no signal (placement Option B2's fail-safe skips — see createNew/writeWholeFile).
 	upsertSkippedUnsafe
 )
 
@@ -228,7 +228,7 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 // a sensitive document is re-encrypted wholesale AT ITS EXISTING PATH (never patched in
 // place — that would drop the SOPS metadata and write the secret back in cleartext, and
 // never at the canonical path, which would orphan the moved copy). A resource with no
-// existing document is placed by createNew (F4). It returns what it did to the bytes
+// existing document is placed by createNew. It returns what it did to the bytes
 // (created / updated / no change).
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
 	if id, ok := manifestIdentity(event.Object); ok {
@@ -245,7 +245,7 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 
 // createNew resolves the placement of a resource with no existing document —
 // declared policy (Option B), sibling inference (Option C), or the canonical
-// fallback — per docs/design/manifest/version2/gittarget-new-file-placement-rules.md,
+// fallback — per docs/spec/gittarget-new-file-placement-rules.md,
 // adds the kustomize resources: entry the placement may require, and writes the new
 // document: a brand-new file, or an additional document appended to an existing
 // accepted plaintext bundle. A placement LocateNew cannot honour safely (today, only
@@ -408,7 +408,7 @@ func appendYAMLDocument(existing, newDoc []byte) []byte {
 
 // appendKustomizationResource adds the new document's path to its resources:
 // sequence as part of the same commit, so kustomize picks up the file createNew just
-// placed inside the kustomization's directory — F4's "add to the right kustomize
+// placed inside the kustomization's directory — the "add to the right kustomize
 // file." The entry is rendered relative to the kustomization's own directory
 // (resources: entries are relative to the kustomization file, not the repo root).
 // A failure here only drops the resources: entry (logged as a diagnostic); the
@@ -504,7 +504,8 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 
 // routeGovernedFieldAssignments diverts a spec.replicas assignment whose value a
 // replicas override governs to its kustomization entry (the /scale subresource
-// case of F1) and returns the assignments the file patch should still apply. An
+// case of the images/replicas edit-through) and returns the assignments the file
+// patch should still apply. An
 // ungoverned assignment — any other path, a non-integer value, no matching
 // entry — keeps today's bounded file patch.
 func (wb *writeBatch) routeGovernedFieldAssignments(
@@ -573,7 +574,7 @@ func (wb *writeBatch) resolveFieldPatchTarget(event Event) (string, manifestedit
 // When the document is governed by a kustomize images/replicas override chain, the
 // desired projection is first split: values the chain produces are restored to their
 // source form (so the file keeps its bytes) and the divergence is routed to the
-// override entries instead — see docs/design/gitops-api/f1-images-replicas-edit-through.md.
+// override entries instead — see docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
 func (wb *writeBatch) patchExisting(
 	ctx context.Context,
 	event Event,
@@ -817,7 +818,7 @@ func currentDocIndex(filePath string, content []byte, id manifestedit.Identity) 
 // least one file was written or removed.
 //
 // Before touching a single byte it enforces the write-plan precondition (§4.3 of
-// docs/design/gitpath-foreign-content-stringency.md): no path the operator is about to
+// docs/spec/gitpath-foreign-content-stringency.md): no path the operator is about to
 // write, edit, or delete may be shadowed by the active .gittargetignore. The check is a
 // precondition, not a post-hoc detector, so the unrecoverable state (an ignored file the
 // operator can no longer see) is never reached — the flush is refused and the GitTarget
@@ -830,7 +831,7 @@ func (wb *writeBatch) flush(ctx context.Context, worktree *gogit.Worktree, root,
 	// guard (§4.3), the L1 write-scope jail (writes stay inside spec.path), and the L2
 	// write-fan-in = 1 rule (never write a live change through into context shared by more
 	// than one render root). See
-	// docs/design/gitops-api/gittarget-granularity-and-cross-environment-edits.md §1.
+	// docs/design/support-boundary/gittarget-granularity-and-cross-environment-edits.md §1.
 	if err := wb.ignoreShadowPrecondition(); err != nil {
 		return false, err
 	}
@@ -948,7 +949,7 @@ func writePathEscapesScope(rel string) bool {
 // refusal, so the fan-in guarantee no longer depends on the emergent side effect of namespace
 // ambiguity blocking the match. It fires only on an actual planned write, so the legitimate
 // base-sharing layout (a base doc reached by distinct overlays is NamespaceNone and never
-// dirty) is not refused — F2 render-root scoping generalizes the check.
+// dirty) is not refused — per-render-root scoping would generalize the check.
 func (wb *writeBatch) fanInPrecondition() error {
 	var issues []manifestanalyzer.AcceptanceIssue
 	for _, rel := range sortedBufferKeys(wb.buffers) {

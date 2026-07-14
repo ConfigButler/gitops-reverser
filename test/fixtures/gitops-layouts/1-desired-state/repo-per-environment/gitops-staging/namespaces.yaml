@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: frontend-staging
+  labels:
+    environment: staging
+    app.kubernetes.io/part-of: storefront
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backend-staging
+  labels:
+    environment: staging
+    app.kubernetes.io/part-of: storefront

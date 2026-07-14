@@ -1,5 +1,7 @@
 # Kubernetes `generateName` and audit identity facts
 
+> **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
+
 This note records the Kubernetes API behavior relevant to resources created
 with `metadata.generateName`, especially when the create request is consumed
 from Kubernetes audit events.

@@ -1,0 +1,8 @@
+# This is a kustomization.yaml: a Kustomize config file. It has a Kubernetes-like
+# apiVersion/kind but is NOT a cluster object - the API server never stores a
+# Kustomization of kind kustomize.config.k8s.io. It is build instructions.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - service.yaml

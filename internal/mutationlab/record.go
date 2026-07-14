@@ -5,7 +5,7 @@
 // native watches, audit webhooks, and validating admission webhooks, and
 // commits those structures as a versioned corpus. It is deliberately NOT a
 // second implementation of GitOps Reverser; see
-// docs/design/mutation-capture-lab-design.md.
+// docs/spec/mutation-capture-lab-design.md.
 package mutationlab
 
 import (

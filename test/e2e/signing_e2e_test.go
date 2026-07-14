@@ -401,7 +401,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		commitPath := "e2e/signing-reconcile"
 		// The reconcile template names the synced type ({{.APIVersion}}/{{.Resource}}) and pins the
 		// {{.Revision}} so the per-type splice commits are self-describing — the §9 "name the synced
-		// type" improvement in docs/design/stream/signing-snapshot-tail-replay-failure-investigation.md.
+		// type" improvement in docs/finished/signing-snapshot-tail-replay-failure-investigation.md.
 		customReconcileTemplate := "e2e-reconcile: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
 			"@{{.Revision}} to {{.GitTarget}}"
 

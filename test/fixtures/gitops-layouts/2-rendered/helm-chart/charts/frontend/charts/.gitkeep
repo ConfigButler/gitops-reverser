@@ -1,0 +1,3 @@
+# Placeholder so the vendored-subchart directory exists in git even though no
+# dependency .tgz has been fetched here. `helm dependency update` would populate
+# this directory with redis-<version>.tgz based on Chart.lock.

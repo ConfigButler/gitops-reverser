@@ -1,0 +1,8 @@
+# kustomize build config (not a cluster object). It lists an encrypted Secret
+# as an ordinary resource; kustomize copies the ciphertext through untouched.
+# Decryption happens later, in the cluster, via the Flux Kustomization.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - secret.enc.yaml

@@ -19,7 +19,7 @@ import (
 )
 
 // ManifestStore is the byte-free, in-memory structure model of a GitTarget folder
-// described in docs/design/manifest/current-manifest-support-review.md ("Concrete
+// described in docs/spec/current-manifest-support-review.md ("Concrete
 // Data Structures"). It is the backbone the live writer, scan mode, the CLI, and
 // status all consume; the analyzer Report is rendered as a projection over it.
 //
@@ -72,7 +72,7 @@ type ManifestStore struct {
 
 	// Kustomizations indexes every kustomization.yaml found under the scanned root by
 	// its directory (slash, relative to the root; "." for the root itself). New-file
-	// placement (F4) consults it to decide whether a candidate directory is
+	// placement consults it to decide whether a candidate directory is
 	// kustomize-governed and, if so, which file's resources: list a new sibling must
 	// be added to. Populated independent of the allowlist — build-directive discovery
 	// does not depend on which files the writer materialises.
@@ -81,7 +81,7 @@ type ManifestStore struct {
 	// Foreign lists the filesystem entries under spec.path that matched no recognized role
 	// (non-YAML files, symlinks, submodules) and survived the .gittargetignore filter. The
 	// acceptance gate refuses each one (foreignContentRefusals); the path is an
-	// operator-exclusive subtree. See docs/design/gitpath-foreign-content-stringency.md.
+	// operator-exclusive subtree. See docs/spec/gitpath-foreign-content-stringency.md.
 	Foreign []ForeignEntry
 
 	// Ignore is the active root .gittargetignore matcher (nil when the path carries none).
@@ -155,7 +155,7 @@ func (f *FileModel) Deleted() bool { return f.Current == nil && f.Original != ni
 // without storing a fragile mutable field. The M4 acceptance gate additionally
 // refuses any managed file that is not entirely valid KRM (Decision #2), so an
 // accepted file is contiguous anyway. manifestedit is given the position only at
-// apply time. See docs/design/manifest/current-manifest-support-review.md ("Concrete
+// apply time. See docs/spec/current-manifest-support-review.md ("Concrete
 // Data Structures") and the M4 acceptance gate (acceptance.go).
 type DocumentModel struct {
 	// ManifestIdentity is the EFFECTIVE content identity (apiVersion + kind +
@@ -175,7 +175,7 @@ type DocumentModel struct {
 	// ambiguous-kustomize-overrides diagnostic). The writer routes a live change
 	// produced by one of these entries back to the entry instead of writing it
 	// through into the source document. See
-	// docs/design/gitops-api/f1-images-replicas-edit-through.md.
+	// docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
 	Overrides *KustomizeOverrides
 
 	// ResourceIdentity is the API-side identity (GVR + namespace + name). It is set
@@ -206,7 +206,7 @@ type DocumentModel struct {
 // It replaces an earlier "namespace came from kustomize" boolean so the store can also
 // explain the no-context and ambiguous cases to status, duplicate diagnostics, and
 // future placement — see
-// docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md.
+// docs/spec/contextual-namespace-and-kustomize-folder-editing.md.
 type NamespaceSourceKind string
 
 const (
@@ -601,7 +601,7 @@ type namespaceAssignment struct {
 }
 
 // KustomizationInfo is the write-relevant view of one kustomization.yaml exposed for
-// new-file placement (F4): whether the directory it lives in carries a supported
+// new-file placement: whether the directory it lives in carries a supported
 // kustomization and, if so, its local resources/bases entries (raw, relative to its
 // own directory) — the list a new sibling file must be added to so kustomize
 // includes it.
@@ -628,7 +628,7 @@ type KustomizationInfo struct {
 }
 
 // kustomizationInfos exports the analyzer's internal kustomization index for
-// new-file placement (F4). Copying into a fresh map/slice keeps ManifestStore
+// new-file placement. Copying into a fresh map/slice keeps ManifestStore
 // immune to any future mutation of the internal kustomizationDoc values.
 func kustomizationInfos(kusts map[string]*kustomizationDoc) map[string]*KustomizationInfo {
 	out := make(map[string]*KustomizationInfo, len(kusts))
@@ -647,7 +647,7 @@ func kustomizationInfos(kusts map[string]*kustomizationDoc) map[string]*Kustomiz
 // namespace transformer, its resources/bases graph entries, and whether it uses any
 // feature outside the supported contextual-namespace subset (which disqualifies it as
 // a namespace source). See the "Kustomize subset proposal" in
-// docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md.
+// docs/spec/contextual-namespace-and-kustomize-folder-editing.md.
 type kustomizationDoc struct {
 	path        string            // kustomization file path (slash)
 	namespace   string            // the namespace: transformer value

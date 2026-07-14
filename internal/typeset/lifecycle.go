@@ -14,7 +14,7 @@ import (
 // just-appeared type does not drive a per-type reconcile on a state that is about to change
 // again. Like RemovalGrace it is product safety, not tuning, so it is a fixed constant — but
 // it is deliberately short where the grace is long. See
-// docs/design/manifest/version2/type-lifecycle-events-and-wobble-settling.md (Proposal 2).
+// docs/spec/type-lifecycle-events-and-wobble-settling.md (Proposal 2).
 const SettleWindow = 5 * time.Second
 
 // EventKind names a per-type lifecycle transition the registry emits. The events are

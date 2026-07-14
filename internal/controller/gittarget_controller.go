@@ -67,7 +67,7 @@ const (
 	GitTargetReasonGitPathAccepted      = "GitPathAccepted"
 	GitTargetReasonUnsupportedContent   = "UnsupportedContent"
 	// GitTargetReasonIgnoreShadowsManagedPath is the terminal reason for the one
-	// unrecoverable .gittargetignore footgun (docs/design/gitpath-foreign-content-stringency.md
+	// unrecoverable .gittargetignore footgun (docs/spec/gitpath-foreign-content-stringency.md
 	// §4.3): an ignore pattern matches a path the operator writes, which would blind it to its
 	// own file. The writer's write-plan precondition refuses the flush before any byte is
 	// written and the GitTarget is failed with this reason. The string must stay in sync with
@@ -76,7 +76,7 @@ const (
 	// GitTargetReasonWriteBoundaryRefused is the reason for a write the operator refused
 	// because it had nowhere safe to land, rather than because the folder holds content the
 	// operator cannot manage
-	// (docs/design/gitops-api/gittarget-granularity-and-cross-environment-edits.md §1): a
+	// (docs/design/support-boundary/gittarget-granularity-and-cross-environment-edits.md §1): a
 	// planned write escaping spec.path (L1), or an in-place edit of a source file more than
 	// one kustomize render root reaches (L2, write-fan-in > 1). Nothing was committed. The
 	// string must stay in sync with the watch package's gitPathRefusalReason.
@@ -974,7 +974,7 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// full-object Secret watch made the process retain every Secret value in the
 		// cluster. Generated-age-Secret recovery and out-of-band age-key updates are
 		// picked up by the periodic reconcile (RequeueSteadyInterval) instead.
-		// See docs/future/secret-value-retention-plan.md.
+		// See docs/rbac.md.
 		// GenerationChangedPredicate keeps this watch reacting to a freshly
 		// applied or spec-changed GitProvider while ignoring the status-only
 		// updates the controllers write themselves — without it every provider
@@ -1004,7 +1004,7 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// React to a data-plane GitPath acceptance TRANSITION (refused/recovered) so GitPathAccepted
 	// is re-projected within one reconcile instead of lagging up to RequeueSteadyInterval (5m).
 	// The watch manager records acceptance asynchronously and pushes a GenericEvent here. See
-	// docs/design/manifest/gitpathaccepted-projection-race-and-external-drift.md.
+	// docs/spec/manifest-system.md.
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
 		b = b.WatchesRawSource(source.Channel(
 			r.EventRouter.WatchManager.GitPathEvents(),

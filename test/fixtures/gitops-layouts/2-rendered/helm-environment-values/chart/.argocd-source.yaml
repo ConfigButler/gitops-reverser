@@ -1,0 +1,19 @@
+# Argo CD source override. A HIDDEN dotfile that changes what gets deployed.
+#
+# Argo CD reads `.argocd-source.yaml` from the Application's source path and
+# merges it over `spec.source` in the Application manifest. It applies to EVERY
+# Application whose path is this directory. A file named
+# `.argocd-source-<appname>.yaml` targets one named Application and wins over
+# this one.
+#
+# It is not a Kubernetes object: no apiVersion, no kind. Its top-level keys are
+# the fields of an Argo CD Application's `spec.source`.
+#
+# Consequence for this fixture: the effective image tag is NOT the "1.8.3" that
+# argocd/production.yaml sets in spec.source.helm.parameters. It is the value
+# below, because this file is merged over that.
+helm:
+  parameters:
+    - name: image.tag
+      value: "1.8.4"
+      forceString: true

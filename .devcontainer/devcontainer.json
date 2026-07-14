@@ -18,7 +18,13 @@
   },
   "runArgs": [
     "--group-add=docker",
-    "--add-host=host.docker.internal:host-gateway"
+    "--add-host=host.docker.internal:host-gateway",
+    // Cap the devcontainer so a runaway build/lint/test is OOM-killed inside the
+    // container instead of starving the remote host. Note this bounds only what runs
+    // *in here*: docker-outside-of-docker means e2e's k3d containers are siblings on
+    // the host daemon and are not covered by this limit.
+    "--memory=12g",
+    "--memory-swap=16g"
   ],
   "forwardPorts": [
     13000,

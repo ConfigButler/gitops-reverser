@@ -13,7 +13,7 @@ import (
 )
 
 // This spec proves the foreign-content stringency end to end
-// (docs/design/gitpath-foreign-content-stringency.md): a GitTarget path is an
+// (docs/spec/gitpath-foreign-content-stringency.md): a GitTarget path is an
 // operator-exclusive subtree, so a loose non-YAML file the operator cannot manage is REFUSED
 // (GitPathAccepted=False / UnsupportedContent / Stalled=True) with the offending file named,
 // and the operator commits nothing. It reuses the GitPathAccepted refusal plumbing the

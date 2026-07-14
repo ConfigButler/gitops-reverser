@@ -1,0 +1,21 @@
+# A pre-existing resource in the overlay, proving the folder is already a real
+# kustomize context before placement puts anything new in it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: new-file-placement-web
+  labels:
+    app.kubernetes.io/part-of: new-file-placement
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: new-file-placement-web
+  template:
+    metadata:
+      labels:
+        app: new-file-placement-web
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27

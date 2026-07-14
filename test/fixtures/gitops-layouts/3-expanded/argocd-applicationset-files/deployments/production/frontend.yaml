@@ -1,0 +1,9 @@
+# ApplicationSet generator input. This is NOT a Kubernetes object: it has no
+# apiVersion, no kind, and no metadata. It is plain data consumed by the git
+# files generator in applicationset.yaml.
+name: frontend
+namespace: frontend
+chartVersion: 1.4.2
+values:
+  replicas: 4
+  image: ghcr.io/example-org/frontend:1.8.3

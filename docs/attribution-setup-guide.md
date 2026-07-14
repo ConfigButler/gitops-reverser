@@ -20,7 +20,7 @@ which only self-managed control planes expose:
 - **Not supported:** managed control planes (EKS, GKE, AKS) that hide apiserver configuration.
 
 On a managed platform, either front it with a self-managed control plane or stay in configured-author
-mode. The [audit webhook connectivity design](design/audit-webhook-api-server-connectivity.md) has
+mode. The [audit webhook connectivity design](facts/audit-webhook-api-server-connectivity.md) has
 the full reasoning on hosting.
 
 ## Prerequisites
@@ -29,7 +29,7 @@ the full reasoning on hosting.
 - A control plane whose apiserver flags you can set and reload.
 - **Redis/Valkey, required.** In configured-author mode it is optional; with attribution on it holds the
   audit attribution facts (in addition to watch resume cursors), so `queue.redis.addr` must be
-  non-empty. See [Redis is required for HA](redis-required-for-ha.md) for sizing notes.
+  non-empty. See Redis is required for HA for sizing notes.
 
 ## The two sides of the setup
 
@@ -75,9 +75,9 @@ The chart deliberately does **not** touch your nodes. Working from the rendered 
 
 **Use `batch` mode. Never start with `blocking` or `blocking-strict`** — those couple normal API
 request latency to the health of the audit receiver and can reject valid requests when the receiver
-is slow. The [connectivity design doc](design/audit-webhook-api-server-connectivity.md#audit-webhook-backend-best-practices)
+is slow. The [connectivity design doc](facts/audit-webhook-api-server-connectivity.md#audit-webhook-backend-best-practices)
 covers the recommended flags and what to tune first; the
-[TLS design doc](design/audit-webhook-tls-design.md) covers trusting the receiver certificate versus
+[TLS design doc](finished/audit-webhook-tls-design.md) covers trusting the receiver certificate versus
 the local-only `insecure-skip-tls-verify` shortcut. For a k3s-specific file-placement walkthrough,
 see [`audit-setup/cluster/readme.md`](audit-setup/cluster/readme.md).
 
@@ -108,7 +108,7 @@ Service are removed; you can then also remove the apiserver audit flags on the n
 
 ## Related docs
 
-- [`design/audit-webhook-api-server-connectivity.md`](design/audit-webhook-api-server-connectivity.md): networking, DNS, and TLS tradeoffs for audit delivery
-- [`design/audit-webhook-tls-design.md`](design/audit-webhook-tls-design.md): trusting the audit receiver certificate
+- [`design/audit-webhook-api-server-connectivity.md`](facts/audit-webhook-api-server-connectivity.md): networking, DNS, and TLS tradeoffs for audit delivery
+- [`design/audit-webhook-tls-design.md`](finished/audit-webhook-tls-design.md): trusting the audit receiver certificate
 - [`configuration.md`](configuration.md): core configuration objects
 - [`../README.md`](../README.md): product overview and configured-author quick start

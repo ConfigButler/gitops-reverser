@@ -17,7 +17,7 @@ how to (a) restore periodic checkpoint healing without stealing commit windows,
 
 It is the companion to:
 
-- [api-source-of-truth-reconcile.md](./api-source-of-truth-reconcile.md) — the R-stage
+- [api-source-of-truth-reconcile.md](../architecture.md) — the R-stage
   splice/tail architecture.
 - `demand-driven-type-materialization-lifecycle.md`
   — the demand axis (claims, phases) this builds on.
@@ -412,7 +412,7 @@ latent re-anchor flap, move into the controller and are fixed there). Because `R
 counts as serviceable, a periodic re-anchor does **not** flap the phase. Also **delete the
 vestigial `status.snapshot`** while here. The full two-axis status contract (conditions,
 phase derivation, reasons, tests) is written up in
-[../status-design-git-target.md](../design/status-design-git-target.md).
+[../status-design-git-target.md](../spec/status-conditions-guide.md).
 
 ### Rec 5 — Tests to add
 

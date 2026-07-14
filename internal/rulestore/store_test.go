@@ -384,7 +384,7 @@ func TestGetMatchingRules(t *testing.T) {
 //     deduped to one).
 //
 // This matters for the per-target effective watch plan
-// (docs/design/gittarget-isolation-on-rule-change.md): a target's watched
+// (docs/spec/gittarget-isolation-on-rule-change.md): a target's watched
 // operation set for a GVR is the union across its rules, and each returned
 // CompiledRule carries its own GitTarget, so two complementary rules pointing at
 // the same target make that target watch the union.

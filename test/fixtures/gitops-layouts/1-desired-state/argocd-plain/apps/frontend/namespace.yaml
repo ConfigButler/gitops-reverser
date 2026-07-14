@@ -1,0 +1,8 @@
+# Cluster-scoped object: a Namespace has no metadata.namespace of its own.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: example-platform

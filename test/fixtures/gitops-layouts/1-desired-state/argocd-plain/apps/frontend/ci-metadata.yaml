@@ -1,0 +1,8 @@
+# NOT a Kubernetes object: this is build metadata emitted by CI and dropped
+# into the manifest directory. It has no apiVersion/kind, so it is not KRM.
+# The Application excludes it via directory.exclude so it is never applied.
+pipeline: frontend-release
+commit: 9f3c1ab7d2e4c5061b8a0f2d3e4c5061b8a0f2d3
+builtAt: "2026-07-09T14:22:07Z"
+builtBy: github-actions
+image: ghcr.io/example-org/frontend:1.8.3

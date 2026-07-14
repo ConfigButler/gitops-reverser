@@ -54,7 +54,7 @@ func (r ResourceIdentifier) Key() string {
 // once any layout exists in the target, sibling inference follows it, and an
 // existing document is always edited in place at its current location (match-first),
 // so changing this shape never moves a file that is already in Git. See
-// docs/design/manifest/version2/gittarget-new-file-placement-rules.md.
+// docs/spec/gittarget-new-file-placement-rules.md.
 func (r ResourceIdentifier) ToGitPath() string {
 	scope := r.Namespace
 	if scope == "" {

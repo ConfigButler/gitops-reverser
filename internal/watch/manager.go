@@ -49,7 +49,7 @@ import (
 // holds NO long-lived object informers: the only always-on resource intake is the
 // audit-webhook push (mirrored into the per-type :audit:stream); the only API touch on a
 // schedule is the brief checkpoint fill (mirrorTypeObjects) the materialization driver runs
-// for claimed types. See docs/design/stream/api-source-of-truth-reconcile.md.
+// for claimed types. See docs/architecture.md.
 type Manager struct {
 	// Client provides cluster access.
 	Client client.Client
@@ -162,7 +162,7 @@ type Manager struct {
 	// state TRANSITIONS, so the GitTarget controller re-projects GitPathAccepted promptly
 	// instead of waiting up to RequeueSteadyInterval (5m) for its next periodic reconcile. The
 	// data plane records acceptance asynchronously; without this edge the status lags. See
-	// docs/design/manifest/gitpathaccepted-projection-race-and-external-drift.md. Lazily
+	// docs/spec/manifest-system.md. Lazily
 	// created by GitPathEvents() and guarded by gitPathEventsMu.
 	gitPathEventsMu sync.Mutex
 	gitPathEventsCh chan event.GenericEvent
@@ -175,7 +175,7 @@ type Manager struct {
 	gitTargetUIDs   map[string]string
 
 	// typeRegistry is the followability decision surface (see
-	// docs/design/manifest/version2/type-followability.md): one typeset.TypeRecord
+	// docs/spec/type-followability.md): one typeset.TypeRecord
 	// per served type, refreshed from the catalog scan on every catalog refresh. It
 	// is the inventory/status surface ("is this type followable, and if not, why?");
 	// typeRegistryInit guards its lazy construction for zero-value Managers in tests.

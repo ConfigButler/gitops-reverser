@@ -18,7 +18,7 @@ import (
 // commits nothing and surfaces the refusal on GitTarget status as GitPathAccepted=False,
 // Stalled=True, and Ready=False. WatchRule and ClusterWatchRule surface the same dependency
 // on GitTargetReady. The source streams stay truthful to watch state; the path is left untouched
-// until a human cleans it. See docs/design/unsupported-folder-refusal-plan.md.
+// until a human cleans it. See docs/spec/unsupported-folder-refusal-plan.md.
 var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsupported-folder"), Ordered, func() {
 	var (
 		testNs          string

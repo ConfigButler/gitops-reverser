@@ -159,7 +159,7 @@ that field silently stops applying too. That is [split ownership](#recommended-m
 (mode 3), a legitimate but *different* mode — not the shared, both-ways behaviour
 this guide is about. The full reasoning — including why PreSync hooks and self-heal
 timers can't rescue it either — is in
-[`design/gitops-api/argocd-bi-directional.md`](design/gitops-api/argocd-bi-directional.md).
+[`design/support-boundary/argocd-bi-directional.md`](design/support-boundary/argocd-bi-directional.md).
 
 ## Practical Platform Guidance
 
@@ -246,6 +246,6 @@ with `task argocd-ui`):
 
 Design detail:
 
-- [`design/e2e-bi-directional-corner.md`](design/e2e-bi-directional-corner.md) — the corner
-- [`design/gitops-api/argocd-bi-directional.md`](design/gitops-api/argocd-bi-directional.md) — why `selfHeal` is opposed to bi-directional
-- [`design/gittarget-lifecycle-and-repo-architecture.md`](design/gittarget-lifecycle-and-repo-architecture.md) — controller and repo lifecycle
+- [`design/e2e-bi-directional-corner.md`](spec/e2e-bi-directional-corner.md) — the corner
+- [`design/support-boundary/argocd-bi-directional.md`](design/support-boundary/argocd-bi-directional.md) — why `selfHeal` is opposed to bi-directional
+- [`design/gittarget-lifecycle-and-repo-architecture.md`](architecture.md) — controller and repo lifecycle

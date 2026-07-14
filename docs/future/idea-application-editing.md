@@ -2,9 +2,10 @@
 
 ## Context
 
-gitops-reverser is currently positioned as a tool for "intent clusters" — test environments where you
-explore changes before promoting them. This document explores one concrete and powerful use case for
-that positioning: making the ArgoCD GUI a first-class GitOps authoring tool.
+gitops-reverser mirrors live Kubernetes state back into Git, which makes it useful in a cluster you
+change on purpose — a test environment where you explore changes before promoting them. This document
+explores one concrete and powerful use case for that: making the ArgoCD GUI a first-class GitOps
+authoring tool.
 
 ## The idea
 

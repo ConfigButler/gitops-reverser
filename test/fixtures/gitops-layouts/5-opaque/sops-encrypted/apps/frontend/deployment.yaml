@@ -1,0 +1,31 @@
+# Plain, unencrypted Kubernetes object. It sits in the same directory as an
+# encrypted Secret; only the Secret's values are opaque, this Deployment is not.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: frontend-production
+  labels:
+    app: frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/example-org/frontend:1.8.3
+          envFrom:
+            - secretRef:
+                name: frontend-credentials
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi

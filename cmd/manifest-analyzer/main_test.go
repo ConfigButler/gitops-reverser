@@ -167,7 +167,7 @@ func TestRun_ScanRepoText(t *testing.T) {
 	if code := run([]string{"--mode", "scan-repo", scanRepoFixture(t)}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
 	}
-	for _, want := range []string{"candidates:", "kustomize-overlay", "overlay-fan-out-needs-f2"} {
+	for _, want := range []string{"candidates:", "kustomize-overlay", "overlay-fan-out-unsupported"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("scan-repo text missing %q:\n%s", want, out.String())
 		}

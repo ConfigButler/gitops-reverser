@@ -3,7 +3,7 @@
 // manifest-analyzer is a standalone, read-only CLI that analyzes a folder of
 // Kubernetes manifests. It is the proof-of-concept consumer of the
 // internal/manifestanalyzer library described in
-// docs/design/manifest/current-manifest-support-review.md. It writes nothing; it
+// docs/spec/current-manifest-support-review.md. It writes nothing; it
 // only reports what it finds.
 //
 // Usage:
@@ -277,7 +277,7 @@ func scanExitCode(policy string, accepted bool) int {
 	return exitOK
 }
 
-// runScanRepo runs the F8 whole-repo onboarding scan: walk every folder, enumerate
+// runScanRepo runs the whole-repo onboarding scan: walk every folder, enumerate
 // candidate GitTarget subtrees, classify each one's layout and acceptance, and emit the
 // report. It is read-only and needs no cluster. Exit codes stay simple for this cut
 // (exitOK, or exitUsage on an I/O error); the repo-level --policy refuse gate is

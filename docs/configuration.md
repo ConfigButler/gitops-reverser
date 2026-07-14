@@ -428,8 +428,8 @@ The boundaries that keep it predictable:
   want all ConfigMaps bundled even though none exist yet" is a job for `byType` below.
 
 The full ladder, tie-break rules, and edge cases are in
-[design/manifest/version2/gittarget-new-file-placement-rules.md](design/manifest/version2/gittarget-new-file-placement-rules.md);
-the vision behind it is [design/manifest/file-agnostic-placement.md](design/manifest/file-agnostic-placement.md).
+[design/manifest/version2/gittarget-new-file-placement-rules.md](spec/gittarget-new-file-placement-rules.md);
+the vision behind it is [design/manifest/file-agnostic-placement.md](spec/gittarget-new-file-placement-rules.md).
 
 #### Declaring a layout (`byType` / `default`)
 
@@ -542,7 +542,7 @@ entry). These fallbacks are recorded as store diagnostics — visible in the ana
 the running operator, in the logs at debug verbosity (`manifest store diagnostic`).
 
 For design details and the exact boundary, see
-[design/gitops-api/finished/f1-images-replicas-edit-through.md](design/gitops-api/finished/f1-images-replicas-edit-through.md).
+[design/support-boundary/finished/images-and-replicas-edit-through.md](design/support-boundary/finished/images-and-replicas-edit-through.md).
 
 ## `WatchRule`
 

@@ -821,7 +821,7 @@ func operationForWatchEvent(eventType watch.EventType) string {
 // the writer folds to a no-op against the already-absent path. deletionTimestamp is
 // server-owned runtime metadata (sanitize strips it), never desired state, so the
 // intent tree's invariant — a file present means the resource is intended to exist —
-// holds. See docs/design/deletecollection-attribution-expander.md §2.
+// holds. See docs/spec/deletecollection-attribution-expander.md §2.
 func operationForLiveTargetWatchEvent(eventType watch.EventType, u *unstructured.Unstructured) string {
 	if u != nil && u.GetDeletionTimestamp() != nil {
 		return string(configv1alpha3.OperationDelete)

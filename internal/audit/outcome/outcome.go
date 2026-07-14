@@ -8,7 +8,7 @@
 // outcomes, the per-type queue for queue outcomes). The Git-materialization fate
 // (read-time tail/splice skips) is deliberately NOT an Outcome — those are
 // repeatable per (GitTarget, GVR) and would multi-count the same stored entry.
-// See docs/design/stream/audit-diagnostic-streams-plan.md.
+// See docs/architecture.md.
 package outcome
 
 import (

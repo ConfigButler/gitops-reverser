@@ -1,5 +1,7 @@
 # Plan: build release images once on main, retag at release
 
+> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+
 Status: **PR 1 (§8 core) MERGED to `main`** — squash-merged 2026-07-03 as
 [#190], commit `2b3a949`. PRs 2–5 remain unstarted follow-ups. No real
 release has exercised the retag path yet as of this writing (an open

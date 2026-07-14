@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: frontend-production
+  labels:
+    environment: production
+    app.kubernetes.io/part-of: storefront
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backend-production
+  labels:
+    environment: production
+    app.kubernetes.io/part-of: storefront

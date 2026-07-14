@@ -13,7 +13,7 @@ import (
 )
 
 // GitTargetIgnoreFileName is the basename of the in-repo escape hatch described in
-// docs/design/gitpath-foreign-content-stringency.md (§4). Exactly ONE copy is honoured —
+// docs/spec/gitpath-foreign-content-stringency.md (§4). Exactly ONE copy is honoured —
 // the file at the GitTarget path root — and the patterns it carries name content the
 // operator must NEVER read, even when it is YAML. A copy deeper in the subtree is NOT
 // honoured and is refused as foreign content (D-foreign-2).
@@ -25,7 +25,7 @@ const gitDirName = ".git"
 
 // ForeignKind classifies a non-managed filesystem entry found under a GitTarget path —
 // the foreign role of the five-role model in
-// docs/design/gitpath-foreign-content-stringency.md (§3). A foreign entry is refused, not
+// docs/spec/gitpath-foreign-content-stringency.md (§3). A foreign entry is refused, not
 // ignored: the path is an operator-exclusive subtree.
 type ForeignKind string
 

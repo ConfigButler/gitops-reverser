@@ -1,0 +1,13 @@
+# Plain checked-in Kubernetes object: the base Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    app: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 80
+      targetPort: 9090

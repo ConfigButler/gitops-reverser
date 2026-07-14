@@ -1,0 +1,6 @@
+# This file marks gitops-production/ as a standalone repository root.
+# In the real world this directory would be cloned as its own Git repository,
+# typically with the tightest access control of the three environments.
+.env
+*.tmp
+.DS_Store

@@ -5,7 +5,7 @@ The only Argo CD installation in this repository. Installed by the
 only `task test-e2e-bi-directional` and `task argocd-ui` depend on — so the other
 CI legs never pay for it.
 
-Design: [`docs/design/e2e-bi-directional-corner.md`](../../../../docs/design/e2e-bi-directional-corner.md).
+Design: [`docs/spec/e2e-bi-directional-corner.md`](../../../../docs/spec/e2e-bi-directional-corner.md).
 
 ## Shape
 

@@ -24,7 +24,7 @@ import (
 // because it is the only place Argo CD is installed — `task test-e2e` skips it,
 // `task test-e2e-bi-directional` runs it.
 //
-// See docs/design/e2e-bi-directional-corner.md and docs/bi-directional.md.
+// See docs/spec/e2e-bi-directional-corner.md and docs/bi-directional.md.
 const biDirectionalEnabledEnv = "E2E_ENABLE_BI_DIRECTIONAL"
 
 const (

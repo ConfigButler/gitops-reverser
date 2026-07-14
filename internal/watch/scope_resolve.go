@@ -23,7 +23,7 @@ import (
 // rather than reconciling a reduced view (R11, §7). The desired set itself is no longer
 // gathered live — it is the spliced materialization (splice_snapshot.go) — so this file holds
 // only scope resolution and the object→DesiredResource projection both the splice and the
-// demand Declare share. See docs/design/stream/api-source-of-truth-reconcile.md.
+// demand Declare share. See docs/architecture.md.
 
 // ClusterSnapshot is one type's revision-pinned desired set for a GitTarget: Desired is the
 // scoped object set the worker folds over the git folder; Revision is the checkpoint

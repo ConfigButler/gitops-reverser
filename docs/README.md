@@ -30,21 +30,24 @@ If you only want the supported product docs, start with the files below.
 
 ## Maintainer notes
 
-These directories are useful when changing internals, but they are not the primary user-facing
-docs surface:
+**Start at [`INDEX.md`](INDEX.md)** — it names the ~35 documents that actually bind, out of the
+117 here. Everything else is a user guide (above) or history.
 
-- [`design/`](design/): architecture notes, investigations, and implementation plans
-- [`finished/`](finished/): design docs and reports for work that has shipped or been resolved,
-  kept for historical context
-- [`ci/`](ci/): CI/devcontainer rationale and troubleshooting
-- [`future/`](future/): ideas that are intentionally deferred
-- [`audit-setup/`](audit-setup/): cluster-specific audit delivery notes and examples
+The maintainer folders are organised by **lifecycle**, not by topic. Pick a folder by asking
+"what state is this work in?", never "what is this about?":
 
-These root-level files are also working notes rather than polished user docs:
+| Folder | Means | Binds? |
+|---|---|---|
+| [`spec/`](spec/) | **This is true now, and the code depends on it.** Most are cited by path from Go source. Change the behaviour, change the doc. | **yes** |
+| [`design/`](design/) | **We are still deciding.** Open questions and unbuilt work. | yes — it is the roadmap |
+| [`facts/`](facts/) | Durable reference: how Kubernetes behaves, and what we learned about it. | yes, as reference |
+| [`finished/`](finished/) | **This happened.** Shipped plans and closed investigations. | **no** |
+| [`future/`](future/) | Deferred ideas we still want. | as intent |
+| [`ci/`](ci/) | CI/devcontainer rationale and troubleshooting. | as reference |
+| [`audit-setup/`](audit-setup/) | Cluster-specific audit delivery notes. | as reference |
 
-- [`TODO.md`](TODO.md)
-- `*plan*.md`
-- `*analysis*.md`
+The one rule that keeps this working: **most documents in `spec/` are cited by path from the Go
+source.** If you move or rename one, fix the citation in the same commit. Not doing that is what
+made the previous tree unreadable — 17 citations were pointing at files that no longer existed.
 
-If you are cleaning up documentation, that maintainer-notes layer is usually the first place to
-trim, archive, or merge.
+[`TODO.md`](TODO.md) is a scratch list, not a plan.

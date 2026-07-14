@@ -217,10 +217,10 @@ func (m *Manager) typeRegistryInstance() *typeset.Registry {
 
 // refreshTypeRegistry publishes the catalog's latest normalized scan to the typeset
 // registry, which owns ALL cross-scan judgement (retain-on-error, the removal grace
-// for omissions — docs/design/typeset-owns-discovery-grace.md). It runs after every
+// for omissions — docs/spec/typeset-owns-discovery-grace.md). It runs after every
 // catalog refresh, so the registry tracks discovery and its grace clocks advance on
 // the same cadence the catalog scans do. It is the "Scan -> Registry" pipeline of
-// docs/design/manifest/version2/type-followability.md.
+// docs/spec/type-followability.md.
 func (m *Manager) refreshTypeRegistry() {
 	// Only publish once the catalog holds trusted data, so the registry's readiness
 	// tracks the catalog's: an unready catalog must leave the registry unready, which

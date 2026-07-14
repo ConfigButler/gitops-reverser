@@ -1,0 +1,39 @@
+# Production overlay build instructions (NOT a cluster object).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # Relative path to the in-repo base.
+  - ../../base
+# namespace: transformation.
+namespace: frontend-production
+# nameSuffix: mutates object identity - "frontend" becomes "frontend-prod".
+nameSuffix: -prod
+# replicas: override.
+replicas:
+  - name: frontend
+    count: 4
+# images: override using BOTH newName and newTag - the image is repointed to a
+# different repository and tag than the base.
+images:
+  - name: ghcr.io/example-org/frontend
+    newName: ghcr.io/example-org/frontend-hardened
+    newTag: 1.8.3
+# patches: strategic-merge patch changing an existing object.
+patches:
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: frontend
+# configMapGenerator: from a non-YAML env file; output name is hash-suffixed.
+configMapGenerator:
+  - name: frontend-config
+    behavior: create
+    envs:
+      - config.properties
+# secretGenerator: builds a Secret from a non-YAML env file. Also hash-suffixed,
+# and the secret material lives in plain text in secrets.env, not in a manifest.
+secretGenerator:
+  - name: frontend-secrets
+    type: Opaque
+    envs:
+      - secrets.env

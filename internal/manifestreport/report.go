@@ -66,7 +66,7 @@ func (r Report) Counts() map[Action]int {
 // The trust model is a single repository transaction: files must be the content
 // of one checked-out commit/worktree, and the resulting verdicts are valid only
 // for that snapshot. See
-// docs/design/manifest/manifestedit-integration-readonly-reconcile.md.
+// docs/spec/manifest-system.md.
 func BuildReport(
 	files []manifestedit.FileContent,
 	desired []*unstructured.Unstructured,

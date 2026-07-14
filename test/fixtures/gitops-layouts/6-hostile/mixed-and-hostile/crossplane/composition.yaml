@@ -1,0 +1,63 @@
+# TRAP: KRM whose spec EMBEDS other KRM as templates. A Crossplane Composition:
+# the objects under spec.resources[].base are full manifests nested inside this
+# one object. Naive assumption broken: KRM never nests KRM.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: frontend-platform
+spec:
+  compositeTypeRef:
+    apiVersion: platform.example-org.io/v1alpha1
+    kind: XFrontend
+  resources:
+    - name: deployment
+      base:
+        # A full Kubernetes object nested inside the Composition's spec.
+        apiVersion: kubernetes.crossplane.io/v1alpha2
+        kind: Object
+        spec:
+          forProvider:
+            manifest:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: frontend
+                labels:
+                  app: frontend
+              spec:
+                replicas: 2
+                selector:
+                  matchLabels:
+                    app: frontend
+                template:
+                  metadata:
+                    labels:
+                      app: frontend
+                  spec:
+                    containers:
+                      - name: frontend
+                        image: ghcr.io/example-org/frontend:1.8.3
+                        ports:
+                          - containerPort: 8080
+      patches:
+        - fromFieldPath: spec.replicas
+          toFieldPath: spec.forProvider.manifest.spec.replicas
+    - name: service
+      base:
+        apiVersion: kubernetes.crossplane.io/v1alpha2
+        kind: Object
+        spec:
+          forProvider:
+            manifest:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: frontend
+                labels:
+                  app: frontend
+              spec:
+                selector:
+                  app: frontend
+                ports:
+                  - port: 80
+                    targetPort: 8080

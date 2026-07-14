@@ -154,7 +154,7 @@ type ResolvedTargetMetadata struct {
 	Path             string
 	BootstrapOptions pathBootstrapOptions
 	EncryptionConfig *ResolvedEncryptionConfig
-	// Placement is the GitTarget's declared new-file placement policy (F4), resolved
+	// Placement is the GitTarget's declared new-file placement policy, resolved
 	// from spec.placement. Nil when the GitTarget declares none, in which case new
 	// resources are placed by sibling inference and then the canonical path.
 	Placement *manifestanalyzer.PlacementPolicy
@@ -195,7 +195,7 @@ type PendingWrite struct {
 
 	// CommitRequest, when set, is the CommitRequest claiming this write: it is
 	// resolved Committed (with CommitSHA) once this write is pushed (§6.5 of
-	// docs/design/stream/commitrequest-design.md). It rides the write through the
+	// docs/spec/commitrequest-design.md). It rides the write through the
 	// push cooldown and the conflict rebase-replay, so the result follows the data.
 	CommitRequest *commitRequestID
 	// CommitSHA is the hash of the commit this write created, captured in
@@ -268,7 +268,7 @@ type ResyncResult struct {
 // counts; Skipped is documents present but not safely editable (e.g. encrypted or
 // disallowed constructs). PlacementSkipped is new resources the writer refused to
 // place fail-safe — placement could not be resolved safely, or the write would
-// co-mingle sensitive and plaintext documents (F4 Option B2). It is counted (not
+// co-mingle sensitive and plaintext documents (placement Option B2). It is counted (not
 // silently swallowed) and logged per-resource so a not-mirrored resource is visible
 // in the resync summary; it is not (yet) surfaced as a dedicated GitTarget status
 // condition.
@@ -319,7 +319,7 @@ type Event struct {
 	// route). The sub-sequence is load-bearing: distinct entries can share an rv (an rv-less
 	// DELETE/Status rides the high-water, duplicate/same-rv writes get fresh seqs), so the gate
 	// compares full positions, not bare rvs. Empty on the live admission path; not used by the
-	// writer. See docs/design/stream/signing-snapshot-tail-replay-failure-investigation.md §7.
+	// writer. See docs/finished/signing-snapshot-tail-replay-failure-investigation.md §7.
 	AuditStreamID string
 
 	// UserInfo contains user information for commit messages.
@@ -351,7 +351,7 @@ func (e Event) IsFieldPatch() bool {
 // carried in place of a full Object. It is how an author-preserving subresource
 // mutation (e.g. deployments/scale) reaches Git: set exactly the audited field
 // paths on the already committed parent, never reconstructing the whole object.
-// See docs/design/manifest/version2/scale-subresource-audit-rehydration.md.
+// See docs/spec/scale-subresource-audit-rehydration.md.
 type FieldPatch struct {
 	// Assignments are the (path, value) pairs to set on the parent manifest. Paths
 	// are disjoint; each owns only its own subtree, so the patch is additive and
@@ -455,7 +455,7 @@ func (r ResourceRef) String() string {
 
 // GroupedCommitMessageData is the template context for grouped commit
 // messages. Each grouped commit covers exactly one (author, gitTarget) tuple
-// (see docs/design/commit-window-refactor.md).
+// (see docs/spec/commit-window-refactor.md).
 type GroupedCommitMessageData struct {
 	// Author is the verbatim event.UserInfo.Username for the group.
 	Author string

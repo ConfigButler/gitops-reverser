@@ -48,7 +48,7 @@ type Registry struct {
 	// followable<->refused) or the backing scan generation moves. Consumers that cache
 	// a projection of the registry (the per-GitTarget watched-type set) gate on this,
 	// not on the catalog generation — so a retention-grace drop at a stable generation
-	// still invalidates their cache. See docs/.../discovery-catalog-typeset-boundary.md.
+	// still invalidates their cache. See docs/spec/type-followability.md.
 	revision uint64
 	ready    bool
 }

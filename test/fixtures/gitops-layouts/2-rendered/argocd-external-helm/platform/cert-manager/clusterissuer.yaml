@@ -1,0 +1,18 @@
+# Plain Kubernetes manifest (cert-manager.io/v1 ClusterIssuer) co-located with the
+# Application and the Helm values in this folder. This one file IS a Kubernetes
+# object -- but it depends on CRDs the cert-manager chart installs first.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-production
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: platform-team@example-org.com
+    privateKeySecretRef:
+      name: letsencrypt-production-account-key
+    solvers:
+      - dns01:
+          route53:
+            region: us-east-1
+            hostedZoneID: Z0123456789ABCDEFGHIJ

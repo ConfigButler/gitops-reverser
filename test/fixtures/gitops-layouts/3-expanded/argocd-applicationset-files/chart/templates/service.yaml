@@ -1,0 +1,13 @@
+# Helm template. Not valid YAML until Helm renders its template actions.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tenant-app.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "tenant-app.name" . }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "tenant-app.name" . }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}

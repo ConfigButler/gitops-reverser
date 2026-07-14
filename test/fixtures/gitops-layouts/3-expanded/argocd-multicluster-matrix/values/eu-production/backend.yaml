@@ -1,0 +1,9 @@
+# Per-cluster override values for backend on the eu-production cluster.
+# This is plain YAML, NOT a Kubernetes object: no apiVersion, no kind.
+replicaCount: 4
+image:
+  tag: 2.4.0
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi

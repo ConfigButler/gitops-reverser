@@ -274,7 +274,7 @@ func TestResync_FoldsCreateUpdateDropTogether(t *testing.T) {
 	_, dropErr := os.Stat(dropFull)
 	assert.True(t, os.IsNotExist(dropErr))
 
-	// F4: with existing ConfigMap siblings ("keep", "drop") each in their own file
+	// Placement: with existing ConfigMap siblings ("keep", "drop") each in their own file
 	// under apps/, a genuinely new ConfigMap follows that established layout
 	// (Option C sibling inference) rather than the canonical GVR-tree path.
 	freshInferred := filepath.Join(root, "apps", "fresh.yaml")

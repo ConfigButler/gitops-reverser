@@ -1,0 +1,17 @@
+# Helm values for the cert-manager chart -- NOT a Kubernetes object.
+# Consumed by the co-located application.yaml through the `$values` valueFiles ref.
+# It sits in the same folder as an Application and a ClusterIssuer, yet it is
+# neither an Argo CD resource nor a Kubernetes object.
+installCRDs: true
+replicaCount: 2
+prometheus:
+  enabled: true
+webhook:
+  replicaCount: 2
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+extraArgs:
+  - --dns01-recursive-nameservers-only
+  - --dns01-recursive-nameservers=8.8.8.8:53,1.1.1.1:53

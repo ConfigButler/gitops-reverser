@@ -8,7 +8,7 @@ set -euo pipefail
 # and is reused on the fast path when already up.
 #
 # Argo CD is only installed in the bi-directional e2e corner
-# (docs/design/e2e-bi-directional-corner.md), so this is a standalone script
+# (docs/spec/e2e-bi-directional-corner.md), so this is a standalone script
 # rather than another service in setup-port-forwards.sh — the default
 # prepare-e2e must not try to forward a Service that does not exist.
 #

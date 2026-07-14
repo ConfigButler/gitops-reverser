@@ -8,7 +8,7 @@ everything it did not change.
 
 It is intentionally throw-away: the package proves whether gopkg.in/yaml.v3 node
 editing is good enough before any of this is wired into the real writer. See
-docs/design/manifest/manifest-parser-poc.md.
+internal/git/manifestedit/DECISION.md.
 */
 package manifestedit
 

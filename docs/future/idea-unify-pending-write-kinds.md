@@ -19,7 +19,7 @@ unset. The temptation is to make that the dispatch and delete the `Kind` enum.
 
 ## Use case walkthrough
 
-The four use cases in [commit-window-refactor.md](../finished/commit-window-refactor.md#use-cases):
+The four use cases in [commit-window-refactor.md](../spec/commit-window-refactor.md#use-cases):
 
 1. **Burst collapse.** Per-event-only behavior (atomic is one commit by definition).
    Unification neither helps nor breaks this.
@@ -78,7 +78,7 @@ finalize trigger, a do-not-split byte-cap rule, an event/window invariant
 A rough sketch of the change footprint:
 
 - **Producers** (small): three `UserInfo` fabrication sites in
-  [folder_reconciler.go](../../internal/reconcile/folder_reconciler.go) deleted; the
+  folder_reconciler.go deleted; the
   reconcile `WriteRequest` site sets `CommitMessage` instead of `CommitMode`. The audit
   producer in [git_target_event_stream.go](../../internal/reconcile/git_target_event_stream.go)
   is unchanged.

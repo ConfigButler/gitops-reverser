@@ -1,0 +1,26 @@
+# Chart defaults. NOT a Kubernetes object. These are the lowest layer of the
+# merge: values/common.yaml, then values/<env>.yaml, then inline Argo CD
+# helm.parameters each override keys on top of what is defined here.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/example-org/frontend
+  tag: "1.8.3"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+ingress:
+  enabled: false
+  host: frontend.example-org.test

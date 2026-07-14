@@ -30,7 +30,7 @@ import (
 // watches with a concrete `apiVersions: ["v1"]` rule passes even with the bug
 // present — which is exactly why the existing e2e suite never caught this.
 // Serial: rolls the controller deployment, which disrupts any spec running
-// concurrently on another process. See docs/design/e2e-serial-registry.md.
+// concurrently on another process. See docs/spec/e2e-serial-registry.md.
 var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial, Ordered, func() {
 	var (
 		testNs        string

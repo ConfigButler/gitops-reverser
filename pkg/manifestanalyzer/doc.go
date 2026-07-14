@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package manifestanalyzer is the public, stable answer to two questions a tool built
+// Package manifestanalyzer is the public answer to two questions a tool built
 // around GitOps Reverser needs to ask about a Git repository, without a cluster and
 // without writing anything:
 //
@@ -11,11 +11,19 @@
 // it commits a byte, so a tool built on this package cannot drift from the operator that
 // will later refuse the folder. Nothing here re-implements a rule.
 //
-// # Stability
+// # Stability: none yet
 //
-// This package is the supported surface. The types below carry JSON tags and a
-// [SchemaVersion]; fields are added, never repurposed or removed within a schema major.
-// Everything under internal/ is not covered by that promise and is not importable from
+// GitOps Reverser is pre-1.0, and so is this package. It is the surface a tool is meant
+// to build on rather than reaching into internal/, but it carries no compatibility
+// guarantee: fields may be renamed, removed, or given a new meaning in any release, and
+// [SchemaVersion] may bump for reasons that would be breaking after 1.0. Pin a version.
+//
+// Two habits will nonetheless save you work. Ignore fields you do not recognise, because
+// new ones do get added. Do not switch on the human-readable strings — [Issue.Message]
+// and [RefusalReason.Detail] are prose, while [IssueKind] and the refusal reason codes
+// are the values worth matching on.
+//
+// Everything under internal/ carries no guarantee either, and is not importable from
 // another module.
 //
 // The command-line equivalents are `manifest-analyzer --mode scan-folder --format json` and

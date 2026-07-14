@@ -61,7 +61,7 @@ func TestScanRepo_RefusalCodesStayDistinct(t *testing.T) {
 	}{
 		"overlay fan-out is a not-yet": {
 			group: "unsupported", name: "base-overlays",
-			wantCode:   manifestanalyzer.ReasonOverlayFanOutNeedsF2,
+			wantCode:   manifestanalyzer.ReasonOverlayFanOutUnsupported,
 			wantLayout: manifestanalyzer.LayoutKustomizeOverlay,
 		},
 		"helm inflation is permanent": {

@@ -9,6 +9,8 @@ related:
 
 # Reconcile triggering — how our controllers wake up
 
+> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+
 A controller is only as good as the events that wake it. Periodic requeue is a
 **safety net**, not a mechanism: if state changes and nothing enqueues the owner,
 the change is invisible until the next periodic tick — up to 10 minutes here. This
@@ -76,7 +78,7 @@ The branch worker discovers a refused Git path **asynchronously**, after the
 GitTarget's reconcile has already run and scheduled its 10-minute requeue. Before
 the fix, `GitPathAccepted` could read `True` for up to 10 minutes after the path
 was actually refused (it caused a CI flake; full write-up in
-[gitpathaccepted-projection-race-and-external-drift.md](manifest/gitpathaccepted-projection-race-and-external-drift.md)).
+[gitpathaccepted-projection-race-and-external-drift.md](../spec/manifest-system.md)).
 
 The fix gives the data plane a controller-runtime `source.Channel` edge:
 
@@ -253,7 +255,7 @@ pull immediately. Pulling on the push event is strictly better than discovering 
 drift on a later fetch: we re-align (or refuse) while the change is fresh, and we
 usually avoid the expensive replay-mark session entirely. It is the push-driven
 complement to the poll-driven drift detection in A3 and the subtree-OID check in the
-[sibling doc](manifest/gitpathaccepted-projection-race-and-external-drift.md).
+[sibling doc](../spec/manifest-system.md).
 
 **Flow.**
 

@@ -13,12 +13,13 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
-// This file is the projection half of F1 (see overrides.go for the model half):
+// This file is the projection half of the images/replicas edit-through (see
+// overrides.go for the model half):
 // given the source document as Git holds it, the live desired object, and the
 // governing override chain, it splits the live state into what the SOURCE FILE
 // should hold and what the KUSTOMIZATION ENTRIES should hold — "the edit lands
 // where the value lives". See
-// docs/design/gitops-api/f1-images-replicas-edit-through.md.
+// docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
 
 // OverrideEdit routes one live-value change to a field of an existing
 // kustomization override entry.

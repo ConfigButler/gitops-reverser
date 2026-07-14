@@ -1,0 +1,22 @@
+# Plain checked-in Kubernetes object: the base Deployment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    app: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: ghcr.io/example-org/backend:2.4.0
+          ports:
+            - containerPort: 9090

@@ -135,7 +135,7 @@ normal pipeline and is audit-attributed like any other resource. See
 ### Proving it on new Kubernetes versions
 
 How Kubernetes actually emits these structures is not something to guess at. A separate, standalone
-project — the **mutation-capture lab** ([design](design/mutation-capture-lab-design.md),
+project — the **mutation-capture lab** ([design](spec/mutation-capture-lab-design.md),
 [cmd/mutation-capture-lab/](../cmd/mutation-capture-lab/)) — records the exact watch, audit, and admission
 output a real apiserver produces for each interesting scenario and commits it as normalized example YAML (a
 versioned *corpus*). It doubles as a regression harness: point it at a new Kubernetes release, regenerate,
@@ -277,7 +277,7 @@ The controller verifies repository reachability and manages the signing key life
 ed25519 keypair when `signing.generateWhenMissing` is set. The portable artifact across GitOps
 ecosystems is the credentials Secret, not a foreign repository object. The credentials reader accepts the
 Kubernetes native, Flux, and Argo CD Secret key dialects (see
-[design/git-credentials-interop.md](design/git-credentials-interop.md)).
+[design/git-credentials-interop.md](finished/git-credentials-interop.md)).
 
 ***
 
@@ -711,7 +711,7 @@ FIFO. So:
   a few seconds at most.
 
 The full analysis, worked examples, and the future non-blocking option are in
-[Watch event ordering under the attribution grace window](design/watch-event-ordering-and-attribution-grace.md).
+[Watch event ordering under the attribution grace window](facts/watch-event-ordering-and-attribution-grace.md).
 
 ***
 
@@ -736,13 +736,13 @@ keeps only mechanical bookkeeping. **All judgement across scans lives in the typ
 (`Registry.UpdateFromScan`): a failed group/version keeps serving last known facts instead of looking
 like an empty API surface, and a group/version that vanishes from a complete scan rides a removal grace
 rather than being pruned. Both protect against accidental Git deletions on a discovery blink (see
-[typeset-owns-discovery-grace.md](design/typeset-owns-discovery-grace.md)). The catalog refreshes on
+[typeset-owns-discovery-grace.md](spec/typeset-owns-discovery-grace.md)). The catalog refreshes on
 startup, periodically, and when CRD/APIService trigger informers fire.
 
 ### TypeRegistry and Followability
 
 * **Source**: [internal/typeset/](../internal/typeset/)
-* **Design**: [design/manifest/version2/type-followability.md](design/manifest/version2/type-followability.md)
+* **Design**: [design/manifest/version2/type-followability.md](spec/type-followability.md)
 
 `internal/typeset` is the single decision surface for "can this type be followed?" Each `TypeRecord`
 carries GVK/GVR identity, scope and preferred version facts, origin classification, subresource facts
@@ -767,7 +767,7 @@ namespaces.
 Desired state comes from one **raw watch per `(GitTarget, GVR, scope)`**. Each event is sanitized, diffed
 against current Git content, and applied — there is no separate per-type object store to reconstruct,
 because Git already holds current state. The authoritative design is
-[design/watch-first-ingestion-architecture.md](design/watch-first-ingestion-architecture.md).
+[design/watch-first-ingestion-architecture.md](finished/watch-first-ingestion-architecture.md).
 
 * **Manager**: [internal/watch/manager.go](../internal/watch/manager.go)
 * **Watch / replay / sweep**: [internal/watch/target_watch.go](../internal/watch/target_watch.go)
@@ -829,7 +829,7 @@ The acceptance gate is **structure-only on purpose**: it never refuses on a disc
 followability fact (unwatched / out-of-scope), which can blink on a discovery wobble; only facts that are
 true from the path's structure alone block a GitTarget. The same gate runs on the live write path, so a
 refused path is never written into by a racing live event either. See
-[unsupported-folder-refusal-plan.md](design/unsupported-folder-refusal-plan.md).
+[unsupported-folder-refusal-plan.md](spec/unsupported-folder-refusal-plan.md).
 
 A reconcile is **type scoped** (`ScopeGVR`): the sweep is restricted to one `(group, resource)`, so
 anchoring one type again never disturbs another's manifests. The desired set for the sweep is the
@@ -910,7 +910,7 @@ hydrates only touched files into buffers for the commit, and flushes only change
   entry in the document's kustomization chain is written back to that entry (comment-preserving, only
   fields the entry already declares); the source manifest keeps its bytes. Anything the inversion cannot
   express falls back to the plain in-place patch. See
-  [gitops-api/finished/f1-images-replicas-edit-through.md](design/gitops-api/finished/f1-images-replicas-edit-through.md).
+  [gitops-api/finished/images-and-replicas-edit-through.md](design/support-boundary/finished/images-and-replicas-edit-through.md).
 * **Deletes:** use the manifest identity index, so a moved manifest can still be deleted even when it is
   not at the canonical path.
 * **Field patches** (currently `/scale` → parent `spec.replicas`) are intentionally narrow: they only
@@ -924,7 +924,7 @@ Placement runs **only for a resource with no existing document** in the target. 
 manifest identity, not by path — instead of recomputing placement. So a change to how new files are
 placed never moves a file already in Git. A new resource is placed by the first of these that applies
 ([internal/manifestanalyzer/placement.go](../internal/manifestanalyzer/placement.go),
-[design](design/manifest/version2/gittarget-new-file-placement-rules.md)):
+[design](spec/gittarget-new-file-placement-rules.md)):
 
 1. **Declared policy (`spec.placement`).** A `GitTarget` can declare a `byType` map (exact
    `[group/]version/resource` → path template) plus a `default` template, rendered from a small
@@ -1068,7 +1068,7 @@ Metrics are exported over OTLP / the metrics server. The audit-attribution path 
 * resync/background-apply failure counters so a silently-recovered fault stays visible.
 
 Per-watch volume/restart/replay metrics and per-attribution result/wait histograms are designed
-([watch-first metrics](design/watch-first-ingestion-architecture.md#metrics)) but **not yet emitted**; see
+([watch-first metrics](finished/watch-first-ingestion-architecture.md#metrics)) but **not yet emitted**; see
 [Operational Boundaries](#operational-boundaries).
 
 ***
@@ -1129,21 +1129,21 @@ Deeper dives live under [docs/design/](design/):
 
 **Ingestion, attribution, and reconcile:**
 
-* [Watch-first ingestion architecture](design/watch-first-ingestion-architecture.md) — the authoritative
+* [Watch-first ingestion architecture](finished/watch-first-ingestion-architecture.md) — the authoritative
   model: watch is the only object-state source, audit is optional attribution.
-* [Watch event ordering under the attribution grace window](design/watch-event-ordering-and-attribution-grace.md)
-* [Reconcile via watchlist mark and sweep](design/manifest/reconcile-via-watchlist-mark-and-sweep.md)
-* [CommitRequest design](design/stream/commitrequest-design.md)
+* [Watch event ordering under the attribution grace window](facts/watch-event-ordering-and-attribution-grace.md)
+* [Reconcile via watchlist mark and sweep](spec/reconcile-via-watchlist-mark-and-sweep.md)
+* [CommitRequest design](spec/commitrequest-design.md)
 
 **Types, discovery, status, and the Git write side:**
 
-* [Type followability](design/manifest/version2/type-followability.md)
-* [Typeset owns discovery grace](design/typeset-owns-discovery-grace.md)
-* [Kubernetes API resource catalog](design/kubernetes-api-resource-catalog.md)
-* [GitTarget status design](design/status-design-git-target.md)
-* [GitTarget lifecycle and repo architecture](design/gittarget-lifecycle-and-repo-architecture.md)
-* [Git credentials interop](design/git-credentials-interop.md)
-* [SOPS/age key management](design/sops-repo-bootstrap-and-key-management-architecture.md)
+* [Type followability](spec/type-followability.md)
+* [Typeset owns discovery grace](spec/typeset-owns-discovery-grace.md)
+* [Kubernetes API resource catalog](facts/kubernetes-api-resource-catalog.md)
+* [GitTarget status design](spec/status-conditions-guide.md)
+* [GitTarget lifecycle and repo architecture](architecture.md)
+* [Git credentials interop](finished/git-credentials-interop.md)
+* [SOPS/age key management](finished/sops-repo-bootstrap-and-key-management-architecture.md)
 * [Commit signing](commit-signing.md)
 * [Interpreting metrics](interpreting-metrics.md)
 

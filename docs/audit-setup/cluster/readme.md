@@ -32,5 +32,5 @@ sudo k3s kubectl get nodes
 ```
 
 For the broader connectivity and TLS tradeoffs, use
-[`../../design/audit-webhook-api-server-connectivity.md`](../../design/audit-webhook-api-server-connectivity.md)
+[`../../design/audit-webhook-api-server-connectivity.md`](../../facts/audit-webhook-api-server-connectivity.md)
 instead of this short placement note.

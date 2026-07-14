@@ -13,7 +13,7 @@ import (
 
 // Acceptance is the M4 adoption gate: the distinct step between "build the store"
 // and "use it as the planning model", described in
-// docs/design/manifest/current-manifest-support-review.md ("Acceptance Checks On
+// docs/spec/current-manifest-support-review.md ("Acceptance Checks On
 // First Materialization"). A GitTarget folder is adopted only when it passes; any
 // blocking refusal stops it and reconciles nothing until a human cleans the folder.
 //
@@ -93,7 +93,7 @@ const (
 	IssueUnsupportedKustomize IssueKind = "unsupported-kustomize"
 	// IssueForeignFile marks a non-YAML regular file under spec.path that matches no
 	// recognized role — the operator-exclusive subtree refuses content it cannot manage
-	// (docs/design/gitpath-foreign-content-stringency.md §3). Foreign YAML is already
+	// (docs/spec/gitpath-foreign-content-stringency.md §3). Foreign YAML is already
 	// refused as IssueNonKRM; this is the non-YAML case the gate was previously blind to.
 	IssueForeignFile IssueKind = "foreign-file"
 	// IssueForeignSymlink marks any symlink under spec.path. A writer could follow it out
@@ -113,14 +113,14 @@ const (
 	// but never writes outside it. Enforced by the writer's pathScopePrecondition; today it is
 	// defense-in-depth (planned write paths are base-relative by construction), made explicit
 	// and tested per
-	// docs/design/gitops-api/gittarget-granularity-and-cross-environment-edits.md §1.
+	// docs/design/support-boundary/gittarget-granularity-and-cross-environment-edits.md §1.
 	IssueWriteEscapesScope IssueKind = "write-escapes-scope"
 	// IssueWriteFanIn marks a planned in-place edit of a source file that more than one
 	// kustomize render path reaches with override entries at stake (write-fan-in > 1). Writing
 	// the change through would corrupt what another render root renders, so the flush is
 	// refused instead of falling back to write-through. It is the L2 write-boundary invariant
 	// made explicit; the broader "any file shared by multiple render roots" generalization is
-	// F2 render-root scoping.
+	// Per-render-root scoping would generalize this.
 	IssueWriteFanIn IssueKind = "write-fan-in"
 
 	// A refusal made up purely of the two write-boundary kinds above surfaces as the GitTarget

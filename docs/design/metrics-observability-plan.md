@@ -1,5 +1,7 @@
 # Metrics & Audit Observability — improvement plan
 
+> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+
 > Status: PROPOSAL — 2026-06-26. **Architecture-led**: [architecture.md](../architecture.md) is the
 > spine; every metric below maps to a stage in
 > [Common Flows](../architecture.md#common-flows). The live baseline and the
@@ -67,7 +69,7 @@ serious, honest metrics to show, and the audit subsystem is glass-box.
 ## 4. Target metric model — by pipeline stage
 
 New watch metrics use the shape already sketched in
-[watch-first-ingestion-architecture.md → Metrics](watch-first-ingestion-architecture.md), but this
+[watch-first-ingestion-architecture.md → Metrics](../finished/watch-first-ingestion-architecture.md), but this
 plan modernizes type labels to the live audit convention: separate `group`, `version`, and
 `resource` labels instead of a packed `gvr` string. Keep `version` on watch metrics even though it
 adds some series: Git paths and audit metrics already treat version as part of the resource identity,
@@ -93,7 +95,7 @@ cursor progress.
 
 | Metric | Type | Labels | Answers |
 |---|---|---|---|
-| `watch_events_filtered_total` | counter | `group`, `version`, `resource`, `reason` (`sanitized_noop`/`status_only`/`not_followable`/`duplicate`) | is the product-side filter behaving, or masking real changes? A mis-tuned filter is visible, per [watch-first](watch-first-ingestion-architecture.md). |
+| `watch_events_filtered_total` | counter | `group`, `version`, `resource`, `reason` (`sanitized_noop`/`status_only`/`not_followable`/`duplicate`) | is the product-side filter behaving, or masking real changes? A mis-tuned filter is visible, per [watch-first](../finished/watch-first-ingestion-architecture.md). |
 
 The reason set is the target shape, not a claim that one chokepoint exists today. Phase 3 first
 locates or consolidates the scattered filter decisions on the watch-to-Git path, then records the
@@ -291,5 +293,5 @@ rows → dashboard panels → alerts, validated per [AGENTS.md](../../AGENTS.md)
 - [architecture.md](../architecture.md) — leading source of truth (esp. *Common Flows*,
   *Optional Attribution*, *State Ingestion*, *Observability*).
 - [interpreting-metrics.md](../interpreting-metrics.md) — the live baseline + the per-metric doc bar.
-- [watch-first-ingestion-architecture.md](watch-first-ingestion-architecture.md) — the watch-first
+- [watch-first-ingestion-architecture.md](../finished/watch-first-ingestion-architecture.md) — the watch-first
   ingestion design and the earlier metric sketch this plan modernizes.

@@ -6,8 +6,8 @@
       "acceptedByOperator": false,
       "refusalReasons": [
         {
-          "code": "overlay-fan-out-needs-f2",
-          "detail": "base \"base\" is read from outside this folder's subtree and is shared by 1 render root(s); render-root scoping (F2) required"
+          "code": "overlay-fan-out-unsupported",
+          "detail": "base \"base\" is read from outside this folder's subtree and is shared by 1 render root(s); render-root scoping required"
         }
       ],
       "renderRoot": true,

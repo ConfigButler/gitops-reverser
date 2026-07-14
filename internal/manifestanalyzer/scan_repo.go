@@ -17,8 +17,8 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
-// This file implements the first cut of F8 (repo discovery / onboarding scan),
-// designed in docs/design/gitops-api/f8-repo-discovery-and-onboarding-scan.md. It
+// This file implements the first cut of repo discovery (the onboarding scan),
+// designed in docs/design/support-boundary/repo-discovery-and-onboarding-scan.md. It
 // walks a WHOLE repository once (today's Scan/ScanDir is subtree-only), enumerates
 // candidate GitTarget subtrees, classifies each one's layout, runs the same
 // acceptance gate the operator runs, and emits a machine-readable report.
@@ -34,8 +34,8 @@ import (
 // --policy refuse exit semantics — see the design doc's "explicitly defer" list.
 
 // Layout is the structural shape of a candidate subtree. Layout and acceptedByOperator
-// are two distinct truths that diverge during the F2 gap: a kustomize-overlay has a
-// well-understood layout yet is not accepted until render-root scoping (F2) lands.
+// are two distinct truths that diverge while overlays stay unsupported: a kustomize-overlay
+// has a well-understood layout yet is not accepted until render-root scoping lands.
 type Layout string
 
 const (
@@ -49,8 +49,8 @@ const (
 	// LayoutKustomizeOverlay is a render root that reaches a base kustomization OUTSIDE
 	// its own subtree (the classic base/ + overlays/{env} shape reached via ../../base).
 	// The operator hard-scopes to one subtree and cannot see the base, so it is refused
-	// today with the forward-looking overlay-fan-out-needs-f2 reason — it flips to
-	// accepted when F2 render-root scoping ships.
+	// today with the forward-looking overlay-fan-out-unsupported reason — it flips to
+	// accepted if render-root scoping ships.
 	LayoutKustomizeOverlay Layout = "kustomize-overlay"
 	// LayoutRefusedStructural is a render root whose kustomization uses a feature the
 	// contextual-namespace writer cannot map back to editable source (helm inflation,
@@ -60,12 +60,12 @@ const (
 )
 
 // Refusal reason codes. The distinction between the two is load-bearing:
-// ReasonOverlayFanOutNeedsF2 is a forward-looking "not yet" that flips to accepted
-// when F2 lands; ReasonRefusedStructural is the permanent boundary. Discovery must
+// ReasonOverlayFanOutUnsupported is a forward-looking "not yet" that flips to accepted
+// if render-root scoping ships; ReasonRefusedStructural is the permanent boundary. Discovery must
 // never collapse them into one "refused".
 const (
-	ReasonOverlayFanOutNeedsF2 = "overlay-fan-out-needs-f2"
-	ReasonRefusedStructural    = "refused-structural"
+	ReasonOverlayFanOutUnsupported = "overlay-fan-out-unsupported"
+	ReasonRefusedStructural        = "refused-structural"
 )
 
 // RefusalReason is one machine-readable reason a candidate is not accepted, with a
@@ -79,7 +79,7 @@ type RefusalReason struct {
 // can actually edit. For a plain or self-contained kustomize candidate the two are
 // equal; for an overlay they diverge — rendered counts the documents pulled from the
 // out-of-subtree base, editable counts only the source physically in the candidate's
-// own subtree (zero for a pure overlay), making the F2 gap legible at a glance.
+// own subtree (zero for a pure overlay), making the gap legible at a glance.
 type ResourceCounts struct {
 	// Rendered is the number of managed KRM documents the candidate renders: its own
 	// subtree plus every base it reads (readScope).
@@ -94,7 +94,7 @@ type ResourceCounts struct {
 }
 
 // RepoCandidate is one subtree the product could turn into a GitTarget, with its
-// layout, current operator acceptance, and the facts a product layer needs to decide.
+// layout, current operator acceptance, and the facts a tool built on top needs to decide.
 // This cut reports these; it proposes no GitTarget/WatchRule.
 type RepoCandidate struct {
 	// Path is the candidate directory, slash-separated and relative to the repo root.
@@ -150,7 +150,7 @@ type RepoSummary struct {
 }
 
 // RepoReport is the whole-repo discovery report: the machine-readable contract the
-// product layer consumes.
+// a tool built on top of the operator consumes.
 type RepoReport struct {
 	// Root is the scanned repository root as passed to ScanRepo. It is informational.
 	Root string `json:"root,omitempty"`
@@ -160,7 +160,7 @@ type RepoReport struct {
 	Summary RepoSummary `json:"summary"`
 }
 
-// ScanRepo is the F8 whole-repo discovery pass (the library entry point; the CLI
+// ScanRepo is the whole-repo discovery pass (the library entry point; the CLI
 // --mode scan-repo is a thin wrapper). It is read-only, writes nothing, needs no
 // cluster, and never follows symlinks — the same posture as ScanDir, just over the
 // whole tree rather than one subtree. It verifies root is a directory, then walks
@@ -238,7 +238,7 @@ func classifyRenderRoot(
 		c.AcceptedByOperator = false
 		c.ReadScope = outsideBases
 		c.RefusalReasons = []RefusalReason{{
-			Code:   ReasonOverlayFanOutNeedsF2,
+			Code:   ReasonOverlayFanOutUnsupported,
 			Detail: overlayFanOutDetail(outsideBases[0], kusts),
 		}}
 		c.Resources = countResources(store, rootDir, rendered)
@@ -426,7 +426,7 @@ func reachedResourceFiles(kusts map[string]*kustomizationDoc) map[string]struct{
 	return out
 }
 
-// overlayFanOutDetail explains why an overlay needs F2: the shared base and how many
+// overlayFanOutDetail explains why an overlay is unsupported: the shared base and how many
 // render roots reach it from outside their subtree.
 func overlayFanOutDetail(base string, kusts map[string]*kustomizationDoc) string {
 	shared := 0
@@ -437,7 +437,7 @@ func overlayFanOutDetail(base string, kusts map[string]*kustomizationDoc) string
 	}
 	return fmt.Sprintf(
 		"base %q is read from outside this folder's subtree and is shared by %d render root(s); "+
-			"render-root scoping (F2) required",
+			"render-root scoping required",
 		base, shared)
 }
 

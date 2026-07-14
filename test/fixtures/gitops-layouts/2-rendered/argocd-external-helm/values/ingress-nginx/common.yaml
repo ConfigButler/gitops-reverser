@@ -1,0 +1,18 @@
+# Helm values for the ingress-nginx chart -- NOT a Kubernetes object.
+# Rendered by Argo CD via Helm; this file has no apiVersion or kind of its own.
+# Merged first; production.yaml overlays the environment-specific settings.
+controller:
+  replicaCount: 2
+  ingressClassResource:
+    name: nginx
+    default: true
+  admissionWebhooks:
+    enabled: true
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+  config:
+    use-forwarded-headers: "true"
+    proxy-body-size: 16m
+    ssl-redirect: "true"

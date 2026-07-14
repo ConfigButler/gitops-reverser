@@ -1,0 +1,23 @@
+# Production-only object: neither gitops-dev nor gitops-staging has a HorizontalPodAutoscaler.
+# This is intentional drift — autoscaling is enabled only in production.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend
+  namespace: frontend-production
+  labels:
+    app.kubernetes.io/name: frontend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

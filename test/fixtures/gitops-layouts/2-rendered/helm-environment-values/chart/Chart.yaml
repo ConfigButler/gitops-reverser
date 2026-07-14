@@ -1,0 +1,7 @@
+# Helm chart metadata. Not a Kubernetes object (there is no `kind: Chart`).
+apiVersion: v2
+name: frontend
+description: Application-owned frontend chart, deployed per environment via layered values.
+type: application
+version: 1.4.2
+appVersion: "1.8.3"

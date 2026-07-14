@@ -1,0 +1,4 @@
+# Intentionally empty directory.
+# Git cannot track an empty directory, so this .gitkeep placeholder preserves it.
+# apps/* still MATCHES apps/empty, so the generator would produce an Application
+# named "empty" pointing at a directory with no manifests to apply.

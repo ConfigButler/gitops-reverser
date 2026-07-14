@@ -1,0 +1,28 @@
+# Argo CD Application for the production environment. Same chart and layering
+# shape as dev.yaml, but a different environment values file and a different
+# pinned image tag. This IS a Kubernetes object (Argo CD control-plane CRD).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: frontend-production
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/example-org/gitops.git
+    targetRevision: main
+    path: chart
+    helm:
+      valueFiles:
+        - ../values/common.yaml
+        - ../values/production.yaml
+      parameters:
+        - name: image.tag
+          value: "1.8.3"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: frontend-production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

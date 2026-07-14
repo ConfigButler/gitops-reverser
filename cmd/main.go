@@ -269,7 +269,7 @@ func main() {
 	// lives in its own Redis corner (author:v1:command), independent of
 	// --author-attribution (which governs mirrored-resource attribution). It is wired
 	// whenever the admission server is on; the controller reads the captured submitter
-	// back with no wait (docs/design/commitrequest-admission-authorship.md §2, §6).
+	// back with no wait (docs/spec/commitrequest-admission-authorship.md §2, §6).
 	//
 	// AuthorLookup must be a nil interface — not a non-nil interface wrapping a nil
 	// *CommandAuthorStore — when the webhook is off, so the controller's nil check
@@ -898,7 +898,7 @@ func newManager(
 		// value in memory. Typed Secret Get/List go straight to the API server instead,
 		// which also keeps credential/age-key rotation reads fresh. Mirrored Secrets
 		// selected by a WatchRule use the separate dynamic-watch path, not this cache.
-		// See docs/future/secret-value-retention-plan.md.
+		// See docs/rbac.md.
 		Client: client.Options{
 			Cache: &client.CacheOptions{
 				DisableFor: []client.Object{&corev1.Secret{}},

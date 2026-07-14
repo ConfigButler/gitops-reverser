@@ -6,7 +6,7 @@
 # chart version is pinned in ARGOCD_CHART_VERSION (test/e2e/Taskfile.yml); its
 # appVersion is the Argo CD release the specs pin behaviour against.
 #
-# Design: docs/design/e2e-bi-directional-corner.md. README.md lists what to
+# Design: docs/spec/e2e-bi-directional-corner.md. README.md lists what to
 # re-verify on a bump.
 
 # CRDs travel with the chart (crds.install: true by default). Keep them on chart

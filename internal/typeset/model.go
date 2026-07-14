@@ -3,7 +3,7 @@
 // Package typeset is GitOps Reverser's single decision surface for "is this
 // resource type followable, and if not, what is the one reason it is not?".
 //
-// It is the greenfield model from docs/design/manifest/version2/type-followability.md.
+// It is the greenfield model from docs/spec/type-followability.md.
 // Every served type carries one TypeRecord with one Followability: a verdict, a
 // one-line summary, and the full funnel-ordered list of requirement checks. That
 // single value replaces the old split between a "requirements" table and a "health
@@ -84,7 +84,7 @@ type StatusFact struct {
 // ScaleBinding is the only subresource fact the writer needs: where a /scale
 // mutation lands on the parent's desired state. SpecReplicasPath drives the scale
 // write path; the selector facts are for reporting. See
-// docs/design/manifest/version2/type-followability.md.
+// docs/spec/type-followability.md.
 type ScaleBinding struct {
 	Enabled     bool
 	Source      string // discovery | crd | builtin-registry | aggregated | unknown

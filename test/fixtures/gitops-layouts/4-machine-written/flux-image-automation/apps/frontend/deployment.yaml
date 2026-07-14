@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: frontend
+  labels:
+    app: frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          # LOAD-BEARING COMMENT. The trailing `$imagepolicy` marker is a kustomize
+          # "setter": image-automation-controller finds it, reads the latest tag
+          # selected by the named ImagePolicy, and rewrites the image value on this
+          # line - then commits the result straight back to this repository.
+          #
+          # Two consequences. The comment is not decoration: strip it and automation
+          # silently stops updating this image. And this file has a second writer
+          # that is not a human.
+          image: ghcr.io/example-org/frontend:1.8.3 # {"$imagepolicy": "flux-system:frontend"}
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi

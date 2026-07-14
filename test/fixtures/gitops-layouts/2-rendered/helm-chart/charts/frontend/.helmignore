@@ -1,0 +1,15 @@
+# Patterns to ignore when packaging the chart with `helm package`.
+# These files never end up inside the .tgz artifact.
+.DS_Store
+.git/
+.gitignore
+.vscode/
+*.tmproj
+*.bak
+*.orig
+*.swp
+# CI and editor cruft
+.idea/
+.editorconfig
+# Test harness scratch
+ci/

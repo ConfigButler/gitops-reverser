@@ -370,6 +370,12 @@ linters:
       # traffic generation, and operator-supplied target URLs.
       - path: 'test/loadtest/.*\.go'
         linters: [depguard, forbidigo, gochecknoglobals, gosec, mnd]
+      # The doc-link checker is a standalone dev CLI: printing its report to the console
+      # is its entire purpose (forbidigo), and it reads every git-tracked file by a path
+      # it computed rather than a constant (gosec G304). It only ever reads them — it
+      # opens nothing it was handed by a reference, and writes nothing at all.
+      - path: 'hack/doccheck/.*\.go'
+        linters: [forbidigo, gosec]
       # Allow fmt.Println in metrics exporter (initialization logs)
       - path: 'internal/telemetry/.*\.go'
         linters: [forbidigo]

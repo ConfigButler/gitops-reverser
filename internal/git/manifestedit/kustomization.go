@@ -10,8 +10,8 @@ import (
 )
 
 // Kustomization override sections the editor accepts. The editor is the
-// mechanism half of the F1 images/replicas edit-through
-// (docs/design/gitops-api/f1-images-replicas-edit-through.md): it updates the
+// mechanism half of the images/replicas edit-through
+// (docs/design/support-boundary/finished/images-and-replicas-edit-through.md): it updates the
 // scalar value of a field that ALREADY EXISTS on an entry that ALREADY EXISTS,
 // and nothing else — it never adds or removes entries, keys, or files.
 const (
@@ -127,8 +127,8 @@ func applyKustomizationEdit(root *yaml.Node, e KustomizationEdit) error {
 }
 
 // AppendKustomizationResource adds one entry to an existing kustomization.yaml's
-// resources: sequence — the mechanism half of F4's "add to the right kustomize
-// file" (docs/design/manifest/version2/gittarget-new-file-placement-rules.md): a
+// resources: sequence — the mechanism half of the "add to the right kustomize
+// file" (docs/spec/gittarget-new-file-placement-rules.md): a
 // new sibling file placed inside a kustomize-governed directory must also be named
 // in that directory's resources: list, or kustomize never renders it.
 //
@@ -136,7 +136,7 @@ func applyKustomizationEdit(root *yaml.Node, e KustomizationEdit) error {
 // (EditNoChange), never a duplicate append. All-or-nothing like PatchKustomization:
 // a multi-document file, unparseable YAML, or a document with no existing
 // resources: sequence skips the whole call with a diagnostic — the writer never
-// invents a resources: key that is not already there, mirroring F1's "never
+// invents a resources: key that is not already there, mirroring the edit-through's "never
 // creates a kustomization file" boundary one level down (never creates a
 // resources: section either).
 func AppendKustomizationResource(path string, content []byte, entry string) (EditResult, []Diagnostic) {

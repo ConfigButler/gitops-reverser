@@ -5,7 +5,7 @@ records the cluster the committed corpus under `test/mutationlab/corpus/` was
 captured from. When the cluster version bumps, regenerating the corpus and
 reviewing the diff *is* the changelog of "what changed in Kubernetes between
 these versions" (see
-[the design](../../../docs/design/mutation-capture-lab-design.md#validating-new-kubernetes-versions)).
+[the design](../../../docs/spec/mutation-capture-lab-design.md#validating-new-kubernetes-versions)).
 
 The lab reuses the main e2e cluster (`task lab-e2e` swaps the controller image),
 so this provenance tracks the k3s image used for the committed capture.

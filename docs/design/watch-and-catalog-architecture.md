@@ -1,9 +1,11 @@
 # Watch & Catalog Architecture — Requirements, Current State, Target Design
 
+> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+
 Status: **vision / proposed** — supersedes the framing in
-[watchrule-wildcard-support-plan.md](../future/watchrule-wildcard-support-plan.md),
-[watchrule-wildcard-and-resolution-semantics.md](watchrule-wildcard-and-resolution-semantics.md),
-and [rule-set-snapshot-discovery-lag-fix.md](../finished/rule-set-snapshot-discovery-lag-fix.md);
+[watchrule-wildcard-support-plan.md](../spec/type-followability.md),
+[watchrule-wildcard-and-resolution-semantics.md](../spec/type-followability.md),
+and [rule-set-snapshot-discovery-lag-fix.md](../spec/typeset-owns-discovery-grace.md);
 those become implementation details of the model described here.
 
 This document is in three parts:
@@ -182,7 +184,7 @@ Beyond the four beliefs above, a complete design needs:
   excluded kinds back in.
 - **Sensitive resources.** Wildcards will select Secrets and similar. This must
   compose with the existing sensitive-resource classification work
-  ([sensitive-resource-classification-plan.md](sensitive-resource-classification-plan.md)).
+  ([sensitive-resource-classification-plan.md](../finished/sensitive-resource-classification-plan.md)).
 - **Migration / backward compatibility.** Changing selector semantics changes
   what *existing* rules watch. Required: no silent expansion of an existing user's
   scope on upgrade — a migration story or explicit opt-in.
@@ -198,12 +200,12 @@ Beyond the four beliefs above, a complete design needs:
 
 - **`APIResourceCatalog`** ([api_resource_catalog.go](../../internal/watch/api_resource_catalog.go))
   — since the typeset-grace relocation
-  ([typeset-owns-discovery-grace.md](../typeset-owns-discovery-grace.md)): a thin
+  ([typeset-owns-discovery-grace.md](../spec/typeset-owns-discovery-grace.md)): a thin
   per-scan normalizer producing a `typeset.Scan` (entries + scanned/failed
   group/versions + completeness) with only mechanical state (last scan as the
   change fingerprint, `generation`, readiness). Degraded-GV retention and the
   removal grace for omitted GVs both live in `typeset.Registry.UpdateFromScan`.
-- **`RuleGVRResolver`** ([rule_gvr_resolver.go](../../internal/watch/rule_gvr_resolver.go))
+- **`RuleGVRResolver`** (rule_gvr_resolver.go)
   — maps one rule selector to concrete GVRs via the catalog, returning
   `ResolveMiss` values classified by reason. **Refuses wildcards** in
   `preflightMisses`.
@@ -253,7 +255,7 @@ ReconcileForRuleChange  (manager.go:740)
    (`currentRuleSetSnapshots`, manager.go:1248/1264) and the snapshot path
    (manager.go:559-594) both resolve rules independently — duplicated logic that
    has already drifted (the bug that birthed
-   [watchrule-gvr-resolution-plan.md](../finished/watchrule-gvr-resolution-plan.md)).
+   [watchrule-gvr-resolution-plan.md](../spec/type-followability.md)).
 2. **Snapshots are whole-target, not per-cell.** Adding one GVR re-lists and
    re-diffs the *entire* target (`emitSnapshotForRuleChange` →
    `RequestClusterState` over all GVRs). Violates requirement 1.3.

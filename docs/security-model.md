@@ -107,7 +107,7 @@ resource types can opt into the same encryption path at controller startup. See
 method from the keys present, preferring an SSH key, then HTTP basic auth, then a bearer token. The
 examples below use the Kubernetes-native key names; the reader also accepts the Flux and Argo CD key
 names so an existing GitOps Secret works unchanged (see
-[`design/git-credentials-interop.md`](design/git-credentials-interop.md)).
+[`design/git-credentials-interop.md`](finished/git-credentials-interop.md)).
 
 **HTTPS (basic auth)**
 

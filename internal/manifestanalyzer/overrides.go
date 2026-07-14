@@ -10,12 +10,12 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
-// This file implements the model half of F1 (kustomize images/replicas
+// This file implements the model half of the kustomize images/replicas
 // edit-through): parsing the two supported override transformers out of
 // kustomization.yaml and attributing an unambiguous override chain to every
 // resource file a render root reaches. The write-side projection consumes the
 // attached KustomizeOverrides. See
-// docs/design/gitops-api/f1-images-replicas-edit-through.md.
+// docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
 
 // reasonAmbiguousOverrides marks a build-time diagnostic for a resource file that
 // more than one render root reaches with differing override chains. The store
