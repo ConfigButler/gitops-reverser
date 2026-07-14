@@ -122,7 +122,10 @@ func VerifyBatchRenders(before, after []manifestedit.FileContent, intents []Writ
 		}
 		now, err := renderRoot(after, root)
 		if err != nil {
-			reasons = append(reasons, fmt.Sprintf("render root %s no longer builds with the write applied: %v", root, err))
+			reasons = append(
+				reasons,
+				fmt.Sprintf("render root %s no longer builds with the write applied: %v", root, err),
+			)
 			continue
 		}
 		reasons = append(reasons, compareRoot(root, byKey, seen, renderedByKey(was), renderedByKey(now))...)

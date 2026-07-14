@@ -613,9 +613,9 @@ func (wb *writeBatch) patchExisting(
 	}
 	projected := manifestreport.Project(desired)
 	var overrideEdits []manifestanalyzer.OverrideEdit
-	if dm.Overrides != nil {
+	if dm.Rendered != nil {
 		if gitRaw, parsed := gitDocRawObject(buf.current, idx); parsed {
-			projected, overrideEdits = manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Overrides)
+			projected, overrideEdits = manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Rendered)
 		}
 	}
 	c := manifestedit.Comparison{

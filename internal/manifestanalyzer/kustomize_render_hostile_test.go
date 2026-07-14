@@ -38,10 +38,11 @@ func TestRenderRoot_ValidRegexImageNameStillBuilds(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, rendered, 1)
-	slots := collectContainerSlots(rendered[0].Object.Object)
+	slots := collectImageSlots(rendered[0].Object.Object)
 	require.Len(t, slots, 1)
-	// Measured against kustomize: `ngin.` matches `nginx`. Our own renderImage compares
-	// names for equality and does NOT — see docs/design/support-boundary/render-attribution.md.
+	// Measured against kustomize: `ngin.` matches `nginx`. Our own matcher used to compare
+	// names for equality and did NOT (B1) — which is why attribution now reads kustomize's
+	// dyes instead of re-deciding what matched.
 	require.Equal(t, "nginx:2.0", slots[0].image)
 }
 
@@ -56,7 +57,7 @@ func TestRenderRootWith_RendersTheReplacementAndLeavesTheScanAlone(t *testing.T)
 
 	require.NoError(t, err)
 	require.Len(t, rendered, 1)
-	slots := collectContainerSlots(rendered[0].Object.Object)
+	slots := collectImageSlots(rendered[0].Object.Object)
 	require.Len(t, slots, 1)
 	require.Equal(t, "nginx:v3", slots[0].image, "the build must see the counterfactual")
 	require.Contains(t, string(files[1].Content), "newTag: v2", "the scan must survive the probe unchanged")

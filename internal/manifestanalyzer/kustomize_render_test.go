@@ -4,6 +4,7 @@ package manifestanalyzer
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,32 +17,42 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
-// This is the differential test that licenses deleting the re-implemented
-// transformers: for every kustomize render root in both corpora, the image our
-// renderImage chain produces must be byte-for-byte the image kustomize produces.
+// The corpus-wide invariant that licenses deleting the re-implemented transformers.
 //
-// It used to also compare the override CHAIN against kustomize's transformations
-// annotation. That assertion has done its job and is gone: the chain is now READ
-// from that annotation (override_chain.go), so comparing the two would be comparing
-// kustomize to itself.
+// This test used to render every corpus image through our own renderImage chain and require it
+// to equal kustomize's. That comparison is gone with the code it compared — there is no second
+// opinion left to check against the first. What replaces it is stronger, and it is the property
+// the deleted code kept violating:
+//
+//	AN IN-SYNC FOLDER MUST PROJECT TO A COMPLETE NO-OP.
+//
+// Take what kustomize renders and hand it back as the live object — the folder is by definition
+// already converged — then run the projection. It must route NO entry edits and it must hand
+// back the source document unchanged. Any disagreement between what we think a folder renders
+// to and what it actually renders shows up here as a phantom edit or a rewritten source file,
+// on every render root of every fixture in both corpora.
+//
+// That is exactly the shape of #231: a digest entry clears the tag, we thought it did not, and
+// on a perfectly in-sync folder the projection "helpfully" rewrote the tag out of the source
+// manifest. This test fails on that. The old one could not — it compared our belief to our
+// belief.
 
-func TestRenderRoot_ImagesAgreeWithKustomize(t *testing.T) {
+func TestProjection_InSyncCorpusFolderIsANoOp(t *testing.T) {
 	roots := allCorpusRenderRoots(t)
 	require.NotEmpty(t, roots, "no render roots found — the test would prove nothing")
 
-	compared, skipped := 0, 0
+	checked, skipped := 0, 0
 	for _, root := range roots {
 		t.Run(root.name, func(t *testing.T) {
 			rendered, err := renderRoot(root.files, root.dir)
 			if err != nil {
-				// A folder we refuse (remote base, generators, patches, plugins)
-				// need not render: the gate refuses it and the writer never sees it.
+				// A folder we refuse (remote base, generators, patches, plugins) need not
+				// render: the gate refuses it and the writer never sees it.
 				skipped++
 				t.Skipf("not renderable, and refused by the acceptance gate: %v", err)
 			}
+			chains, _ := renderChains(root.files, parseKustomizations(root.files))
 
-			kusts := parseKustomizations(root.files)
-			chains, _ := renderChains(root.files, kusts) // once per fixture, not once per object
 			for _, ro := range rendered {
 				if ro.OriginPath == "" {
 					continue // a generated resource; generators are refused
@@ -50,60 +61,84 @@ func TestRenderRoot_ImagesAgreeWithKustomize(t *testing.T) {
 				if src == nil {
 					continue // renamed by a transformer we refuse; not a supported shape
 				}
-				chain, ambiguous := ourChainFor(chains, ro)
-				if ambiguous {
-					continue // we route nothing through it; there is no claim to check
+				attribution, ambiguous := ourAttributionFor(chains, ro)
+				if ambiguous || attribution == nil {
+					continue // nothing is routed through it, so there is no claim to check
 				}
-				compared += assertImagesMatchKustomize(t, ro, src, chain)
+				assertInSyncIsANoOp(t, ro, src, attribution)
+				checked++
 			}
 		})
 	}
-	t.Logf("compared %d rendered images against the hand-rolled chain (%d roots skipped as refused)",
-		compared, skipped)
+	t.Logf("checked %d rendered documents for no-op projection (%d roots skipped as refused)",
+		checked, skipped)
 }
 
-// assertImagesMatchKustomize renders each source container image through our own
-// chain and requires it to equal what kustomize actually produced. Returns the
-// number of images compared.
-func assertImagesMatchKustomize(
+// assertInSyncIsANoOp hands kustomize's own render back as the live object — the folder is by
+// definition converged — and requires the projection to route nothing and to leave the source
+// document's images exactly as they are.
+func assertInSyncIsANoOp(
 	t *testing.T,
 	ro renderedObject,
 	src *unstructured.Unstructured,
-	chain *KustomizeOverrides,
-) int {
+	attribution *RenderedOverrides,
+) {
 	t.Helper()
-	var entries []ImageOverride
-	if chain != nil {
-		entries = chain.Images
-	}
-	ours := map[string]string{}
-	for _, slot := range collectContainerSlots(src.Object) {
-		got, _ := renderImage(parseImageRef(slot.image), entries)
-		ours[slot.key] = got.String()
-	}
+	where := ro.OriginPath + " " + ro.Object.GetKind() + "/" + ro.Object.GetName()
 
-	compared := 0
-	for _, slot := range collectContainerSlots(ro.Object.Object) {
-		got, known := ours[slot.key]
-		if !known {
-			continue
+	out, edits := SplitDesiredForOverrides(src.Object, asLiveObject(t, ro.Object), attribution)
+
+	require.Empty(t, edits,
+		"%s: the folder is already in sync, so nothing may be routed to an entry", where)
+
+	for _, slot := range collectImageSlots(out.Object) {
+		want := sourceImageAt(src.Object, slot.key)
+		if want == "" {
+			continue // the live object has a slot the source does not; not our claim
 		}
-		want := slot.image // kustomize's render is the expected truth
-		compared++
-		require.Equal(t, want, got,
-			"%s container %s: kustomize renders %q, our chain renders %q",
-			ro.OriginPath, slot.key, want, got)
+		require.Equal(t, want, slot.image,
+			"%s: an in-sync folder must hand back the SOURCE image untouched at %q", where, slot.key)
 	}
-	return compared
 }
 
-// ourChainFor is the override chain the store attributes to a document, and whether
-// it was found ambiguous (reached by more than one render root with differing
-// chains, which we refuse to route through).
-func ourChainFor(
+// asLiveObject turns a RENDERED object into the shape a live one actually has.
+//
+// This is not a formality. A rendered object is NOT a valid unstructured: kustomize hands
+// numbers back as Go `int`, and DeepCopyJSON accepts only the JSON types, so
+// unstructured.DeepCopy PANICS on one outright ("cannot deep copy int"). The API server hands
+// out JSON, so a real live object has int64 — round-tripping through JSON is what makes this
+// fixture faithful rather than merely non-crashing.
+//
+// The same landmine sits under any code that reads a number off a rendered object with the
+// standard helpers: unstructured.NestedInt64 reports found=FALSE on a rendered spec.replicas,
+// and silently gives you zero. See renderedReplicaCount, which is why the projection does not
+// use it.
+func asLiveObject(t *testing.T, rendered *unstructured.Unstructured) *unstructured.Unstructured {
+	t.Helper()
+	encoded, err := json.Marshal(rendered.Object)
+	require.NoError(t, err)
+	var obj map[string]interface{}
+	require.NoError(t, json.Unmarshal(encoded, &obj))
+	return &unstructured.Unstructured{Object: obj}
+}
+
+// sourceImageAt is the image the SOURCE document holds at a slot, or "" when it has none.
+func sourceImageAt(src map[string]interface{}, key string) string {
+	for _, slot := range collectImageSlots(src) {
+		if slot.key == key {
+			return slot.image
+		}
+	}
+	return ""
+}
+
+// ourAttributionFor is what the store attributes to a document, and whether it was found
+// ambiguous (reached by more than one render root with differing answers, which we refuse to
+// route through).
+func ourAttributionFor(
 	chains map[chainKey]*overrideAssignment,
 	ro renderedObject,
-) (*KustomizeOverrides, bool) {
+) (*RenderedOverrides, bool) {
 	a := chains[chainKey{
 		originPath: ro.OriginPath,
 		kind:       ro.Object.GetKind(),
@@ -115,7 +150,7 @@ func ourChainFor(
 	if a.ambiguous() {
 		return nil, true
 	}
-	return a.overrides, false
+	return a.rendered, false
 }
 
 // sourceDocFor finds the document in the origin file that produced a rendered
