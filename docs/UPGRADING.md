@@ -7,6 +7,29 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — `pkg/manifestanalyzer`: the overlay fan-out refusal code was renamed (next minor; breaking for consumers)
+
+One refusal reason changed its name, in both the Go constant and the machine-readable
+value it carries:
+
+| | Before | After |
+|---|---|---|
+| Go constant | `ReasonOverlayFanOutNeedsF2` | `ReasonOverlayFanOutUnsupported` |
+| `RefusalReason.Code` (JSON) | `overlay-fan-out-needs-f2` | `overlay-fan-out-unsupported` |
+
+The meaning is unchanged: a kustomize overlay whose base is shared by more than one
+render root is refused, and the refusal is a *forward-looking* one — it flips to accepted
+when render-root scoping ships, unlike `refused-structural`, which is the permanent
+boundary. The old name encoded an internal roadmap label (`F2`) that meant nothing outside
+our planning docs; the new one says what it means.
+
+**Migration**
+
+- **Go consumers** get a compile error naming the constant. Rename and rebuild.
+- **Consumers matching the JSON `code` string get no error.** This is the one to look for:
+  a `switch` or `if` on `"overlay-fan-out-needs-f2"` simply stops matching, and the refusal
+  falls through to whatever your default branch does. Grep for the old string.
+
 ## Unreleased — the wildcard cluster read moved to its own, droppable ClusterRole (next minor; behavior change)
 
 The shipped RBAC now says what the binary actually does. Nothing is taken away from a default
