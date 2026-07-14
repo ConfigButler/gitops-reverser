@@ -59,9 +59,23 @@ telling us what it is, in a field we already parse.
 
 ### Move 1 (cheap, immediate): a referenced values file is context, not junk
 
-A values file named by an `Application`'s `valueFiles`/`valuesObject` source config, or by a
-`HelmRelease`'s `valuesFrom`, is **Read-only context** — a file we understand, never write,
-and never refuse the folder over.
+A values file named by an `Application`'s **`helm.valueFiles`**, or by a `HelmRelease`'s
+**`spec.chart.spec.valuesFiles`**, is **Read-only context** — a file we understand, never
+write, and never refuse the folder over.
+
+**Only the path-valued fields, and this distinction is load-bearing**, because the three
+spellings are three different surfaces and only one of them is a file at all (both verified
+against upstream, not inferred from the names):
+
+| Field | What it holds | Surface |
+|---|---|---|
+| Argo `helm.valueFiles`, Flux `spec.chart.spec.valuesFiles` | a **path** — `$values/platform/cert-manager/values.yaml` | **a file in the repo.** This document's subject. |
+| Argo `helm.valuesObject` (a `runtime.RawExtension`), Flux `spec.values` | **inline YAML**, embedded in the Application/HelmRelease itself | not a file. It is a *field of a KRM document we already parse*, so it is editable exactly as any other field of that document — no projection, no new claim. |
+| Flux `spec.valuesFrom` | a **KRM object reference** — `Secret/my-secret-values`, with a `valuesKey` | not a file either. It names a ConfigMap or Secret, which is *already* a document the store handles (and a Secret drags in [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md), a different problem with a different answer). |
+
+Collapsing the three would claim a file-projection capability over content that lives inside
+another document, or inside a Secret. The read-only-context rule below is scoped to the first
+row.
 
 This needs no new API and no renderer. It is one more claim in the closed vocabulary that
 [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) already defines —

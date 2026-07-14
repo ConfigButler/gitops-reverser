@@ -39,25 +39,42 @@ code:
 > live object exactly — and leave every other object in the build byte-identical — refuse
 > the write.**
 
-This is not a new idea imported from outside. It is what
-[`simulateImageRender`](../../../internal/manifestanalyzer/overrides_projection.go) already
-does for `images:` today: it replays the render with the proposed entry edits applied and
-discards the entire inversion unless every planned source image renders back to exactly its
-live value. F1 shipped the pattern. What F1 did not have is a renderer.
+This is not a new idea imported from outside. F1 shipped the *shape* of it in
+[`simulateImageRender`](../../../internal/manifestanalyzer/overrides_projection.go): propose
+the entry edits, replay, and discard the whole inversion unless every planned source image
+comes back as its live value.
+
+But be precise about how far short of the statement above that falls, because the gap is the
+work: `simulateImageRender` replays **our re-implemented image chain, not kustomize**, and it
+checks **only the images it planned** — never that the rest of the build is untouched. So it
+is image-specific verification, and it shares a blind spot with the thing it is verifying: a
+value owned by a patch, or by a matching rule we got wrong, reproduces perfectly in the
+simulation and wrongly in reality. F1 shipped the pattern. **What F1 did not have is a
+renderer** — and without one, neither half of the guarantee above is actually in force. See
+[render-attribution.md](render-attribution.md) §5.
 
 ---
 
-## 2. What we have instead of a renderer
+## 2. What we had instead of a renderer
 
-`sigs.k8s.io/kustomize` **is not a dependency of this module.** Zero hits in `go.mod`. What
-the code calls a render is a hand-written structural model:
+> **Historical.** When this was written, `sigs.k8s.io/kustomize` was **not a dependency of
+> this module** — zero hits in `go.mod` — and what the code called a render was a hand-written
+> structural model. That is what the section argues against, and the argument won:
+> [kustomize-support-boundary.md](kustomize-support-boundary.md) §7 took the decision, and
+> #229/#231/#232 shipped it. `krusty` is now the renderer, `kustomization.yaml` is parsed with
+> kustomize's own type, and the resource-DAG walk is gone. **The projection's transformers are
+> the last of the re-implementation still standing** — see
+> [render-attribution.md](render-attribution.md), which is the design for deleting them.
+>
+> The inventory below is kept because it is the *evidence*, and because the last two rows are
+> still true today.
 
-| Piece | What it is |
-|---|---|
-| [`renderRoots`](../../../internal/manifestanalyzer/overrides.go) | every kustomization directory no other kustomization references |
-| [`renderImage`](../../../internal/manifestanalyzer/overrides_projection.go) | a ~20-line reimplementation of kustomize's image transformer |
-| [`isReplicaKind`](../../../internal/manifestanalyzer/overrides_projection.go) | the replica transformer's fieldspec, hardcoded to three kinds |
-| [`unsupportedKustomizeFeatureKeys`](../../../internal/manifestanalyzer/store.go) | 17 keys that refuse the folder outright |
+| Piece | What it is | Status |
+|---|---|---|
+| [`renderRoots`](../../../internal/manifestanalyzer/override_chain.go) | every kustomization directory no other kustomization references | **kept** — something must decide which directories a build is invoked on. Everything the walk did *beyond* that now comes from the renderer. |
+| [`renderImage`](../../../internal/manifestanalyzer/overrides_projection.go) | a ~20-line reimplementation of kustomize's image transformer | **still there.** Measured to diverge from kustomize: its matcher is string equality where kustomize's is a *regex over the whole image string*. |
+| [`isReplicaKind`](../../../internal/manifestanalyzer/overrides_projection.go) | the replica transformer's fieldspec, hardcoded to three kinds | **still there.** kustomize's fieldspec has four — it misses `ReplicationController`. |
+| [`unsupportedKustomizeFeatureKeys`](../../../internal/manifestanalyzer/store.go) | 17 keys that refuse the folder outright | **replaced** (#229): the unsupported set is now derived by *reflecting over kustomize's own struct*, so a field we have never heard of refuses rather than being silently tolerated. |
 
 The deny-list is not a statement about what is editable. **It is a fence around the
 reimplementation** — a list of everything we chose not to re-derive. That is why
@@ -93,10 +110,16 @@ move, and names the seat it sits in:
 
 Adopt it, with the sandbox stated as part of the contract:
 
-| Sandbox setting | Consequence |
+> **This section proposed `LoadRestrictionsRootOnly`. The shipped renderer
+> ([`kustomize_render.go`](../../../internal/manifestanalyzer/kustomize_render.go), #231/#232)
+> uses `LoadRestrictionsNone`, and the reasoning below is why the proposal was wrong.** The
+> contract as built is recorded here rather than quietly corrected.
+
+| Sandbox setting, as shipped | Consequence |
 |---|---|
-| `LoadRestrictionsRootOnly` | a build cannot read outside the render root's load boundary |
+| `LoadRestrictionsNone` | what **Flux itself** builds with. The in-memory filesystem holds only the scanned tree, so **the filesystem is the jail** — "unrestricted" loading cannot reach the real disk. `RootOnly` would be the wrong kind of strict: it forbids `resources: [../shared.yaml]`, which Flux renders happily, so we would fail to build a root that deploys in production — and failing to build a root silently disarms the write-fan-in guard. Refusing to look is not a safety property. |
 | `DisabledPluginConfig` | no exec, no Go plugins — *"arbitrary code = unknowable render"* stays true by construction |
+| **pre-build refusal** | remote bases, and `images:` entry names kustomize cannot compile. Both are properties of the *build*, not of what we can model, and both must be caught before krusty is called. |
 
 **The sandbox does not stop the network, and this was measured rather than assumed.** Given
 a remote base, kustomize shells out to `/usr/bin/git fetch` — under
@@ -108,6 +131,13 @@ are promoted to a **security precondition that runs before krusty is ever called
 are the one piece of the current kustomize code that must survive. *"We do not run kustomize
 on a remote base"* stays literally true — now enforced, rather than merely implied by having
 no renderer at all.
+
+The same slot now also holds a second precondition, found the same way: an `images:` entry's
+`name:` is a **regular expression**, and kustomize compiles it while discarding the compile
+error before dereferencing it — so `- name: "ngin["` does not fail the build, it **panics
+inside it**, on bytes from a user's repository. Refused before the build, with a `recover()`
+under krusty for the panics not yet found. See
+[render-attribution.md](render-attribution.md) §6.
 
 The oracle guards two directions:
 

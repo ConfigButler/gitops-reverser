@@ -85,7 +85,7 @@ ordinary configurations in the wild, and measurably *worse than the code it repl
 **The idempotent pin.** A base holding `image: app:v1` under an overlay declaring
 `newTag: v1` — the state every repo is in the moment a release lands in both places.
 
-```
+```text
 source=app:v1, entry newTag:v1 PRESENT  ->  app:v1
 source=app:v1, entry REMOVED            ->  app:v1     # nothing moved
 ```
@@ -97,7 +97,7 @@ again, on every reconcile, forever.
 
 **The tie.** Two entries in the chain declaring the same tag:
 
-```
+```text
 two entries, both newTag:v9   ->  app:v9
 entry[1] removed              ->  app:v9     # nothing moved
 ```
@@ -134,7 +134,7 @@ images:                          images:
 Render → `app:grdye-0002` → **entry 2 supplied the tag.** The tie removal cannot see, the
 dye reads straight off the output. Measured, on both of §2's failing cases:
 
-```
+```text
 idempotent pin, entry DYED   ->  app:grdye-0001         # attributed to the entry.  correct.
 tie, both entries DYED       ->  app:grdye-0001 (=[1])  # the LAST writer.          correct.
 ```
@@ -206,7 +206,7 @@ never an input to a matcher.
 
 The last one bites, and it is the reason the dye needs a guard rather than a caveat:
 
-```
+```text
 images: [{name: app, newName: renamed}, {name: renamed, newTag: "4.0"}]
 undyed          ->  renamed:4.0
 newName DYED    ->  grdye-0000:v1        # entry 2 stopped matching. the render changed shape.
@@ -235,10 +235,18 @@ tolerate patches as read-only context, refuse per *field* instead of per folder.
 refusal requires per-field attribution. **The dye is the mechanism that milestone is
 waiting for**, which puts it on the critical path rather than beside it.
 
-And it generalises, because the technique was never about images: put a nonce in *any*
-knob — a `vars` value, a `replacements` source, a generator literal, a scalar inside a
-patch — render, and see where it lands. It is the only field-level provenance available for
-kustomize at any price, and it costs one build.
+And the technique was never about images, so it *can* generalise — to a `vars` value, a
+`replacements` source, a generator literal, a scalar inside a patch. But "any knob" is
+exactly the overclaim this design must not make. **Each new field costs a sink proof.**
+Dyeing is sound only where the dyed value is a pure sink (below), and the fields worth
+reaching for next are precisely the ones most likely not to be: a `replacements` source is
+read *by* a selector, a generator literal feeds a *name hash*, and a patch's `containers[].name`
+is a merge key. Extending the dye to a field means showing that field is a sink and keeping
+the baseline-first guardrail (§7) that catches it when the showing is wrong — not assuming
+the mechanism travels for free.
+
+Within that bound it remains the only field-level provenance available for kustomize at any
+price, and it costs one build.
 
 ---
 
@@ -302,11 +310,21 @@ other object in the build byte-identical.** That check is total, and it does not
 the proposal was arrived at.
 
 So attribution's job is only to produce *a candidate good enough to usually pass*. When a
-dye's precondition fails, or a rename chain defeats it, the consequence is a **refused route
-→ write-through** — today's behaviour, not a corruption. That is what licenses reasoning
-probabilistically at all, and it is exactly why `simulateImageRender` must die: it is a
-verification step that shares the blind spot of the thing it verifies, and so it converts a
-wrong attribution into a *confident* wrong write.
+dye's precondition fails, or a rename chain defeats it, we route nothing, and the proposal
+falls to what the source document alone can carry — which the re-render then adjudicates.
+
+It is worth being exact about that, because "we fall back to today's write-through" is the
+comfortable phrasing and it is not quite true. Writing a live value into a source document
+whose field an **entry governs does not converge**: the entry overrides it on the next
+render, which is the same non-convergence §2 convicts leave-one-out of. What makes the
+fallback safe is not that write-through is harmless — it is that the verification re-render
+*catches* it: the proposed source write does not reproduce the live object, so the flush is
+refused instead of landing and quietly doing nothing forever.
+
+That is what licenses reasoning probabilistically at all, and it is exactly why
+`simulateImageRender` must die. It is a verification step that shares the blind spot of the
+thing it verifies — it replays *our* chain, not kustomize's, over only the images it planned —
+so it cannot catch this, and it converts a wrong attribution into a *confident* wrong write.
 
 **Replace the simulation with a real re-render first, before anything else changes.** Then
 every later deletion in this workstream is protected by a check that cannot share the bug it
@@ -386,9 +404,16 @@ bug.
 
 **Guardrails the dye needs** (all measured; see §8 for provenance):
 
-- **Baseline first, then dye.** If the dyed build errors where the real one didn't, **refuse
-  and fall back** — that is the `replacements`-consumes-the-image class, and it is reliably
-  detectable.
+- **Baseline first, then dye.** If the dyed build errors where the real one didn't, that is
+  the `replacements`-consumes-the-image class, and it is reliably detectable. **"Fall back"
+  means fall back to NO ATTRIBUTION — never to another heuristic.** Not to `renderImage`, not
+  to leave-one-out, not to a guess at the last matching entry. Those are the silent-corruption
+  paths this design exists to delete, and reaching for one at the moment the renderer says *I
+  cannot tell you* is the worst possible time to trust them. No attribution means no entry
+  edits; the proposal is then whatever the source document alone can carry, and it still has
+  to survive the verification re-render (§5) — which, for a field an entry governs, it will
+  not. The edit becomes a refused flush. That is the correct outcome and it must be reported,
+  not absorbed.
 - **Only read the dye in the fields you are attributing.** Never grep the whole output: `vars`
   and `replacements` can leak a dyed value into `args`, `env`, or ConfigMap data.
 - **Never align real↔dyed objects by resource name.** A generator hash suffix can drift
