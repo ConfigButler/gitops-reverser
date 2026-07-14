@@ -143,8 +143,9 @@ no further commits occur. Git is polluted, but nothing breaks.
 
 It breaks the moment that committed manifest reaches a cluster through **anything
 other than Argo's repo-server** — `kubectl apply`, Flux, a promotion pipeline, or
-an intent-cluster hydration step. Those tools apply the file *verbatim*, tracking-id
-and all. The live object now claims to belong to `app-a`.
+any tool that applies the committed file into a second cluster. Those tools apply
+the file *verbatim*, tracking-id and all. The live object now claims to belong to
+`app-a`.
 
 When an Argo Application `app-b` later manages that object:
 
@@ -420,7 +421,7 @@ stripped too, so its applies are commit-neutral.)
 
 Expected timeline, from the verified constants: self-heal's **first** revert is
 sub-second (backoff is zero on attempt 0;
-[`argocd-bi-directional.md`](../design/gitops-api/argocd-bi-directional.md)), replaying the
+[`argocd-bi-directional.md`](../design/support-boundary/argocd-bi-directional.md)), replaying the
 stale cached revision. The Reverser commits `WaffleBowl`, then observes the revert
 and commits `Cone`. At the 180s refresh Argo finds `Cone` in Git and is already
 Synced. **The user's change is lost, and Git history flaps.**
@@ -463,7 +464,7 @@ directions: the API can now own it, but a **Git-side** change to `/spec/scoops`
 would no longer reach the cluster either. That is the whole point of split
 ownership, and the whole reason it is not the bi-directional answer. The genuine
 bi-directional configuration is `selfHeal: false` + the webhook (see
-[`argocd-bi-directional.md`](../design/gitops-api/argocd-bi-directional.md)); Spec C exists
+[`argocd-bi-directional.md`](../design/support-boundary/argocd-bi-directional.md)); Spec C exists
 to pin the *contrast* — the difference from Spec B is one `ignoreDifferences`
 stanza, and it is the difference between the cluster losing the change and the
 cluster keeping it by taking the field out of GitOps.
@@ -479,7 +480,7 @@ patch and the Reverser's commit, which would otherwise reset the field
 `syncPolicy.automated: {prune: true, selfHeal: false}`, no `ignoreDifferences`.
 
 This is the genuine bi-directional configuration from
-[`argocd-bi-directional.md`](../design/gitops-api/argocd-bi-directional.md): the field stays
+[`argocd-bi-directional.md`](../design/support-boundary/argocd-bi-directional.md): the field stays
 fully GitOps-managed (unlike Spec C, which carves it out) and changes from **both**
 sides. It is the deterministic counterpart to Spec B — nothing reverts live drift,
 so every step can be asserted directly, with no timing race.
@@ -645,13 +646,13 @@ neither is `Serial`.
 - **Spec D**, the SharedResourceWarning demonstration, is not implemented. Its
   premise is verified in source (`resource_tracking.go:88-116` →
   `state.go:1043-1064` → `sync.go:169-173`), and with the sanitize fix in place
-  the trap can no longer be armed through this product. It remains the strongest
+  the trap can no longer be armed through this operator. It remains the strongest
   empirical argument for the fix, and is worth adding if the strip list is ever
   questioned.
 
 ## References
 
-- [`docs/bi-directional.md`](../bi-directional.md) — the product-level guidance this closes gaps in
+- [`docs/bi-directional.md`](../bi-directional.md) — the user-facing guidance this closes gaps in
 - [`docs/design/e2e-serial-registry.md`](e2e-serial-registry.md) — parallelism and shared cluster state
 - [`docs/design/e2e-ci-runner-sharding-plan.md`](../finished/e2e-ci-runner-sharding-plan.md) — leg membership and rebalancing
 - [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go) — the two specs in this corner

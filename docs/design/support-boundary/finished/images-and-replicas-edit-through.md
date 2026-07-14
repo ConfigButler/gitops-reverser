@@ -1,4 +1,4 @@
-# F1: Kustomize `images:` / `replicas:` edit-through
+# Kustomize `images:` / `replicas:` edit-through
 
 > Status: shipped ([#198](https://github.com/ConfigButler/gitops-reverser/pull/198)) —
 > phases A–C landed together with this doc; the ambiguity refusal projection into
@@ -6,8 +6,8 @@
 > Captured: 2026-07-06
 > Related:
 > [../README.md](../README.md),
-> [../../manifest/contextual-namespace-and-kustomize-folder-editing.md](../../../spec/contextual-namespace-and-kustomize-folder-editing.md),
-> [../../../../internal/git/manifestedit/DECISION.md](../../../../internal/git/manifestedit/DECISION.md)
+> [contextual-namespace-and-kustomize-folder-editing.md](../../../spec/contextual-namespace-and-kustomize-folder-editing.md),
+> [manifestedit/DECISION.md](../../../../internal/git/manifestedit/DECISION.md)
 
 ## Problem
 
@@ -59,20 +59,20 @@ component is applied to its supplier:
    already present on an entry that already matches. It never adds or removes
    `images:`/`replicas:` entries, never adds missing fields (`newTag` on an
    entry that lacks it), and never creates a kustomization file. The human
-   declares where the knob lives; the operator turns the knob. "Should env
-   drift become a new override?" is F2/F3 policy, not F1.
+   declares where the knob lives; the operator turns the knob. Whether drift in
+   one environment should *create* a new override entry is a separate policy
+   question, and is not supported.
 2. **Unambiguous context only.** Override routing applies when every supported
    render root that reaches the document applies an identical override chain.
    Distinct chains from multiple roots emit an `ambiguous-kustomize-overrides`
-   diagnostic and fall back to today's write-through (no behavior regression;
-   F2's render-root scoping resolves this case properly).
+   diagnostic and originally fell back to plain write-through.
 
-   > **Superseded (Track-1 write boundary).** The write-through fallback is gone.
+   > **Superseded (write boundary).** The write-through fallback is gone.
    > A planned write into a file flagged `ambiguous-kustomize-overrides` now
    > refuses the flush (`write-fan-in`) and fails the GitTarget with
    > `WriteBoundaryRefused`; nothing is committed. See
    > [../gittarget-granularity-and-cross-environment-edits.md §1](../gittarget-granularity-and-cross-environment-edits.md).
-   > F2 render-root scoping still generalizes the check.
+   > Per-render-root scoping would generalize the check; it is not built.
 3. **Acceptance tightens only for garbage.** A kustomization whose `images:`
    or `replicas:` value is present but not structurally parseable (not a list
    of maps, missing `name`, non-string image fields, non-integer count) is
@@ -167,17 +167,17 @@ object, and the override chain, return
 ## Known limitation: shared entries with divergent live consumers
 
 One `images:` entry is a **shared knob**: kustomize rewrites every matching
-image in the build, so bumping `newTag` moves all consumers together. F1
-mirrors that faithfully for the normal case — when consumers move together
-(the entry is bumped Git-side, or a product bumps "the app version" live for
-all of them), the routing is stable and idempotent: the first event updates
-the entry, later events for sibling consumers see live == render and do
+image in the build, so bumping `newTag` moves all consumers together. The
+router mirrors that faithfully for the normal case — when consumers move
+together (the entry is bumped Git-side, or a caller bumps "the app version"
+live for all of them), the routing is stable and idempotent: the first event
+updates the entry, later events for sibling consumers see live == render and do
 nothing.
 
 But if consumers **diverge live** — one Deployment is hot-bumped to a new tag
 while another keeps the old one — that state is *unrepresentable* in the
 source layout: one entry cannot hold two tags. No deterministic writer can
-mirror it. F1's behavior is then: the entry follows whichever consumer's
+mirror it. The behavior is then: the entry follows whichever consumer's
 change was processed last, and a full resync can alternate the entry between
 the divergent values (each pass "corrects" it toward a different consumer).
 The render always matches at least one consumer, never both.
@@ -185,15 +185,15 @@ The render always matches at least one consumer, never both.
 Remedies: align the consumers live, or give each workload its own image name
 (and entry) so each has its own knob. A cross-consumer consistency refusal at
 edit time needs the siblings' live state, which the steady-state writer does
-not have — batch-wide edit reconciliation is future work, noted for F2.
+not have — batch-wide edit reconciliation is not built.
 
-## What F1 deliberately does not do
+## What this deliberately does not do
 
 - No `kustomize build`, no source maps (Option D remains future research).
 - No entry creation/deletion, no patch authoring, no `namePrefix`/`nameSuffix`
   or generator support — the acceptance boundary for those is unchanged.
 - No multi-root overlay support: base + env1/env2/prod fan-out stays refused
-  (namespace case) or unrouted (no-namespace case) until F2.
+  (namespace case) or unrouted (no-namespace case).
 
 ## Test plan
 

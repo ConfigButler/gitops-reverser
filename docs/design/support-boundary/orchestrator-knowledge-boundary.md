@@ -1,11 +1,11 @@
 # Orchestrator knowledge boundary: renderability, ownership, and claims
 
-> Status: direction-setting; proposes two ladder entries, ships no code.
+> Status: direction-setting; ships no code. Nothing it describes is supported today.
 > Captured: 2026-07-10
 > Related:
 > [README.md](README.md),
-> [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md),
-> [f8-repo-discovery-and-onboarding-scan.md](f8-repo-discovery-and-onboarding-scan.md),
+> [kustomize-support-boundary.md](kustomize-support-boundary.md),
+> [repo-discovery-and-onboarding-scan.md](repo-discovery-and-onboarding-scan.md),
 > [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md),
 > [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md),
 > the layout corpus at [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/)
@@ -18,7 +18,7 @@ This doc answers two questions that turned out to be the same question:
    *"can an edit be mapped back to one source document?"* That is necessary and
    it is not sufficient.
 2. **Where does Argo CD / Flux knowledge belong?** It is real knowledge, the
-   product needs it, and it must not be smeared through the acceptance gate.
+   operator needs it, and it must not be smeared through the acceptance gate.
 
 The answer to (2) falls out of (1): the missing safety property is **ownership**,
 ownership is asserted by orchestrator objects that already live in the repository
@@ -54,7 +54,7 @@ They fail a question it never asks.
 
 | Axis | Question | Failure mode | Modelled today |
 |---|---|---|---|
-| **Renderability** | Can an edit be written back to exactly one source document, such that live → Git → live round-trips? | We cannot express the change. | ✅ Yes — this *is* the [support boundary](kustomize-support-boundary-and-product-model.md). Generators, `namePrefix`, patches, remote bases, Helm inflation are refused because they are non-invertible. |
+| **Renderability** | Can an edit be written back to exactly one source document, such that live → Git → live round-trips? | We cannot express the change. | ✅ Yes — this *is* the [support boundary](kustomize-support-boundary.md). Generators, `namePrefix`, patches, remote bases, Helm inflation are refused because they are non-invertible. |
 | **Ownership** | Is this file already owned by something else that writes it? | We *can* express the change, write it, and destroy someone else's invariant. | ❌ No. |
 
 The two are independent. A folder can be renderable and unowned (write it),
@@ -228,7 +228,7 @@ can move.
 **Keep ownership *policy* in core, not in the interpreters.** The interpreter
 says "`ImageUpdateAutomation` writes this path." The rule "refuse to write a
 machine-owned file" is core policy, applied uniformly to every claim from every
-interpreter. Invert this and the product ships Flux-shaped safety with no
+interpreter. Invert this and the operator ships Flux-shaped safety with no
 Argo-shaped equivalent.
 
 **Interpreters are read-only and cluster-free**, exactly like `ScanRepo`. They
@@ -287,29 +287,29 @@ should **propose** that file rather than report a refusal, and an Argo CD
 interpreter can seed it from `directory.exclude`. This is a report-quality bug,
 not a boundary question.
 
-## Proposed ladder entries
+## Not supported today
 
-Neither is designed here beyond the shape above.
+None of the following is built, and none is designed here beyond the shape above.
 
-| Proposed | Scope |
+| Capability | Scope |
 |---|---|
-| **Ownership axis** | `Encrypted`/non-editable in `ResourceCounts`; a core write-gate that refuses a machine-owned or generated destination; `Generated` detection from headers and `config.kubernetes.io/origin`. Delivers the three false accepts. Its first API surface is [`EncryptedSecret`](write-only-encrypted-secrets.md). |
-| **Orchestrator interpreters** | `internal/gitops` claim vocabulary + registry; `argocd` and `flux` interpreters; `fleetRoot` re-expressed as `NotAnEditingTarget`; role classification (workload / control-plane / generated / machine-written) in the F8 report. |
-| **Resource capability registry** | Tier 0b: four knobs, three classifiers ([design](resource-capability-model.md)). Carries the day-1 gate below. |
+| **Ownership axis** | `Encrypted`/non-editable in `ResourceCounts`; a core write-gate that refuses a machine-owned or generated destination; `Generated` detection from headers and `config.kubernetes.io/origin`. Fixes the three false accepts. Its first API surface is [`EncryptedSecret`](write-only-encrypted-secrets.md). |
+| **Orchestrator interpreters** | `internal/gitops` claim vocabulary + registry; `argocd` and `flux` interpreters; `fleetRoot` re-expressed as `NotAnEditingTarget`; role classification (workload / control-plane / generated / machine-written) in the repo scan report. |
+| **Resource capability registry** | Tier 0b: four knobs, three classifiers ([design](resource-capability-model.md)). Carries the derived-object gate below. |
 | **Derived-object gate** | Never mirror an object carrying a controller `ownerReference` — it is a controller's output, not desired state. Live-state, Tier 0, no orchestrator knowledge. Today [`sanitize`](../../../internal/sanitize/sanitize.go) *deletes* that field without ever gating on it, so an ESO- or sealed-secrets-derived `Secret` would be committed as a second source of truth. See [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md). |
 
-The derived-object gate is the smallest and the most urgent: it is a few lines,
-it needs nothing else in this doc, and it protects far more than secrets. The
-ownership axis is next, being the one with a correctness argument behind it.
-Interpreters are what make it complete, and what make the F8 report an onboarding
-answer rather than a folder census.
+The derived-object gate stands alone: it is a few lines, it needs nothing else in
+this doc, and it protects far more than secrets. The ownership axis is the one
+with a correctness argument behind it — the three false accepts above are its
+evidence. Interpreters are what make the ownership axis complete, and what turn
+the repo scan report into an onboarding answer rather than a folder census.
 
-A fifth thing falls out of hydration rather than from ownership: `RepoReport`
-should report `requiredCRDs`, the group/kind pairs a repository needs installed
-before an intent cluster can hold its documents. See
-[intent-cluster-hydration.md](intent-cluster-hydration.md).
+One further report field comes from neither: `RepoReport` should carry
+`requiredCRDs`, the group/kind pairs a repository needs installed before any
+cluster can hold its documents. It is computable from `apiVersion`/`kind` alone,
+during the scan the analyzer already performs.
 
-## Why the F8 report is not yet an onboarding answer
+## Why the repo scan report is not yet an onboarding answer
 
 Related, and worth recording while the evidence is fresh. `scan-repo` counts
 candidates, and every candidate counts the same:
@@ -321,7 +321,7 @@ candidates, and every candidate counts the same:
 - `07-helm-environment-values` reports one accepted candidate: `argocd/`.
 
 Each is structurally true. None is a useful thing to tell a user during
-onboarding, and a product that leads with "1 folder supported" on a Helm
+onboarding, and a report that leads with "1 folder supported" on a Helm
 repository is misleading rather than honest. Candidates need a **role** beside
 their layout, and a Helm chart should surface as an explicit layout rather than
 as silence plus an incidental `crds/`.
@@ -331,13 +331,15 @@ as silence plus an incidental `crds/`.
 Two follow-ups on the corpus itself, which is the test surface for all of the
 above:
 
-- **No fixture currently produces `kustomize-overlay` / `overlay-fan-out-needs-f2`.**
+- **No fixture currently produces `kustomize-overlay` / `overlay-fan-out-unsupported`.**
   Every overlay in the corpus also uses `patches`, so `refused-structural` — the
-  permanent wall — fires first and hides the F2 ladder rung. The
-  [F8 doc](f8-repo-discovery-and-onboarding-scan.md) calls that ladder-versus-wall
-  distinction load-bearing and says it must never collapse; today nothing pins it.
-  A minimal overlay that only sets `namespace` and `images` over `../../base`
-  closes the gap.
+  permanent wall — fires first and hides the other verdict entirely. The two are
+  not interchangeable: `refused-structural` is a permanent refusal, while
+  `overlay-fan-out-unsupported` names a folder that is simply not written today.
+  [repo-discovery-and-onboarding-scan.md](repo-discovery-and-onboarding-scan.md)
+  calls that distinction load-bearing and says it must never collapse; today
+  nothing pins it. A minimal overlay that only sets `namespace` and `images` over
+  `../../base` closes the gap.
 - **`support-today.md` should be generated, not pasted.** A task target that runs
   `scan-repo` over every fixture and rewrites the file turns the corpus from
   documentation into a **behavioural baseline**: not an assertion, a diff. Any
@@ -350,8 +352,8 @@ above:
 - **No orchestrator emulation.** Interpreters read declarations. They do not run
   kustomize on a remote base, resolve a Helm chart, evaluate an ApplicationSet
   generator, decrypt SOPS, or contact a registry.
-- **No new operator dependency.** Interpreters serve the analyzer and the F8
-  report. Whether the operator ever consumes a claim is a separate decision; the
+- **No new operator dependency.** Interpreters serve the analyzer and the repo
+  scan report. Whether the operator ever consumes a claim is a separate decision; the
   ownership *gate* it needs can be fed by Tier 0 (`Encrypted`) alone for the
   first cut.
 - **The write boundary does not widen.** Everything refused for renderability
@@ -369,13 +371,13 @@ above:
    In `16-flux-image-automation` the automation owns exactly one field — the image
    on the line carrying the `$imagepolicy` comment. Refusing the whole folder is
    safe and coarse; refusing the field is precise and needs setter-comment
-   awareness. The same question, in a different costume, as F3's restricted patch
-   authoring.
+   awareness. The same question, in a different costume, as restricted patch
+   authoring — write the one field, or refuse the document that holds it.
 4. **Does a `RenderRootFor` claim from an Argo CD `Application` change which
    folders are candidates at all**, or only annotate the ones the structural walk
    already found? The structural walk found `manifests/frontend` without help;
    the `Application` merely confirms it. Where do the two disagree?
 5. **How is a claim from a *different repository* represented?** An `Application`
    in a bootstrap repo points at a path in a workload repo. The single-repo scan
-   cannot see it. Is that simply out of scope, or does the product layer stitch
-   claims across repositories?
+   cannot see it. Is that simply out of scope, or does a tool built on top of the
+   operator stitch claims across repositories?

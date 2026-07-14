@@ -65,7 +65,7 @@ func imgEntry(name string, set map[string]string) ImageOverride {
 	return e
 }
 
-// TestSplitDesired_TagRoutedToEntry pins the core F1 behavior: a live tag change
+// TestSplitDesired_TagRoutedToEntry pins the core edit-through behavior: a live tag change
 // produced by a newTag entry lands on the entry and the file keeps its bytes.
 func TestSplitDesired_TagRoutedToEntry(t *testing.T) {
 	git := deploymentObj("ghcr.io/example/app:1.0.0", nil)

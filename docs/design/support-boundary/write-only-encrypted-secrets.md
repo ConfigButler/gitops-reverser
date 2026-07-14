@@ -5,8 +5,8 @@
 > Related:
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md),
 > [README.md](README.md),
-> [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md),
-> [f8-repo-discovery-and-onboarding-scan.md](f8-repo-discovery-and-onboarding-scan.md),
+> [kustomize-support-boundary.md](kustomize-support-boundary.md),
+> [repo-discovery-and-onboarding-scan.md](repo-discovery-and-onboarding-scan.md),
 > fixture [`13-sops-encrypted`](../../../test/fixtures/gitops-layouts/5-opaque/sops-encrypted/)
 
 ## The idea
@@ -109,10 +109,9 @@ only method, and `ResolvedEncryptionConfig` carries recipients only. So the
 property is preserved by construction — but it is preserved by *design discipline*,
 not by cryptography.
 
-The distinction matters for the security claim below, and it matters for
-[hydration](intent-cluster-hydration.md): an operator that can read that `Secret`
-*could* decrypt. The rule that it must not is a rule, and it should be written
-down as one.
+The distinction matters for the security claim below: an operator that can read
+that `Secret` *could* decrypt. The rule that it must not is a rule, and it should
+be written down as one.
 
 ## The constraint that shapes the API: the MAC
 
@@ -132,9 +131,9 @@ Two consequences, and they are not negotiable:
    plaintext document does, and exactly what the writer does today.
 
 So where does the complete plaintext come from, if not from Git? **From the live
-cluster.** The intent cluster holds a real, readable `Secret`; Git holds the
-ciphertext. The plaintext flows one way, and the operator never needs to reverse
-it.
+cluster.** The cluster the operator watches holds a real, readable `Secret`; Git
+holds the ciphertext. The plaintext flows one way, and the operator never needs
+to reverse it.
 
 That constraint is not a limitation to apologise for. It *is* the model:
 
@@ -234,7 +233,7 @@ resolved and a write will land.
 ```mermaid
 sequenceDiagram
     actor User
-    participant K8s as Intent cluster
+    participant K8s as Source cluster
     participant Rev as GitOps Reverser
     participant Git
     participant Flux as kustomize-controller
@@ -247,7 +246,7 @@ sequenceDiagram
     Rev->>Rev: sops --encrypt (fresh data key, new mac)
     Rev->>Git: commit secret.enc.yaml on a branch
     Rev-->>K8s: CommitRequest Pushed=True, sha, branch
-    Note over Git: Product layer opens the PR, then a human merges.
+    Note over Git: The operator opens no PR. Something above it does,<br/>then a human merges.
     Git-->>Flux: reconcile
     Flux->>Flux: decrypt with private age identity
     Flux->>Prod: apply Secret frontend-db
@@ -279,7 +278,7 @@ ownership we have over each document*, rather than silently claiming all of it.
 `ResourceCounts` grows an `encrypted` field, and an encrypted document stops
 counting as `editable` — the fix already named in the boundary doc.
 
-## Why this is a good product result
+## Why this is a good result
 
 - **A refusal becomes a capability.** "We do not support SOPS folders" turns into
   "we support SOPS folders, and we cannot read your secrets." The second sentence
@@ -306,8 +305,8 @@ counting as `editable` — the fix already named in the boundary doc.
   behind a flag — not even in the bootstrap model, where the key material is
   reachable and the restraint is therefore ours to keep. The moment the operator
   reads, the security argument above evaporates.
-- **Not a secret manager.** Rotation policy, generation, and vault integration are
-  the product layer's business.
+- **Not a secret manager.** Rotation policy, generation, and vault integration sit
+  above the operator, not in it.
 - **Not a merge.** A per-key patch of an encrypted document is impossible without
   reading it, and pretending otherwise would corrupt the `mac`.
 
@@ -333,11 +332,11 @@ counting as `editable` — the fix already named in the boundary doc.
 4. **Is `EncryptedSecret` cluster-scoped truth or per-`GitTarget`?** The same
    `Secret` name may exist in several targets with different recipients. Does the
    projection key on `(GitTarget, identity)`?
-5. **Should `Readable=False` block the intent cluster from showing a `Secret` at
-   all?** A user who runs `kubectl get secret frontend-db -o yaml` in the intent
-   cluster sees whatever plaintext they last wrote — which may be stale relative
-   to Git if someone edited the ciphertext by hand. Is the live `Secret`
-   authoritative, or is that drift we must detect and cannot see?
+5. **Should `Readable=False` block the watched cluster from showing a `Secret` at
+   all?** A user who runs `kubectl get secret frontend-db -o yaml` there sees
+   whatever plaintext they last wrote — which may be stale relative to Git if
+   someone edited the ciphertext by hand. Is the live `Secret` authoritative, or
+   is that drift we must detect and cannot see?
 6. **Does this extend to SealedSecrets and ExternalSecrets?** — *answered, in
    [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md).*
    Neither one abstraction nor three kinds: one

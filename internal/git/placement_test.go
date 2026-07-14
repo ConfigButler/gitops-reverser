@@ -19,7 +19,7 @@ import (
 )
 
 // newConfigMapEvent builds a CREATE event for a new ConfigMap with no existing
-// document anywhere in the fixture — the only case F4 placement runs for.
+// document anywhere in the fixture — the only case new-file placement runs for.
 func newConfigMapEvent(name, namespace string) Event {
 	return Event{
 		Object: &unstructured.Unstructured{Object: map[string]interface{}{

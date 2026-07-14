@@ -39,7 +39,7 @@ Kustomize or Helm, and nothing decrypts.
 
 ## The load-bearing rules
 
-These are the invariants. Break one and the product is unsafe rather than merely
+These are the invariants. Break one and the operator is unsafe rather than merely
 limited.
 
 **Identity is the key, not the file path.** A KRM document carries its own full
@@ -116,8 +116,8 @@ refused rather than unimplemented, is
 The governing constraint is invertibility: an edit must round-trip in both
 directions. Generators, `patches*`, `namePrefix`/`nameSuffix`, `components`, remote
 bases and Helm inflation are refused because they are one-way, not because nobody
-got to them. The current boundary and the product model built on it live in
-[`../design/gitops-api/`](../design/gitops-api/).
+got to them. The full boundary — what is supported, what is refused, and why — is
+[`../design/support-boundary/support-contract.md`](../design/support-boundary/support-contract.md).
 
 ## Types
 

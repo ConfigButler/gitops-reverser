@@ -16,7 +16,7 @@ import (
 // single-root overlay attaches its entries, a nested base composes
 // innermost-first, and two roots with differing chains attach nothing and emit
 // the ambiguity diagnostic. See
-// docs/design/gitops-api/finished/f1-images-replicas-edit-through.md.
+// docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
 
 func corpusDeployment(t *testing.T, store *ManifestStore) *DocumentModel {
 	t.Helper()

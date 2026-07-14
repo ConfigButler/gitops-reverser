@@ -24,7 +24,7 @@ import (
 
 // The write-boundary preconditions (Track 1) make two invariants explicit and tested rather
 // than emergent, before any byte is written. See
-// docs/design/gitops-api/gittarget-granularity-and-cross-environment-edits.md §1:
+// docs/design/support-boundary/gittarget-granularity-and-cross-environment-edits.md §1:
 //   - L1: every planned write stays inside the GitTarget write scope (spec.path).
 //   - L2: never write a live change through into a source file more than one render root
 //     reaches with override entries at stake (write-fan-in must be 1).

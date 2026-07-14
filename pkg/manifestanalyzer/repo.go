@@ -33,9 +33,9 @@ const (
 // Refusal reason codes. The distinction is load-bearing and a consumer must not collapse
 // it: one is a "not yet", the other is permanent.
 const (
-	// ReasonOverlayFanOutNeedsF2 is the forward-looking refusal that flips to accepted
+	// ReasonOverlayFanOutUnsupported is the forward-looking refusal that flips to accepted
 	// when render-root scoping ships.
-	ReasonOverlayFanOutNeedsF2 = "overlay-fan-out-needs-f2"
+	ReasonOverlayFanOutUnsupported = "overlay-fan-out-unsupported"
 	// ReasonRefusedStructural is the permanent support boundary.
 	ReasonRefusedStructural = "refused-structural"
 )

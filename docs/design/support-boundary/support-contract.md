@@ -17,7 +17,7 @@ them. We mirror and edit the intent layer, because that is the layer with a home
 Git and the layer a careful human would edit anyway. We refuse the expansion layer,
 because expansion is a one-way function and its output has nowhere to go.
 
-That refusal is **the product's defensible support contract, not a gap.**
+That refusal is **the operator's defensible support contract, not a gap.**
 
 ## The three questions we ask
 
@@ -27,7 +27,7 @@ doc.
 | # | Question | Failure if we get it wrong | Where it is argued |
 |---|---|---|---|
 | 1 | **Is it KRM, and may I read/write it?** | we corrupt a document we did not understand | [resource-capability-model.md](resource-capability-model.md) |
-| 2 | **Can this edit be written back to exactly one document?** | we cannot express the change, or we change more than one thing | [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md), [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md) |
+| 2 | **Can this edit be written back to exactly one document?** | we cannot express the change, or we change more than one thing | [kustomize-support-boundary.md](kustomize-support-boundary.md), [gittarget-granularity-and-cross-environment-edits.md §1](gittarget-granularity-and-cross-environment-edits.md) |
 | 3 | **Does that document already have another writer — and does this object even have a home in Git?** | we destroy someone else's invariant, or invent a second source of truth | [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md), [expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md) |
 
 **The governing rule of question 2 is fan-in = 1: we never change more than one
@@ -57,7 +57,7 @@ templates, and multi-input ResourceSet templates alike. It is specified once, in
 | Argo CD `ApplicationSet` (the CR) | intent | **Editable as a document** | but its `template` has fan-in N — see below |
 | App-of-apps root `Application` | intent | Editable, flagged **cluster entry point** | not an onboarding answer |
 | Flux `Kustomization`, `GitRepository`, `OCIRepository`, `HelmRepository` | intent | **Editable** | ordinary KRM |
-| Flux `HelmRelease` | intent | **Editable** | shipped (F7) |
+| Flux `HelmRelease` | intent | **Editable** | shipped; an ordinary KRM document like any other |
 | Objects the helm-controller renders from it | expansion | **Not mirrored** | no home file |
 | flux-operator `ResourceSet` (the CR) | intent | **Editable as a document** | `spec.inputs` is the supported edit surface |
 | Objects a `ResourceSet` expands | expansion | **Not mirrored** | `spec.resources` × inputs; no home file |
@@ -70,10 +70,10 @@ templates, and multi-input ResourceSet templates alike. It is specified once, in
 
 | Construct | Verdict | Why |
 |---|---|---|
-| kustomize `resources`, `namespace`, `images`, `replicas` | **Editable** | invertible; F1 ships `images`/`replicas` edit-through |
-| kustomize base + un-fancy overlays | **Editable at launch (F2)** | the base stays read-only context |
+| kustomize `resources`, `namespace`, `images`, `replicas` | **Editable** | invertible; `images`/`replicas` edit-through is shipped |
+| kustomize base + un-fancy overlays | **Designed, not shipped** | render-root scoping; the base stays read-only context |
 | kustomize base shared by >1 overlay, edited in place | **Refused** | fan-in > 1 |
-| kustomize `patches*`, generators, `components`, `namePrefix`/`nameSuffix`, remote bases | **Refused** | non-invertible; F3 would author patches |
+| kustomize `patches*`, generators, `components`, `namePrefix`/`nameSuffix`, remote bases | **Refused** | non-invertible; the only safe route would be patches the operator authored itself |
 | kustomize `helmCharts:` (inflation) | **Refused** | we never render a chart |
 | A Helm chart (`Chart.yaml` + `templates/` + `values.yaml` + `crds/`) | **Skipped as a unit** | detected by folder structure and reported as a `helm-chart` layout, not as silence plus an incidental `crds/` |
 | Helm knobs on a `HelmRelease` / `Application` (chart version, inline values, parameters) | **Editable** | the Helm surface people actually use — see below |
@@ -99,7 +99,8 @@ We already do more Helm than that sentence admits, and the honest headline is:
 > you edit, not a chart you render.**
 
 The most common Helm operations in a GitOps repo are *bump the chart version* and
-*change a value on a `HelmRelease`*, and both have worked since F7. What stays
+*change a value on a `HelmRelease`*, and both have worked since higher-level KRM
+documents landed. What stays
 refused, permanently and correctly, is **chart inflation**: we never render
 `templates/`, and we never learn what a value means.
 
@@ -124,17 +125,15 @@ we can store — and is argued in
 
 | Doc | What it settles |
 |---|---|
-| [the-layer-above-and-the-expansion-graph.md](the-layer-above-and-the-expansion-graph.md) | **the architecture: kcp + Flux + Argo CD above this operator, and the graph these verdicts are a property of** |
 | [`../../facts/expansion-provenance-markers.md`](../../facts/expansion-provenance-markers.md) | **the measured evidence each producer leaves behind** — and why the `ownerReference` gate catches one producer in five |
-| [README.md](README.md) | the feature ladder F1–F8, and the launch path |
-| [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md) | the kustomization field taxonomy and the supported-layout allowlist |
+| [README.md](README.md) | the index of this folder, and the summary of what works today |
+| [kustomize-support-boundary.md](kustomize-support-boundary.md) | the kustomization field taxonomy and the supported-layout allowlist |
 | [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md) | **the write boundary (L1/L2) — the one home of fan-in = 1** |
 | [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) | where Flux/Argo knowledge lives: claims about paths, not a dependency |
 | [expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md) | the provenance axis; ApplicationSet vs ResourceSet; the Helm surface |
 | [resource-capability-model.md](resource-capability-model.md) | what may I do to *this document* (schema conformance, visibility, write unit) |
 | [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md) | SOPS: describe the ciphertext, never read it |
 | [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md) | why neither needs a new kind, and the derived-object gate |
-| [intent-cluster-hydration.md](intent-cluster-hydration.md) | how the objects get into the cluster to be edited at all |
 | [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) | what happens to an edit with no legal destination |
-| [f8-repo-discovery-and-onboarding-scan.md](f8-repo-discovery-and-onboarding-scan.md) | reporting all of this over a whole repository |
+| [repo-discovery-and-onboarding-scan.md](repo-discovery-and-onboarding-scan.md) | reporting all of this over a whole repository |
 | [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/) | the corpus of real-world shapes every verdict is checked against |

@@ -30,7 +30,7 @@ metadata:
 // inference, and the rendered/editable split are all fixed by real layouts rather than
 // prose. The corpus is split supported/ vs unsupported/ mirroring the
 // contextual-namespace corpus. See
-// docs/design/gitops-api/f8-repo-discovery-and-onboarding-scan.md.
+// docs/design/support-boundary/repo-discovery-and-onboarding-scan.md.
 func TestScanRepo_Golden(t *testing.T) {
 	for _, group := range []string{"supported", "unsupported"} {
 		base := filepath.Join("testdata", "scan-repo", group)
@@ -89,7 +89,7 @@ func checkGoldenFixture(t *testing.T, fixture string) {
 }
 
 // TestScanRepo_RefusalCodesStayDistinct pins the load-bearing distinction the design
-// calls out: a forward-looking overlay-fan-out-needs-f2 must never collapse into the
+// calls out: a forward-looking overlay-fan-out-unsupported must never collapse into the
 // permanent refused-structural boundary. base-overlays is the former; helm-inflation and
 // unsupported-kustomize are the latter.
 func TestScanRepo_RefusalCodesStayDistinct(t *testing.T) {
@@ -98,8 +98,8 @@ func TestScanRepo_RefusalCodesStayDistinct(t *testing.T) {
 		wantCode string
 		layout   Layout
 	}{
-		{"unsupported/base-overlays", ReasonOverlayFanOutNeedsF2, LayoutKustomizeOverlay},
-		{"unsupported/overlay-parked-base", ReasonOverlayFanOutNeedsF2, LayoutKustomizeOverlay},
+		{"unsupported/base-overlays", ReasonOverlayFanOutUnsupported, LayoutKustomizeOverlay},
+		{"unsupported/overlay-parked-base", ReasonOverlayFanOutUnsupported, LayoutKustomizeOverlay},
 		{"unsupported/helm-inflation", ReasonRefusedStructural, LayoutRefusedStructural},
 		{"unsupported/unsupported-kustomize", ReasonRefusedStructural, LayoutRefusedStructural},
 	}

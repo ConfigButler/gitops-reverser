@@ -11,7 +11,7 @@ those. If a document is not on this page, it is either a user guide (see
 | Folder | Means | Binds? |
 |---|---|---|
 | [`spec/`](spec/) | **This is true now, and the code depends on it.** Most are cited by path from Go source. Change the behaviour, change the doc. | **yes** |
-| [`design/`](design/) | **We are still deciding.** Open questions, proposals, unbuilt work. | yes — it is the roadmap |
+| [`design/`](design/) | **We are still deciding.** Open questions, proposals, unbuilt work. | yes — as intent, not as shipped behaviour |
 | [`facts/`](facts/) | Durable reference: how Kubernetes behaves, and what we discovered about it. | yes, as reference |
 | [`finished/`](finished/) | **This happened.** Shipped plans, closed investigations. Kept for context. | **no** |
 
@@ -21,14 +21,14 @@ folder by **lifecycle**, not by topic.
 
 ## If you are new: read these five
 
-1. [`../README.md`](../README.md) — what the product does.
+1. [`../README.md`](../README.md) — what the operator does.
 2. [`architecture.md`](architecture.md) — how the operator is put together.
 3. [`spec/manifest-system.md`](spec/manifest-system.md) — **how a live object
    becomes a line in a Git file.** The single best explanation of the core.
 4. [`spec/current-manifest-support-review.md`](spec/current-manifest-support-review.md)
    — the manifest store's contract, and the rules that must never break.
-5. [`design/gitops-api/README.md`](design/gitops-api/README.md) — what is being
-   built now, and the feature ladder.
+5. [`design/support-boundary/support-contract.md`](design/support-boundary/support-contract.md)
+   — **what the operator edits, what it refuses, and why.**
 
 ## The contracts — [`spec/`](spec/)
 
@@ -43,7 +43,7 @@ misled. Full list in [`spec/README.md`](spec/README.md); the ones that carry a
 | [`manifestedit-field-ownership-spike.md`](spec/manifestedit-field-ownership-spike.md) | the API wins — full-object ownership, never field-subset |
 | [`reconcile-via-watchlist-mark-and-sweep.md`](spec/reconcile-via-watchlist-mark-and-sweep.md) | **no bookmark, no sweep** |
 | [`contextual-namespace-and-kustomize-folder-editing.md`](spec/contextual-namespace-and-kustomize-folder-editing.md) | kustomize namespace inference; the supported subset |
-| [`gittarget-new-file-placement-rules.md`](spec/gittarget-new-file-placement-rules.md) | where a new resource's file goes (F4) |
+| [`gittarget-new-file-placement-rules.md`](spec/gittarget-new-file-placement-rules.md) | where a new resource's file goes |
 | [`sops-single-file-no-multidoc.md`](spec/sops-single-file-no-multidoc.md) | one encrypted file is one document |
 | [`scale-subresource-audit-rehydration.md`](spec/scale-subresource-audit-rehydration.md) | `/scale` only; every other subresource ignored |
 | [`commit-window-refactor.md`](spec/commit-window-refactor.md) | one grouped commit = one (author, GitTarget) |
@@ -58,14 +58,13 @@ misled. Full list in [`spec/README.md`](spec/README.md); the ones that carry a
 
 ## What is being decided now — [`design/`](design/)
 
-**The live workstream** is [`design/gitops-api/`](design/gitops-api/) — editing
-existing GitOps folders through the Kubernetes API. Start at its
-[README](design/gitops-api/README.md) for the feature ladder (F1–F8), then
-[`support-contract.md`](design/gitops-api/support-contract.md) — **the single page that
-says what we support and refuse** — and
-[`the-layer-above-and-the-expansion-graph.md`](design/gitops-api/the-layer-above-and-the-expansion-graph.md),
-which draws the architecture the product is heading for (kcp + Flux + Argo CD above
-this operator) and names the one question every layer must agree on.
+**The live workstream** is [`design/support-boundary/`](design/support-boundary/) — editing
+existing GitOps folders through the Kubernetes API. Start at
+[`support-contract.md`](design/support-boundary/support-contract.md) — **the single page that
+says what we support and refuse** — and then its
+[README](design/support-boundary/README.md), which maps the rest of the folder: the
+kustomize field taxonomy, the write boundary, the orchestrator/expansion line, and
+how secrets are handled.
 
 Nine other open items:
 
@@ -83,8 +82,8 @@ Nine other open items:
 
 ## Deferred, but still wanted — [`future/`](future/)
 
-[`idea-application-editing.md`](future/idea-application-editing.md) is the product
-seed of the whole gitops-api workstream and still holds the branch/session
+[`idea-application-editing.md`](future/idea-application-editing.md) is where the
+whole edit-through-the-API workstream started, and still holds the branch/session
 grouping strategies nothing else covers.
 [`ha-gittarget-distribution-plan.md`](future/ha-gittarget-distribution-plan.md) is
 the HA plan `architecture.md` cites three times (and the reason Redis is required).

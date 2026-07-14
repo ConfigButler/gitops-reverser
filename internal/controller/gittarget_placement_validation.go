@@ -18,7 +18,7 @@ import (
 const coreSecretsTypeKey = "v1/secrets"
 
 // validatePlacementPolicy statically validates a GitTarget's declared placement
-// policy (F4, Option B2:
+// policy (Option B2:
 // docs/spec/gittarget-new-file-placement-rules.md) against the
 // spec alone — no repository scan is needed, so this runs as part of the Validated
 // gate, the same spec-well-formedness check that already covers provider/branch

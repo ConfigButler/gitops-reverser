@@ -78,7 +78,7 @@ type PlacementResult struct {
 	// Kustomization is set when Path's directory carries a supported
 	// kustomization.yaml whose resources: list does not already name Path — the
 	// writer must add it as part of the same commit so kustomize picks the file
-	// up (F4's "add to the right kustomize file").
+	// up ("add to the right kustomize file").
 	Kustomization *KustomizationInfo
 	// NamespaceInherited is true when Path's destination infers its namespace
 	// from build context (a kustomization.yaml's namespace: transformer) rather
@@ -133,13 +133,13 @@ func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementReque
 	return finishPlacement(store, req, canonicalPath(req), PlacementSourceCanonical, "", false)
 }
 
-// resolveKustomizeRoot is a narrow, F4-specific fallback for when no sibling cohort
+// resolveKustomizeRoot is a narrow, placement-specific fallback for when no sibling cohort
 // exists (steps 1/2 both miss) — typically a resource whose type has never before
 // appeared in this GitTarget. The canonical path (step 4) is a
 // {group}/{version}/{resource}/{namespace}/{name}.yaml tree a kustomization's
 // resources: graph can never reach, so a brand-new type in an otherwise
 // kustomize-managed folder would silently land outside the folder's own
-// convention — precisely the problem F4 exists to fix. When the whole scanned
+// convention — precisely the problem new-file placement exists to fix. When the whole scanned
 // subtree is governed by exactly one supported kustomization (today's
 // single-context baseline), the new resource belongs beside that kustomization's
 // other files instead.
@@ -254,7 +254,7 @@ func kustomizationListsResource(k *KustomizationInfo, resolvedPath string) bool 
 // segments), no Windows-style backslash separators, a non-empty final file name,
 // and a recognized YAML suffix (".sops.yaml"/".sops.yml" satisfy this too, since
 // they end in ".yaml"/".yml"). finishPlacement runs this on every path before a
-// single byte is written, so a bad declared template (F4 Option B) can never
+// single byte is written, so a bad declared template (Option B) can never
 // escape the folder the writer owns — sanitizePlacementSegment already defends
 // each individual variable's value, but the template's own literal text is
 // author-supplied and unconstrained without this gate.

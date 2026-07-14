@@ -5,7 +5,6 @@
 > Related:
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md),
 > [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md),
-> [intent-cluster-hydration.md](intent-cluster-hydration.md),
 > [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md),
 > [README.md](README.md)
 
@@ -203,7 +202,7 @@ incrementally.
 1. **Where does `schemaConformant` come from?** Today it would be hardcoded for
    the SOPS case. It could instead be *derived*: fetch the OpenAPI schema and try
    a strict decode. That is exact, and it needs a cluster — which
-   [`ScanRepo` explicitly does not have](f8-repo-discovery-and-onboarding-scan.md).
+   [`ScanRepo` explicitly does not have](repo-discovery-and-onboarding-scan.md).
    Is a hardcoded classifier acceptable, or does this belong to a cluster-aware
    second pass?
 2. **Is `visibility` per-document or per-field?** A `SealedSecret` is `opaque` in

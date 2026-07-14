@@ -72,7 +72,7 @@ type ManifestStore struct {
 
 	// Kustomizations indexes every kustomization.yaml found under the scanned root by
 	// its directory (slash, relative to the root; "." for the root itself). New-file
-	// placement (F4) consults it to decide whether a candidate directory is
+	// placement consults it to decide whether a candidate directory is
 	// kustomize-governed and, if so, which file's resources: list a new sibling must
 	// be added to. Populated independent of the allowlist — build-directive discovery
 	// does not depend on which files the writer materialises.
@@ -175,7 +175,7 @@ type DocumentModel struct {
 	// ambiguous-kustomize-overrides diagnostic). The writer routes a live change
 	// produced by one of these entries back to the entry instead of writing it
 	// through into the source document. See
-	// docs/design/gitops-api/finished/f1-images-replicas-edit-through.md.
+	// docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
 	Overrides *KustomizeOverrides
 
 	// ResourceIdentity is the API-side identity (GVR + namespace + name). It is set
@@ -601,7 +601,7 @@ type namespaceAssignment struct {
 }
 
 // KustomizationInfo is the write-relevant view of one kustomization.yaml exposed for
-// new-file placement (F4): whether the directory it lives in carries a supported
+// new-file placement: whether the directory it lives in carries a supported
 // kustomization and, if so, its local resources/bases entries (raw, relative to its
 // own directory) — the list a new sibling file must be added to so kustomize
 // includes it.
@@ -628,7 +628,7 @@ type KustomizationInfo struct {
 }
 
 // kustomizationInfos exports the analyzer's internal kustomization index for
-// new-file placement (F4). Copying into a fresh map/slice keeps ManifestStore
+// new-file placement. Copying into a fresh map/slice keeps ManifestStore
 // immune to any future mutation of the internal kustomizationDoc values.
 func kustomizationInfos(kusts map[string]*kustomizationDoc) map[string]*KustomizationInfo {
 	out := make(map[string]*KustomizationInfo, len(kusts))

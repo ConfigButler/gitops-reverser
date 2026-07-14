@@ -277,7 +277,7 @@ func scanExitCode(policy string, accepted bool) int {
 	return exitOK
 }
 
-// runScanRepo runs the F8 whole-repo onboarding scan: walk every folder, enumerate
+// runScanRepo runs the whole-repo onboarding scan: walk every folder, enumerate
 // candidate GitTarget subtrees, classify each one's layout and acceptance, and emit the
 // report. It is read-only and needs no cluster. Exit codes stay simple for this cut
 // (exitOK, or exitUsage on an I/O error); the repo-level --policy refuse gate is

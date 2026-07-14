@@ -1,30 +1,31 @@
 # GitTarget granularity, the write boundary, and cross-environment edits
 
 > Status: direction-setting / options. The two forks are decided (§2 → **A**,
-> §3 → **product promotion**), and the Track-1 write-boundary hardening they
+> §3 → **promotion in the layer above**), and the write-boundary hardening they
 > gate has **shipped**: L1 and L2 are enforced as write-plan preconditions in
 > `internal/git/plan_flush.go` and surface as the GitTarget reason
-> `WriteBoundaryRefused` (§1). What remains open is F2 render-root scoping and
+> `WriteBoundaryRefused` (§1). What remains open is render-root scoping and
 > the divergence notification sketched in §6.
 > Captured: 2026-07-09
 > Related:
 > [README.md](README.md),
-> [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md)
-> (§4 invariant, §5 overlay model, §9 three arrows),
+> [kustomize-support-boundary.md](kustomize-support-boundary.md)
+> (§4 invariant, §5 overlay model),
 > [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md),
 > [../gitpath-foreign-content-stringency.md](../../spec/gitpath-foreign-content-stringency.md)
 
 ## Purpose
 
-Two questions surfaced while scoping F2 that the existing docs do not settle,
-and both change what the Track-1 write-boundary hardening should build:
+Two questions surfaced while scoping render-root scoping (overlay support) that
+the existing docs do not settle, and both changed what the write-boundary
+hardening had to build:
 
 1. **Granularity** — is a `GitTarget` allowed at an *overlay* subfolder
    (`overlays/test`), or only at the *app root* (`apps/podinfo`)? "Manage the
    higher level as one thing" resolves some problems and creates others.
 2. **Cross-environment edits** — the model today makes "change one thing in
    every environment at once" (bump a version everywhere) deliberately
-   impossible for the operator (§9). People *will* want it. What is the honest
+   impossible for the operator. People *will* want it. What is the honest
    answer?
 
 This doc records the inputs already settled, lays out each fork as concrete
@@ -38,12 +39,13 @@ These are decided; they frame the forks but are not reopened here.
 - **The write boundary is two layers.** (§1 below.) **L1** — every path the
   operator writes is inside the target's write scope (a filesystem jail).
   **L2** — within the reachable graph, never write a file consumed by more than
-  one render root (fan-in = 1). Both *were* only emergent; Track 1 made them
-  explicit write-plan preconditions, checked before any byte is written.
+  one render root (fan-in = 1). Both *were* only emergent; the hardening made
+  them explicit write-plan preconditions, checked before any byte is written.
 - **The admission webhook is a fail-open accelerator, not a correctness layer.**
   It rejects unsavable edits at `kubectl apply` time for immediate,
-  *atomic* feedback, but it is opt-in, intent-mode-only, and `failurePolicy:
-  Ignore`. Correctness rests entirely on the L1/L2 write-plan preconditions
+  *atomic* feedback, but it is opt-in, never used on a cluster the operator
+  merely mirrors, and `failurePolicy: Ignore`. Correctness rests entirely on
+  the L1/L2 write-plan preconditions
   below: with the webhook off, a write that would leave the jail or touch shared
   context is still refused before any byte is written. The Tier-2 unreflected-set
   accounting ([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md))
@@ -65,20 +67,20 @@ These are decided; they frame the forks but are not reopened here.
 
 Both forks below are **decided — this is the user's call**, recorded here:
 
-- **Granularity: Option A for launch; keep the way open for Option C; reject
-  Option B as the operator write model.** A `GitTarget` is a *write partition* —
+- **Granularity: Option A; keep the way open for Option C; reject Option B as the
+  operator write model.** A `GitTarget` is a *write partition* —
   one overlay = environment = watch scope = write scope. B is rejected not only
   on the L1-vs-L2 safety point but because, *even if L2 were perfect*, one target
   spanning test/acceptance/production muddies authorization, audit, status, and
-  session lifecycle. "Manage the app as one thing" is a **product grouping**
-  concern (an aggregate/app concept the product layer can add later over N
+  review. "Manage the app as one thing" is a **grouping** concern for the layer
+  above the operator (an aggregate/app concept a tool built on top can add over N
   targets), never a reason to widen an operator target across environments.
-- **Cross-environment editing: product-layer promotion now; Option C later, and
+- **Cross-environment editing: promotion in the layer above; Option C later, and
   only for *shared defaults* — not as the answer to "edit every environment."**
   C (base-as-variant) edits the shared default/template and reaches only the
   overlays that do **not** override that field; the honest "set every
-  environment's effective value" stays the product-layer Git operation (§3a).
-  Promotion and factor-into-base remain distinct verbs (§3/§4). 3c rejected.
+  environment's effective value" stays a Git-level operation above the operator
+  (§3a). Promotion and factor-into-base remain distinct verbs (§3/§4). 3c rejected.
 
 The rest of this doc keeps the full option analysis so the decision stays
 legible; §2 and §3 mark the chosen paths.
@@ -124,12 +126,12 @@ and **not built**. Wherever this doc says an edit is "unreflected," read it as
   (write scope) and treats siblings as non-overlapping — so it must not later
   fold the wider read scope into ownership.
 
-**Before Track 1:** L1 held only because write paths happened to be built
+**Before the hardening:** L1 held only because write paths happened to be built
 relative to the write root, and L2 was not enforced at all — an ambiguous
 override chain *warned and wrote through*, and the only thing preventing a
 shared-file clobber was a coincidental namespace-ambiguity block.
 
-**Now (Track 1, shipped):** both are write-plan preconditions in
+**Now (shipped):** both are write-plan preconditions in
 `writeBatch.flush`, evaluated at the one moment every planned path is known and
 before any byte is touched, alongside the existing `.gittargetignore` shadow
 check:
@@ -208,11 +210,11 @@ flowchart TB
 - **Base read-only enforced by L1** (it is outside every write scope — the
   strong, filesystem guarantee).
 - Clean identity: environment = GitTarget = namespace = write scope = RBAC
-  scope. This is what §8/§9 lean on — "propose to test, read-only on prod" is a
-  namespace RoleBinding, and a session branch is naturally single-environment.
-- **Cost:** F2 must teach the analyzer to *follow* `../../base` for reading
-  (today that reference is dropped). More `GitTarget` objects; onboarding emits
-  several per app.
+  scope. It is what makes "propose to test, read-only on prod" a namespace
+  RoleBinding, and it keeps one branch's changes naturally single-environment.
+- **Cost:** render-root scoping must teach the analyzer to *follow* `../../base`
+  for reading (today that reference is dropped). More `GitTarget` objects;
+  onboarding emits several per app.
 
 ### Option B — Coarse: one target at the app root
 
@@ -242,9 +244,8 @@ flowchart TB
   ("an edit in test writes base → changes prod"), and any future fan-in blind
   spot (a shared file with no override entries at stake — see §5) is a
   corruption rather than a refusal. It also dissolves the clean identity: one
-  target spans three namespaces, its watch scope is all of them, and a session
-  branch can mix environments — which muddies RBAC, promotion, and session
-  lifecycle.
+  target spans three namespaces, its watch scope is all of them, and one branch
+  can mix environments — which muddies RBAC, promotion, and review.
 
 ### Option C — Fine + base-as-variant
 
@@ -274,7 +275,7 @@ flowchart TB
   (fan-in = 1 there → writable). The write jail per target is unchanged;
   ownership stays disjoint.
 - **Nuance:** `base/` has no namespace, so the base target must inject a
-  synthetic one (`podinfo-base`) for the intent cluster and strip it on
+  synthetic one (`podinfo-base`) on the cluster side and strip it on
   write-back — which is exactly the existing "inherited namespaces are kept out
   of file bytes on write" behaviour, reused.
 
@@ -285,17 +286,17 @@ flowchart TB
 | Base kept read-only by | **L1** (filesystem) | **L2** (graph) ⚠ | **L1** |
 | Read wider than write | yes (`../../base`) | no | yes |
 | Identity env=target=ns | clean | broken (target spans envs) | clean |
-| Session branch scope | one environment | can mix environments | one environment |
+| Branch scope | one environment | can mix environments | one environment |
 | RBAC per environment | namespace RoleBinding | coarse (whole app) | namespace RoleBinding |
 | Onboarding output | N targets/app | 1 target/app | N+1 targets/app |
-| "Edit all envs at once" | product-layer only (§3a) | tempting but unsafe | edit base variant (§3b) |
-| New F2 machinery | follow `../../base` reads | none | follow reads + base variant |
+| "Edit all envs at once" | only in the layer above (§3a) | tempting but unsafe | edit base variant (§3b) |
+| New render-root machinery | follow `../../base` reads | none | follow reads + base variant |
 
 ### Decision — Option A now, C kept open, B rejected
 
-**This is the chosen path (2026-07-09):** Option A for launch, Option C as an
-additive later step (shared-defaults editing, §3b), and **B rejected as the
-operator write model**.
+**This is the chosen path (2026-07-09):** Option A, Option C as an additive later
+step (shared-defaults editing, §3b), and **B rejected as the operator write
+model**.
 
 The decisive safety point stands: B makes the *weaker* guarantee (L2 — enforced
 now, but only as good as our model of the render graph) the only thing between
@@ -305,43 +306,43 @@ need L2**: a `GitTarget` should
 be a **write partition**. Even with a perfect L2, one target spanning
 test/acceptance/production muddies four things a per-overlay target keeps clean —
 authorization (RBAC per namespace), audit (who changed which environment), status
-(per-environment `Ready`, and the planned per-edit `FullyReflected`), and session
-lifecycle (a session
-branch is one environment). "Manage the app as one thing" is a *product grouping*
-concern — an aggregate/app concept the product layer can add over N targets
-later — not a reason to make the operator's write unit span environments.
+(per-environment `Ready`, and the planned per-edit `FullyReflected`), and review
+(one branch's changes are one environment). "Manage the app as one thing" is a
+*grouping* concern for the layer above — an aggregate/app concept a tool built on
+the operator can add over N targets — not a reason to make the operator's write
+unit span environments.
 
-A is also where the code and docs already point: the product model fixes
+A is also where the code and docs already point: the overlay model fixes
 environment = GitTarget = watch scope = write scope with shared read-only bases
-([kustomize-support-boundary-and-product-model.md §5](kustomize-support-boundary-and-product-model.md#L208)),
+([kustomize-support-boundary.md §5](kustomize-support-boundary.md)),
 and the repo scan already classifies an out-of-subtree base as a
-forward-looking F2 gap (`overlay-fan-out-needs-f2`), not permanent unsupported
+forward-looking gap (`overlay-fan-out-unsupported`), not permanent unsupported
 structure
-([scan_repo.go](../../../internal/manifestanalyzer/scan_repo.go#L37)). A is the
+([scan_repo.go](../../../internal/manifestanalyzer/scan_repo.go)). A is the
 direction of travel; this decision commits to it.
 
 **Onboarding UX is not a reason to pick B.** A produces N targets per app, but
-object count is a product-presentation problem, not an API-shape problem: the
-product layer groups the N targets as one app in its UI. Do not let "one object
+object count is a presentation problem, not an API-shape problem: a tool built on
+the operator groups the N targets as one app in its UI. Do not let "one object
 is tidier" pull the write model into B.
 
 ## 3. Fork two — "edit N environments at once"
 
 Today the operator cannot write the base, so "bump the image everywhere" has no
-operator path — it is a product-layer Git computation (§9). That is correct as a
-*safety* stance and wrong as a *product* stance: it is a top-three user request.
-Three ways to answer it.
+operator path — it is a Git-level computation for the layer above. That is correct
+as a *safety* stance, but it is a common request, so the honest answer has to be
+stated rather than implied. Three ways to answer it.
 
-### 3a. Product-layer Git operation (status quo, §9)
+### 3a. A Git-level operation in the layer above (status quo)
 
 The user bumps the tag in `test`; the operator lands the one-line
-`overlays/test/kustomization.yaml` change; the product offers **promote** /
+`overlays/test/kustomization.yaml` change; the layer above offers **promote** /
 **factor into base** — a pure Git→Git copy/diff that opens a PR. The operator
 never writes the base.
 
 - **Pro:** operator stays minimal; base edits are ordinary reviewed Git changes.
-- **Con:** "all at once" is a product feature that must exist, and until it does
-  the answer is "edit three files." Not an *operator* capability.
+- **Con:** "all at once" has to be built somewhere above, and until it is the
+  answer is "edit three files." Not an *operator* capability.
 
 ### 3b. Base-as-variant (Option C): edit the shared default explicitly
 
@@ -355,8 +356,8 @@ The base is hydrated into a synthetic `podinfo-base` namespace that is a
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as User / product UI
-    participant IC as Intent cluster ns podinfo-base
+    participant U as User / UI
+    participant IC as Cluster ns podinfo-base
     participant R as Reverser base GitTarget
     participant G as Git base/
     participant F as GitOps controllers
@@ -373,13 +374,13 @@ sequenceDiagram
   per-environment observations.
 - **What it is *not*:** the answer to "set every environment's effective value."
   For any field an overlay overrides, the base edit is shadowed — the honest
-  every-environment change is the product-layer promotion of §3a. C edits
-  defaults; promotion sets effective values.
+  every-environment change is the promotion of §3a, a Git-level operation above
+  the operator. C edits defaults; promotion sets effective values.
 - **RBAC / blast radius:** writing `podinfo-base` changes the default under *all*
   non-overriding environments at once, so it is not just another environment
   edit — it needs its own **"global/defaults editor"** permission, distinct from
   per-environment write access.
-- **Intent-only semantics to design:** the synthetic base namespace is a virtual
+- **Semantics to design:** the synthetic base namespace is a virtual editing
   surface with no workloads and is never a deploy target. Bases that inject
   *multiple* namespaces, and **cluster-scoped** resources living in the base,
   need explicit handling before C can ship — which namespace the virtual surface
@@ -394,31 +395,34 @@ plus a logic slip silently writes the base — reintroducing exactly the
 "edit test changed prod" failure L1 exists to prevent. It also violates fan-in =
 1 by design. Listed only to mark it considered and closed.
 
-### Decision — product promotion now, C later for shared defaults
+### Decision — promotion in the layer above now, C later for shared defaults
 
-**Chosen (2026-07-09): 3a is the launch answer; 3b (Option C) comes later and
+**Chosen (2026-07-09): 3a is the answer today; 3b (Option C) comes later and
 only for shared-defaults editing; 3c rejected.** The honest "set every
-environment's effective value" is the product-layer Git operation — it falls out
-of work already done (a tag bump in one overlay is a one-line diff to copy across
-overlays). Base-as-variant is added when editing a shared *default* is worth the
-virtual-namespace handling, and it is never sold as "edit everywhere."
+environment's effective value" is a Git-level operation in the layer above — it
+falls out of work already done (a tag bump in one overlay is a one-line diff to
+copy across overlays). Base-as-variant is added when editing a shared *default* is
+worth the virtual-namespace handling, and it is never sold as "edit everywhere."
 
 Keep **two distinct verbs** and never conflate them:
 
-- **Promotion** — copy an *effective* environment change across overlays
-  (product-layer Git → Git). This is how "make every environment 6.6.1" is done.
+- **Promotion** — copy an *effective* environment change across overlays (a
+  Git → Git operation above the operator). This is how "make every environment
+  6.6.1" is done.
 - **Factor into base** — refactor a shared *default* into `base/` (Option C's
-  surface, or a product refactor). This changes the template, not necessarily
-  every effective value.
+  surface, or a refactor done above the operator). This changes the template, not
+  necessarily every effective value.
 
 ## 4. Worked examples: action → expected output
 
-Fixed action set, acting in `podinfo-test` unless noted, at the **future** launch
-scope (F2+F4, no F3) — this table describes where the model is headed, not what
-today's binary does.
+Fixed action set, acting in `podinfo-test` unless noted, assuming **render-root
+scoping** (overlay support — *not* supported today) and no overlay patch
+authoring — this table describes where the model is headed, not what today's
+binary does.
 
 "Unreflected" here means the *designed* Tier-2 outcome: recorded in the
-unreflected set, `FullyReflected=False`, reverted by hydration in intent mode
+unreflected set, `FullyReflected=False`, and reverted wherever something
+re-applies the folder's render
 ([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)).
 None of that is built. Until it is, an edit with no legal destination either
 never matches a source document (nothing happens) or trips a write-boundary
@@ -431,7 +435,7 @@ precondition and is refused outright (§1).
 | `kubectl set image deploy/podinfo podinfo=…:6.6.1` | `images:` entry in `overlays/test/kustomization.yaml` |
 | `kubectl scale deploy/podinfo --replicas=5` | `replicas:` entry in `overlays/test/kustomization.yaml` |
 | `kubectl apply -f new-cronjob.yaml` (test-only) | new `overlays/test/cronjob.yaml` + `resources:` entry |
-| edit an env var on the **base-owned** Deployment | **unreflected** (no destination until F3); webhook rejects at apply time if enabled |
+| edit an env var on the **base-owned** Deployment | **unreflected** (no destination until overlay patch authoring exists); webhook rejects at apply time if enabled |
 | edit a `HelmRelease` chart version `6.0.0 → 6.1.0` (floating range or pinned) | in-place edit of the `HelmRelease` document — **accepted** (control plane renders it) |
 | a `kustomization.yaml` gains `resources: [github.com/org/repo//base?ref=main]` | **folder refused** (`GitPathAccepted=False`) — we render kustomize; a remote/floating source is non-invertible |
 
@@ -439,9 +443,9 @@ precondition and is refused outright (§1).
 
 | Option | Expected output of "bump everywhere" |
 |---|---|
-| **A** (per overlay) | not an operator action — product **promote** copies the one-line change into each overlay's `kustomization.yaml`, one PR |
+| **A** (per overlay) | not an operator action — a **promote** operation in the layer above copies the one-line change into each overlay's `kustomization.yaml`, one PR |
 | **B** (app root) | *tempting* to write `base/`, but that is the unsafe path — must still be refused/kept to promotion, so B buys nothing here while weakening L1→L2 |
-| **C** (base variant) | editing `base/` changes the shared *default* only — but overlays override `images:`, so it does **not** bump those environments. "Every environment effective value" is still product promotion (A's answer). C fits editing a *default*, not this action |
+| **C** (base variant) | editing `base/` changes the shared *default* only — but overlays override `images:`, so it does **not** bump those environments. "Every environment effective value" is still promotion (A's answer). C fits editing a *default*, not this action |
 
 ### Where the options differ — "how is base kept read-only"
 
@@ -451,26 +455,29 @@ precondition and is refused outright (§1).
 | **B** | possible in principle — only L2 fan-in stops it, and L2 is the graph-modelling layer, not the path check ⚠ |
 | **C** | impossible from the test target (L1); the *base* target may write `base/`, but only from a `podinfo-base` edit |
 
-## 5. Consequences for the ladder and Track 1
+## 5. Consequences for the write model
 
-- **Granularity is decided (A), which fixed the Track-1 investment.** Because A
-  keeps the base read-only by **L1**, Track 1 built **L1 as an explicit
-  precondition** (the strong, cheap guarantee) and turned **L2 into a refusal**
-  (never write-through a multi-consumer file) — it never leans on L2 to protect
-  the base. Both shipped; see §1.
-- **L2's remaining blind spot is F2's job.** `fanInPrecondition` fires on the
+- **Granularity is decided (A), which fixed what the hardening had to build.**
+  Because A keeps the base read-only by **L1**, the hardening built **L1 as an
+  explicit precondition** (the strong, cheap guarantee) and turned **L2 into a
+  refusal** (never write-through a multi-consumer file) — it never leans on L2 to
+  protect the base. Both shipped; see §1.
+- **L2's remaining blind spot belongs to render-root scoping.**
+  `fanInPrecondition` fires on the
   signal the store already carries: a file more than one render path reaches
   *with override entries at stake*. A file shared by two render roots with no
   competing `images:`/`replicas:` chain is not flagged — under layout A it is
   also never dirty (a base doc reached by distinct overlays is `NamespaceNone`
   and never matches a live object), so nothing is written. Generalizing the check
-  to "any file reachable from more than one render root" is F2 render-root
-  scoping, and it is what would be required before layout B could be offered.
-- **F2 scope gains one concrete capability under A/C:** follow `../../base` for
-  *reading* (today dropped), while the write jail stays at `spec.path`. Much of
-  the read-scope / render-root / out-of-subtree-base logic already exists
-  read-only in the F8 repo scan and can be promoted into the live analyzer.
-- **Cross-environment editing is decided:** product promotion at launch; Option
+  to "any file reachable from more than one render root" is render-root scoping's
+  job, and it is what would be required before layout B could be offered.
+- **Render-root scoping gains one concrete capability under A/C:** follow
+  `../../base` for *reading* (today dropped), while the write jail stays at
+  `spec.path`. Much of the read-scope / render-root / out-of-subtree-base logic
+  already exists read-only in the
+  [repo scan](repo-discovery-and-onboarding-scan.md) and can be promoted into the
+  live analyzer.
+- **Cross-environment editing is decided:** promotion in the layer above; Option
   C (base-as-variant) later and only for editing *shared defaults*, not as the
   "every environment" answer. Neither reopens the fan-in invariant.
 - **Floating-source rule needs no new code, only docs + a test:** the
@@ -482,13 +489,14 @@ precondition and is refused outright (§1).
 
 The write boundary refuses an edit that would land in shared context. But most
 edits that *want* to land there have a legal destination one level up: the
-overlay's own `kustomization.yaml`. This is the reflection path F1 already
-implements, and it is worth naming explicitly, because it is the reason the L2
-refusal is a narrow rule rather than a broad one.
+overlay's own `kustomization.yaml`. This is the reflection path the operator
+already implements for override entries, and it is worth naming explicitly,
+because it is the reason the L2 refusal is a narrow rule rather than a broad one.
 
 Bump `podinfo` to `9.9.9` in the `test` namespace. The container image lives in
 `base/deployment.yaml`, which `prod` also renders — writing it there is exactly
-the edit L2 forbids. Instead the operator edits the overlay's `images:` entry:
+the edit L2 forbids. Instead the operator edits the overlay's `images:` entry
+(the reflection path it already implements for `images:`/`replicas:`):
 
 ```text
 apps/podinfo/
@@ -503,7 +511,8 @@ The write stays inside `spec.path` (L1 holds), the shared file is never touched
 (L2 holds), and the render is correct: kustomize applies `images:` *after* the
 base is loaded, so the overlay entry wins. `replicas:` behaves the same way.
 Field-level edits that no override entry can express (an env var, a resource
-limit) have no such destination — they are the F3 patch case. Today they are
+limit) have no such destination — they are the overlay-patch case, which is not
+supported today. Today they are
 simply refused when they reach a write-boundary precondition; the honest per-edit
 report of *what was dropped* is the unbuilt Tier-2 accounting
 ([unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)).
@@ -522,13 +531,13 @@ Two shapes are worth distinguishing:
 | **Override updated** | an `images:` entry already existed for this image; the operator changed `newTag` | no — the overlay already diverged; the user is editing their own pin |
 | **Override created** | no entry existed; the overlay rendered the base value, and the operator has now pinned it | **yes** — this is the moment the environment stops tracking base |
 
-**Proposal (not built; own F-item).** On the *create* transition, surface the
+**Proposal (not built).** On the *create* transition, surface the
 divergence at the point it becomes true. Three candidate surfaces, cheapest
 first, and they are not exclusive:
 
 1. **Commit-message trailer** on the commit that adds the entry — e.g.
    `Overlay-Diverged: images/podinfo base=6.3.0 overlay=9.9.9`. Free, durable,
-   reviewable, lands in the product PR where a human is already looking. This is
+   reviewable, and it lands in the PR where a human is already looking. This is
    the one to build first.
 2. **Kubernetes Event** on the GitTarget (`reason: OverlayDiverged`), so the
    divergence is visible to `kubectl describe` and to anything watching events.
@@ -548,19 +557,19 @@ two would make the common, healthy overlay edit look like a failure.
 
 **Decided (2026-07-09) — the user's call:**
 
-1. **Granularity — Option A for launch, C kept open, B rejected** as the operator
+1. **Granularity — Option A, C kept open, B rejected** as the operator
    write model. A `GitTarget` is a write partition (§2 Decision).
-2. **Cross-environment edits — product promotion now, Option C later and only for
-   shared defaults**; 3c rejected. Promotion and factor-into-base stay distinct
-   verbs (§3 Decision).
+2. **Cross-environment edits — promotion in the layer above, Option C later and
+   only for shared defaults**; 3c rejected. Promotion and factor-into-base stay
+   distinct verbs (§3 Decision).
 
 **Still open:**
 
 3. **Divergence notification (§6)** — build the commit-message trailer on the
-   "override created" transition? Own F-item; nothing depends on it shipping with
-   the write boundary.
+   "override created" transition? Independent; nothing depends on it shipping
+   with the write boundary.
 4. **Write-up placement** — fold the §1 L1/L2 model back into
-   [kustomize-support-boundary-and-product-model.md §4](kustomize-support-boundary-and-product-model.md)
+   [kustomize-support-boundary.md §4](kustomize-support-boundary.md)
    (one canonical invariant statement), or keep §4 as the short invariant and let
    this doc own the two-layer detail?
 5. **Option C sub-questions (deferred with C):** the synthetic base namespace's

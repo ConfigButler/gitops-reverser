@@ -910,7 +910,7 @@ hydrates only touched files into buffers for the commit, and flushes only change
   entry in the document's kustomization chain is written back to that entry (comment-preserving, only
   fields the entry already declares); the source manifest keeps its bytes. Anything the inversion cannot
   express falls back to the plain in-place patch. See
-  [gitops-api/finished/f1-images-replicas-edit-through.md](design/gitops-api/finished/f1-images-replicas-edit-through.md).
+  [gitops-api/finished/images-and-replicas-edit-through.md](design/support-boundary/finished/images-and-replicas-edit-through.md).
 * **Deletes:** use the manifest identity index, so a moved manifest can still be deleted even when it is
   not at the canonical path.
 * **Field patches** (currently `/scale` → parent `spec.replicas`) are intentionally narrow: they only

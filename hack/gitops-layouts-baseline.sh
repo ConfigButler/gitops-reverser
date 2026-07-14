@@ -7,7 +7,7 @@
 # in review as a diff of exactly which fixtures moved, and in which direction.
 #
 # It carries no interpretation. Interpretation belongs in
-# docs/design/gitops-api/, which is free to disagree with this file — that
+# docs/design/support-boundary/, which is free to disagree with this file — that
 # disagreement is the backlog.
 #
 # Usage: task gitops-layouts-baseline
@@ -95,8 +95,8 @@ emit_detail() {
 
 A behavioural baseline: what `manifest-analyzer --mode scan-repo` reports for every
 fixture in this corpus, as of the last regeneration. It is **descriptive**. It
-records what the tool does today, not what the product should support — that is
-[`docs/design/gitops-api/support-contract.md`](../../../docs/design/gitops-api/support-contract.md).
+records what the tool does today, not what the operator should support — that is
+[`docs/design/support-boundary/support-contract.md`](../../../docs/design/support-boundary/support-contract.md).
 
 This file carries no interpretation on purpose. When it disagrees with the support
 contract, that disagreement is the backlog.

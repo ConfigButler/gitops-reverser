@@ -1,20 +1,20 @@
-# F7: Higher-level KRM objects as first-class documents
+# Higher-level KRM objects as first-class documents
 
 > Status: shipped ([#203](https://github.com/ConfigButler/gitops-reverser/pull/203)) —
-> corpus + e2e pins landed with this doc; **no product code changed** (the guarantee
-> already held; F7 makes it load-bearing). Filed under `finished/`.
+> corpus + e2e pins landed with this doc; **no operator code changed** (the guarantee
+> already held; this work makes it load-bearing). Filed under `finished/`.
 > Captured: 2026-07-07
 > Related:
 > [../README.md](../README.md),
-> [../kustomize-support-boundary-and-product-model.md](../kustomize-support-boundary-and-product-model.md),
-> [f1-images-replicas-edit-through.md](f1-images-replicas-edit-through.md),
+> [../kustomize-support-boundary.md](../kustomize-support-boundary.md),
+> [images-and-replicas-edit-through.md](images-and-replicas-edit-through.md),
 > [../../../future/idea-application-editing.md](../../../future/idea-application-editing.md),
 > [../../../architecture.md](../../../architecture.md)
 
 ## Premise: the pipeline is already kind-agnostic
 
-The launch pitch is "install an app = add a KRM document, roll out a version =
-edit a field" and it must hold for the objects platform teams actually deploy:
+The promise is *install an app = add a KRM document; roll out a version = edit a
+field*, and it must hold for the objects platform teams actually deploy:
 Flux `HelmRelease`, Flux `Kustomization`, Argo CD `Application`, KRO resources,
 and plain core objects. That already works, because **nothing in the write path
 carries a per-kind allowlist**:
@@ -46,10 +46,10 @@ default-allowed. The remaining kind-specific branches are **write-safety** and
 - Sensitive types (core `Secret` plus configured types) are encrypted before
   they touch the worktree. A `HelmRelease`/`Application`/KRO instance is not
   sensitive by default, so it writes plaintext like any document.
-- The `/scale` subresource route and the kustomize `images:`/`replicas:`
-  override route ([F1](f1-images-replicas-edit-through.md)) apply to specific
-  shapes. A control-plane CR hits neither and takes the ordinary in-place patch
-  path.
+- The `/scale` subresource route and the kustomize
+  [`images:`/`replicas:` override route](images-and-replicas-edit-through.md)
+  apply to specific shapes. A control-plane CR hits neither and takes the
+  ordinary in-place patch path.
 - `status` is stripped from every mirrored object and status-only churn is
   deduped, so a controller reconciling the CR does not produce spurious commits
   (`internal/sanitize/marshal.go`, `internal/watch/target_watch.go`).
@@ -58,19 +58,20 @@ This kind-agnosticism is **already e2e-proven for a generic CRD**: the
 icecream-order lifecycle spec installs an arbitrary CRD and pins
 create→file / update→file / delete→file-removed with `status` never committed
 ([../../../../test/e2e/crd_lifecycle_e2e_test.go](../../../../test/e2e/crd_lifecycle_e2e_test.go)).
-What F7 adds is the same proof for a **named, real higher-level control-plane
-type** (Flux `HelmRelease`) plus the un-installed kinds at the unit level.
+What this work adds is the same proof for a **named, real higher-level
+control-plane type** (Flux `HelmRelease`) plus the un-installed kinds at the
+unit level.
 
 So a Flux `HelmRelease`, a Flux `Kustomization`, an Argo CD `Application`, a KRO
 `ResourceGraphDefinition` or its generated instance, and a plain `Deployment`
 all mirror and edit **identically** — they are KRM documents, and editing KRM
-documents is the product surface (README, *"Higher-level products come into
-scope as KRM, not as special cases"*).
+documents is the whole surface. Higher-level tools come into scope as KRM, not
+as special cases.
 
 ## Why prove something that already works
 
-F7 is not a code feature; it is the **proof and the promise**. It is
-launch-critical for two reasons:
+This is not a code feature; it is the **proof and the promise**. It matters for
+two reasons:
 
 1. **Regression fence.** "Kind-agnostic" is an *emergent* property of several
    independent components (watch resolution, the node editor, placement,
@@ -78,13 +79,14 @@ launch-critical for two reasons:
    override heuristic, a placement tweak, a sensitivity default — could quietly
    break a control-plane CR with no test noticing. A corpus + e2e make the
    guarantee load-bearing so a regression announces itself.
-2. **Marketing the boundary correctly.** The support contract is "we edit KRM
+2. **Stating the boundary correctly.** The support contract is "we edit KRM
    documents; we do not inflate Helm charts." Users conflate "Flux
    `HelmRelease`" with "Helm." The user docs draw the line: the `HelmRelease`
-   *document* is first-class; `helmCharts:` *inflation* stays refused (README,
-   *The governing rule*; kustomize-support-boundary, *"No Helm"*).
+   *document* is first-class; `helmCharts:` *inflation* stays permanently
+   refused — see
+   [../kustomize-support-boundary.md](../kustomize-support-boundary.md).
 
-## What F7 pins
+## What this pins
 
 ### Coverage split
 
@@ -93,7 +95,7 @@ launch-critical for two reasons:
 | Flux `HelmRelease` (`helm.toolkit.fluxcd.io/v2`) | ✅ CRD in base e2e cluster | ✅ |
 | Argo CD `Application` (`argoproj.io/v1alpha1`) | — (CRD not in cluster) | ✅ |
 | KRO instance, e.g. `PodInfoApp` (`kro.run` group) | — (KRO is demo-only) | ✅ |
-| core (`ConfigMap`/`Deployment`) | already pinned (inplace-edit, f4-placement, scale) | already pinned |
+| core (`ConfigMap`/`Deployment`) | already pinned (e2e labels `inplace-edit`, `f4-placement`, `scale`) | already pinned |
 
 Flux CRDs (`helmreleases.helm.toolkit.fluxcd.io`,
 `kustomizations.kustomize.toolkit.fluxcd.io`) are established during standard
@@ -107,8 +109,8 @@ mirror/edit behavior.
 
 ### Live e2e pin — `test/e2e/helmrelease_mirror_edit_e2e_test.go`
 
-Mirrors launch use case 2 ("roll out a new version — a chart version on a Flux
-`HelmRelease`"):
+Pins the *roll out a new version* case — a chart version on a Flux
+`HelmRelease`:
 
 1. A `WatchRule` selecting `helmreleases` → `GitTarget`; create a `HelmRelease`
    live with `spec.chart.spec.version: X` (its source need not resolve — the
@@ -135,18 +137,18 @@ two existing globbed gates then automatically cover them:
 Each document carries a hand-authored comment and a realistic version/revision
 field so the gates exercise the properties that matter for these kinds.
 
-## What F7 deliberately does not do
+## What this deliberately does not do
 
 - **No per-kind semantics.** A `HelmRelease`'s `chartRef`, an `Application`'s
   `targetRevision`, a KRO field are ordinary scalars; the operator edits the
   field a human pointed it at, it does not understand chart/app semantics.
-- **No chart inflation.** `helmCharts:` in a kustomization stays refused; F7
-  mirrors the `HelmRelease` *document*, it never renders a chart.
+- **No chart inflation.** `helmCharts:` in a kustomization stays refused; the
+  operator mirrors the `HelmRelease` *document*, it never renders a chart.
 - **No new controllers in e2e.** Argo and KRO stay out of the base cluster;
   adding their CRDs for a live pin is future work, wanted only if the unit-level
   proof ever proves insufficient.
-- **No placement changes.** New-file placement for these kinds is F4's generic
-  path; F7 adds no kind-specific placement.
+- **No placement changes.** New-file placement for these kinds takes the generic
+  placement path; no kind-specific placement was added.
 
 ## Test plan
 

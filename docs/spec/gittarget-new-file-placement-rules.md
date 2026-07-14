@@ -2,7 +2,7 @@
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
 
-> Status: implemented (F4 v1 — Option B2: one `byType`/`default` placement map,
+> Status: implemented (v1 — Option B2: one `byType`/`default` placement map,
 > with sensitivity treated as an internal write-safety classification rather than a
 > separate user-facing placement namespace) + Option C sibling inference (steps
 > 1/2/4) + the kustomize-root fallback documented below. The earlier B1 surface (a
@@ -642,7 +642,7 @@ lands on canonical `ToGitPath()` — **byte-identical to today.** From then on t
 layout propagates itself. A brand-new target behaves exactly as it does now; the
 power only appears once a human (or a prior import) has established any layout.
 
-**Amendment, decided during F4 implementation: a kustomize-root fallback sits
+**Amendment, decided during implementation: a kustomize-root fallback sits
 between "no sibling match" and true canonical.** The rule above is exactly right
 for a flat or already-populated folder, but it silently breaks the moment the
 GitTarget's one kustomization-managed folder receives its *first* resource of a
@@ -654,7 +654,7 @@ document exists to prevent, just for a type instead of a whole folder.
 So, when steps 1/2 (sibling inference) both miss **and** the scanned subtree is
 governed by exactly one supported kustomization, the new resource is placed
 beside that kustomization's other files (and gets a `resources:` entry — see
-`kustomize-support-boundary-and-product-model.md` and
+`kustomize-support-boundary.md` and
 `unreflectable-edits-and-write-gating.md` for the product-level "add to the right
 kustomize file" framing) instead of falling to canonical. This is deliberately
 narrower than the shelved step 3 (same namespace, any type) above: it never joins

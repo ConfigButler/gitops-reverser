@@ -34,9 +34,9 @@ assumed.
 
 ### 1. `ownerReference` is evidence for exactly one of the five
 
-[`resource-capability-model.md`](../design/gitops-api/resource-capability-model.md)
+[`resource-capability-model.md`](../design/support-boundary/resource-capability-model.md)
 and
-[`sealed-secrets-and-external-secrets.md`](../design/gitops-api/sealed-secrets-and-external-secrets.md)
+[`sealed-secrets-and-external-secrets.md`](../design/support-boundary/sealed-secrets-and-external-secrets.md)
 both define a `derived` object as *"Evidence: a controller `ownerReference` on the
 live object."*
 
@@ -143,7 +143,7 @@ So in a generator-enumerated repository both naive moves are wrong: author the C
 you get a duplicate that fights the generator; omit it and — in every *other* layout —
 nothing deploys. This is why the `EnumeratedBy` claim exists, and why adding an app to
 such a repository is
-[refused, loudly](../design/gitops-api/expansion-boundary-and-corpus-organisation.md).
+[refused, loudly](../design/support-boundary/expansion-boundary-and-corpus-organisation.md).
 
 ## Incidental, but worth knowing
 

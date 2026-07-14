@@ -113,14 +113,14 @@ const (
 	// but never writes outside it. Enforced by the writer's pathScopePrecondition; today it is
 	// defense-in-depth (planned write paths are base-relative by construction), made explicit
 	// and tested per
-	// docs/design/gitops-api/gittarget-granularity-and-cross-environment-edits.md §1.
+	// docs/design/support-boundary/gittarget-granularity-and-cross-environment-edits.md §1.
 	IssueWriteEscapesScope IssueKind = "write-escapes-scope"
 	// IssueWriteFanIn marks a planned in-place edit of a source file that more than one
 	// kustomize render path reaches with override entries at stake (write-fan-in > 1). Writing
 	// the change through would corrupt what another render root renders, so the flush is
 	// refused instead of falling back to write-through. It is the L2 write-boundary invariant
 	// made explicit; the broader "any file shared by multiple render roots" generalization is
-	// F2 render-root scoping.
+	// Per-render-root scoping would generalize this.
 	IssueWriteFanIn IssueKind = "write-fan-in"
 
 	// A refusal made up purely of the two write-boundary kinds above surfaces as the GitTarget

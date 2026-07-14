@@ -85,7 +85,7 @@ the small authored document, not the large derived tree — the derived tree is 
 
 **Why mirroring the output is wrong**, not just noisy:
 
-- It breaks the [governing rule](design/gitops-api/README.md) — round-trippability.
+- It breaks the [governing rule](design/support-boundary/README.md) — round-trippability.
   A rendered object is *owned by a controller*: it carries generated names, hash
   suffixes, injected defaults, and controller-managed metadata. There is no single
   writable human destination for it, so an edit can't round-trip. Capturing

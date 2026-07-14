@@ -5,7 +5,7 @@ against concrete examples instead of prose.
 
 > **These fixtures record no verdicts.** Nothing here says which layouts GitOps
 > Reverser supports, accepts, or refuses — that is the job of
-> [`docs/design/gitops-api/support-contract.md`](../../../docs/design/gitops-api/support-contract.md).
+> [`docs/design/support-boundary/support-contract.md`](../../../docs/design/support-boundary/support-contract.md).
 > Each fixture describes *what a layout is*, *what questions it raises*, and — where
 > we have run it — *what the real controller actually did*. A fixture may record an
 > **observation**; it never records a support decision.
@@ -38,7 +38,7 @@ number. One family per decision:
 Families 2, 3, and 4 are the three axes of the support model — renderability,
 provenance, ownership — and they are the reason this grouping exists at all. The
 model is argued in
-[expansion-boundary-and-corpus-organisation.md](../../../docs/design/gitops-api/expansion-boundary-and-corpus-organisation.md).
+[expansion-boundary-and-corpus-organisation.md](../../../docs/design/support-boundary/expansion-boundary-and-corpus-organisation.md).
 
 ### The distinction families 1 and 3 exist to protect
 
@@ -233,7 +233,7 @@ exist and *are* assertion-driven — do not duplicate them here:
 
 When a layout here graduates into a decision, that decision belongs in one of those
 corpora (as an assertion) and in
-[`docs/design/gitops-api/`](../../../docs/design/gitops-api/) (as the reasoning).
+[`docs/design/support-boundary/`](../../../docs/design/support-boundary/) (as the reasoning).
 
 ## Adding a fixture
 

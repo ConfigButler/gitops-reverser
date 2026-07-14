@@ -21,7 +21,7 @@ the problem.
 | `docs/*.md` (user/operator guides) | ~20 | all — they are the product surface |
 | `docs/facts/` | 4 | all — durable reference |
 | `docs/design/*.md` + `design/stream/` | 57 | **9 active**, 9 reference |
-| `docs/design/gitops-api/` | 13 | **all — the live workstream** |
+| `docs/design/support-boundary/` | 13 | **all — the live workstream** |
 | `docs/design/manifest/` + `version2/` | 19 | ~3 — the rest shipped |
 | `docs/finished/` | 41 | **10 load-bearing** (see below — this is the bug) |
 | `docs/future/` | 13 | 8 still wanted |
@@ -62,8 +62,8 @@ A previous reorganisation moved documents and never fixed the pointers. Today,
 docs/guide.md                                             docs/keep.md
 docs/design/manifest/implementation-plan.md               docs/design/commit-window-refactor.md
 docs/design/manifest/current-manifest-support-review.md   docs/design/audit-readiness-probe-plan.md
-docs/design/stream/api-source-of-truth-reconcile.md       docs/design/gitops-api/f1-...md
-docs/future/secret-value-retention-plan.md                docs/design/gitops-api/f7-...md
+docs/design/stream/api-source-of-truth-reconcile.md       docs/design/support-boundary/f1-...md
+docs/future/secret-value-retention-plan.md                docs/design/support-boundary/f7-...md
 docs/design/stream/audit-diagnostic-streams-plan.md       …and 6 more
 ```
 
@@ -82,10 +82,10 @@ Two consequences, and they shape the entire plan below:
 If you read nothing else, read these. This is the set that describes how the system
 works *today* or what is being decided *now*.
 
-### The live workstream (13) — `docs/design/gitops-api/`
+### The live workstream (13) — `docs/design/support-boundary/`
 
 All of it. This is the branch you are on. My separate proposal
-([expansion-boundary-and-corpus-organisation.md](../design/gitops-api/expansion-boundary-and-corpus-organisation.md))
+([expansion-boundary-and-corpus-organisation.md](../design/support-boundary/expansion-boundary-and-corpus-organisation.md))
 recommends adding a `support-contract.md` front door and folding four restatements
 of the fan-in rule into one.
 
@@ -247,7 +247,7 @@ facts first (noted above). Git keeps everything; nothing is lost that a
 ### Phase 5 — the gitops-api consolidation
 
 Separately proposed in
-[expansion-boundary-and-corpus-organisation.md](../design/gitops-api/expansion-boundary-and-corpus-organisation.md):
+[expansion-boundary-and-corpus-organisation.md](../design/support-boundary/expansion-boundary-and-corpus-organisation.md):
 add a `support-contract.md` front door, fold the four restatements of the fan-in
 invariant into one, and de-duplicate the `--dry-run=server` evidence table.
 

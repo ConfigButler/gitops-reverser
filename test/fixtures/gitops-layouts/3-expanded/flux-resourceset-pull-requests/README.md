@@ -48,6 +48,6 @@ flux-resourceset-pull-requests/
 - If a preview namespace is mirrored to Git, the next merge prunes the live
   objects and Git keeps a folder for a pull request that no longer exists. What
   deletes it?
-- An intent cluster hydrated from this repo would need the GitHub token to
-  materialise anything at all. Is a repository whose expansion requires a live
-  credential hydratable, even in principle?
+- Any cluster populated from this repo alone would need the GitHub token to
+  materialise anything at all. Can a repository whose expansion depends on a live
+  credential be reconstructed from Git at all, even in principle?

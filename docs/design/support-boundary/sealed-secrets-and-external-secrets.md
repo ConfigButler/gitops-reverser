@@ -1,11 +1,10 @@
-# Sealed Secrets and External Secrets: what day-1 support actually costs
+# Sealed Secrets and External Secrets: what supporting them actually costs
 
 > Status: analysis; proposes one write-path provider and one safety gate.
 > Captured: 2026-07-10
 > Related:
 > [resource-capability-model.md](resource-capability-model.md),
 > [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md),
-> [intent-cluster-hydration.md](intent-cluster-hydration.md),
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md)
 
 ## The question
@@ -18,7 +17,7 @@ not the Secret" — *one abstraction, or three kinds?*
 
 **Neither.** One [capability model](resource-capability-model.md), and:
 
-| | New kind? | Day-1 code |
+| | New kind? | Code needed |
 |---|---|---|
 | SOPS `Secret` | **yes** — `EncryptedSecret` | the projection |
 | `SealedSecret` | no | a second encryption provider, plus a rename guard |
@@ -28,8 +27,8 @@ SOPS needs a kind because it is [not schema-conformant](resource-capability-mode
 not because it is encrypted. The other two are ordinary, valid KRM documents that
 an API server stores happily. `ExternalSecret` is not encrypted at all.
 
-The real day-1 work is not in supporting either kind. It is a **safety gate** that
-both of them make urgent, and which is missing today.
+The real work is not in supporting either kind. It is a **safety gate** that both
+of them make urgent, and which is missing today.
 
 ---
 
@@ -59,7 +58,7 @@ Sealed Secrets permits `writeUnit: key`:
 ```mermaid
 sequenceDiagram
     actor User
-    participant K8s as Intent cluster
+    participant K8s as Source cluster
     participant Rev as GitOps Reverser
     participant Git
 
@@ -104,7 +103,7 @@ Under `strict` scope:
 > re-seal** — and we cannot re-seal a value we cannot read.
 
 A rename is therefore a silent, partial destruction: the keys we rewrote survive,
-the keys we merely copied through become undecryptable. Day-1 rule: **refuse a
+the keys we merely copied through become undecryptable. The rule: **refuse a
 name or namespace change on a strictly-scoped `SealedSecret`.** The scope is
 readable from the annotations, so this gate needs no key and no controller.
 
@@ -153,7 +152,7 @@ Every byte is plaintext, structural, ordinary KRM. It is readable, writable,
 round-trippable, and an API server stores it without complaint. Its capability is
 `schemaConformant: true`, `visibility: elsewhere`, `writeUnit: document`.
 
-**Day-1 code required: none.** It already flows through the existing path.
+**Code required: none.** It already flows through the existing path.
 
 `elsewhere` is not a weaker `opaque`. The document is not hiding a value; there is
 no value in it. Editing `remoteRef.key` changes *which* secret is fetched. Nothing
@@ -229,24 +228,26 @@ it** — the evidence must be consumed before it is discarded.
 > [expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md)
 > for the argument.
 
-That single gate is the entire day-1 cost of supporting External Secrets safely,
-and it is not really about External Secrets at all.
+That single gate is the entire cost of supporting External Secrets safely, and it
+is not really about External Secrets at all.
 
-## What to build, in order
+## What is missing
 
-1. **The `ownerReference` gate on the mirror path.** Smallest, most valuable,
-   independent of everything else here. Protects the External Secrets and Sealed
-   Secrets derived `Secret`s, and much besides.
-2. **The [capability registry](resource-capability-model.md)** with three
-   classifiers: `Secret`+`sops:`, `SealedSecret`, `ExternalSecret`. `ExternalSecret`
-   is a two-line classifier that exists only to say `visibility: elsewhere`.
-3. **`EncryptedSecret`** — the projection SOPS needs because it is not
-   schema-conformant.
-4. **The `sealed-secrets` encryption provider**, priced honestly as a kind
-   transform rather than as a crypto change.
+None of the four exists today.
 
-Steps 1 and 2 are day-1. Step 3 is the SOPS work already designed. Step 4 is a
-genuine feature, and the estimate belongs to the identity model, not to `kubeseal`.
+- **The `ownerReference` gate on the mirror path.** A few lines, and independent
+  of everything else here. Protects the External Secrets and Sealed Secrets
+  derived `Secret`s, and much besides.
+- **The [capability registry](resource-capability-model.md)** with three
+  classifiers: `Secret`+`sops:`, `SealedSecret`, `ExternalSecret`. `ExternalSecret`
+  is a two-line classifier that exists only to say `visibility: elsewhere`.
+  Independent of everything else here.
+- **`EncryptedSecret`** — the projection SOPS needs because it is not
+  schema-conformant. Designed in
+  [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md).
+- **The `sealed-secrets` encryption provider**, priced honestly as a kind
+  transform rather than as a crypto change. The cost belongs to the identity
+  model, not to `kubeseal`.
 
 ## Open questions
 
@@ -262,8 +263,8 @@ genuine feature, and the estimate belongs to the identity model, not to `kubesea
    `SealedSecret` document breaks the one-identity-one-document assumption that
    placement, deletion planning and `GitPathAccepted` all rest on. Is there a
    cheaper framing — for instance, the user edits a `SealedSecret` *directly* in
-   the intent cluster, with a `stringData`-style write-only field that the
-   operator seals and clears?
+   the cluster the operator watches, with a `stringData`-style write-only field
+   that the operator seals and clears?
 4. **`creationPolicy: Merge` and `Orphan`.** With `Orphan`, ESO sets **no**
    `ownerReference`. The gate in this doc then does not fire, and the derived
    `Secret` looks exactly like a hand-written one. Is that acceptable, or does the

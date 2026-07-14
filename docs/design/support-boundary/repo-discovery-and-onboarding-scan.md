@@ -1,26 +1,26 @@
-# F8: Repo discovery and onboarding scan (CLI / product-layer)
+# Repo discovery and onboarding scan
 
-> Status: designed; **first cut shipped 2026-07-09** (branch `feat/gitops-api-f8`) —
-> CLI/onboarding tooling, not an operator write-model feature. The engine it needs is
-> already shipped; this adds a new entry point plus a report contract. See
+> A read-only capability of the `manifest-analyzer` CLI and the public
+> `pkg/manifestanalyzer` library. It ships **no operator code**: the operator never
+> discovers anything.
+>
+> Status: **first cut shipped 2026-07-09**. The engine it needs was already shipped;
+> this adds a new entry point plus a report contract. See
 > [First cut (shipped)](#first-cut-shipped-2026-07-09) for what actually landed and where
 > it refines the sketch below.
 > Captured: 2026-07-09
 > Related:
 > [README.md](README.md),
-> [kustomize-support-boundary-and-product-model.md](kustomize-support-boundary-and-product-model.md),
-> [finished/f1-images-replicas-edit-through.md](finished/f1-images-replicas-edit-through.md),
-> [finished/f7-higher-level-krm-documents.md](finished/f7-higher-level-krm-documents.md),
+> [kustomize-support-boundary.md](kustomize-support-boundary.md),
+> [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md),
+> [finished/higher-level-krm-documents.md](finished/higher-level-krm-documents.md),
 > [../manifest/file-agnostic-placement.md](../../spec/gittarget-new-file-placement-rules.md),
 > [../../finished/current-manifest-support-review.md](../../spec/current-manifest-support-review.md)
 
 ## Why this exists
 
-The product front door is "point a GitHub App at a repository you own and get an
-easy Kubernetes API over it" (the intent-mode direction of
-[kustomize-support-boundary-and-product-model.md §8](kustomize-support-boundary-and-product-model.md)).
-Between "here is a repo" and "here is your API" sits an **onboarding** step the
-operator deliberately does **not** perform:
+Between "here is a repository" and "here is a `GitTarget` that edits one folder of
+it" sits an **onboarding** step the operator deliberately does **not** perform:
 
 - Which folders in this repo can become `GitTarget`s?
 - What **layout** is each (plain per-env folder, single-context kustomize,
@@ -32,7 +32,7 @@ operator deliberately does **not** perform:
 None of this is the operator's job, and it must stay that way. This doc designs
 the discovery capability as an extension of the existing `manifest-analyzer`
 CLI + its shared `internal/manifestanalyzer` engine, and defines the
-machine-readable report the product layer consumes.
+machine-readable report a tool built on top of the operator consumes.
 
 ## The boundary this respects: the operator never discovers
 
@@ -47,8 +47,8 @@ refused to preserve one-owner-per-folder (`checkForConflicts`,
 
 Repo-wide target discovery is therefore a **new axis**, not a new operator
 feature. Putting it in the operator would fight both the simplicity goal and the
-one-owner invariant. It belongs in the CLI/library and, above that, the product
-layer — exactly the division already recorded in
+one-owner invariant. It belongs in the CLI/library, and anything built on top of the
+operator consumes its report — exactly the division already recorded in
 [file-agnostic-placement.md](../../spec/gittarget-new-file-placement-rules.md) and the
 [README](README.md) responsibilities table:
 
@@ -56,7 +56,7 @@ layer — exactly the division already recorded in
 |---|---|---|
 | **GitOps Reverser (operator)** | watch live state, edit one subtree, push a branch, expose `CommitRequest` status | **No.** Unchanged. One `GitTarget` = one subtree. |
 | **`manifest-analyzer` CLI + `internal/manifestanalyzer` library** | folder walk, acceptance gate, placement, refusal reasons — already shared with the operator | **Yes.** New repo-wide entry point + report. Read-only, writes nothing, needs no cluster. |
-| **Product / GitHub App layer** | repo access, CR generation, PR creation, session/branch policy | Consumes the report → generates `GitProvider`/`GitTarget`/`WatchRule` → opens PRs. Still no operator Git-host knowledge. |
+| **A tool built on top of the operator** | repo access, CR generation, PR creation | Consumes the report → generates `GitProvider`/`GitTarget`/`WatchRule` → opens PRs. Still no operator Git-host knowledge. |
 
 ### Why walking a whole repo does not re-open Pandora's box: discovery ≠ support
 
@@ -66,7 +66,7 @@ principled** — they are deliberately different jobs. scan-repo classifies what
 *is*; it never widens what the operator will *write*. The write boundary is not a
 hand-maintained feature allowlist but a **consequence of one rule**: every edit must have a
 single writable Git destination that round-trips
-([boundary §1–§4](kustomize-support-boundary-and-product-model.md)). Anything that creates
+([boundary §1–§4](kustomize-support-boundary.md)). Anything that creates
 resources or mutates identity (generators, patches, `components`, `namePrefix`/`nameSuffix`,
 Helm inflation, `replacements`) has no source document to write an edit into, so it is
 refused *structurally* — not "unimplemented," but non-invertible.
@@ -74,8 +74,8 @@ refused *structurally* — not "unimplemented," but non-invertible.
 That is the escape from the "support every kustomize feature" trap: a repo may use
 constructs the operator will never write, and discovery's only job is to **say so, honestly,
 per folder**. You onboard a kustomize repo without supporting kustomize writes. The refusal
-reasons are the product's honesty surface — "here is exactly what we will not touch, and
-why" — not a gap to apologise for.
+reasons are the honesty surface — "here is exactly what we will not touch, and why" — not a
+gap to apologise for.
 
 ## The engine is already there
 
@@ -123,26 +123,26 @@ flowchart TD
    target unit; its inferred `namespace:` (when set) is the variant identity.
 3. **Enumerate candidates:** every render root, plus every plain leaf folder of
    KRM documents that no kustomization owns (many GitOps tools apply a directory
-   of manifests directly — the "one plain folder per environment" launch layout).
+   of manifests directly — the common "one plain folder per environment" layout).
 4. **Run the same acceptance gate the operator runs** per candidate, scoped to
    the candidate subtree plus the read-only context it reaches (bases via
    `../../base`). This yields, per candidate: accepted?, refusal reasons, layout
    class, inferred namespace(s)/variants, KRM vs non-KRM document counts.
 5. **Detect overlap/nesting** between candidates (mirroring
-   `gittarget_path_overlap`) so the product never proposes two `GitTarget`s that
+   `gittarget_path_overlap`) so a caller never proposes two `GitTarget`s that
    would be mutually refused.
 6. **Emit** the report (below).
 
 ### Layout classification
 
 Discovery reports the layout **and** current operator acceptance as two distinct
-truths — they diverge during the F2 gap (see below).
+truths — they diverge wherever a layout is well understood but not accepted (see below).
 
 | `layout` | Meaning | `acceptedByOperator` today |
 |---|---|---|
-| `plain` | Directory of KRM docs, explicit namespaces, no kustomization | ✅ shipped |
-| `kustomize-single` | One render root; `namespace` + `resources`/`images`/`replicas` | ✅ shipped |
-| `kustomize-overlay` | Base + N overlay roots, one namespace per overlay | ⛔ until **F2** — reason `overlay-fan-out-needs-f2` |
+| `plain` | Directory of KRM docs, explicit namespaces, no kustomization | ✅ supported today |
+| `kustomize-single` | One render root; `namespace` + `resources`/`images`/`replicas` | ✅ supported today |
+| `kustomize-overlay` | Base + N overlay roots, one namespace per overlay | ⛔ not supported today — reason `overlay-fan-out-unsupported`; render-root scoping would accept it |
 | `refused-structural` | Helm inflation, generators with hash suffixes, `components`, `namePrefix`/`nameSuffix`, remote bases, `configurations`/`openapi`/`crds` | ⛔ permanent — the support contract |
 | `refused-fleet-root` | `clusters/` + `apps/` + `infra/` cluster-root repo (a `GitTarget` points at an app subtree, never a cluster root) | ⛔ out of scope by design |
 | `refused-out-of-band` | Namespace/transform injected outside the folder (Flux `postBuild`/`targetNamespace`, Argo Application-level overrides) | ⛔ permanent — round-trip cannot hold |
@@ -155,25 +155,24 @@ truths — they diverge during the F2 gap (see below).
 > or Argo `Application`. Those CRs are themselves KRM documents in the repo, so detecting
 > out-of-band overrides later means parsing the fleet CRs and cross-referencing the app
 > subtree they target — a bounded future capability, already flagged as a "much-later
-> feature" in [boundary §2](kustomize-support-boundary-and-product-model.md). The first
+> feature" in [boundary §2](kustomize-support-boundary.md). The first
 > cut therefore ships four candidate layouts: `plain`, `kustomize-single`,
 > `kustomize-overlay`, `refused-structural`.
 
-The distinction between `overlay-fan-out-needs-f2` and `refused-structural` is
-the load-bearing one: the first is a **forward-looking** "not yet" that flips to
-accepted when [F2](README.md) render-root scoping lands; the second is the
-permanent boundary. Discovery must never collapse them into one "refused." **This
-two-bucket split is what keeps the kustomize surface finite:** every construct sorts into
-a **ladder** (a bounded roadmap of layouts we choose to build — plain → single →
-overlay/F2 → …) or a **wall** (structurally non-invertible, refused forever). Neither is
-unbounded work — the ladder is a sequence you climb deliberately; the wall costs nothing
-but a clear reason.
+The distinction between `overlay-fan-out-unsupported` and `refused-structural` is
+the load-bearing one: the first is a **forward-looking** "not yet" that flips to accepted
+if render-root scoping lands in the operator; the second is the **permanent** boundary.
+Discovery must never collapse them into one "refused." **This two-bucket split is what
+keeps the kustomize surface finite:** every construct sorts into either a bounded set of
+layouts we choose to support (plain, single-context kustomize, and — planned — overlays)
+or a **wall** (structurally non-invertible, refused forever). Neither is unbounded work —
+the first is a finite set, built deliberately; the wall costs nothing but a clear reason.
 
 ## The report contract
 
-Two renderings, matching the existing `--format text|json` split. JSON is the
-product's interface. The shape below is what the [first cut](#first-cut-shipped-2026-07-09)
-emits, per candidate — **except `proposedGitTarget`, which is the eventual goal and is
+Two renderings, matching the existing `--format text|json` split. JSON is the interface a
+tool built on top consumes. The shape below is what the
+[first cut](#first-cut-shipped-2026-07-09) emits, per candidate — **except `proposedGitTarget`, which is the eventual goal and is
 not emitted yet** (CR proposal is deferred). Do not copy `proposedGitTarget` as if it
 were live output. (The block is fenced `jsonc` because it carries an explanatory
 comment — the shipped report is strict JSON.)
@@ -184,7 +183,7 @@ comment — the shipped report is strict JSON.)
   "layout": "kustomize-overlay",
   "acceptedByOperator": false,
   "refusalReasons": [
-    { "code": "overlay-fan-out-needs-f2", "detail": "base \"apps/podinfo/base\" is read from outside this folder's subtree and is shared by 3 render root(s); render-root scoping (F2) required" }
+    { "code": "overlay-fan-out-unsupported", "detail": "base \"apps/podinfo/base\" is read from outside this folder's subtree and is shared by 3 render root(s); render-root scoping required" }
   ],
   "renderRoot": true,
   "readScope": ["apps/podinfo/base"],
@@ -205,8 +204,8 @@ comment — the shipped report is strict JSON.)
 `{ rendered, editable, nonKrm }` split (see [First cut](#first-cut-shipped-2026-07-09) for
 why rendered and editable diverge for overlays). Plus a repo-level summary:
 `candidatesByLayout`, `accepted`/`refused` counts, `overlapConflicts`, `fleetRoot`, and
-`unsupportedConstructs` (so the product can say "this repo uses Helm inflation in
-`infra/`, which we don't manage").
+`unsupportedConstructs` (so a caller can say "this repo uses Helm inflation in
+`infra/`, which the operator does not manage").
 
 **Exit codes** reuse the CLI convention (`exitOK=0`, `exitRefused=1`,
 `exitUsage=2`). The eventual design: `--policy report` always exits 0 (pure report);
@@ -223,7 +222,7 @@ A new mode on `manifest-analyzer` (shipped form):
 manifest-analyzer --mode scan-repo --format json <repo-root>
 ```
 
-Naming note: the modes are named after the product question they answer, matching the
+Naming note: the modes are named after the question they answer, matching the
 public [`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer) entry points —
 `scan-folder` asks "may **this folder** become a GitTarget?" (`ScanFolder`) and
 `scan-repo` asks "which folders under **this repo root** could?" (`ScanRepo`). The first
@@ -238,14 +237,13 @@ so "discovery" is not overloaded remains a possible follow-up. `--policy` is acc
 symmetry but the repo-level refuse gate is deferred (see
 [First cut](#first-cut-shipped-2026-07-09)).
 
-The report should also be exposed as a **library function** (the product is
-likely part of the same Go binary family), with the CLI mode as the thin wrapper
-+ CI gate. Library-first keeps the product from shelling out and re-parsing JSON.
+The report should also be exposed as a **library function**, with the CLI mode as the thin
+wrapper + CI gate. Library-first keeps a caller from shelling out and re-parsing JSON.
 
 ## First cut (shipped 2026-07-09)
 
-A lean first slice landed on branch `feat/gitops-api-f8`. It **reports**; it does not
-yet **propose**. Library-first, as recommended above.
+A lean first slice landed on 2026-07-09. It **reports**; it does not yet **propose**.
+Library-first, as recommended above.
 
 **Surface.** `ScanRepo(ctx, root) (RepoReport, error)` in
 `internal/manifestanalyzer/scan_repo.go`, with `--mode scan-repo <root>`
@@ -254,7 +252,7 @@ followed — the same posture as `ScanDir`, over the whole tree. It reuses `coll
 `parseKustomizations`/`renderRoots`, the `Scan`/acceptance gate, and mirrors
 `gittarget_path_overlap` for nesting.
 
-A product layer consuming this from Go imports [`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer)
+A tool consuming this from Go imports [`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer)
 — `ScanRepo` and `ScanFolder` — rather than exec'ing the binary. That package is the
 supported, versioned projection of the reports below; the engine above stays internal and
 free to move.
@@ -270,7 +268,7 @@ free to move.
   reference; for a plain folder it is the whole directory. `editable` counts only the
   rendered source physically in the candidate's own subtree. They are equal for plain /
   self-contained kustomize candidates and **diverge for an overlay** (e.g. `rendered: 2,
-  editable: 0`) — the overlay renders a base it cannot yet edit, which makes the F2 gap
+  editable: 0`) — the overlay renders a base it cannot edit, which makes the overlay gap
   legible at a glance.
 - Repo summary: `candidatesByLayout`, `accepted`, `refused`, `overlapConflicts[]`,
   `fleetRoot`, `unsupportedConstructs[]`.
@@ -283,11 +281,11 @@ falsely reported refused. A refused plain / self-contained candidate carries the
 issues as `refusalReasons` (`{code, detail}` — duplicate identity, non-KRM YAML, a foreign
 file, an unsupported nested kustomization, …), never a bare `false`. The structural gate
 refuses `openapi`/`crds` alongside `configurations`, matching the
-[support boundary §1](kustomize-support-boundary-and-product-model.md).
+[support boundary §1](kustomize-support-boundary.md).
 
 **Classification findings.**
 
-- The overlay discriminator that trips `overlay-fan-out-needs-f2` is precisely **the base
+- The overlay discriminator that trips `overlay-fan-out-unsupported` is precisely **the base
   escaping the render root's own subtree** (`../../base` resolves outside the candidate) —
   the very fact the operator's hard subtree-scope hits. Fan-out (how many overlay roots
   share the base) is carried as informative `detail`, not the trigger. A base nested
@@ -319,33 +317,30 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
   targets, never "apps to deploy."
 - **Writes nothing, no Git-host calls, no cluster required.** Structure-only,
   read-only, symlinks never followed — same posture as `ScanDir`.
-- **Proposes, never creates.** The CLI/library emits candidate `GitTarget`s; the
-  product layer decides, renders the actual manifests (naming, labels,
-  ownerRefs), and opens PRs. CR generation stays out of the operator.
+- **Proposes, never creates.** The CLI/library emits candidate `GitTarget`s; a tool
+  built on top decides, renders the actual manifests (naming, labels, ownerRefs),
+  and opens PRs. CR generation stays out of the operator.
 - **Moves no boundary.** Refused layouts stay refused; discovery only *reports*
-  them. It does not make the operator accept overlays — [F2](README.md) does.
+  them. It does not make the operator accept overlays — only render-root scoping
+  in the operator would.
 - **`WatchRule` proposal is optional (open question).** Discovery can suggest
   `WatchRule`s from the kinds present in a folder, but watch selection is about
-  *which cluster resources flow* ([F7](finished/f7-higher-level-krm-documents.md)),
+  *which cluster resources flow*
+  ([higher-level KRM documents](finished/higher-level-krm-documents.md)),
   orthogonal to the Git path — it may be cleaner to stop at `GitTarget` and leave
-  watch scoping to the user/product.
+  watch scoping to the user.
 
-## Relationship to the ladder
+## Relationship to the operator
 
-- **Dependencies are all shipped:** the acceptance gate, render-root computation
-  ([F1](finished/f1-images-replicas-edit-through.md)), and namespace inference.
-  Discovery is additive tooling on top.
-- **F2 is the one that changes discovery's *output*, not its code:** pre-F2,
-  overlay candidates report `acceptedByOperator: false` +
-  `overlay-fan-out-needs-f2`; once F2 ships they flip to accepted with an
+- **It ships no operator code.** Everything discovery depends on is already
+  shipped — the acceptance gate, render-root computation
+  ([images/replicas edit-through](finished/images-and-replicas-edit-through.md)),
+  and namespace inference. Discovery is additive tooling on top of the shared engine.
+- **Overlay support would change discovery's *output*, not its code.** Today overlay
+  candidates report `acceptedByOperator: false` + `overlay-fan-out-unsupported`; if
+  render-root scoping ships in the operator they flip to accepted, with an
   `images:`/`replicas:` + overlay-local-file capability summary. The report is
   designed to be correct across that transition.
-- **Intent mode (§8) reuses the same report** as its onboarding front door: the
-  set of accepted candidates and their namespaces is exactly what tells the
-  intent cluster which overlays to hydrate.
-- **Not itself an operator write-model feature** — hence the "CLI / product-layer"
-  tag. It is tracked in the ladder for one delivery surface, but it ships no
-  operator code.
 
 ## Test plan
 
@@ -354,7 +349,7 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
   Helm-hybrid, and nested/overlapping candidates — each with a golden JSON
   report.
 - Assertions: render-root enumeration, layout classification, refusal-reason
-  codes (especially `overlay-fan-out-needs-f2` vs `refused-structural`), overlap
+  codes (especially `overlay-fan-out-unsupported` vs `refused-structural`), overlap
   detection, namespace/variant inference, and proposed `GitTarget` paths.
 - Reuse existing corpora where they fit
   (`internal/manifestanalyzer/testdata/contextual-namespace`, the `ambiguous-*`
@@ -382,21 +377,21 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
    open.
 2. **Stop at `GitTarget`, or also propose `WatchRule`s?** — moot for now: the first cut
    proposes neither (reports only).
-3. **Read-scope depth for overlays pre-F2** — how far up the tree to follow
-   `../../base` when the operator would still refuse the folder. _First cut:_ `readScope`
-   is the **minimal** set of out-of-subtree base directories (a base nested under another
-   reached base is folded into its parent, so the rendered-document count never
-   double-counts a shared nested base). How many levels the product should *display*
+3. **Read-scope depth for overlays the operator refuses today** — how far up the tree to
+   follow `../../base` when the operator would still refuse the folder. _First cut:_
+   `readScope` is the **minimal** set of out-of-subtree base directories (a base nested
+   under another reached base is folded into its parent, so the rendered-document count
+   never double-counts a shared nested base). How many levels a caller should *display*
    remains a presentation choice.
-4. **Library vs. CLI as the product's integration point** — _settled:_ library-first
+4. **Library vs. CLI as the integration point** — _settled:_ library-first
    (`ScanRepo`), CLI (`--mode scan-repo`) as the thin wrapper + CI gate.
-5. **`overlay-fan-out-needs-f2` naming** — the reason code reads as if *fan-out* (a base
-   shared by several overlays) is the trigger, but the real trigger is a base **escaping
-   the render root's own subtree**, true even at fan-out = 1. The first cut carries the
-   shared-root count as descriptive `detail`, not as the condition. Open: rename to
-   something like `overlay-base-out-of-subtree-needs-f2`, or keep the product-facing code
-   and rely on the detail. _Not settled._
+5. **`overlay-fan-out-unsupported` naming** — the reason code still reads as if *fan-out*
+   (a base shared by several overlays) is the trigger, but the real trigger is a base
+   **escaping the render root's own subtree**, true even at fan-out = 1. The first cut
+   carries the shared-root count as descriptive `detail`, not as the condition. Open:
+   rename to something like `overlay-base-out-of-subtree`, or keep the published code — it
+   is part of `pkg/manifestanalyzer`'s surface — and rely on the detail. _Not settled._
 6. **Repo-level `--policy refuse` gate** — the eventual "zero acceptable candidates → exit
    1" onboarding gate (see [Exit codes](#the-report-contract)) is **deferred**: the first
    cut always exits 0 (or 2 on an I/O error) and `--policy` is not applied in scan-repo
-   mode. Open: implement it as the CI/onboarding gate when the product needs it.
+   mode. Open: implement it as the CI/onboarding gate when a caller needs it.
