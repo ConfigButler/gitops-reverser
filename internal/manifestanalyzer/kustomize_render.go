@@ -124,10 +124,34 @@ const renderMountPoint = "/scan"
 // build never touches the real disk, never executes a plugin, and never reaches the
 // network.
 func renderRoot(files []manifestedit.FileContent, rootDir string) ([]renderedObject, error) {
-	if err := refuseBeforeBuild(parseKustomizations(files), rootDir); err != nil {
+	return renderRootWith(files, rootDir, nil)
+}
+
+// renderRootWith is renderRoot over a COUNTERFACTUAL tree: replace layers in-memory
+// content for any scanned path, and the build sees that instead of what the scan holds.
+//
+// It is the whole new API this workstream needs, and every question we ask kustomize is
+// this call with a different overlay:
+//
+//   - dye an entry and see where the nonce lands       -> attribution;
+//   - apply a proposed write and see what it renders   -> verification.
+//
+// The point is that the counterfactual goes through the SAME sandbox, the same refusals
+// and the same kustomize invocation as the real render. A question answered by a
+// different renderer than the one that produces the answer we ship is not an answer.
+//
+// files is never mutated: callers hold the scan, and a probe must not be able to corrupt it.
+// See docs/design/support-boundary/render-attribution.md §7.
+func renderRootWith(
+	files []manifestedit.FileContent,
+	rootDir string,
+	replace map[string][]byte,
+) ([]renderedObject, error) {
+	input := replacedFiles(files, replace)
+	if err := refuseBeforeBuild(parseKustomizations(input), rootDir); err != nil {
 		return nil, err
 	}
-	fSys, err := renderFilesystem(files, rootDir)
+	fSys, err := renderFilesystem(input, rootDir)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +160,25 @@ func renderRoot(files []manifestedit.FileContent, rootDir string) ([]renderedObj
 		return nil, fmt.Errorf("kustomize build: %w", err)
 	}
 	return collectRendered(resMap, rootDir)
+}
+
+// replacedFiles returns a copy of files with replace layered over it, keyed by slash path.
+//
+// A replacement for a path the scan does not hold is ignored rather than appended: a
+// counterfactual may only perturb files that are actually in the tree kustomize is about
+// to build, and inventing one would be a way to render something the repository does not
+// contain.
+func replacedFiles(files []manifestedit.FileContent, replace map[string][]byte) []manifestedit.FileContent {
+	if len(replace) == 0 {
+		return files
+	}
+	out := append([]manifestedit.FileContent(nil), files...)
+	for i := range out {
+		if content, ok := replace[filepathToSlash(out[i].Path)]; ok {
+			out[i].Content = content
+		}
+	}
+	return out
 }
 
 // build runs krusty, converting a panic into an error (errBuildPanicked).
