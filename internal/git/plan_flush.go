@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	sigsyaml "sigs.k8s.io/yaml"
 
@@ -79,6 +80,13 @@ type writeBatch struct {
 	// render precondition can tell a change the flush MEANT from one it merely caused.
 	// Anything not named here has to come out of the re-render untouched.
 	intents []manifestanalyzer.WriteIntent
+	// putToKustomize records that this flush touched a kustomize render root — it edited a
+	// governed document, or placed a new one into a kustomization's resources:. It is what
+	// turns the oracle on, and it is deliberately NOT the same question as WriteIntent.Governed:
+	// that one additionally ASSERTS the document is rendered, which a new document is not
+	// entitled to claim (its resources: entry can legitimately fail to be added — see
+	// appendKustomizationResource — leaving the file written but outside every render).
+	putToKustomize bool
 	// policy is the GitTarget's declared new-file placement policy, consulted
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to sibling inference and then the canonical path.
@@ -236,16 +244,39 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 // existing document is placed by createNew. It returns what it did to the bytes
 // (created / updated / no change).
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
-	if id, ok := manifestIdentity(event.Object); ok {
-		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
-			filePath := wb.docLoc[dm].FilePath
-			if wb.writer.isSensitiveIdentifier(event.Identifier) {
-				return wb.writeWholeFile(ctx, event, filePath)
-			}
-			return wb.patchExisting(ctx, event, filePath, id, dm)
-		}
+	id, ok := manifestIdentity(event.Object)
+	if !ok {
+		return wb.createNew(ctx, event)
 	}
-	return wb.createNew(ctx, event)
+	dm := wb.store.ByManifestIdentity[id]
+	if dm == nil {
+		return wb.createNew(ctx, event)
+	}
+	filePath := wb.docLoc[dm].FilePath
+	if !wb.writer.isSensitiveIdentifier(event.Identifier) {
+		return wb.patchExisting(ctx, event, filePath, id, dm)
+	}
+	return wb.rewriteSensitive(ctx, event, filePath)
+}
+
+// rewriteSensitive re-encrypts a sensitive document wholesale at its existing path.
+//
+// Its intent is UNCHECKED: the file is SOPS ciphertext, so kustomize renders the encrypted
+// blob and no plaintext live object can ever equal it. The oracle is told to expect this
+// object to move without being able to say what to — while still holding the write to
+// disturbing nothing else, which is the half that protects other environments.
+func (wb *writeBatch) rewriteSensitive(ctx context.Context, event Event, filePath string) (upsertOutcome, error) {
+	outcome, err := wb.writeWholeFile(ctx, event, filePath)
+	if err == nil && wroteBytes(outcome) {
+		wb.intend(markUnchecked(intentFor(event.Object, filePath, false), true))
+	}
+	return outcome, err
+}
+
+// wroteBytes reports whether an upsert actually changed the worktree, which is the only
+// case that owes the oracle an intent.
+func wroteBytes(o upsertOutcome) bool {
+	return o == upsertCreated || o == upsertUpdated
 }
 
 // createNew resolves the placement of a resource with no existing document —
@@ -274,6 +305,11 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		return upsertSkippedUnsafe, nil
 	}
 
+	// The LIVE object, kept before the namespace strip below rewrites it. The bytes we write
+	// and the object the render must produce are not the same thing, and only this scope
+	// still holds both — see intentFor.
+	live := event.Object
+
 	if placement.Kustomization != nil {
 		wb.appendKustomizationResource(ctx, event, placement)
 	}
@@ -288,6 +324,34 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		event.Object.SetNamespace("")
 	}
 
+	outcome, err := wb.placeNewDocument(ctx, event, placement, sensitive)
+	if err != nil || !wroteBytes(outcome) {
+		return outcome, err
+	}
+
+	// A new document that joins a kustomization's resources: list is INSIDE a render root, so
+	// the folder's images:/replicas: entries govern it from the moment it lands — and we do not
+	// route a new document's values onto an entry (it has no override chain yet; it did not
+	// exist when the store was built). So the live value goes into the file, and if an entry
+	// overrides it, the folder renders something else and the resource never converges.
+	//
+	// Declaring it governed puts it in front of the oracle, which turns that from a silent
+	// non-converging commit into a reported refusal naming the file and the object. It does not
+	// make the write work — that needs attribution for a document that does not exist yet — but
+	// "we cannot express this here" is an answer, and quietly writing a lie is not.
+	wb.putToKustomize = wb.putToKustomize || placement.Kustomization != nil
+	wb.intend(markUnchecked(intentFor(live, placement.Path, false), sensitive))
+	return outcome, nil
+}
+
+// placeNewDocument writes the new document at its resolved placement: appended to an existing
+// accepted bundle, folded into a same-batch cold bundle, or as a file of its own.
+func (wb *writeBatch) placeNewDocument(
+	ctx context.Context,
+	event Event,
+	placement manifestanalyzer.PlacementResult,
+	sensitive bool,
+) (upsertOutcome, error) {
 	if placement.Append {
 		return wb.appendNewDocument(ctx, event, placement.Path)
 	}
@@ -361,7 +425,6 @@ func (wb *writeBatch) writeColdBundleMember(
 		rebuilt = appendYAMLDocument(rebuilt, m.content)
 	}
 	wb.buffer(rel).current = rebuilt
-	wb.intend(markUnchecked(intentFor(event, rel, false), sensitive))
 	return upsertCreated, nil
 }
 
@@ -390,7 +453,6 @@ func (wb *writeBatch) appendNewDocument(ctx context.Context, event Event, rel st
 	}
 	buf := wb.buffer(rel)
 	buf.current = appendYAMLDocument(buf.current, content)
-	wb.intend(intentFor(event, rel, false))
 	return upsertCreated, nil
 }
 
@@ -485,6 +547,7 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 		// intended write as collateral damage. It is UNCHECKED because a field patch carries
 		// a few audited assignments, never a whole object to compare the render against: the
 		// oracle can still prove the write disturbs nothing else, but not that it landed.
+		wb.putToKustomize = true
 		wb.intend(fieldPatchIntent(filePath, id, governed))
 		if len(assignments) == 0 {
 			return nil
@@ -652,8 +715,11 @@ func (wb *writeBatch) patchExisting(
 	// what the second one renders to, so by the time the second is processed there is nothing
 	// left to write. Its render still moves, and it moves onto its own live state — that is
 	// the resource converging, not collateral damage, and only its declared intent says so.
+	if dm.Overrides != nil {
+		wb.putToKustomize = true
+	}
 	if outcome == upsertUpdated || dm.Overrides != nil {
-		wb.intend(intentFor(event, filePath, dm.Overrides != nil))
+		wb.intend(intentFor(event.Object, filePath, dm.Overrides != nil))
 	}
 	return outcome, nil
 }
@@ -673,14 +739,7 @@ func (wb *writeBatch) patchExisting(
 // absorbed." A resource we silently stop mirroring is the failure this path exists to
 // prevent, so it must not be the failure this path introduces.
 func (wb *writeBatch) renderPrecondition() error {
-	governed := false
-	for _, in := range wb.intents {
-		if in.Governed {
-			governed = true
-			break
-		}
-	}
-	if !governed {
+	if !wb.putToKustomize {
 		return nil
 	}
 
@@ -718,8 +777,16 @@ func (wb *writeBatch) intend(in manifestanalyzer.WriteIntent) {
 
 // intentFor builds the intent for an ordinary object-bearing write: the document must
 // render to exactly the live object.
-func intentFor(event Event, filePath string, governed bool) manifestanalyzer.WriteIntent {
-	desired := manifestreport.Project(event.Object)
+//
+// It takes the LIVE object, not the event, and that distinction is load-bearing. createNew
+// strips metadata.namespace out of the bytes it writes when the destination inherits its
+// namespace from a kustomization's namespace: transformer — correct, because the transformer
+// puts it back. But the render therefore HAS the namespace, so an intent built from the
+// stripped object would demand that the render not have one, and the oracle would refuse a
+// flush it had just planned perfectly. The bytes and the intent are different objects, and
+// the caller is the only one that still holds both.
+func intentFor(live *unstructured.Unstructured, filePath string, governed bool) manifestanalyzer.WriteIntent {
+	desired := manifestreport.Project(live)
 	return manifestanalyzer.WriteIntent{
 		SourcePath: filePath,
 		Kind:       desired.GetKind(),
@@ -885,11 +952,6 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 		}
 	}
 	buf.current = content
-	// A SENSITIVE document is written encrypted, so kustomize renders the SOPS ciphertext
-	// and no plaintext live object can ever equal it. Declare the write so the oracle does
-	// not read it as collateral damage, but mark it unchecked: we can still prove it
-	// disturbs nothing else, which is the half that protects other environments.
-	wb.intend(markUnchecked(intentFor(event, rel, false), wb.writer.isSensitiveIdentifier(event.Identifier)))
 	if isNew {
 		return upsertCreated, nil
 	}
