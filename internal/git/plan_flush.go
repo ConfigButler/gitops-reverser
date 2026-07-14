@@ -983,6 +983,13 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 		Name:       target.id.Name,
 		Removed:    true,
 	})
+	// Any delete inside a render root changes what that root renders, so it goes to the
+	// oracle — whether or not the file itself goes with it. Gating this on "the file was
+	// emptied" would be a rule about our own bookkeeping rather than about the render, and
+	// the whole point of the oracle is that it does not take our word for anything.
+	if len(wb.kustomizationsListing(target.filePath)) > 0 {
+		wb.putToKustomize = true
+	}
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if !res.FileEmpty {
 		buf.current = res.Content
@@ -1002,44 +1009,60 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 // kustomization it cannot edit only loses its entry (logged), it does not abort the delete —
 // the render precondition is what decides whether the resulting tree is committable.
 func (wb *writeBatch) dropKustomizationResource(ctx context.Context, event Event, filePath string) {
-	for _, k := range sortedKustomizationPaths(wb.store.Kustomizations) {
-		info := wb.store.Kustomizations[k]
-		if info.Unsupported {
-			continue // never edit a kustomization we do not model
+	for _, listing := range wb.kustomizationsListing(filePath) {
+		buf := wb.buffer(listing.kustomization)
+		if buf.current == nil {
+			continue // the kustomization is itself being deleted in this batch
 		}
-		dir := path.Dir(info.Path)
-		for _, entry := range info.Resources {
-			if path.Clean(path.Join(dir, entry)) != filePath {
-				continue
-			}
-			wb.putToKustomize = true
-			buf := wb.buffer(info.Path)
-			if buf.current == nil {
-				continue // the kustomization is itself being deleted in this batch
-			}
-			res, diags := manifestedit.RemoveKustomizationResource(info.Path, buf.current, entry)
-			switch res.Mode {
-			case manifestedit.EditPatched:
-				buf.current = res.Content
-				log.FromContext(ctx).Info("Removed resources: entry for deleted file",
-					"kustomization", info.Path, "entry", entry, "resource", event.Identifier.String())
-			case manifestedit.EditNoChange:
-			case manifestedit.EditSkipped, manifestedit.EditDeleted, manifestedit.EditWholeReplace:
-				log.FromContext(ctx).Info("Could not remove resources: entry for deleted file",
-					"kustomization", info.Path, "entry", entry, "resource", event.Identifier.String())
-				logManifestDiagnostics(ctx, diags)
-			}
+		res, diags := manifestedit.RemoveKustomizationResource(listing.kustomization, buf.current, listing.entry)
+		switch res.Mode {
+		case manifestedit.EditPatched:
+			buf.current = res.Content
+			log.FromContext(ctx).Info("Removed resources: entry for deleted file",
+				"kustomization", listing.kustomization, "entry", listing.entry,
+				"resource", event.Identifier.String())
+		case manifestedit.EditNoChange:
+		case manifestedit.EditSkipped, manifestedit.EditDeleted, manifestedit.EditWholeReplace:
+			// The entry stays, and it now names a file that does not exist. We do not have to
+			// decide how bad that is: the render precondition rebuilds the tree and refuses
+			// the flush, because kustomize will not build over a missing resource.
+			log.FromContext(ctx).Info("Could not remove resources: entry for deleted file",
+				"kustomization", listing.kustomization, "entry", listing.entry,
+				"resource", event.Identifier.String())
+			logManifestDiagnostics(ctx, diags)
 		}
 	}
 }
 
-// sortedKustomizationPaths keeps the edit order deterministic across reconciles.
-func sortedKustomizationPaths(kusts map[string]*manifestanalyzer.KustomizationInfo) []string {
-	out := make([]string, 0, len(kusts))
-	for dir := range kusts {
-		out = append(out, dir)
+// resourceListing is one kustomization's resources: entry naming a given file.
+type resourceListing struct {
+	kustomization string // the kustomization.yaml's own path
+	entry         string // the entry text, relative to the kustomization's directory
+}
+
+// kustomizationsListing returns every supported kustomization whose resources: names filePath,
+// in deterministic order. It is the one definition of "this file is inside a render root",
+// shared by the oracle's trigger and by the entry removal, so the two cannot drift apart.
+func (wb *writeBatch) kustomizationsListing(filePath string) []resourceListing {
+	dirs := make([]string, 0, len(wb.store.Kustomizations))
+	for dir := range wb.store.Kustomizations {
+		dirs = append(dirs, dir)
 	}
-	sort.Strings(out)
+	sort.Strings(dirs)
+
+	var out []resourceListing
+	for _, dir := range dirs {
+		info := wb.store.Kustomizations[dir]
+		if info.Unsupported {
+			continue // never edit a kustomization we do not model
+		}
+		base := path.Dir(info.Path)
+		for _, entry := range info.Resources {
+			if path.Clean(path.Join(base, entry)) == filePath {
+				out = append(out, resourceListing{kustomization: info.Path, entry: entry})
+			}
+		}
+	}
 	return out
 }
 

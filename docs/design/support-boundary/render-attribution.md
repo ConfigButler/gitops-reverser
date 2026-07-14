@@ -7,7 +7,7 @@
 > *patching-kustomize.md* (ConfigButler/kustomize-tracer, `plans/`) — **revises §4**: the fork is ~30 lines, and it is built ·
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) — what shipped ·
 > [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)
-
+>
 > **Status: shipped (§7 stages 1-3).** `renderRootWith` is the counterfactual primitive;
 > verification is a real re-render (`VerifyBatchRenders`); attribution is the dye (`dye.go`,
 > `overrides_attribution.go`). `renderImage`, `imageSuppliers`, `simulateImageRender` and

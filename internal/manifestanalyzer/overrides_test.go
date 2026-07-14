@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -246,4 +248,44 @@ func hasOverrideAmbiguityDiag(store *ManifestStore) bool {
 		}
 	}
 	return false
+}
+
+// A document can render an image while NO images:/replicas: entry governs it: the chain is
+// nil, but the attribution is not, because the projection still needs to know what the folder
+// renders that slot to. The two are different questions, and anyOverrides has to ask both --
+// otherwise two roots disagreeing only on the attribution would diverge in the fingerprint
+// while ambiguous() stayed false, leaving the document silently un-routed with no diagnostic
+// and no fan-in refusal.
+//
+// Requested in review on #233.
+func TestRecord_AttributionWithoutAChainIsStillSomethingAtStake(t *testing.T) {
+	files := []manifestedit.FileContent{
+		{Path: "deployment.yaml", Content: []byte(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: app:v1
+`)},
+		// No images:, no replicas: -- nothing governs this document.
+		{Path: "kustomization.yaml", Content: []byte("resources:\n  - deployment.yaml\n")},
+	}
+
+	assignments, failed := renderChains(files, parseKustomizations(files))
+	require.Empty(t, failed)
+
+	a := assignments[chainKey{originPath: "deployment.yaml", kind: "Deployment", name: "web"}]
+	require.NotNil(t, a)
+	require.Nil(t, a.overrides, "no entry governs it, so there is no chain")
+	require.NotNil(t, a.rendered, "but the folder still renders its image, and the projection reads that")
+	require.True(t, a.anyOverrides,
+		"an attribution with no chain is still something an edit could be routed through")
+
+	// And with nothing supplying the image, an edit to it flows into the source file.
+	require.Empty(t, a.rendered.Images["/spec/template/spec/containers\x00app"].Tag,
+		"no entry supplies the tag")
 }

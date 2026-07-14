@@ -3,6 +3,7 @@
 package git
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -143,6 +144,29 @@ func TestPlanFlush_DeletingTheLastDocumentAlsoRemovesTheResourcesEntry(t *testin
 	assert.NotContains(t, string(kust), "bundle.yaml",
 		"a resources: entry naming a file that no longer exists makes the folder unbuildable")
 	assert.Contains(t, string(kust), "web.yaml", "and every other entry is left exactly as it was")
+}
+
+// A delete inside a render root goes to the oracle, whether or not the file itself goes with
+// it. So if the resources: entry is ever left dangling — by a kustomization we cannot edit, or
+// by a future refactor that forgets to remove it — the re-render fails to build and the flush
+// is refused, rather than committing a repository kustomize cannot deploy.
+//
+// Raised in review on #233. It is verified here rather than argued: the delete flush below
+// runs the render precondition, which is what makes the dangling-entry case unreachable
+// instead of merely unlikely.
+func TestPlanFlush_DeleteInsideARenderRootIsVerified(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	seedDeleteWorktree(t, worktree, deleteKustomizationYAML)
+
+	scan, err := scanWorktreeSubtree(root)
+	require.NoError(t, err)
+	batch := newWriteBatch(context.Background(), writer, configMapMapper(), scan, nil)
+	batch.applyDelete(context.Background(), deleteConfigMapEvent("delete-me"))
+
+	assert.True(t, batch.putToKustomize,
+		"the deleted document's file is named in resources:, so the flush must be put to kustomize")
 }
 
 // The delete lands in the same flush as a governed write. Both must survive: without the

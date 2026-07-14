@@ -241,7 +241,7 @@ func record(out map[chainKey]*overrideAssignment, key chainKey, ov *KustomizeOve
 			chainKeys:    map[string]struct{}{fp: {}},
 			overrides:    ov,
 			rendered:     rd,
-			anyOverrides: ov != nil,
+			anyOverrides: hasSomethingAtStake(ov, rd),
 		}
 		return
 	}
@@ -249,10 +249,28 @@ func record(out map[chainKey]*overrideAssignment, key chainKey, ov *KustomizeOve
 		return // the same chain and the same attribution, reached twice; not an ambiguity
 	}
 	prev.chainKeys[fp] = struct{}{}
-	prev.anyOverrides = prev.anyOverrides || ov != nil
+	prev.anyOverrides = prev.anyOverrides || hasSomethingAtStake(ov, rd)
 	// More than one distinct answer: route through none of them.
 	prev.overrides = nil
 	prev.rendered = nil
+}
+
+// hasSomethingAtStake reports whether a root's view of a document carries anything an edit
+// could be routed through, which is what makes a disagreement between two roots worth
+// refusing rather than merely noting.
+//
+// It asks about the ATTRIBUTION as well as the chain. The chain alone is not the same
+// question: an object can render with no images:/replicas: entry governing it at all (ov nil)
+// and still carry a rendered image the projection reads (rd non-nil). Two roots that
+// disagreed only there would diverge in the fingerprint while ambiguous() stayed false, so the
+// document would be silently un-routed with no diagnostic and no fan-in refusal.
+//
+// That divergence is not constructible today — a nil chain means no image transformer ran,
+// which means the rendered value IS the source value, which is the same in every root — so
+// this changes no current behaviour. It is here because the invariant it protects is not
+// obvious enough to leave resting on that argument.
+func hasSomethingAtStake(ov *KustomizeOverrides, rd *RenderedOverrides) bool {
+	return ov != nil || rd != nil
 }
 
 // fingerprint reduces a chain to a comparable string, so two roots reaching one
