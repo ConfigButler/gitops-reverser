@@ -28,7 +28,17 @@ into your source manifest as though you had typed it there.
 rewriting files it should have left alone. Check `git log` on your manifests if you want to
 see whether a past reconcile touched an image or a replica count you did not change.
 
-**One behavior change comes with them.** A write routed through a kustomization is now
+**Deleting a resource now also removes its `resources:` entry.** Previously the manifest was
+deleted and the entry was left behind, pointing at a file that no longer exists — which
+kustomize refuses to build over (*"accumulating resources … doesn't exist"*), so the folder
+became undeployable and the `GitTarget` was refused on the next reconcile. Registering the
+entry when a resource is created was only half the job.
+
+The entry is removed **only when the file itself is actually gone**. A file holding several
+documents survives the deletion of one of them, and its entry stays — pulling it would
+un-deploy every other resource in that file.
+
+**One more behavior change.** A write routed through a kustomization is now
 re-rendered with kustomize before it is committed, and must reproduce the live object
 exactly while leaving every other rendered object untouched. A write that fails that check
 **refuses the flush** — `GitPathAccepted=False` / `WriteBoundaryRefused`, naming the file

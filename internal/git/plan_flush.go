@@ -227,7 +227,7 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 	case event.IsFieldPatch():
 		return wb.applyFieldPatch(ctx, event)
 	case event.Operation == "DELETE":
-		wb.applyDelete(event)
+		wb.applyDelete(ctx, event)
 		return nil
 	default:
 		_, err := wb.applyUpsert(ctx, event)
@@ -964,7 +964,7 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 // the same batch that shifted a multi-document file does not misdirect this one.
 // Removing the last document in a file marks it for deletion; otherwise the surviving
 // documents are kept byte-for-byte.
-func (wb *writeBatch) applyDelete(event Event) {
+func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	target, found := wb.resolveDelete(event)
 	if !found {
 		return
@@ -984,11 +984,63 @@ func (wb *writeBatch) applyDelete(event Event) {
 		Removed:    true,
 	})
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
-	if res.FileEmpty {
-		buf.current = nil
+	if !res.FileEmpty {
+		buf.current = res.Content
 		return
 	}
-	buf.current = res.Content
+	// The file is gone. Anything still naming it in a resources: list now names a file that
+	// does not exist, and kustomize refuses to build over that — so deleting the manifest is
+	// only half the delete.
+	buf.current = nil
+	wb.dropKustomizationResource(ctx, event, target.filePath)
+}
+
+// dropKustomizationResource removes the resources: entry naming a file this flush deleted,
+// from every supported kustomization that lists it.
+//
+// It is the counterpart of appendKustomizationResource, and it fails the same way: a
+// kustomization it cannot edit only loses its entry (logged), it does not abort the delete —
+// the render precondition is what decides whether the resulting tree is committable.
+func (wb *writeBatch) dropKustomizationResource(ctx context.Context, event Event, filePath string) {
+	for _, k := range sortedKustomizationPaths(wb.store.Kustomizations) {
+		info := wb.store.Kustomizations[k]
+		if info.Unsupported {
+			continue // never edit a kustomization we do not model
+		}
+		dir := path.Dir(info.Path)
+		for _, entry := range info.Resources {
+			if path.Clean(path.Join(dir, entry)) != filePath {
+				continue
+			}
+			wb.putToKustomize = true
+			buf := wb.buffer(info.Path)
+			if buf.current == nil {
+				continue // the kustomization is itself being deleted in this batch
+			}
+			res, diags := manifestedit.RemoveKustomizationResource(info.Path, buf.current, entry)
+			switch res.Mode {
+			case manifestedit.EditPatched:
+				buf.current = res.Content
+				log.FromContext(ctx).Info("Removed resources: entry for deleted file",
+					"kustomization", info.Path, "entry", entry, "resource", event.Identifier.String())
+			case manifestedit.EditNoChange:
+			case manifestedit.EditSkipped, manifestedit.EditDeleted, manifestedit.EditWholeReplace:
+				log.FromContext(ctx).Info("Could not remove resources: entry for deleted file",
+					"kustomization", info.Path, "entry", entry, "resource", event.Identifier.String())
+				logManifestDiagnostics(ctx, diags)
+			}
+		}
+	}
+}
+
+// sortedKustomizationPaths keeps the edit order deterministic across reconciles.
+func sortedKustomizationPaths(kusts map[string]*manifestanalyzer.KustomizationInfo) []string {
+	out := make([]string, 0, len(kusts))
+	for dir := range kusts {
+		out = append(out, dir)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // deleteTarget names the file and manifest identity a delete targets. The document

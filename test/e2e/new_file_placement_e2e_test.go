@@ -114,4 +114,42 @@ var _ = Describe("Manager New-File Placement", Label("manager", "new-file-placem
 
 		By("✅ new resource placed inside the kustomize overlay and registered in resources:")
 	})
+
+	// The round trip, and the half that used to be missing. Deleting the resource removes its
+	// file — and a resources: entry naming a file that no longer exists is one kustomize
+	// REFUSES to build over ("accumulating resources ... doesn't exist"), which would leave the
+	// repository in a state no GitOps controller can deploy. Registering the entry on create is
+	// only half the job if nothing ever takes it back out.
+	//
+	// Ordered: this deletes exactly the ConfigMap the spec above placed.
+	It("removes the resources: entry when the resource is deleted, leaving a folder that still builds", func() {
+		kustFullPath := filepath.Join(repo.CheckoutDir, gitPath, kustRepoPath)
+		newFileFullPath := filepath.Join(repo.CheckoutDir, gitPath, newFileRepoPath)
+
+		By("deleting the ConfigMap from the cluster")
+		_, err := kubectlRunInNamespace(testNs, "delete", "configmap", newConfigMap)
+		Expect(err).NotTo(HaveOccurred(), "failed to delete the ConfigMap")
+
+		By("verifying the file is gone AND its resources: entry went with it")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+
+			_, statErr := os.Stat(newFileFullPath)
+			g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "the resource's file must be removed")
+
+			kustBody := readRepoFile(g, kustFullPath)
+			g.Expect(kustBody).NotTo(ContainSubstring("- "+newFileRepoPath),
+				"a resources: entry pointing at a deleted file makes the folder unbuildable")
+			g.Expect(kustBody).To(ContainSubstring("- deployment.yaml"),
+				"and every other entry must be left exactly as it was")
+		}, 120*time.Second, 3*time.Second).Should(Succeed())
+
+		By("verifying kustomize can still build the folder — which is the whole point")
+		_, err = kubectlRunInNamespace(testNs, "apply", "-k",
+			filepath.Join(repo.CheckoutDir, gitPath), "--dry-run=server")
+		Expect(err).NotTo(HaveOccurred(),
+			"the overlay must still build after the delete; a dangling resources: entry would fail here")
+
+		By("✅ deleted resource's file and its resources: entry both removed; the folder still builds")
+	})
 })
