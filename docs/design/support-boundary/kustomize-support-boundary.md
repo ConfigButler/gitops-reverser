@@ -284,6 +284,21 @@ kustomize" means two different things:
 renderer. The re-implementation is being removed.** This reverses the earlier
 position — kept here because the reasoning was wrong in a specific, instructive way.
 
+> **Landed so far.** The typed `kustomization.yaml` parse (#229), and
+> [`kustomize_render.go`](../../../internal/manifestanalyzer/kustomize_render.go) — a
+> sandboxed `krusty` build that returns each object with kustomize's own provenance
+> (`config.kubernetes.io/origin` says which file produced it;
+> `alpha.config.kubernetes.io/transformations` says which kustomization's transformers
+> touched it, in order). The renderer is not yet on the write path: it is currently the
+> differential oracle the re-implementation is checked against, which is what makes
+> removing the re-implementation safe rather than brave.
+>
+> **What the oracle found immediately:** the re-implemented image transformer treated
+> tag and digest as independent, where kustomize replaces both. A folder using `digest:`
+> had the tag written out of its source manifest on every reconcile. Two silent-corruption
+> bugs, in shipped code, found by the first differential run — which is the whole argument
+> for this decision, made concrete.
+
 The old position was that re-implementing the narrow transformer subset "keeps the
 refusal boundary honest: we refuse exactly what we do not model," and that `krusty`
 was at best a *verification oracle* comparing against our own projection.

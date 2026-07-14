@@ -31,6 +31,7 @@ require (
 	sigs.k8s.io/cli-utils v0.37.2
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/kustomize/api v0.21.1
+	sigs.k8s.io/kustomize/kyaml v0.21.1
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -88,6 +89,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
+	github.com/monochromegane/go-gitignore v0.0.0-20200626010858-205db1a8cc00 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
@@ -100,6 +102,7 @@ require (
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
+	github.com/xlab/treeprint v1.2.0 // indirect
 	github.com/yuin/gopher-lua v1.1.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect
@@ -137,7 +140,6 @@ require (
 	k8s.io/streaming v0.36.2 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.34.0 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
-	sigs.k8s.io/kustomize/kyaml v0.21.1 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )

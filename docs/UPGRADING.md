@@ -7,6 +7,32 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — a `digest:` override no longer strips the tag out of your source file (next patch; bug fix)
+
+**If any of your kustomizations use `images:` with `digest:`, or `newTag:` on an image
+that carries a digest, the operator has been rewriting your source manifests. This stops.**
+
+kustomize's image transformer treats tag and digest as mutually exclusive — its own code
+says *"overriding tag or digest will replace both original tag and digest values"*. Our
+re-implementation set the two components independently, so:
+
+| Source image | `images:` entry | kustomize renders | We believed |
+|---|---|---|---|
+| `app:1.0.0` | `digest: sha256:bbb` | `app@sha256:bbb` | `app:1.0.0@sha256:bbb` |
+| `app@sha256:old` | `newTag: "2.0"` | `app:2.0` | `app:2.0@sha256:old` |
+
+Believing the wrong render, the projection compared the real live object against it,
+concluded the user had *removed* the tag, and wrote the tag out of the source document —
+`app:1.0.0` became `app`. On every reconcile, silently, with no refusal and no diagnostic.
+
+**Migration**
+
+- **Check the affected files.** Any manifest referenced by a kustomization whose `images:`
+  entry sets `digest:` may have lost its tag in Git. The fix stops the rewrite but does not
+  restore what was already written; recover the tag from history if you need it.
+- Nothing to configure. The behaviour is simply correct now, and pinned against a real
+  `kustomize build` so it cannot regress.
+
 ## Unreleased — `kustomization.yaml` is now read by kustomize itself (next minor; behavior change)
 
 The analyzer used to decode `kustomization.yaml` with a hand-written walk over a generic
