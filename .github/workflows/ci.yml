@@ -513,8 +513,20 @@ jobs:
                 fi
               done
 
-              if grep -Eq "^task: \[[^]]+\]" "${cache_log}"; then
-                echo "Expected second task lint dry-run to be fully cached, but a command would run" >&2
+              # lint-docs is exempt on purpose. It carries no `sources:` (see
+              # Taskfile-build.yml), because its real input is "every tracked .md, .go,
+              # .yml and .sh" — which Task cannot express: an unrooted `**` glob walks
+              # external-sources/ and has OOM'd the host, and a hand-maintained file list
+              # silently drifts out of sync with what doccheck scans. A stale "up to date"
+              # there means the check never runs, so it always runs. It costs ~0.2s.
+              #
+              # awk, not `grep -qv`: the CI image ships ugrep as grep, whose -q -v returns
+              # 1 even when -c reports a selected line. That would make this assertion
+              # silently pass whatever it was handed.
+              uncached="$(awk '/^task: \[/ && !/^task: \[lint-docs\]/' "${cache_log}")"
+              if [ -n "${uncached}" ]; then
+                echo "Expected second task lint dry-run to be fully cached apart from lint-docs, but these would run:" >&2
+                printf '%s\n' "${uncached}" >&2
                 exit 1
               fi
             '
