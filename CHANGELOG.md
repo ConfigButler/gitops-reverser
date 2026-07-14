@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.34.0...gitops-reverser-v0.35.0) (2026-07-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gitops-api:** layout corpus, support baseline, and doc-link checker ([#224](https://github.com/ConfigButler/gitops-reverser/issues/224))
+
+### Features
+
+* bi-directional ArgoCD advise/tests + strip Argo tracking-id from Git writes ([#225](https://github.com/ConfigButler/gitops-reverser/issues/225)) ([ddd75cb](https://github.com/ConfigButler/gitops-reverser/commit/ddd75cb48661d114b7343dd4b06293bc49043616))
+* **gitops-api:** layout corpus, support baseline, and doc-link checker ([#224](https://github.com/ConfigButler/gitops-reverser/issues/224)) ([c48cc58](https://github.com/ConfigButler/gitops-reverser/commit/c48cc583664baf433355d97e50b3facf0faa31ed))
+
+
+### Bug Fixes
+
+* **sanitize:** strip the kcp.io/cluster annotation from Git writes ([#227](https://github.com/ConfigButler/gitops-reverser/issues/227)) ([d9b6d9d](https://github.com/ConfigButler/gitops-reverser/commit/d9b6d9ddcf4662019eedbd7199b5a3ad76cab822))
+
 ## [0.34.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.33.0...gitops-reverser-v0.34.0) (2026-07-10)
 
 
