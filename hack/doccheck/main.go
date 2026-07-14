@@ -32,6 +32,13 @@
 // Only git-tracked files are scanned, so gitignored scratch notes and the local
 // upstream checkouts under external-sources/ are out of scope for free.
 //
+// A reference must resolve to a git-tracked file or directory, not merely to
+// something on disk. Resolving against the filesystem would make this check pass on
+// the author's machine and fail in CI: a link into a gitignored path — `.agents/`,
+// a local scratch file, an untracked upstream checkout — exists locally and does not
+// exist in a fresh clone. That is precisely the reference this check must catch, so
+// existence is decided by `git ls-files`, never by os.Stat.
+//
 // Usage:
 //
 //	doccheck [-root DIR]
@@ -47,6 +54,7 @@ import (
 	"go/token"
 	"os"
 	"os/exec"
+	gopath "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -88,6 +96,8 @@ func main() {
 		os.Exit(exitUsage)
 	}
 
+	known := newTrackedSet(tracked)
+
 	var findings []finding
 	var mdFiles, goFiles, textFiles int
 
@@ -96,16 +106,16 @@ func main() {
 		switch {
 		case strings.HasSuffix(name, ".md"):
 			mdFiles++
-			findings = append(findings, checkMarkdown(abs, path)...)
+			findings = append(findings, checkMarkdown(abs, path, known)...)
 		case strings.HasSuffix(name, ".go"):
 			goFiles++
-			findings = append(findings, checkGoComments(abs, path)...)
+			findings = append(findings, checkGoComments(abs, path, known)...)
 		case strings.HasSuffix(name, ".yml"), strings.HasSuffix(name, ".yaml"):
 			textFiles++
-			findings = append(findings, checkTextCitations(abs, path, "yaml")...)
+			findings = append(findings, checkTextCitations(abs, path, "yaml", known)...)
 		case strings.HasSuffix(name, ".sh"):
 			textFiles++
-			findings = append(findings, checkTextCitations(abs, path, "shell")...)
+			findings = append(findings, checkTextCitations(abs, path, "shell", known)...)
 		}
 	}
 
@@ -151,7 +161,7 @@ func trackedFiles(ctx context.Context, root string) ([]string, error) {
 
 // checkMarkdown resolves every relative link in a Markdown file against the file's
 // own directory. http(s), mailto and pure-anchor links are not our business.
-func checkMarkdown(root, path string) []finding {
+func checkMarkdown(root, path string, known map[string]bool) []finding {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -172,7 +182,7 @@ func checkMarkdown(root, path string) []finding {
 			if target == "" {
 				continue
 			}
-			if _, err := os.Stat(filepath.Join(dir, target)); err != nil {
+			if !resolves(root, known, filepath.Join(dir, target)) {
 				out = append(out, finding{
 					file:   rel(root, path),
 					line:   i + 1,
@@ -187,7 +197,7 @@ func checkMarkdown(root, path string) []finding {
 
 // checkGoComments extracts docs/**.md citations from comments only. String
 // literals are ignored on purpose — see the package doc.
-func checkGoComments(root, path string) []finding {
+func checkGoComments(root, path string, known map[string]bool) []finding {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
@@ -199,7 +209,7 @@ func checkGoComments(root, path string) []finding {
 	for _, group := range file.Comments {
 		for _, c := range group.List {
 			for _, target := range citationsIn(c.Text) {
-				if _, err := os.Stat(filepath.Join(root, target)); err != nil {
+				if !resolves(root, known, filepath.Join(root, target)) {
 					out = append(out, finding{
 						file:   rel(root, path),
 						line:   fset.Position(c.Pos()).Line,
@@ -235,7 +245,7 @@ func citationsIn(text string) []string {
 // checkTextCitations resolves docs/**.md citations in a file with no parser worth
 // carrying — YAML and shell, where these paths live in comments. kind names the
 // surface so the report says which one broke.
-func checkTextCitations(root, path, kind string) []finding {
+func checkTextCitations(root, path, kind string, known map[string]bool) []finding {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -244,7 +254,7 @@ func checkTextCitations(root, path, kind string) []finding {
 	var out []finding
 	for i, line := range strings.Split(string(data), "\n") {
 		for _, target := range citationsIn(line) {
-			if _, err := os.Stat(filepath.Join(root, target)); err != nil {
+			if !resolves(root, known, filepath.Join(root, target)) {
 				out = append(out, finding{
 					file:   rel(root, path),
 					line:   i + 1,
@@ -255,6 +265,38 @@ func checkTextCitations(root, path, kind string) []finding {
 		}
 	}
 	return out
+}
+
+// newTrackedSet is the set of repo-relative paths git tracks, plus every directory
+// implied by them (git lists files, but a link may legitimately point at a folder).
+func newTrackedSet(tracked []string) map[string]bool {
+	// Sized for the files alone; the implied directories grow it a little.
+	known := make(map[string]bool, len(tracked))
+	for _, name := range tracked {
+		name = filepath.ToSlash(name)
+		known[name] = true
+		for dir := gopath.Dir(name); dir != "." && dir != "/"; dir = gopath.Dir(dir) {
+			known[dir] = true
+		}
+	}
+	return known
+}
+
+// resolves reports whether abs — an absolute path a reference pointed at — names a
+// git-tracked file or directory. A path that escapes the repository never resolves.
+func resolves(root string, known map[string]bool, abs string) bool {
+	r, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	r = filepath.ToSlash(r)
+	if r == "." {
+		return true
+	}
+	if r == ".." || strings.HasPrefix(r, "../") {
+		return false
+	}
+	return known[r]
 }
 
 func isExternal(target string) bool {

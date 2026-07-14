@@ -98,10 +98,9 @@ Two independent critiques landed against v1:
    - **Our own docs say the same.** [status-conditions-guide.md:25-26](status-conditions-guide.md#L25-L26):
      *"Always have a summary condition. `Ready` for long-running objects… This is what operators and
      scripts will `kubectl wait` on,"* with `Ready` glossed as *"summary — True when everything is
-     healthy."* The installed `k8s-crd-design-review` skill agrees
-     ([conditions-and-status.md:13-24](../../.agents/skills/k8s-crd-design-review/references/conditions-and-status.md#L13-L24)):
-     one high-signal **summary** `Ready`, and *"prefer Conditions over state-machine style `status.phase`
-     for new APIs."*
+     healthy."* The installed `k8s-crd-design-review` skill agrees, in its
+     `conditions-and-status` reference: one high-signal **summary** `Ready`, and *"prefer Conditions
+     over state-machine style `status.phase` for new APIs."*
 
    v1 made `Ready` control-plane-only and parked the aggregate health in `status.phase` (`Degraded`) —
    which is exactly the `phase`-as-aggregate pattern the skill tells us to avoid, and it makes
@@ -141,9 +140,8 @@ This directly fixes both critiques:
 
 ### 3.3 The model kstatus pushes us to: two layers
 
-The updated `k8s-crd-design-review` skill now carries a
-[`kstatus-readiness.md`](../../.agents/skills/k8s-crd-design-review/references/kstatus-readiness.md)
-reference, and it changes the target shape. The point of kstatus
+The updated `k8s-crd-design-review` skill now carries a `kstatus-readiness` reference, and it
+changes the target shape. The point of kstatus
 (`sigs.k8s.io/cli-utils/pkg/kstatus/status`) is that **generic tooling** — Flux health polling, Argo CD
 health checks, `helm --wait` (HIP-0022), `kubectl wait` — reads a small, fixed condition vocabulary to
 answer one question: *is this object done, still progressing, or blocked?* Our highly-technical target

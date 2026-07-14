@@ -25,6 +25,12 @@ func write(t *testing.T, dir, name, content string) string {
 	return path
 }
 
+// known builds the tracked-path set the checkers resolve against. The tests name
+// exactly the files they created, which is what git would have listed for them.
+func known(names ...string) map[string]bool {
+	return newTrackedSet(names)
+}
+
 func targets(findings []finding) []string {
 	out := make([]string, 0, len(findings))
 	for _, f := range findings {
@@ -63,7 +69,7 @@ func TestCheckMarkdown_ReportsOnlyUnresolvableRelativeLinks(t *testing.T) {
 [broken with anchor](also-gone.md#x)
 `)
 
-	got := targets(checkMarkdown(root, doc))
+	got := targets(checkMarkdown(root, doc, known("docs/real.md", "docs/dir/nested.md", "docs/index.md")))
 
 	want := []string{"gone.md", "also-gone.md#x"}
 	if len(got) != len(want) {
@@ -80,7 +86,7 @@ func TestCheckMarkdown_ReportsRepoRelativePathAndLine(t *testing.T) {
 	root := t.TempDir()
 	doc := write(t, root, "docs/design/plan.md", "line one\n\n[broken](../nope.md)\n")
 
-	findings := checkMarkdown(root, doc)
+	findings := checkMarkdown(root, doc, known("docs/design/plan.md"))
 	if len(findings) != 1 {
 		t.Fatalf("want 1 finding, got %d", len(findings))
 	}
@@ -99,7 +105,7 @@ func TestCheckMarkdown_ReportsRepoRelativePathAndLine(t *testing.T) {
 
 func TestCheckMarkdown_UnreadableFileIsNotAFinding(t *testing.T) {
 	root := t.TempDir()
-	if got := checkMarkdown(root, filepath.Join(root, "absent.md")); got != nil {
+	if got := checkMarkdown(root, filepath.Join(root, "absent.md"), known()); got != nil {
 		t.Errorf("a file that cannot be read must yield no findings, got %v", got)
 	}
 }
@@ -121,7 +127,7 @@ func doThing() string {
 }
 `)
 
-	got := targets(checkGoComments(root, src))
+	got := targets(checkGoComments(root, src, known("docs/spec/real.md", "pkg/thing.go")))
 
 	// The path that resolves is absent from the findings, and the one in the string
 	// literal is never considered at all. (Spelling that resolvable path out here
@@ -150,7 +156,7 @@ func TestCheckGoComments_IgnoresDocsPathsInsideURLs(t *testing.T) {
 package thing
 `)
 
-	got := targets(checkGoComments(root, src))
+	got := targets(checkGoComments(root, src, known("pkg/thing.go")))
 	if len(got) != 1 || got[0] != "docs/spec/gone.md" {
 		t.Errorf("the URL must not be reported and the bare citation must be; got %v", got)
 	}
@@ -160,7 +166,7 @@ func TestCheckGoComments_UnparseableFileIsNotAFinding(t *testing.T) {
 	root := t.TempDir()
 	src := write(t, root, "broken.go", "this is not go source at all, and cites docs/spec/missing.md\n")
 
-	if got := checkGoComments(root, src); got != nil {
+	if got := checkGoComments(root, src, known("broken.go")); got != nil {
 		t.Errorf("a file that does not parse is golangci-lint's problem, not ours; got %v", got)
 	}
 }
@@ -180,7 +186,7 @@ tasks:
       - echo docs/spec/also-missing.md
 `)
 
-	got := targets(checkTextCitations(root, yml, "yaml"))
+	got := targets(checkTextCitations(root, yml, "yaml", known("docs/spec/real.md", "Taskfile.yml")))
 	want := []string{"docs/design/moved.md", "docs/spec/also-missing.md"}
 	if len(got) != len(want) {
 		t.Fatalf("want %v, got %v", want, got)
@@ -201,7 +207,7 @@ func TestCheckTextCitations_IgnoresDocsPathsInsideURLs(t *testing.T) {
 # but this one is a real citation: docs/spec/gone.md
 `)
 
-	got := targets(checkTextCitations(root, sh, "shell"))
+	got := targets(checkTextCitations(root, sh, "shell", known("hack/thing.sh")))
 	if len(got) != 1 || got[0] != "docs/spec/gone.md" {
 		t.Errorf("the URL must not be reported and the bare path must be; got %v", got)
 	}
@@ -265,5 +271,32 @@ func TestRel_FallsBackToTheAbsolutePath(t *testing.T) {
 	// A relative path cannot be computed from an absolute root to a relative target.
 	if got := rel("/a/b", "c.md"); got != "c.md" {
 		t.Errorf("want the path back unchanged, got %q", got)
+	}
+}
+
+// The bug this guards: doccheck used to resolve targets with os.Stat, so a link into
+// a gitignored path (.agents/, a scratch file, an untracked upstream checkout) existed
+// on the author's machine and passed, then broke in CI's fresh clone. Existence is a
+// question about the repository, not about this disk.
+func TestCheckMarkdown_UntrackedTargetIsBroken(t *testing.T) {
+	root := t.TempDir()
+	// The target exists on disk but git does not track it.
+	write(t, root, ".agents/skills/notes.md", "# local only\n")
+	doc := write(t, root, "docs/plan.md", "[local only](../.agents/skills/notes.md)\n")
+
+	got := targets(checkMarkdown(root, doc, known("docs/plan.md")))
+	if len(got) != 1 || got[0] != "../.agents/skills/notes.md" {
+		t.Errorf("a link to an untracked file must be reported even though it exists on disk; got %v", got)
+	}
+}
+
+// A link may legitimately point at a directory, which git ls-files never lists.
+func TestCheckMarkdown_DirectoryTargetResolves(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "test/fixtures/corpus/a.yaml", "{}\n")
+	doc := write(t, root, "docs/plan.md", "[the corpus](../test/fixtures/corpus/)\n")
+
+	if got := targets(checkMarkdown(root, doc, known("test/fixtures/corpus/a.yaml", "docs/plan.md"))); len(got) != 0 {
+		t.Errorf("a directory implied by a tracked file must resolve; got %v", got)
 	}
 }
