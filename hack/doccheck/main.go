@@ -8,16 +8,20 @@
 //  1. Relative links in Markdown — `[text](../spec/foo.md)`, including links that
 //     point at source files. External URLs and pure `#anchor` links are skipped.
 //
-//  2. Repo-relative documentation paths cited inside **Go comments** — the
+//  2. Repo-relative Markdown paths cited inside **Go comments** — the
 //     `docs/spec/manifest-system.md`-style references the packages use to point at
-//     their contract. These are the ones that rot silently: a doc gets moved, the
-//     comment keeps pointing at the old path, and nothing notices. Seventeen of
-//     them were dangling before this check existed.
+//     their contract, and the ones that live next to the code they describe, like
+//     `internal/git/manifestedit/DECISION.md`. These are the ones that rot silently:
+//     a doc gets moved, the comment keeps pointing at the old path, and nothing
+//     notices. Seventeen of them were dangling before this check existed.
 //
 //  3. The same repo-relative paths cited in **YAML and shell** — Taskfiles, CI
 //     workflows, chart values, hack scripts. This surface was added after a docs
 //     reorg left eight of them dangling: the Markdown and Go citations had all been
 //     repointed, and nothing was looking at the Taskfiles.
+//
+// A citation must contain a slash. A bare `README.md` in prose names no particular
+// file — relative to which directory? — so it is not treated as a reference.
 //
 // The Go side parses the AST and reads only comments, never string literals. That
 // distinction matters: the gittargetignore tests build in-memory filesystems whose
@@ -65,15 +69,20 @@ import (
 // are deliberately not matched: the former are rare here, the latter are URLs.
 var markdownLink = regexp.MustCompile(`\[[^\]\[]*\]\(([^)\s]+)\)`)
 
-// docPath matches a repo-relative documentation path as written in a Go comment.
-// Anchored on the `docs/` prefix so we do not try to validate arbitrary prose.
-var docPath = regexp.MustCompile(`\bdocs/[A-Za-z0-9._/-]+\.md\b`)
+// docPath matches a repo-relative Markdown path as written in a comment — `docs/`
+// is the common case, but a package that keeps its contract next to its code cites
+// something like `internal/git/manifestedit/DECISION.md`, and those rot just the same.
+//
+// At least one slash is required: a bare `README.md` in prose names no particular
+// file (relative to which directory?), and treating it as a citation would report
+// half the repository's prose as broken.
+var docPath = regexp.MustCompile(`\b[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+\.md\b`)
 
 type finding struct {
 	file   string // repo-relative
 	line   int
 	target string
-	kind   string // "markdown" | "go-comment"
+	kind   string // "markdown" | "go-comment" | "yaml" | "shell"
 }
 
 // exitUsage is the exit code for doccheck failing to run at all, as distinct from
@@ -227,9 +236,9 @@ func checkGoComments(root, path string, known map[string]bool) []finding {
 // i.e. the match is the tail of that URL rather than a repo-relative path.
 var urlPrefix = regexp.MustCompile(`https?://\S*$`)
 
-// citationsIn returns the docs/**.md paths cited in text, skipping any that are the
-// tail of a URL. `https://github.com/…/docs/spec/foo.md` names a rendered page on a
-// website; only a bare repo-relative path is ours to resolve. Both the Go and the
+// citationsIn returns the repo-relative *.md paths cited in text, skipping any that
+// are the tail of a URL. `https://github.com/…/docs/spec/foo.md` names a rendered page
+// on a website; only a bare repo-relative path is ours to resolve. Both the Go and the
 // YAML/shell surfaces need this, so it lives here rather than in either of them.
 func citationsIn(text string) []string {
 	var out []string
@@ -237,9 +246,33 @@ func citationsIn(text string) []string {
 		if urlPrefix.MatchString(text[:loc[0]]) {
 			continue
 		}
+		if loc[0] > 0 && isPathTail(text[loc[0]-1]) {
+			continue
+		}
 		out = append(out, text[loc[0]:loc[1]])
 	}
 	return out
+}
+
+// isPathTail reports whether the character immediately before a match makes that match
+// the tail of a longer token rather than a citation in its own right. A repo-relative
+// citation starts at the beginning of its path; when the regex can only latch onto the
+// middle of one, what it found is not a path from the repository root.
+//
+// Two shapes hit this. An example relative link written out in a comment begins with
+// a dot-dot segment, and a path assembled in shell begins with a variable — in both,
+// the regex can only start matching after the leading separator, so what it captures
+// is a fragment. Reporting either would be a false positive, and the shell one would
+// be unfixable: there is no repo-relative path there to correct.
+//
+// (The fragments are deliberately not spelled out here. This checker reads its own
+// comments, and a bare fragment in prose is exactly what it is built to report.)
+func isPathTail(b byte) bool {
+	switch b {
+	case '/', '.', '-', '$':
+		return true
+	}
+	return false
 }
 
 // checkTextCitations resolves docs/**.md citations in a file with no parser worth

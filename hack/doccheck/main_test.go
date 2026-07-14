@@ -162,6 +162,45 @@ package thing
 	}
 }
 
+// A package may keep its contract next to its code rather than under docs/. Anchoring
+// the pattern on `docs/` made those citations invisible, which is how two Go comments
+// citing a support-boundary doc without its `docs/` prefix went unnoticed.
+func TestCheckGoComments_ChecksCitationsOutsideDocs(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "internal/thing/DECISION.md", "# decided\n")
+
+	src := write(t, root, "internal/thing/thing.go", `// Package thing records why in internal/thing/DECISION.md,
+// and used to record it in internal/thing/OLD-DECISION.md.
+package thing
+`)
+
+	got := targets(checkGoComments(root, src, known("internal/thing/DECISION.md", "internal/thing/thing.go")))
+	if len(got) != 1 || got[0] != "internal/thing/OLD-DECISION.md" {
+		t.Errorf("a non-docs/ citation must be checked like any other; got %v", got)
+	}
+}
+
+// The regex can only latch onto the middle of a path it cannot see the start of. What
+// it captures then is a fragment, not a repo-relative path — and for the shell case
+// there is no path to fix, so reporting it would be an unfixable false positive.
+func TestCitationsIn_SkipsFragmentsOfLongerTokens(t *testing.T) {
+	for _, text := range []string{
+		"an example relative link: [text](../spec/foo.md)",
+		`out="$corpus/support.md"`,
+		"a bare README.md names no particular file",
+		"a rendered page: https://github.com/o/r/blob/main/docs/spec/foo.md",
+	} {
+		if got := citationsIn(text); len(got) != 0 {
+			t.Errorf("citationsIn(%q): want no citations, got %v", text, got)
+		}
+	}
+
+	// ...while the real thing, at the start of its path, is still a citation.
+	if got := citationsIn("the contract is docs/spec/foo.md today"); len(got) != 1 || got[0] != "docs/spec/foo.md" {
+		t.Errorf("a bare repo-relative citation must still be found; got %v", got)
+	}
+}
+
 func TestCheckGoComments_UnparseableFileIsNotAFinding(t *testing.T) {
 	root := t.TempDir()
 	src := write(t, root, "broken.go", "this is not go source at all, and cites docs/spec/missing.md\n")

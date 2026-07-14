@@ -249,7 +249,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		//
 		// Two clocks: self-heal reverts live drift essentially immediately —
 		// sub-second on the FIRST drift, because the backoff is zero on attempt 0
-		// (design/support-boundary/argocd-bi-directional.md) — while a new Git revision is
+		// (docs/design/support-boundary/argocd-bi-directional.md) — while a new Git revision is
 		// only noticed on the 180s timed refresh. So Argo replays its stale cached
 		// revision long before it ever looks at what the reverser committed. The
 		// user's change is lost.
@@ -401,7 +401,7 @@ var _ = Describe("Bi Directional (Argo CD)", Label("bi-directional", "argocd"), 
 		// Phase 4 — the recommended shared-field loop: selfHeal:false + webhook.
 		//
 		// This is the ONE Argo CD configuration docs/bi-directional.md recommends
-		// for a genuinely shared field (design/support-boundary/argocd-bi-directional.md).
+		// for a genuinely shared field (docs/design/support-boundary/argocd-bi-directional.md).
 		// It is the deterministic counterpart to phase 2: phase 2 proved selfHeal
 		// LOSES the API edit; this proves selfHeal:false KEEPS it, and — unlike the
 		// ignoreDifferences of phase 3 — the field stays fully GitOps-driven, so a
