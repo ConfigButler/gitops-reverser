@@ -269,8 +269,9 @@ func (r *EventRouter) handleScopedResyncError(
 //
 //   - purely the .gittargetignore-shadows-a-write case (§4.3) — the unrecoverable footgun —
 //     gets IgnoreShadowsManagedPath;
-//   - purely write-boundary violations (a planned write escaping spec.path, or an in-place
-//     edit of a file more than one render root reaches) gets WriteBoundaryRefused: the folder
+//   - purely write-boundary violations (a planned write escaping spec.path, an in-place edit
+//     of a file more than one render root reaches, or a write kustomize will not vouch for
+//     when the folder is re-rendered with it applied) gets WriteBoundaryRefused: the folder
 //     content is fine, the *edit* had nowhere safe to land.
 //
 // Any other refusal, and any mix of shapes, keeps the umbrella UnsupportedContent. The strings
@@ -281,7 +282,11 @@ func gitPathRefusalReason(refused *manifestanalyzer.AcceptanceRefusedError) stri
 	switch {
 	case refused.AllIssuesOfKinds(manifestanalyzer.IssueIgnoreShadowsManaged):
 		return "IgnoreShadowsManagedPath"
-	case refused.AllIssuesOfKinds(manifestanalyzer.IssueWriteEscapesScope, manifestanalyzer.IssueWriteFanIn):
+	case refused.AllIssuesOfKinds(
+		manifestanalyzer.IssueWriteEscapesScope,
+		manifestanalyzer.IssueWriteFanIn,
+		manifestanalyzer.IssueRenderRefused,
+	):
 		return "WriteBoundaryRefused"
 	default:
 		return "UnsupportedContent"

@@ -146,6 +146,10 @@ func renderChains(
 	out := map[chainKey]*overrideAssignment{}
 	failed := map[string]string{}
 
+	// One dye plan for the whole scan, so the nonces are stable across roots and a base
+	// reached by two overlays is dyed identically in both. Building it costs no render.
+	plan := planDye(files)
+
 	for _, rootDir := range renderTargets(kusts) {
 		rendered, err := renderRoot(files, rootDir)
 		if err != nil {
@@ -154,6 +158,13 @@ func renderChains(
 			}
 			continue
 		}
+		// BASELINE FIRST, THEN DYE. The real render is what we ship; the dyed one is only
+		// ever a question we ask about it. A dyed build that fails where the real one
+		// succeeded means the dye perturbed something that is not a pure sink, and the
+		// answer is then no attribution — never a fallback to a second guess.
+		dyed, dyeErr := renderRootWith(files, rootDir, plan.replace)
+		attribution := attributeRoot(rendered, dyed, dyeErr, plan)
+
 		for _, ro := range rendered {
 			if ro.OriginPath == "" {
 				continue // a generated resource: it has no source document to edit
@@ -163,7 +174,7 @@ func renderChains(
 				kind:       ro.Object.GetKind(),
 				name:       ro.Object.GetName(),
 			}
-			record(out, key, chainOf(ro, kusts))
+			record(out, key, chainOf(ro, kusts), attribution[key])
 		}
 	}
 	return out, failed
@@ -219,23 +230,47 @@ func chainOf(ro renderedObject, kusts map[string]*kustomizationDoc) *KustomizeOv
 // anyOverrides preserves the existing narrowness of the fan-in refusal: a base
 // document reached by two roots that declare no images:/replicas: at all is shared
 // context, but nothing is at stake in it, so it is not refused.
-func record(out map[chainKey]*overrideAssignment, key chainKey, ov *KustomizeOverrides) {
-	fp := fingerprint(ov)
+func record(out map[chainKey]*overrideAssignment, key chainKey, ov *KustomizeOverrides, rd *RenderedOverrides) {
+	// The fingerprint now covers the ATTRIBUTION as well as the chain, which is the sharper
+	// question the fan-in check was always trying to ask: two roots agree only if they
+	// attribute the same field to the same entry AND render it to the same value.
+	fp := fingerprint(ov) + "\x03" + fingerprintRendered(rd)
 	prev, seen := out[key]
 	if !seen {
 		out[key] = &overrideAssignment{
 			chainKeys:    map[string]struct{}{fp: {}},
 			overrides:    ov,
-			anyOverrides: ov != nil,
+			rendered:     rd,
+			anyOverrides: hasSomethingAtStake(ov, rd),
 		}
 		return
 	}
 	if _, same := prev.chainKeys[fp]; same {
-		return // the same chain, reached twice; not an ambiguity
+		return // the same chain and the same attribution, reached twice; not an ambiguity
 	}
 	prev.chainKeys[fp] = struct{}{}
-	prev.anyOverrides = prev.anyOverrides || ov != nil
-	prev.overrides = nil // more than one distinct chain: route through none of them
+	prev.anyOverrides = prev.anyOverrides || hasSomethingAtStake(ov, rd)
+	// More than one distinct answer: route through none of them.
+	prev.overrides = nil
+	prev.rendered = nil
+}
+
+// hasSomethingAtStake reports whether a root's view of a document carries anything an edit
+// could be routed through, which is what makes a disagreement between two roots worth
+// refusing rather than merely noting.
+//
+// It asks about the ATTRIBUTION as well as the chain. The chain alone is not the same
+// question: an object can render with no images:/replicas: entry governing it at all (ov nil)
+// and still carry a rendered image the projection reads (rd non-nil). Two roots that
+// disagreed only there would diverge in the fingerprint while ambiguous() stayed false, so the
+// document would be silently un-routed with no diagnostic and no fan-in refusal.
+//
+// That divergence is not constructible today — a nil chain means no image transformer ran,
+// which means the rendered value IS the source value, which is the same in every root — so
+// this changes no current behaviour. It is here because the invariant it protects is not
+// obvious enough to leave resting on that argument.
+func hasSomethingAtStake(ov *KustomizeOverrides, rd *RenderedOverrides) bool {
+	return ov != nil || rd != nil
 }
 
 // fingerprint reduces a chain to a comparable string, so two roots reaching one

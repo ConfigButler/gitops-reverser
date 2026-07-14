@@ -38,11 +38,58 @@ func TestRenderRoot_ValidRegexImageNameStillBuilds(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, rendered, 1)
-	slots := collectContainerSlots(rendered[0].Object.Object)
+	slots := collectImageSlots(rendered[0].Object.Object)
 	require.Len(t, slots, 1)
-	// Measured against kustomize: `ngin.` matches `nginx`. Our own renderImage compares
-	// names for equality and does NOT — see docs/design/support-boundary/render-attribution.md.
+	// Measured against kustomize: `ngin.` matches `nginx`. Our own matcher used to compare
+	// names for equality and did NOT (B1) — which is why attribution now reads kustomize's
+	// dyes instead of re-deciding what matched.
 	require.Equal(t, "nginx:2.0", slots[0].image)
+}
+
+// The counterfactual render must go through the same renderer as the baseline, and must not
+// be able to corrupt the scan it is probing. Both halves matter: attribution and verification
+// are only worth anything if the question is asked of the renderer that gives the answer.
+func TestRenderRootWith_RendersTheReplacementAndLeavesTheScanAlone(t *testing.T) {
+	files := imageFixture("nginx:v1", "  - name: nginx\n    newTag: v2\n")
+	replacement := []byte("resources:\n  - deployment.yaml\nimages:\n  - name: nginx\n    newTag: v3\n")
+
+	rendered, err := renderRootWith(files, ".", map[string][]byte{"kustomization.yaml": replacement})
+
+	require.NoError(t, err)
+	require.Len(t, rendered, 1)
+	slots := collectImageSlots(rendered[0].Object.Object)
+	require.Len(t, slots, 1)
+	require.Equal(t, "nginx:v3", slots[0].image, "the build must see the counterfactual")
+	require.Contains(t, string(files[1].Content), "newTag: v2", "the scan must survive the probe unchanged")
+}
+
+// A replacement for a path the scan does not hold is ignored, never appended: a probe may
+// perturb the tree kustomize builds, not invent a file the repository does not contain.
+func TestRenderRootWith_IgnoresAReplacementForAnAbsentPath(t *testing.T) {
+	files := imageFixture("nginx:v1", "  - name: nginx\n    newTag: v2\n")
+
+	rendered, err := renderRootWith(files, ".", map[string][]byte{
+		"not/in/the/scan.yaml": []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ghost\n"),
+	})
+
+	require.NoError(t, err)
+	require.Len(t, rendered, 1, "the phantom file must not have been rendered")
+}
+
+// kustomization.yml is a build directive everywhere else in the analyzer, so it has to be
+// one here too. Matching the root against the literal "kustomization.yaml" left a .yml root
+// building with no buildMetadata at all: the objects came back with no origin and no
+// transformations, which reads downstream as "this file is governed by nothing".
+func TestRenderRoot_KustomizationYMLCarriesProvenance(t *testing.T) {
+	files := imageFixture("nginx:v1", "  - name: nginx\n    newTag: v2\n")
+	files[1].Path = "kustomization.yml"
+
+	rendered, err := renderRoot(files, ".")
+
+	require.NoError(t, err)
+	require.Len(t, rendered, 1)
+	require.Equal(t, "deployment.yaml", rendered[0].OriginPath, "the source file must be attributable")
+	require.NotEmpty(t, rendered[0].TransformedBy, "the override chain must be readable")
 }
 
 // The net under krusty: whatever panics in there, the caller gets an error and the process

@@ -39,17 +39,21 @@ code:
 > live object exactly — and leave every other object in the build byte-identical — refuse
 > the write.**
 
+> **This shipped.** It is [`VerifyBatchRenders`](../../../internal/manifestanalyzer/render_verify.go),
+> run as a write-plan precondition once per flush. See
+> [render-attribution.md](render-attribution.md) §5.
+
 This is not a new idea imported from outside. F1 shipped the *shape* of it in
-[`simulateImageRender`](../../../internal/manifestanalyzer/overrides_projection.go): propose
-the entry edits, replay, and discard the whole inversion unless every planned source image
-comes back as its live value.
+`simulateImageRender`: propose the entry edits, replay, and discard the whole inversion
+unless every planned source image comes back as its live value.
 
 But be precise about how far short of the statement above that falls, because the gap is the
-work: `simulateImageRender` replays **our re-implemented image chain, not kustomize**, and it
-checks **only the images it planned** — never that the rest of the build is untouched. So it
-is image-specific verification, and it shares a blind spot with the thing it is verifying: a
+work: `simulateImageRender` replayed **our re-implemented image chain, not kustomize**, and it
+checked **only the images it planned** — never that the rest of the build is untouched. So it
+was image-specific verification, and it shared a blind spot with the thing it verified: a
 value owned by a patch, or by a matching rule we got wrong, reproduces perfectly in the
-simulation and wrongly in reality. F1 shipped the pattern. **What F1 did not have is a
+simulation and wrongly in reality. (It is deleted; the re-render replaced it.) F1 shipped the
+pattern. **What F1 did not have is a
 renderer** — and without one, neither half of the guarantee above is actually in force. See
 [render-attribution.md](render-attribution.md) §5.
 
@@ -72,8 +76,8 @@ renderer** — and without one, neither half of the guarantee above is actually 
 | Piece | What it is | Status |
 |---|---|---|
 | [`renderRoots`](../../../internal/manifestanalyzer/override_chain.go) | every kustomization directory no other kustomization references | **kept** — something must decide which directories a build is invoked on. Everything the walk did *beyond* that now comes from the renderer. |
-| [`renderImage`](../../../internal/manifestanalyzer/overrides_projection.go) | a ~20-line reimplementation of kustomize's image transformer | **still there.** Measured to diverge from kustomize: its matcher is string equality where kustomize's is a *regex over the whole image string*. |
-| [`isReplicaKind`](../../../internal/manifestanalyzer/overrides_projection.go) | the replica transformer's fieldspec, hardcoded to three kinds | **still there.** kustomize's fieldspec has four — it misses `ReplicationController`. |
+| `renderImage` | a ~20-line reimplementation of kustomize's image transformer | **deleted.** It diverged from kustomize (its matcher was string equality where kustomize's is a *regex over the whole image string*). Attribution now reads a dyed render: [render-attribution.md](render-attribution.md) §3. |
+| `isReplicaKind` | the replica transformer's fieldspec, hardcoded to three kinds | **deleted.** kustomize's fieldspec has four; it missed `ReplicationController`. There is no list of kinds any more. |
 | [`unsupportedKustomizeFeatureKeys`](../../../internal/manifestanalyzer/store.go) | 17 keys that refuse the folder outright | **replaced** (#229): the unsupported set is now derived by *reflecting over kustomize's own struct*, so a field we have never heard of refuses rather than being silently tolerated. |
 
 The deny-list is not a statement about what is editable. **It is a fence around the
@@ -321,10 +325,10 @@ silently lost**. That is the gate on all of this, and it is the right one.
 
 1. **The minimal-overlay fixture.** Until it exists, the overlay code path is unobserved.
 2. **Tier-2 accounting** — `FullyReflected` per edit; refused edits reported and reverted.
-3. **The oracle**: krusty, sandboxed, in the acceptance gate and in the write-plan
-   precondition. Ship it first against `images`/`replicas`, where it must agree with
-   `simulateImageRender` on every corpus fixture — a free differential test of the thing
-   we are about to trust.
+3. ~~**The oracle**~~ — **done.** krusty, sandboxed, in the acceptance gate (#232) and in the
+   write-plan precondition (`VerifyBatchRenders`). The differential test against
+   `simulateImageRender` was overtaken: the simulation is deleted, and the corpus test that
+   replaced it makes the stronger claim that an in-sync folder projects to a no-op.
 4. **Render-root scoping proper**: read `../../base`; bases become declared read-only
    context; generalise `fanInPrecondition` to any file reachable from more than one render
    root.

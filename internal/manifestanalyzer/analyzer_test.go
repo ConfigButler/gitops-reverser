@@ -113,15 +113,18 @@ func TestAnalyze_Issues(t *testing.T) {
 		IssueUnresolvedKRM:        0,
 		IssueOutOfScope:           0,
 		IssueUnsupportedKustomize: 0,
-		// Foreign-content, ignore-shadow, and the L1/L2 write-boundary refusals are
+		// Foreign-content, ignore-shadow, and the write-boundary refusals are
 		// acceptance-gate / write-plan facts, not part of the structure-only Analyze report,
-		// so they never surface here.
+		// so they never surface here. IssueRenderRefused is the strongest case of that: it is
+		// a fact about a PROPOSED WRITE re-rendered with kustomize, which structure-only
+		// analysis has no live object to propose.
 		IssueForeignFile:          0,
 		IssueForeignSymlink:       0,
 		IssueForeignSubmodule:     0,
 		IssueIgnoreShadowsManaged: 0,
 		IssueWriteEscapesScope:    0,
 		IssueWriteFanIn:           0,
+		IssueRenderRefused:        0,
 	}
 	for kind, n := range want {
 		if got := countIssues(rep, kind); got != n {

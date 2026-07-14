@@ -183,6 +183,65 @@ func TestAppendKustomizationResource_IdempotentWhenAlreadyListed(t *testing.T) {
 	}
 }
 
+func TestRemoveKustomizationResource_DropsEntryPreservingHandAuthoring(t *testing.T) {
+	withExtra, _ := AppendKustomizationResource(
+		"kustomization.yaml",
+		[]byte(kustomizationFixture),
+		"debug-toolbox.yaml",
+	)
+
+	res, diags := RemoveKustomizationResource("kustomization.yaml", withExtra.Content, "debug-toolbox.yaml")
+	if res.Mode != EditPatched {
+		t.Fatalf("Mode = %q, want patched (diags %+v)", res.Mode, diags)
+	}
+	got := string(res.Content)
+	if strings.Contains(got, "debug-toolbox.yaml") {
+		t.Errorf("the entry must be gone:\n%s", got)
+	}
+	// The hand-authoring, the surviving entry, and every unrelated section stay put.
+	for _, want := range []string{"# pin the app image here", "- deployment.yaml", "namespace: app", "count: 3"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("want %q preserved in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRemoveKustomizationResource_IdempotentWhenNotListed(t *testing.T) {
+	res, _ := RemoveKustomizationResource("kustomization.yaml", []byte(kustomizationFixture), "never-there.yaml")
+	if res.Mode != EditNoChange {
+		t.Fatalf("Mode = %q, want no-change for an entry that is not listed", res.Mode)
+	}
+	if string(res.Content) != kustomizationFixture {
+		t.Errorf("a no-op must leave the bytes byte-identical")
+	}
+}
+
+func TestRemoveKustomizationResource_RefusalsLeaveContentUntouched(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"no resources sequence", "namespace: app\n"},
+		{"resources is not a sequence", "resources: not-a-list\n"},
+		{"multi-document file", kustomizationFixture + "---\nnamespace: other\n"},
+		{"unparseable", "resources: [::\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, diags := RemoveKustomizationResource("kustomization.yaml", []byte(tc.content), "deployment.yaml")
+			if res.Mode != EditSkipped {
+				t.Fatalf("Mode = %q, want skipped", res.Mode)
+			}
+			if string(res.Content) != tc.content {
+				t.Errorf("a refused removal must leave the bytes untouched")
+			}
+			if len(diags) == 0 {
+				t.Errorf("a refusal must carry a diagnostic")
+			}
+		})
+	}
+}
+
 func TestAppendKustomizationResource_RefusalsLeaveContentUntouched(t *testing.T) {
 	cases := []struct {
 		name    string

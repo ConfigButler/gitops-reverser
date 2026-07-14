@@ -5,6 +5,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	sigsyaml "sigs.k8s.io/yaml"
 
@@ -74,6 +76,17 @@ type writeBatch struct {
 	docLoc        map[*manifestanalyzer.DocumentModel]manifestanalyzer.RecordRef
 	contentByPath map[string][]byte
 	buffers       map[string]*fileBuffer
+	// intents records what each document this flush writes must render to, so the
+	// render precondition can tell a change the flush MEANT from one it merely caused.
+	// Anything not named here has to come out of the re-render untouched.
+	intents []manifestanalyzer.WriteIntent
+	// putToKustomize records that this flush touched a kustomize render root — it edited a
+	// governed document, or placed a new one into a kustomization's resources:. It is what
+	// turns the oracle on, and it is deliberately NOT the same question as WriteIntent.Governed:
+	// that one additionally ASSERTS the document is rendered, which a new document is not
+	// entitled to claim (its resources: entry can legitimately fail to be added — see
+	// appendKustomizationResource — leaving the file written but outside every render).
+	putToKustomize bool
 	// policy is the GitTarget's declared new-file placement policy, consulted
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to sibling inference and then the canonical path.
@@ -214,7 +227,7 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 	case event.IsFieldPatch():
 		return wb.applyFieldPatch(ctx, event)
 	case event.Operation == "DELETE":
-		wb.applyDelete(event)
+		wb.applyDelete(ctx, event)
 		return nil
 	default:
 		_, err := wb.applyUpsert(ctx, event)
@@ -231,16 +244,39 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 // existing document is placed by createNew. It returns what it did to the bytes
 // (created / updated / no change).
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
-	if id, ok := manifestIdentity(event.Object); ok {
-		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
-			filePath := wb.docLoc[dm].FilePath
-			if wb.writer.isSensitiveIdentifier(event.Identifier) {
-				return wb.writeWholeFile(ctx, event, filePath)
-			}
-			return wb.patchExisting(ctx, event, filePath, id, dm)
-		}
+	id, ok := manifestIdentity(event.Object)
+	if !ok {
+		return wb.createNew(ctx, event)
 	}
-	return wb.createNew(ctx, event)
+	dm := wb.store.ByManifestIdentity[id]
+	if dm == nil {
+		return wb.createNew(ctx, event)
+	}
+	filePath := wb.docLoc[dm].FilePath
+	if !wb.writer.isSensitiveIdentifier(event.Identifier) {
+		return wb.patchExisting(ctx, event, filePath, id, dm)
+	}
+	return wb.rewriteSensitive(ctx, event, filePath)
+}
+
+// rewriteSensitive re-encrypts a sensitive document wholesale at its existing path.
+//
+// Its intent is UNCHECKED: the file is SOPS ciphertext, so kustomize renders the encrypted
+// blob and no plaintext live object can ever equal it. The oracle is told to expect this
+// object to move without being able to say what to — while still holding the write to
+// disturbing nothing else, which is the half that protects other environments.
+func (wb *writeBatch) rewriteSensitive(ctx context.Context, event Event, filePath string) (upsertOutcome, error) {
+	outcome, err := wb.writeWholeFile(ctx, event, filePath)
+	if err == nil && wroteBytes(outcome) {
+		wb.intend(markUnchecked(intentFor(event.Object, filePath, false), true))
+	}
+	return outcome, err
+}
+
+// wroteBytes reports whether an upsert actually changed the worktree, which is the only
+// case that owes the oracle an intent.
+func wroteBytes(o upsertOutcome) bool {
+	return o == upsertCreated || o == upsertUpdated
 }
 
 // createNew resolves the placement of a resource with no existing document —
@@ -269,6 +305,11 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		return upsertSkippedUnsafe, nil
 	}
 
+	// The LIVE object, kept before the namespace strip below rewrites it. The bytes we write
+	// and the object the render must produce are not the same thing, and only this scope
+	// still holds both — see intentFor.
+	live := event.Object
+
 	if placement.Kustomization != nil {
 		wb.appendKustomizationResource(ctx, event, placement)
 	}
@@ -283,6 +324,34 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		event.Object.SetNamespace("")
 	}
 
+	outcome, err := wb.placeNewDocument(ctx, event, placement, sensitive)
+	if err != nil || !wroteBytes(outcome) {
+		return outcome, err
+	}
+
+	// A new document that joins a kustomization's resources: list is INSIDE a render root, so
+	// the folder's images:/replicas: entries govern it from the moment it lands — and we do not
+	// route a new document's values onto an entry (it has no override chain yet; it did not
+	// exist when the store was built). So the live value goes into the file, and if an entry
+	// overrides it, the folder renders something else and the resource never converges.
+	//
+	// Declaring it governed puts it in front of the oracle, which turns that from a silent
+	// non-converging commit into a reported refusal naming the file and the object. It does not
+	// make the write work — that needs attribution for a document that does not exist yet — but
+	// "we cannot express this here" is an answer, and quietly writing a lie is not.
+	wb.putToKustomize = wb.putToKustomize || placement.Kustomization != nil
+	wb.intend(markUnchecked(intentFor(live, placement.Path, false), sensitive))
+	return outcome, nil
+}
+
+// placeNewDocument writes the new document at its resolved placement: appended to an existing
+// accepted bundle, folded into a same-batch cold bundle, or as a file of its own.
+func (wb *writeBatch) placeNewDocument(
+	ctx context.Context,
+	event Event,
+	placement manifestanalyzer.PlacementResult,
+	sensitive bool,
+) (upsertOutcome, error) {
 	if placement.Append {
 		return wb.appendNewDocument(ctx, event, placement.Path)
 	}
@@ -469,8 +538,17 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 	}
 
 	assignments := event.FieldPatch.Assignments
-	if dm := wb.store.ByManifestIdentity[id]; dm != nil && dm.Overrides != nil {
+	dm := wb.store.ByManifestIdentity[id]
+	governed := dm != nil && dm.Overrides != nil
+	if governed {
 		assignments = wb.routeGovernedFieldAssignments(ctx, event, dm, assignments)
+		// A routed scale changes only the kustomization entry, which still moves what this
+		// document renders to — so it must be declared, or the oracle would read its own
+		// intended write as collateral damage. It is UNCHECKED because a field patch carries
+		// a few audited assignments, never a whole object to compare the render against: the
+		// oracle can still prove the write disturbs nothing else, but not that it landed.
+		wb.putToKustomize = true
+		wb.intend(fieldPatchIntent(filePath, id, governed))
 		if len(assignments) == 0 {
 			return nil
 		}
@@ -489,6 +567,9 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 	switch res.Mode {
 	case manifestedit.EditPatched:
 		buf.current = res.Content
+		if !governed {
+			wb.intend(fieldPatchIntent(filePath, id, false))
+		}
 	case manifestedit.EditNoChange, manifestedit.EditDeleted:
 		// No-op: the audited value already matched (or, impossible here, a delete).
 	case manifestedit.EditSkipped, manifestedit.EditWholeReplace:
@@ -595,9 +676,9 @@ func (wb *writeBatch) patchExisting(
 	}
 	projected := manifestreport.Project(desired)
 	var overrideEdits []manifestanalyzer.OverrideEdit
-	if dm.Overrides != nil {
+	if dm.Rendered != nil {
 		if gitRaw, parsed := gitDocRawObject(buf.current, idx); parsed {
-			projected, overrideEdits = manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Overrides)
+			projected, overrideEdits = manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Rendered)
 		}
 	}
 	c := manifestedit.Comparison{
@@ -622,7 +703,156 @@ func (wb *writeBatch) patchExisting(
 	if wb.applyOverrideEdits(ctx, event, overrideEdits) {
 		outcome = upsertUpdated
 	}
+
+	// Declare what this document must render to. Attribution above decided WHERE the edit
+	// goes and is allowed to be wrong; the render precondition adjudicates it once the whole
+	// plan is known (see renderPrecondition).
+	//
+	// A GOVERNED document declares its intent even when its own bytes did not change, and
+	// that is not belt-and-braces — it is the difference between the oracle working and the
+	// oracle refusing perfectly good writes. An images: entry is shared: when two Deployments
+	// run the same image and are bumped together, the FIRST event's entry edit already moves
+	// what the second one renders to, so by the time the second is processed there is nothing
+	// left to write. Its render still moves, and it moves onto its own live state — that is
+	// the resource converging, not collateral damage, and only its declared intent says so.
+	if dm.Overrides != nil {
+		wb.putToKustomize = true
+	}
+	if outcome == upsertUpdated || dm.Overrides != nil {
+		wb.intend(intentFor(event.Object, filePath, dm.Overrides != nil))
+	}
 	return outcome, nil
+}
+
+// renderPrecondition is the oracle, and it is a write-plan precondition like the three
+// above it: it runs at the one moment the whole plan is known and before a single byte is
+// touched, so a refusal aborts the flush and commits nothing.
+//
+// It only runs when the flush actually routed something through a kustomization. A repo
+// with no override chain pays nothing, and a flush that changed no governed document has
+// nothing for kustomize to adjudicate.
+//
+// A refusal is an AcceptanceRefusedError, which is the seam that carries it to the user as
+// GitPathAccepted=False / Stalled=True with the file and object named. That is deliberate:
+// render-attribution.md §7 is explicit that a proposal the renderer cannot vouch for
+// "becomes a refused flush — that is the correct outcome and it must be reported, not
+// absorbed." A resource we silently stop mirroring is the failure this path exists to
+// prevent, so it must not be the failure this path introduces.
+func (wb *writeBatch) renderPrecondition() error {
+	if !wb.putToKustomize {
+		return nil
+	}
+
+	before := make([]manifestedit.FileContent, 0, len(wb.contentByPath))
+	for _, path := range sortedContentKeys(wb.contentByPath) {
+		before = append(before, manifestedit.FileContent{Path: path, Content: wb.contentByPath[path]})
+	}
+
+	var refused *manifestanalyzer.RenderRefusedError
+	if err := manifestanalyzer.VerifyBatchRenders(before, wb.files(), wb.intents); err != nil {
+		if errors.As(err, &refused) {
+			issues := make([]manifestanalyzer.AcceptanceIssue, 0, len(refused.Reasons))
+			for _, reason := range refused.Reasons {
+				issues = append(issues, manifestanalyzer.AcceptanceIssue{
+					Kind:    manifestanalyzer.IssueRenderRefused,
+					Message: reason,
+				})
+			}
+			return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
+		}
+		return err
+	}
+	return nil
+}
+
+// intend records what one document of this flush must render to, so the oracle can tell a
+// change the flush MEANT from a change it merely caused. Everything not intended has to
+// come out of the render untouched.
+func (wb *writeBatch) intend(in manifestanalyzer.WriteIntent) {
+	if in.Kind == "" || in.Name == "" {
+		return // nothing addressable to check; the render comparison keys on kind+name
+	}
+	wb.intents = append(wb.intents, in)
+}
+
+// intentFor builds the intent for an ordinary object-bearing write: the document must
+// render to exactly the live object.
+//
+// It takes the LIVE object, not the event, and that distinction is load-bearing. createNew
+// strips metadata.namespace out of the bytes it writes when the destination inherits its
+// namespace from a kustomization's namespace: transformer — correct, because the transformer
+// puts it back. But the render therefore HAS the namespace, so an intent built from the
+// stripped object would demand that the render not have one, and the oracle would refuse a
+// flush it had just planned perfectly. The bytes and the intent are different objects, and
+// the caller is the only one that still holds both.
+func intentFor(live *unstructured.Unstructured, filePath string, governed bool) manifestanalyzer.WriteIntent {
+	desired := manifestreport.Project(live)
+	return manifestanalyzer.WriteIntent{
+		SourcePath: filePath,
+		Kind:       desired.GetKind(),
+		Name:       desired.GetName(),
+		Desired:    desired,
+		Governed:   governed,
+	}
+}
+
+// unchecked marks a write whose rendered form cannot be predicted, so the oracle lets the
+// object move without comparing it (but still holds the write to disturbing nothing else).
+func markUnchecked(in manifestanalyzer.WriteIntent, unchecked bool) manifestanalyzer.WriteIntent {
+	if unchecked {
+		in.Unchecked = true
+		in.Desired = nil
+	}
+	return in
+}
+
+// fieldPatchIntent declares a bounded field patch. It is always unchecked: the event carries
+// a handful of audited assignments, not a whole object, so there is nothing to require the
+// render to equal.
+func fieldPatchIntent(filePath string, id manifestedit.Identity, governed bool) manifestanalyzer.WriteIntent {
+	return manifestanalyzer.WriteIntent{
+		SourcePath: filePath,
+		Kind:       id.Kind,
+		Name:       id.Name,
+		Unchecked:  true,
+		Governed:   governed,
+	}
+}
+
+// files is the batch's complete tree as the flush would leave it: the worktree bytes with
+// every buffer folded over them, and deleted files removed. Sorted, so the render is
+// reproducible.
+func (wb *writeBatch) files() []manifestedit.FileContent {
+	byPath := make(map[string][]byte, len(wb.contentByPath)+len(wb.buffers))
+	for path, content := range wb.contentByPath {
+		byPath[path] = content
+	}
+	for path, b := range wb.buffers {
+		if b.current == nil {
+			delete(byPath, path) // the flush deletes this file
+			continue
+		}
+		byPath[path] = b.current
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	out := make([]manifestedit.FileContent, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, manifestedit.FileContent{Path: path, Content: byPath[path]})
+	}
+	return out
+}
+
+func sortedContentKeys(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // applyOverrideEdits folds routed override edits into their kustomization file
@@ -734,7 +964,7 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 // the same batch that shifted a multi-document file does not misdirect this one.
 // Removing the last document in a file marks it for deletion; otherwise the surviving
 // documents are kept byte-for-byte.
-func (wb *writeBatch) applyDelete(event Event) {
+func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	target, found := wb.resolveDelete(event)
 	if !found {
 		return
@@ -747,12 +977,93 @@ func (wb *writeBatch) applyDelete(event Event) {
 	if !ok {
 		return
 	}
+	wb.intend(manifestanalyzer.WriteIntent{
+		SourcePath: target.filePath,
+		Kind:       target.id.Kind,
+		Name:       target.id.Name,
+		Removed:    true,
+	})
+	// Any delete inside a render root changes what that root renders, so it goes to the
+	// oracle — whether or not the file itself goes with it. Gating this on "the file was
+	// emptied" would be a rule about our own bookkeeping rather than about the render, and
+	// the whole point of the oracle is that it does not take our word for anything.
+	if len(wb.kustomizationsListing(target.filePath)) > 0 {
+		wb.putToKustomize = true
+	}
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
-	if res.FileEmpty {
-		buf.current = nil
+	if !res.FileEmpty {
+		buf.current = res.Content
 		return
 	}
-	buf.current = res.Content
+	// The file is gone. Anything still naming it in a resources: list now names a file that
+	// does not exist, and kustomize refuses to build over that — so deleting the manifest is
+	// only half the delete.
+	buf.current = nil
+	wb.dropKustomizationResource(ctx, event, target.filePath)
+}
+
+// dropKustomizationResource removes the resources: entry naming a file this flush deleted,
+// from every supported kustomization that lists it.
+//
+// It is the counterpart of appendKustomizationResource, and it fails the same way: a
+// kustomization it cannot edit only loses its entry (logged), it does not abort the delete —
+// the render precondition is what decides whether the resulting tree is committable.
+func (wb *writeBatch) dropKustomizationResource(ctx context.Context, event Event, filePath string) {
+	for _, listing := range wb.kustomizationsListing(filePath) {
+		buf := wb.buffer(listing.kustomization)
+		if buf.current == nil {
+			continue // the kustomization is itself being deleted in this batch
+		}
+		res, diags := manifestedit.RemoveKustomizationResource(listing.kustomization, buf.current, listing.entry)
+		switch res.Mode {
+		case manifestedit.EditPatched:
+			buf.current = res.Content
+			log.FromContext(ctx).Info("Removed resources: entry for deleted file",
+				"kustomization", listing.kustomization, "entry", listing.entry,
+				"resource", event.Identifier.String())
+		case manifestedit.EditNoChange:
+		case manifestedit.EditSkipped, manifestedit.EditDeleted, manifestedit.EditWholeReplace:
+			// The entry stays, and it now names a file that does not exist. We do not have to
+			// decide how bad that is: the render precondition rebuilds the tree and refuses
+			// the flush, because kustomize will not build over a missing resource.
+			log.FromContext(ctx).Info("Could not remove resources: entry for deleted file",
+				"kustomization", listing.kustomization, "entry", listing.entry,
+				"resource", event.Identifier.String())
+			logManifestDiagnostics(ctx, diags)
+		}
+	}
+}
+
+// resourceListing is one kustomization's resources: entry naming a given file.
+type resourceListing struct {
+	kustomization string // the kustomization.yaml's own path
+	entry         string // the entry text, relative to the kustomization's directory
+}
+
+// kustomizationsListing returns every supported kustomization whose resources: names filePath,
+// in deterministic order. It is the one definition of "this file is inside a render root",
+// shared by the oracle's trigger and by the entry removal, so the two cannot drift apart.
+func (wb *writeBatch) kustomizationsListing(filePath string) []resourceListing {
+	dirs := make([]string, 0, len(wb.store.Kustomizations))
+	for dir := range wb.store.Kustomizations {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+
+	var out []resourceListing
+	for _, dir := range dirs {
+		info := wb.store.Kustomizations[dir]
+		if info.Unsupported {
+			continue // never edit a kustomization we do not model
+		}
+		base := path.Dir(info.Path)
+		for _, entry := range info.Resources {
+			if path.Clean(path.Join(base, entry)) == filePath {
+				out = append(out, resourceListing{kustomization: info.Path, entry: entry})
+			}
+		}
+	}
+	return out
 }
 
 // deleteTarget names the file and manifest identity a delete targets. The document
@@ -839,6 +1150,9 @@ func (wb *writeBatch) flush(ctx context.Context, worktree *gogit.Worktree, root,
 		return false, err
 	}
 	if err := wb.fanInPrecondition(); err != nil {
+		return false, err
+	}
+	if err := wb.renderPrecondition(); err != nil {
 		return false, err
 	}
 	logger := log.FromContext(ctx)

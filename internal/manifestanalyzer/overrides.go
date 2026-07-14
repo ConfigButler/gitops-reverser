@@ -72,6 +72,7 @@ type KustomizeOverrides struct {
 type overrideAssignment struct {
 	chainKeys    map[string]struct{}
 	overrides    *KustomizeOverrides
+	rendered     *RenderedOverrides
 	anyOverrides bool
 }
 
@@ -87,17 +88,17 @@ func resolveOverrides(
 	loc manifestedit.Location,
 	id manifestedit.Identity,
 	assignments map[chainKey]*overrideAssignment,
-) (*KustomizeOverrides, *manifestedit.Diagnostic) {
+) (*KustomizeOverrides, *RenderedOverrides, *manifestedit.Diagnostic) {
 	a := assignments[chainKey{
 		originPath: filepathToSlash(loc.Path),
 		kind:       id.Kind,
 		name:       id.Name,
 	}]
 	if a == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if a.ambiguous() {
-		return nil, &manifestedit.Diagnostic{
+		return nil, nil, &manifestedit.Diagnostic{
 			Level:  manifestedit.DiagWarning,
 			Reason: reasonAmbiguousOverrides,
 			Message: "multiple render roots reach this file with different images/replicas override chains; " +
@@ -106,7 +107,7 @@ func resolveOverrides(
 			DocumentIndex: loc.DocumentIndex,
 		}
 	}
-	return a.overrides, nil
+	return a.overrides, a.rendered, nil
 }
 
 // OverridesAmbiguousAt reports whether the store refused to route a kustomize override chain

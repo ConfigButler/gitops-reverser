@@ -184,6 +184,19 @@ type DocumentModel struct {
 	// docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
 	Overrides *KustomizeOverrides
 
+	// Rendered is what kustomize ACTUALLY renders this document to, plus which override
+	// entry supplied each override-produced value — the values read off the real render, the
+	// suppliers read off a dyed counterfactual one. It is what the write-side projection
+	// inverts against, and it replaced ~400 lines that re-implemented kustomize's
+	// transformers in order to guess the same thing.
+	//
+	// Nil when no render root supplies a chain, when distinct roots disagree, or when the
+	// dyed build could not be trusted (see attributeRoot). Nil means NO ATTRIBUTION: the
+	// writer routes nothing to an entry, and the verification re-render adjudicates whatever
+	// the source document alone can carry. See
+	// docs/design/support-boundary/render-attribution.md.
+	Rendered *RenderedOverrides
+
 	// ResourceIdentity is the API-side identity (GVR + namespace + name). It is set
 	// only when the injected GVK->GVR mapper resolves the document's GVK to a single
 	// served, allowed resource; structure-only analysis (and any unresolved lookup)
@@ -496,7 +509,7 @@ func (s *ManifestStore) materialize(
 	if diag != nil {
 		s.Diagnostics = append(s.Diagnostics, *diag)
 	}
-	overrides, ovDiag := resolveOverrides(r.Location, r.Identity, ovAssignments)
+	overrides, rendered, ovDiag := resolveOverrides(r.Location, r.Identity, ovAssignments)
 	if ovDiag != nil {
 		s.Diagnostics = append(s.Diagnostics, *ovDiag)
 	}
@@ -510,6 +523,7 @@ func (s *ManifestStore) materialize(
 		ManifestIdentity: identity,
 		NamespaceSource:  nsSource,
 		Overrides:        overrides,
+		Rendered:         rendered,
 		Editable:         r.Editable && !r.Encrypted,
 		Cause:            causeFor(r),
 	}

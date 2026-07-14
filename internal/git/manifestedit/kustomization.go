@@ -178,6 +178,64 @@ func AppendKustomizationResource(path string, content []byte, entry string) (Edi
 	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
 }
 
+// RemoveKustomizationResource drops one entry from an existing kustomization.yaml's
+// resources: sequence. It is AppendKustomizationResource's counterpart, and it exists for
+// exactly the reason that one does, read backwards: a file named in resources: that no
+// longer exists is a file kustomize refuses to build over —
+//
+//	accumulating resources ... '/scan/apps/api.yaml' doesn't exist
+//
+// so deleting a managed document without removing its entry leaves a repository no GitOps
+// controller can deploy. Deleting the manifest is only half the delete.
+//
+// It is idempotent (an entry that is not there is EditNoChange) and all-or-nothing in the
+// same way as its sibling: a multi-document file, unparseable YAML, or a document with no
+// resources: sequence skips the whole call with a diagnostic rather than inventing structure.
+// An emptied sequence is left as an empty sequence — removing the key is not this function's
+// call to make.
+func RemoveKustomizationResource(path string, content []byte, entry string) (EditResult, []Diagnostic) {
+	skip := func(format string, args ...interface{}) (EditResult, []Diagnostic) {
+		return EditResult{Content: content, Mode: EditSkipped},
+			[]Diagnostic{diag(DiagWarning, Location{Path: path}, format, args...)}
+	}
+
+	docs, idx, root, reason, ok := locateKustomizationDocument(path, content)
+	if !ok {
+		return skip("%s", reason)
+	}
+	target := docs[idx].body
+
+	section := nodeMapGet(root, "resources")
+	if section == nil || section.Kind != yaml.SequenceNode {
+		return skip("kustomization %s has no resources sequence", path)
+	}
+
+	kept := make([]*yaml.Node, 0, len(section.Content))
+	removed := false
+	for _, item := range section.Content {
+		if item.Kind == yaml.ScalarNode && strings.TrimSpace(item.Value) == strings.TrimSpace(entry) {
+			removed = true
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if !removed {
+		return EditResult{Content: content, Mode: EditNoChange}, nil
+	}
+	section.Content = kept
+
+	encoded, err := encodeNode(root)
+	if err != nil {
+		return skip("kustomization %s: re-encode failed: %v", path, err)
+	}
+	body := reskinDocument(target, string(encoded))
+	if body == target {
+		return EditResult{Content: content, Mode: EditNoChange}, nil
+	}
+	docs[idx].body = body
+	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
+}
+
 // setOverrideScalar writes the new value, keeping the value string-typed for the
 // image fields (the encoder quotes "1.29"-style values when the tag is !!str) and
 // integer-typed for count. An existing quoting style is kept; other styles reset

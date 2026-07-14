@@ -122,8 +122,20 @@ const (
 	// made explicit; the broader "any file shared by multiple render roots" generalization is
 	// Per-render-root scoping would generalize this.
 	IssueWriteFanIn IssueKind = "write-fan-in"
+	// IssueRenderRefused marks a planned write that kustomize itself will not vouch for: the
+	// flush was re-rendered with the write applied, and either the edited document did not
+	// come out as the live object, or the write moved an object it never set out to touch.
+	//
+	// It is the write-plan half of "attribution may be heuristic, verification may not"
+	// (docs/design/support-boundary/render-attribution.md §5). The projection is ALLOWED to
+	// guess which file an edit belongs in, precisely because this refuses the guess when the
+	// renderer disagrees. And it must refuse LOUDLY: a write that does not survive the
+	// re-render is one that would not converge — the entry overrides it straight back on the
+	// next render — so absorbing it would leave a resource silently un-mirrored forever,
+	// which is the exact failure this whole path exists to prevent.
+	IssueRenderRefused IssueKind = "kustomize-render-refused"
 
-	// A refusal made up purely of the two write-boundary kinds above surfaces as the GitTarget
+	// A refusal made up purely of the write-boundary kinds above surfaces as the GitTarget
 	// reason WriteBoundaryRefused rather than the umbrella UnsupportedContent: the folder holds
 	// nothing the operator cannot manage, the edit simply had nowhere safe to land. See the
 	// watch package's gitPathRefusalReason.
