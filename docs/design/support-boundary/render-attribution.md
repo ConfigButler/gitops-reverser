@@ -4,7 +4,7 @@
 > Related:
 > [kustomize-support-boundary.md](kustomize-support-boundary.md) §7 — the decision to embed the renderer ·
 > [render-root-scoping.md](render-root-scoping.md) — the oracle, and §6's tolerate-don't-author plan ·
-> [patching-kustomize.md](patching-kustomize.md) — **revises §4**: the fork is ~30 lines, and it is built ·
+> *patching-kustomize.md* (ConfigButler/kustomize-tracer, `plans/`) — **revises §4**: the fork is ~30 lines, and it is built ·
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) — what shipped ·
 > [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)
 
@@ -29,7 +29,7 @@
 >
 > §5's verdict — *attribution may be heuristic, verification may not* — survived contact
 > intact, and it is what made the rest safe to delete. But see
-> [patching-kustomize.md](patching-kustomize.md): the dye is now the **fallback** for an
+> *patching-kustomize.md* (ConfigButler/kustomize-tracer, `plans/`): the dye is now the **fallback** for an
 > unpatched build, not the destination.
 
 The workstream that replaced our hand-written kustomize with the real one has one step
