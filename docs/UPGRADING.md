@@ -7,6 +7,40 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — kustomize decides what it renders, and what it touched (next minor; bug fixes + behavior change)
+
+The write path no longer contains a re-implementation of kustomize's image and replica
+transformers. It asks kustomize what a folder renders to, and — by rendering a second time
+with a unique nonce written into every override entry — which entry supplied each value.
+`renderImage`, `imageSuppliers`, `simulateImageRender` and `isReplicaKind` are deleted.
+
+**Three shipped bugs go with them.** Each was a case where we believed a folder rendered
+one thing while kustomize rendered another, and the projection then wrote the difference
+into your source manifest as though you had typed it there.
+
+| | If your repo has… | What was happening |
+|---|---|---|
+| **B1** | an `images:` entry whose `name:` is not a literal — `- name: "ap."`, `- name: ".*"`, `- name: app:v1` | A kustomization `name:` is a **regular expression**, and kustomize matches on it as one. Our matcher was string equality, so we thought the entry matched nothing while kustomize rewrote the image. We read the difference as a user edit and wrote the *rendered* value into the source manifest — which then no longer matched the entry, silently killing the override. |
+| **B2** | a `replicas:` entry naming a **ReplicationController** | kustomize's replica fieldspec is `[Deployment, StatefulSet, ReplicaSet, ReplicationController]` — it says so in its own error message. Ours listed three of the four. A scale on an RC was written into the source document, where the transformer overrode it right back: non-converging drift, on every reconcile, forever. |
+| **B3** | an OCI **`volumes[].image.reference`**, or an **`ephemeralContainers`** entry | kustomize rewrites volume image references (measured) and does **not** rewrite ephemeral containers (measured). We had it backwards on both: we never looked at volume images, so the rendered value was mirrored back into your source file; and we treated ephemeral containers as override-governed when the source file owns them. |
+
+**Nothing here needs migration** — these are fixes, and they make the operator stop
+rewriting files it should have left alone. Check `git log` on your manifests if you want to
+see whether a past reconcile touched an image or a replica count you did not change.
+
+**One behavior change comes with them.** A write routed through a kustomization is now
+re-rendered with kustomize before it is committed, and must reproduce the live object
+exactly while leaving every other rendered object untouched. A write that fails that check
+**refuses the flush** — `GitPathAccepted=False` / `WriteBoundaryRefused`, naming the file
+and the object — rather than being committed.
+
+This is deliberate, and it is the safe direction: a write that does not survive the
+re-render is one the override entry overrides straight back on the next render, so
+committing it would leave the resource permanently un-mirrored while looking like it
+worked. If you see this refusal, the live state cannot be expressed in the repository as it
+stands — most often because something we do not model (a `patches:` block, a
+`replacements:` entry) owns the field. The refusal names it.
+
 ## Unreleased — a folder kustomize cannot build is now refused (next minor; behavior change)
 
 The analyzer now **builds** every render root with kustomize, instead of only parsing the

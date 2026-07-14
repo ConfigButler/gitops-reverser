@@ -1,11 +1,36 @@
 # Render attribution: which override entry supplied this value?
 
-> **design** — direction-setting; ships no code. Captured: 2026-07-14
+> **design** — direction-setting. Captured: 2026-07-14
 > Related:
 > [kustomize-support-boundary.md](kustomize-support-boundary.md) §7 — the decision to embed the renderer ·
 > [render-root-scoping.md](render-root-scoping.md) — the oracle, and §6's tolerate-don't-author plan ·
+> [patching-kustomize.md](patching-kustomize.md) — **revises §4**: the fork is ~30 lines, and it is built ·
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) — what shipped ·
 > [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)
+
+> **Status: §7 is done — stages 1 through 3 are shipped.** `renderRootWith` is the
+> counterfactual primitive; verification is a real re-render (`VerifyBatchRenders`), and
+> `simulateImageRender` is gone; attribution is the dye (`dye.go`,
+> `overrides_attribution.go`), and `renderImage`, `imageSuppliers` and `isReplicaKind` are
+> gone with **B1, B2 and B3**. The 12 `TestSplitDesired_*` tests are rebuilt against real
+> kustomize fixtures, and the corpus differential is now the stronger claim that **an in-sync
+> folder projects to a complete no-op**. Stage 4 (chain → set) is not done.
+>
+> Two things the building corrected, both recorded below where they belong:
+>
+> - **B4 is worse than stated.** A rendered object is not merely awkward to read a number off
+>   — it is **not a valid `unstructured` at all**. `DeepCopyJSON` **panics** on one (*"cannot
+>   deep copy int"*), so a rendered object must be normalised through JSON before any
+>   apimachinery helper touches it.
+> - **The rename-chain guard must use kustomize's regex, not string equality** (§3 proposed
+>   equality). An entry's `name:` is a regex, so `mirror/ap.` matches `mirror/app` without
+>   equalling it, and an equality guard would dye the name, kill the next entry, and
+>   mis-attribute the tag.
+>
+> §5's verdict — *attribution may be heuristic, verification may not* — survived contact
+> intact, and it is what made the rest safe to delete. But see
+> [patching-kustomize.md](patching-kustomize.md): the dye is now the **fallback** for an
+> unpatched build, not the destination.
 
 The workstream that replaced our hand-written kustomize with the real one has one step
 left, and it is the load-bearing one: **deleting the re-implemented transformers the
@@ -333,6 +358,13 @@ is checking for.
 ---
 
 ## 6. The bug ledger: what the probes found
+
+> **All of it is closed.** P1 and C1 shipped in #232. **B1, B2 and B3 are not fixed — they are
+> DELETED**, along with the `renderImage` / `isReplicaKind` / fieldspec code that caused them
+> (see [UPGRADING.md](../../UPGRADING.md)). B4 was found to be worse than recorded and is
+> handled by a type switch (`renderedReplicaCount`) plus a JSON normalisation in the tests.
+> The ledger is kept as written, because *how* each was found is the argument for the method:
+> not one came from reading kustomize's source. Every one came from asking it.
 
 Every stage of this workstream found a shipped bug by making kustomize the arbiter. Writing
 this document found more — none by reading code, all from ~60 lines of throwaway probe
