@@ -107,12 +107,19 @@ type RetainedDocument struct {
 	Location manifestedit.Location
 	Identity manifestedit.Identity
 	GVK      schema.GroupVersionKind
-	// Unsupported is true for a whole-file kustomization retention that uses a feature
-	// outside the supported contextual-namespace subset (generators / patches /
-	// components / helm / replacements / transformers / name(pre|suf)fix / remote bases).
-	// The operator cannot map such a folder back to editable source documents, so the
-	// acceptance gate refuses it (IssueUnsupportedKustomize) rather than writing into
-	// content it cannot safely manage. Only ever set on a whole-file retention.
+	// Unsupported is true for a whole-file kustomization retention that the operator
+	// cannot map back to editable source documents, for either of two reasons:
+	//
+	//   - it uses a feature outside the supported contextual-namespace subset
+	//     (generators / patches / components / helm / replacements / transformers /
+	//     name(pre|suf)fix / remote bases), or declares malformed images/replicas; or
+	//   - it is a render root KUSTOMIZE CANNOT BUILD (reasonRenderFailed). If the build
+	//     fails, Flux cannot deploy the folder either, and we cannot know what it renders
+	//     to — and a silent pass would be worse than useless, because a root that yields
+	//     no chain also yields no ambiguity, which disarms the write-fan-in guard.
+	//
+	// The acceptance gate refuses either (IssueUnsupportedKustomize) rather than writing
+	// into content it cannot safely manage. Only ever set on a whole-file retention.
 	Unsupported bool
 }
 
@@ -363,7 +370,7 @@ func buildStore(
 	kusts := parseKustomizations(yamlFiles)
 	resourceFiles := resourceFilePaths(yamlFiles)
 	nsAssignments := kustomizeNamespaceAssignments(kusts, resourceFiles)
-	ovAssignments := kustomizeOverrideAssignments(kusts, resourceFiles)
+	ovAssignments, renderFailures := renderChains(yamlFiles, kusts)
 
 	store := &ManifestStore{
 		FilesByPath:        map[string]*FileModel{},
@@ -402,13 +409,31 @@ func buildStore(
 	// so it is known to acceptance (and shown) but never becomes a FileModel.
 	for _, f := range yamlFiles {
 		if allowlist.Allows(f.Path) && !hasNamedRecord[f.Path] {
+			// A render root kustomize cannot BUILD is unsupported too, not just one
+			// declaring a feature we do not model: if the build fails, Flux cannot
+			// deploy the folder, and we cannot know what it renders to. Refusing is
+			// the only honest answer — and a silent pass would disarm the
+			// write-fan-in guard, which needs the render to see the shared file.
+			_, buildFailed := renderFailures[filepathToSlash(f.Path)]
 			store.Retained = append(store.Retained, RetainedDocument{
-				Location:    manifestedit.Location{Path: f.Path},
-				Unsupported: isKustomizationFile(f.Path) && kustomizationUsesUnsupportedFeature(f.Content),
+				Location: manifestedit.Location{Path: f.Path},
+				Unsupported: isKustomizationFile(f.Path) &&
+					(kustomizationUsesUnsupportedFeature(f.Content) || buildFailed),
 			})
 		}
 	}
 	sortRetained(store.Retained)
+
+	// Say WHY a build failed, in the store's diagnostics: "refused-structural" on its
+	// own is not something a user can act on, and kustomize's error usually is.
+	for _, path := range sortedKeysOf(renderFailures) {
+		store.Diagnostics = append(store.Diagnostics, manifestedit.Diagnostic{
+			Level:   manifestedit.DiagWarning,
+			Reason:  reasonRenderFailed,
+			Message: renderFailures[path],
+			Path:    path,
+		})
+	}
 
 	return store
 }
@@ -464,14 +489,14 @@ func (s *ManifestStore) materialize(
 	r manifestedit.DocumentRecord,
 	lookup typeset.Lookup,
 	nsAssignments map[string]namespaceAssignment,
-	ovAssignments map[string]*overrideAssignment,
+	ovAssignments map[chainKey]*overrideAssignment,
 ) {
 	gvk := gvkOf(r.Identity)
 	identity, nsSource, diag := resolveNamespaceContext(ctx, r.Identity, gvk, lookup, r.Location, nsAssignments)
 	if diag != nil {
 		s.Diagnostics = append(s.Diagnostics, *diag)
 	}
-	overrides, ovDiag := resolveOverrides(r.Location, ovAssignments)
+	overrides, ovDiag := resolveOverrides(r.Location, r.Identity, ovAssignments)
 	if ovDiag != nil {
 		s.Diagnostics = append(s.Diagnostics, *ovDiag)
 	}

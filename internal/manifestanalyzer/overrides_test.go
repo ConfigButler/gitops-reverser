@@ -69,16 +69,46 @@ func TestKustomizeOverridesCorpus_ReplicasOverlayChain(t *testing.T) {
 }
 
 // A diamond under ONE render root (root → a → base, root → b → base) must
-// record both paths: their chains differ, so no overrides attach and the
-// ambiguity diagnostic fires. Pins the on-path (not per-walk) cycle protection.
-func TestKustomizeOverridesCorpus_DiamondUnderOneRoot(t *testing.T) {
+// TestKustomizeOverridesCorpus_DiamondIsUnbuildable pins the diamond's fate.
+//
+// A diamond — one render root reaching a shared base through two overlays — is not
+// merely ambiguous to us: kustomize REFUSES to build it ("may not add resource with
+// an already registered id"), which means Flux cannot deploy the folder either. So
+// the folder is refused, and no document in it is routable.
+//
+// This used to be accepted and merely guarded: the hand-written walk recorded both
+// paths and attached no overrides, leaving the write-fan-in precondition to refuse
+// the write later. Refusing the unbuildable folder up front is strictly stronger,
+// and it is what the renderer tells us for free.
+func TestKustomizeOverridesCorpus_DiamondIsUnbuildable(t *testing.T) {
 	store := corpusStore(t, "unsupported/diamond-images")
 	dm := corpusDeployment(t, store)
 	if dm.Overrides != nil {
-		t.Errorf("a diamond's conflicting chains must attach no overrides, got %+v", dm.Overrides)
+		t.Errorf("a folder kustomize cannot build must attach no overrides, got %+v", dm.Overrides)
 	}
-	if !hasOverrideAmbiguityDiag(store) {
-		t.Errorf("want an %s diagnostic for the diamond", reasonAmbiguousOverrides)
+	if !hasRenderFailure(store) {
+		t.Errorf("want a %s diagnostic naming kustomize's build error", reasonRenderFailed)
+	}
+}
+
+// TestAccept_UnbuildableRenderRootRefusesTheFolder is the other half: the diamond is
+// not merely unrouted, it is REFUSED. A folder whose render root kustomize cannot
+// build is one no GitOps controller can deploy, and one whose renders we cannot
+// reason about — so the operator will not write into it.
+func TestAccept_UnbuildableRenderRootRefusesTheFolder(t *testing.T) {
+	fsys := os.DirFS(filepath.Join("testdata", "contextual-namespace", "unsupported", "diamond-images"))
+	_, acc := acceptanceOf(t, fsys, snapMapper(), AcceptancePolicy{Allowlist: DefaultAllowlist()})
+	if acc.Accepted {
+		t.Fatalf("a render root kustomize cannot build must refuse the folder")
+	}
+	found := false
+	for _, iss := range acc.Issues {
+		if iss.Kind == IssueUnsupportedKustomize {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want an %s issue, got %+v", IssueUnsupportedKustomize, acc.Issues)
 	}
 }
 
@@ -93,30 +123,42 @@ func TestKustomizeOverridesCorpus_AmbiguousImages(t *testing.T) {
 	}
 }
 
-// TestOverridesAmbiguousAt pins the store-side signal the writer's write-fan-in precondition
-// consults: the shared document a diamond reaches two ways reports ambiguous, a build
-// directive / unknown path does not, and a store with no ambiguous chain never reports it.
+// TestOverridesAmbiguousAt pins the store-side signal the writer's write-fan-in
+// precondition consults: the shared document TWO render roots reach with differing
+// chains reports ambiguous, a build directive / unknown path does not, and a store
+// with no ambiguous chain never reports it.
+//
+// The fixture is ambiguous-images, not the diamond: the diamond does not build at
+// all now, so it is refused before any write is planned, while ambiguous-images
+// builds cleanly from both roots and disagrees — which is exactly the shape the
+// fan-in guard exists for.
 func TestOverridesAmbiguousAt(t *testing.T) {
-	diamond := corpusStore(t, "unsupported/diamond-images")
-	if !diamond.OverridesAmbiguousAt("base/deployment.yaml") {
-		t.Errorf("the diamond's shared base/deployment.yaml must report an ambiguous override chain")
+	shared := corpusStore(t, "unsupported/ambiguous-images")
+	if !shared.OverridesAmbiguousAt("shared.yaml") {
+		t.Errorf("the document two roots reach with differing chains must report ambiguous")
 	}
-	if diamond.OverridesAmbiguousAt("base/kustomization.yaml") {
+	if shared.OverridesAmbiguousAt("kustomization.yaml") {
 		t.Errorf("a build directive is not an ambiguous managed write path")
 	}
-	if diamond.OverridesAmbiguousAt("no/such/file.yaml") {
-		t.Errorf("an unknown path must not report ambiguity")
+	if shared.OverridesAmbiguousAt("no/such/file.yaml") {
+		t.Errorf("an unknown path must not report ambiguous")
 	}
-
 	clean := corpusStore(t, "supported/images-overlay")
-	if clean.OverridesAmbiguousAt("base/deployment.yaml") {
-		t.Errorf("a store with no ambiguous chain must never report ambiguity")
+	if clean.OverridesAmbiguousAt("deployment.yaml") {
+		t.Errorf("a single unambiguous chain must never report ambiguous")
 	}
 }
 
-// TestKustomizeOverridesNestedBaseIsNotARoot pins the render-root rule: a base
-// referenced by another kustomization is not walked as its own root, so the
-// nested layout yields ONE chain (base+parent composed), not two conflicting ones.
+// hasRenderFailure reports whether the store recorded a kustomize build failure.
+func hasRenderFailure(store *ManifestStore) bool {
+	for _, d := range store.Diagnostics {
+		if d.Reason == reasonRenderFailed {
+			return true
+		}
+	}
+	return false
+}
+
 func TestKustomizeOverridesNestedBaseIsNotARoot(t *testing.T) {
 	store := corpusStore(t, "supported/replicas-overlay")
 	for _, d := range store.Diagnostics {

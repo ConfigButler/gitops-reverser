@@ -17,19 +17,15 @@ import (
 )
 
 // This is the differential test that licenses deleting the re-implemented
-// transformers. For every kustomize render root in both corpora it renders the
-// folder with kustomize itself and checks two independent claims:
+// transformers: for every kustomize render root in both corpora, the image our
+// renderImage chain produces must be byte-for-byte the image kustomize produces.
 //
-//  1. the override CHAIN our resources-graph walk attributes to a document is the
-//     same chain kustomize says it applied (its transformations annotation), and
-//  2. the IMAGE our renderImage chain produces is byte-for-byte the image kustomize
-//     produces.
-//
-// A disagreement is either a bug in our re-implementation or a misunderstanding of
-// kustomize. Either way it is exactly what we want to find before the write path
-// starts trusting the renderer.
+// It used to also compare the override CHAIN against kustomize's transformations
+// annotation. That assertion has done its job and is gone: the chain is now READ
+// from that annotation (override_chain.go), so comparing the two would be comparing
+// kustomize to itself.
 
-func TestRenderRoot_ChainAndImagesAgreeWithKustomize(t *testing.T) {
+func TestRenderRoot_ImagesAgreeWithKustomize(t *testing.T) {
 	roots := allCorpusRenderRoots(t)
 	require.NotEmpty(t, roots, "no render roots found — the test would prove nothing")
 
@@ -45,6 +41,7 @@ func TestRenderRoot_ChainAndImagesAgreeWithKustomize(t *testing.T) {
 			}
 
 			kusts := parseKustomizations(root.files)
+			chains, _ := renderChains(root.files, kusts) // once per fixture, not once per object
 			for _, ro := range rendered {
 				if ro.OriginPath == "" {
 					continue // a generated resource; generators are refused
@@ -53,8 +50,7 @@ func TestRenderRoot_ChainAndImagesAgreeWithKustomize(t *testing.T) {
 				if src == nil {
 					continue // renamed by a transformer we refuse; not a supported shape
 				}
-				chain, ambiguous := ourChainFor(kusts, root.files, ro.OriginPath)
-				assertChainMatchesKustomize(t, ro, chain, ambiguous)
+				chain, ambiguous := ourChainFor(chains, ro)
 				if ambiguous {
 					continue // we route nothing through it; there is no claim to check
 				}
@@ -64,52 +60,6 @@ func TestRenderRoot_ChainAndImagesAgreeWithKustomize(t *testing.T) {
 	}
 	t.Logf("compared %d rendered images against the hand-rolled chain (%d roots skipped as refused)",
 		compared, skipped)
-}
-
-// assertChainMatchesKustomize checks that the kustomizations our graph walk
-// attributes to a document are exactly the ones kustomize says ran an
-// ImageTagTransformer over it, in the same order.
-//
-// The ambiguous case is a deliberate, documented divergence rather than a bug. When
-// more than one render root reaches a file with differing chains, we attach NO chain
-// (fan-in = 1: we will not route an edit through a file two roots disagree about).
-// kustomize, asked to build one root, naturally reports the transformer that root
-// ran. So for an ambiguous file we assert the opposite thing: that kustomize DID
-// apply a chain and we deliberately declined to claim one.
-func assertChainMatchesKustomize(
-	t *testing.T,
-	ro renderedObject,
-	chain *KustomizeOverrides,
-	ambiguous bool,
-) {
-	t.Helper()
-	var kustomizeSays []string
-	for _, tr := range ro.TransformedBy {
-		if tr.Kind == imageTagTransformer {
-			kustomizeSays = append(kustomizeSays, tr.ConfiguredIn)
-		}
-	}
-	if ambiguous {
-		require.Nil(t, chain, "%s: an ambiguous file must carry no chain", ro.OriginPath)
-		require.NotEmpty(t, kustomizeSays,
-			"%s: we refused to attribute a chain, so kustomize must have applied one — "+
-				"otherwise the ambiguity refusal is guarding nothing", ro.OriginPath)
-		return
-	}
-
-	var weSay []string
-	seen := map[string]bool{}
-	if chain != nil {
-		for _, img := range chain.Images {
-			if !seen[img.Source] {
-				seen[img.Source] = true
-				weSay = append(weSay, img.Source)
-			}
-		}
-	}
-	require.Equal(t, kustomizeSays, weSay,
-		"%s: kustomize ran ImageTagTransformer configured in %v; our graph walk attributes %v",
-		ro.OriginPath, kustomizeSays, weSay)
 }
 
 // assertImagesMatchKustomize renders each source container image through our own
@@ -147,15 +97,18 @@ func assertImagesMatchKustomize(
 	return compared
 }
 
-// ourChainFor is the override chain our resources-graph walk attributes to a file,
-// and whether the walk found the file ambiguous (reached by more than one render
-// root with differing chains, which we refuse to route through).
+// ourChainFor is the override chain the store attributes to a document, and whether
+// it was found ambiguous (reached by more than one render root with differing
+// chains, which we refuse to route through).
 func ourChainFor(
-	kusts map[string]*kustomizationDoc,
-	files []manifestedit.FileContent,
-	originPath string,
+	chains map[chainKey]*overrideAssignment,
+	ro renderedObject,
 ) (*KustomizeOverrides, bool) {
-	a := kustomizeOverrideAssignments(kusts, resourceFilePaths(files))[originPath]
+	a := chains[chainKey{
+		originPath: ro.OriginPath,
+		kind:       ro.Object.GetKind(),
+		name:       ro.Object.GetName(),
+	}]
 	if a == nil {
 		return nil, false
 	}

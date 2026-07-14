@@ -25,6 +25,11 @@ const plainKustomizeYAML = "apiVersion: kustomize.config.k8s.io/v1beta1\n" +
 	"kind: Kustomization\n" +
 	"resources:\n  - cm.yaml\n"
 
+// cmYAML is the resource plainKustomizeYAML points at. It has to be there: the
+// analyzer now builds every render root with kustomize, and a dangling resources:
+// entry fails the build.
+const cmYAML = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: seeded\n  namespace: default\ndata:\n  k: v\n"
+
 // A GitTarget subtree holding a kustomization.yaml that uses an unsupported feature is
 // refused: the live flush returns an *AcceptanceRefusedError naming the file and writes
 // nothing, so the operator never edits a folder it cannot safely manage.
@@ -55,6 +60,9 @@ func TestPlanFlush_AcceptsPlainKustomizeFolder(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 
+	// cm.yaml must actually exist: a render root whose resources: entry does not
+	// resolve is refused now (kustomize cannot build it, so neither can Flux).
+	seedPlacedManifest(t, worktree, "cm.yaml", cmYAML)
 	seedPlacedManifest(t, worktree, "kustomization.yaml", plainKustomizeYAML)
 
 	w := &BranchWorker{contentWriter: writer}

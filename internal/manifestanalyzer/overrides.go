@@ -3,9 +3,6 @@
 package manifestanalyzer
 
 import (
-	"sort"
-	"strings"
-
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
@@ -82,141 +79,20 @@ func (a *overrideAssignment) ambiguous() bool {
 	return a != nil && len(a.chainKeys) > 1 && a.anyOverrides
 }
 
-// kustomizeOverrideAssignments walks every render root — a kustomization no other
-// kustomization references, i.e. the directory a human would `kustomize build` —
-// and records, per resource file, the kustomization chain along the reference
-// path. Unlike the namespace walk (which treats every namespace-bearing
-// kustomization as a root and refuses parent/child conflicts), a referenced base
-// is not a root here: its transformers compose with its parent's, innermost
-// first, exactly as kustomize applies them.
-//
-// Cycle protection is on the CURRENT PATH, not per walk: a diamond (one root
-// reaching a shared base through two overlays) must record both paths so their
-// differing chains trip the ambiguity refusal, while a true reference cycle
-// still terminates. Real kustomize rejects the diamond outright (duplicate
-// resources), so ambiguity — never silent first-path attribution — is the
-// honest outcome.
-func kustomizeOverrideAssignments(
-	kusts map[string]*kustomizationDoc,
-	resourceFiles map[string]struct{},
-) map[string]*overrideAssignment {
-	out := map[string]*overrideAssignment{}
-	for _, rootDir := range renderRoots(kusts) {
-		root := kusts[rootDir]
-		if root == nil || root.unsupported {
-			continue
-		}
-		onPath := map[string]struct{}{}
-		var stack []*kustomizationDoc
-		var walk func(dir string, cur *kustomizationDoc)
-		walk = func(dir string, cur *kustomizationDoc) {
-			if cur == nil || cur.unsupported {
-				return
-			}
-			if _, cycling := onPath[dir]; cycling {
-				return
-			}
-			onPath[dir] = struct{}{}
-			stack = append(stack, cur)
-			for _, entry := range cur.resources {
-				target := cleanJoin(dir, entry)
-				switch {
-				case target == "":
-					// empty, or escapes the scanned root: contributes no chain.
-				case mapHasKey(resourceFiles, target):
-					recordOverrideChain(out, target, stack)
-				default:
-					walk(target, kusts[target])
-				}
-			}
-			stack = stack[:len(stack)-1]
-			delete(onPath, dir)
-		}
-		walk(rootDir, root)
-	}
-	return out
-}
-
-// renderRoots returns the kustomization directories no other kustomization in
-// the subtree references — the directories a build would be invoked on — in
-// sorted order for deterministic walks.
-func renderRoots(kusts map[string]*kustomizationDoc) []string {
-	referenced := map[string]struct{}{}
-	for dir, k := range kusts {
-		for _, entry := range k.resources {
-			target := cleanJoin(dir, entry)
-			if target == "" {
-				continue
-			}
-			if _, ok := kusts[target]; ok {
-				referenced[target] = struct{}{}
-			}
-		}
-	}
-	roots := make([]string, 0, len(kusts))
-	for dir := range kusts {
-		if _, ok := referenced[dir]; !ok {
-			roots = append(roots, dir)
-		}
-	}
-	sort.Strings(roots)
-	return roots
-}
-
-// recordOverrideChain records one root→file chain. The walk descends root-first,
-// so the stack is outermost-first; build order (innermost kustomization's
-// transformers first) is its reverse.
-func recordOverrideChain(out map[string]*overrideAssignment, file string, stack []*kustomizationDoc) {
-	chain := make([]*kustomizationDoc, len(stack))
-	for i, k := range stack {
-		chain[len(stack)-1-i] = k
-	}
-	keys := make([]string, len(chain))
-	for i, k := range chain {
-		keys[i] = k.path
-	}
-	key := strings.Join(keys, "\x00")
-
-	a := out[file]
-	if a == nil {
-		a = &overrideAssignment{chainKeys: map[string]struct{}{}}
-		out[file] = a
-	}
-	flat := flattenOverrideChain(chain)
-	if _, seen := a.chainKeys[key]; !seen {
-		a.chainKeys[key] = struct{}{}
-		if a.overrides == nil {
-			a.overrides = flat
-		}
-	}
-	if flat != nil {
-		a.anyOverrides = true
-	}
-}
-
-// flattenOverrideChain concatenates the chain's entries in build order. Nil when
-// no kustomization in the chain declares any override.
-func flattenOverrideChain(chain []*kustomizationDoc) *KustomizeOverrides {
-	var ov KustomizeOverrides
-	for _, k := range chain {
-		ov.Images = append(ov.Images, k.images...)
-		ov.Replicas = append(ov.Replicas, k.replicas...)
-	}
-	if len(ov.Images) == 0 && len(ov.Replicas) == 0 {
-		return nil
-	}
-	return &ov
-}
-
 // resolveOverrides returns the overrides to attach to a document in the given
 // file, plus an ambiguity diagnostic when distinct chains with overrides at
 // stake reach it. Attribution is purely structural (no API source needed), so it
 // also works in structure-only analysis.
 func resolveOverrides(
 	loc manifestedit.Location,
-	assignments map[string]*overrideAssignment,
+	id manifestedit.Identity,
+	assignments map[chainKey]*overrideAssignment,
 ) (*KustomizeOverrides, *manifestedit.Diagnostic) {
-	a := assignments[filepathToSlash(loc.Path)]
+	a := assignments[chainKey{
+		originPath: filepathToSlash(loc.Path),
+		kind:       id.Kind,
+		name:       id.Name,
+	}]
 	if a == nil {
 		return nil, nil
 	}

@@ -252,9 +252,10 @@ func unsupportedKustomizeRefusals(store *ManifestStore) []AcceptanceIssue {
 			Path:          rd.Location.Path,
 			DocumentIndex: rd.Location.DocumentIndex,
 			Message: "kustomization " + rd.Location.Path + " uses an unsupported feature " +
-				"(generators/patches/components/helm/replacements/transformers/namePrefix/nameSuffix/remote bases) " +
-				"or malformed images/replicas overrides; " +
-				"the operator cannot map it back to editable source documents and will not write into this folder",
+				"(generators/patches/components/helm/replacements/transformers/namePrefix/nameSuffix/remote bases), " +
+				"declares malformed images/replicas overrides, or is a render root kustomize cannot build; " +
+				"the operator cannot map it back to editable source documents and will not write into this folder " +
+				"(a kustomize-build-failed diagnostic on this path carries the build error)",
 		})
 	}
 	return out

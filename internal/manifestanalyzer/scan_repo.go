@@ -671,8 +671,9 @@ func pathWithin(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
-// sortedKeysOf returns the sorted keys of a string set.
-func sortedKeysOf(m map[string]struct{}) []string {
+// sortedKeysOf returns the sorted keys of a string-keyed map, so a walk over it emits
+// in deterministic order.
+func sortedKeysOf[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
