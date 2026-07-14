@@ -349,9 +349,13 @@ above:
 
 ## Non-goals
 
-- **No orchestrator emulation.** Interpreters read declarations. They do not run
-  kustomize on a remote base, resolve a Helm chart, evaluate an ApplicationSet
-  generator, decrypt SOPS, or contact a registry.
+- **No orchestrator emulation.** Interpreters read declarations. They do not resolve a
+  Helm chart, evaluate an ApplicationSet generator, decrypt SOPS, or contact a
+  registry. (The analyzer does decode a `kustomization.yaml` with kustomize's own
+  type, and will render a local render root with kustomize's own library — using the
+  renderer is the opposite of emulating it. It never runs on a remote base: kustomize
+  fetches one by shelling out to `git`, so a remote resource is refused before any
+  build. See [kustomize-support-boundary.md](kustomize-support-boundary.md) §7.)
 - **No new operator dependency.** Interpreters serve the analyzer and the repo
   scan report. Whether the operator ever consumes a claim is a separate decision; the
   ownership *gate* it needs can be fed by Tier 0 (`Encrypted`) alone for the

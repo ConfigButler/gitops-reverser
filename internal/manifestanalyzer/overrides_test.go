@@ -127,9 +127,14 @@ func TestKustomizeOverridesNestedBaseIsNotARoot(t *testing.T) {
 }
 
 // TestKustomizationOverrideParsing pins the malformed-overrides boundary: a
-// kustomization whose images:/replicas: cannot be parsed is unsupported (it
-// would fail kustomize build, and we can no longer vouch for the render), while
-// well-formed entries keep the folder supported.
+// kustomization whose images:/replicas: kustomize itself cannot decode is
+// unsupported (it would fail kustomize build, and we can no longer vouch for the
+// render), while entries kustomize accepts keep the folder supported.
+//
+// Three of these cases changed when the hand-written key check was replaced by
+// kustomize's own type, and each was verified against a real `kustomize build`:
+// we now agree with the renderer where we previously did not. The two marked
+// "kustomize honours" were refused before — folders Flux renders happily.
 func TestKustomizationOverrideParsing(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -139,16 +144,42 @@ func TestKustomizationOverrideParsing(t *testing.T) {
 		{"well-formed images", "images:\n  - name: a/b\n    newTag: \"1.2\"\n", false},
 		{"well-formed replicas", "replicas:\n  - name: web\n    count: 3\n", false},
 		{"empty images list", "images: []\n", false},
+		// kustomize decodes into a typed struct via JSON, so a key differing only in
+		// case still binds: `newtag` sets NewTag, and the build applies it. Refusing
+		// it would refuse a folder that renders.
+		{"kustomize honours a case-variant key", "images:\n  - name: a/b\n    newtag: \"1.2\"\n", false},
+		// An empty component is not a declared-but-broken transform; kustomize skips
+		// it and applies the rest of the entry.
+		{
+			"kustomize honours a blank newName",
+			"images:\n  - name: a/b\n    newName: \"\"\n    newTag: \"1.2\"\n",
+			false,
+		},
 		{"images not a list", "images: oops\n", true},
 		{"images entry not a map", "images:\n  - just-a-string\n", true},
 		{"images entry missing name", "images:\n  - newTag: \"1.2\"\n", true},
-		{"images unknown key", "images:\n  - name: a/b\n    newtag: \"1.2\"\n", true},
+		{"images entry genuinely unknown key", "images:\n  - name: a/b\n    bogus: \"1.2\"\n", true},
+		// tagSuffix is a real kustomize field we do not model. Decoding it would
+		// silently ignore a transform kustomize applies, so it refuses the folder.
+		{"images tagSuffix is not modelled", "images:\n  - name: a/b\n    tagSuffix: -rc1\n", true},
 		{"non-string newTag", "images:\n  - name: a/b\n    newTag: 1.29\n", true},
-		{"blank newName", "images:\n  - name: a/b\n    newName: \"\"\n", true},
 		{"replicas count string", "replicas:\n  - name: web\n    count: \"3\"\n", true},
 		{"replicas count fractional", "replicas:\n  - name: web\n    count: 2.5\n", true},
 		{"replicas count negative", "replicas:\n  - name: web\n    count: -1\n", true},
 		{"replicas unknown key", "replicas:\n  - name: web\n    count: 3\n    kind: Deployment\n", true},
+		// Holes the hand-written deny-list had: neither was on it, and both change
+		// the render. They are refused now because they are not in the modelled set.
+		{
+			"vars",
+			"vars:\n  - name: NS\n    objref:\n      kind: Service\n      name: web\n      apiVersion: v1\n",
+			true,
+		},
+		{"validators (plugin code)", "validators:\n  - check.yaml\n", true},
+		// imageTags is the deprecated spelling of images, and FixKustomization folds
+		// it into images exactly as the builder does — so it is supported, and its
+		// override is seen, where before it was silently ignored.
+		{"imageTags is normalised into images", "imageTags:\n  - name: a/b\n    newTag: \"1.2\"\n", false},
+		{"bases is normalised into resources", "bases:\n  - ../base\n", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

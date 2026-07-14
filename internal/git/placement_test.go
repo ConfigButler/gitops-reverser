@@ -199,15 +199,14 @@ func TestPlacement_KustomizeEntryIdempotent_OnRepeatedApply(t *testing.T) {
 		"the resources: entry must appear exactly once")
 }
 
-// A kustomization whose resources: field is malformed (not a sequence) is still
-// accepted by the analyzer (only specific disallowed keys, not resources: shape,
-// disqualify a kustomization) — so the writer must still place the resource's own
-// file, but the resources: entry add is skipped rather than corrupting the
-// kustomization, leaving it exactly as it was for a human to fix.
-func TestPlacement_KustomizeEntryAppendSkipped_MalformedResourcesField(t *testing.T) {
+// A kustomization with no resources: sequence to append to is still accepted — so
+// the writer must place the resource's own file, while the resources: entry add is
+// skipped rather than inventing the key, leaving the kustomization exactly as it
+// was for a human to complete.
+func TestPlacement_KustomizeEntryAppendSkipped_NoResourcesSequence(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
-	kustYAML := "namespace: app\nresources: not-a-list\n"
+	kustYAML := "namespace: app\n"
 	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml", kustYAML)
 
 	changed := applyEventsWithPolicy(t, worktree, nil, newConfigMapEvent("cache", "app"))
@@ -222,7 +221,24 @@ func TestPlacement_KustomizeEntryAppendSkipped_MalformedResourcesField(t *testin
 	// returns the original content untouched, not merely a semantically
 	// equivalent one.
 	assert.Equal(t, kustYAML, string(kust), //nolint:testifylint
-		"a malformed resources: field must be left untouched, not corrupted")
+		"a kustomization with no resources: sequence must be left untouched, not corrupted")
+}
+
+// A kustomization kustomize itself cannot decode (here resources: is not a
+// sequence, which fails `kustomize build` outright) refuses the folder rather than
+// being tolerated. Before the analyzer used kustomize's own type this file was
+// accepted — only specific disallowed *keys* disqualified a kustomization, never
+// its shape — so the operator would happily write into a folder that no GitOps
+// controller could render.
+func TestPlacement_UndecodableKustomization_RefusesTheFlush(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml", "namespace: app\nresources: not-a-list\n")
+
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	_, err := w.flushEventsToWorktree(
+		context.Background(), worktree, "", []Event{newConfigMapEvent("cache", "app")}, nil,
+	)
+	require.Error(t, err, "a kustomization kustomize cannot build must refuse the folder, not be written into")
 }
 
 func newTestWriteBatch(t *testing.T) *writeBatch {

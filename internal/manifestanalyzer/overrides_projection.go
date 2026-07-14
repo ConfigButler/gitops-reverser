@@ -4,6 +4,7 @@ package manifestanalyzer
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -453,12 +454,33 @@ func ReplicaCountEdit(dm *DocumentModel, count int64) (OverrideEdit, bool) {
 	}, true
 }
 
+// sourceReplicaCount reads spec.replicas off a source KRM document. This is a
+// manifest field, not kustomize configuration — kustomize's types cover the
+// kustomization.yaml, not the documents it renders — so the decoding lives here.
+// sigs.k8s.io/yaml decodes YAML numbers as float64 (via JSON), so an integral
+// float is accepted; anything else is not a replica count.
+func sourceReplicaCount(spec map[string]interface{}) (int64, bool) {
+	switch n := spec["replicas"].(type) {
+	case float64:
+		if n != math.Trunc(n) {
+			return 0, false
+		}
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
 // restoreSourceReplicas puts spec.replicas back to the source document's form on
 // the desired copy: the source's own value when it has one, absent when the
 // source omits it (the transformer supplies the field either way).
 func restoreSourceReplicas(gitRaw map[string]interface{}, out *unstructured.Unstructured) {
 	spec, _ := gitRaw["spec"].(map[string]interface{})
-	if src, ok := integerField(spec, "replicas"); ok {
+	if src, ok := sourceReplicaCount(spec); ok {
 		_ = unstructured.SetNestedField(out.Object, src, "spec", "replicas")
 		return
 	}

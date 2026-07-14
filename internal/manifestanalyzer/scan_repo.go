@@ -12,8 +12,6 @@ import (
 	"sort"
 	"strings"
 
-	"sigs.k8s.io/yaml"
-
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
@@ -448,41 +446,14 @@ func refusedStructuralDetail(content []byte) string {
 	if len(features) == 0 {
 		return "kustomization uses an unsupported feature the operator cannot map back to editable source"
 	}
-	return "kustomization uses unsupported feature(s): " + strings.Join(features, ", ")
-}
-
-// unsupportedKustomizeFeatures returns the sorted, de-duplicated unsupported features a
-// kustomization declares: the identity/generator transformers, remote bases, and
-// malformed images/replicas. It shares unsupportedKustomizeFeatureKeys with the
-// acceptance gate so the two never drift.
-func unsupportedKustomizeFeatures(content []byte) []string {
-	raw := map[string]interface{}{}
-	if err := yaml.Unmarshal(content, &raw); err != nil {
-		return []string{"unparseable"}
+	detail := "kustomization uses unsupported feature(s): " + strings.Join(features, ", ")
+	// "unparseable" on its own says nothing a user can act on. kustomize's decoder
+	// knows exactly what is wrong — that a resources: is a string, or that the file
+	// is a Flux Kustomization CR rather than a build file — so quote it.
+	if err := kustomizationDecodeError(content); err != "" {
+		detail += " (" + err + ")"
 	}
-	seen := map[string]struct{}{}
-	add := func(f string) { seen[f] = struct{}{} }
-	for _, key := range unsupportedKustomizeFeatureKeys() {
-		if v, ok := raw[key]; ok && !isEmptyValue(v) {
-			add(key)
-		}
-	}
-	resources := append(stringList(raw, "resources"), stringList(raw, "bases")...)
-	if hasRemoteResource(resources) {
-		add("remote-base")
-	}
-	if _, ok := parseImageOverrides(raw, ""); !ok {
-		add("malformed-images")
-	}
-	if _, ok := parseReplicaOverrides(raw, ""); !ok {
-		add("malformed-replicas")
-	}
-	out := make([]string, 0, len(seen))
-	for f := range seen {
-		out = append(out, f)
-	}
-	sort.Strings(out)
-	return out
+	return detail
 }
 
 // renderRootNamespace resolves the namespace a render root renders under: the

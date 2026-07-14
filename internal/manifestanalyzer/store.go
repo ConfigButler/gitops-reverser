@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/yaml"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -758,83 +757,16 @@ func collapseAssignments(nsByFile map[string]map[string]string) map[string]names
 	return out
 }
 
-// parseKustomizations reads every kustomization.yaml into a kustomizationDoc keyed by
-// its directory. An unparseable kustomization, or one using an unsupported feature, is
-// kept but marked unsupported so it never acts as a namespace source.
-func parseKustomizations(files []manifestedit.FileContent) map[string]*kustomizationDoc {
-	out := map[string]*kustomizationDoc{}
-	for _, f := range files {
-		if !isKustomizationFile(f.Path) {
-			continue
-		}
-		doc := &kustomizationDoc{path: filepathToSlash(f.Path)}
-		raw := map[string]interface{}{}
-		if err := yaml.Unmarshal(f.Content, &raw); err != nil {
-			doc.unsupported = true
-			out[slashDir(f.Path)] = doc
-			continue
-		}
-		doc.namespace = strings.TrimSpace(stringField(raw, "namespace"))
-		doc.resources = append(stringList(raw, "resources"), stringList(raw, "bases")...)
-		images, imagesOK := parseImageOverrides(raw, doc.path)
-		replicas, replicasOK := parseReplicaOverrides(raw, doc.path)
-		doc.images, doc.replicas = images, replicas
-		doc.unsupported = hasUnsupportedKustomizeFeature(raw) || hasRemoteResource(doc.resources) ||
-			!imagesOK || !replicasOK
-		out[slashDir(f.Path)] = doc
-	}
-	return out
-}
-
-// kustomizationUsesUnsupportedFeature reports whether a kustomization.yaml's bytes use a
-// feature outside the supported contextual-namespace subset — the same predicate that
-// disqualifies it as a namespace source (parseKustomizations), reused by the acceptance
-// gate to refuse the folder at the retention site. An unparseable kustomization is treated
-// as unsupported: if we cannot read it, we cannot vouch for what it produces.
-func kustomizationUsesUnsupportedFeature(content []byte) bool {
-	raw := map[string]interface{}{}
-	if err := yaml.Unmarshal(content, &raw); err != nil {
-		return true
-	}
-	resources := append(stringList(raw, "resources"), stringList(raw, "bases")...)
-	_, imagesOK := parseImageOverrides(raw, "")
-	_, replicasOK := parseReplicaOverrides(raw, "")
-	return hasUnsupportedKustomizeFeature(raw) || hasRemoteResource(resources) || !imagesOK || !replicasOK
-}
-
-// unsupportedKustomizeFeatureKeys returns the kustomization fields that create resources
-// or mutate resource identity (name/namespace) in ways the contextual-namespace writer
-// cannot map back to an editable source document. Their presence disqualifies a
-// kustomization as a namespace source. It is the single source of truth for both the
-// boolean gate (hasUnsupportedKustomizeFeature) and the repo scan's per-feature
-// refusal detail (unsupportedKustomizeFeatures). It returns a fresh slice on every call,
-// so no shared state can be mutated.
-func unsupportedKustomizeFeatureKeys() []string {
-	return []string{
-		"generators", "configMapGenerator", "secretGenerator",
-		"helmCharts", "helmGlobals", "helmChartInflationGenerator",
-		"patches", "patchesStrategicMerge", "patchesJson6902",
-		"replacements", "components", "transformers",
-		"configurations", "openapi", "crds",
-		"namePrefix", "nameSuffix",
-	}
-}
-
-// hasUnsupportedKustomizeFeature reports whether a kustomization uses a field that
-// creates resources or mutates resource identity (name/namespace) in ways the
-// contextual-namespace writer cannot map back to an editable source document. Their
-// presence disqualifies a kustomization as a namespace source; benign transformers
-// (labels, annotations) do not. images/replicas are parsed separately (overrides.go)
-// and disqualify only when malformed.
-func hasUnsupportedKustomizeFeature(raw map[string]interface{}) bool {
-	for _, key := range unsupportedKustomizeFeatureKeys() {
-		if v, ok := raw[key]; ok && !isEmptyValue(v) {
-			return true
-		}
-	}
-	return false
-}
-
+// hasRemoteResource reports whether any resources/bases entry points outside this
+// repository. It is the one piece of kustomize semantics the operator must keep
+// owning rather than delegate to the library.
+//
+// kustomize resolves a remote base by shelling out to `git fetch`, and it does so
+// under LoadRestrictionsRootOnly and under an in-memory filesystem alike (both
+// measured). No build option turns that off. Detecting a remote entry ourselves,
+// and refusing before any build is invoked, is therefore what keeps "the operator
+// never fetches a remote base" true — see
+// docs/design/support-boundary/kustomize-support-boundary.md §7.
 func hasRemoteResource(entries []string) bool {
 	for _, e := range entries {
 		if isRemoteResource(e) {
@@ -857,44 +789,6 @@ func isRemoteResource(entry string) bool {
 		}
 	}
 	return false
-}
-
-func stringField(raw map[string]interface{}, key string) string {
-	if v, ok := raw[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
-func stringList(raw map[string]interface{}, key string) []string {
-	v, ok := raw[key].([]interface{})
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(v))
-	for _, e := range v {
-		if s, ok := e.(string); ok {
-			if s = strings.TrimSpace(s); s != "" {
-				out = append(out, s)
-			}
-		}
-	}
-	return out
-}
-
-func isEmptyValue(v interface{}) bool {
-	switch t := v.(type) {
-	case nil:
-		return true
-	case string:
-		return strings.TrimSpace(t) == ""
-	case []interface{}:
-		return len(t) == 0
-	case map[string]interface{}:
-		return len(t) == 0
-	default:
-		return false
-	}
 }
 
 // cleanJoin resolves a kustomization resources entry against the kustomization's

@@ -189,6 +189,13 @@ not have — batch-wide edit reconciliation is not built.
 
 ## What this deliberately does not do
 
+> **Superseded on 2026-07-14, in part.** "Option D remains future research" was answered:
+> the analyzer now decodes `kustomization.yaml` with kustomize's own type rather than a
+> hand-written key walk, and the re-implemented transformer subset is being removed. The
+> reasoning, and why the original position was wrong, is in
+> [../kustomize-support-boundary.md](../kustomize-support-boundary.md) §7. The rest of
+> this section still describes what shipped here.
+
 - No `kustomize build`, no source maps (Option D remains future research).
 - No entry creation/deletion, no patch authoring, no `namePrefix`/`nameSuffix`
   or generator support — the acceptance boundary for those is unchanged.

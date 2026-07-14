@@ -41,7 +41,7 @@ Reading rules:
 | 3-expanded/flux-resourceset-pull-requests | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 4-machine-written/flux-image-automation | 0 | All reported candidates accepted | 3 | 0 | kustomize-single=3 | - | None |
 | 5-opaque/sops-encrypted | 0 | All reported candidates accepted | 3 | 0 | kustomize-single=2, plain=1 | - | None |
-| 6-hostile/mixed-and-hostile | 0 | Partial | 3 | 2 | kustomize-single=1, plain=4 | - | non-krm-yaml: ci/.gitlab-ci.yml: YAML is not a Kubernetes manifest<br>non-krm-yaml: ci/docker-compose.yml: YAML is not a Kubernetes manifest<br>foreign-file: empty-dir/.gitkeep: foreign file empty-dir/.gitkeep is not a managed manifest; remove it or name it in .gittargetignore<br>mixed-managed-allowlisted: kustomization.yaml: managed resource kustomize.toolkit.fluxcd.io/v1/Kustomization/flux-system/apps must not live in the allowlisted build-directive file kustomization.yaml<br>+8 more |
+| 6-hostile/mixed-and-hostile | 0 | Partial | 3 | 2 | plain=4, refused-structural=1 | unparseable | refused-structural: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec")<br>impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |
 
 ## 1-desired-state/argocd-app-of-apps
 
@@ -239,11 +239,11 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 6-hostile/mixed-and-hostile
 
 Reported rc `0`. Accepted `3`, refused `2`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `unparseable`. Fleet root: `false`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `.` | `kustomize-single` | false | `backend` | 0/0/6 | non-krm-yaml: ci/.gitlab-ci.yml: YAML is not a Kubernetes manifest<br>non-krm-yaml: ci/docker-compose.yml: YAML is not a Kubernetes manifest<br>foreign-file: empty-dir/.gitkeep: foreign file empty-dir/.gitkeep is not a managed manifest; remove it or name it in .gittargetignore<br>mixed-managed-allowlisted: kustomization.yaml: managed resource kustomize.toolkit.fluxcd.io/v1/Kustomization/flux-system/apps must not live in the allowlisted build-directive file kustomization.yaml<br>impure-managed-file: mixed/bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file: mixed/bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file: mixed/deployment.json: foreign file mixed/deployment.json is not a managed manifest; remove it or name it in .gittargetignore<br>invalid-yaml: templates/deployment.yaml: invalid YAML: yaml: line 21: did not find expected key<br>non-krm-yaml: values.yaml: YAML is not a Kubernetes manifest |
+| `.` | `refused-structural` | false | `backend` | 0/0/6 | refused-structural: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec") |
 | `crossplane` | `plain` | true | `-` | 1/1/0 | none |
 | `kro` | `plain` | true | `-` | 1/1/0 | none |
 | `mixed` | `plain` | false | `-` | 3/3/2 | impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |
