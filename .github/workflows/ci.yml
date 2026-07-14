@@ -516,7 +516,7 @@ jobs:
               # lint-docs is exempt on purpose. It carries no `sources:` (see
               # Taskfile-build.yml), because its real input is "every tracked .md, .go,
               # .yml and .sh" — which Task cannot express: an unrooted `**` glob walks
-              # external-sources/ and has OOM'd the host, and a hand-maintained file list
+              # external-sources/ and has OOMed the host, and a hand-maintained file list
               # silently drifts out of sync with what doccheck scans. A stale "up to date"
               # there means the check never runs, so it always runs. It costs ~0.2s.
               #
@@ -526,7 +526,7 @@ jobs:
               uncached="$(awk "/^task: \\[/ && !/^task: \\[lint-docs\\]/" "${cache_log}")"
               if [ -n "${uncached}" ]; then
                 echo "Expected second task lint dry-run to be fully cached apart from lint-docs, but these would run:" >&2
-                printf '%s\n' "${uncached}" >&2
+                printf "%s\n" "${uncached}" >&2
                 exit 1
               fi
             '
