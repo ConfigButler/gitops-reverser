@@ -674,12 +674,13 @@ func (wb *writeBatch) patchExisting(
 		desired = desired.DeepCopy()
 		desired.SetNamespace("")
 	}
-	projected := manifestreport.Project(desired)
-	var overrideEdits []manifestanalyzer.OverrideEdit
-	if dm.Rendered != nil {
-		if gitRaw, parsed := gitDocRawObject(buf.current, idx); parsed {
-			projected, overrideEdits = manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Rendered)
-		}
+	projected, overrideEdits, err := projectThroughKustomize(
+		manifestreport.Project(desired), buf.current, idx, dm)
+	if err != nil {
+		// The projection could not place the edit. Refusing the whole flush is the point: the
+		// alternative is to write the live object through and silently absorb the build's own
+		// output into the file that feeds it.
+		return upsertNoChange, sourceFormRefusal(filePath, id, err)
 	}
 	c := manifestedit.Comparison{
 		Git:     gitDoc,
@@ -715,13 +716,59 @@ func (wb *writeBatch) patchExisting(
 	// what the second one renders to, so by the time the second is processed there is nothing
 	// left to write. Its render still moves, and it moves onto its own live state — that is
 	// the resource converging, not collateral damage, and only its declared intent says so.
-	if dm.Overrides != nil {
+	//
+	// The oracle is armed for ANY document a render root produces, not only one an override
+	// chain governs, and the difference is a hole rather than a refinement. The source form
+	// leaves a field the build supplies to the source file — but where the live object and the
+	// render DISAGREE the user has changed something, and that change is written through. If a
+	// transformer or a patch owns that field it will be overridden right back, and the write
+	// never converges. Only the re-render can see that, and until now it did not run at all
+	// unless an images:/replicas: entry happened to exist somewhere in the chain.
+	if dm.Rendered != nil {
 		wb.putToKustomize = true
 	}
 	if outcome == upsertUpdated || dm.Overrides != nil {
 		wb.intend(intentFor(event.Object, filePath, dm.Overrides != nil))
 	}
 	return outcome, nil
+}
+
+// projectThroughKustomize turns the live projection into the SOURCE FORM of it: the object the
+// file should hold once everything the build supplies is left to the build, plus the entry edits
+// for the values an images:/replicas: entry supplies.
+//
+// A document no render root produces (dm.Rendered nil), or one whose Git bytes will not parse,
+// passes straight through: there is no build standing between the file and the cluster, so the
+// live projection IS what the file should hold.
+func projectThroughKustomize(
+	projected *unstructured.Unstructured,
+	content []byte,
+	idx int,
+	dm *manifestanalyzer.DocumentModel,
+) (*unstructured.Unstructured, []manifestanalyzer.OverrideEdit, error) {
+	if dm.Rendered == nil {
+		return projected, nil, nil
+	}
+	gitRaw, parsed := gitDocRawObject(content, idx)
+	if !parsed {
+		return projected, nil, nil
+	}
+	return manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Rendered)
+}
+
+// sourceFormRefusal turns a projection that could not place an edit into the same reported
+// refusal every other write-boundary violation surfaces as: GitPathAccepted=False / Stalled=True,
+// naming the file and the object. It is not an internal error — the folder is fine and the
+// operator is fine; the EDIT had nowhere honest to land, and saying so is the whole contract.
+func sourceFormRefusal(filePath string, id manifestedit.Identity, err error) error {
+	return &manifestanalyzer.AcceptanceRefusedError{
+		Issues: []manifestanalyzer.AcceptanceIssue{{
+			Kind: manifestanalyzer.IssueUnplaceableEdit,
+			Path: filePath,
+			Message: fmt.Sprintf("%s/%s in %s: %v",
+				id.Kind, id.Name, filePath, err),
+		}},
+	}
 }
 
 // renderPrecondition is the oracle, and it is a write-plan precondition like the three

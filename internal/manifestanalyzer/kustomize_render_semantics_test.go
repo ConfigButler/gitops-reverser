@@ -4,6 +4,9 @@ package manifestanalyzer
 
 import (
 	"fmt"
+	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
@@ -40,4 +43,73 @@ spec:
 		{Path: "deployment.yaml", Content: []byte(deployment)},
 		{Path: "kustomization.yaml", Content: []byte(kustomization)},
 	}
+}
+
+// PATCHES RUN FIRST, AND THE TRANSFORMERS WIN.
+//
+// This is the fact that makes "the patch asks for it, so edit the patch" wrong, and it is the one
+// a future refactor will break. A patch that sets a field an images:/replicas: entry also governs
+// is DEAD TEXT: kustomize applies the patch, then the transformers overwrite it, and the value the
+// user reads in the patch file is not the value the cluster runs.
+//
+// It cannot be established by reading the patch — reading it tells you what the patch ASKS for,
+// never what the build DOES — so it is pinned here as a render, against the library that decides
+// it. The transformations annotation says the same thing in the same breath: PatchTransformer
+// runs, and then the two transformers do.
+func TestRender_ATransformerOverridesAPatchOnTheSameField(t *testing.T) {
+	files := []manifestedit.FileContent{
+		{Path: "deployment.yaml", Content: []byte(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/example/app:1.0.0
+`)},
+		{Path: "patch.yaml", Content: []byte(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 7
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/example/app:patched
+`)},
+		{Path: "kustomization.yaml", Content: []byte(`resources:
+  - deployment.yaml
+patches:
+  - path: patch.yaml
+images:
+  - name: ghcr.io/example/app
+    newTag: 2.0.0
+replicas:
+  - name: web
+    count: 3
+`)},
+	}
+
+	rendered, err := renderRoot(files, ".")
+	require.NoError(t, err)
+	require.Len(t, rendered, 1, "a patch is a build input, not a resource: it renders no object of its own")
+
+	object := rendered[0].Object.Object
+	require.Equal(t, "ghcr.io/example/app:2.0.0",
+		nestedOf(t, object, "spec", "template", "spec", "containers", "0", "image"),
+		"the images: entry wins; the patch's :patched never reaches the cluster")
+	require.Equal(t, 3, nestedOf(t, object, "spec", "replicas"),
+		"the replicas: entry wins; the patch's 7 never reaches the cluster")
+
+	var order []string
+	for _, tr := range rendered[0].TransformedBy {
+		order = append(order, tr.Kind)
+	}
+	require.Equal(t, []string{"PatchTransformer", "ReplicaCountTransformer", "ImageTagTransformer"}, order,
+		"kustomize itself says which ran when, and the patch ran first")
 }

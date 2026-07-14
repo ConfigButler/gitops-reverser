@@ -90,6 +90,7 @@ The fence has a cost we are already paying, and it is not the cost we think:
 - **`vars` is not on the list.** A source document containing `$(SOME_VAR)` renders to a
   substituted value. Mirroring that live object writes the *substituted* value over the
   `$(VAR)` in the source. That is silent corruption, in a folder we accept **today**.
+  (`vars` was moved off the tolerated set by #229 and now refuses the folder.)
 - **`labels` / `commonLabels` / `annotations` are explicitly classed as benign.** They
   inject metadata into every rendered object; mirroring bakes it into the source file as
   drift. This is the metadata-transformer leak, live today, in supported folders.
@@ -100,6 +101,20 @@ and we currently handle it in three inconsistent ways**: explicitly and verified
 incorrectly, for the transformers we called benign.
 
 A renderer replaces three policies with one.
+
+> **The leak is fixed, and the fix is one rule, not three policies.**
+> [`sourceForm`](../../../internal/manifestanalyzer/source_form.go): *where the live object and
+> the render agree, the source keeps its bytes; where they disagree, the user changed something,
+> and that is what we write.* Agreement means the build already produces exactly what the cluster
+> runs, so the source is — by construction — what produced it, and there is nothing to write. It
+> needs no model of `commonLabels`, of `namespace`, or of a patch, which is precisely why it
+> closes all three at once and is what makes §6 possible at all.
+>
+> The leak was measured before it was fixed, and it was not theoretical: a folder declaring
+> `labels:` + `commonAnnotations:` and nothing else committed the overlay's `env: prod` into the
+> base manifest on the first reconcile of an *unchanged* folder. The corpus no-op invariant now
+> compares the **whole document** rather than only its images, which is how a projection that
+> quietly rewrote every field we had not modelled passed that test for as long as it did.
 
 ---
 

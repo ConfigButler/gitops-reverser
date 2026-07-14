@@ -86,19 +86,30 @@ func assertInSyncIsANoOp(
 	t.Helper()
 	where := ro.OriginPath + " " + ro.Object.GetKind() + "/" + ro.Object.GetName()
 
-	out, edits := SplitDesiredForOverrides(src.Object, asLiveObject(t, ro.Object), attribution)
+	out, edits, err := SplitDesiredForOverrides(src.Object, asLiveObject(t, ro.Object), attribution)
+	require.NoError(t, err, "%s: an in-sync folder needs no edit placed at all", where)
 
 	require.Empty(t, edits,
 		"%s: the folder is already in sync, so nothing may be routed to an entry", where)
 
-	for _, slot := range collectImageSlots(out.Object) {
-		want := sourceImageAt(src.Object, slot.key)
-		if want == "" {
-			continue // the live object has a slot the source does not; not our claim
-		}
-		require.Equal(t, want, slot.image,
-			"%s: an in-sync folder must hand back the SOURCE image untouched at %q", where, slot.key)
-	}
+	// THE WHOLE DOCUMENT, not just its images. The claim is that an in-sync folder projects to a
+	// complete no-op, and checking only the image slots is how a projection that quietly rewrote
+	// every other field — an injected label, a patched CPU request — passed this test while
+	// corrupting source files. There is nothing special about the image: it is simply the field
+	// we happened to model.
+	require.Equal(t, normaliseForCompare(t, src.Object), normaliseForCompare(t, out.Object),
+		"%s: an in-sync folder must hand the SOURCE document back untouched", where)
+}
+
+// normaliseForCompare puts a document through JSON so the three number types in play (kustomize's
+// int, the API machinery's int64, the YAML decoder's float64) compare as the numbers they are.
+func normaliseForCompare(t *testing.T, obj map[string]interface{}) map[string]interface{} {
+	t.Helper()
+	encoded, err := json.Marshal(obj)
+	require.NoError(t, err)
+	var out map[string]interface{}
+	require.NoError(t, json.Unmarshal(encoded, &out))
+	return out
 }
 
 // asLiveObject turns a RENDERED object into the shape a live one actually has.
@@ -120,16 +131,6 @@ func asLiveObject(t *testing.T, rendered *unstructured.Unstructured) *unstructur
 	var obj map[string]interface{}
 	require.NoError(t, json.Unmarshal(encoded, &obj))
 	return &unstructured.Unstructured{Object: obj}
-}
-
-// sourceImageAt is the image the SOURCE document holds at a slot, or "" when it has none.
-func sourceImageAt(src map[string]interface{}, key string) string {
-	for _, slot := range collectImageSlots(src) {
-		if slot.key == key {
-			return slot.image
-		}
-	}
-	return ""
 }
 
 // ourAttributionFor is what the store attributes to a document, and whether it was found
