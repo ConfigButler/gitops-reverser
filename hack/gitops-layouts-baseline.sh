@@ -18,6 +18,12 @@ cd "$repo_root"
 
 corpus="test/fixtures/gitops-layouts"
 out="$corpus/support-today.md"
+
+# Every value below is interpolated into a Markdown table cell, and a refusal detail is
+# free prose the analyzer wrote — the day one of them quotes a shell pipeline or a YAML
+# block scalar, an unescaped `|` splits that row into extra columns and the baseline
+# silently renders wrong. Prepended to each jq program that fills a cell.
+MD_CELL='def md: tostring | gsub("\\|"; "\\|");'
 analyzer="$(mktemp -d)/manifest-analyzer"
 trap 'rm -rf "$(dirname "$analyzer")"' EXIT
 
@@ -33,12 +39,12 @@ emit_summary_row() {
   local accepted refused layouts constructs outcome signal
   accepted=$(jq -r '.summary.accepted // 0' <<<"$json")
   refused=$(jq -r '.summary.refused // 0' <<<"$json")
-  layouts=$(jq -r '(.summary.candidatesByLayout // {}) | to_entries
-                   | map("\(.key)=\(.value)") | join(", ") | if . == "" then "-" else . end' <<<"$json")
-  constructs=$(jq -r '(.summary.unsupportedConstructs // []) | join(", ")
+  layouts=$(jq -r "$MD_CELL"'(.summary.candidatesByLayout // {}) | to_entries
+                   | map("\(.key)=\(.value)") | join(", ") | md | if . == "" then "-" else . end' <<<"$json")
+  constructs=$(jq -r "$MD_CELL"'(.summary.unsupportedConstructs // []) | join(", ") | md
                       | if . == "" then "-" else . end' <<<"$json")
-  signal=$(jq -r '[.candidates[]? | select(.acceptedByOperator == false)
-                   | .refusalReasons[]? | "\(.code): \(.detail)"]
+  signal=$(jq -r "$MD_CELL"'[.candidates[]? | select(.acceptedByOperator == false)
+                   | .refusalReasons[]? | "\(.code): \(.detail)" | md]
                   | if length == 0 then "None"
                     elif length > 4 then (.[0:4] | join("<br>")) + "<br>+\(length - 4) more"
                     else join("<br>") end' <<<"$json")
@@ -64,7 +70,7 @@ emit_detail() {
   local accepted refused constructs fleet
   accepted=$(jq -r '.summary.accepted // 0' <<<"$json")
   refused=$(jq -r '.summary.refused // 0' <<<"$json")
-  constructs=$(jq -r '(.summary.unsupportedConstructs // []) | join(", ")
+  constructs=$(jq -r "$MD_CELL"'(.summary.unsupportedConstructs // []) | join(", ") | md
                       | if . == "" then "none" else . end' <<<"$json")
   fleet=$(jq -r '.summary.fleetRoot // false' <<<"$json")
 
@@ -79,10 +85,10 @@ emit_detail() {
 
   printf '| Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |\n'
   printf '|---|---|---|---|---|---|\n'
-  jq -r '.candidates[]
-         | "| `\(.path)` | `\(.layout)` | \(.acceptedByOperator) | `\(.inferredNamespace // "-")` | "
+  jq -r "$MD_CELL"'.candidates[]
+         | "| `\(.path | md)` | `\(.layout | md)` | \(.acceptedByOperator) | `\(.inferredNamespace // "-" | md)` | "
            + "\(.resources.rendered // 0)/\(.resources.editable // 0)/\(.resources.nonKrm // 0) | "
-           + ((.refusalReasons // []) | map("\(.code): \(.detail)") | join("<br>")
+           + ((.refusalReasons // []) | map("\(.code): \(.detail)" | md) | join("<br>")
               | if . == "" then "none" else . end)
            + " |"' <<<"$json"
 }
