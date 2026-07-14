@@ -107,12 +107,19 @@ type RetainedDocument struct {
 	Location manifestedit.Location
 	Identity manifestedit.Identity
 	GVK      schema.GroupVersionKind
-	// Unsupported is true for a whole-file kustomization retention that uses a feature
-	// outside the supported contextual-namespace subset (generators / patches /
-	// components / helm / replacements / transformers / name(pre|suf)fix / remote bases).
-	// The operator cannot map such a folder back to editable source documents, so the
-	// acceptance gate refuses it (IssueUnsupportedKustomize) rather than writing into
-	// content it cannot safely manage. Only ever set on a whole-file retention.
+	// Unsupported is true for a whole-file kustomization retention that the operator
+	// cannot map back to editable source documents, for either of two reasons:
+	//
+	//   - it uses a feature outside the supported contextual-namespace subset
+	//     (generators / patches / components / helm / replacements / transformers /
+	//     name(pre|suf)fix / remote bases), or declares malformed images/replicas; or
+	//   - it is a render root KUSTOMIZE CANNOT BUILD (reasonRenderFailed). If the build
+	//     fails, Flux cannot deploy the folder either, and we cannot know what it renders
+	//     to — and a silent pass would be worse than useless, because a root that yields
+	//     no chain also yields no ambiguity, which disarms the write-fan-in guard.
+	//
+	// The acceptance gate refuses either (IssueUnsupportedKustomize) rather than writing
+	// into content it cannot safely manage. Only ever set on a whole-file retention.
 	Unsupported bool
 }
 
@@ -419,11 +426,11 @@ func buildStore(
 
 	// Say WHY a build failed, in the store's diagnostics: "refused-structural" on its
 	// own is not something a user can act on, and kustomize's error usually is.
-	for path, msg := range renderFailures {
+	for _, path := range sortedKeysOf(renderFailures) {
 		store.Diagnostics = append(store.Diagnostics, manifestedit.Diagnostic{
 			Level:   manifestedit.DiagWarning,
 			Reason:  reasonRenderFailed,
-			Message: msg,
+			Message: renderFailures[path],
 			Path:    path,
 		})
 	}

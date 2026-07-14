@@ -18,9 +18,9 @@ import (
 // off the renderer that applies it rather than reconstructed from a DFS that has to
 // re-derive kustomize's build order, its cycle rules, and its diamond behaviour.
 //
-// The chain is attributed per OBJECT, not per file. kustomize records the
-// transformers that touched each resource, so a Deployment and a Service sharing a
-// file are attributed separately and correctly.
+// What the annotation does NOT say is which images: ENTRY supplied a value — kustomize
+// keeps no field-level provenance at all — so the projection still has to derive the
+// supplier itself. See overrides_projection.go.
 //
 // See docs/design/support-boundary/kustomize-support-boundary.md §7.
 
@@ -68,6 +68,63 @@ func renderRoots(kusts map[string]*kustomizationDoc) []string {
 	return roots
 }
 
+// renderTargets returns the directories renderChains must BUILD: every render root, plus
+// a deterministic representative of every component that has no root at all.
+//
+// A component with no root is a cycle — `a` referencing `b` referencing `a` — and it is
+// the one shape renderRoots cannot see: every directory in it is referenced by another,
+// so none of them is a root, so a plain walk over renderRoots builds nothing there,
+// records no failure, and leaves the component INVISIBLE. That is precisely the hole the
+// refusal exists to close: no build means no chain, no chain means no ambiguity, and no
+// ambiguity means the write-fan-in guard never fires on a folder kustomize cannot build
+// at all. Silence is the dangerous answer here, so we make sure every kustomization is
+// covered by some build attempt and let kustomize give the verdict (it says "cycle
+// detected"; Flux would say the same).
+func renderTargets(kusts map[string]*kustomizationDoc) []string {
+	targets := renderRoots(kusts)
+	covered := map[string]struct{}{}
+	for _, root := range targets {
+		markReachable(kusts, root, covered)
+	}
+
+	rest := make([]string, 0, len(kusts))
+	for dir := range kusts {
+		if _, ok := covered[dir]; !ok {
+			rest = append(rest, dir)
+		}
+	}
+	sort.Strings(rest)
+	for _, dir := range rest {
+		if _, ok := covered[dir]; ok {
+			continue // reached from an earlier representative of the same cycle
+		}
+		markReachable(kusts, dir, covered)
+		targets = append(targets, dir)
+	}
+	return targets
+}
+
+// markReachable records dir and every kustomization it reaches through resources:.
+func markReachable(kusts map[string]*kustomizationDoc, dir string, covered map[string]struct{}) {
+	if _, seen := covered[dir]; seen {
+		return
+	}
+	covered[dir] = struct{}{}
+	doc := kusts[dir]
+	if doc == nil {
+		return
+	}
+	for _, entry := range doc.resources {
+		target := cleanJoin(dir, entry)
+		if target == "" {
+			continue
+		}
+		if _, isKust := kusts[target]; isKust {
+			markReachable(kusts, target, covered)
+		}
+	}
+}
+
 // renderChains renders every render root and returns, per rendered document, the
 // override chain governing it — or an ambiguity marker when more than one render
 // root reaches the same document with DIFFERENT chains, which is the fan-in > 1 case
@@ -89,7 +146,7 @@ func renderChains(
 	out := map[chainKey]*overrideAssignment{}
 	failed := map[string]string{}
 
-	for _, rootDir := range renderRoots(kusts) {
+	for _, rootDir := range renderTargets(kusts) {
 		rendered, err := renderRoot(files, rootDir)
 		if err != nil {
 			if doc := kusts[rootDir]; doc != nil {
@@ -114,11 +171,29 @@ func renderChains(
 
 // chainOf reads the override chain kustomize applied to one object: the images: and
 // replicas: entries of every kustomization whose ImageTagTransformer or
-// ReplicaCountTransformer touched it, in the order kustomize ran them (innermost
-// base first).
+// ReplicaCountTransformer RAN over it, in the order kustomize ran them (innermost base
+// first).
+//
+// "Ran over it", not "touched it", and the distinction is measured: kustomize appends a
+// transformations record to EVERY object in the build for EVERY transformer that ran,
+// modified or not (api/resmap/reswrangler.go loops the whole ResMap with no diff check).
+// A ConfigMap no image transformer could possibly touch still collects ImageTagTransformer
+// records. So the annotation names the kustomizations whose transformers were in this
+// object's pipeline — never which entry did anything, and never whether anything was done.
+// That is enough to know which files GOVERN the object, which is what the chain is for.
+//
+// The records are deduped because kustomize builds ONE TRANSFORMER PER ENTRY and gives
+// them all the same origin: a kustomization with three images: entries stamps three
+// byte-identical records, and each record would otherwise contribute that file's whole
+// entry list again.
 func chainOf(ro renderedObject, kusts map[string]*kustomizationDoc) *KustomizeOverrides {
 	ov := &KustomizeOverrides{}
+	seen := map[transformation]struct{}{}
 	for _, tr := range ro.TransformedBy {
+		if _, dup := seen[tr]; dup {
+			continue
+		}
+		seen[tr] = struct{}{}
 		doc := kusts[slashDir(tr.ConfiguredIn)]
 		if doc == nil {
 			continue

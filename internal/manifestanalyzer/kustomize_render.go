@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"regexp"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/kustomize/api/krusty"
@@ -33,8 +34,10 @@ import (
 //	    configuredBy: {apiVersion: builtin, kind: ImageTagTransformer}
 //
 // The first says which source file produced the object. The second says which
-// kustomization's transformers touched it, in build order — the override chain,
-// handed to us by the renderer that applies it.
+// kustomization's transformers RAN over it, in build order — the override chain,
+// handed to us by the renderer that applies it. (Ran over, not touched: kustomize
+// records a transformer against every object in the build, whether or not it changed
+// anything. See chainOf.)
 const (
 	originAnnotation          = "config.kubernetes.io/origin"
 	transformationsAnnotation = "alpha.config.kubernetes.io/transformations"
@@ -56,6 +59,36 @@ const (
 // off, so refusing first is the only thing that keeps "the operator never fetches a
 // remote base" true.
 var errRemoteBase = errors.New("kustomization reaches a remote base; the operator never fetches one")
+
+// errInvalidImageName refuses a build whose images: entry carries a name kustomize
+// cannot compile.
+//
+// An images: entry's name: is a REGULAR EXPRESSION, not a literal, and kustomize
+// compiles it while DISCARDING the compile error (api/internal/image/image.go):
+//
+//	pattern, _ := regexp.Compile("^" + name + "(:[a-zA-Z0-9_.{}-]*)?(@sha256:...)?$")
+//
+// It then dereferences the nil *Regexp. So `- name: "ngin["` does not fail the build —
+// it PANICS inside it, on content that came straight from a user's repository. Like the
+// remote-base check, this one must run before krusty, and for the same reason: it is not
+// a modelling question, it is what keeps a hostile kustomization.yaml from taking the
+// process somewhere it cannot come back from.
+var errInvalidImageName = errors.New("images: entry name is not a valid regular expression")
+
+// errBuildPanicked is the net under krusty. errInvalidImageName covers the one panic we
+// found; this covers the ones we have not. A build runs library code we do not own over
+// bytes we do not control, so a panic there has to become a refused folder — never a
+// crashed CLI, and never a GitTarget that panics, requeues and panics again for as long
+// as the repository stays as it is (controller-runtime recovers reconciler panics by
+// default, which turns a crash into a hot loop, not into safety).
+var errBuildPanicked = errors.New("kustomize build panicked")
+
+// imageNamePattern is the pattern kustomize compiles for an images: entry name
+// (api/internal/image/image.go). We validate the WHOLE pattern, not the name alone, so
+// that what we accept is exactly what kustomize can compile.
+func imageNamePattern(name string) string {
+	return "^" + name + "(:[a-zA-Z0-9_.{}-]*)?(@sha256:[a-zA-Z0-9_.{}-]*)?$"
+}
 
 // renderedObject is one object kustomize produced, with the provenance saying
 // where it came from and what shaped it.
@@ -91,43 +124,56 @@ const renderMountPoint = "/scan"
 // build never touches the real disk, never executes a plugin, and never reaches the
 // network.
 func renderRoot(files []manifestedit.FileContent, rootDir string) ([]renderedObject, error) {
-	if err := refuseRemoteBases(parseKustomizations(files), rootDir); err != nil {
+	if err := refuseBeforeBuild(parseKustomizations(files), rootDir); err != nil {
 		return nil, err
 	}
 	fSys, err := renderFilesystem(files, rootDir)
 	if err != nil {
 		return nil, err
 	}
-	// LoadRestrictionsNone is what Flux itself builds with, and it is safe here for
-	// the same reason it is safe there: THE FILESYSTEM IS THE JAIL. The in-memory
-	// filesystem contains only the scanned tree, so "unrestricted" loading cannot
-	// reach the real disk, and a remote base is refused before we get here.
-	//
-	// RootOnly would be the wrong kind of strict. It forbids loading a FILE from
-	// outside the render root — `resources: [../shared.yaml]` — which Flux renders
-	// happily. We would then fail to build a root that deploys in production, see no
-	// chain for it, and quietly stop enforcing write-fan-in on the file it shares.
-	// Refusing to look is not a safety property.
-	k := krusty.MakeKustomizer(&krusty.Options{
-		LoadRestrictions: kustypes.LoadRestrictionsNone,
-		PluginConfig:     kustypes.DisabledPluginConfig(), // no exec, no Go plugins
-	})
-	resMap, err := k.Run(fSys, path.Join(renderMountPoint, rootDir))
+	resMap, err := build(fSys, path.Join(renderMountPoint, rootDir))
 	if err != nil {
 		return nil, fmt.Errorf("kustomize build: %w", err)
 	}
 	return collectRendered(resMap, rootDir)
 }
 
-// refuseRemoteBases refuses the build when any kustomization THIS ROOT REACHES
-// declares a remote base.
+// build runs krusty, converting a panic into an error (errBuildPanicked).
+//
+// LoadRestrictionsNone is what Flux itself builds with, and it is safe here for the same
+// reason it is safe there: THE FILESYSTEM IS THE JAIL. The in-memory filesystem contains
+// only the scanned tree, so "unrestricted" loading cannot reach the real disk, and a
+// remote base is refused before we get here.
+//
+// RootOnly would be the wrong kind of strict. It forbids loading a FILE from outside the
+// render root — `resources: [../shared.yaml]` — which Flux renders happily. We would then
+// fail to build a root that deploys in production, see no chain for it, and quietly stop
+// enforcing write-fan-in on the file it shares. Refusing to look is not a safety property.
+func build(fSys filesys.FileSystem, target string) (_ resmap.ResMap, err error) {
+	// On a panic the result is the zero ResMap (nil) and err is what the deferred
+	// function leaves here, so only the error needs naming.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: %v", errBuildPanicked, r)
+		}
+	}()
+	k := krusty.MakeKustomizer(&krusty.Options{
+		LoadRestrictions: kustypes.LoadRestrictionsNone,
+		PluginConfig:     kustypes.DisabledPluginConfig(), // no exec, no Go plugins
+	})
+	return k.Run(fSys, target)
+}
+
+// refuseBeforeBuild refuses the build when any kustomization THIS ROOT REACHES is one we
+// must not hand to krusty: it declares a remote base (kustomize would fetch it), or an
+// images: entry name kustomize would nil-deref on (see errInvalidImageName).
 //
 // Scoping it to the reachable graph is deliberate, and it is both safer and more
-// accurate than a scan-wide check: kustomize only fetches what it actually loads,
+// accurate than a scan-wide check: kustomize only loads what it actually reaches,
 // so a remote base in an unrelated sibling folder cannot make this build reach the
 // network — and refusing on its account would refuse a folder that is perfectly
 // renderable.
-func refuseRemoteBases(kusts map[string]*kustomizationDoc, rootDir string) error {
+func refuseBeforeBuild(kusts map[string]*kustomizationDoc, rootDir string) error {
 	visited := map[string]struct{}{}
 	var walk func(dir string) error
 	walk = func(dir string) error {
@@ -139,8 +185,8 @@ func refuseRemoteBases(kusts map[string]*kustomizationDoc, rootDir string) error
 		if cur == nil {
 			return nil
 		}
-		if hasRemoteResource(cur.resources) {
-			return fmt.Errorf("%s: %w", cur.path, errRemoteBase)
+		if err := unbuildable(cur); err != nil {
+			return err
 		}
 		for _, entry := range cur.resources {
 			target := cleanJoin(dir, entry)
@@ -156,6 +202,21 @@ func refuseRemoteBases(kusts map[string]*kustomizationDoc, rootDir string) error
 		return nil
 	}
 	return walk(rootDir)
+}
+
+// unbuildable reports why one kustomization must not be handed to krusty, or nil when
+// it may be. Both reasons are properties of the BUILD, not of what we can model: a
+// kustomization we refuse here is one kustomize would fetch the network for, or crash on.
+func unbuildable(k *kustomizationDoc) error {
+	if hasRemoteResource(k.resources) {
+		return fmt.Errorf("%s: %w", k.path, errRemoteBase)
+	}
+	for _, img := range k.images {
+		if _, err := regexp.Compile(imageNamePattern(img.Name)); err != nil {
+			return fmt.Errorf("%s: images[%d].name %q: %w", k.path, img.Index, img.Name, errInvalidImageName)
+		}
+	}
+	return nil
 }
 
 // renderFilesystem materialises the scan's files in memory and asks the render root

@@ -41,6 +41,7 @@ func TestRenderRoot_ImagesAgreeWithKustomize(t *testing.T) {
 			}
 
 			kusts := parseKustomizations(root.files)
+			chains, _ := renderChains(root.files, kusts) // once per fixture, not once per object
 			for _, ro := range rendered {
 				if ro.OriginPath == "" {
 					continue // a generated resource; generators are refused
@@ -49,7 +50,7 @@ func TestRenderRoot_ImagesAgreeWithKustomize(t *testing.T) {
 				if src == nil {
 					continue // renamed by a transformer we refuse; not a supported shape
 				}
-				chain, ambiguous := ourChainFor(root.files, kusts, ro)
+				chain, ambiguous := ourChainFor(chains, ro)
 				if ambiguous {
 					continue // we route nothing through it; there is no claim to check
 				}
@@ -100,11 +101,9 @@ func assertImagesMatchKustomize(
 // it was found ambiguous (reached by more than one render root with differing
 // chains, which we refuse to route through).
 func ourChainFor(
-	files []manifestedit.FileContent,
-	kusts map[string]*kustomizationDoc,
+	chains map[chainKey]*overrideAssignment,
 	ro renderedObject,
 ) (*KustomizeOverrides, bool) {
-	chains, _ := renderChains(files, kusts)
 	a := chains[chainKey{
 		originPath: ro.OriginPath,
 		kind:       ro.Object.GetKind(),

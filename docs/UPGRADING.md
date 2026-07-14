@@ -18,7 +18,17 @@ controller could deploy:
 
 - a `resources:` entry that does not resolve (a manifest that was moved or renamed);
 - a **diamond** — one render root reaching a shared base through two overlays — which
-  kustomize rejects outright with *"may not add resource with an already registered id"*.
+  kustomize rejects outright with *"may not add resource with an already registered id"*;
+- a **cycle** — `a` referencing `b` referencing `a`. A cycle has no render root at all
+  (every directory in it is referenced by another), so it used to be invisible rather than
+  refused: nothing was built, nothing failed, and the folder passed. It is now built, and
+  kustomize says *"cycle detected"*;
+- an `images:` entry whose `name:` is not a valid **regular expression** — `- name: "ngin["`.
+  A kustomization `name:` is a regex, not a literal string, and kustomize compiles it without
+  checking the compile error, so such an entry does not fail the build, it **panics** inside
+  it. We refuse the folder before the build rather than hand it over. (Note the corollary,
+  which is not new but is easy to miss: `- name: "ngin."` **matches** `nginx`, because it is
+  a regex.)
 
 **Why this is a safety fix, not just strictness.** The override chain, and therefore the
 write-fan-in guard, is derived from the render. A root that does not build yields no chain,
