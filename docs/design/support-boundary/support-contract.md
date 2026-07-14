@@ -119,12 +119,17 @@ we can store — and is argued in
 
 ## What we will not do
 
-- **No orchestrator emulation.** We do not run kustomize on a remote base, resolve
-  a Helm chart, evaluate an ApplicationSet generator or a ResourceSet template,
-  decrypt SOPS, or contact a registry.
+- **No orchestrator emulation.** We do not resolve a Helm chart, evaluate an
+  ApplicationSet generator or a ResourceSet template, decrypt SOPS, or contact a
+  registry. **We do run kustomize** — the real `sigs.k8s.io/kustomize/api`, the library
+  Flux itself renders with — locally, with plugins disabled, and **never on a remote
+  base**: a remote resource is refused before the build is invoked. Using the renderer
+  is the opposite of emulating it; see
+  [kustomize-support-boundary.md](kustomize-support-boundary.md) §7.
 - **No Argo CD or Flux Go dependency.** Their kinds are matched by group and kind
   over `unstructured`; the upstream checkouts under `external-sources/` are
-  reference material, never vendored code.
+  reference material, never vendored code. (`sigs.k8s.io/kustomize` is neither — it is
+  a Kubernetes SIG library, already in this module's requirement graph.)
 - **We never widen the boundary by guessing.** Ownership and provenance only ever
   *refuse more*. Everything refused for renderability stays refused.
 

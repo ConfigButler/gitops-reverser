@@ -280,12 +280,57 @@ kustomize" means two different things:
 - **Understanding** (folder → expected render): ours, necessarily — the
   writer must know which file supplied each live value.
 
-We keep *re-implementing the narrow transformer subset* rather than embedding
-kustomize as the renderer: it is what keeps the refusal boundary honest (we
-refuse exactly what we do not model). The worthwhile upgrade is kustomize's
-Go API (`krusty`) as a **verification oracle**, not a renderer: in the
-acceptance gate or in CI, build each render root in-memory and compare
-against our own projection; mismatch → refuse. That buys kustomize's ground
-truth without ever depending on semantics we have not modeled — the cheap,
-high-confidence version of the "Option D" parked during the `images:`/`replicas:`
-work.
+**Decision (2026-07-14): we embed kustomize (`sigs.k8s.io/kustomize/api`) as the
+renderer. The re-implementation is being removed.** This reverses the earlier
+position — kept here because the reasoning was wrong in a specific, instructive way.
+
+The old position was that re-implementing the narrow transformer subset "keeps the
+refusal boundary honest: we refuse exactly what we do not model," and that `krusty`
+was at best a *verification oracle* comparing against our own projection.
+
+Both halves turned out to be false:
+
+- **The re-implementation does not keep the boundary honest — it makes it dishonest
+  in two places.** `vars` was never added to the deny-list, so `$(VAR)` in a source
+  file is silently overwritten with its substituted value. `commonLabels`/`labels`/
+  `annotations` were classed as benign and leak into source documents as drift.
+  "We refuse exactly what we do not model" was the *intent*; what shipped is "we
+  refuse most of what we do not model, and corrupt source files with the rest."
+- **The dependency was never the cost we thought.** `sigs.k8s.io/kustomize/api` and
+  `kyaml` are **already in this module's requirement graph**. Taking them as a direct
+  dependency at the version Flux ships (v0.21.1) adds **zero new modules** — one line
+  in `go.mod`, and code we already carry starts getting linked instead of re-typed.
+
+Against that: ~1,050 lines across
+[`overrides.go`](../../../internal/manifestanalyzer/overrides.go),
+[`overrides_projection.go`](../../../internal/manifestanalyzer/overrides_projection.go)
+and [`kustomization.go`](../../../internal/git/manifestedit/kustomization.go)
+re-derive image-reference parsing, the image transformer, the replica transformer's
+fieldspec, render-root discovery and the resource DAG walk — and every future feature
+demands more of the same (strategic-merge semantics, name-reference cascades, the
+generator content-hash algorithm). We were re-writing kustomize by instalments.
+
+**Understanding is still ours; deploying is still theirs.** Embedding the library does
+not put us in the deployment business. It replaces our *guess* at what Flux will render
+with the *library Flux actually renders with*.
+
+### The sandbox is part of the contract
+
+```go
+krusty.Options{
+    LoadRestrictions: kustypes.LoadRestrictionsRootOnly,
+    PluginConfig:     kustypes.DisabledPluginConfig(),  // no exec, no Go plugins
+}
+```
+
+**`LoadRestrictions` does not stop the network, and this was measured, not assumed.**
+Given a remote base, kustomize shells out to `/usr/bin/git fetch` — under
+`LoadRestrictionsRootOnly` *and* under an in-memory filesystem. Both were tried; both
+fetched.
+
+So the remote-base detection we already have
+([`hasRemoteResource`/`isRemoteResource`](../../../internal/manifestanalyzer/store.go))
+is **not** made redundant by the renderer. It is promoted to a **security precondition
+that runs before krusty is ever called**. It is the one piece of the re-implementation
+that must survive, and *"we do not run kustomize on a remote base"* stays literally
+true — now enforced rather than merely implied by not having a renderer at all.

@@ -7,6 +7,37 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — `kustomization.yaml` is now read by kustomize itself (next minor; behavior change)
+
+The analyzer used to decode `kustomization.yaml` with a hand-written walk over a generic
+YAML map, checked against a hand-maintained list of 17 unsupported keys. It now decodes with
+kustomize's own type (`sigs.k8s.io/kustomize/api/types.Kustomization`) and runs the same
+`Unmarshal` + `FixKustomization` sequence kustomize's builder runs, and it derives the
+unsupported set by reflecting over that type: **anything not explicitly modelled refuses the
+folder.**
+
+Five verdicts change as a result. Each was verified against a real `kustomize build`, and in
+every case the new behaviour is the one that agrees with the renderer:
+
+| Kustomization contains | Before | After |
+|---|---|---|
+| `vars:` | **accepted** — and `$(VAR)` in a source file was silently overwritten with its substituted value | **refused** (`vars`) |
+| `validators:` (plugin code) | **accepted**, unmodelled | **refused** (`validators`) |
+| a `kustomization.yaml` kustomize cannot decode (e.g. `resources:` is a string, or the file is really a Flux `Kustomization` CR) | **accepted**, and written into | **refused** (`unparseable`, quoting kustomize's own error) |
+| `imageTags:` / `bases:` (deprecated spellings) | `imageTags` ignored; `bases` read | both **normalised** into `images`/`resources`, as the builder does |
+| a case-variant key (`newtag:`), or a blank optional component (`newName: ""`) | **refused** | **accepted** — kustomize honours both, so folders that render fine are no longer refused |
+
+**Migration**
+
+- **The first three refuse folders that previously worked.** All three were unsafe: two let
+  the operator write into a folder whose render it had misunderstood, and the third let it
+  write into a folder no GitOps controller can build at all. If a `GitTarget` starts failing
+  with `GitPathAccepted=False` / `UnsupportedContent`, the refusal detail now names the
+  feature — and for `unparseable`, quotes kustomize's decode error verbatim.
+- **`vars` has no supported replacement.** A value derived at render time has no single home
+  in Git; edit the source field instead.
+- Nothing to do for the last two rows: they only ever accept more.
+
 ## Unreleased — `pkg/manifestanalyzer`: the overlay fan-out refusal code was renamed (next minor; breaking for consumers)
 
 One refusal reason changed its name, in both the Go constant and the machine-readable
