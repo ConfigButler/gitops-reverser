@@ -46,8 +46,9 @@ flowchart LR
 
 The remaining overlay gap is deliberately narrow: creating a **new object** and adding its
 `resources:` entry needs a placement/write-path correction. It is planned, not shipped.
-`scan-repo` likewise still labels external-base overlays as unsupported while its discovery
-classification catches up with the runtime.
+`scan-repo` now adopts external-base overlays too, matching the runtime: it reports a
+`kustomize-overlay` candidate as accepted and lets its `editable` count show how much the
+overlay owns (a pure passthrough overlay is adopted yet `editable: 0`).
 
 ## Active design work
 

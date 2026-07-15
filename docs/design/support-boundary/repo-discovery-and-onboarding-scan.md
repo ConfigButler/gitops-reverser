@@ -136,14 +136,14 @@ flowchart TD
 ### Layout classification
 
 Discovery reports the layout and its **scanner classification** as two distinct truths.
-The narrow external-base overlay runtime has shipped, but this scanner has not yet flipped
-its overlay classification (see below).
+The narrow external-base overlay runtime has shipped, and this scanner now matches it: it
+runs the same adoption gate over the overlay's render scope rather than blanket-refusing.
 
 | `layout` | Meaning | Scanner output today |
 |---|---|---|
 | `plain` | Directory of KRM docs, explicit namespaces, no kustomization | ✅ supported today |
 | `kustomize-single` | One render root; `namespace` + `resources`/`images`/`replicas` | ✅ supported today |
-| `kustomize-overlay` | Base + N overlay roots, one namespace per overlay | ⛔ reports `overlay-fan-out-unsupported`; runtime accepts the narrow existing-document/image/replica slice, and this classification needs to catch up |
+| `kustomize-overlay` | Base + N overlay roots, one namespace per overlay | ✅ adopted today; the render scope passes the gate and `editable` shows how much the overlay owns (a pure passthrough overlay is adopted yet `editable: 0`). Base-owned fields and new overlay objects stay write-time-planned |
 | `refused-structural` | Helm inflation, generators with hash suffixes, `components`, `namePrefix`/`nameSuffix`, remote bases, `configurations`/`openapi`/`crds` | ⛔ permanent — the support contract |
 | `refused-fleet-root` | `clusters/` + `apps/` + `infra/` cluster-root repo (a `GitTarget` points at an app subtree, never a cluster root) | ⛔ out of scope by design |
 | `refused-out-of-band` | Namespace/transform injected outside the folder (Flux `postBuild`/`targetNamespace`, Argo Application-level overrides) | ⛔ permanent — round-trip cannot hold |
@@ -160,11 +160,12 @@ its overlay classification (see below).
 > cut therefore ships four candidate layouts: `plain`, `kustomize-single`,
 > `kustomize-overlay`, `refused-structural`.
 
-The distinction between `overlay-fan-out-unsupported` and `refused-structural` remains
-load-bearing: the first currently identifies a **scanner lag** on a bounded supported
-layout, while the second is the **permanent** boundary. Discovery must never collapse them
-into one refusal. The classification follow-up should make the scanner match the runtime
-without widening either accepted layout or the structural wall.
+The distinction between an **adopted** `kustomize-overlay` and a **permanently refused**
+`refused-structural` render root stays load-bearing: the first is a bounded supported layout
+the operator renders through render-root scoping, the second is the permanent boundary.
+Discovery must never collapse them — an overlay must not be reported as a hopeless structural
+refusal, and helm inflation must not be reported as an adoptable overlay. The former
+`overlay-fan-out-unsupported` reason is retired now that the scanner matches the runtime.
 
 ## The report contract
 
@@ -283,11 +284,14 @@ refuses `openapi`/`crds` alongside `configurations`, matching the
 
 **Classification findings.**
 
-- The overlay discriminator that trips `overlay-fan-out-unsupported` is precisely **the base
-  escaping the render root's own subtree** (`../../base` resolves outside the candidate) —
-  the very fact the operator's hard subtree-scope hits. Fan-out (how many overlay roots
-  share the base) is carried as informative `detail`, not the trigger. A base nested
-  *within* the subtree keeps the root `kustomize-single` (accepted today).
+- The overlay discriminator that marks a render root `kustomize-overlay` is precisely **the
+  base escaping the render root's own subtree** (`../../base` resolves outside the candidate).
+  A base nested *within* the subtree keeps the root `kustomize-single`. Both are adopted; the
+  distinction is only that an overlay renders — and cannot edit — an out-of-subtree base, so
+  its `editable` count can be lower than `rendered`. Acceptance of the overlay comes from
+  running the same gate the live writer runs over the overlay's **render scope** (the overlay
+  subtree plus the exact base files its graph reaches), so the report cannot drift from the
+  runtime; the former `overlay-fan-out-unsupported` reason is retired.
 - `refused-fleet-root` ships as a repo-summary flag (`fleetRoot: true`), not a
   per-candidate layout: the repo root is never itself a candidate, and leaf app folders
   still surface normally. `refused-out-of-band` is not detected yet — a structure-only
@@ -334,10 +338,11 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
   shipped — the acceptance gate, render-root computation
   ([images/replicas edit-through](finished/images-and-replicas-edit-through.md)),
   and namespace inference. Discovery is additive tooling on top of the shared engine.
-- **Overlay support changes discovery's *output*, not its code.** Today overlay
-  candidates still report `acceptedByOperator: false` + `overlay-fan-out-unsupported`.
-  The pending classification change should report the shipped existing-document and
-  `images:`/`replicas:` slice, while keeping new overlay resource creation planned.
+- **Overlay support changed discovery's *output*, not the operator.** An external-base
+  overlay candidate now reports `acceptedByOperator: true` (its render scope passes the same
+  gate the live writer runs) with an `editable` count that shows how much it owns — a pure
+  passthrough overlay is adopted yet `editable: 0`. New overlay object creation and base-owned
+  field edits stay write-time-planned; the scan reports folder adoption, not write capability.
 
 ## Test plan
 
@@ -382,12 +387,10 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
    remains a presentation choice.
 4. **Library vs. CLI as the integration point** — _settled:_ library-first
    (`ScanRepo`), CLI (`--mode scan-repo`) as the thin wrapper + CI gate.
-5. **`overlay-fan-out-unsupported` naming** — the reason code still reads as if *fan-out*
-   (a base shared by several overlays) is the trigger, but the real trigger is a base
-   **escaping the render root's own subtree**, true even at fan-out = 1. The first cut
-   carries the shared-root count as descriptive `detail`, not as the condition. Open:
-   rename to something like `overlay-base-out-of-subtree`, or keep the published code — it
-   is part of `pkg/manifestanalyzer`'s surface — and rely on the detail. _Not settled._
+5. **`overlay-fan-out-unsupported` naming** — _moot: retired._ Render-root scoping shipped and
+   the scanner now adopts external-base overlays, so this reason is no longer emitted. The
+   public `pkg/manifestanalyzer` constant is kept (deprecated) for source compatibility; the
+   naming debate is closed because the code is gone from the output.
 6. **Repo-level `--policy refuse` gate** — the eventual "zero acceptable candidates → exit
    1" onboarding gate (see [Exit codes](#the-report-contract)) is **deferred**: the first
    cut always exits 0 (or 2 on an I/O error) and `--policy` is not applied in scan-repo

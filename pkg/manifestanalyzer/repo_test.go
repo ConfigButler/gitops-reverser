@@ -48,43 +48,41 @@ func TestScanRepo_PlainPerEnvironmentFoldersAreCandidates(t *testing.T) {
 	require.Zero(t, report.Summary.Refused)
 }
 
-// The two refusal codes mean different things and a consumer must be able to tell them
-// apart: one is "not yet, when render-root scoping ships", the other is the permanent
-// support boundary. Collapsing them would mislabel an onboardable repository as hopeless.
-func TestScanRepo_RefusalCodesStayDistinct(t *testing.T) {
+// An external-base overlay and a permanent structural refusal are different truths a consumer
+// must be able to tell apart: render-root scoping shipped, so the overlay is ADOPTED, while
+// helm inflation and unsupported kustomize stay the permanent support boundary. Collapsing the
+// two would either mislabel an onboardable overlay as hopeless or an unbuildable folder as fine.
+func TestScanRepo_OverlayAdoptedDistinctFromStructural(t *testing.T) {
 	t.Parallel()
 
-	tests := map[string]struct {
-		group, name string
-		wantCode    string
-		wantLayout  manifestanalyzer.Layout
-	}{
-		"overlay fan-out is a not-yet": {
-			group: "unsupported", name: "base-overlays",
-			wantCode:   manifestanalyzer.ReasonOverlayFanOutUnsupported,
-			wantLayout: manifestanalyzer.LayoutKustomizeOverlay,
-		},
-		"helm inflation is permanent": {
-			group: "unsupported", name: "helm-inflation",
-			wantCode:   manifestanalyzer.ReasonRefusedStructural,
-			wantLayout: manifestanalyzer.LayoutRefusedStructural,
-		},
-		"unsupported kustomize is permanent": {
-			group: "unsupported", name: "unsupported-kustomize",
-			wantCode:   manifestanalyzer.ReasonRefusedStructural,
-			wantLayout: manifestanalyzer.LayoutRefusedStructural,
-		},
-	}
+	t.Run("external-base overlay is adopted", func(t *testing.T) {
+		t.Parallel()
+		report, err := manifestanalyzer.ScanRepo(context.Background(), fixture(t, "supported", "base-overlays"))
+		require.NoError(t, err)
 
-	for name, tc := range tests {
+		var seen bool
+		for _, cand := range report.Candidates {
+			require.Equal(t, manifestanalyzer.LayoutKustomizeOverlay, cand.Layout)
+			require.True(t, cand.AcceptedByOperator, "render-root scoping adopts the external-base overlay")
+			require.Empty(t, cand.RefusalReasons)
+			seen = true
+		}
+		require.True(t, seen, "expected at least one kustomize-overlay candidate")
+	})
+
+	structural := map[string]string{
+		"helm inflation is permanent":        "helm-inflation",
+		"unsupported kustomize is permanent": "unsupported-kustomize",
+	}
+	for name, fixtureName := range structural {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			report, err := manifestanalyzer.ScanRepo(context.Background(), fixture(t, tc.group, tc.name))
+			report, err := manifestanalyzer.ScanRepo(context.Background(), fixture(t, "unsupported", fixtureName))
 			require.NoError(t, err)
 
 			var seen bool
 			for _, cand := range report.Candidates {
-				if cand.Layout != tc.wantLayout {
+				if cand.Layout != manifestanalyzer.LayoutRefusedStructural {
 					continue
 				}
 				seen = true
@@ -93,9 +91,9 @@ func TestScanRepo_RefusalCodesStayDistinct(t *testing.T) {
 				for _, reason := range cand.RefusalReasons {
 					codes = append(codes, reason.Code)
 				}
-				require.Contains(t, codes, tc.wantCode)
+				require.Contains(t, codes, manifestanalyzer.ReasonRefusedStructural)
 			}
-			require.True(t, seen, "expected at least one %s candidate", tc.wantLayout)
+			require.True(t, seen, "expected at least one refused-structural candidate")
 		})
 	}
 }

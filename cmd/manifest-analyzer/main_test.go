@@ -139,7 +139,7 @@ func TestRun_ScanJSON(t *testing.T) {
 
 // scanRepoFixture builds a tiny two-folder repo: a plain KRM app folder and a kustomize
 // overlay reaching an out-of-subtree base, so scan-repo reports both an accepted plain
-// candidate and a refused kustomize-overlay one.
+// candidate and an accepted kustomize-overlay one (render-root scoping adopts the overlay).
 func scanRepoFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -167,7 +167,7 @@ func TestRun_ScanRepoText(t *testing.T) {
 	if code := run([]string{"--mode", "scan-repo", scanRepoFixture(t)}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
 	}
-	for _, want := range []string{"candidates:", "kustomize-overlay", "overlay-fan-out-unsupported"} {
+	for _, want := range []string{"candidates:", "kustomize-overlay", "accepted=2 refused=0"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("scan-repo text missing %q:\n%s", want, out.String())
 		}

@@ -3,13 +3,7 @@
     {
       "path": "overlays/test",
       "layout": "kustomize-overlay",
-      "acceptedByOperator": false,
-      "refusalReasons": [
-        {
-          "code": "overlay-fan-out-unsupported",
-          "detail": "base \"base\" is read from outside this folder's subtree and is shared by 1 render root(s); render-root scoping required"
-        }
-      ],
+      "acceptedByOperator": true,
       "renderRoot": true,
       "readScope": [
         "base"
@@ -26,7 +20,7 @@
     "candidatesByLayout": {
       "kustomize-overlay": 1
     },
-    "accepted": 0,
-    "refused": 1
+    "accepted": 1,
+    "refused": 0
   }
 }
