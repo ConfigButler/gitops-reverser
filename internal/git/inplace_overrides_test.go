@@ -210,7 +210,7 @@ func TestApplyOverrideEdits_SkipLeavesBuffersUntouched(t *testing.T) {
 	scan := manifestanalyzer.FolderScan{YAMLFiles: []manifestedit.FileContent{
 		{Path: "kustomization.yaml", Content: []byte(kust)},
 	}}
-	wb := newWriteBatch(context.Background(), newContentWriter(types.SensitiveResourcePolicy{}), nil, scan, nil)
+	wb := newWriteBatch(context.Background(), newContentWriter(types.SensitiveResourcePolicy{}), nil, scan, nil, "")
 
 	fieldMissing := manifestanalyzer.OverrideEdit{
 		KustomizationPath: "kustomization.yaml",

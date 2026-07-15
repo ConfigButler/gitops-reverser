@@ -92,6 +92,12 @@ type ManifestStore struct {
 	// denylist). The acceptance gate appends them so a footgun fails the GitTarget at the
 	// same surface as any other refusal.
 	IgnoreIssues []AcceptanceIssue
+
+	// reachedByMultipleRoots is the set of resource-file paths (slash) that more than one
+	// render root reaches through the resources graph — the generalised write-fan-in
+	// signal, exposed via ReachedByMultipleRenderRoots. Computed once at build time from
+	// the kustomization graph; empty for a subtree with zero or one render root.
+	reachedByMultipleRoots map[string]struct{}
 }
 
 // RetainedDocument records an allowlisted build-directive that is excluded from the
@@ -398,6 +404,10 @@ func buildStore(
 		Ignore:         scan.Ignore,
 		IgnoreIssues:   scan.IgnoreIssues,
 		Kustomizations: kustomizationInfos(kusts),
+		// The generalised write-fan-in set: files more than one render root reaches. It
+		// is derived from the same kustomization graph renderRoots reads, so a base
+		// shared by two overlays is flagged whether or not an override entry is at stake.
+		reachedByMultipleRoots: renderRootFanIn(kusts),
 	}
 
 	// inv.Records are exactly the KRM documents (editable or not), in stable scan

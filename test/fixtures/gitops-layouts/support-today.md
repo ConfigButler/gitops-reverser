@@ -31,6 +31,7 @@ Reading rules:
 | 2-rendered/argocd-external-helm | 0 | Partial | 2 | 1 | plain=3 | - | non-krm-yaml: values.yaml: YAML is not a Kubernetes manifest |
 | 2-rendered/helm-chart | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 2-rendered/helm-environment-values | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
+| 2-rendered/kustomize-overlay-minimal | 0 | No reported candidates accepted | 0 | 2 | kustomize-overlay=2 | - | overlay-fan-out-unsupported: base "base" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required<br>overlay-fan-out-unsupported: base "base" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required |
 | 2-rendered/kustomize-overlays | 0 | Partial | 1 | 3 | kustomize-single=1, refused-structural=3 | configMapGenerator, namePrefix, nameSuffix, patches, remote-base, secretGenerator | refused-structural: kustomization uses unsupported feature(s): remote-base<br>refused-structural: kustomization uses unsupported feature(s): configMapGenerator, nameSuffix, patches, secretGenerator<br>refused-structural: kustomization uses unsupported feature(s): configMapGenerator, namePrefix, patches |
 | 2-rendered/rendered-manifests | 0 | Partial | 3 | 2 | plain=3, refused-structural=2 | namePrefix | refused-structural: kustomization uses unsupported feature(s): namePrefix<br>refused-structural: kustomization uses unsupported feature(s): namePrefix |
 | 3-expanded/argocd-applicationset-directories | 0 | All reported candidates accepted | 5 | 0 | plain=5 | - | None |
@@ -124,6 +125,16 @@ Unsupported constructs: `none`. Fleet root: `false`.
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
 | `argocd` | `plain` | true | `argocd` | 2/2/0 | none |
+
+## 2-rendered/kustomize-overlay-minimal
+
+Reported rc `0`. Accepted `0`, refused `2`.
+Unsupported constructs: `none`. Fleet root: `false`.
+
+| Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
+|---|---|---|---|---|---|
+| `overlays/production` | `kustomize-overlay` | false | `frontend-production` | 2/0/0 | overlay-fan-out-unsupported: base "base" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required |
+| `overlays/staging` | `kustomize-overlay` | false | `frontend-staging` | 2/0/0 | overlay-fan-out-unsupported: base "base" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required |
 
 ## 2-rendered/kustomize-overlays
 
