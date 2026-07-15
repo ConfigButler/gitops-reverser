@@ -85,20 +85,21 @@ reimplementation** — a list of everything we chose not to re-derive. That is w
 [images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) says it
 plainly: *"No `kustomize build`, no source maps."*
 
-The fence has a cost we are already paying, and it is not the cost we think:
+The fence had a cost we were already paying, and it was not the cost we thought (both examples
+are now closed — see the note below — but they are what the argument rests on):
 
-- **`vars` is not on the list.** A source document containing `$(SOME_VAR)` renders to a
-  substituted value. Mirroring that live object writes the *substituted* value over the
-  `$(VAR)` in the source. That is silent corruption, in a folder we accept **today**.
-  (`vars` was moved off the tolerated set by #229 and now refuses the folder.)
-- **`labels` / `commonLabels` / `annotations` are explicitly classed as benign.** They
-  inject metadata into every rendered object; mirroring bakes it into the source file as
-  drift. This is the metadata-transformer leak, live today, in supported folders.
+- **`vars` was not on the deny-list.** A source document containing `$(SOME_VAR)` renders to a
+  substituted value, and mirroring that live object wrote the *substituted* value over the
+  `$(VAR)` in the source: silent corruption, in a folder we accepted. #229 moved `vars` off the
+  tolerated set, so it now refuses the folder.
+- **`labels` / `commonLabels` / `annotations` were classed as benign.** They inject metadata
+  into every rendered object, and mirroring baked it into the source file as drift — the
+  metadata-transformer leak, live in supported folders until `sourceForm` (below) closed it.
 
-So the inversion problem is not something overlay support introduces. **We already have it,
-and we currently handle it in three inconsistent ways**: explicitly and verified for
-`images`/`replicas`; by blanket folder refusal for `patches` and friends; and silently,
-incorrectly, for the transformers we called benign.
+So the inversion problem is not something overlay support introduces. **We already had it, and
+handled it in three inconsistent ways**: explicitly and verified for `images`/`replicas`; by
+blanket folder refusal for `patches` and friends; and silently, incorrectly, for the transformers
+we called benign.
 
 A renderer replaces three policies with one.
 

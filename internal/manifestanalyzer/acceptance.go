@@ -135,8 +135,8 @@ const (
 	// which is the exact failure this whole path exists to prevent.
 	IssueRenderRefused IssueKind = "kustomize-render-refused"
 	// IssueUnplaceableEdit marks a live change the projection could not place in the source
-	// document: the BUILD and the USER both rewrote one list, and its elements carry no unique
-	// name: to pair the source's with the render's by (SourceFormRefusedError).
+	// document: the BUILD and the USER both rewrote one list whose elements carry no unique
+	// name to pair the source's with the render's by (see SourceFormRefusedError).
 	//
 	// The alternative to refusing is aligning the two lists by position, and that is not a
 	// conservative guess — it is measurably wrong: kustomize's strategic merge PREPENDS a

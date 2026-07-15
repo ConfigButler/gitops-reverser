@@ -68,7 +68,8 @@ type SourceFormRefusedError struct {
 
 func (e *SourceFormRefusedError) Error() string {
 	return "cannot place the edit: the build and the live object both changed " + e.Field +
-		", and its elements carry no unique name: to pair the source with the render by"
+		", whose elements carry no unique name to pair the source with the render by, " +
+		"so pairing them by position could place one element's edit onto another"
 }
 
 // sourceForm computes the document the source file should hold: src, carrying the user's
