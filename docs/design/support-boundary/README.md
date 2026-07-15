@@ -38,15 +38,19 @@ flowchart LR
 |---|---|
 | Plain KRM and higher-level KRM documents | Editable in place, preserving document form where possible. A `HelmRelease`, `Application`, KRO resource, or Crossplane claim is ordinary intent-layer KRM. |
 | Self-contained Kustomize | Local `resources`, `namespace`, `images`, and `replicas` are supported. Image and replica changes write to their declaring entry. |
-| External-base overlay | The overlay may read `../../base` as context, but writes remain inside the target overlay. Existing overlay-local documents and declared image/replica entries are editable; base-owned fields are refused. |
-| Path-based strategic-merge patch | The render is accepted; the patch is read-only context. We tolerate it but do not author or edit patches yet. |
+| External-base overlay | The overlay may read `../../base` as context, but writes remain inside the target overlay. Existing overlay-local documents and declared image/replica entries are editable; a brand-new object is created as an overlay-local file registered in the overlay's own `resources:`; and changing a base-supplied image/replica in one environment **authors a new `images:`/`replicas:` entry** in the overlay. Other base-owned fields are refused. |
+| Path-based strategic-merge patch | The render is accepted and a patch that **edits a field** is read-only context — never authored or edited. The one authored patch is **`$patch: delete`** for an object an overlay inherits from its base (a patch file plus a `patches:` entry), verified by re-render. |
 | Render verification | A proposed batch is built with kustomize before any bytes are written. Mismatch or blast-radius change refuses the flush. |
 | Write boundary | Writes never leave `spec.path`, and a file read by more than one render root is never edited in place. |
 | Foreign-content boundary | A GitTarget subtree is operator-exclusive: loose scripts, binaries, and symlinks refuse the folder. Inert repo-hygiene passengers — documentation (`*.md`), a license, and `.gitignore`/`.gitattributes`/`.gitkeep` — are accepted so adopting an existing repo does not stall on them. Anything else is named in a root `.gittargetignore`. |
 
-The remaining overlay gap is deliberately narrow: creating a **new object** and adding its
-`resources:` entry needs a placement/write-path correction. It is planned, not shipped.
-`scan-repo` now adopts external-base overlays too, matching the runtime: it reports a
+Three overlay capabilities are now shipped and verified by re-render: creating a **new object**
+(an overlay-local file plus its `resources:` entry); **authoring a missing `images:`/`replicas:`
+entry** when a base-supplied image or replica count is changed in one environment; and
+**`$patch: delete`** for an object the overlay inherits from its base — so editing a specific
+environment adds the override, or the deletion, for you. The remaining overlay gap is a
+strategic-merge patch for a base-owned *field* that is not an image, replica, or whole-object
+delete. `scan-repo` now adopts external-base overlays too, matching the runtime: it reports a
 `kustomize-overlay` candidate as accepted and lets its `editable` count show how much the
 overlay owns (a pure passthrough overlay is adopted yet `editable: 0`).
 

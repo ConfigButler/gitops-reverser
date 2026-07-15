@@ -86,7 +86,7 @@ func assertInSyncIsANoOp(
 	t.Helper()
 	where := ro.OriginPath + " " + ro.Object.GetKind() + "/" + ro.Object.GetName()
 
-	out, edits, err := SplitDesiredForOverrides(src.Object, asLiveObject(t, ro.Object), attribution)
+	out, edits, err := SplitDesiredForOverrides(src.Object, asLiveObject(t, ro.Object), attribution, "")
 	require.NoError(t, err, "%s: an in-sync folder needs no edit placed at all", where)
 
 	require.Empty(t, edits,

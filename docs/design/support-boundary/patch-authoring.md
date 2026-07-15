@@ -36,6 +36,14 @@ flowchart LR
   than guessed or written through.
 - Inline patches, JSON6902 patches, deprecated patch spellings, and out-of-tree paths remain
   refused; they do not provide the narrow sparse-KRM unit this design relies on.
+- **`$patch: delete` is now authored (shipped), as a slice distinct from field patching.**
+  Deleting an object the overlay inherits from its base writes a small `$patch: delete` document
+  under the overlay and names it in `patches:`, verified by the re-render oracle (the object must
+  leave the render, everything else unchanged; a non-matching patch is refused). It needs no
+  field attribution — the target is identified by apiVersion/kind/namespace/name — so it does not
+  wait on the scalar-attribution work below. See
+  [render-root scoping §1/§4](render-root-scoping.md). What is still refused is authoring a patch
+  that *edits a field* of a base-owned object.
 
 ## Narrow first slice
 

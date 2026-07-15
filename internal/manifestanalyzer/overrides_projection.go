@@ -22,12 +22,18 @@ import (
 // where the value lives". See
 // docs/design/support-boundary/finished/images-and-replicas-edit-through.md.
 
-// OverrideEdit routes one live-value change to a field of an existing
-// kustomization override entry.
+// OverrideEdit routes one live-value change to a field of a kustomization override entry.
 type OverrideEdit struct {
 	// KustomizationPath is the kustomization file (slash, relative to the
-	// GitTarget subtree) declaring the entry.
+	// GitTarget subtree) that carries the entry.
 	KustomizationPath string
+	// Create AUTHORS a new entry (via AppendKustomizationOverride) rather than editing a
+	// scalar on an existing one: an overlay overriding a value its base supplies, where no
+	// entry exists yet. Edit.EntryName is the new entry's name: (the image name for an
+	// images: entry, the resource name for a replicas: entry); Edit.EntryIndex is unused.
+	// Every authored entry is put to the re-render oracle before it can commit, so a proposal
+	// that over-reaches is refused there, not written.
+	Create bool
 	// Edit is the bounded scalar update the manifestedit editor applies.
 	Edit manifestedit.KustomizationEdit
 }
@@ -63,10 +69,18 @@ type OverrideEdit struct {
 // gitRaw is the source document parsed as JSON-typed maps (sigs.k8s.io/yaml); desired is the
 // sanitized projection the writer would otherwise compare. The returned object is always a
 // copy; desired is never mutated.
+// authorInto is the kustomization the writer may AUTHOR a new images:/replicas: entry into when
+// a value the SOURCE document supplies diverges in live and the source is out of the write jail
+// (a base an overlay reads read-only). It is "" for a self-contained subtree and for an in-jail
+// document, where a source-supplied change is written into the file directly. When set, a
+// diverging source-supplied image component or replica count becomes a proposed new entry rather
+// than a refused base write — the "edit a specific environment, get the override authored"
+// capability of docs/design/support-boundary/render-root-scoping.md §4.
 func SplitDesiredForOverrides(
 	gitRaw map[string]interface{},
 	desired *unstructured.Unstructured,
 	rendered *RenderedOverrides,
+	authorInto string,
 ) (*unstructured.Unstructured, []OverrideEdit, error) {
 	if rendered == nil || desired == nil || gitRaw == nil {
 		return desired, nil, nil
@@ -76,8 +90,8 @@ func SplitDesiredForOverrides(
 		return nil, nil, err
 	}
 	out := &unstructured.Unstructured{Object: source}
-	edits := projectImages(gitRaw, desired, out, rendered.Images)
-	edits = append(edits, projectReplicas(gitRaw, desired, out, rendered.Replicas)...)
+	edits := projectImages(gitRaw, desired, out, rendered.Images, authorInto)
+	edits = append(edits, projectReplicas(gitRaw, desired, out, rendered.Replicas, authorInto)...)
 	return out, edits, nil
 }
 
@@ -252,6 +266,7 @@ func projectImages(
 	gitRaw map[string]interface{},
 	live, out *unstructured.Unstructured,
 	rendered map[string]RenderedImage,
+	authorInto string,
 ) []OverrideEdit {
 	if len(rendered) == 0 {
 		return nil
@@ -276,7 +291,7 @@ func projectImages(
 		if !inGit || !isRendered || !inSource {
 			continue // a new container writes through; the supplier rule converges it later
 		}
-		plan, routable := invertImage(slot, src, render)
+		plan, routable := invertImage(slot, src, render, authorInto)
 		if !routable {
 			return nil // one unroutable slot abandons routing for the whole object
 		}
@@ -298,7 +313,7 @@ func projectImages(
 //
 // routable is false when a live change cannot be expressed on the entries that exist, which
 // abandons routing for the whole object.
-func invertImage(slot imageSlot, src string, render RenderedImage) (slotPlan, bool) {
+func invertImage(slot imageSlot, src string, render RenderedImage, authorInto string) (slotPlan, bool) {
 	srcRef := parseImageRef(src)
 	rendered := parseImageRef(render.Rendered)
 	live := parseImageRef(slot.image)
@@ -321,11 +336,30 @@ func invertImage(slot imageSlot, src string, render RenderedImage) (slotPlan, bo
 			},
 		})
 	}
+	// author writes a NEW images: entry into the overlay kustomization, matching the source
+	// image by name. It fires only where the source document supplies the component AND an
+	// overlay is available to author into — otherwise the change goes into the source file.
+	author := func(field, value string) {
+		plan.edits = append(plan.edits, OverrideEdit{
+			KustomizationPath: authorInto,
+			Create:            true,
+			Edit: manifestedit.KustomizationEdit{
+				Section:   manifestedit.KustomizationSectionImages,
+				EntryName: srcRef.name,
+				Field:     field,
+				Value:     value,
+			},
+		})
+	}
+	authorTag := authorFor(authorInto != "", author, fieldNewTag)
+	authorDigest := authorFor(authorInto != "", author, fieldDigest)
 
 	if live.name != rendered.name {
 		switch {
 		case render.Name != nil:
 			route(render.Name, fieldNewName, live.name)
+		case authorInto != "":
+			author(fieldNewName, live.name)
 		default:
 			newSrc.name = live.name
 		}
@@ -333,19 +367,28 @@ func invertImage(slot imageSlot, src string, render RenderedImage) (slotPlan, bo
 	if live.tag != rendered.tag {
 		if !routeComponent(render.Tag, render.Digest, live.tag,
 			func(v string) { newSrc.tag = v },
-			func(e *ImageOverride, v string) { route(e, fieldNewTag, v) }) {
+			func(e *ImageOverride, v string) { route(e, fieldNewTag, v) }, authorTag) {
 			return plan, false
 		}
 	}
 	if live.digest != rendered.digest {
 		if !routeComponent(render.Digest, render.Tag, live.digest,
 			func(v string) { newSrc.digest = v },
-			func(e *ImageOverride, v string) { route(e, fieldDigest, v) }) {
+			func(e *ImageOverride, v string) { route(e, fieldDigest, v) }, authorDigest) {
 			return plan, false
 		}
 	}
 	plan.fileImage = newSrc.String()
 	return plan, true
+}
+
+// authorFor returns a component author (the routeComponent "no entry, but an overlay is
+// available" hook) for one image field, or nil when there is nowhere to author into.
+func authorFor(enabled bool, author func(field, value string), field string) func(string) {
+	if !enabled {
+		return nil
+	}
+	return func(value string) { author(field, value) }
 }
 
 // routeComponent decides where one changed image component (tag or digest) goes: onto the
@@ -370,12 +413,17 @@ func invertImage(slot imageSlot, src string, render RenderedImage) (slotPlan, bo
 //     entry that sets one;
 //   - a change to a component the SIBLING entry clears — nowhere to land, and the file would
 //     be overridden straight back.
+//
+// author is the overlay hook: when the source document supplies the component and an overlay is
+// available to author into, the change becomes a new images: entry instead of a source write.
+// It is nil for a self-contained subtree and for an in-jail source, where the file is writable.
 func routeComponent(
 	supplier *ImageOverride,
 	sibling *ImageOverride,
 	live string,
 	setSource func(string),
 	route func(*ImageOverride, string),
+	author func(string),
 ) bool {
 	switch {
 	case supplier != nil && live == "":
@@ -384,6 +432,8 @@ func routeComponent(
 		route(supplier, live)
 	case sibling != nil:
 		return false // the sibling component's entry clears this one; the file cannot own it
+	case author != nil && live != "":
+		author(live) // no entry supplies it, but an overlay can author one over the base
 	default:
 		setSource(live) // the source document supplies it; the change flows into the file
 	}
@@ -446,13 +496,34 @@ func projectReplicas(
 	gitRaw map[string]interface{},
 	live, out *unstructured.Unstructured,
 	rendered *RenderedReplicas,
+	authorInto string,
 ) []OverrideEdit {
-	if rendered == nil || rendered.Entry == nil {
-		return nil // no entry supplies the count; a scale flows into the source document
+	if rendered == nil {
+		return nil // the object renders no spec.replicas; nothing an entry governs
 	}
 	liveCount, liveHas, err := unstructured.NestedInt64(live.Object, "spec", "replicas")
 	if err != nil || !liveHas {
 		return nil
+	}
+
+	if rendered.Entry == nil {
+		// No entry supplies the count. If the source is out of the write jail (a base) and an
+		// overlay is available, author a new replicas: entry over it; otherwise the scale flows
+		// into the source document.
+		if authorInto == "" || liveCount == rendered.Rendered {
+			return nil
+		}
+		restoreSourceReplicas(gitRaw, out)
+		return []OverrideEdit{{
+			KustomizationPath: authorInto,
+			Create:            true,
+			Edit: manifestedit.KustomizationEdit{
+				Section:   manifestedit.KustomizationSectionReplicas,
+				EntryName: live.GetName(),
+				Field:     fieldCount,
+				Value:     strconv.FormatInt(liveCount, 10),
+			},
+		}}
 	}
 
 	restoreSourceReplicas(gitRaw, out)

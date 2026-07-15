@@ -241,6 +241,225 @@ func TestPlacement_UndecodableKustomization_RefusesTheFlush(t *testing.T) {
 	require.Error(t, err, "a kustomization kustomize cannot build must refuse the folder, not be written into")
 }
 
+// TestPlacement_ExternalBaseOverlay_NewObject proves render-root scoping's WRITE half for a
+// brand-new object: a GitTarget rooted at an overlay that reads ../../base gains a new
+// ConfigMap. The file must land inside the overlay (never the read-only base), the overlay's
+// kustomization must gain the resources: entry so kustomize renders it, the base must be left
+// byte-for-byte untouched, and the render oracle must accept the flush — kustomize builds the
+// new object through the re-rooted scope. This is the "New object -> overlay-local file plus
+// resources: entry" row of render-root-scoping.md §4.
+func TestPlacement_ExternalBaseOverlay_NewObject(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+
+	// The read-only base, outside the overlay's own subtree.
+	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - deployment.yaml\n")
+	seedPlacedManifest(t, worktree, "base/deployment.yaml",
+		"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n")
+	// The overlay GitTarget reaches ../../base and sets the namespace transformer.
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml",
+		"namespace: podinfo-test\nresources:\n  - ../../base\n")
+	baseKustBefore, err := os.ReadFile(filepath.Join(root, "base/kustomization.yaml"))
+	require.NoError(t, err)
+
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	changed, err := w.flushEventsToWorktree(
+		context.Background(), worktree, "overlays/test",
+		[]Event{newConfigMapEvent("cache", "podinfo-test")}, nil,
+	)
+	require.NoError(t, err, "the overlay new-object flush must pass the render oracle")
+	require.True(t, changed)
+
+	// The new object lands inside the overlay, not the base.
+	newFile, err := os.ReadFile(filepath.Join(root, "overlays/test/cache.yaml"))
+	require.NoError(t, err, "the new resource must land inside the overlay directory")
+	assert.Contains(t, string(newFile), "name: cache")
+
+	// The overlay kustomization gains the resources: entry so kustomize renders it.
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "- ../../base", "the base reference must survive")
+	assert.Contains(t, string(kust), "cache.yaml", "the new file must be registered in the overlay's resources:")
+
+	// The read-only base is never written into.
+	_, statErr := os.Stat(filepath.Join(root, "base/cache.yaml"))
+	assert.True(t, os.IsNotExist(statErr), "nothing may be written into the read-only base")
+	baseKustAfter, err := os.ReadFile(filepath.Join(root, "base/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, string(baseKustBefore), string(baseKustAfter),
+		"the base kustomization must be untouched")
+}
+
+// overlayBaseDeploymentWorktree seeds an external-base overlay whose base declares one
+// Deployment, and returns the worktree. The overlay reaches ../../base and sets the namespace.
+func overlayBaseDeploymentWorktree(t *testing.T, baseImage string, baseReplicas string) *gogit.Worktree {
+	t.Helper()
+	worktree := newWorktreeForTest(t)
+	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - deployment.yaml\n")
+	dep := "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: podinfo-test\nspec:\n"
+	if baseReplicas != "" {
+		dep += "  replicas: " + baseReplicas + "\n"
+	}
+	dep += "  template:\n    spec:\n      containers:\n        - name: app\n          image: " + baseImage + "\n"
+	seedPlacedManifest(t, worktree, "base/deployment.yaml", dep)
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml",
+		"namespace: podinfo-test\nresources:\n  - ../../base\n")
+	return worktree
+}
+
+func liveDeployment(image string, replicas int64) Event {
+	spec := map[string]interface{}{
+		"template": map[string]interface{}{"spec": map[string]interface{}{
+			"containers": []interface{}{map[string]interface{}{"name": "app", "image": image}}}},
+	}
+	if replicas >= 0 {
+		spec["replicas"] = replicas
+	}
+	return Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "apps/v1", "kind": "Deployment",
+			"metadata": map[string]interface{}{"name": "web", "namespace": "podinfo-test"},
+			"spec":     spec,
+		}},
+		Identifier: types.NewResourceIdentifier("apps", "v1", "deployments", "podinfo-test", "web"),
+		Operation:  "UPDATE",
+	}
+}
+
+func flushOverlayDeployment(t *testing.T, worktree *gogit.Worktree, event Event) error {
+	t.Helper()
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: deploymentMapper()}
+	_, err := w.flushEventsToWorktree(context.Background(), worktree, "overlays/test", []Event{event}, nil)
+	return err
+}
+
+// TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage is the flagship of "edit a specific
+// environment and the override is authored for you": bumping a base-rendered Deployment's image
+// in an overlay authors a new images: entry in the overlay's OWN kustomization (never the base),
+// verified by the re-render oracle. Before this the flush was refused for escaping the write jail.
+func TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage(t *testing.T) {
+	worktree := overlayBaseDeploymentWorktree(t, "nginx:1.0", "")
+	root := worktree.Filesystem.Root()
+
+	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:2.0", -1)),
+		"an image bump must be authored as an overlay images: entry, not refused")
+
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "images:", "the overlay must gain an images: section")
+	assert.Contains(t, string(kust), "name: nginx", "the entry names the base image")
+	assert.Contains(t, string(kust), "newTag: \"2.0\"", "the entry carries the new tag")
+
+	base, err := os.ReadFile(filepath.Join(root, "base/deployment.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(base), "image: nginx:1.0", "the read-only base image must be untouched")
+}
+
+// TestOverlayAuthors_ReplicaEntry_ForBaseSuppliedCount scales a base-rendered Deployment in an
+// overlay: the overlay authors a replicas: entry over the base's count, base untouched.
+func TestOverlayAuthors_ReplicaEntry_ForBaseSuppliedCount(t *testing.T) {
+	worktree := overlayBaseDeploymentWorktree(t, "nginx:1.0", "2")
+	root := worktree.Filesystem.Root()
+
+	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:1.0", 5)),
+		"a scale must be authored as an overlay replicas: entry, not refused")
+
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "replicas:", "the overlay must gain a replicas: section")
+	assert.Contains(t, string(kust), "name: web", "the entry names the resource")
+	assert.Contains(t, string(kust), "count: 5", "the entry carries the new count")
+
+	base, err := os.ReadFile(filepath.Join(root, "base/deployment.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(base), "replicas: 2", "the read-only base replica count must be untouched")
+}
+
+// TestOverlayAuthors_Idempotent_OnResync re-observes the same live image after the entry was
+// authored: the store now sees the entry, so the change routes to it (no duplicate entry).
+func TestOverlayAuthors_Idempotent_OnResync(t *testing.T) {
+	worktree := overlayBaseDeploymentWorktree(t, "nginx:1.0", "")
+	root := worktree.Filesystem.Root()
+
+	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:2.0", -1)))
+	// A second flush of the same live state must not append a second entry.
+	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:2.0", -1)))
+
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(kust), "name: nginx"),
+		"the authored images: entry must appear exactly once")
+}
+
+// TestOverlayAuthors_DeletePatch_ForInheritedObject deletes an object the overlay inherits from
+// its base: the writer authors a $patch: delete in the overlay (file + patches: entry), the
+// re-render oracle proves the object leaves the render, and the read-only base is untouched.
+func TestOverlayAuthors_DeletePatch_ForInheritedObject(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - cm.yaml\n")
+	seedPlacedManifest(t, worktree, "base/cm.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n  namespace: podinfo-test\ndata:\n  k: v\n")
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml",
+		"namespace: podinfo-test\nresources:\n  - ../../base\n")
+
+	del := Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]interface{}{"name": "shared", "namespace": "podinfo-test"}}},
+		Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "podinfo-test", "shared"),
+		Operation:  "DELETE",
+	}
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	_, err := w.flushEventsToWorktree(context.Background(), worktree, "overlays/test", []Event{del}, nil)
+	require.NoError(t, err, "deleting an inherited object must author a $patch: delete, not refuse")
+
+	patch, err := os.ReadFile(filepath.Join(root, "overlays/test/configmap-shared-delete.yaml"))
+	require.NoError(t, err, "the overlay must gain a $patch: delete file")
+	assert.Contains(t, string(patch), "$patch: delete")
+	assert.Contains(t, string(patch), "name: shared")
+
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "patches:")
+	assert.Contains(t, string(kust), "configmap-shared-delete.yaml")
+
+	base, err := os.ReadFile(filepath.Join(root, "base/cm.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(base), "name: shared", "the read-only base object must be untouched")
+}
+
+// TestOverlayAuthors_DeletePatch_SkipsOnPathCollision proves the delete-patch author never
+// clobbers an unrelated file that happens to occupy the deterministic patch path: the flush skips
+// the delete and leaves the existing file byte-for-byte, rather than overwriting it.
+func TestOverlayAuthors_DeletePatch_SkipsOnPathCollision(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - cm.yaml\n")
+	seedPlacedManifest(t, worktree, "base/cm.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n  namespace: podinfo-test\ndata:\n  k: v\n")
+	// An unrelated overlay-local file already occupies the delete patch's deterministic path.
+	collision := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: keepme\n  namespace: podinfo-test\ndata:\n  x: y\n"
+	seedPlacedManifest(t, worktree, "overlays/test/configmap-shared-delete.yaml", collision)
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml",
+		"namespace: podinfo-test\nresources:\n  - ../../base\n  - configmap-shared-delete.yaml\n")
+
+	del := Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]interface{}{"name": "shared", "namespace": "podinfo-test"}}},
+		Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "podinfo-test", "shared"),
+		Operation:  "DELETE",
+	}
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	_, err := w.flushEventsToWorktree(context.Background(), worktree, "overlays/test", []Event{del}, nil)
+	require.NoError(t, err, "a patch-path collision must be skipped, not error")
+
+	got, err := os.ReadFile(filepath.Join(root, "overlays/test/configmap-shared-delete.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, collision, string(got), "the colliding file must be left byte-for-byte, never overwritten")
+}
+
 func newTestWriteBatch(t *testing.T) *writeBatch {
 	t.Helper()
 	writer := newContentWriter(types.SensitiveResourcePolicy{})

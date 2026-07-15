@@ -202,7 +202,7 @@ spec:
 	chains, _ := renderChains(files, parseKustomizations(files))
 	rendered := chains[chainKey{originPath: sourceDoc, kind: "Deployment", name: "web"}].rendered
 
-	_, _, err := SplitDesiredForOverrides(gitRaw, &unstructured.Unstructured{Object: live}, rendered)
+	_, _, err := SplitDesiredForOverrides(gitRaw, &unstructured.Unstructured{Object: live}, rendered, "")
 
 	var refused *SourceFormRefusedError
 	require.ErrorAs(t, err, &refused)
