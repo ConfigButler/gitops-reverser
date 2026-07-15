@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	gogit "github.com/go-git/go-git/v5"
 
@@ -248,6 +249,120 @@ func TestScanRenderScope_RefusesBaseEscapingRepoRoot(t *testing.T) {
 	_, err := scanRenderScope(root, "app")
 	require.Error(t, err, "a base escaping the repository root must be refused")
 	assert.Contains(t, err.Error(), "escapes the repository root")
+}
+
+func deploymentAndConfigMapMapper() typeset.Lookup {
+	return typeset.NewSnapshotRegistry(typeset.Snapshot{
+		Entries: []typeset.Entry{
+			{
+				GVK:        schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				GVR:        schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
+				Namespaced: true, Allowed: true,
+			},
+			{
+				GVK:        schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"},
+				GVR:        schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+				Namespaced: true, Allowed: true,
+			},
+		},
+	})
+}
+
+// A brand-new object in an overlay lands beside the overlay's own kustomization, is added to
+// its resources: list, and renders — verified by the oracle. It must NOT be committed to a file
+// no kustomization includes (which would never render, with the oracle skipped) — the silent
+// divergence P1 flagged.
+func TestPlanFlush_Overlay_NewObjectLandsInOverlayAndRenders(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	_, overlayKustPath := seedOverlayWorktree(t, root)
+
+	cm := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]interface{}{"name": "features", "namespace": "production"},
+		"data":     map[string]interface{}{"flag": "on"},
+	}}
+	event := Event{
+		Object: cm,
+		Identifier: types.ResourceIdentifier{
+			Group: "", Version: "v1", Resource: "configmaps", Namespace: "production", Name: "features",
+		},
+		Operation: "UPDATE",
+	}
+
+	changed, err := flushAtBase(t, writer, worktree, deploymentAndConfigMapMapper(), overlayGitPath, event)
+	require.NoError(t, err, "a new object in an overlay must not be silently dropped")
+	require.True(t, changed)
+
+	written := filepath.Join(root, filepath.FromSlash(overlayGitPath), "features.yaml")
+	_, statErr := os.Stat(written)
+	require.NoError(t, statErr, "the new object must be written inside the overlay (the write jail)")
+
+	kust, err := os.ReadFile(overlayKustPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "features.yaml",
+		"the overlay's kustomization must gain a resources: entry so the new object renders")
+}
+
+// A base directory holding BOTH kustomization.yaml and kustomization.yml is imported whole, so
+// the render reaches kustomize's own "multiple kustomization files" refusal instead of masking
+// it by reading only the first.
+func TestScanRenderScope_DualKustomizationFilesImportedBoth(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	write := func(rel, content string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	write("apps/frontend/overlays/production/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"namespace: production\nresources:\n  - ../../base\n")
+	k := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"
+	write("apps/frontend/base/kustomization.yaml", k)
+	write("apps/frontend/base/kustomization.yml", k)
+	write("apps/frontend/base/deployment.yaml", overlayBaseDeploymentYAML)
+
+	scoped, err := scanRenderScope(root, "apps/frontend/overlays/production")
+	require.NoError(t, err)
+	got := map[string]bool{}
+	for _, f := range scoped.scan.YAMLFiles {
+		got[f.Path] = true
+	}
+	assert.True(t, got["base/kustomization.yaml"] && got["base/kustomization.yml"],
+		"both kustomization files must be imported so the render refuses the ambiguous base")
+}
+
+// External-base discovery never follows a symlinked kustomization file, so the controller does
+// not read outside the worktree during scope resolution.
+func TestScanRenderScope_DoesNotFollowKustomizationSymlink(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	write := func(rel, content string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	// A secret file OUTSIDE the worktree that a symlink would expose.
+	outside := filepath.Join(t.TempDir(), "outside-kustomization.yaml")
+	require.NoError(t, os.WriteFile(outside,
+		[]byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n# SECRET-OUTSIDE-WORKTREE\n"), 0o600))
+
+	write("apps/frontend/overlays/production/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"namespace: production\nresources:\n  - ../../base\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "apps/frontend/base"), 0o750))
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "apps/frontend/base/kustomization.yaml")))
+
+	scoped, err := scanRenderScope(root, "apps/frontend/overlays/production")
+	require.NoError(t, err)
+	for _, f := range scoped.scan.YAMLFiles {
+		assert.NotContains(t, string(f.Content), "SECRET-OUTSIDE-WORKTREE",
+			"a symlinked kustomization must never be read from outside the worktree")
+		assert.NotEqual(t, "base/kustomization.yaml", f.Path,
+			"the symlinked base kustomization must not be imported")
+	}
 }
 
 // A base that itself reads another out-of-scope base is followed transitively, and renderBase

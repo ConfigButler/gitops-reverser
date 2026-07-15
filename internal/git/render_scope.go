@@ -127,9 +127,12 @@ func resolveReadScope(root, base string, specFiles []manifestedit.FileContent) (
 		if !ok {
 			continue // a referenced directory with no readable kustomization: nothing to follow
 		}
-		// An out-of-scope base's own kustomization file is a build input the render FS needs.
+		// An out-of-scope base's own kustomization file(s) are a build input the render FS
+		// needs. Import EVERY recognized kustomization file the directory holds, not just the
+		// first: real kustomize refuses a directory with more than one, so carrying them all
+		// lets the render reach the same refusal instead of masking the conflict.
 		if !pathWithin(dir, base) {
-			if kf, kok := kustomizationFilePath(root, dir); kok {
+			for _, kf := range kustomizationFiles(root, dir) {
 				readSet[kf] = struct{}{}
 			}
 		}
@@ -228,25 +231,30 @@ func kustContentOrDisk(root, dir string, cache map[string][]byte) ([]byte, bool)
 	return content, ok
 }
 
-// kustomizationFilePath returns the worktree-relative path of a directory's kustomization
-// file (kustomization.yaml or .yml), or ok=false when it holds none.
-func kustomizationFilePath(root, dir string) (string, bool) {
+// kustomizationFiles returns the worktree-relative path of every recognized kustomization
+// file (kustomization.yaml and/or kustomization.yml) a directory holds as a REGULAR file — a
+// symlink is skipped, so a base reference can never leave the tree through one. Both are
+// returned when both exist: real kustomize refuses that directory, and importing both lets the
+// render reach the same verdict rather than masking it.
+func kustomizationFiles(root, dir string) []string {
+	var out []string
 	for _, name := range []string{"kustomization.yaml", "kustomization.yml"} {
 		rel := cleanSlash(path.Join(dir, name))
-		if info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err == nil && !info.IsDir() {
-			return rel, true
+		if info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err == nil && info.Mode().IsRegular() {
+			out = append(out, rel)
 		}
 	}
-	return "", false
+	return out
 }
 
-// readKustomization reads the kustomization.yaml (or .yml) of a worktree-relative directory
-// from disk, for following an out-of-scope base's own `../` references. ok is false when the
-// directory holds no readable kustomization.
+// readKustomization reads a directory's kustomization file from disk, for following an
+// out-of-scope base's own `../` references. It goes through the same guarded reader as every
+// other referenced file (readFileBytes: Lstat + regular-file), so a symlinked kustomization is
+// never followed outside the worktree. ok is false when the directory holds no readable
+// regular kustomization.
 func readKustomization(root, dir string) ([]byte, bool) {
 	for _, name := range []string{"kustomization.yaml", "kustomization.yml"} {
-		p := filepath.Join(root, filepath.FromSlash(dir), name)
-		if content, err := os.ReadFile(p); err == nil {
+		if content, ok := readFileBytes(root, cleanSlash(path.Join(dir, name))); ok {
 			return content, true
 		}
 	}
