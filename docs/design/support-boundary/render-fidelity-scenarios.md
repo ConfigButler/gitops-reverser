@@ -1,18 +1,18 @@
 # Render fidelity: red-first scenarios and fixtures
 
-> **design** — the executable examples for
+> **design + implementation record** — the executable examples for
 > [render-fidelity.md](render-fidelity.md). They are deliberately separate from the
 > layout corpus: the layout corpus has repository bytes but no corresponding live
 > objects, while fidelity is a render-**vs-live** claim.
 
-This is the acceptance suite for `RenderMatchesLive`. Implement the fixture reader and
-the first failing test before the predicate or gate. A hand-written unit test that
-constructs only the happy path is not an adequate substitute: the two regressions this
+The predicate fixtures and state-machine tests below are implemented. This document keeps the
+remaining worker-sequencing and Flux end-to-end cases as follow-up acceptance criteria. A hand-written
+unit test that constructs only the happy path is not an adequate substitute: the two regressions this
 fence exists to prevent are both plausible-looking shortcuts.
 
 ## 1. Fixture boundary
 
-Create a self-contained fixture suite at:
+The implemented self-contained fixture suite is:
 
 ```text
 internal/manifestanalyzer/testdata/render-fidelity/
@@ -76,15 +76,15 @@ the example uses `deployments.apps/default` and `configmaps/default`.
 | 1 | Begin epoch `E1` with both scopes pending | `Unknown/Rechecking` | No |
 | 2 | Deployment scope reports clean | `Unknown/Rechecking` | No |
 | 3 | ConfigMap scope reports clean | `True/RenderMatchesLive` | Yes |
-| 4 | Begin `E2` after a Git revision or watch-set change; discard its open target window | `Unknown/Rechecking` | No |
+| 4 | Begin `E2` after a target-watch replacement; an existing window is discarded if it later finalizes while the gate is closed | `Unknown/Rechecking` | No |
 | 5 | Deployment scope reports a `${REGION}` divergence | `False/RenderDoesNotMatchLive` | No |
 | 6 | ConfigMap scope reports clean | Still `False` | No |
 | 7 | A normal live write arrives | Still `False`; no window/commit | No |
 | 8 | Stale clean result from `E1` arrives | Ignored; still `False` | No |
-| 9 | Begin `E3` after the Git repair; both scopes report clean | `True/RenderMatchesLive` | Yes |
+| 9 | Begin `E3` through an explicit fresh watch epoch; both scopes report clean | `True/RenderMatchesLive` | Yes |
 | 10 | A steady-state write finds a divergence | Immediately `False` with a sample | No |
 
-Test the zero-scope case explicitly. Once structural acceptance has passed, a target with
+The shipped tests cover this trace, including the zero-scope case. Once structural acceptance has passed, a target with
 no active watch scopes is `True` by vacuous comparison; it cannot receive a normal live
 write. This avoids leaving an otherwise idle target permanently `Unknown`.
 
@@ -99,19 +99,18 @@ TestRenderFidelityGate_FullFreshEpochReopensAfterGitRepair
 
 ## 4. Writer and watch integration tests
 
-After the two pure suites are red and passing, add a minimal worktree/worker test that
-does all of the following in one ordered trace:
+The shipped writer test proves that the same refusal blocks both a live write and a scoped-resync
+write without changing the worktree. The following ordered worker trace remains to be added:
 
 1. Initial scoped resync finds `plain-postbuild-token` and creates **no** Git commit.
 2. The worker records `RenderMatchesLive=False` before it processes the next queued
    event for that target.
 3. A clean-resource event queued behind the refusal cannot open a write window or
    change a file.
-4. Beginning a fresh epoch discards an already-open, uncommitted window for that target;
-   the resync must not finalize it before measuring the new epoch.
-5. A fresh complete epoch after an incoming Git edit that removes or changes the token
-   cleanly re-evaluates the current worktree and reopens writes only after every scope
-   passes.
+4. An already-open, uncommitted window is discarded if it later finalizes while a fresh epoch has the
+   gate closed; the resync must not commit it before measuring the new epoch.
+5. After a future remote-Git revision detector has safely started a fresh epoch, a complete replay of
+   the refreshed worktree reopens writes only after every scope passes.
 
 At the watch-manager layer, pin that a clean scoped resync does not overwrite another
 scope's failed result. The existing `GitPathAccepted` tests are not enough: fidelity is
@@ -120,10 +119,11 @@ resync reply.
 
 ## 5. End-to-end proof
 
-Add a dedicated e2e fixture under `test/e2e/fixtures/render-fidelity/`; do not reuse a
-render-root-scoping fixture. It needs a real Flux `Kustomization` whose repository
-Deployment contains `${REGION}` and whose `postBuild.substitute` resolves it to
-`us-east`.
+The dedicated fixture at `test/e2e/fixtures/render-fidelity/` is implemented and runs in the
+regular `manager` E2E shard (not the Argo-only bi-directional lane). It uses a real Flux
+`Kustomization`: the repository Deployment contains `${REGION}`, while
+`postBuild.substitute` resolves it to `us-east` in the live object. Do not reuse a
+render-root-scoping fixture: this fixture owns the render-vs-live pair directly.
 
 The e2e assertions are:
 
@@ -132,12 +132,12 @@ The e2e assertions are:
 2. The Git file still contains `${REGION}` and no reverse-GitOps commit was created.
 3. A subsequent live edit to an otherwise clean object is not mirrored while the gate
    remains false.
-4. After an incoming Git revision makes the local render equal live, a complete replay
-   flips the condition to `True` and normal writes resume.
+4. **Future:** after a remote-Git revision detector refreshes a Git repair, a complete replay flips the
+   condition to `True` and normal writes resume.
 5. The existing CRD-lifecycle e2e remains green: its literal `${var:=default}` schema
    description must never fail the condition.
 
-The feature is not complete if it only passes the synthetic predicate tests. The Flux
-fixture proves that the operator observes the exact extra render context the local
-renderer cannot see, while the CRD lifecycle spec proves it did not revive the rejected
-structural check.
+The shipped gate is protected by synthetic predicate, writer, state, watch, controller, and direct
+Flux end-to-end coverage. The test proves the actual external `postBuild` context rather than a
+hand-constructed live object; recovery is deliberately not claimed until the revision detector exists.
+The CRD lifecycle spec remains the regression guard against reviving the rejected structural check.
