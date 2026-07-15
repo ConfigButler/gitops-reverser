@@ -1,9 +1,11 @@
 # Render-root scoping
 
 > **Implementation record.** External-base overlay support is shipped for existing
-> overlay-local documents, declared `images`/`replicas` entries, and **creating a new
-> overlay-local object** (a new file plus its `resources:` entry, verified by re-render).
-> Adding a *missing* `images`/`replicas` declaration and patch authoring remain separate work.
+> overlay-local documents, declared `images`/`replicas` entries, **creating a new
+> overlay-local object** (a new file plus its `resources:` entry), and **authoring a missing
+> `images`/`replicas` entry** when a base-supplied image or replica count is changed in one
+> environment — all verified by re-render. Patch authoring (including `$patch: delete` for an
+> inherited object) remains separate work.
 >
 > Related: [support contract](support-contract.md),
 > [Kustomize boundary](kustomize-support-boundary.md),
@@ -34,6 +36,12 @@ flowchart LR
   while the **write scope** remains `spec.path`.
 - An existing overlay-local document is edited in place. An existing `images:` or `replicas:`
   declaration receives the corresponding edit-through change.
+- When a **base** supplies an image or replica count and it is changed in one environment (the
+  classic "bump the image in dev"), the writer **authors a new `images:`/`replicas:` entry** in
+  the overlay's own kustomization — creating the section if the overlay has none yet — rather
+  than writing the read-only base. The re-render verifies the entry produces the live value and
+  moves nothing else; an entry that would over-reach (an image name shared by another object) is
+  refused there, not committed.
 - A **brand-new object** with no existing document is created as an overlay-local file and
   registered in the overlay's **own** `resources:` entry — never the base's — with the
   re-render verifying it before the commit. A new object whose field a folder-level
@@ -83,31 +91,33 @@ refuses the edit. See [render attribution](render-attribution.md) for the method
 
 | Observed change in selected overlay | Destination | Status |
 |---|---|---|
-| Image tag or repository | declared overlay `images:` entry | Editable |
-| Replica count | declared overlay `replicas:` entry | Editable |
+| Image tag or repository | overlay `images:` entry — edited if declared, **authored if the base supplies it** | Editable |
+| Replica count | overlay `replicas:` entry — edited if declared, **authored if the base supplies it** | Editable |
 | Existing overlay-local document field | that document | Editable |
 | New object | overlay-local file plus `resources:` entry | **Editable** — placed in the overlay, registered in its own kustomization, verified by re-render |
-| Base-owned field | operator-authored strategic-merge patch | Refused pending [patch authoring](patch-authoring.md) |
-| Delete inherited object in one overlay | `$patch: delete` | Refused |
+| Base-owned field (not image/replica) | operator-authored strategic-merge patch | Refused pending [patch authoring](patch-authoring.md) |
+| Delete inherited object in one overlay | `$patch: delete` | Refused pending [patch authoring](patch-authoring.md) |
 
-Entry creation is distinct from editing an entry. Creating a **new object** — an overlay-local
-file plus a `resources:` entry in the overlay's **own** kustomization (the base's is out of the
-write jail) — is shipped: the generic placement feature resolves the file, the writer adds the
-`resources:` entry in the same commit, and the re-render oracle verifies the new object appears
-while everything else is unchanged. What the writer still does **not** do is add a *missing*
-`images:`/`replicas:` declaration — that entry-creation case has no source value to attribute
-yet and stays planned.
+Entry creation is distinct from editing an entry, and both are now shipped for images/replicas.
+Creating a **new object** — an overlay-local file plus a `resources:` entry in the overlay's
+**own** kustomization (the base's is out of the write jail) — is shipped. **Authoring a missing
+`images:`/`replicas:` entry** is too: when a base supplies an image component or replica count
+and the environment changes it, the writer creates the entry (and the section, if absent) in the
+overlay rather than writing the read-only base, and the re-render adjudicates the proposal. What
+remains is a strategic-merge patch for a base-owned field that is *not* an image or replica, and
+`$patch: delete` for an inherited object — both patch authoring.
 
 ## 5. Remaining work
 
-1. Add missing `images:` and `replicas:` declarations only under the same verification proof.
-2. Flip discovery classification and add a dedicated cluster end-to-end overlay case.
-3. Author a narrow scalar strategic-merge patch for base-owned fields; lists, deletes, and
+1. Flip discovery classification and add a dedicated cluster end-to-end overlay case.
+2. Author a narrow scalar strategic-merge patch for base-owned fields; lists, deletes, and
    structural merges require separate decisions.
 
-Overlay-local new-object placement (a new file plus its `resources:` entry) is done and covered
-by `TestPlacement_ExternalBaseOverlay_NewObject`; it left the list when the write path proved it
-end-to-end.
+Overlay-local new-object placement (a new file plus its `resources:` entry) and authoring a
+missing `images:`/`replicas:` entry are both done, covered by
+`TestPlacement_ExternalBaseOverlay_NewObject` and `TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage`
+/ `TestOverlayAuthors_ReplicaEntry_ForBaseSuppliedCount`; they left the list as the write path
+proved them end-to-end.
 
 The earlier exploratory prompt material was consolidated into this implementation record and
 [patch authoring](patch-authoring.md). Git history retains the detailed experiments without

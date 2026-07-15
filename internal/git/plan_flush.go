@@ -692,7 +692,7 @@ func (wb *writeBatch) patchExisting(
 		desired.SetNamespace("")
 	}
 	projected, overrideEdits, err := projectThroughKustomize(
-		manifestreport.Project(desired), buf.current, idx, dm)
+		manifestreport.Project(desired), buf.current, idx, dm, wb.overlayAuthorKustomization(filePath))
 	if err != nil {
 		var fidelity *renderFidelityRefusedError
 		if errors.As(err, &fidelity) {
@@ -766,6 +766,7 @@ func projectThroughKustomize(
 	content []byte,
 	idx int,
 	dm *manifestanalyzer.DocumentModel,
+	authorInto string,
 ) (*unstructured.Unstructured, []manifestanalyzer.OverrideEdit, error) {
 	gitRaw, parsed := gitDocRawObject(content, idx)
 	if !parsed {
@@ -781,7 +782,23 @@ func projectThroughKustomize(
 	if dm.Rendered == nil {
 		return projected, nil, nil
 	}
-	return manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Rendered)
+	return manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Rendered, authorInto)
+}
+
+// overlayAuthorKustomization is the kustomization the writer may author a NEW images:/replicas:
+// entry into for an edit to filePath. It is set only when render-root scoping put filePath OUT of
+// the write jail — a base document an overlay reads read-only — and the overlay has a supported
+// render root of its own: then a value the base supplies can be overridden by authoring an entry
+// in the overlay instead of refusing the base write. It is "" for a self-contained subtree and
+// for an in-jail document, where the source file itself is writable.
+func (wb *writeBatch) overlayAuthorKustomization(filePath string) string {
+	if wb.writeSubdir == "" || pathWithin(filePath, wb.writeSubdir) {
+		return ""
+	}
+	if k := wb.store.Kustomizations[wb.writeSubdir]; k != nil && !k.Unsupported {
+		return k.Path
+	}
+	return ""
 }
 
 // renderFidelityRefusedError travels from the projection seam to patchExisting, where the file
@@ -973,13 +990,13 @@ func (wb *writeBatch) applyOverrideEdits(
 	if len(edits) == 0 {
 		return false
 	}
-	byPath := map[string][]manifestedit.KustomizationEdit{}
+	byPath := map[string][]manifestanalyzer.OverrideEdit{}
 	paths := make([]string, 0, len(edits))
 	for _, e := range edits {
 		if _, seen := byPath[e.KustomizationPath]; !seen {
 			paths = append(paths, e.KustomizationPath)
 		}
-		byPath[e.KustomizationPath] = append(byPath[e.KustomizationPath], e.Edit)
+		byPath[e.KustomizationPath] = append(byPath[e.KustomizationPath], e)
 	}
 	sort.Strings(paths)
 
@@ -989,17 +1006,42 @@ func (wb *writeBatch) applyOverrideEdits(
 		if buf.current == nil {
 			continue // the kustomization vanished within this batch; nothing to edit
 		}
-		res, diags := manifestedit.PatchKustomization(p, buf.current, byPath[p])
-		switch res.Mode {
-		case manifestedit.EditPatched:
-			buf.current = res.Content
-			changed = true
-			log.FromContext(ctx).Info("Routed live change to kustomization override",
-				"kustomization", p, "resource", event.Identifier.String(), "edits", len(byPath[p]))
-		case manifestedit.EditNoChange:
-			// Another event in this batch already landed the same value.
-		case manifestedit.EditSkipped, manifestedit.EditWholeReplace, manifestedit.EditDeleted:
-			logManifestDiagnostics(ctx, diags)
+		// A skipped or no-change edit leaves buf.current as it is; a patch updates it. Folded
+		// here so PatchKustomization (edit an existing entry) and AppendKustomizationOverride
+		// (author a new one) share one place that advances the buffer and logs.
+		fold := func(res manifestedit.EditResult, diags []manifestedit.Diagnostic, n int, msg string) {
+			switch res.Mode {
+			case manifestedit.EditPatched:
+				buf.current = res.Content
+				changed = true
+				log.FromContext(ctx).Info(msg,
+					"kustomization", p, "resource", event.Identifier.String(), "edits", n)
+			case manifestedit.EditNoChange:
+				// Another event in this batch already landed the same value.
+			case manifestedit.EditSkipped, manifestedit.EditWholeReplace, manifestedit.EditDeleted:
+				logManifestDiagnostics(ctx, diags)
+			}
+		}
+
+		var patches []manifestedit.KustomizationEdit
+		var creates []manifestanalyzer.OverrideEdit
+		for _, e := range byPath[p] {
+			if e.Create {
+				creates = append(creates, e)
+			} else {
+				patches = append(patches, e.Edit)
+			}
+		}
+		if len(patches) > 0 {
+			res, diags := manifestedit.PatchKustomization(p, buf.current, patches)
+			fold(res, diags, len(patches), "Routed live change to kustomization override")
+		}
+		// Each authored entry is applied on its own (the writer creates one image component or
+		// replica count at a time), reading buf.current so several land in the same file.
+		for _, c := range creates {
+			res, diags := manifestedit.AppendKustomizationOverride(
+				p, buf.current, c.Edit.Section, c.Edit.EntryName, c.Edit.Field, c.Edit.Value)
+			fold(res, diags, 1, "Authored kustomization override for a base-supplied value")
 		}
 	}
 	return changed

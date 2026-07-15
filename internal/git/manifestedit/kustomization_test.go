@@ -183,6 +183,73 @@ func TestAppendKustomizationResource_IdempotentWhenAlreadyListed(t *testing.T) {
 	}
 }
 
+func TestAppendKustomizationOverride_AddsImageEntryToExistingSection(t *testing.T) {
+	res, diags := AppendKustomizationOverride(
+		"kustomization.yaml", []byte(kustomizationFixture), KustomizationSectionImages, "nginx", "newTag", "1.29")
+	if res.Mode != EditPatched {
+		t.Fatalf("Mode = %q, want patched (diags %+v)", res.Mode, diags)
+	}
+	got := string(res.Content)
+	// The existing entry survives with its comments; the new entry is appended, tag quoted.
+	for _, want := range []string{
+		"# pin the app image here",
+		"newTag: \"6.4.0\" # deployed version",
+		"- name: nginx",
+		"newTag: \"1.29\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("want %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestAppendKustomizationOverride_CreatesReplicasSectionWhenAbsent(t *testing.T) {
+	// A kustomization with no replicas: section yet gains one with a single entry.
+	src := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nnamespace: app\n" +
+		"resources:\n  - ../../base\n"
+	res, diags := AppendKustomizationOverride(
+		"kustomization.yaml", []byte(src), KustomizationSectionReplicas, "web", "count", "5")
+	if res.Mode != EditPatched {
+		t.Fatalf("Mode = %q, want patched (diags %+v)", res.Mode, diags)
+	}
+	got := string(res.Content)
+	if !strings.Contains(got, "replicas:") || !strings.Contains(got, "- name: web") ||
+		!strings.Contains(got, "count: 5") {
+		t.Errorf("expected a new replicas: section with the entry:\n%s", got)
+	}
+	// count must be an integer, never a quoted string.
+	if strings.Contains(got, "count: \"5\"") || strings.Contains(got, "count: '5'") {
+		t.Errorf("count must be integer-typed:\n%s", got)
+	}
+	// The base reference must survive untouched.
+	if !strings.Contains(got, "- ../../base") {
+		t.Errorf("resources: must be untouched:\n%s", got)
+	}
+}
+
+func TestAppendKustomizationOverride_IdempotentWhenEntryAlreadyAuthored(t *testing.T) {
+	res, _ := AppendKustomizationOverride(
+		"kustomization.yaml", []byte(kustomizationFixture),
+		KustomizationSectionImages, "ghcr.io/example/podinfo", "newTag", "6.4.0")
+	if res.Mode != EditNoChange {
+		t.Fatalf("Mode = %q, want no-change for an entry that already sets that value", res.Mode)
+	}
+	if string(res.Content) != kustomizationFixture {
+		t.Errorf("a no-op must leave the bytes byte-identical")
+	}
+}
+
+func TestAppendKustomizationOverride_RefusesUnknownSection(t *testing.T) {
+	res, diags := AppendKustomizationOverride(
+		"kustomization.yaml", []byte(kustomizationFixture), "patches", "web", "path", "p.yaml")
+	if res.Mode != EditSkipped || len(diags) == 0 {
+		t.Fatalf("an unknown section must skip with a diagnostic; got %q diags=%+v", res.Mode, diags)
+	}
+	if string(res.Content) != kustomizationFixture {
+		t.Errorf("a skip must leave the bytes untouched")
+	}
+}
+
 func TestRemoveKustomizationResource_DropsEntryPreservingHandAuthoring(t *testing.T) {
 	withExtra, _ := AppendKustomizationResource(
 		"kustomization.yaml",

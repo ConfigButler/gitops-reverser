@@ -49,7 +49,7 @@ func splitFixture(
 	var gitRaw map[string]interface{}
 	require.NoError(t, yaml.Unmarshal(contentOf(t, files, sourcePath), &gitRaw))
 
-	out, edits, err := SplitDesiredForOverrides(gitRaw, desired, assignment.rendered)
+	out, edits, err := SplitDesiredForOverrides(gitRaw, desired, assignment.rendered, "")
 	require.NoError(t, err, "the projection must be able to place the edit")
 	return out, edits
 }

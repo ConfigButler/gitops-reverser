@@ -178,6 +178,103 @@ func AppendKustomizationResource(path string, content []byte, entry string) (Edi
 	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
 }
 
+// AppendKustomizationOverride AUTHORS a new images:/replicas: override entry in a
+// kustomization.yaml — the mechanism half of "edit a specific environment and the override is
+// added for you" (docs/design/support-boundary/render-root-scoping.md §4). Unlike
+// PatchKustomization, which only updates a scalar on an entry that already exists, this creates
+// the entry (and the section sequence, if the kustomization has none yet) so an overlay can
+// override a value its base supplies WITHOUT touching the read-only base.
+//
+// It writes exactly one field beside name:, matching how the writer inverts one changed image
+// component or replica count at a time:
+//
+//	images:   { name: <image name>, newName|newTag|digest: <value> }
+//	replicas: { name: <resource name>, count: <value> }
+//
+// It is idempotent and never duplicates: an entry named name that already sets field to value is
+// a no-op (EditNoChange), so a resync re-observing the same live state does not append a second
+// entry. All-or-nothing like its siblings: a multi-document file, unparseable YAML, or a
+// non-mapping document skips the whole call with a diagnostic. Every proposal it produces is put
+// to kustomize by the re-render oracle before it can become a commit, so an entry that would
+// over-reach (an images: name shared by another object the overlay did not mean to move) is
+// refused there, not written.
+func AppendKustomizationOverride(
+	path string, content []byte, section, name, field, value string,
+) (EditResult, []Diagnostic) {
+	skip := func(format string, args ...interface{}) (EditResult, []Diagnostic) {
+		return EditResult{Content: content, Mode: EditSkipped},
+			[]Diagnostic{diag(DiagWarning, Location{Path: path}, format, args...)}
+	}
+	if section != KustomizationSectionImages && section != KustomizationSectionReplicas {
+		return skip("kustomization %s: unknown override section %q", path, section)
+	}
+
+	docs, idx, root, reason, ok := locateKustomizationDocument(path, content)
+	if !ok {
+		return skip("%s", reason)
+	}
+	target := docs[idx].body
+
+	seq := nodeMapGet(root, section)
+	if seq != nil && seq.Kind != yaml.SequenceNode {
+		return skip("kustomization %s: %s is not a sequence", path, section)
+	}
+	if seq == nil {
+		seq = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		root.Content = append(root.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: section},
+			seq)
+	}
+	if overrideEntryPresent(seq, name, field, value) {
+		return EditResult{Content: content, Mode: EditNoChange}, nil // already authored
+	}
+	seq.Content = append(seq.Content, overrideEntryNode(section, name, field, value))
+
+	encoded, err := encodeNode(root)
+	if err != nil {
+		return skip("kustomization %s: re-encode failed: %v", path, err)
+	}
+	body := reskinDocument(target, string(encoded))
+	if body == target {
+		return EditResult{Content: content, Mode: EditNoChange}, nil
+	}
+	docs[idx].body = body
+	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
+}
+
+// overrideEntryPresent reports whether the sequence already holds an entry named name that sets
+// field to value — the idempotency check that keeps a resync from appending a duplicate.
+func overrideEntryPresent(seq *yaml.Node, name, field, value string) bool {
+	for _, item := range seq.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		if n := nodeMapGet(item, "name"); n == nil || n.Value != name {
+			continue
+		}
+		if f := nodeMapGet(item, field); f != nil && f.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
+// overrideEntryNode builds the `{ name: <name>, <field>: <value> }` mapping for a new override
+// entry. count is integer-typed (kustomize's replicas count is an int); image components are
+// string-typed and left plain so the encoder can quote a "1.29"-style tag safely.
+func overrideEntryNode(section, name, field, value string) *yaml.Node {
+	valueNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+	if section == KustomizationSectionReplicas && field == "count" {
+		valueNode.Tag = "!!int"
+	}
+	return &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: "name"},
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: name},
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: field},
+		valueNode,
+	}}
+}
+
 // RemoveKustomizationResource drops one entry from an existing kustomization.yaml's
 // resources: sequence. It is AppendKustomizationResource's counterpart, and it exists for
 // exactly the reason that one does, read backwards: a file named in resources: that no

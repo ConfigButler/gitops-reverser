@@ -290,6 +290,107 @@ func TestPlacement_ExternalBaseOverlay_NewObject(t *testing.T) {
 		"the base kustomization must be untouched")
 }
 
+// overlayBaseDeploymentWorktree seeds an external-base overlay whose base declares one
+// Deployment, and returns the worktree. The overlay reaches ../../base and sets the namespace.
+func overlayBaseDeploymentWorktree(t *testing.T, baseImage string, baseReplicas string) *gogit.Worktree {
+	t.Helper()
+	worktree := newWorktreeForTest(t)
+	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - deployment.yaml\n")
+	dep := "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: podinfo-test\nspec:\n"
+	if baseReplicas != "" {
+		dep += "  replicas: " + baseReplicas + "\n"
+	}
+	dep += "  template:\n    spec:\n      containers:\n        - name: app\n          image: " + baseImage + "\n"
+	seedPlacedManifest(t, worktree, "base/deployment.yaml", dep)
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml",
+		"namespace: podinfo-test\nresources:\n  - ../../base\n")
+	return worktree
+}
+
+func liveDeployment(image string, replicas int64) Event {
+	spec := map[string]interface{}{
+		"template": map[string]interface{}{"spec": map[string]interface{}{
+			"containers": []interface{}{map[string]interface{}{"name": "app", "image": image}}}},
+	}
+	if replicas >= 0 {
+		spec["replicas"] = replicas
+	}
+	return Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "apps/v1", "kind": "Deployment",
+			"metadata": map[string]interface{}{"name": "web", "namespace": "podinfo-test"},
+			"spec":     spec,
+		}},
+		Identifier: types.NewResourceIdentifier("apps", "v1", "deployments", "podinfo-test", "web"),
+		Operation:  "UPDATE",
+	}
+}
+
+func flushOverlayDeployment(t *testing.T, worktree *gogit.Worktree, event Event) error {
+	t.Helper()
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: deploymentMapper()}
+	_, err := w.flushEventsToWorktree(context.Background(), worktree, "overlays/test", []Event{event}, nil)
+	return err
+}
+
+// TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage is the flagship of "edit a specific
+// environment and the override is authored for you": bumping a base-rendered Deployment's image
+// in an overlay authors a new images: entry in the overlay's OWN kustomization (never the base),
+// verified by the re-render oracle. Before this the flush was refused for escaping the write jail.
+func TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage(t *testing.T) {
+	worktree := overlayBaseDeploymentWorktree(t, "nginx:1.0", "")
+	root := worktree.Filesystem.Root()
+
+	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:2.0", -1)),
+		"an image bump must be authored as an overlay images: entry, not refused")
+
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "images:", "the overlay must gain an images: section")
+	assert.Contains(t, string(kust), "name: nginx", "the entry names the base image")
+	assert.Contains(t, string(kust), "newTag: \"2.0\"", "the entry carries the new tag")
+
+	base, err := os.ReadFile(filepath.Join(root, "base/deployment.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(base), "image: nginx:1.0", "the read-only base image must be untouched")
+}
+
+// TestOverlayAuthors_ReplicaEntry_ForBaseSuppliedCount scales a base-rendered Deployment in an
+// overlay: the overlay authors a replicas: entry over the base's count, base untouched.
+func TestOverlayAuthors_ReplicaEntry_ForBaseSuppliedCount(t *testing.T) {
+	worktree := overlayBaseDeploymentWorktree(t, "nginx:1.0", "2")
+	root := worktree.Filesystem.Root()
+
+	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:1.0", 5)),
+		"a scale must be authored as an overlay replicas: entry, not refused")
+
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "replicas:", "the overlay must gain a replicas: section")
+	assert.Contains(t, string(kust), "name: web", "the entry names the resource")
+	assert.Contains(t, string(kust), "count: 5", "the entry carries the new count")
+
+	base, err := os.ReadFile(filepath.Join(root, "base/deployment.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(base), "replicas: 2", "the read-only base replica count must be untouched")
+}
+
+// TestOverlayAuthors_Idempotent_OnResync re-observes the same live image after the entry was
+// authored: the store now sees the entry, so the change routes to it (no duplicate entry).
+func TestOverlayAuthors_Idempotent_OnResync(t *testing.T) {
+	worktree := overlayBaseDeploymentWorktree(t, "nginx:1.0", "")
+	root := worktree.Filesystem.Root()
+
+	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:2.0", -1)))
+	// A second flush of the same live state must not append a second entry.
+	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:2.0", -1)))
+
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(kust), "name: nginx"),
+		"the authored images: entry must appear exactly once")
+}
+
 func newTestWriteBatch(t *testing.T) *writeBatch {
 	t.Helper()
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
