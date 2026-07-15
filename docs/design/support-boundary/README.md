@@ -121,6 +121,11 @@ rather than guessing.
 - **Kustomize `images:` / `replicas:` edit-through** — a live change produced by an
   override entry is written back to that entry, never through into the source manifest
   ([finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md)).
+- **Render-fidelity token gate** — parsed `${...}` values are compared with live state before a
+  write. A mismatch refuses the operation and makes the independent
+  `RenderMatchesLive=False` condition close normal writes until a fresh complete watch epoch is clean
+  ([render-fidelity.md](render-fidelity.md)). Remote-Git revision detection and automatic recovery after
+  a Git repair remain unbuilt.
 - **Higher-level KRM documents** (Flux `HelmRelease`, Argo CD `Application`, KRO
   resources) mirror and edit exactly like core resources — the pipeline is kind-agnostic,
   and is pinned by a corpus plus a HelmRelease mirror+edit e2e

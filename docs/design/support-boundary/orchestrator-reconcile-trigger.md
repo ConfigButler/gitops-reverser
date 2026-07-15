@@ -1,12 +1,15 @@
 # The orchestrator reconcile trigger: revert a refusal, and order around origin drift
 
-> **design** — direction-setting; ships no code. Nothing it describes is supported today.
-> Captured: 2026-07-15
+> **design** — direction-setting; no orchestrator trigger or origin-drift barrier described here is
+> implemented. `RenderMatchesLive` is shipped, but it deliberately stays closed after a Git repair
+> until this document's safe remote-revision path exists.
+> Captured: 2026-07-15; implementation status updated: 2026-07-15.
 > Related:
 > [README.md](README.md),
 > [../../bi-directional.md](../../bi-directional.md) — **the user-facing model this expands: the reconciler as a *triggered applier***,
 > [argocd-bi-directional.md](argocd-bi-directional.md) — why `selfHeal` must be off, and why that means nothing reverts a refused edit,
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) — **the ownership model this rides on; it is the first *write* action built on it**,
+> [render-fidelity.md](render-fidelity.md) — the shipped gate whose automatic Git-repair recovery depends on this barrier,
 > [admission-consent.md](admission-consent.md) — the sibling half: deciding *whether* a write happens,
 > [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md)
 
@@ -15,9 +18,11 @@ write happens, at admission time. This half is about the operator gaining **one 
 asking the GitOps orchestrator (Flux/Argo) to reconcile now** — and the two places it is needed:
 reverting a refused edit promptly, and ordering our processing behind an incoming origin change.
 
-It is not a correctness layer. The one correctness gate stays where it is — the flush-time render
-oracle ([`VerifyBatchRenders`](../../../internal/manifestanalyzer/render_verify.go)). This is about
-closing the loop *fast* and *visibly* once a "no" has been decided.
+It is not a replacement for the write correctness layers: the flush-time render oracle
+([`VerifyBatchRenders`](../../../internal/manifestanalyzer/render_verify.go)) and the shipped
+[`RenderMatchesLive`](render-fidelity.md) token fence remain the decision points. This document is
+about closing the loop *fast* and *visibly* once a "no" has been decided, and about safely refreshing
+Git after origin drift so a repaired render-fidelity gate can be measured again.
 
 ---
 
@@ -205,15 +210,51 @@ watch (re)establishment the operator enqueues a scoped mark-and-sweep ahead of l
 the `replaying` flag, all on one FIFO so order is preserved
 ([`target_watch.go`](../../../internal/watch/target_watch.go),
 [`resync_flush.go`](../../../internal/git/resync_flush.go)). Two additions turn it into what we need: a
-new **trigger** (origin-drift detection, from the existing cached remote-drift check `SyncAndGetMetadata`),
-and a stronger **wait** (the barrier's "reconcile" step now waits for the *orchestrator* to apply
-Git → cluster, not only the operator's own sweep).
+new **trigger** (proactive origin-drift detection — see *The trigger*, below; the groundwork method
+`SyncAndGetMetadata` exists but is dormant, uncalled today), and a stronger **wait** (the barrier's
+"reconcile" step now waits for the *orchestrator* to apply Git → cluster, not only the operator's own
+sweep).
 
 > **Terminology, because "reconcile" is overloaded and this doc would mislead without saying so.**
 > There are two. The **orchestrator reconcile** (Flux/Argo applies Git → cluster) is what this
 > document triggers and waits on. The operator's internal **resync** (a mark-and-sweep that rebuilds
 > the Git-side model from the cluster, cluster → Git) is what runs *after* the barrier to absorb the
 > apply. Where this doc means the internal one, it says "resync."
+
+### The trigger: a Git push webhook, not lazy discovery
+
+Today the operator has **no proactive drift signal at all.** It notices a moved origin only at *push
+time* — when `PushAtomic`'s compare-and-swap is rejected and `pushPendingCommits` rebases by replay —
+and a push only happens after a *cluster* edit produces a commit. So a foreign push into an otherwise
+quiet branch stays invisible until the next cluster edit collides with it: the conflict path *is* the
+discovery mechanism. (`SyncAndGetMetadata` was meant to be a cached remote-drift check, but it is
+dormant — nothing calls it, and the steady 5-minute reconcile never fetches the remote.)
+
+The better trigger is the one the orchestrator already consumes: the **Git host's push webhook.** The
+same event that tells Flux/Argo "apply this revision now" is exactly the signal the operator needs —
+"origin drifted, engage the barrier" — and it arrives at the same moment, so the operator can raise the
+barrier *concurrently* with the orchestrator beginning its apply, rather than discovering the drift
+mid-flood. This flips detection from lazy to proactive and **demotes the conflict/replay path from the
+common case to a rarely-hit backstop.** Three properties make it a clean fit:
+
+- **It stays a backstop, never a correctness dependency — and must be tested as one.** Webhooks are
+  lost, delayed, misrouted, or **never configured at all**, and the operator cannot tell a webhook that
+  will never come from one that is merely late. So the CAS-rejection rebase-by-replay must remain the
+  correctness net, and **a kept e2e must exercise the drift-recovery path with the webhook switched
+  off** — proving a foreign push is still absorbed correctly on the next push attempt with no webhook in
+  play. If that test is ever allowed to lapse, a webhook regression turns silently into a data-loss bug.
+  (An optional periodic poll, reviving `SyncAndGetMetadata`, is a reasonable middle fallback, but it
+  replaces neither the backstop nor its test.)
+- **It must suppress our own push.** The operator's own commit fires the very same webhook. The
+  receiver has to compare the webhook's new revision against the SHA it last pushed for that
+  `(provider, branch)`: equal ⇒ our own commit, ignore; different ⇒ foreign drift, engage. Without this
+  the operator would raise the barrier against every commit it makes.
+- **Its routing is trivial — lighter than §4's.** A push webhook names `(repo, branch)`, and
+  BranchWorkers are already keyed by `(provider, branch)`, so the signal maps straight to the worker
+  with no path-level lookup. And *receiving* a drift notification is not a boundary *write*, so it
+  clears a much lower bar than the orchestrator-ownership claim §4 needs to *fire* the reconcile
+  trigger — though it is still a new inbound surface (a Service plus a shared secret to validate
+  signatures), opt-in like everything else here.
 
 ### The hazard: pending intent vs. the reconcile that overwrites it
 
@@ -251,6 +292,20 @@ reaches Git rebased onto the new tip (a no-op when the drift already matches); t
 reconcile is triggered and awaited; and the resulting apply is absorbed as a resync no-op rather than
 mirrored back as a fresh commit. Until then, treat "the whole thing just works" as a *design intent*,
 not a tested guarantee.
+
+**Two drift e2es, both kept, both required — because the webhook is best-effort.** The webhook is an
+accelerator that can fail or simply never be configured, so correctness cannot rest on it. Coverage must
+split, and neither half may be allowed to lapse:
+
+1. **Webhook present (the fast path).** A foreign push fires the webhook; assert the barrier engages
+   promptly and the orchestrator's apply is absorbed as a no-op.
+2. **Webhook absent (the backstop).** The *same* foreign push with **no webhook delivered**; assert the
+   operator still recovers on its next push — CAS rejection → rebase-by-replay → clean landing — with no
+   clobber and no spurious commit.
+
+The second is the one that must never rot: it is the guarantee that a missing or broken webhook degrades
+gracefully to correct-but-slower, never to data loss. Keep it green as a required check for the life of
+the feature.
 
 ---
 
@@ -300,3 +355,8 @@ off by default and enabled per GitTarget, alongside the tier-3 write gate — e.
   triggers the apply. Does the operator still issue an explicit trigger (and wait for the SHA, closing
   the handshake the guide describes), or defer to the webhook? Likely: trigger only where the webhook
   cannot help — refusal and drift — and let the push webhook cover the happy path.
+- **Webhook delivery and trust** (the drift trigger, §3). Delivery is best-effort: how is a missed
+  webhook caught up — a poll fallback cadence (reviving `SyncAndGetMetadata`), or a fetch on the next
+  reconcile — so the CAS-replay backstop is not the *only* thing that ever notices a lost notification?
+  And how is the receiver authenticated per provider (shared secret, signature scheme) so a forged push
+  notification cannot make the operator barrier or replay on demand?

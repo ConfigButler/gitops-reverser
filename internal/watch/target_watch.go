@@ -275,8 +275,14 @@ func (m *Manager) runTargetWatch(
 	key targetWatchKey,
 	ops OperationSet,
 ) {
+	// A target-watch declaration defines the fidelity epoch. Its first session must replay even
+	// when a durable cursor exists: a replacement can add a sibling scope, and resuming an unchanged
+	// scope would otherwise leave that scope pending in the new epoch forever. Later reconnects may
+	// resume from their cursors because they stay within the same declaration and epoch.
+	resumeFromCursor := false
 	for ctx.Err() == nil {
-		err := m.targetWatchReplayAndStream(ctx, log, gitDest, key, ops)
+		err := m.targetWatchReplayAndStream(ctx, log, gitDest, key, ops, resumeFromCursor)
+		resumeFromCursor = true
 		if ctx.Err() != nil {
 			return
 		}
@@ -297,9 +303,10 @@ func (m *Manager) targetWatchReplayAndStream(
 	gitDest types.ResourceReference,
 	key targetWatchKey,
 	ops OperationSet,
+	resumeFromCursor bool,
 ) error {
 	cursorExpired := false
-	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, key); ok {
+	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, key); resumeFromCursor && ok {
 		err := m.targetWatchResumeAndStream(ctx, log, gitDest, key, ops, cursor)
 		if !errors.Is(err, errTargetWatchExpired) {
 			return err

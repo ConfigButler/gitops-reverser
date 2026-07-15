@@ -65,8 +65,10 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 	defer cancel()
 
 	opened := make(chan openedWatch, 4)
+	store := &fakeWatchCursorStore{rv: "41", ok: true}
 	manager := &Manager{
-		Log: logr.Discard(),
+		Log:              logr.Discard(),
+		WatchCursorStore: store,
 		targetWatchOpen: func(
 			_ context.Context,
 			_ schema.GroupVersionResource,
@@ -78,6 +80,7 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 			return fw, nil
 		},
 	}
+	manager.rememberGitTargetUID(gitDest.WithUID("uid-1"))
 
 	first := WatchedTypeTable{
 		GitDest: gitDest,
@@ -106,6 +109,10 @@ func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *te
 	require.NoError(t, manager.replaceGitTargetWatches(ctx, changed))
 	restarted := receiveOpenedWatch(t, opened)
 	assert.Equal(t, "apps", restarted.namespace)
+	assert.True(t, *restarted.opts.SendInitialEvents,
+		"a target-watch replacement must replay the existing scope for its new fidelity epoch")
+	assert.Empty(t, restarted.opts.ResourceVersion,
+		"the first session of a replacement must not resume an old epoch from a durable cursor")
 }
 
 func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T) {
@@ -347,6 +354,7 @@ func TestTargetWatchReplayAndStream_ReturnsWhenContextCancels(t *testing.T) {
 			types.NewResourceReference("target", "default"),
 			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
 			nil,
+			false,
 		)
 	}()
 
@@ -400,6 +408,7 @@ func TestTargetWatchReplayAndStream_FallsBackWhenReplayWatchIsForbidden(t *testi
 			gitDest,
 			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
 			nil,
+			true,
 		)
 	}()
 
@@ -460,6 +469,7 @@ func TestTargetWatchReplayAndStream_ResumesFromStoredCursor(t *testing.T) {
 			gitDest,
 			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
 			nil,
+			true,
 		)
 	}()
 
@@ -631,7 +641,7 @@ func TestTargetWatchReplayAndStream_ExpiredCursorFallsBackToFreshReplay(t *testi
 	go func() {
 		done <- manager.targetWatchReplayAndStream(
 			ctx, logr.Discard(), gitDest,
-			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil,
+			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil, true,
 		)
 	}()
 

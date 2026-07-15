@@ -53,9 +53,14 @@ a live `prod`. Comparing the *source* to live would falsely refuse that faithful
    not because descriptions receive a structural exemption. The live comparison, not
    a field-name exception, avoids that false positive.
 
-## Token regex — test results
+## Token regex — shipped implementation
 
-Regex: `\$\{[A-Za-z0-9_.][^}]*\}`, executed against these vectors:
+`internal/manifestanalyzer/render_fidelity.go` uses `\$\{[^{}]+\}`. The gate treats every non-empty,
+non-nested brace expression as a token; it deliberately excludes only `${}` and `$(...)`. This is
+broader than the historical substitution regex, but remains safe under the same render-vs-live rule:
+a match blocks only when the rendered scalar differs from live.
+
+Executed against these vectors:
 
 | String | Matches | Expected | Note |
 |---|---|---|---|
@@ -66,7 +71,7 @@ Regex: `\$\{[A-Za-z0-9_.][^}]*\}`, executed against these vectors:
 | `$(POD_IP)` | ❌ | ❌ | parens, not braces |
 | `$(kustomize_leftover_var)` | ❌ | ❌ | unresolved kustomize var — correctly ignored |
 | `${}` | ❌ | ❌ | empty |
-| `${ spaced }` | ❌ | ❌ | leading space not allowed |
+| `${ spaced }` | ✅ | ✅ | non-empty brace expression |
 | `# a comment with ${var}` | ✅ | — | regex alone can't tell; fact 3 handles it |
 
 All rows matched expectation.

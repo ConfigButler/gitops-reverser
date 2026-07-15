@@ -1,7 +1,9 @@
 # Render fidelity: our render is not the orchestrator's
 
-> **design** — direction-setting; ships no code. Nothing it describes is supported today.
-> Captured: 2026-07-15
+> **design + implementation record** — the token form of this fence (5a), its write gate,
+> condition, and fixture suite shipped on 2026-07-15. The general fence (5b), remote-Git
+> revision detection, and the orchestrator reconcile barrier remain design work.
+> Captured: 2026-07-15; implementation status updated: 2026-07-15.
 > Related:
 > [README.md](README.md),
 > [render-root-scoping.md](render-root-scoping.md) §3 — the version-skew caveat this generalises,
@@ -14,6 +16,27 @@
 We run `kustomize build` on the folder. Flux and Argo run kustomize on the folder **plus a layer
 of context that is not in the folder** — so the object the cluster runs is not the object our
 render produces, and every guarantee we make by rendering is only as good as that gap being empty.
+
+## Implementation status
+
+The shipped implementation is deliberately the narrow, safe token form (§5a):
+
+- `RenderTokenDivergences` walks parsed render values and compares every non-empty `${...}` scalar
+  with sanitized live state. It uses the kustomize render for governed documents and the parsed Git
+  document for plain manifests; comments and `$(...)` are outside the predicate.
+- A divergence aborts both live-event and scoped-resync writes with
+  `IssueRenderDoesNotMatchLive`. No file is changed or committed by that refused operation.
+- `RenderMatchesLive` is an independent three-state GitTarget condition. Its per-target gate keeps
+  normal writes closed while an epoch is `Unknown` or `False`; scoped resync remains allowed so it can
+  measure the current watch set.
+- The fixture corpus covers literal CRD/KRO/ConfigMap tokens, comments, `$(...)`, missing live
+  fields, nested lists, and source-versus-render label transforms. The gate, writer, watch, and
+  controller seams have unit coverage.
+
+Not shipped: a remote-Git revision observer that starts a fresh fidelity epoch after someone changes
+the source, the required retained-intent/orchestrator reconciliation barrier for doing that safely,
+the dedicated Flux postBuild end-to-end fixture, and the general non-token fence (§5b). Until the
+revision observer exists, a Git repair alone does **not** automatically reopen a false gate.
 
 This document names the gap, records a fence that looked obvious and was **wrong** (and why), and
 proposes the fence that is right: **measure our render against the live object, and refuse where
@@ -260,13 +283,13 @@ produce (Flux postBuild, an Argo override, a direct live edit, admission mutatio
 version), so you learn it **up front, from status, before you waste an edit** — rather than one refusal
 at a time.
 
-It carries a bounded sample of the diverging `(file, field)` pairs, in the style of the
+The current condition carries one deterministic representative `(field, token)` in its message; the
+per-write refusal retains the file path as well. It is a sibling of the planned
 `FullyReflected` condition in
-[unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md), and it is a
-sibling of that condition: `FullyReflected` says *everything you edited was expressed*;
+[unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md): `FullyReflected` says *everything you edited was expressed*;
 `RenderMatchesLive` says *our render matches what is running, so we can be trusted at all* — the more
-fundamental of the two. It is recomputable: the mark-and-sweep resync rebuilds it from scratch,
-steady-state events keep it current.
+fundamental of the two. It is recomputable when the watch manager begins a new epoch; steady-state
+write refusals can close it, but cannot clear it.
 
 This is exactly what the reverted structural check was reaching for and could not have — a folder-level
 *"can we track this?"* verdict. It failed because it tried to answer from the **disk**; the same
@@ -275,30 +298,30 @@ wants.
 
 `RenderMatchesLive` is deliberately **separate from `GitPathAccepted`**. The latter remains the
 structure/write-boundary claim (*can we parse and route this path safely?*). Fidelity is a live,
-recomputable claim (*does the current Git revision reproduce what is running?*). Conflating them would
-let one clean scoped resync erase either a structural refusal or a still-diverging sibling scope.
+epoch-scoped claim (*do the currently replayed watch scopes match the local render?*). Conflating them
+would let one clean scoped resync erase either a structural refusal or a still-diverging sibling scope.
 
 #### The folder-gate state machine
 
 The gate is a per-`GitTarget` data-plane state machine. Its unit of evidence is a watch **scope**:
-`(GVR, namespace)`, not only a GVR. A fidelity **epoch** is the immutable set of active scopes plus the
-Git revision the worker rendered. Results from another epoch are stale and must be discarded.
+`(GVR, namespace)`, not only a GVR. In the shipped implementation, a fidelity **epoch** is the
+immutable set of active scopes installed by a target-watch declaration. It does not yet carry a Git
+revision or independently detect source changes. Results from another epoch are stale and discarded.
 
 | Derived condition | Scope evidence for the current epoch | Normal live writes |
 |---|---|---|
 | `Unknown` / `Rechecking` | One or more active scopes are pending. A newly declared target starts here. | Deny |
-| `False` / `RenderDoesNotMatchLive` | At least one completed scope found a rendered token whose live value differs. Keep a bounded, deterministic sample. | Deny |
+| `False` / `RenderDoesNotMatchLive` | At least one completed scope found a rendered token whose live value differs. Expose one deterministic representative. | Deny |
 | `True` / `RenderMatchesLive` | Every active scope completed cleanly for the same epoch. | Allow |
 
 The transitions are deliberately strict:
 
-1. Before opening/replacing the target's watches — and whenever the Git revision, `GitTarget`
-   generation, or watch-scope set changes — begin a new epoch. Snapshot the active scopes, mark every
-   one pending, set `RenderMatchesLive=Unknown`, and close the normal-write gate. Beginning the epoch is
-   a control action ordered on the branch-worker FIFO before its scoped resyncs: an uncommitted open
-   window for **that target** is discarded, never finalized, and later normal events stay closed until
-   the condition becomes True. Otherwise `applyResync` could finalize an old window immediately before
-   it measures the new epoch and defeat the gate.
+1. The first target-watch declaration, or a replacement whose scope set changes, begins a new epoch.
+   It snapshots the scopes, marks each pending, sets `RenderMatchesLive=Unknown`, and closes normal
+   writes. This is **not** yet tied to every `GitTarget` generation or to an incoming Git revision.
+   Beginning an epoch does not enqueue a separate branch-worker control item; if an already-open window
+   later tries to finalize, the worker sees the closed gate and discards that window rather than
+   committing it.
 2. Each scoped replay runs through the target's branch-worker FIFO. Its resync computes the predicate
    for that scope and records `Clean` or `Diverged(sample)` **before** it replies and the worker accepts
    the next queued write for that target. A stale `(epoch, scope)` result is ignored.
@@ -308,18 +331,18 @@ The transitions are deliberately strict:
 4. A steady-state per-write divergence immediately records `Diverged` for its scope, flips the target
    `False`, refuses that write, and keeps later normal writes closed. A later clean result from one scope
    cannot clear it.
-5. A resync is allowed while the gate is `Unknown` or `False`, because it is the only way to measure a
-   repair. It evaluates before writing and commits nothing when it finds divergence. Recovery requires a
-   **new complete epoch** over the current Git revision; it is never inferred from one unrelated clean
-   scope or a status update.
+5. A resync is allowed while the gate is `Unknown` or `False`, because it is how a new epoch is
+   measured. It evaluates before writing and commits nothing when it finds divergence. Recovery requires
+   a **new complete epoch**; it is never inferred from one unrelated clean scope or a status update.
 
-The GitTarget controller must begin a fresh epoch when it observes an incoming Git revision that may
-change the render. Its existing periodic/reconciliation path must therefore force a source refresh and
-full scope replay while fidelity is `False`; otherwise a human Git repair could never reopen the gate.
-The enforcement check belongs in the branch worker (or an equivalent synchronous data-plane guard), not
-in status projection: status is observable output, whereas the worker must reject a `WriteRequest` before
-it opens a commit window. The controller projects the same state as `Ready=False` / `Stalled=True` for
-`False`, and as `Ready=False` / `Reconciling=True` for `Unknown`.
+The missing transition is intentional and visible: the controller does **not** yet observe an incoming
+Git revision, refresh the source, and begin a complete epoch. Therefore a human Git repair cannot by
+itself reopen a false gate. Adding that transition requires the retained-intent ordering barrier in
+[orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md), so a source refresh cannot
+discard or race an open live-edit window. The enforcement check already belongs in the branch worker,
+not status projection: the worker rejects a `WriteRequest` before it opens a commit window. The
+controller projects the same state as `Ready=False` / `Stalled=True` for `False`, and as
+`Ready=False` / `Reconciling=True` for `Unknown`.
 
 This is deliberately strict. A `GitTarget` claims that a folder can be reverse-GitOps'd — live changes
 captured faithfully back to Git. While the claim is unmeasured or false, the folder is not tracked for
@@ -334,12 +357,11 @@ not touching — catching the blind spot the oracle cannot.
 
 ---
 
-## 7. Implementation: where the comparison runs
+## 7. Shipped implementation: where the comparison runs
 
-The blocking decision forces the timing: `RenderMatchesLive` must be computed where the operator holds
-both the Git content and the live objects, and **before any write** — because the first mirror of an
-diverging folder *is* the corruption. That point already exists, which is why the shape you
-suggested is the right one.
+The blocking decision forces the timing: `RenderMatchesLive` is computed where the operator holds both
+the Git content and the live objects, and **before the affected write** — because the first mirror of a
+diverging folder is the corruption. That path is now implemented.
 
 ### The one predicate, computed once, read by both surfaces
 
@@ -363,15 +385,15 @@ blocking a folder for ordinary runtime drift would refuse to track a folder that
 `${...}` token — which kustomize provably never produces and an HPA never introduces — has no such
 false positive. 5b, and the `managedFields` discriminator it needs, is the follow-on (§8).
 
-### Where to run it — three ways
+### Where it runs
 
-**(A) Fold it into the reconcile that runs on acceptance — recommended.** When a folder is accepted, the
+**(A) Fold it into the reconcile that runs on acceptance — shipped.** When a folder is accepted, the
 watch manager first starts the fidelity epoch, then each watch opens with `SendInitialEvents` and enqueues
 a scoped **mark-and-sweep resync ahead of any live event** (the `replaying` barrier;
 [`target_watch.go`](../../../internal/watch/target_watch.go),
 [`resync_flush.go`](../../../internal/git/resync_flush.go)). That resync already scans the whole
 subtree *and* replays the live objects — the one moment both halves are in hand and nothing has been
-written. Add the predicate as a **resync precondition**, beside the write-boundary ones: render the roots
+written. The predicate runs as a **resync write precondition**, beside the write-boundary ones: render the roots
 (already done for the oracle), walk each rendered object against its live counterpart for a token
 divergence, and record the scope result in the epoch. A diverging scope aborts that resync's writes and
 sets the aggregate condition `False`; a clean scope merely advances the epoch toward `True`. The gate
@@ -392,7 +414,7 @@ match until proven otherwise, one write at a time"*, so a user only learns it is
 attempting an edit. That is exactly the up-front property 6b exists to give, so (C) delivers 6a and
 loses the point of 6b.
 
-**Recommended: (A).** It is where the reads already happen, it runs before any write — so it both sets
+**(A) is shipped.** It is where the reads already happen, it runs before any write — so it both sets
 the verdict and prevents the corruption in one step — and it produces the up-front folder answer. (B)
 is (A) with a cleaner seam, a reasonable refinement. (C) is the fallback that keeps only the per-write
 half. Whichever computes the folder pass, the steady-state per-write check (§6a) still runs between
@@ -406,10 +428,12 @@ until every active `(GVR, namespace)` scope is clean, and a divergence keeps the
 is the independent structural gate; `RenderMatchesLive` is the live-fidelity gate. Both must be `True`
 before the folder is writable.
 
-It is **recomputable and self-healing**, but only by a complete, current epoch: removing the postBuild
-configuration, changing the source in Git, or moving tokens out of the subtree begins a fresh source
-revision epoch. Once every active scope is clean at that revision, `RenderMatchesLive=True` reopens writes
-without a manual acknowledgement.
+It is recomputable only when a complete fresh epoch begins. Today that happens when target watches are
+installed or their scope set is replaced. Removing postBuild configuration or changing the source in Git
+does **not** yet start that epoch automatically, so it does not automatically reopen writes. The planned
+remote-revision transition must refresh safely behind the barrier in
+[orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md); once that exists, a full clean
+replay can reopen the gate without manual acknowledgement.
 
 ---
 

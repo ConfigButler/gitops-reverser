@@ -1,10 +1,34 @@
-# Prompt: implement the RenderMatchesLive gate
+# RenderMatchesLive gate: implementation record
 
-Copy everything below the line into a fresh session.
+> **completed (2026-07-15)** — the predicate, fixture corpus, scoped epoch gate, worker enforcement,
+> GitTarget condition, CRD print column, and unit/end-to-end validation are shipped. This document is
+> retained as the original implementation brief, with corrections where its assumptions differed from
+> the delivered runtime.
+
+## Delivered
+
+- Parsed render-vs-live `${...}` comparison for both plain and kustomize-governed documents.
+- Refusal of both live-event and scoped-resync writes before Git bytes change.
+- `RenderMatchesLive` state machine: `Unknown` and `False` close normal write windows; only every
+  current scope clean makes it `True`; stale results and later clean results cannot clear a divergence.
+- Separate `RenderDoesNotMatchLive` reporting; it does not change `GitPathAccepted`.
+- Fixture, gate, writer, watch, controller, CRD, lint, unit, and end-to-end coverage.
+
+## Still open
+
+- An incoming remote Git revision does not yet refresh the local source and begin a new epoch. A Git
+  repair therefore does not automatically reopen a false gate.
+- That recovery must be coupled to the retained-intent/orchestrator barrier in
+  [orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md), not added as an unsafe
+  periodic fetch.
+- The dedicated Flux postBuild end-to-end fixture and the general non-token fence (5b) remain future
+  work.
 
 ---
 
-Implement the **render-vs-live gate** — `RenderMatchesLive` — the fence that refuses to track a
+## Historical implementation brief
+
+The completed work implemented the **render-vs-live gate** — `RenderMatchesLive` — the fence that refuses to track a
 folder whose live objects differ from our render because of context we cannot see (Flux `postBuild`
 substitution, Argo `spec.source.kustomize` overrides, a divergent kustomize version). Build the
 **token form (5a)**, which is the part we block on. This is the implementation of a design that is
@@ -59,10 +83,9 @@ render-fidelity.md §5a.)
 
 Read **parsed values, not raw bytes**. Comments never enter parsed data. A CRD schema `description`
 *is* a parsed scalar and must be compared normally: its literal token is safe because the render and
-live value are equal, not because descriptions receive an exemption. Token regex (from the reverted
-`substitution.go`, recoverable from git history):
-`` `\$\{[A-Za-z0-9_.][^}]*\}` `` — matches `${cluster_domain}` and `${schema.spec.replicas}`; not
-`$(POD_IP)` (parens are native / kustomize var syntax) and not `${}`.
+live value are equal, not because descriptions receive an exemption. The shipped token regex is
+`\$\{[^{}]+\}`: any non-empty non-nested brace expression matches; `$(POD_IP)` (parens are native /
+kustomize var syntax) and `${}` do not.
 
 **Do not over-claim the cause, and bias toward blocking.** A rendered token + a diverged live value
 proves only that our render did not produce that value — it could be Flux postBuild, a direct live
@@ -78,17 +101,17 @@ gate is the right first cut — do not reach for cleverness to avoid the rare ov
   `RenderMatchesLive` GitTarget condition. Do **not** reuse `GitPathAccepted`: that condition remains
   the structure/write-boundary claim, whereas fidelity depends on current Git and live state.
 
-  Implement the epoch state machine in `render-fidelity.md §6b` exactly. In short: a scope is
-  `(GVR, namespace)`; a new Git revision, GitTarget generation, or scope set starts an epoch with every
-  scope pending and `RenderMatchesLive=Unknown`; only every scope clean makes it True; any divergence
-  makes it False; stale results are ignored; and only a new, complete epoch can clear False. Both
-  Unknown and False block normal write windows. Resync remains allowed while blocked so a Git repair can
-  be measured and reopen the gate. Beginning an epoch is a branch-worker FIFO control action: discard an
-  uncommitted window for that target rather than letting `applyResync` finalize it just before the
-  recheck. The worker, not a status update, is the enforcement point.
+  The shipped epoch state machine uses `(GVR, namespace)` scopes. A target-watch declaration or scope
+  replacement starts an epoch with every scope pending and `RenderMatchesLive=Unknown`; only every scope
+  clean makes it True; any divergence makes it False; stale results are ignored; and only a new,
+  complete epoch can clear False. Both Unknown and False block normal write windows. Resync remains
+  allowed while blocked so it can measure that epoch. A Git revision or arbitrary GitTarget generation
+  does **not** yet start an epoch. Beginning an epoch closes the worker gate; an already-open window is
+  discarded if it later finalizes while closed. The worker, not a status update, is the enforcement point.
 
-  Add a dedicated issue kind + `RenderDoesNotMatchLive` reason, with a bounded sample of
-  `(file, field, token)` pairs. The status must derive from the same epoch state; no scoped-resync
+  The implementation adds a dedicated issue kind + `RenderDoesNotMatchLive` reason. The condition
+  reports one deterministic `(field, token)` representative, while the write refusal also names the
+  file. The status derives from the same epoch state; no scoped-resync
   success may unconditionally mark a target healthy.
 
 ## Where it hooks (entry points, verified in the code)
@@ -120,16 +143,16 @@ gate is the right first cut — do not reach for cleverness to avoid the rare ov
   `$(VAR)`, absent live fields, nested lists, a source token overwritten by labels, and a token injected
   into the **render** by supported labels. The last two are non-negotiable render-not-source guardrails.
 - **Gate state unit tests:** build the §3 epoch trace before wiring watches: pending scopes deny writes;
-  a later clean scope cannot erase a divergence; stale results are ignored; a complete fresh epoch after
-  a Git repair reopens the target; and a per-write divergence immediately closes it.
+  a later clean scope cannot erase a divergence; stale results are ignored; a complete explicitly
+  started epoch reopens the target; and a per-write divergence immediately closes it.
 - **Writer/watch integration:** a substituted document refuses the resync with no commit; a clean event
-  queued behind it cannot open a write window; beginning a fresh epoch discards an existing uncommitted
-  target window; and a full fresh recheck can recover. Assert the distinct `RenderMatchesLive=False` /
+  queued behind it cannot open a write window; an existing uncommitted target window is discarded if it
+  later finalizes while a fresh epoch has the gate closed; and a full fresh recheck can recover. Assert the distinct `RenderMatchesLive=False` /
   `RenderDoesNotMatchLive` status rather than `GitPathAccepted=False`.
 - **Corpus:** regenerate `task gitops-layouts-baseline` and confirm **nothing moves** — the corpus has
   no live objects, so nothing can be diverged. In particular the KRO row must **not** move this time
   (it did under the reverted structural check; that is the difference between this fence and that one).
-- **e2e:** add the dedicated Flux `postBuild` fixture from `render-fidelity-scenarios.md §5`, then keep
+- **e2e (still open):** add the dedicated Flux `postBuild` fixture from `render-fidelity-scenarios.md §5`, then keep
   the **CRD-lifecycle spec** green — it is the one the reverted structural check broke. Run
   `task test-e2e` and **capture the full log** (`task test-e2e 2>&1 | tail -N` reports `tail`'s exit
   code, not the suite's — a failing suite reads as green; assert on the `Passed | Failed` summary line
@@ -137,9 +160,10 @@ gate is the right first cut — do not reach for cleverness to avoid the rare ov
 
 ## Validation and delivery
 
-Full sequence per `AGENTS.md`: `task fmt` → `generate` → `manifests` → `vet` → `lint` → `test` →
-`test-e2e` (sequential; needs Docker). Commit on `fix/kustomize-source-form-projection` (#234), then
-restack `feat/kustomize-tolerate-patches` (#235) onto the new HEAD. Report the honest line delta.
+The required sequence was run successfully: `task fmt` → `generate` → `manifests` → `vet` → `lint` →
+`test` → `test-e2e` (sequential, with Docker available). The implementation was delivered on
+`fix/kustomize-source-form-projection`; future work should begin from the current branch head rather
+than relying on the historical branch/restack instructions.
 
 ## How this workstream finds bugs
 
