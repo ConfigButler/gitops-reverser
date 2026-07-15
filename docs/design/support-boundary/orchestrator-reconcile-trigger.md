@@ -128,14 +128,42 @@ ever revert the specific refused object, never sync the whole app.
 The same trigger answers a different, subtler problem — **origin moved under us** — and here it is a
 *barrier*, not a revert.
 
+### The operating model this assumes
+
+Three invariants from the existing pipeline underpin everything below. The barrier is a *consequence*
+of them, not a new policy:
+
+- **The cluster leads.** The cluster is the editing surface; live watch events flow cluster → Git
+  ([bi-directional.md](../../bi-directional.md) — the reconciler as a *triggered applier*). Git is a
+  mirror of cluster intent, re-derivable at any time by the mark-and-sweep resync. Nothing in the
+  operator treats Git as authority *over* the cluster.
+- **Git drift is a supported input, not an error.** Someone else pushing to the branch is expected and
+  handled, never rejected. The commit direction is already safe against it (below); what this document
+  adds is the missing *cluster*-side handling of that same drift.
+- **Optimistic push, and the queue clears only on a landed push.** Cluster changes are committed
+  locally into a retained queue — `pendingWrites` — and pushed; **only a successful push clears that
+  queue**, and a failed push retains it for retry
+  ([`branch_worker.go`](../../../internal/git/branch_worker.go), `pushPending`). We do not pull-then-push
+  in steady state: we push optimistically and reconcile with the remote only when the push is rejected.
+  (The *first* commit of a fresh cycle does re-base the local worktree on the current remote tip first,
+  but the queue is empty at that point, so no intent is at stake — the re-pull/replay of *retained*
+  intent happens only on a rejected push.)
+
 ### What is, and isn't, already handled
 
 The commit direction is already safe against a moved remote. `PushAtomic`
 ([`git_atomic_push.go`](../../../internal/git/git_atomic_push.go)) is a compare-and-swap, never a
 force-push; if the remote advanced, the push is rejected and `pushPendingCommits`
 ([`branch_worker.go`](../../../internal/git/branch_worker.go)) **rebases by replay** — hard-reset to
-the new tip, re-plan and re-commit the retained pending writes on top, re-push with an updated CAS. So
-we never clobber someone else's push, and our own intent survives.
+the new tip, then re-plan and re-commit the *retained pending writes* on top (the local commit objects
+are discarded; the durable intent behind them is not), and re-push with an updated CAS. Because the
+replay re-derives each commit from cluster intent rather than replaying opaque diffs, it can even
+produce **no commit at all**: if the drift already carries the same content, the re-plan finds nothing
+to change and the whole rebase collapses to a no-op. So we never clobber someone else's push, our own
+intent survives, and a push conflict never manufactures a spurious commit. This path is covered by unit
+tests that push a competing commit to the remote and assert the rebase resolves cleanly
+(`TestBranchWorker_ConflictResolution`, `TestBranchWorker_ConcurrentOperations` in
+[`git_operations_test.go`](../../../internal/git/git_operations_test.go)).
 
 What is **not** handled is the *cluster* side. When origin gains new desired state, the orchestrator is
 about to apply it, producing a flood of watch events. Two problems follow:
@@ -163,8 +191,8 @@ sequenceDiagram
     participant K8s as Cluster
 
     Other->>Git: push new desired state (origin drifts)
-    Note over Rev: detects the remote moved
-    Rev->>Git: land pending intent first<br/>(rebase onto the new tip — §3, the hazard)
+    Note over Rev: detects the remote moved —<br/>holds live events back, replaying-gated FIFO
+    Rev->>Git: land pending intent — finalize the open window,<br/>push pendingWrites rebased onto the new tip<br/>(replay — a no-op if the drift already matches)
     Rev->>Recon: TRIGGER reconcile Git → cluster, and WAIT
     Recon->>Git: fetch the new revision
     Recon->>K8s: apply the new desired state
@@ -190,15 +218,39 @@ Git → cluster, not only the operator's own sweep).
 ### The hazard: pending intent vs. the reconcile that overwrites it
 
 There is a real ordering trap, drawn as the first `Rev->>Git` step above. When origin drifts, the
-operator may hold **uncommitted** pending intent — live edits captured in the open commit window but
-not yet pushed. Triggering the orchestrator reconcile *now* would apply the new origin over those live
-edits on the cluster, erasing them before they reach Git.
+operator may hold **not-yet-remote** intent in two places: the **open commit window** (`openWindow` —
+events coalesced in memory but not yet committed) and the **committed-but-unpushed queue**
+(`pendingWrites`). Triggering the orchestrator reconcile *now* would apply the new origin over those
+live edits on the cluster, erasing them before they reach Git.
 
-That is only safe because the intent is **durably captured** (the open window / `pendingWrites`) and
-the commit side already rebases it onto a moved origin. So the ordering must be: **land pending intent
-to Git first (rebased onto the new tip), *then* trigger the reconcile, *then* resume.** If capture
-were not durable, the reconcile would eat the user's edit — so the barrier's safety rests on the
-durability the pipeline already has, stated here as a precondition rather than discovered as a bug.
+So the ordering must be: **land pending intent to Git first, *then* trigger the reconcile, *then*
+resume.** "Landing" it is the ordinary finalize-then-push — the open window is finalized into a commit,
+joins `pendingWrites`, and the whole queue is pushed, rebased onto the new tip by the replay above (and
+a no-op if the drift already matches). This is only safe because the intent is durably recoverable: the
+cluster is the source of truth and the mark-and-sweep resync re-derives it, so even a pod that dies
+mid-barrier rebuilds the same intent on restart. The barrier's safety rests on that durability, stated
+here as a precondition rather than discovered as a bug.
+
+A note on the commit window, because it is tempting to picture the barrier as "pause the window, reset,
+replay, resume the same window." It is **not** that. The open window is in-memory event state,
+*orthogonal* to the git worktree: the push-side reset/replay touches only `pendingWrites` and never the
+window — which is exactly why a plain push conflict "just works" without any window ever being closed or
+reopened; its eventual finalize simply commits on top of whichever tip the worktree now holds. The
+barrier does not suspend and resume a window either. It *finalizes* the open one — closing it — before
+the reconcile, and lets live events **open a fresh window** only after the barrier lifts. Holding those
+live events back for the duration is the existing `replaying`-gated FIFO
+([`target_watch.go`](../../../internal/watch/target_watch.go)) — the same mechanism that already
+sequences a mark-and-sweep ahead of live events on watch (re)establishment.
+
+### What is proven, and what needs a test
+
+The commit-direction replay is proven by the unit tests named above. The *cluster-side* barrier this
+document proposes is unbuilt, so nothing exercises it end to end yet. When it lands it needs an e2e that
+pushes origin drift **while the operator holds uncommitted intent**, and asserts, in order: the intent
+reaches Git rebased onto the new tip (a no-op when the drift already matches); the orchestrator
+reconcile is triggered and awaited; and the resulting apply is absorbed as a resync no-op rather than
+mirrored back as a fresh commit. Until then, treat "the whole thing just works" as a *design intent*,
+not a tested guarantee.
 
 ---
 
