@@ -150,7 +150,7 @@ flowchart TD
     W["about to write a field back to source"] --> Q{"does our render equal<br/>the LIVE object here?"}
     Q -->|"yes"| K["SAFE — our render is what the cluster runs.<br/>keep source / write as normal"]
     Q -->|"no, and the source carries a substitution token here"| R["REFUSE — out-of-band substitution<br/>would destroy the token on write"]
-    Q -->|"no, and no token (general case)"| D["context skew OR ordinary runtime drift —<br/>the open discriminator (§5b, §7)"]
+    Q -->|"no, and no token (general case)"| D["context skew OR ordinary runtime drift —<br/>the open discriminator (§5b, §8)"]
 
     classDef good fill:#dfd,stroke:#3a3,color:#111
     classDef bad fill:#fdd,stroke:#c33,color:#111
@@ -196,7 +196,7 @@ drifts from Git for reasons that are not out-of-band render context.** An HPA ch
 defaulting webhook filled a field; another controller populated something. A naive *"live ≠ render ⇒
 refuse"* would abort a flush because an HPA scaled a Deployment — which is not ours to police.
 Distinguishing *context skew* from *ordinary runtime drift* is the open problem of the general fence
-(§7), and it is why **5a is the right thing to build first**: it sidesteps the problem entirely by
+(§8), and it is why **5a is the right thing to build first**: it sidesteps the problem entirely by
 keying on a token kustomize is *guaranteed* never to produce.
 
 ---
@@ -246,6 +246,16 @@ folder-level *"can we track this?"* verdict. It failed because it tried to answe
 the same question, answered from the **live object**, is both correct and precisely the up-front
 signal a user wants.
 
+**And the condition blocks.** A `GitTarget` *is* the claim that a folder can be reverse-GitOps'd —
+live changes captured faithfully back to Git. If our render is not equal to what the cluster runs
+that claim is void: we cannot reverse a state we cannot reproduce. So `RenderFaithful=False` gates
+adoption exactly as a structural refusal does — the folder is **not tracked**, `Ready=False`, with a
+reason naming the diverging fields — not a soft warning beside a folder we quietly mishandle. This is
+deliberately the strict choice, and it can be loosened later (mirror for audit, refuse only the
+writes) *if* a demand for tracking read-only-but-unfaithful folders proves out. Strict first, because
+the failure it prevents is silent corruption, and loosening a gate is reversible where a shipped
+corruption is not.
+
 ### How it composes with the oracle
 
 `VerifyBatchRenders` checks our render reproduces live **after** a write, sharing our render's blind
@@ -254,15 +264,82 @@ not touching — catching the blind spot the oracle cannot.
 
 ---
 
-## 7. Open questions
+## 7. Implementation: where the comparison runs
 
-- **Does `RenderFaithful=False` block, or only inform?** (§6b) A folder we cannot render-faithfully
-  is one where edit-through is unsafe — but the *mirror* (audit, drift reporting) may still have
-  value even when writes must be refused. So: does the condition gate adoption (`Ready=False` /
-  `GitPathAccepted=False`, the folder is not tracked at all), or does it stay a non-blocking
-  observability signal (`Ready=True`, the folder is mirrored, but edit-through is refused per §5)? The
-  honest lean is non-blocking-but-loud — keep the read-only value, refuse the writes, and say so — but
-  it is a real decision, and it is the one that most changes the product's shape.
+The blocking decision forces the timing: `RenderFaithful` must be computed where the operator holds
+both the Git content and the live objects, and **before any write** — because the first mirror of an
+unfaithful folder *is* the corruption. That point already exists, which is why the shape you
+suggested is the right one.
+
+### The one predicate, computed once, read by both surfaces
+
+Everything reduces to a single per-document test:
+
+> **unfaithful(doc) := our render of the Git document carries a `${...}` token at a field where the
+> live object holds a resolved value.**
+
+kustomize never emits a `${...}` token, so our render preserves the ones the source carries; if the
+live object has a *different, resolved* value there, something out of band produced it. The per-write
+refusal (§6a) is this predicate on the one document a write touches; the folder condition (§6b) is the
+same predicate ORed across the folder. Build it once and read it twice.
+
+It is the **token** form (5a) we block on, not the general render≠live form (5b), and that is a
+*requirement* of blocking rather than a shortcut: 5b would flag an HPA that scaled a Deployment, and
+blocking a folder for ordinary runtime drift would refuse to track a folder that is perfectly fine. A
+`${...}` token — which kustomize provably never produces and an HPA never introduces — has no such
+false positive. 5b, and the `managedFields` discriminator it needs, is the follow-on (§8).
+
+### Where to run it — three ways
+
+**(A) Fold it into the reconcile that runs on acceptance — recommended, and the shape you described.**
+When a folder is accepted, the watch opens with `SendInitialEvents` and enqueues a scoped
+**mark-and-sweep resync ahead of any live event** (the `replaying` barrier;
+[`target_watch.go`](../../../internal/watch/target_watch.go),
+[`resync_flush.go`](../../../internal/git/resync_flush.go)). That resync already scans the whole
+subtree *and* replays the live objects — the one moment both halves are in hand and nothing has been
+written. Add the predicate as a **resync precondition**, beside the write-boundary ones: render the
+roots (already done for the oracle), walk each rendered object against its live counterpart for a
+token divergence, and if any document is unfaithful, **abort the resync's writes and set
+`RenderFaithful=False`**. That same abort is what stops the corruption — an unfaithful resync would
+otherwise mirror `us-east` over `${REGION}` on the spot. *Cost:* one field-walk on top of a render we
+already do — milliseconds.
+
+**(B) A distinct live-aware acceptance layer.** Keep structure-only `Accept` as it is (fast, no
+cluster), and add a *second* gate — `AcceptRenderFaithful(store, liveObjects)` — that runs at the same
+resync moment but is named and tested as its own function. Behaviourally this is (A); the difference is
+packaging. Worth it only if the seam buys clarity: structure-only acceptance answers *"can we parse
+and route this?"*, the fidelity gate answers *"does our render match reality?"*, and separate pure
+functions keep each independently testable.
+
+**(C) Derive the folder verdict purely from per-write refusals.** Don't compute a folder pass at all —
+refuse each unfaithful write (§6a) and flip `RenderFaithful=False` the first time one is refused for
+this reason. Simplest, and it keeps 6a and 6b in one code path — but it makes the folder *"faithful
+until proven otherwise, one write at a time"*, so a user only learns it is untrackable **after**
+attempting an edit. That is exactly the up-front property 6b exists to give, so (C) delivers 6a and
+loses the point of 6b.
+
+**Recommended: (A).** It is where the reads already happen, it runs before any write — so it both sets
+the verdict and prevents the corruption in one step — and it produces the up-front folder answer. (B)
+is (A) with a cleaner seam, a reasonable refinement. (C) is the fallback that keeps only the per-write
+half. Whichever computes the folder pass, the steady-state per-write check (§6a) still runs between
+resyncs, so a folder that becomes unfaithful later (postBuild added after adoption) flips the
+condition the moment the first such write is refused — 6a keeps 6b current.
+
+### How it blocks, and how it clears
+
+`RenderFaithful` is a GitTarget condition. False means the folder is **not tracked**: the resync
+commits nothing, the branch worker opens no window for it, and `Ready=False` carries a reason
+(`RenderNotFaithful`) with a bounded sample of the diverging `(file, field, token)`. It sits second to
+`GitPathAccepted` — structure-only acceptance is the first gate (*parseable, routable?*),
+`RenderFaithful` the second (*does our render match reality?*), and a folder must pass both. It is
+**recomputable and self-healing**: rebuilt from scratch on every resync, so removing the postBuild
+config — or moving the tokens out of the tracked subtree — flips it back to True on the next reconcile
+with no manual acknowledgement.
+
+---
+
+## 8. Open questions
+
 - **5a vs 5b, and sequencing.** 5a (token) is precise and cheap — build first. 5b (general
   render-vs-live) is the complete answer but needs the runtime-drift discriminator before it is safe.
 - **The runtime-drift discriminator.** Can we separate "an HPA changed replicas" from "postBuild
