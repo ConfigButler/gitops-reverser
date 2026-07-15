@@ -73,6 +73,15 @@ const (
 	// RoleOperatorArtifact is an accepted non-YAML operator artifact (README.md). It is
 	// listed in the report's non-YAML inventory but is never foreign.
 	RoleOperatorArtifact
+	// RoleBenignPassenger is an accepted non-YAML file the operator never manages but that a
+	// careful human keeps in a GitOps folder: documentation (*.md / *.markdown), a license
+	// (LICENSE / COPYING / NOTICE), and Git-hygiene metadata (.gitignore / .gitattributes /
+	// .gitkeep / .keep). Unlike an operator artifact it is USER content, so it is recognized
+	// AFTER the root .gittargetignore filter (a user may still ignore it) rather than being
+	// protected from it. It is listed in the non-YAML inventory and is never foreign, so its
+	// mere presence no longer refuses the whole folder — the reverser can adopt an existing
+	// repo without a human first hand-writing a .gittargetignore for its README and license.
+	RoleBenignPassenger
 	// RoleForeignFile is a foreign non-YAML regular file: refused.
 	RoleForeignFile
 	// RoleForeignSymlink is a foreign symlink: refused.
@@ -86,11 +95,14 @@ const (
 // matcher (nil when the path carries no .gittargetignore). It is a pure function — the
 // single source of truth for the precedence in §4.1 of the design:
 //
-//	operator artifacts + build directives  →  root .gittargetignore filter  →  managed KRM / foreign
+//	operator artifacts + build directives  →  root .gittargetignore filter  →
+//	  managed KRM  →  benign passenger  →  foreign
 //
 // so a user cannot use .gittargetignore to hide the operator's own files (README.md,
-// .sops.yaml) or to silence a hard-kustomize refusal (kustomization.yaml), while every
-// other unknown non-YAML entry is refused unless an ignore pattern names it.
+// .sops.yaml) or to silence a hard-kustomize refusal (kustomization.yaml). Benign-passenger
+// hygiene files (a license, docs, .gitignore) are accepted after the ignore filter — so they
+// no longer refuse a folder yet remain user-suppressible — while every other unknown non-YAML
+// entry is refused unless an ignore pattern names it.
 func ClassifyEntry(rel string, d fs.DirEntry, ignore *IgnoreMatcher) EntryRole {
 	// Symlinks are foreign wherever they appear and whatever they are named — a writer
 	// could follow one out of the subtree. The only way to keep one is to ignore it.
@@ -128,6 +140,9 @@ func ClassifyEntry(rel string, d fs.DirEntry, ignore *IgnoreMatcher) EntryRole {
 	if isYAMLFile(rel) {
 		return RoleManagedYAML
 	}
+	if isBenignPassenger(rel) {
+		return RoleBenignPassenger
+	}
 	return RoleForeignFile
 }
 
@@ -149,6 +164,33 @@ func isRecognizedArtifact(path string) bool {
 // sopsConfigBasename is the operator's SOPS creation-rules config basename, recognized as
 // an operator artifact (role 3). It mirrors the constant the bootstrap template uses.
 const sopsConfigBasename = ".sops.yaml"
+
+// isBenignPassenger reports whether a non-YAML file is inert repo-hygiene the operator
+// accepts by default without managing it: documentation, a license, or Git metadata. The
+// set is deliberately small and closed. The acceptance ratchet
+// (docs/spec/gitpath-foreign-content-stringency.md §1) makes accepting a shape irreversible,
+// so this holds only files no future "own the subtree" behaviour (a wrap-to-ConfigMap, a
+// faithful sweep) would ever want to claim — never loose application data such as notes.txt,
+// values.json, or deploy.sh, which stay foreign and refused. Matching is by basename at any
+// depth, mirroring how the equivalent .gittargetignore glob (e.g. `*.md`, `LICENSE`) matches.
+func isBenignPassenger(path string) bool {
+	base := filepathBase(path)
+	switch base {
+	case ".gitignore", ".gitattributes", ".gitkeep", ".keep",
+		"LICENSE", "LICENSE.txt", "LICENCE", "LICENCE.txt",
+		"COPYING", "COPYING.txt", "NOTICE", "NOTICE.txt":
+		return true
+	}
+	return hasMarkdownExt(base)
+}
+
+// hasMarkdownExt reports whether a basename is a Markdown document. It stays case-sensitive
+// on the lower-case extensions so it matches the way a `*.md` .gittargetignore glob behaves
+// on a Linux checkout — the operator's own README.md is already handled earlier as an
+// operator artifact, so this only classifies the remaining loose documentation.
+func hasMarkdownExt(base string) bool {
+	return strings.HasSuffix(base, ".md") || strings.HasSuffix(base, ".markdown")
+}
 
 // IgnoreMatcher is the parsed, active root .gittargetignore: a go-git gitignore matcher
 // plus the raw patterns it was built from. It is reused git's own matching semantics

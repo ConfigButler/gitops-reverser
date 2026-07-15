@@ -89,7 +89,8 @@ type ResourceCounts struct {
 	Editable int `json:"editable"`
 	// NonKRM is the number of non-KRM YAML documents and foreign (non-YAML/symlink)
 	// entries in the candidate's own subtree. Retained build directives (kustomization
-	// files) are neither KRM nor NonKRM and are not counted.
+	// files), operator artifacts (README.md), and accepted benign passengers (a license,
+	// docs, .gitignore) are neither KRM nor NonKRM and are not counted.
 	NonKRM int `json:"nonKrm"`
 }
 
@@ -629,7 +630,8 @@ func reachedResourceFilesFrom(rootDir string, kusts map[string]*kustomizationDoc
 }
 
 // nonKRMUnder counts non-KRM YAML documents and foreign entries under dir. Retained
-// build directives are excluded (they are neither KRM nor noise).
+// build directives, operator artifacts, and accepted benign passengers are excluded
+// (they are neither KRM nor noise).
 func nonKRMUnder(store *ManifestStore, dir string) int {
 	n := 0
 	for _, d := range store.Diagnostics {

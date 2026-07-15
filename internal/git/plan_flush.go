@@ -1459,7 +1459,7 @@ func scanWorktreeSubtree(absBase string) (manifestanalyzer.FolderScan, error) {
 				return readErr
 			}
 			scan.YAMLFiles = append(scan.YAMLFiles, manifestedit.FileContent{Path: rel, Content: content})
-		case manifestanalyzer.RoleOperatorArtifact:
+		case manifestanalyzer.RoleOperatorArtifact, manifestanalyzer.RoleBenignPassenger:
 			scan.NonYAML = append(scan.NonYAML, rel)
 		case manifestanalyzer.RoleForeignFile:
 			scan.NonYAML = append(scan.NonYAML, rel)

@@ -27,7 +27,7 @@ Reading rules:
 | 1-desired-state/argocd-app-of-apps | 0 | All reported candidates accepted | 4 | 0 | plain=4 | - | None |
 | 1-desired-state/argocd-plain | 0 | Partial | 1 | 1 | plain=2 | - | non-krm-yaml: ci-metadata.yaml: YAML is not a Kubernetes manifest |
 | 1-desired-state/flux-monorepo | 0 | All reported candidates accepted | 6 | 0 | kustomize-overlay=2, kustomize-single=4 | - | None |
-| 1-desired-state/repo-per-environment | 0 | Partial | 6 | 3 | plain=9 | - | foreign-file: .gitignore: foreign file .gitignore is not a managed manifest; remove it or name it in .gittargetignore<br>foreign-file: .gitignore: foreign file .gitignore is not a managed manifest; remove it or name it in .gittargetignore<br>foreign-file: .gitignore: foreign file .gitignore is not a managed manifest; remove it or name it in .gittargetignore |
+| 1-desired-state/repo-per-environment | 0 | All reported candidates accepted | 9 | 0 | plain=9 | - | None |
 | 2-rendered/argocd-external-helm | 0 | Partial | 2 | 1 | plain=3 | - | non-krm-yaml: values.yaml: YAML is not a Kubernetes manifest |
 | 2-rendered/helm-chart | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 2-rendered/helm-environment-values | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
@@ -82,18 +82,18 @@ Unsupported constructs: `none`. Fleet root: `false`.
 
 ## 1-desired-state/repo-per-environment
 
-Reported rc `0`. Accepted `6`, refused `3`.
+Reported rc `0`. Accepted `9`, refused `0`.
 Unsupported constructs: `none`. Fleet root: `false`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `gitops-dev` | `plain` | false | `-` | 6/6/1 | foreign-file: .gitignore: foreign file .gitignore is not a managed manifest; remove it or name it in .gittargetignore |
+| `gitops-dev` | `plain` | true | `-` | 6/6/0 | none |
 | `gitops-dev/apps/backend` | `plain` | true | `backend-dev` | 2/2/0 | none |
 | `gitops-dev/apps/frontend` | `plain` | true | `frontend-dev` | 2/2/0 | none |
-| `gitops-production` | `plain` | false | `-` | 7/7/1 | foreign-file: .gitignore: foreign file .gitignore is not a managed manifest; remove it or name it in .gittargetignore |
+| `gitops-production` | `plain` | true | `-` | 7/7/0 | none |
 | `gitops-production/apps/backend` | `plain` | true | `backend-production` | 2/2/0 | none |
 | `gitops-production/apps/frontend` | `plain` | true | `frontend-production` | 3/3/0 | none |
-| `gitops-staging` | `plain` | false | `-` | 6/6/1 | foreign-file: .gitignore: foreign file .gitignore is not a managed manifest; remove it or name it in .gittargetignore |
+| `gitops-staging` | `plain` | true | `-` | 6/6/0 | none |
 | `gitops-staging/apps/backend` | `plain` | true | `backend-staging` | 2/2/0 | none |
 | `gitops-staging/apps/frontend` | `plain` | true | `frontend-staging` | 2/2/0 | none |
 
@@ -254,7 +254,7 @@ Unsupported constructs: `unparseable`. Fleet root: `false`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `.` | `refused-structural` | false | `backend` | 0/0/6 | refused-structural: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec") |
+| `.` | `refused-structural` | false | `backend` | 0/0/5 | refused-structural: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec") |
 | `crossplane` | `plain` | true | `-` | 1/1/0 | none |
 | `kro` | `plain` | true | `-` | 1/1/0 | none |
 | `mixed` | `plain` | false | `-` | 3/3/2 | impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |
