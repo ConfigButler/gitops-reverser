@@ -252,7 +252,7 @@ that claim is void: we cannot reverse a state we cannot reproduce. So `RenderMat
 adoption exactly as a structural refusal does — the folder is **not tracked**, `Ready=False`, with a
 reason naming the diverging fields — not a soft warning beside a folder we quietly mishandle. This is
 deliberately the strict choice, and it can be loosened later (mirror for audit, refuse only the
-writes) *if* a demand for tracking read-only-but-unfaithful folders proves out. Strict first, because
+writes) *if* a demand for tracking read-only-but-diverging folders proves out. Strict first, because
 the failure it prevents is silent corruption, and loosening a gate is reversible where a shipped
 corruption is not.
 
@@ -268,14 +268,14 @@ not touching — catching the blind spot the oracle cannot.
 
 The blocking decision forces the timing: `RenderMatchesLive` must be computed where the operator holds
 both the Git content and the live objects, and **before any write** — because the first mirror of an
-unfaithful folder *is* the corruption. That point already exists, which is why the shape you
+diverging folder *is* the corruption. That point already exists, which is why the shape you
 suggested is the right one.
 
 ### The one predicate, computed once, read by both surfaces
 
 Everything reduces to a single per-document test:
 
-> **unfaithful(doc) := our render of the Git document carries a `${...}` token at a field where the
+> **diverges(doc) := our render of the Git document carries a `${...}` token at a field where the
 > live object holds a resolved value.**
 
 kustomize never emits a `${...}` token, so our render preserves the ones the source carries; if the
@@ -299,8 +299,8 @@ When a folder is accepted, the watch opens with `SendInitialEvents` and enqueues
 subtree *and* replays the live objects — the one moment both halves are in hand and nothing has been
 written. Add the predicate as a **resync precondition**, beside the write-boundary ones: render the
 roots (already done for the oracle), walk each rendered object against its live counterpart for a
-token divergence, and if any document is unfaithful, **abort the resync's writes and set
-`RenderMatchesLive=False`**. That same abort is what stops the corruption — an unfaithful resync would
+token divergence, and if any document diverges, **abort the resync's writes and set
+`RenderMatchesLive=False`**. That same abort is what stops the corruption — a diverging resync would
 otherwise mirror `us-east` over `${REGION}` on the spot. *Cost:* one field-walk on top of a render we
 already do — milliseconds.
 
@@ -312,9 +312,9 @@ and route this?"*, the fidelity gate answers *"does our render match reality?"*,
 functions keep each independently testable.
 
 **(C) Derive the folder verdict purely from per-write refusals.** Don't compute a folder pass at all —
-refuse each unfaithful write (§6a) and flip `RenderMatchesLive=False` the first time one is refused for
-this reason. Simplest, and it keeps 6a and 6b in one code path — but it makes the folder *"faithful
-until proven otherwise, one write at a time"*, so a user only learns it is untrackable **after**
+refuse each diverging write (§6a) and flip `RenderMatchesLive=False` the first time one is refused for
+this reason. Simplest, and it keeps 6a and 6b in one code path — but it makes the folder *"assumed to
+match until proven otherwise, one write at a time"*, so a user only learns it is untrackable **after**
 attempting an edit. That is exactly the up-front property 6b exists to give, so (C) delivers 6a and
 loses the point of 6b.
 
@@ -322,7 +322,7 @@ loses the point of 6b.
 the verdict and prevents the corruption in one step — and it produces the up-front folder answer. (B)
 is (A) with a cleaner seam, a reasonable refinement. (C) is the fallback that keeps only the per-write
 half. Whichever computes the folder pass, the steady-state per-write check (§6a) still runs between
-resyncs, so a folder that becomes unfaithful later (postBuild added after adoption) flips the
+resyncs, so a folder that starts diverging later (postBuild added after adoption) flips the
 condition the moment the first such write is refused — 6a keeps 6b current.
 
 ### How it blocks, and how it clears
@@ -340,8 +340,10 @@ with no manual acknowledgement.
 
 ## 8. Open questions
 
-- **5a vs 5b, and sequencing.** 5a (token) is precise and cheap — build first. 5b (general
-  render-vs-live) is the complete answer but needs the runtime-drift discriminator before it is safe.
+- **5a is the gate we build; 5b is deferred** (decided). The token form (5a) is what
+  `RenderMatchesLive` blocks on — precise, cheap, and free of the runtime-drift false positive. The
+  general render-vs-live form (5b) is the complete answer (it also catches Argo overrides and version
+  skew) but must wait on the drift discriminator below before it is safe to block on.
 - **The runtime-drift discriminator.** Can we separate "an HPA changed replicas" from "postBuild
   changed an env" without hand-written per-field policy? **`managedFields` looks promising and should
   be measured**: a field owned by the GitOps controller's apply is render context; a field owned by
