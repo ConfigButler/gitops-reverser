@@ -8,6 +8,11 @@
 # Shipped fully commented: out of the box it ignores NOTHING, so the strict default stays in
 # force until you deliberately opt a file out. Uncomment or add patterns as needed.
 #
+# You do NOT need to list common repo-hygiene files here — documentation (*.md, *.markdown),
+# a license (LICENSE / COPYING / NOTICE), and Git metadata (.gitignore / .gitattributes /
+# .gitkeep) are accepted automatically. This file is for the OTHER passengers: a whole
+# subtree to leave alone, or a non-managed YAML you want kept in the repo.
+#
 # WARNING — never ignore a path the operator writes (a managed manifest). Doing so would
 # blind the operator to its own file: it could not update or delete it, and would re-create
 # it forever. The operator refuses any flush whose write path a pattern here would shadow,
@@ -16,9 +21,6 @@
 #
 # Examples (uncomment the ones you need):
 #
-# LICENSE                 # a license file kept in the mirror
-# .gitignore              # a hand-maintained git ignore
-# .gitattributes
 # docs/                   # a hand-maintained docs subtree the operator should leave alone
-# *.md                    # loose markdown notes
+# scratch/                # a working directory kept out of the mirror
 # legacy/old-config.yaml  # a YAML file kept in the repo but not operator-managed

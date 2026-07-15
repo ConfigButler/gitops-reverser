@@ -8,7 +8,8 @@
 > landed. Where it lives:
 > - **Matcher, foreign classification, denylist, role policy** —
 >   [internal/manifestanalyzer/gittargetignore.go](../../internal/manifestanalyzer/gittargetignore.go)
->   (`ClassifyEntry`, `LoadGitTargetIgnore`, `IgnoreMatcher`, `foreignContentRefusals`).
+>   (`ClassifyEntry`, `LoadGitTargetIgnore`, `IgnoreMatcher`, `foreignContentRefusals`,
+>   `isBenignPassenger` — the closed benign-passenger set added 2026-07-15 under D-foreign-7).
 > - **Scan wiring** — `collectFiles`
 >   ([analyzer.go](../../internal/manifestanalyzer/analyzer.go)) and the writer's
 >   `scanWorktreeSubtree` ([plan_flush.go](../../internal/git/plan_flush.go)) both produce a
@@ -148,6 +149,11 @@ ACCEPTED under spec.path
   3. Operator artifact      .sops.yaml, README.md (basename) +                     (WriterAllowlist + …)
                               <spec.path>/.gittargetignore (ROOT only) —
                               operator-authored, retained, passive
+  3b. Benign passenger      a closed set of inert repo-hygiene basenames:          (isBenignPassenger, §6)
+                              *.md / *.markdown, LICENSE / COPYING / NOTICE,
+                              .gitignore / .gitattributes / .gitkeep / .keep —
+                              USER-authored, accepted, never managed; matched
+                              AFTER the ignore filter, so still suppressible
   4. User-ignored           anything matching the root .gittargetignore —          (§4, NEW)
                               NEVER READ
   5. (empty directories)    harmless; git does not track them                      (ignore)
@@ -403,13 +409,21 @@ semantics rather than reinventing glob handling.
   and `.gittargetignore` must be added. Audit the full bootstrap template
   ([bootstrapped_repo_template.go](../../internal/git/bootstrapped_repo_template.go)) for any other
   non-KRM file it stages and allowlist each one explicitly.
-- **Keep the hardcoded accepted set minimal; push "common benign" files into the bootstrapped
-  `.gittargetignore`.** Rather than hardcoding `LICENSE` / `.gitignore` / `.gitattributes` into the operator's
-  allowlist (they are *user* content, not operator artifacts, so they would muddy role 3), the bootstrapped
-  `.gittargetignore` (§4.2) ships them as **commented example patterns**. A user who adds a `LICENSE`
-  uncomments one line — an in-repo, discoverable, versioned fix — instead of relying on operator-baked API
-  behaviour. The hardcoded set stays exactly the operator's own artifacts + build directives. (Supersedes
-  the old "starter allowlist" idea; see D-foreign-3.)
+- **Accept a closed set of inert repo-hygiene passengers by default; keep everything else in the
+  `.gittargetignore` escape hatch (D-foreign-7, supersedes the original minimal-set stance).** The
+  original decision hardcoded *nothing* beyond the operator's own artifacts and pushed `LICENSE` /
+  `.gitignore` / `.gitattributes` into the bootstrapped `.gittargetignore` as commented examples. That is
+  correct for a folder the operator *bootstraps*, but wrong for the reverser's core case — **adopting an
+  existing repo**, which has no `.gittargetignore`, so a stray `LICENSE`, a `.gitkeep`, or a non-README
+  `.md` refuses the whole folder on first scan. So a small, closed **benign-passenger** set is now accepted
+  by default (`isBenignPassenger`, role 3b): `*.md` / `*.markdown`, `LICENSE` / `LICENCE` / `COPYING` /
+  `NOTICE`, and `.gitignore` / `.gitattributes` / `.gitkeep` / `.keep`. This does **not** break the ratchet
+  (§1): the set holds only files no future "own the subtree" behaviour would ever want to claim — loose
+  application data (`notes.txt`, `values.json`, `deploy.sh`) stays foreign and refused. These are *user*
+  content, not operator artifacts, so they are matched **after** the ignore filter (role 3b, not role 3):
+  a user can still `.gittargetignore` one, and it can never shadow or be confused with an operator artifact.
+  The bootstrapped `.gittargetignore` keeps its examples for the *non*-hygiene passengers a user might still
+  want (a `docs/` subtree, a kept-but-unmanaged YAML).
 - **Symlinks: refuse, do not skip.** A writer that materializes into a folder containing a symlink can
   follow it out of the subtree; silently skipping it hides a real hazard. A user who genuinely wants a
   symlink left alone can `.gittargetignore` it — explicit and versioned — rather than us tolerating it
@@ -506,6 +520,21 @@ semantics rather than reinventing glob handling.
   placement-agnostic and is the safety precondition for any future **configurable file placement** — call it
   out prominently in that feature's design. Optional later hardening (raw-scan read of ignored files) closes
   the manually-moved-file residual edge.
+
+### Amended later (2026-07-15)
+
+- **D-foreign-7 — accept a closed benign-passenger set by default — DECIDED (§3 role 3b, §6).** Supersedes
+  the original "hardcode nothing beyond operator artifacts" stance for a small, closed set of inert
+  repo-hygiene files: `*.md` / `*.markdown`, `LICENSE` / `LICENCE` / `COPYING` / `NOTICE`, and
+  `.gitignore` / `.gitattributes` / `.gitkeep` / `.keep` (`isBenignPassenger`). Motivation: **adopting an
+  existing repo** — the reverser's core use case — has no `.gittargetignore`, so refusing the whole folder
+  over a `LICENSE` or a `.gitkeep` is a bad first-scan experience. Ratchet-safe because the set holds only
+  files no future "own the subtree" behaviour (wrap-to-ConfigMap, faithful sweep) would ever claim; loose
+  application data stays foreign. Modeled as a **distinct role from operator artifacts** (matched *after*
+  the ignore filter, so still user-suppressible and never able to shadow an operator artifact), which keeps
+  role 3's "operator-authored, un-suppressible" semantics clean — the exact modeling concern the original
+  minimal-set decision raised. The bootstrapped `.gittargetignore` keeps its examples for the remaining
+  non-hygiene passengers (a `docs/` subtree, a kept-but-unmanaged YAML).
 
 ---
 

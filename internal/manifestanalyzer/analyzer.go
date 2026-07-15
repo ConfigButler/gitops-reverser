@@ -297,7 +297,7 @@ func collectFiles(fsys fs.FS) FolderScan {
 				return nil //nolint:nilerr // an unreadable file must not abort the whole scan
 			}
 			scan.YAMLFiles = append(scan.YAMLFiles, manifestedit.FileContent{Path: path, Content: content})
-		case RoleOperatorArtifact:
+		case RoleOperatorArtifact, RoleBenignPassenger:
 			scan.NonYAML = append(scan.NonYAML, path)
 		case RoleForeignFile:
 			scan.NonYAML = append(scan.NonYAML, path)
