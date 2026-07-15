@@ -241,6 +241,55 @@ func TestPlacement_UndecodableKustomization_RefusesTheFlush(t *testing.T) {
 	require.Error(t, err, "a kustomization kustomize cannot build must refuse the folder, not be written into")
 }
 
+// TestPlacement_ExternalBaseOverlay_NewObject proves render-root scoping's WRITE half for a
+// brand-new object: a GitTarget rooted at an overlay that reads ../../base gains a new
+// ConfigMap. The file must land inside the overlay (never the read-only base), the overlay's
+// kustomization must gain the resources: entry so kustomize renders it, the base must be left
+// byte-for-byte untouched, and the render oracle must accept the flush — kustomize builds the
+// new object through the re-rooted scope. This is the "New object -> overlay-local file plus
+// resources: entry" row of render-root-scoping.md §4.
+func TestPlacement_ExternalBaseOverlay_NewObject(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+
+	// The read-only base, outside the overlay's own subtree.
+	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - deployment.yaml\n")
+	seedPlacedManifest(t, worktree, "base/deployment.yaml",
+		"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n")
+	// The overlay GitTarget reaches ../../base and sets the namespace transformer.
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml",
+		"namespace: podinfo-test\nresources:\n  - ../../base\n")
+	baseKustBefore, err := os.ReadFile(filepath.Join(root, "base/kustomization.yaml"))
+	require.NoError(t, err)
+
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	changed, err := w.flushEventsToWorktree(
+		context.Background(), worktree, "overlays/test",
+		[]Event{newConfigMapEvent("cache", "podinfo-test")}, nil,
+	)
+	require.NoError(t, err, "the overlay new-object flush must pass the render oracle")
+	require.True(t, changed)
+
+	// The new object lands inside the overlay, not the base.
+	newFile, err := os.ReadFile(filepath.Join(root, "overlays/test/cache.yaml"))
+	require.NoError(t, err, "the new resource must land inside the overlay directory")
+	assert.Contains(t, string(newFile), "name: cache")
+
+	// The overlay kustomization gains the resources: entry so kustomize renders it.
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "- ../../base", "the base reference must survive")
+	assert.Contains(t, string(kust), "cache.yaml", "the new file must be registered in the overlay's resources:")
+
+	// The read-only base is never written into.
+	_, statErr := os.Stat(filepath.Join(root, "base/cache.yaml"))
+	assert.True(t, os.IsNotExist(statErr), "nothing may be written into the read-only base")
+	baseKustAfter, err := os.ReadFile(filepath.Join(root, "base/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, string(baseKustBefore), string(baseKustAfter),
+		"the base kustomization must be untouched")
+}
+
 func newTestWriteBatch(t *testing.T) *writeBatch {
 	t.Helper()
 	writer := newContentWriter(types.SensitiveResourcePolicy{})

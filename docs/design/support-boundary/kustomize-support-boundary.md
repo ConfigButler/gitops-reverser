@@ -33,9 +33,10 @@ these fields a general reverse-edit feature.
 
 An external-base overlay can edit an existing overlay-local document and a declared
 image/replica entry. Its shared base is read-only. Creating a new overlay-local resource
-and adding its `resources:` entry is **planned** pending a placement/write-path correction;
-it must not be advertised as shipped yet. `scan-repo` still reports external-base overlays
-as unsupported while its classification catches up with the runtime.
+and adding its `resources:` entry is **shipped**: the new object lands as an overlay-local
+file registered in the overlay's own kustomization, verified by re-render. Adding a *missing*
+`images:`/`replicas:` declaration remains planned. `scan-repo` still reports external-base
+overlays as unsupported while its classification catches up with the runtime.
 
 ```mermaid
 flowchart LR

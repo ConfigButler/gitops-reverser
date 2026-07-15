@@ -1,8 +1,9 @@
 # Render-root scoping
 
 > **Implementation record.** External-base overlay support is shipped for existing
-> overlay-local documents and declared `images`/`replicas` entries. New-resource entry
-> creation and patch authoring remain separate work.
+> overlay-local documents, declared `images`/`replicas` entries, and **creating a new
+> overlay-local object** (a new file plus its `resources:` entry, verified by re-render).
+> Adding a *missing* `images`/`replicas` declaration and patch authoring remain separate work.
 >
 > Related: [support contract](support-contract.md),
 > [Kustomize boundary](kustomize-support-boundary.md),
@@ -33,6 +34,11 @@ flowchart LR
   while the **write scope** remains `spec.path`.
 - An existing overlay-local document is edited in place. An existing `images:` or `replicas:`
   declaration receives the corresponding edit-through change.
+- A **brand-new object** with no existing document is created as an overlay-local file and
+  registered in the overlay's **own** `resources:` entry — never the base's — with the
+  re-render verifying it before the commit. A new object whose field a folder-level
+  `images:`/`replicas:` entry would override is refused loudly by that oracle instead of
+  committed as a non-converging write.
 - A source file reached by more than one render root is read-only. The entire flush is refused
   before a commit when a plan would write it.
 - A path-based strategic-merge patch is read-only build context. It no longer rejects the
@@ -80,22 +86,28 @@ refuses the edit. See [render attribution](render-attribution.md) for the method
 | Image tag or repository | declared overlay `images:` entry | Editable |
 | Replica count | declared overlay `replicas:` entry | Editable |
 | Existing overlay-local document field | that document | Editable |
-| New object | overlay-local file plus `resources:` entry | **Planned** — placement/write-path correction required |
+| New object | overlay-local file plus `resources:` entry | **Editable** — placed in the overlay, registered in its own kustomization, verified by re-render |
 | Base-owned field | operator-authored strategic-merge patch | Refused pending [patch authoring](patch-authoring.md) |
 | Delete inherited object in one overlay | `$patch: delete` | Refused |
 
-Entry creation is distinct from editing an entry. The current writer does not safely add a
-missing `images:`/`replicas:` declaration or create a resource entry for a new object, so the
-contract labels those paths planned rather than relying on the existing generic placement
-feature.
+Entry creation is distinct from editing an entry. Creating a **new object** — an overlay-local
+file plus a `resources:` entry in the overlay's **own** kustomization (the base's is out of the
+write jail) — is shipped: the generic placement feature resolves the file, the writer adds the
+`resources:` entry in the same commit, and the re-render oracle verifies the new object appears
+while everything else is unchanged. What the writer still does **not** do is add a *missing*
+`images:`/`replicas:` declaration — that entry-creation case has no source value to attribute
+yet and stays planned.
 
 ## 5. Remaining work
 
-1. Correct overlay-local new-object placement, including a deterministic `resources:` entry.
-2. Add missing `images:` and `replicas:` declarations only under the same verification proof.
-3. Flip discovery classification and add a dedicated cluster end-to-end overlay case.
-4. Author a narrow scalar strategic-merge patch for base-owned fields; lists, deletes, and
+1. Add missing `images:` and `replicas:` declarations only under the same verification proof.
+2. Flip discovery classification and add a dedicated cluster end-to-end overlay case.
+3. Author a narrow scalar strategic-merge patch for base-owned fields; lists, deletes, and
    structural merges require separate decisions.
+
+Overlay-local new-object placement (a new file plus its `resources:` entry) is done and covered
+by `TestPlacement_ExternalBaseOverlay_NewObject`; it left the list when the write path proved it
+end-to-end.
 
 The earlier exploratory prompt material was consolidated into this implementation record and
 [patch authoring](patch-authoring.md). Git history retains the detailed experiments without

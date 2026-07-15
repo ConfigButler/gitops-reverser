@@ -79,7 +79,7 @@ templates, and multi-input ResourceSet templates alike. It is specified once, in
 |---|---|---|
 | kustomize `resources`, `namespace`, `images`, `replicas` | **Editable** | invertible; `images`/`replicas` edit-through is shipped |
 | kustomize base + un-fancy overlays | **Editable, narrow** | render-root scoping reads `../../base` as read-only context and writes existing overlay-local documents plus declared image/replica entries in the overlay; the base is never written. `scan-repo` still reports these as `overlay-fan-out-unsupported` — the discovery-side flip is a follow-up |
-| New object in an external-base overlay | **Planned** | needs an overlay-local file **and** a correct `resources:` entry; the current placement/write path does not yet prove that route |
+| New object in an external-base overlay | **Editable** | placed as an overlay-local file and registered in the overlay's own `resources:` entry (never the base's), verified by re-render before the commit; proven by `TestPlacement_ExternalBaseOverlay_NewObject`. A new object a folder `images:`/`replicas:` entry would override is refused loudly by the oracle, not committed |
 | kustomize base shared by >1 overlay, edited in place | **Refused** | fan-in > 1 |
 | kustomize `patches:` — a strategic-merge document named by `path:` | **Tolerated, not authored** | the folder is accepted and the render is mirrored; the patch is read-only build context. An edit to a field the patch OWNS is refused per object, not per folder |
 | kustomize `patches:` — inline, JSON6902, or a path outside the tree | **Refused** | not a sparse KRM document we can read; refused by name |
