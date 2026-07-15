@@ -6,6 +6,7 @@
 > [README.md](README.md),
 > [render-root-scoping.md](render-root-scoping.md) §3 — the version-skew caveat this generalises,
 > [render-attribution.md](render-attribution.md) §5 — *attribution may be heuristic, verification may not*, and the "shared blind spot" failure,
+> [render-fidelity-scenarios.md](render-fidelity-scenarios.md) — the red-first fixture and gate-state matrix,
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) — reading the Flux/Argo object; the `TransformedOutOfBand` claim,
 > [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md),
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md)
@@ -155,7 +156,7 @@ than guessed from disk:
 flowchart TD
     W["about to write a field back to source"] --> Q{"does our render equal<br/>the LIVE object here?"}
     Q -->|"yes"| K["SAFE — our render is what the cluster runs.<br/>keep source / write as normal"]
-    Q -->|"no, and the source carries a substitution token here"| R["REFUSE — out-of-band substitution<br/>would destroy the token on write"]
+    Q -->|"no, and the render carries a token here"| R["REFUSE — the render did not produce<br/>this live value; protect the token"]
     Q -->|"no, and no token (general case)"| D["context skew OR ordinary runtime drift —<br/>the open discriminator (§5b, §8)"]
 
     classDef good fill:#dfd,stroke:#3a3,color:#111
@@ -231,26 +232,33 @@ there, the answer is worth exposing two different ways.
 
 ### 6a. A per-write refusal (§5)
 
-Point-in-time, per field: a write that would overwrite a source token whose live value diverged is
-refused, in the family of `WriteBoundaryRefused`, naming the file, field, and token. This is the guard
-that stops the corruption at the moment it would happen. It sits beside the source-form projection —
-that decides *keep-source vs write-live* per field; this turns a *write-live* into a refusal when the
-field it would overwrite holds a token the live object no longer has. It is per field, per object, so
-one diverged token refuses one write, never a whole folder (the failure that broke CRD mirroring).
+Point-in-time, per field: a write that would overwrite the source representation of a **rendered** token
+whose live value diverged is refused, in the family of `WriteBoundaryRefused`, naming the file, field,
+and token. This is the guard that stops the corruption at the moment it would happen. It sits beside the
+source-form projection — that decides *keep-source vs write-live* per field; this turns a *write-live*
+into a refusal when the corresponding **rendered** field still holds a token the live object no longer
+has. It is per field, per object, so one diverged token refuses one write, never a whole folder (the
+failure that broke CRD mirroring).
+
+Comments are not parsed fields and never participate. A CRD schema `description` **is** a parsed scalar,
+so it participates exactly like any other scalar: it is safe when render and live both retain the literal
+token, and it is deliberately refused if the live description differs. There is no kind- or field-name
+exception; equality with live is the discriminator.
 
 ### 6b. A GitTarget status you can read *before* you edit
 
 The same measurement, aggregated to the folder and surfaced as a standing **GitTarget condition** —
-e.g. `RenderMatchesLive` — answers a more fundamental question than any single write does:
+`RenderMatchesLive` — answers a more fundamental question than any single write does:
 
 > **Do we even have a chance of tracking this folder?**
 
 Because if our render does not match what the cluster runs, *nothing* we do on the folder is
 trustworthy — not the mirror, not edit-through, not the refusal decisions themselves — since all of
 them reason from a baseline that is wrong. A per-write refusal tells you *this edit* could not land; a
-`RenderMatchesLive=False` condition tells you *this whole folder* is deployed with context we cannot
-reproduce (Flux postBuild, Argo `spec.source.kustomize`, a divergent version), so you learn it **up
-front, from status, before you waste an edit** — rather than one refusal at a time.
+`RenderMatchesLive=False` condition tells you *this whole folder* has live values our render did not
+produce (Flux postBuild, an Argo override, a direct live edit, admission mutation, or a divergent
+version), so you learn it **up front, from status, before you waste an edit** — rather than one refusal
+at a time.
 
 It carries a bounded sample of the diverging `(file, field)` pairs, in the style of the
 `FullyReflected` condition in
@@ -260,20 +268,63 @@ sibling of that condition: `FullyReflected` says *everything you edited was expr
 fundamental of the two. It is recomputable: the mark-and-sweep resync rebuilds it from scratch,
 steady-state events keep it current.
 
-This is exactly what the reverted structural check was reaching for and could not have — a
-folder-level *"can we track this?"* verdict. It failed because it tried to answer from the **disk**;
-the same question, answered from the **live object**, is both correct and precisely the up-front
-signal a user wants.
+This is exactly what the reverted structural check was reaching for and could not have — a folder-level
+*"can we track this?"* verdict. It failed because it tried to answer from the **disk**; the same
+question, answered from the **live object**, is both correct and precisely the up-front signal a user
+wants.
 
-**And the condition blocks.** A `GitTarget` *is* the claim that a folder can be reverse-GitOps'd —
-live changes captured faithfully back to Git. If our render is not equal to what the cluster runs
-that claim is void: we cannot reverse a state we cannot reproduce. So `RenderMatchesLive=False` gates
-adoption exactly as a structural refusal does — the folder is **not tracked**, `Ready=False`, with a
-reason naming the diverging fields — not a soft warning beside a folder we quietly mishandle. This is
-deliberately the strict choice, and it can be loosened later (mirror for audit, refuse only the
-writes) *if* a demand for tracking read-only-but-diverging folders proves out. Strict first, because
-the failure it prevents is silent corruption, and loosening a gate is reversible where a shipped
-corruption is not.
+`RenderMatchesLive` is deliberately **separate from `GitPathAccepted`**. The latter remains the
+structure/write-boundary claim (*can we parse and route this path safely?*). Fidelity is a live,
+recomputable claim (*does the current Git revision reproduce what is running?*). Conflating them would
+let one clean scoped resync erase either a structural refusal or a still-diverging sibling scope.
+
+#### The folder-gate state machine
+
+The gate is a per-`GitTarget` data-plane state machine. Its unit of evidence is a watch **scope**:
+`(GVR, namespace)`, not only a GVR. A fidelity **epoch** is the immutable set of active scopes plus the
+Git revision the worker rendered. Results from another epoch are stale and must be discarded.
+
+| Derived condition | Scope evidence for the current epoch | Normal live writes |
+|---|---|---|
+| `Unknown` / `Rechecking` | One or more active scopes are pending. A newly declared target starts here. | Deny |
+| `False` / `RenderDoesNotMatchLive` | At least one completed scope found a rendered token whose live value differs. Keep a bounded, deterministic sample. | Deny |
+| `True` / `RenderMatchesLive` | Every active scope completed cleanly for the same epoch. | Allow |
+
+The transitions are deliberately strict:
+
+1. Before opening/replacing the target's watches — and whenever the Git revision, `GitTarget`
+   generation, or watch-scope set changes — begin a new epoch. Snapshot the active scopes, mark every
+   one pending, set `RenderMatchesLive=Unknown`, and close the normal-write gate. Beginning the epoch is
+   a control action ordered on the branch-worker FIFO before its scoped resyncs: an uncommitted open
+   window for **that target** is discarded, never finalized, and later normal events stay closed until
+   the condition becomes True. Otherwise `applyResync` could finalize an old window immediately before
+   it measures the new epoch and defeat the gate.
+2. Each scoped replay runs through the target's branch-worker FIFO. Its resync computes the predicate
+   for that scope and records `Clean` or `Diverged(sample)` **before** it replies and the worker accepts
+   the next queued write for that target. A stale `(epoch, scope)` result is ignored.
+3. The condition is derived from the complete scope map, never from the last result: any `Diverged`
+   result makes it `False`; otherwise any `Pending` result keeps it `Unknown`; only all `Clean` makes it
+   `True`.
+4. A steady-state per-write divergence immediately records `Diverged` for its scope, flips the target
+   `False`, refuses that write, and keeps later normal writes closed. A later clean result from one scope
+   cannot clear it.
+5. A resync is allowed while the gate is `Unknown` or `False`, because it is the only way to measure a
+   repair. It evaluates before writing and commits nothing when it finds divergence. Recovery requires a
+   **new complete epoch** over the current Git revision; it is never inferred from one unrelated clean
+   scope or a status update.
+
+The GitTarget controller must begin a fresh epoch when it observes an incoming Git revision that may
+change the render. Its existing periodic/reconciliation path must therefore force a source refresh and
+full scope replay while fidelity is `False`; otherwise a human Git repair could never reopen the gate.
+The enforcement check belongs in the branch worker (or an equivalent synchronous data-plane guard), not
+in status projection: status is observable output, whereas the worker must reject a `WriteRequest` before
+it opens a commit window. The controller projects the same state as `Ready=False` / `Stalled=True` for
+`False`, and as `Ready=False` / `Reconciling=True` for `Unknown`.
+
+This is deliberately strict. A `GitTarget` claims that a folder can be reverse-GitOps'd — live changes
+captured faithfully back to Git. While the claim is unmeasured or false, the folder is not tracked for
+writes. We can later loosen that to an audit-only mode if there is demand; we cannot undo a parameter we
+silently replaced.
 
 ### How it composes with the oracle
 
@@ -314,18 +365,18 @@ false positive. 5b, and the `managedFields` discriminator it needs, is the follo
 
 ### Where to run it — three ways
 
-**(A) Fold it into the reconcile that runs on acceptance — recommended, and the shape you described.**
-When a folder is accepted, the watch opens with `SendInitialEvents` and enqueues a scoped
-**mark-and-sweep resync ahead of any live event** (the `replaying` barrier;
+**(A) Fold it into the reconcile that runs on acceptance — recommended.** When a folder is accepted, the
+watch manager first starts the fidelity epoch, then each watch opens with `SendInitialEvents` and enqueues
+a scoped **mark-and-sweep resync ahead of any live event** (the `replaying` barrier;
 [`target_watch.go`](../../../internal/watch/target_watch.go),
 [`resync_flush.go`](../../../internal/git/resync_flush.go)). That resync already scans the whole
 subtree *and* replays the live objects — the one moment both halves are in hand and nothing has been
-written. Add the predicate as a **resync precondition**, beside the write-boundary ones: render the
-roots (already done for the oracle), walk each rendered object against its live counterpart for a
-token divergence, and if any document diverges, **abort the resync's writes and set
-`RenderMatchesLive=False`**. That same abort is what stops the corruption — a diverging resync would
-otherwise mirror `us-east` over `${REGION}` on the spot. *Cost:* one field-walk on top of a render we
-already do — milliseconds.
+written. Add the predicate as a **resync precondition**, beside the write-boundary ones: render the roots
+(already done for the oracle), walk each rendered object against its live counterpart for a token
+divergence, and record the scope result in the epoch. A diverging scope aborts that resync's writes and
+sets the aggregate condition `False`; a clean scope merely advances the epoch toward `True`. The gate
+being `Unknown` before the first scope result is what prevents an early live event from opening a write
+window. *Cost:* one field-walk on top of a render we already do — milliseconds.
 
 **(B) A distinct live-aware acceptance layer.** Keep structure-only `Accept` as it is (fast, no
 cluster), and add a *second* gate — `AcceptRenderMatchesLive(store, liveObjects)` — that runs at the same
@@ -350,24 +401,15 @@ condition the moment the first such write is refused — 6a keeps 6b current.
 
 ### How it blocks, and how it clears
 
-`RenderMatchesLive` is a GitTarget condition, and blocking it *correctly* has two requirements a
-naive implementation misses — both because reconcile is per type, not per folder:
+The state machine in §6b is the blocking mechanism: an initial or refreshed epoch closes normal writes
+until every active `(GVR, namespace)` scope is clean, and a divergence keeps them closed. `GitPathAccepted`
+is the independent structural gate; `RenderMatchesLive` is the live-fidelity gate. Both must be `True`
+before the folder is writable.
 
-- **Aggregate across every scoped resync.** Reconcile runs per type (the M12 scoped resyncs), so the
-  folder's verdict is the OR over *all* scopes: a divergence found while reconciling any one type
-  fails the whole folder. A "last-successful-GVR" status would let a clean type mask a diverging one,
-  which is not a folder-level gate.
-- **Stop writing while failed — do not merely report.** `RenderMatchesLive=False` must prevent any
-  further write window from opening for the target; a status-only refusal that keeps mirroring would
-  violate the gate. Concretely: the resync commits nothing, the branch worker opens no window for the
-  target while it is failed, and `Ready=False` carries the reason `RenderDoesNotMatchLive` with a
-  bounded sample of the diverging `(file, field, token)`.
-
-It sits second to `GitPathAccepted` — structure-only acceptance is the first gate (*parseable,
-routable?*), `RenderMatchesLive` the second (*does our render match reality?*), and a folder must pass
-both. It is **recomputable and self-healing**: rebuilt from scratch on every resync, so removing the
-postBuild config — or moving the tokens out of the tracked subtree — flips it back to True on the next
-reconcile with no manual acknowledgement.
+It is **recomputable and self-healing**, but only by a complete, current epoch: removing the postBuild
+configuration, changing the source in Git, or moving tokens out of the subtree begins a fresh source
+revision epoch. Once every active scope is clean at that revision, `RenderMatchesLive=True` reopens writes
+without a manual acknowledgement.
 
 ---
 

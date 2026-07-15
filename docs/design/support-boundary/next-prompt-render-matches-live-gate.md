@@ -18,6 +18,8 @@ already written and decided; do not re-derive it, and do not widen it.
 - **`docs/design/support-boundary/render-fidelity.md`** — the whole design. §4 (the fence), §5a
   (what to build), §6 (the two surfaces: per-write + the blocking condition), §7 (where it runs —
   option A, a precondition on the reconcile-on-acceptance), §8 (what is deferred, and why 5b waits).
+- **`docs/design/support-boundary/render-fidelity-scenarios.md`** — the red-first fixture corpus and
+  the folder-gate state traces. Implement those tests before production code.
 
 ## Where things stand, and the one trap
 
@@ -55,8 +57,10 @@ refuse** that faithful folder; render-vs-live does not, and it also catches a to
 *injects* that the source never had. (See `docs/facts/kustomize-never-emits-dollar-brace.md` and
 render-fidelity.md §5a.)
 
-Read **parsed values, not raw bytes** (so a `${var}` in a comment or a CRD schema description never
-counts). Token regex (from the reverted `substitution.go`, recoverable from git history):
+Read **parsed values, not raw bytes**. Comments never enter parsed data. A CRD schema `description`
+*is* a parsed scalar and must be compared normally: its literal token is safe because the render and
+live value are equal, not because descriptions receive an exemption. Token regex (from the reverted
+`substitution.go`, recoverable from git history):
 `` `\$\{[A-Za-z0-9_.][^}]*\}` `` — matches `${cluster_domain}` and `${schema.spec.replicas}`; not
 `$(POD_IP)` (parens are native / kustomize var syntax) and not `${}`.
 
@@ -70,17 +74,22 @@ gate is the right first cut — do not reach for cleverness to avoid the rare ov
 - **6a — per-write refusal.** In the write path, refuse a write that would overwrite a rendered token
   with a diverged live value, aborting the flush. Mirror the existing `sourceFormRefusal` /
   `SourceFormRefusedError` pattern.
-- **6b — the blocking folder condition.** The same predicate ORed across the folder — and it has **two
-  integration requirements the per-write refusal alone does NOT give you** (do not assume it comes for
-  free):
-  - **Aggregate across every scoped resync.** Reconcile runs per type (the M12 scoped resyncs); the
-    folder's verdict is the OR over *all* scopes. A divergence in any one type must fail the whole
-    folder — a "last-successful-GVR" status would let a clean type mask a diverging one.
-  - **Stop writing while failed.** `RenderMatchesLive=False` must prevent any further write window from
-    opening for the target; a status-only refusal that keeps mirroring violates the gate.
-  Add a dedicated issue kind + reason (`RenderDoesNotMatchLive`). Whether to add a distinct
-  `RenderMatchesLive` status condition beside `GitPathAccepted`, or reuse `GitPathAccepted` with the
-  reason, is a call to make against how the other write-boundary refusals surface.
+- **6b — the blocking folder condition.** The same predicate ORed across the folder powers a distinct
+  `RenderMatchesLive` GitTarget condition. Do **not** reuse `GitPathAccepted`: that condition remains
+  the structure/write-boundary claim, whereas fidelity depends on current Git and live state.
+
+  Implement the epoch state machine in `render-fidelity.md §6b` exactly. In short: a scope is
+  `(GVR, namespace)`; a new Git revision, GitTarget generation, or scope set starts an epoch with every
+  scope pending and `RenderMatchesLive=Unknown`; only every scope clean makes it True; any divergence
+  makes it False; stale results are ignored; and only a new, complete epoch can clear False. Both
+  Unknown and False block normal write windows. Resync remains allowed while blocked so a Git repair can
+  be measured and reopen the gate. Beginning an epoch is a branch-worker FIFO control action: discard an
+  uncommitted window for that target rather than letting `applyResync` finalize it just before the
+  recheck. The worker, not a status update, is the enforcement point.
+
+  Add a dedicated issue kind + `RenderDoesNotMatchLive` reason, with a bounded sample of
+  `(file, field, token)` pairs. The status must derive from the same epoch state; no scoped-resync
+  success may unconditionally mark a target healthy.
 
 ## Where it hooks (entry points, verified in the code)
 
@@ -90,36 +99,41 @@ gate is the right first cut — do not reach for cleverness to avoid the rare ov
   `diverges()` against the live projection; on divergence return the refusal (see `sourceFormRefusal`
   for the shape). It fires on `patchExisting` — an existing *rendered* token being overwritten — which
   is the corruption (a new doc goes through `createNew`, with no token yet to protect).
-- **Resync (this is what makes it blocking):**
+- **Resync and folder gate:**
   [`internal/git/resync_flush.go`](../../../internal/git/resync_flush.go)
   `applyResyncToWorktree` → `applyResyncPlan` → `applyUpsert` → `patchExisting`. The refusal fires
-  here automatically; **verify** the error aborts the resync and surfaces as a blocked stream
-  (`commitPendingWrites` → `applyResync` replies `Err`), rather than being swallowed.
-- **Surfacing:** a new `IssueKind` in
-  [`internal/manifestanalyzer/acceptance.go`](../../../internal/manifestanalyzer/acceptance.go), and
-  map it to the reason in
-  [`internal/watch/event_router.go`](../../../internal/watch/event_router.go) `gitPathRefusalReason`.
+  here during a scoped resync, so it must abort that resync before a flush. But that is only the
+  per-write half: begin and reduce the epoch at the watch/worker boundary, record each scope result
+  before the next queued target write can run, and leave regular writes closed until the reduction is
+  True. The current target watch scopes include namespace as well as GVR.
+- **Enforcement and surfacing:** add the state owner that can atomically answer "may this target open a
+  write window?" from the branch worker, then project the same state to the controller as the new
+  condition. Update [`internal/manifestanalyzer/acceptance.go`](../../../internal/manifestanalyzer/acceptance.go)
+  with the issue kind, [`internal/watch/event_router.go`](../../../internal/watch/event_router.go) with
+  the dedicated reason, and the controller's condition/status derivation. Do not implement this as a
+  `MarkTargetGitPathAccepted` variant: that is last-result status, not a folder gate.
 
 ## The test net
 
-- **Unit (`internal/manifestanalyzer`)** for `diverges()`: CRD `${var:=default}` in a description
-  with `live == git` → **not** diverged; KRO `${schema.spec.*}` `live == git` → **not** diverged;
-  nginx ConfigMap `${host}` `live == git` → **not** diverged; Deployment env `${REGION}` with
-  `live = us-east` → **diverged**; a token only in a comment → **not** diverged; native `$(VAR)` →
-  **not** a token. **The render-not-source guardrail (do not skip it):** a source
-  `metadata.labels.env: ${ENV}` under a kustomization `labels: {env: prod}` (so the render is
-  `env: prod`) with `live = prod` → **not** diverged — a git-vs-live implementation fails this, a
-  render-vs-live one passes.
-- **Write-path (`internal/git`)**: an out-of-band-substituted doc refuses the flush
-  (`WriteBoundaryRefused` / `RenderDoesNotMatchLive`); a folder whose tokens match live (`live == git`)
-  mirrors with no refusal.
+- **Predicate fixtures (`internal/manifestanalyzer/testdata/render-fidelity/`)**: build the complete
+  red-first matrix in `render-fidelity-scenarios.md §2`, including CRD/KRO/nginx literals, comments,
+  `$(VAR)`, absent live fields, nested lists, a source token overwritten by labels, and a token injected
+  into the **render** by supported labels. The last two are non-negotiable render-not-source guardrails.
+- **Gate state unit tests:** build the §3 epoch trace before wiring watches: pending scopes deny writes;
+  a later clean scope cannot erase a divergence; stale results are ignored; a complete fresh epoch after
+  a Git repair reopens the target; and a per-write divergence immediately closes it.
+- **Writer/watch integration:** a substituted document refuses the resync with no commit; a clean event
+  queued behind it cannot open a write window; beginning a fresh epoch discards an existing uncommitted
+  target window; and a full fresh recheck can recover. Assert the distinct `RenderMatchesLive=False` /
+  `RenderDoesNotMatchLive` status rather than `GitPathAccepted=False`.
 - **Corpus:** regenerate `task gitops-layouts-baseline` and confirm **nothing moves** — the corpus has
   no live objects, so nothing can be diverged. In particular the KRO row must **not** move this time
   (it did under the reverted structural check; that is the difference between this fence and that one).
-- **e2e:** the **CRD-lifecycle spec must pass** — it is the one the reverted check broke. Run
+- **e2e:** add the dedicated Flux `postBuild` fixture from `render-fidelity-scenarios.md §5`, then keep
+  the **CRD-lifecycle spec** green — it is the one the reverted structural check broke. Run
   `task test-e2e` and **capture the full log** (`task test-e2e 2>&1 | tail -N` reports `tail`'s exit
-  code, not the suite's — a failing suite reads as green; assert on the `Passed | Failed` summary
-  line or redirect to a file). Docker required (`docker info`).
+  code, not the suite's — a failing suite reads as green; assert on the `Passed | Failed` summary line
+  or redirect to a file). Docker required (`docker info`).
 
 ## Validation and delivery
 

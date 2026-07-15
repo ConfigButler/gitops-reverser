@@ -46,10 +46,12 @@ a live `prod`. Comparing the *source* to live would falsely refuse that faithful
    `exec.Command`s the `helm` binary, so any `${...}` in its output is chart-authored
    source content.
 
-3. **Read parsed field *values*, not raw bytes.** The regex cannot distinguish a real
-   value from `${var}` inside a `# comment` or a CRD schema `description` (the literal
-   `${var:=default}` in a description is what broke CRD mirroring once). Only scanning
-   parsed YAML values avoids that false positive.
+3. **Read parsed field *values*, not raw bytes.** Parsing removes comments, so a
+   `${var}` in `# commentary` never enters the predicate. A CRD schema `description`
+   is a real parsed scalar and **must** enter it: the literal `${var:=default}` that
+   broke CRD mirroring is safe because the rendered and live descriptions are equal,
+   not because descriptions receive a structural exemption. The live comparison, not
+   a field-name exception, avoids that false positive.
 
 ## Token regex — test results
 
