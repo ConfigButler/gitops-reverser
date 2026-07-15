@@ -208,16 +208,16 @@ non-invasive, rather than a trade between the two.
 ## Reference-layout walk-through
 
 Every row assumes the reference layout (`base/` + `overlays/{test,acceptance,
-production}`) and **render-root scoping** — overlay support, which is *not*
-supported today — acting in `podinfo-test`. New-file placement is shipped;
-overlay patch authoring is not.
+production}`) and the shipped narrow render-root scope acting in `podinfo-test`.
+Existing overlay-local documents and declared image/replica entries are editable;
+new-object `resources:` entry creation and overlay patch authoring are not.
 
 | Action in `podinfo-test` | Outcome |
 |---|---|
 | `kubectl set image deploy/podinfo podinfo=…:6.6.1` | reflected → `images:` entry in `overlays/test/kustomization.yaml` |
 | `kubectl scale deploy/podinfo --replicas=5` | reflected → `replicas:` entry |
 | set an env var / resource limit on the base-owned Deployment | with **overlay patch authoring**: reflected → `overlays/test/podinfo-deployment.patch.yaml`; without it: **unreflected** — reported, and reverted wherever the render is re-applied |
-| `kubectl apply -f new-cronjob.yaml` | reflected → new overlay-local file + `resources:` entry (new-file placement) |
+| `kubectl apply -f new-cronjob.yaml` | **unreflected today** — overlay-local file placement plus a `resources:` entry needs the planned write-path correction |
 | edit the test-only debug-toolbox object | reflected → in-place edit of `overlays/test/debug-toolbox.yaml` |
 | delete the base-owned Service in test only | **unreflected** until patch authoring covers `$patch: delete` → reported, reverted where the render is re-applied (the preflight gate rejects it up front) |
 | change a label supplied by `commonLabels` | **unreflected** (transformer-owned metadata) |

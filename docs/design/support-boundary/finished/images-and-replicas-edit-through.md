@@ -3,6 +3,10 @@
 > Status: shipped ([#198](https://github.com/ConfigButler/gitops-reverser/pull/198)) —
 > phases A–C landed together with this doc; the ambiguity refusal projection into
 > GitTarget status remains future work. Filed under `finished/`.
+>
+> **Historical record.** Later render-root work supersedes this document's old
+> no-renderer and no-multi-root limitations. Current behaviour is stated in the
+> [support contract](../support-contract.md).
 > Captured: 2026-07-06
 > Related:
 > [../README.md](../README.md),
@@ -72,7 +76,8 @@ component is applied to its supplier:
    > refuses the flush (`write-fan-in`) and fails the GitTarget with
    > `WriteBoundaryRefused`; nothing is committed. See
    > [../gittarget-granularity-and-cross-environment-edits.md §1](../gittarget-granularity-and-cross-environment-edits.md).
-   > Per-render-root scoping would generalize the check; it is not built.
+   > Render-root scoping now generalises the check to any file reached by more
+   > than one render root; this historical section records the earlier scope.
 3. **Acceptance tightens only for garbage.** A kustomization whose `images:`
    or `replicas:` value is present but not structurally parseable (not a list
    of maps, missing `name`, non-string image fields, non-integer count) is
@@ -189,18 +194,12 @@ not have — batch-wide edit reconciliation is not built.
 
 ## What this deliberately does not do
 
-> **Superseded on 2026-07-14, in part.** "Option D remains future research" was answered:
-> the analyzer now decodes `kustomization.yaml` with kustomize's own type rather than a
-> hand-written key walk, and the re-implemented transformer subset is being removed. The
-> reasoning, and why the original position was wrong, is in
-> [../kustomize-support-boundary.md](../kustomize-support-boundary.md) §7. The rest of
-> this section still describes what shipped here.
-
-- No `kustomize build`, no source maps (Option D remains future research).
-- No entry creation/deletion, no patch authoring, no `namePrefix`/`nameSuffix`
-  or generator support — the acceptance boundary for those is unchanged.
-- No multi-root overlay support: base + env1/env2/prod fan-out stays refused
-  (namespace case) or unrouted (no-namespace case).
+> **Superseded in part.** The implementation now uses Kustomize's renderer,
+> source-form projection, and render-root scoping. This historical list is retained
+> only to delimit the #198 delivery. The current contract is
+> [Kustomize support boundary](../kustomize-support-boundary.md): entry creation,
+> patch authoring, name mutation, and generators remain out of scope; narrow
+> external-base overlay editing is shipped.
 
 ## Test plan
 

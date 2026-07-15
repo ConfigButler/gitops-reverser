@@ -2,7 +2,7 @@
 
 > **design** — direction-setting. Captured: 2026-07-14
 > Related:
-> [kustomize-support-boundary.md](kustomize-support-boundary.md) §7 — the decision to embed the renderer ·
+> [kustomize-support-boundary.md](kustomize-support-boundary.md) §4 — the decision to embed the renderer ·
 > [render-root-scoping.md](render-root-scoping.md) — the oracle, and §6's tolerate-don't-author plan ·
 > *patching-kustomize.md* (ConfigButler/kustomize-tracer, `plans/`) — **revises §4**: the fork is ~30 lines, and it is built ·
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) — what shipped ·
@@ -236,12 +236,10 @@ exists → refuse, don't route.
 
 The code this replaced could not make that distinction. `simulateImageRender` "verified" the
 inversion against a simulation that **shared its own blind spot**, so a value owned by a patch
-was confidently written into a file that does not own it. That is invisible only because
-`patches:` currently refuses the whole folder — and
-[render-root-scoping.md §6](render-root-scoping.md) is a plan to **stop doing that**:
-tolerate patches as read-only context, refuse per *field* instead of per folder. Per-field
-refusal requires per-field attribution. **The dye is the mechanism that milestone is
-waiting for**, which puts it on the critical path rather than beside it.
+was confidently written into a file that does not own it. Path-based `patches:` are now
+tolerated as read-only context: the folder renders, while a field the patch owns is refused
+per field. Per-field refusal requires attribution. **The dye is the mechanism that milestone
+is waiting for**, which puts it on the critical path rather than beside it.
 
 And the technique was never about images, so it *can* generalise — to a `vars` value, a
 `replacements` source, a generator literal, a scalar inside a patch. But "any knob" is
