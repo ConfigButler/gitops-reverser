@@ -60,7 +60,7 @@ func TestForeignContent_NonYAMLFileRefused(t *testing.T) {
 	}
 }
 
-func TestBenignPassenger_AcceptedByDefault(t *testing.T) {
+func TestCollectFiles_BenignPassengerAcceptedByDefault(t *testing.T) {
 	// Inert repo-hygiene files — docs, a license, and Git metadata — are accepted without a
 	// .gittargetignore, so adopting an existing repo does not refuse the whole folder over a
 	// LICENSE, a stray .gitkeep, or documentation that is not the operator's own README.
@@ -85,7 +85,9 @@ func TestBenignPassenger_AcceptedByDefault(t *testing.T) {
 	// They are still recorded in the non-YAML inventory (accepted, never managed), and the
 	// managed manifest is modeled as usual.
 	scan := collectFiles(fsys)
-	for _, want := range []string{"LICENSE", "CONTRIBUTING.md", "sub/.gitkeep", ".gitignore"} {
+	for _, want := range []string{
+		"LICENSE", "COPYING", "CONTRIBUTING.md", "docs/guide.markdown", ".gitignore", ".gitattributes", "sub/.gitkeep",
+	} {
 		if !containsString(scan.NonYAML, want) {
 			t.Errorf("%q should appear in the non-YAML inventory; got %+v", want, scan.NonYAML)
 		}
@@ -95,7 +97,7 @@ func TestBenignPassenger_AcceptedByDefault(t *testing.T) {
 	}
 }
 
-func TestBenignPassenger_StillUserSuppressible(t *testing.T) {
+func TestCollectFiles_BenignPassengerStillUserSuppressible(t *testing.T) {
 	// A benign passenger is USER content, matched after the ignore filter, so a user can still
 	// .gittargetignore it to drop it from the inventory entirely (unlike an operator artifact,
 	// which survives an ignore rule).
@@ -113,7 +115,7 @@ func TestBenignPassenger_StillUserSuppressible(t *testing.T) {
 	}
 }
 
-func TestIsBenignPassenger(t *testing.T) {
+func TestIsBenignPassenger_AcceptedAndRefused(t *testing.T) {
 	accepted := []string{
 		"LICENSE", "LICENSE.txt", "LICENCE", "COPYING", "NOTICE",
 		".gitignore", ".gitattributes", ".gitkeep", ".keep",

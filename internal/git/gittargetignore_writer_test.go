@@ -93,7 +93,7 @@ func TestWriter_IgnoredForeignFileAllowsWrite(t *testing.T) {
 // TestWriter_BenignPassengerAllowsWrite proves the live writer accepts a folder whose only
 // non-managed content is an inert hygiene passenger (a LICENSE) — without any
 // .gittargetignore — so adopting an existing repo does not stall on repo-hygiene files.
-func TestWriter_BenignPassengerAllowsWrite(t *testing.T) {
+func TestCommitPendingWrites_BenignPassengerAllowsWrite(t *testing.T) {
 	tempDir := t.TempDir()
 	remotePath := tempDir + "/remote.git"
 	createBareRepo(t, remotePath)
