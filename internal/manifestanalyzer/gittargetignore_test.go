@@ -33,16 +33,16 @@ func accHasIssue(acc Acceptance, kind IssueKind, path string) bool {
 
 func TestForeignContent_NonYAMLFileRefused(t *testing.T) {
 	fsys := fstest.MapFS{
-		"deploy.yaml":  {Data: []byte(deployYAML)},
-		"secrets.txt":  {Data: []byte("db-password=hunter2")},
-		"deploy.sh":    {Data: []byte("#!/bin/sh\n")},
-		"blob.bin":     {Data: []byte{0x00, 0x01}},
-		"sub/notes.md": {Data: []byte("# notes")},
+		"deploy.yaml":     {Data: []byte(deployYAML)},
+		"secrets.txt":     {Data: []byte("db-password=hunter2")},
+		"deploy.sh":       {Data: []byte("#!/bin/sh\n")},
+		"blob.bin":        {Data: []byte{0x00, 0x01}},
+		"sub/values.json": {Data: []byte(`{"k":"v"}`)},
 	}
 	store := BuildStore(context.Background(), fsys, nil)
 
 	got := foreignPaths(store)
-	for _, want := range []string{"secrets.txt", "deploy.sh", "blob.bin", "sub/notes.md"} {
+	for _, want := range []string{"secrets.txt", "deploy.sh", "blob.bin", "sub/values.json"} {
 		if got[want] != ForeignFile {
 			t.Errorf("path %q: foreign kind = %q, want %q", want, got[want], ForeignFile)
 		}
@@ -57,6 +57,81 @@ func TestForeignContent_NonYAMLFileRefused(t *testing.T) {
 	}
 	if !accHasIssue(acc, IssueForeignFile, "secrets.txt") {
 		t.Errorf("expected an IssueForeignFile for secrets.txt; got %+v", acc.Issues)
+	}
+}
+
+func TestBenignPassenger_AcceptedByDefault(t *testing.T) {
+	// Inert repo-hygiene files — docs, a license, and Git metadata — are accepted without a
+	// .gittargetignore, so adopting an existing repo does not refuse the whole folder over a
+	// LICENSE, a stray .gitkeep, or documentation that is not the operator's own README.
+	fsys := fstest.MapFS{
+		"deploy.yaml":         {Data: []byte(deployYAML)},
+		"LICENSE":             {Data: []byte("Apache-2.0")},
+		"COPYING":             {Data: []byte("legal")},
+		"CONTRIBUTING.md":     {Data: []byte("# contributing")},
+		"docs/guide.markdown": {Data: []byte("# guide")},
+		".gitignore":          {Data: []byte("*.log\n")},
+		".gitattributes":      {Data: []byte("*.yaml text\n")},
+		"sub/.gitkeep":        {Data: []byte("")},
+	}
+	store := BuildStore(context.Background(), fsys, nil)
+
+	if len(store.Foreign) != 0 {
+		t.Fatalf("benign-passenger hygiene files must not be foreign; got %+v", store.Foreign)
+	}
+	if acc := AcceptStructureOnly(store); !acc.Accepted {
+		t.Errorf("expected acceptance for a folder of hygiene passengers; got %+v", acc.Issues)
+	}
+	// They are still recorded in the non-YAML inventory (accepted, never managed), and the
+	// managed manifest is modeled as usual.
+	scan := collectFiles(fsys)
+	for _, want := range []string{"LICENSE", "CONTRIBUTING.md", "sub/.gitkeep", ".gitignore"} {
+		if !containsString(scan.NonYAML, want) {
+			t.Errorf("%q should appear in the non-YAML inventory; got %+v", want, scan.NonYAML)
+		}
+	}
+	if _, ok := store.FilesByPath["deploy.yaml"]; !ok {
+		t.Error("the managed manifest must still be modeled alongside benign passengers")
+	}
+}
+
+func TestBenignPassenger_StillUserSuppressible(t *testing.T) {
+	// A benign passenger is USER content, matched after the ignore filter, so a user can still
+	// .gittargetignore it to drop it from the inventory entirely (unlike an operator artifact,
+	// which survives an ignore rule).
+	fsys := fstest.MapFS{
+		"deploy.yaml":      {Data: []byte(deployYAML)},
+		"NOTES.md":         {Data: []byte("# notes")},
+		".gittargetignore": {Data: []byte("NOTES.md\n")},
+	}
+	scan := collectFiles(fsys)
+	if containsString(scan.NonYAML, "NOTES.md") {
+		t.Error("a benign passenger named in .gittargetignore must be dropped (never read)")
+	}
+	if len(scan.Foreign) != 0 {
+		t.Errorf("an ignored passenger is not foreign; got %+v", scan.Foreign)
+	}
+}
+
+func TestIsBenignPassenger(t *testing.T) {
+	accepted := []string{
+		"LICENSE", "LICENSE.txt", "LICENCE", "COPYING", "NOTICE",
+		".gitignore", ".gitattributes", ".gitkeep", ".keep",
+		"README.md", "notes.md", "a/b/guide.markdown",
+	}
+	for _, p := range accepted {
+		if !isBenignPassenger(p) {
+			t.Errorf("isBenignPassenger(%q) = false, want true", p)
+		}
+	}
+	refused := []string{
+		"notes.txt", "values.json", "deploy.sh", "Chart.yaml", "blob.bin",
+		"license", "readme", "MD", "sub.markdown.tar",
+	}
+	for _, p := range refused {
+		if isBenignPassenger(p) {
+			t.Errorf("isBenignPassenger(%q) = true, want false", p)
+		}
 	}
 }
 

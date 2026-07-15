@@ -89,3 +89,23 @@ func TestWriter_IgnoredForeignFileAllowsWrite(t *testing.T) {
 
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 }
+
+// TestWriter_BenignPassengerAllowsWrite proves the live writer accepts a folder whose only
+// non-managed content is an inert hygiene passenger (a LICENSE) — without any
+// .gittargetignore — so adopting an existing repo does not stall on repo-hygiene files.
+func TestWriter_BenignPassengerAllowsWrite(t *testing.T) {
+	tempDir := t.TempDir()
+	remotePath := tempDir + "/remote.git"
+	createBareRepo(t, remotePath)
+	remoteURL := "file://" + remotePath
+
+	simulateClientCommitOnDisk(t, remoteURL, "main", "LICENSE", "Apache-2.0")
+
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "main")
+	require.NoError(t, err)
+	event := createTestEvent(t, "pod-c")
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+}

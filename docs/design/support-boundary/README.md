@@ -42,6 +42,7 @@ flowchart LR
 | Path-based strategic-merge patch | The render is accepted; the patch is read-only context. We tolerate it but do not author or edit patches yet. |
 | Render verification | A proposed batch is built with kustomize before any bytes are written. Mismatch or blast-radius change refuses the flush. |
 | Write boundary | Writes never leave `spec.path`, and a file read by more than one render root is never edited in place. |
+| Foreign-content boundary | A GitTarget subtree is operator-exclusive: loose scripts, binaries, and symlinks refuse the folder. Inert repo-hygiene passengers — documentation (`*.md`), a license, and `.gitignore`/`.gitattributes`/`.gitkeep` — are accepted so adopting an existing repo does not stall on them. Anything else is named in a root `.gittargetignore`. |
 
 The remaining overlay gap is deliberately narrow: creating a **new object** and adding its
 `resources:` entry needs a placement/write-path correction. It is planned, not shipped.
