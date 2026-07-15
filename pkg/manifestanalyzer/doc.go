@@ -16,7 +16,11 @@
 // GitOps Reverser is pre-1.0, and so is this package. It is the surface a tool is meant
 // to build on rather than reaching into internal/, but it carries no compatibility
 // guarantee: fields may be renamed, removed, or given a new meaning in any release, and
-// [SchemaVersion] may bump for reasons that would be breaking after 1.0. Pin a version.
+// [SchemaVersion] may bump for reasons that would be breaking after 1.0. Pin a version: each
+// release is tagged `vX.Y.Z`, so `go get github.com/ConfigButler/gitops-reverser@vX.Y.Z` (and
+// `go install github.com/ConfigButler/gitops-reverser/cmd/manifest-analyzer@vX.Y.Z`) resolve to
+// that release rather than an opaque pseudo-version — the whole repository is one Go module,
+// versioned as a unit.
 //
 // Two habits will nonetheless save you work. Ignore fields you do not recognise, because
 // new ones do get added. Do not switch on the human-readable strings — [Issue.Message]
