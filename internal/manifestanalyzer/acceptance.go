@@ -134,6 +134,10 @@ const (
 	// next render — so absorbing it would leave a resource silently un-mirrored forever,
 	// which is the exact failure this whole path exists to prevent.
 	IssueRenderRefused IssueKind = "kustomize-render-refused"
+	// IssueRenderDoesNotMatchLive marks a rendered ${...} value whose corresponding live field is
+	// absent or different. It is a runtime fidelity refusal, distinct from structural Git-path
+	// acceptance and from a proposed write that fails the post-write render oracle.
+	IssueRenderDoesNotMatchLive IssueKind = "render-does-not-match-live"
 	// IssueUnplaceableEdit marks a live change the projection could not place in the source
 	// document: the BUILD and the USER both rewrote one list whose elements carry no unique
 	// name to pair the source's with the render's by (see SourceFormRefusedError).

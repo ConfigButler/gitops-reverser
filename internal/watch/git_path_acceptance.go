@@ -18,6 +18,10 @@ func (m *Manager) ReportGitPathRefusal(
 	gitDest types.ResourceReference,
 	refused *manifestanalyzer.AcceptanceRefusedError,
 ) {
+	if refused.AllIssuesOfKinds(manifestanalyzer.IssueRenderDoesNotMatchLive) {
+		m.MarkTargetRenderFidelityDiverged(gitDest, renderFidelityDivergence(refused))
+		return
+	}
 	m.MarkTargetGitPathRefused(gitDest, gitPathRefusalReason(refused), refused.BlockMessage())
 }
 

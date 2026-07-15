@@ -677,6 +677,10 @@ func (wb *writeBatch) patchExisting(
 	projected, overrideEdits, err := projectThroughKustomize(
 		manifestreport.Project(desired), buf.current, idx, dm)
 	if err != nil {
+		var fidelity *renderFidelityRefusedError
+		if errors.As(err, &fidelity) {
+			return upsertNoChange, renderFidelityRefusal(filePath, id, fidelity)
+		}
 		// The projection could not place the edit. Refusing the whole flush is the point: the
 		// alternative is to write the live object through and silently absorb the build's own
 		// output into the file that feeds it.
@@ -737,23 +741,40 @@ func (wb *writeBatch) patchExisting(
 // file should hold once everything the build supplies is left to the build, plus the entry edits
 // for the values an images:/replicas: entry supplies.
 //
-// A document no render root produces (dm.Rendered nil), or one whose Git bytes will not parse,
-// passes straight through: there is no build standing between the file and the cluster, so the
-// live projection IS what the file should hold.
+// A plain document uses its parsed Git object as its render. A kustomize document uses the
+// DocumentModel's local render. In both cases, a rendered ${...} value that differs in live is
+// refused before source-form projection can write the live expansion back into Git.
 func projectThroughKustomize(
 	projected *unstructured.Unstructured,
 	content []byte,
 	idx int,
 	dm *manifestanalyzer.DocumentModel,
 ) (*unstructured.Unstructured, []manifestanalyzer.OverrideEdit, error) {
-	if dm.Rendered == nil {
-		return projected, nil, nil
-	}
 	gitRaw, parsed := gitDocRawObject(content, idx)
 	if !parsed {
 		return projected, nil, nil
 	}
+	rendered := gitRaw
+	if dm.Rendered != nil {
+		rendered = dm.Rendered.Object
+	}
+	if divergences := manifestanalyzer.RenderTokenDivergences(rendered, projected.Object); len(divergences) > 0 {
+		return nil, nil, &renderFidelityRefusedError{Divergences: divergences}
+	}
+	if dm.Rendered == nil {
+		return projected, nil, nil
+	}
 	return manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Rendered)
+}
+
+// renderFidelityRefusedError travels from the projection seam to patchExisting, where the file
+// and object identity are available to make a normal write-boundary refusal.
+type renderFidelityRefusedError struct {
+	Divergences []manifestanalyzer.RenderDivergence
+}
+
+func (e *renderFidelityRefusedError) Error() string {
+	return "rendered token does not match live"
 }
 
 // sourceFormRefusal turns a projection that could not place an edit into the same reported
@@ -769,6 +790,25 @@ func sourceFormRefusal(filePath string, id manifestedit.Identity, err error) err
 				id.Kind, id.Name, filePath, err),
 		}},
 	}
+}
+
+func renderFidelityRefusal(
+	filePath string,
+	id manifestedit.Identity,
+	fidelity *renderFidelityRefusedError,
+) error {
+	issues := make([]manifestanalyzer.AcceptanceIssue, 0, len(fidelity.Divergences))
+	for _, divergence := range fidelity.Divergences {
+		issues = append(issues, manifestanalyzer.AcceptanceIssue{
+			Kind:  manifestanalyzer.IssueRenderDoesNotMatchLive,
+			Path:  filePath,
+			Field: divergence.Field,
+			Token: divergence.Token,
+			Message: fmt.Sprintf("%s/%s in %s: rendered token %q at %s does not match live",
+				id.Kind, id.Name, filePath, divergence.Token, divergence.Field),
+		})
+	}
+	return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
 }
 
 // renderPrecondition is the oracle, and it is a write-plan precondition like the three

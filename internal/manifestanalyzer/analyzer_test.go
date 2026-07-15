@@ -105,14 +105,15 @@ func TestAnalyze_Issues(t *testing.T) {
 	// the acceptance gate's mapping-aware kinds never appear here, so they are 0. All
 	// kinds are listed so the exhaustive linter guards future additions.
 	want := map[IssueKind]int{
-		IssueDuplicate:            1,
-		IssueNonKRM:               1,
-		IssueInvalidYAML:          1,
-		IssueImpureManagedFile:    0,
-		IssueMixedFile:            0,
-		IssueUnresolvedKRM:        0,
-		IssueOutOfScope:           0,
-		IssueUnsupportedKustomize: 0,
+		IssueDuplicate:              1,
+		IssueNonKRM:                 1,
+		IssueInvalidYAML:            1,
+		IssueImpureManagedFile:      0,
+		IssueMixedFile:              0,
+		IssueUnresolvedKRM:          0,
+		IssueOutOfScope:             0,
+		IssueUnsupportedKustomize:   0,
+		IssueRenderDoesNotMatchLive: 0,
 		// Foreign-content, ignore-shadow, and the write-boundary refusals are
 		// acceptance-gate / write-plan facts, not part of the structure-only Analyze report,
 		// so they never surface here. IssueRenderRefused is the strongest case of that: it is

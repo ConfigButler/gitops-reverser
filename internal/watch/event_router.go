@@ -213,12 +213,13 @@ func (r *EventRouter) drainScopedResync(
 	gitDest types.ResourceReference,
 	key targetWatchKey,
 	kind string,
+	renderFidelityEpoch uint64,
 	resultCh chan git.ResyncResult,
 ) {
 	select {
 	case result := <-resultCh:
 		if result.Err != nil {
-			r.handleScopedResyncError(gitDest, key, kind, result.Err)
+			r.handleScopedResyncError(gitDest, key, kind, renderFidelityEpoch, result.Err)
 			return
 		}
 		r.Log.V(1).Info("per-type "+kind+" applied",
@@ -226,6 +227,7 @@ func (r *EventRouter) drainScopedResync(
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
 		if r.WatchManager != nil {
 			r.WatchManager.MarkTargetGitPathAccepted(gitDest)
+			r.WatchManager.MarkTargetRenderFidelityScopeClean(gitDest, renderFidelityEpoch, key)
 		}
 		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile
@@ -248,10 +250,20 @@ func (r *EventRouter) handleScopedResyncError(
 	gitDest types.ResourceReference,
 	key targetWatchKey,
 	kind string,
+	renderFidelityEpoch uint64,
 	err error,
 ) {
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	if errors.As(err, &refused) {
+		if refused.AllIssuesOfKinds(manifestanalyzer.IssueRenderDoesNotMatchLive) {
+			r.Log.Info("per-type "+kind+" found a render-vs-live divergence",
+				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
+			if r.WatchManager != nil {
+				r.WatchManager.MarkTargetRenderFidelityScopeDiverged(
+					gitDest, renderFidelityEpoch, key, renderFidelityDivergence(refused))
+			}
+			return
+		}
 		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget path content",
 			"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
 		if r.WatchManager != nil {
@@ -261,6 +273,15 @@ func (r *EventRouter) handleScopedResyncError(
 	}
 	r.Log.Error(err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "gvr", key.GVR.String())
 	r.recordBackgroundResyncFailure(gitDest)
+}
+
+func renderFidelityDivergence(refused *manifestanalyzer.AcceptanceRefusedError) manifestanalyzer.RenderDivergence {
+	for _, issue := range refused.Issues {
+		if issue.Kind == manifestanalyzer.IssueRenderDoesNotMatchLive {
+			return manifestanalyzer.RenderDivergence{Field: issue.Field, Token: issue.Token}
+		}
+	}
+	return manifestanalyzer.RenderDivergence{}
 }
 
 // gitPathRefusalReason picks the GitTarget status reason for a refused path. Two refusal

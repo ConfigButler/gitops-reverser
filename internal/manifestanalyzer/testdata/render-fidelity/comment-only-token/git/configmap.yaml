@@ -1,0 +1,7 @@
+# ${REGION} is a comment; it is not a rendered value.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: comments
+data:
+  region: us-east

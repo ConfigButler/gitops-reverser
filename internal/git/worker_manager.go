@@ -46,6 +46,10 @@ type WorkerManager struct {
 	// once at startup (SetPathRefusalReporter) before any worker is created; nil in the
 	// CLI and in tests that do not assert on the status transition.
 	pathRefusal PathRefusalReporter
+
+	// renderFidelityGate is shared by every worker and the watch manager. It is created with the
+	// manager so a target's state survives workers being recreated for the same branch.
+	renderFidelityGate *RenderFidelityGate
 }
 
 // NewWorkerManager creates a new worker manager.
@@ -66,7 +70,16 @@ func NewWorkerManager(
 		branchBufferMaxBytes: branchBufferMaxBytes,
 		sensitiveResources:   sensitiveResources,
 		workers:              make(map[BranchKey]*BranchWorker),
+		renderFidelityGate:   NewRenderFidelityGate(),
 	}
+}
+
+// RenderFidelityGate returns the manager-wide target gate used by branch workers. The gate is
+// safe for concurrent watch and worker access.
+func (m *WorkerManager) RenderFidelityGate() *RenderFidelityGate {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.renderFidelityGate
 }
 
 // SetMapper injects the GVK->GVR resolver used by every worker's store scan. It is
@@ -153,6 +166,7 @@ func (m *WorkerManager) EnsureWorker(
 		worker.mapper = m.mapper
 		worker.sshHostKeys = m.sshHostKeys
 		worker.pathRefusal = m.pathRefusal
+		worker.renderFidelityGate = m.renderFidelityGate
 
 		if err := worker.Start(m.ctx); err != nil {
 			return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)

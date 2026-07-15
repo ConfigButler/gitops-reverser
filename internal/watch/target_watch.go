@@ -136,7 +136,11 @@ func (m *Manager) replaceGitTargetWatches(
 			)
 		}
 	}
+	fidelityChanged := m.beginTargetRenderFidelityEpochLocked(table.GitDest, keys)
 	m.targetWatchesMu.Unlock()
+	if fidelityChanged {
+		m.enqueueGitPathChange(table.GitDest)
+	}
 
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 	for _, watchKey := range keys {
@@ -196,6 +200,7 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 	}
 	m.dropTargetStreamStateLocked(gitDest)
 	m.dropTargetGitPathAcceptanceLocked(gitDest)
+	m.dropTargetRenderFidelityLocked(gitDest)
 }
 
 func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
@@ -565,7 +570,9 @@ func (m *Manager) enqueueReplayResync(
 	if m.EventRouter == nil {
 		return nil
 	}
-	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(ctx, gitDest, key.GVR, desired, revision, false)
+	epoch := m.RenderFidelityEpochForGitTarget(gitDest)
+	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
+		ctx, gitDest, key.GVR, desired, revision, false)
 	if err != nil {
 		return err
 	}
@@ -576,7 +583,7 @@ func (m *Manager) enqueueReplayResync(
 	// The key (GVR + namespace) is threaded to the drain for diagnostics. A refused
 	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather
 	// than mutating this stream's watch readiness.
-	go m.EventRouter.drainScopedResync(gitDest, key, "reconcile", resultCh)
+	go m.EventRouter.drainScopedResync(gitDest, key, "reconcile", epoch, resultCh)
 	log.V(1).Info("target replay resync enqueued",
 		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "revision", revision, "count", len(desired))
 	return nil

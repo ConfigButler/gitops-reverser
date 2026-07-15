@@ -1,0 +1,15 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: web
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: Web
+    spec:
+      replicas: integer | default=1
+  resources:
+    - id: deployment
+      template:
+        spec:
+          replicas: ${schema.spec.replicas}

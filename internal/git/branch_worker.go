@@ -90,6 +90,11 @@ type BranchWorker struct {
 	// by the WorkerManager before Start; a nil reporter only drops the status transition.
 	pathRefusal PathRefusalReporter
 
+	// renderFidelityGate closes normal live writes while a target's current render-vs-live
+	// epoch is pending or divergent. Resync remains allowed so it can measure and repair Git.
+	// Set by WorkerManager before Start, alongside pathRefusal.
+	renderFidelityGate *RenderFidelityGate
+
 	// Event processing
 	eventQueue chan WorkItem
 	ctx        context.Context
@@ -690,13 +695,23 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	if item.Request == nil {
 		return
 	}
-
 	if item.Request.CommitMode == CommitModeAtomic {
+		targetName, targetNamespace := atomicRefusalTarget(item.Request)
+		if !l.w.normalWritesAllowed(targetName, targetNamespace) {
+			l.w.Log.V(1).Info("Dropping atomic write while render fidelity is not established",
+				"gitTarget", targetNamespace+"/"+targetName)
+			return
+		}
 		l.handleAtomicRequest(item.Request)
 		return
 	}
 
 	for _, event := range item.Request.Events {
+		if !l.w.normalWritesAllowed(event.GitTargetName, event.GitTargetNamespace) {
+			l.w.Log.V(1).Info("Dropping live event while render fidelity is not established",
+				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName)
+			continue
+		}
 		if l.openWindow != nil && !l.openWindow.canAppend(event) {
 			// Log the identity that broke the window so an unexpected split is
 			// diagnosable: the common cause is an incoming event whose author is empty
@@ -869,6 +884,12 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	effectiveMessage := message
 	if effectiveMessage == "" {
 		effectiveMessage = l.openWindow.pendingMessage
+	}
+	if !l.w.normalWritesAllowed(targetName, targetNamespace) {
+		l.w.Log.V(1).Info("Discarding open window while render fidelity is not established",
+			"reason", string(reason), "gitTarget", targetNamespace+"/"+targetName)
+		l.dropOpenWindow(pendingCR, errors.New("render fidelity gate is closed"))
+		return false
 	}
 
 	l.w.Log.Info("Finalizing open commit window",
