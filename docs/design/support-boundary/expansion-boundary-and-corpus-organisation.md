@@ -336,9 +336,10 @@ or an onboarding report can be checked against. Five verdicts, deliberately few:
 | Construct | Verdict | Why |
 |---|---|---|
 | kustomize: `resources`, `namespace`, `images`, `replicas` | **Editable** | invertible; `images`/`replicas` edit-through is shipped |
-| kustomize base + un-fancy overlays | **Editable — planned** | not supported today; the base is read-only context, and render-root scoping is unbuilt |
+| kustomize base + un-fancy overlays | **Editable, narrow** | external-base overlays may edit existing overlay-local documents and declared image/replica entries; base context is read-only. New object + `resources:` creation remains planned |
 | kustomize base shared by >1 overlay, edited in place | **Refused** | write-fan-in > 1 (L2) |
-| kustomize `patches*`, generators, `components`, `namePrefix`/`nameSuffix`, remote bases | **Refused** | non-invertible; restricted patch authoring is planned, the rest are permanently refused |
+| kustomize path strategic-merge `patches:` | **Tolerated, not authored** | local path patches are read-only build context; patch authoring is planned |
+| kustomize generators, `components`, `namePrefix`/`nameSuffix`, remote bases, other patch forms | **Refused** | non-invertible or not a sparse KRM write unit |
 | kustomize `helmCharts:` (inflation) | **Refused** | we never render a chart |
 | Helm chart (the whole folder: `Chart.yaml` + `templates/` + `values.yaml` + `crds/`) | **Skipped as a unit** | decision 4 — detect the chart by its folder structure and skip it whole; report it as a `helm-chart` layout, not as silence |
 | Flux `HelmRelease` / Argo `Application` Helm knobs (chart version, inline values, parameters) | **Editable** | the Helm surface people actually use — see the Helm section below |

@@ -6,7 +6,7 @@
 > Captured: 2026-07-15; implementation status updated: 2026-07-15.
 > Related:
 > [README.md](README.md),
-> [render-root-scoping.md](render-root-scoping.md) §3 — the version-skew caveat this generalises,
+> [render-root-scoping.md](render-root-scoping.md) — the overlay verification model this generalises,
 > [render-attribution.md](render-attribution.md) §5 — *attribution may be heuristic, verification may not*, and the "shared blind spot" failure,
 > [render-fidelity-scenarios.md](render-fidelity-scenarios.md) — the red-first fixture and gate-state matrix,
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) — reading the Flux/Argo object; the `TransformedOutOfBand` claim,
@@ -40,6 +40,9 @@ Not shipped: a remote-Git revision observer that starts a fresh fidelity epoch a
 the source, the required retained-intent/orchestrator reconciliation barrier for doing that safely,
 and the general non-token fence (§5b). Until the revision observer exists, a Git repair alone does
 **not** automatically reopen a false gate.
+
+The completed implementation prompt has been folded into this status and the scenario matrix;
+this document is now the only detailed record for the render-matches-live gate.
 
 This document names the gap, records a fence that looked obvious and was **wrong** (and why), and
 proposes the fence that is right: **measure our render against the live object, and refuse where

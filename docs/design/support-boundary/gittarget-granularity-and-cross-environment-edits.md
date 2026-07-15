@@ -4,8 +4,9 @@
 > §3 → **promotion in the layer above**), and the write-boundary hardening they
 > gate has **shipped**: L1 and L2 are enforced as write-plan preconditions in
 > `internal/git/plan_flush.go` and surface as the GitTarget reason
-> `WriteBoundaryRefused` (§1). What remains open is render-root scoping and
-> the divergence notification sketched in §6.
+> `WriteBoundaryRefused` (§1). Render-root scoping has also shipped for existing
+> overlay-local documents and declared image/replica entries; new-resource entry
+> creation and the divergence notification sketched in §6 remain open.
 > Captured: 2026-07-09
 > Related:
 > [README.md](README.md),
@@ -139,7 +140,7 @@ check:
 | Layer | Precondition | Refusal issue |
 |---|---|---|
 | L1 | `pathScopePrecondition` — no planned write is absolute or climbs out of `spec.path` with `..` | `write-escapes-scope` |
-| L2 | `fanInPrecondition` — no planned write edits a file more than one render path reaches with override entries at stake | `write-fan-in` |
+| L2 | `fanInPrecondition` — no planned write edits a file reached by more than one render root | `write-fan-in` |
 
 A violation aborts the whole flush, commits nothing, and fails the GitTarget
 with `GitPathAccepted=False` / `Stalled=True`, reason **`WriteBoundaryRefused`**
@@ -212,9 +213,9 @@ flowchart TB
 - Clean identity: environment = GitTarget = namespace = write scope = RBAC
   scope. It is what makes "propose to test, read-only on prod" a namespace
   RoleBinding, and it keeps one branch's changes naturally single-environment.
-- **Cost:** render-root scoping must teach the analyzer to *follow* `../../base`
-  for reading (today that reference is dropped). More `GitTarget` objects;
-  onboarding emits several per app.
+- **Delivered cost:** render-root scoping follows `../../base` for reading while
+  retaining the overlay write jail. More `GitTarget` objects remain; onboarding
+  emits several per app.
 
 ### Option B — Coarse: one target at the app root
 
@@ -241,9 +242,9 @@ flowchart TB
   enforced but is still the weaker guarantee: it depends on modelling the render
   graph correctly, where L1 is a path check that cannot be wrong. That weaker
   guarantee would become load-bearing exactly where the blast radius is highest
-  ("an edit in test writes base → changes prod"), and any future fan-in blind
-  spot (a shared file with no override entries at stake — see §5) is a
-  corruption rather than a refusal. It also dissolves the clean identity: one
+  ("an edit in test writes base → changes prod"). L2 is now generalized across
+  render roots, but it remains a graph property where L1 is a path check. It
+  also dissolves the clean identity: one
   target spans three namespaces, its watch scope is all of them, and one branch
   can mix environments — which muddies RBAC, promotion, and review.
 
@@ -415,10 +416,10 @@ Keep **two distinct verbs** and never conflate them:
 
 ## 4. Worked examples: action → expected output
 
-Fixed action set, acting in `podinfo-test` unless noted, assuming **render-root
-scoping** (overlay support — *not* supported today) and no overlay patch
-authoring — this table describes where the model is headed, not what today's
-binary does.
+Fixed action set, acting in `podinfo-test` unless noted, assuming the shipped
+**narrow render-root scope** and no overlay patch authoring. Existing
+overlay-local documents and declared image/replica entries are current runtime
+behaviour; the remaining rows describe the planned model.
 
 "Unreflected" here means the *designed* Tier-2 outcome: recorded in the
 unreflected set, `FullyReflected=False`, and reverted wherever something
@@ -462,21 +463,13 @@ precondition and is refused outright (§1).
   explicit precondition** (the strong, cheap guarantee) and turned **L2 into a
   refusal** (never write-through a multi-consumer file) — it never leans on L2 to
   protect the base. Both shipped; see §1.
-- **L2's remaining blind spot belongs to render-root scoping.**
-  `fanInPrecondition` fires on the
-  signal the store already carries: a file more than one render path reaches
-  *with override entries at stake*. A file shared by two render roots with no
-  competing `images:`/`replicas:` chain is not flagged — under layout A it is
-  also never dirty (a base doc reached by distinct overlays is `NamespaceNone`
-  and never matches a live object), so nothing is written. Generalizing the check
-  to "any file reachable from more than one render root" is render-root scoping's
-  job, and it is what would be required before layout B could be offered.
-- **Render-root scoping gains one concrete capability under A/C:** follow
-  `../../base` for *reading* (today dropped), while the write jail stays at
-  `spec.path`. Much of the read-scope / render-root / out-of-subtree-base logic
-  already exists read-only in the
-  [repo scan](repo-discovery-and-onboarding-scan.md) and can be promoted into the
-  live analyzer.
+- **L2 is now render-root aware.** `fanInPrecondition` rejects a planned write
+  to any file reached by more than one render root, not merely an
+  override-ambiguous chain. That is the safety condition layout A needs.
+- **Render-root scoping delivered one concrete capability under A/C:** it follows
+  `../../base` for reading while the write jail stays at `spec.path`. Discovery
+  classification is the remaining follow-up; see
+  [render-root scoping](render-root-scoping.md).
 - **Cross-environment editing is decided:** promotion in the layer above; Option
   C (base-as-variant) later and only for editing *shared defaults*, not as the
   "every environment" answer. Neither reopens the fan-in invariant.
@@ -529,7 +522,7 @@ Two shapes are worth distinguishing:
 | Shape | What happened | Notable? |
 |---|---|---|
 | **Override updated** | an `images:` entry already existed for this image; the operator changed `newTag` | no — the overlay already diverged; the user is editing their own pin |
-| **Override created** | no entry existed; the overlay rendered the base value, and the operator has now pinned it | **yes** — this is the moment the environment stops tracking base |
+| **Override created** | no entry existed; the overlay rendered the base value, and the operator pins it | **planned** — entry creation needs the pending write-path correction |
 
 **Proposal (not built).** On the *create* transition, surface the
 divergence at the point it becomes true. Three candidate surfaces, cheapest

@@ -78,7 +78,8 @@ templates, and multi-input ResourceSet templates alike. It is specified once, in
 | Construct | Verdict | Why |
 |---|---|---|
 | kustomize `resources`, `namespace`, `images`, `replicas` | **Editable** | invertible; `images`/`replicas` edit-through is shipped |
-| kustomize base + un-fancy overlays | **Editable** | render-root scoping ships: the operator reads `../../base` as read-only context, renders the overlay, and routes edit-through to the overlay's own entry; the base is never written. Onboarding `scan-repo` still reports these as `overlay-fan-out-unsupported` — the discovery-side flip is a follow-up |
+| kustomize base + un-fancy overlays | **Editable, narrow** | render-root scoping reads `../../base` as read-only context and writes existing overlay-local documents plus declared image/replica entries in the overlay; the base is never written. `scan-repo` still reports these as `overlay-fan-out-unsupported` — the discovery-side flip is a follow-up |
+| New object in an external-base overlay | **Planned** | needs an overlay-local file **and** a correct `resources:` entry; the current placement/write path does not yet prove that route |
 | kustomize base shared by >1 overlay, edited in place | **Refused** | fan-in > 1 |
 | kustomize `patches:` — a strategic-merge document named by `path:` | **Tolerated, not authored** | the folder is accepted and the render is mirrored; the patch is read-only build context. An edit to a field the patch OWNS is refused per object, not per folder |
 | kustomize `patches:` — inline, JSON6902, or a path outside the tree | **Refused** | not a sparse KRM document we can read; refused by name |
@@ -128,7 +129,7 @@ we can store — and is argued in
   Flux itself renders with — locally, with plugins disabled, and **never on a remote
   base**: a remote resource is refused before the build is invoked. Using the renderer
   is the opposite of emulating it; see
-  [kustomize-support-boundary.md](kustomize-support-boundary.md) §7.
+  [kustomize-support-boundary.md](kustomize-support-boundary.md) §4.
 - **No Argo CD or Flux Go dependency.** Their kinds are matched by group and kind
   over `unstructured`; the upstream checkouts under `external-sources/` are
   reference material, never vendored code. (`sigs.k8s.io/kustomize` is neither — it is

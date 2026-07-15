@@ -1,6 +1,7 @@
 # Orchestrator knowledge boundary: renderability, ownership, and claims
 
-> Status: direction-setting; ships no code. Nothing it describes is supported today.
+> Status: direction-setting. The ownership/provenance claim system remains unbuilt;
+> this document does not redefine the shipped Kustomize or write-boundary work.
 > Captured: 2026-07-10
 > Related:
 > [README.md](README.md),
@@ -54,7 +55,7 @@ They fail a question it never asks.
 
 | Axis | Question | Failure mode | Modelled today |
 |---|---|---|---|
-| **Renderability** | Can an edit be written back to exactly one source document, such that live → Git → live round-trips? | We cannot express the change. | ✅ Yes — this *is* the [support boundary](kustomize-support-boundary.md). Generators, `namePrefix`, patches, remote bases, Helm inflation are refused because they are non-invertible. |
+| **Renderability** | Can an edit be written back to exactly one source document, such that live → Git → live round-trips? | We cannot express the change. | ✅ Yes — this *is* the [support boundary](kustomize-support-boundary.md). Generators, `namePrefix`, remote bases, and Helm inflation are refused; path strategic-merge patches are read-only context. |
 | **Ownership** | Is this file already owned by something else that writes it? | We *can* express the change, write it, and destroy someone else's invariant. | ❌ No. |
 
 The two are independent. A folder can be renderable and unowned (write it),
@@ -331,15 +332,11 @@ as silence plus an incidental `crds/`.
 Two follow-ups on the corpus itself, which is the test surface for all of the
 above:
 
-- **No fixture currently produces `kustomize-overlay` / `overlay-fan-out-unsupported`.**
-  Every overlay in the corpus also uses `patches`, so `refused-structural` — the
-  permanent wall — fires first and hides the other verdict entirely. The two are
-  not interchangeable: `refused-structural` is a permanent refusal, while
-  `overlay-fan-out-unsupported` names a folder that is simply not written today.
-  [repo-discovery-and-onboarding-scan.md](repo-discovery-and-onboarding-scan.md)
-  calls that distinction load-bearing and says it must never collapse; today
-  nothing pins it. A minimal overlay that only sets `namespace` and `images` over
-  `../../base` closes the gap.
+- **The minimal overlay fixture now produces `kustomize-overlay` /
+  `overlay-fan-out-unsupported`.** It pins the scanner's current classification
+  gap: the runtime supports the narrow overlay write path, but discovery has not
+  flipped its report yet. The report must preserve that distinction rather than
+  silently equating it with a structural refusal.
 - **`support-today.md` should be generated, not pasted.** A task target that runs
   `scan-repo` over every fixture and rewrites the file turns the corpus from
   documentation into a **behavioural baseline**: not an assertion, a diff. Any
@@ -355,7 +352,7 @@ above:
   type, and will render a local render root with kustomize's own library — using the
   renderer is the opposite of emulating it. It never runs on a remote base: kustomize
   fetches one by shelling out to `git`, so a remote resource is refused before any
-  build. See [kustomize-support-boundary.md](kustomize-support-boundary.md) §7.)
+  build. See [kustomize-support-boundary.md](kustomize-support-boundary.md) §4.)
 - **No new operator dependency.** Interpreters serve the analyzer and the repo
   scan report. Whether the operator ever consumes a claim is a separate decision; the
   ownership *gate* it needs can be fed by Tier 0 (`Encrypted`) alone for the

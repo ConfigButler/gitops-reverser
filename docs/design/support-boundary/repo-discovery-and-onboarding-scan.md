@@ -135,14 +135,15 @@ flowchart TD
 
 ### Layout classification
 
-Discovery reports the layout **and** current operator acceptance as two distinct
-truths — they diverge wherever a layout is well understood but not accepted (see below).
+Discovery reports the layout and its **scanner classification** as two distinct truths.
+The narrow external-base overlay runtime has shipped, but this scanner has not yet flipped
+its overlay classification (see below).
 
-| `layout` | Meaning | `acceptedByOperator` today |
+| `layout` | Meaning | Scanner output today |
 |---|---|---|
 | `plain` | Directory of KRM docs, explicit namespaces, no kustomization | ✅ supported today |
 | `kustomize-single` | One render root; `namespace` + `resources`/`images`/`replicas` | ✅ supported today |
-| `kustomize-overlay` | Base + N overlay roots, one namespace per overlay | ⛔ not supported today — reason `overlay-fan-out-unsupported`; render-root scoping would accept it |
+| `kustomize-overlay` | Base + N overlay roots, one namespace per overlay | ⛔ reports `overlay-fan-out-unsupported`; runtime accepts the narrow existing-document/image/replica slice, and this classification needs to catch up |
 | `refused-structural` | Helm inflation, generators with hash suffixes, `components`, `namePrefix`/`nameSuffix`, remote bases, `configurations`/`openapi`/`crds` | ⛔ permanent — the support contract |
 | `refused-fleet-root` | `clusters/` + `apps/` + `infra/` cluster-root repo (a `GitTarget` points at an app subtree, never a cluster root) | ⛔ out of scope by design |
 | `refused-out-of-band` | Namespace/transform injected outside the folder (Flux `postBuild`/`targetNamespace`, Argo Application-level overrides) | ⛔ permanent — round-trip cannot hold |
@@ -159,14 +160,11 @@ truths — they diverge wherever a layout is well understood but not accepted (s
 > cut therefore ships four candidate layouts: `plain`, `kustomize-single`,
 > `kustomize-overlay`, `refused-structural`.
 
-The distinction between `overlay-fan-out-unsupported` and `refused-structural` is
-the load-bearing one: the first is a **forward-looking** "not yet" that flips to accepted
-if render-root scoping lands in the operator; the second is the **permanent** boundary.
-Discovery must never collapse them into one "refused." **This two-bucket split is what
-keeps the kustomize surface finite:** every construct sorts into either a bounded set of
-layouts we choose to support (plain, single-context kustomize, and — planned — overlays)
-or a **wall** (structurally non-invertible, refused forever). Neither is unbounded work —
-the first is a finite set, built deliberately; the wall costs nothing but a clear reason.
+The distinction between `overlay-fan-out-unsupported` and `refused-structural` remains
+load-bearing: the first currently identifies a **scanner lag** on a bounded supported
+layout, while the second is the **permanent** boundary. Discovery must never collapse them
+into one refusal. The classification follow-up should make the scanner match the runtime
+without widening either accepted layout or the structural wall.
 
 ## The report contract
 
@@ -320,9 +318,9 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
 - **Proposes, never creates.** The CLI/library emits candidate `GitTarget`s; a tool
   built on top decides, renders the actual manifests (naming, labels, ownerRefs),
   and opens PRs. CR generation stays out of the operator.
-- **Moves no boundary.** Refused layouts stay refused; discovery only *reports*
-  them. It does not make the operator accept overlays — only render-root scoping
-  in the operator would.
+- **Moves no boundary.** Discovery only reports. It cannot widen the runtime;
+  its overlay follow-up is a classification correction for already-shipped narrow
+  render-root support.
 - **`WatchRule` proposal is optional (open question).** Discovery can suggest
   `WatchRule`s from the kinds present in a folder, but watch selection is about
   *which cluster resources flow*
@@ -336,11 +334,10 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
   shipped — the acceptance gate, render-root computation
   ([images/replicas edit-through](finished/images-and-replicas-edit-through.md)),
   and namespace inference. Discovery is additive tooling on top of the shared engine.
-- **Overlay support would change discovery's *output*, not its code.** Today overlay
-  candidates report `acceptedByOperator: false` + `overlay-fan-out-unsupported`; if
-  render-root scoping ships in the operator they flip to accepted, with an
-  `images:`/`replicas:` + overlay-local-file capability summary. The report is
-  designed to be correct across that transition.
+- **Overlay support changes discovery's *output*, not its code.** Today overlay
+  candidates still report `acceptedByOperator: false` + `overlay-fan-out-unsupported`.
+  The pending classification change should report the shipped existing-document and
+  `images:`/`replicas:` slice, while keeping new overlay resource creation planned.
 
 ## Test plan
 

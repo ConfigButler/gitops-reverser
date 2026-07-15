@@ -1,6 +1,7 @@
 # Acceptance precision: we refuse too much, and we explain too little
 
-> **design** — direction-setting; ships no code. Nothing it describes is supported today.
+> **design + implementation record** — some corrections described here have shipped;
+> the remaining sections are proposals until their own status says otherwise.
 > Captured: 2026-07-14
 > Related:
 > [README.md](README.md),
@@ -98,19 +99,15 @@ this document, but the corpus is a strong argument that the answer is no.
 
 ## 2. `labels` / `commonLabels` / `annotations` leak into source files
 
-**This is the correctness bug, and it is live.** These three are classed as benign and
-explicitly supported — they are named in `supportedKustomizationFields()`, with a comment
-admitting the defect. They inject metadata into every rendered object; mirroring bakes that
-metadata into the source file as drift.
+**Resolved by source-form projection.** The old implementation treated transform-supplied
+metadata as user drift and copied it into source files. `sourceForm` now preserves source bytes
+where the source render already agrees with the live object, so `labels`, `commonLabels`, and
+`commonAnnotations` no longer leak into the source. This section remains as the rationale for
+the fix, not as a currently open correctness bug.
 
-It is the last surviving instance of the general hazard that `vars` was the sharpest case of,
-and that [render-root-scoping.md](render-root-scoping.md) §2 states in full: **any transformer
-we tolerate but do not invert leaks its output into the source.** `vars` got refused; these
-did not, because they looked harmless.
-
-F1 solved exactly this problem for `images` and `replicas` — `SplitDesiredForOverrides`
-subtracts the override's effect from the live object before the diff engine ever sees it — and
-the same subtraction is what these transformers need.
+`vars` was refused because it has no safe source inverse. Metadata transformers are different:
+the writer need not invert them when source form proves the rendered value already came from the
+repository. Neither outcome makes transformer declarations a general field-authoring surface.
 
 Two ways out, and they should be chosen deliberately rather than left to drift:
 
@@ -178,7 +175,7 @@ arbitrary.
 | `secretGenerator` | policy, not invertibility — plaintext secrets in Git contradict the SOPS stance | use SOPS |
 | `replacements` / `vars` | the value is derived from another field; writing it here is overwritten on the next render | edit the source field |
 | plugins (`generators`, `transformers`) | arbitrary code — the render is unknowable | — |
-| `patches` | we cannot author one, today | see [render-root-scoping.md](render-root-scoping.md) §6 |
+| `patches` | we cannot author one, today | see [patch-authoring.md](patch-authoring.md) |
 
 ---
 

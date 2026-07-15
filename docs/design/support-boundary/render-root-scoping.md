@@ -1,415 +1,102 @@
-# Render-root scoping: an overlay is a write partition, and the renderer is the proof
+# Render-root scoping
 
-> **design** — direction-setting. Captured: 2026-07-14.
-> **Update (2026-07-15): the launch unit (§7 steps 1, 3, 4) has shipped** — the writer reads
-> `../../base` as read-only context, routes edit-through to the overlay, refuses base-owned
-> edits, and generalises write-fan-in. Steps 2 (per-edit accounting), 5 (entry creation), and
-> 6 (tolerate-don't-author) remain; see §7.
-> Related:
-> [README.md](README.md),
-> [support-contract.md](support-contract.md),
-> [kustomize-support-boundary.md](kustomize-support-boundary.md),
-> [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md),
-> [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md),
-> [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md),
-> [acceptance-precision.md](acceptance-precision.md),
-> [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md)
-
-A `GitTarget` may point at a kustomize overlay. The overlay reads a base through
-`../../base`; the operator reads that base as context and writes only inside the overlay.
-This is the layout half of Kustomize support, and it is launch-critical.
-
-It is **not** patch authoring. That stays deferred — see §6, which also explains why the
-folder should nonetheless stop being refused for containing a patch.
-
----
-
-## 1. The problem, stated honestly
-
-An overlay's live object is `render(base, overlay)`. `render` is lossy and many-to-one:
-transformers rename, generate, derive, and drop. **A general inverse does not exist**, and
-any design that claims one is lying.
-
-We do not need one. We need two much weaker things:
-
-1. a **proposal** — a guess at which file an edit belongs in, and
-2. a **decision procedure** — something that tells us whether the guess was right.
-
-The second is the whole design. It is cheap, total, and already prototyped in the shipped
-code:
-
-> **Propose a source edit, re-render, and compare. If the render does not reproduce the
-> live object exactly — and leave every other object in the build byte-identical — refuse
-> the write.**
-
-> **This shipped.** It is [`VerifyBatchRenders`](../../../internal/manifestanalyzer/render_verify.go),
-> run as a write-plan precondition once per flush. See
-> [render-attribution.md](render-attribution.md) §5.
-
-This is not a new idea imported from outside. F1 shipped the *shape* of it in
-`simulateImageRender`: propose the entry edits, replay, and discard the whole inversion
-unless every planned source image comes back as its live value.
-
-But be precise about how far short of the statement above that falls, because the gap is the
-work: `simulateImageRender` replayed **our re-implemented image chain, not kustomize**, and it
-checked **only the images it planned** — never that the rest of the build is untouched. So it
-was image-specific verification, and it shared a blind spot with the thing it verified: a
-value owned by a patch, or by a matching rule we got wrong, reproduces perfectly in the
-simulation and wrongly in reality. (It is deleted; the re-render replaced it.) F1 shipped the
-pattern. **What F1 did not have is a
-renderer** — and without one, neither half of the guarantee above is actually in force. See
-[render-attribution.md](render-attribution.md) §5.
-
----
-
-## 2. What we had instead of a renderer
-
-> **Historical.** When this was written, `sigs.k8s.io/kustomize` was **not a dependency of
-> this module** — zero hits in `go.mod` — and what the code called a render was a hand-written
-> structural model. That is what the section argues against, and the argument won:
-> [kustomize-support-boundary.md](kustomize-support-boundary.md) §7 took the decision, and
-> #229/#231/#232 shipped it. `krusty` is now the renderer, `kustomization.yaml` is parsed with
-> kustomize's own type, and the resource-DAG walk is gone. **The projection's transformers are
-> the last of the re-implementation still standing** — see
-> [render-attribution.md](render-attribution.md), which is the design for deleting them.
+> **Implementation record.** External-base overlay support is shipped for existing
+> overlay-local documents and declared `images`/`replicas` entries. New-resource entry
+> creation and patch authoring remain separate work.
 >
-> The inventory below is kept because it is the *evidence*, and because the last two rows are
-> still true today.
+> Related: [support contract](support-contract.md),
+> [Kustomize boundary](kustomize-support-boundary.md),
+> [render attribution](render-attribution.md), and
+> [GitTarget granularity](gittarget-granularity-and-cross-environment-edits.md).
 
-| Piece | What it is | Status |
-|---|---|---|
-| [`renderRoots`](../../../internal/manifestanalyzer/override_chain.go) | every kustomization directory no other kustomization references | **kept** — something must decide which directories a build is invoked on. Everything the walk did *beyond* that now comes from the renderer. |
-| `renderImage` | a ~20-line reimplementation of kustomize's image transformer | **deleted.** It diverged from kustomize (its matcher was string equality where kustomize's is a *regex over the whole image string*). Attribution now reads a dyed render: [render-attribution.md](render-attribution.md) §3. |
-| `isReplicaKind` | the replica transformer's fieldspec, hardcoded to three kinds | **deleted.** kustomize's fieldspec has four; it missed `ReplicationController`. There is no list of kinds any more. |
-| [`unsupportedKustomizeFeatureKeys`](../../../internal/manifestanalyzer/store.go) | 17 keys that refuse the folder outright | **replaced** (#229): the unsupported set is now derived by *reflecting over kustomize's own struct*, so a field we have never heard of refuses rather than being silently tolerated. |
-
-The deny-list is not a statement about what is editable. **It is a fence around the
-reimplementation** — a list of everything we chose not to re-derive. That is why
-[images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) says it
-plainly: *"No `kustomize build`, no source maps."*
-
-The fence had a cost we were already paying, and it was not the cost we thought (both examples
-are now closed — see the note below — but they are what the argument rests on):
-
-- **`vars` was not on the deny-list.** A source document containing `$(SOME_VAR)` renders to a
-  substituted value, and mirroring that live object wrote the *substituted* value over the
-  `$(VAR)` in the source: silent corruption, in a folder we accepted. #229 moved `vars` off the
-  tolerated set, so it now refuses the folder.
-- **`labels` / `commonLabels` / `annotations` were classed as benign.** They inject metadata
-  into every rendered object, and mirroring baked it into the source file as drift — the
-  metadata-transformer leak, live in supported folders until `sourceForm` (below) closed it.
-
-So the inversion problem is not something overlay support introduces. **We already had it, and
-handled it in three inconsistent ways**: explicitly and verified for `images`/`replicas`; by
-blanket folder refusal for `patches` and friends; and silently, incorrectly, for the transformers
-we called benign.
-
-A renderer replaces three policies with one.
-
-> **The leak is fixed, and the fix is one rule, not three policies.**
-> [`sourceForm`](../../../internal/manifestanalyzer/source_form.go): *where the live object and
-> the render agree, the source keeps its bytes; where they disagree, the user changed something,
-> and that is what we write.* Agreement means the build already produces exactly what the cluster
-> runs, so the source is — by construction — what produced it, and there is nothing to write. It
-> needs no model of `commonLabels`, of `namespace`, or of a patch, which is precisely why it
-> closes all three at once and is what makes §6 possible at all.
->
-> The leak was measured before it was fixed, and it was not theoretical: a folder declaring
-> `labels:` + `commonAnnotations:` and nothing else committed the overlay's `env: prod` into the
-> base manifest on the first reconcile of an *unchanged* folder. The corpus no-op invariant now
-> compares the **whole document** rather than only its images, which is how a projection that
-> quietly rewrote every field we had not modelled passed that test for as long as it did.
-
----
-
-## 3. The oracle
-
-[kustomize-support-boundary.md](kustomize-support-boundary.md) §7 already sanctions the
-move, and names the seat it sits in:
-
-> *"The worthwhile upgrade is kustomize's Go API (`krusty`) as a **verification oracle, not
-> a renderer**: build each render root in-memory and compare against our own projection;
-> mismatch → refuse."*
-
-Adopt it, with the sandbox stated as part of the contract:
-
-> **This section proposed `LoadRestrictionsRootOnly`. The shipped renderer
-> ([`kustomize_render.go`](../../../internal/manifestanalyzer/kustomize_render.go), #231/#232)
-> uses `LoadRestrictionsNone`, and the reasoning below is why the proposal was wrong.** The
-> contract as built is recorded here rather than quietly corrected.
-
-| Sandbox setting, as shipped | Consequence |
-|---|---|
-| `LoadRestrictionsNone` | what **Flux itself** builds with. The in-memory filesystem holds only the scanned tree, so **the filesystem is the jail** — "unrestricted" loading cannot reach the real disk. `RootOnly` would be the wrong kind of strict: it forbids `resources: [../shared.yaml]`, which Flux renders happily, so we would fail to build a root that deploys in production — and failing to build a root silently disarms the write-fan-in guard. Refusing to look is not a safety property. |
-| `DisabledPluginConfig` | no exec, no Go plugins — *"arbitrary code = unknowable render"* stays true by construction |
-| **pre-build refusal** | remote bases, and `images:` entry names kustomize cannot compile. Both are properties of the *build*, not of what we can model, and both must be caught before krusty is called. |
-
-**The sandbox does not stop the network, and this was measured rather than assumed.** Given
-a remote base, kustomize shells out to `/usr/bin/git fetch` — under
-`LoadRestrictionsRootOnly` *and* under an in-memory filesystem. Both were tried; both
-fetched.
-
-So `hasRemoteResource`/`isRemoteResource` are **not** made redundant by the renderer. They
-are promoted to a **security precondition that runs before krusty is ever called**, and they
-are the one piece of the current kustomize code that must survive. *"We do not run kustomize
-on a remote base"* stays literally true — now enforced, rather than merely implied by having
-no renderer at all.
-
-The same slot now also holds a second precondition, found the same way: an `images:` entry's
-`name:` is a **regular expression**, and kustomize compiles it while discarding the compile
-error before dereferencing it — so `- name: "ngin["` does not fail the build, it **panics
-inside it**, on bytes from a user's repository. Refused before the build, with a `recover()`
-under krusty for the panics not yet found. See
-[render-attribution.md](render-attribution.md) §6.
-
-The oracle guards two directions:
+An overlay is a **write partition**. It may render `../../base`, but a GitTarget rooted at
+that overlay must never write the base or another overlay. This document records the design
+that makes the split safe and what is still intentionally absent.
 
 ```mermaid
 flowchart LR
-    live["live object<br/>(edited via K8s API)"] -->|propose| src["source edit<br/>(overlay-local file)"]
-    src -->|krusty build| out["rendered object"]
-    out -->|compare| live
-    out -->|"compare (must be unchanged)"| rest["every other object<br/>in the build"]
-    src -.->|mismatch| refuse["refuse the flush<br/>name the file and the field"]
+    B[../../base<br/>read-only] --> O[overlay GitTarget]
+    O --> A[attribute a proposed edit]
+    A --> V[kustomize verification build]
+    V -->|target matches; others unchanged| C[commit in overlay]
+    V -->|mismatch or shared source| R[refuse flush]
 
-    classDef editable fill:#dfd,stroke:#3a3,color:#111
-    classDef refused fill:#fdd,stroke:#c33,color:#111
-    class src,out editable
-    class refuse refused
+    classDef yes fill:#dfd,stroke:#3a3,color:#111
+    classDef no fill:#fdd,stroke:#c33,color:#111
+    class C yes
+    class R no
 ```
 
-The blast-radius half — *every other object in the build is unchanged* — is what makes it
-safe to guess. A proposal that would move another environment's object cannot land, so the
-proposal function is allowed to be simple.
+## 1. Shipped boundary
 
-### What the oracle does not promise
+- The writer expands its **read scope** to the render base needed by the selected overlay,
+  while the **write scope** remains `spec.path`.
+- An existing overlay-local document is edited in place. An existing `images:` or `replicas:`
+  declaration receives the corresponding edit-through change.
+- A source file reached by more than one render root is read-only. The entire flush is refused
+  before a commit when a plan would write it.
+- A path-based strategic-merge patch is read-only build context. It no longer rejects the
+  whole overlay merely by existing.
+- A base-owned field is refused rather than written through to the shared base.
 
-We would run *a* kustomize; Flux and Argo run *theirs*. A version skew between our pinned
-library and the orchestrator's is a residual risk, and it should be written down rather than
-finessed: pin to the version Flux ships, and accept that the guarantee is *"this renders to
-what you edited, under the kustomize we pinned."*
+The discovery report has not caught up: `scan-repo` still uses
+`overlay-fan-out-unsupported` for these layouts. That is a classification follow-up, not a
+runtime boundary.
 
-That is strictly better than the guarantee we have now, which is *"this renders to what you
-edited, under twenty lines we wrote by hand."*
+## 2. Why verification, not inversion
 
----
+Kustomize is lossy and many-to-one; a general source inverse does not exist. We only need a
+much smaller decision procedure:
 
-## 4. The proposal function
+> Propose an overlay-local source edit, rebuild the root, and commit only when it reproduces
+> the edited object exactly while leaving every other object unchanged.
 
-It is nearly trivial, and it is forced by decisions already made.
+[`VerifyBatchRenders`](../../../internal/manifestanalyzer/render_verify.go) runs this test as a
+write-plan precondition. It uses Kustomize's implementation in an in-memory filesystem,
+with plugins disabled. Remote bases are rejected before the build, because Kustomize may
+otherwise invoke Git; invalid image-name regular expressions are also rejected before they
+can panic the renderer.
 
-> **An edit to an object rendered by an overlay lands in that overlay. Never in the base.**
+The renderer uses `LoadRestrictionsNone` deliberately. The in-memory filesystem is the
+jail, and Flux accepts local `../shared.yaml` references that `RootOnly` would reject. A
+stricter path option would create a false refusal and leave a real production render outside
+the proof.
 
-Not merely unsafe — *wrong*. A user who edits production's replicas did not ask to change
-staging. Writing the base would change what another environment renders, and
-[gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md)
-already forecloses it four times over: Option A, base read-only by **L1**, the filesystem
-guarantee that cannot be wrong. Nothing here opens a base-write path. The only route to a
-base write remains Option C (base-as-variant, its own `GitTarget`, its own RBAC role), and
-it stays deferred.
+## 3. Source form and attribution
 
-So routing is: *which file **inside this overlay** should carry this field?* — and the
-oracle adjudicates.
+The source-form projection avoids treating a transformer's output as a user edit: when the
+source render already agrees with live state, source bytes remain untouched. This closes the
+old metadata-transformer leak and lets a patched folder be mirrored without copying the
+patch's values into its base input.
 
-### The launch scope
+Attribution may be a heuristic; verification is not. A candidate source is dyed and rebuilt
+to prove which declaration supplied a value. Where the writer cannot prove ownership, it
+refuses the edit. See [render attribution](render-attribution.md) for the method.
 
-Unchanged from [kustomize-support-boundary.md](kustomize-support-boundary.md) §2 and §5:
+## 4. Current routing table
 
-| Observed change in overlay X | Lands in | Status |
+| Observed change in selected overlay | Destination | Status |
 |---|---|---|
-| image tag / repository | overlay X's `images:` entry | **Editable** |
-| replica count | overlay X's `replicas:` entry | **Editable** |
-| new object | new overlay-local file **+ a `resources:` entry** | **Editable** |
-| overlay-local document's own fields | that document, in place | **Editable** |
-| a base-owned field (env var, limits, args…) | an operator-authored patch | **Refused** — deferred, §6 |
-| delete of a base-owned object in one env | a `$patch: delete` directive | **Refused** |
+| Image tag or repository | declared overlay `images:` entry | Editable |
+| Replica count | declared overlay `replicas:` entry | Editable |
+| Existing overlay-local document field | that document | Editable |
+| New object | overlay-local file plus `resources:` entry | **Planned** — placement/write-path correction required |
+| Base-owned field | operator-authored strategic-merge patch | Refused pending [patch authoring](patch-authoring.md) |
+| Delete inherited object in one overlay | `$patch: delete` | Refused |
 
-Two mechanical extensions the current writer does not have, both small and both gated by
-the oracle:
+Entry creation is distinct from editing an entry. The current writer does not safely add a
+missing `images:`/`replicas:` declaration or create a resource entry for a new object, so the
+contract labels those paths planned rather than relying on the existing generic placement
+feature.
 
-- **Create an entry, not just turn a knob.** [`applyKustomizationEdit`](../../../internal/git/manifestedit/kustomization.go)
-  today requires the field to already exist as a scalar; it never adds an entry. An overlay
-  that has no `replicas:` at all cannot receive a replica edit. Adding an entry to an
-  existing sequence is the same shape as
-  [`AppendKustomizationResource`](../../../internal/git/manifestedit/kustomization.go), which
-  already exists.
-- **Create the sequence.** Same rule, one level up. Guard both with the oracle: an entry we
-  add must render to the value the user set, or it does not get written.
+## 5. Remaining work
 
-### Read scope grows; write scope does not
+1. Correct overlay-local new-object placement, including a deterministic `resources:` entry.
+2. Add missing `images:` and `replicas:` declarations only under the same verification proof.
+3. Flip discovery classification and add a dedicated cluster end-to-end overlay case.
+4. Author a narrow scalar strategic-merge patch for base-owned fields; lists, deletes, and
+   structural merges require separate decisions.
 
-Render-root scoping's one concrete new capability, per §5 of the granularity doc: **follow
-`../../base` for reading** (today it is dropped), while the write jail stays at `spec.path`.
-That asymmetry *is* L1 — *"reads may reach shared context; writes never leave it"* — and it
-is already enforced and tested in
-[`pathScopePrecondition`](../../../internal/git/plan_flush.go).
-
-### L2's blind spot closes here
-
-[`fanInPrecondition`](../../../internal/git/plan_flush.go) refuses a write to a file reached
-by more than one override chain **with override entries at stake** (`anyOverrides`). Its
-generalisation — *any file reachable from more than one render root* — is exactly this
-workstream's job. With render roots first-class, the check stops leaning on the emergent
-side effect that a namespace-ambiguous base document never becomes dirty.
-
----
-
-## 5. What the corpus says
-
-Every `refused-structural` row in
-[support-today.md](../../../test/fixtures/gitops-layouts/support-today.md) is an overlay,
-and the corpus has already sorted them by difficulty for us.
-
-| Fixture candidate | Refused on | Reading |
-|---|---|---|
-| `flux-monorepo/apps/{staging,production}` | **`patches` only** | `namespace` + `resources` + one strategic-merge patch on a base Deployment. **No name mutation, stable name, known namespace.** The most tractable overlay in the corpus — and a *category-1 desired-state* layout, the kind we claim to support. |
-| `rendered-manifests/src/frontend/overlays/{staging,production}` | **`namePrefix` only** | The overlay dirs contain *nothing but* a kustomization.yaml. `namespace`, `resources`, `images` all pass. Deleting one key is the entire delta between refused and accepted. |
-| `flux-helmrelease/apps/frontend` | **`configMapGenerator` only** | With `generatorOptions.disableNameSuffixHash: true`. The output name is deterministic (`frontend-values`); there is no hash, no prefix, no patch. Refused solely because the key is on the list at all. |
-| `kustomize-overlays/apps/frontend/overlays/*` | the full zoo | `patches` + generators + `namePrefix`/`nameSuffix` + a hidden `.argocd-source-*.yaml` that silently outranks the `images:` block. Correctly refused. |
-| `kustomize-overlays/apps/backend/overlays/production` | `remote-base` | `0/0/0` — literally zero local files. Nothing to render, nothing to edit. Correctly refused — and it must be refused *before* the build, because kustomize would fetch it (§3). |
-
-Three things the corpus makes visible that no design doc had said out loud:
-
-1. **We accept the generated artifact and refuse its source.** In `rendered-manifests`,
-   `rendered/production/` is **accepted** (`3/3/0`) — a file carrying `# DO NOT EDIT`,
-   regenerated by `src/render.sh`, which will clobber anything we write. Meanwhile the
-   authored overlay it came from is refused. We have the polarity exactly backwards. The
-   `Generated{path}` claim already exists in
-   [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md)'s vocabulary;
-   nothing emits it. See [acceptance-precision.md](acceptance-precision.md).
-2. **In-repo bases are invisible.** A base referenced by an in-repo overlay is not reported
-   as a candidate at all — `flux-monorepo/apps/base/frontend`,
-   `kustomize-overlays/apps/frontend/base` and `rendered-manifests/src/frontend/base` are
-   all absorbed. Any design that starts rendering overlays must decide what those bases
-   become. **They become read-only context**, which is the right answer and should be said
-   explicitly rather than achieved by accident.
-3. **No fixture exercises the `kustomize-overlay` layout at all.** Every overlay in the
-   corpus also uses `patches` or `namePrefix`, so `refused-structural` fires first and
-   hides the verdict — `overlay-fan-out-unsupported` has never been observed. **A minimal
-   overlay fixture (`namespace` + `images` over `../../base`, nothing else) is a
-   prerequisite**, not a nice-to-have: it is the only way to see the code path this
-   document is about.
-
----
-
-## 6. Why a patch still blocks the folder — and why it should not
-
-> **Shipped, and the corpus said something the plan did not expect.**
->
-> A `patches:` entry naming a strategic-merge document by `path:` is now **tolerated**: the folder
-> is accepted, the render is mirrored, the patch file is retained as read-only build context (never
-> managed, never mirrored over, never swept), and nothing is routed into it. Inline patches,
-> JSON6902, and paths outside the tree are refused **by name**. `images:`/`replicas:` edit-through
-> works in a patched folder, which is the point: a patch on a replica count has nothing to do with
-> an image tag, and refusing the folder refused both.
->
-> **It accepted zero new candidates in the corpus, and that is the finding.** Every patched overlay
-> in the corpus *also* reads a base from outside its own folder, so `patches` was **masking the real
-> refusal**. `flux-monorepo/apps/{staging,production}` now report
-> `overlay-fan-out-unsupported` — the verdict §5 records as *never having been observed*, because
-> `refused-structural` always fired first and hid it. The single blocker on the corpus's most
-> tractable layout is therefore §4 (render-root scoping), not patches.
->
-> The prerequisite named at the end of this section turned out to be a different one, and a
-> load-bearing one: **the writer was mirroring the build's own output back into the build's input**
-> (§2). A patched base would have absorbed one environment's values, and *no re-render can catch
-> that* — the patch re-imposes its value, so the render comes out identical either way. That is
-> fixed first ([`sourceForm`](../../../internal/manifestanalyzer/source_form.go)), and tolerating
-> patches without it would have been silent corruption.
-
-Patch authoring is deferred, and this document does not un-defer it. Writing a
-strategic-merge patch means modelling merge keys, `$patch` directives, and CRD fallback
-behaviour, and it is priced against the tier-2 metrics for a reason.
-
-But **accepting a folder and being able to express every edit in it are two different
-questions, and today one deny-list answers both.**
-
-A `patches:` entry refuses the entire `GitTarget`. Not the edit — the *target*. Acceptance
-is all-or-nothing (`Accepted = len(issues) == 0`), and a refusal aborts the whole flush
-before a byte is written. So `flux-monorepo/apps/production` — whose patch touches
-`spec.replicas`, an env var, and CPU requests — also loses `images:` and `replicas:`
-edit-through, which the patch has nothing to do with.
-
-Separate the gates:
-
-| Gate | Question | Granularity |
-|---|---|---|
-| **Renderable** | can we compute the objects this folder produces? | per folder |
-| **Routable** | can we place *this* edit in a file, and prove it? | **per (object, field)** |
-
-With the oracle, a folder containing a hand-written patch is perfectly **renderable**. The
-patch is a sparse KRM document; the fields it sets are readable directly from it. So:
-
-- **Tolerate `patches` as read-only context.** Render it, mirror the result, accept the
-  folder.
-- **Route what we can already route.** An `images:` or `replicas:` edit goes to its entry,
-  as today — and the oracle *proves* it, including the interesting case where the patch
-  itself pins `spec.replicas` and the transformer overrides it anyway. We do not have to
-  reason about kustomize's transformer ordering. We check.
-- **Refuse the edits we cannot express**, per field, naming the patch that owns the field
-  and the fact that authoring one is not supported.
-
-This changes one decided position — §5's *"pre-existing hand-written patches would still
-refuse the folder"* — and it should be argued, not smuggled. The argument: that sentence was
-written when the only way to know what a patch does was to model it. With a renderer we do
-not model it, we execute it. The reason for the refusal was the fence, and the fence is what
-we are removing.
-
-**Prerequisite, not a follow-on.** None of this may ship before the tier-2 unreflected-edit
-accounting in [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md):
-*"overlay support without the unreflected set would reintroduce silent divergence."* A
-per-field refusal is only honest if the refused edit is **reported and reverted, never
-silently lost**. That is the gate on all of this, and it is the right one.
-
----
-
-## 7. The order of work
-
-1. ~~**The minimal-overlay fixture.**~~ — **done.** `2-rendered/kustomize-overlay-minimal` in
-   the corpus (`namespace` + `images` over `../../base`, nothing else) is the first fixture to
-   report `kustomize-overlay` / `overlay-fan-out-unsupported` in
-   [support-today.md](../../../test/fixtures/gitops-layouts/support-today.md), rather than have
-   `refused-structural` fire first and hide the verdict.
-2. **Tier-2 accounting** — `FullyReflected` per edit; refused edits reported and reverted.
-   Partially in force through this work: a base-owned edit an overlay cannot express is
-   **refused and reported** (§4), never silently written into the base. The per-edit
-   `FullyReflected` set proper still belongs to
-   [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md).
-3. ~~**The oracle**~~ — **done.** krusty, sandboxed, in the acceptance gate (#232) and in the
-   write-plan precondition (`VerifyBatchRenders`). The differential test against
-   `simulateImageRender` was overtaken: the simulation is deleted, and the corpus test that
-   replaced it makes the stronger claim that an in-sync folder projects to a no-op.
-4. ~~**Render-root scoping proper**~~ — **done.** The writer re-roots its scan at renderBase —
-   the lowest common ancestor of `spec.path` and every base it reaches — so `../../base` is
-   read as context while the write jail stays at `spec.path`
-   ([`render_scope.go`](../../../internal/git/render_scope.go)). The whole store, attribution,
-   and the oracle run in that one coordinate system, so a base an overlay renders is
-   materialised, an `images:`/`replicas:` edit routes to the overlay's own entry, and a
-   base-owned field edit is refused rather than written through. `fanInPrecondition` is
-   generalised to any file reachable from more than one render root
-   (`ReachedByMultipleRenderRoots`), no longer only the override-ambiguous case.
-   *Deferred to a follow-up:* the discovery-side flip (scan-repo still reports
-   `overlay-fan-out-unsupported`) and a dedicated cluster e2e — the write path is covered by
-   unit tests that execute real kustomize builds.
-5. **Entry creation** (`replicas:`/`images:` entries that do not yet exist), oracle-gated.
-6. **Tolerate-don't-author**: patches, `namePrefix`/`nameSuffix`, and hash-free generators
-   become read-only context; refusals move from the folder to the edit.
-
-Steps 1–4 are the launch unit. Steps 5–6 are what turn `flux-monorepo` and
-`rendered-manifests` from refused into supported, and they are worth stating as the goal
-because they are what the corpus is asking for.
-
-## 8. Still open
-
-- **Does the oracle run in the gate, the write path, or both?** §7 of the kustomize doc says
-  the gate. The blast-radius check only means something on an actual planned write. Probably
-  both, with different failure modes: gate → `GitPathAccepted=False`; write → refuse the
-  flush.
-- **Cost per flush.** A build is milliseconds on these trees, but it is not free, and it is
-  on the hot path.
-- **Generators with `disableNameSuffixHash: true`.** `flux-helmrelease/apps/frontend` is the
-  case: deterministic name, single file input. It is refused as a generator, but it is not
-  *structurally* non-invertible — the hash is what makes generators non-invertible, and it
-  is switched off. This is the seam between here and
-  [values-file-projection.md](values-file-projection.md), which needs the same file.
-- **Version skew** between our kustomize and the orchestrator's (§3).
+The earlier exploratory prompt material was consolidated into this implementation record and
+[patch authoring](patch-authoring.md). Git history retains the detailed experiments without
+making the active support boundary harder to read.
