@@ -201,25 +201,68 @@ keying on a token kustomize is *guaranteed* never to produce.
 
 ---
 
-## 6. Where it lives, and how it composes
+## 6. Two surfaces of the one measurement
 
-The fence needs the **live object**, so it lives on the **write path**, not the structure-only
-acceptance gate — which was the fatal placement of the structural check: with no live object, it
-could only guess from disk. It is **per field, per object**, so one diverged token refuses one
-write, never a whole folder (the failure that broke CRD mirroring).
+The measurement — *does our render equal the live object?* — needs the live object, so it runs at
+**reconcile time**, where the operator holds both the Git content and the watched live state. That
+rules out only the **structure-only** acceptance gate (the CLI scan, the initial dry validation),
+which has no cluster to look at — the trap the reverted structural check fell into. It does **not**
+rule out the operator, which has live state in hand on every reconcile. And once the measurement runs
+there, the answer is worth exposing two different ways.
 
-It sits beside the source-form projection — that decides *keep-source vs write-live* per field; this
-turns a *write-live* decision into a refusal when the field it would overwrite holds a token the live
-object no longer has. And it complements the oracle: `VerifyBatchRenders` checks our render reproduces
-live **after** the write (sharing our render's blind spot); this checks our render reproduces live
-**before** it, at the fields we are not touching — catching the blind spot the oracle cannot. The
-refusal is a reported one, in the family of `WriteBoundaryRefused`, naming the file, the field, and
-the token.
+### 6a. A per-write refusal (§5)
+
+Point-in-time, per field: a write that would overwrite a source token whose live value diverged is
+refused, in the family of `WriteBoundaryRefused`, naming the file, field, and token. This is the guard
+that stops the corruption at the moment it would happen. It sits beside the source-form projection —
+that decides *keep-source vs write-live* per field; this turns a *write-live* into a refusal when the
+field it would overwrite holds a token the live object no longer has. It is per field, per object, so
+one diverged token refuses one write, never a whole folder (the failure that broke CRD mirroring).
+
+### 6b. A GitTarget status you can read *before* you edit
+
+The same measurement, aggregated to the folder and surfaced as a standing **GitTarget condition** —
+e.g. `RenderFaithful` — answers a more fundamental question than any single write does:
+
+> **Do we even have a chance of tracking this folder?**
+
+Because if our render does not match what the cluster runs, *nothing* we do on the folder is
+trustworthy — not the mirror, not edit-through, not the refusal decisions themselves — since all of
+them reason from a baseline that is wrong. A per-write refusal tells you *this edit* could not land; a
+`RenderFaithful=False` condition tells you *this whole folder* is deployed with context we cannot
+reproduce (Flux postBuild, Argo `spec.source.kustomize`, a divergent version), so you learn it **up
+front, from status, before you waste an edit** — rather than one refusal at a time.
+
+It carries a bounded sample of the diverging `(file, field)` pairs, in the style of the
+`FullyReflected` condition in
+[unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md), and it is a
+sibling of that condition: `FullyReflected` says *everything you edited was expressed*;
+`RenderFaithful` says *our render matches what is running, so we can be trusted at all* — the more
+fundamental of the two. It is recomputable: the mark-and-sweep resync rebuilds it from scratch,
+steady-state events keep it current.
+
+This is exactly what the reverted structural check was reaching for and could not have — a
+folder-level *"can we track this?"* verdict. It failed because it tried to answer from the **disk**;
+the same question, answered from the **live object**, is both correct and precisely the up-front
+signal a user wants.
+
+### How it composes with the oracle
+
+`VerifyBatchRenders` checks our render reproduces live **after** a write, sharing our render's blind
+spot. The fidelity measurement checks our render reproduces live **before** it, at the fields we are
+not touching — catching the blind spot the oracle cannot.
 
 ---
 
 ## 7. Open questions
 
+- **Does `RenderFaithful=False` block, or only inform?** (§6b) A folder we cannot render-faithfully
+  is one where edit-through is unsafe — but the *mirror* (audit, drift reporting) may still have
+  value even when writes must be refused. So: does the condition gate adoption (`Ready=False` /
+  `GitPathAccepted=False`, the folder is not tracked at all), or does it stay a non-blocking
+  observability signal (`Ready=True`, the folder is mirrored, but edit-through is refused per §5)? The
+  honest lean is non-blocking-but-loud — keep the read-only value, refuse the writes, and say so — but
+  it is a real decision, and it is the one that most changes the product's shape.
 - **5a vs 5b, and sequencing.** 5a (token) is precise and cheap — build first. 5b (general
   render-vs-live) is the complete answer but needs the runtime-drift discriminator before it is safe.
 - **The runtime-drift discriminator.** Can we separate "an HPA changed replicas" from "postBuild
