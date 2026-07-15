@@ -1,7 +1,10 @@
 # Render-root scoping: an overlay is a write partition, and the renderer is the proof
 
-> **design** — direction-setting; ships no code. Nothing it describes is supported today.
-> Captured: 2026-07-14
+> **design** — direction-setting. Captured: 2026-07-14.
+> **Update (2026-07-15): the launch unit (§7 steps 1, 3, 4) has shipped** — the writer reads
+> `../../base` as read-only context, routes edit-through to the overlay, refuses base-owned
+> edits, and generalises write-fan-in. Steps 2 (per-edit accounting), 5 (entry creation), and
+> 6 (tolerate-don't-author) remain; see §7.
 > Related:
 > [README.md](README.md),
 > [support-contract.md](support-contract.md),
@@ -291,6 +294,29 @@ Three things the corpus makes visible that no design doc had said out loud:
 
 ## 6. Why a patch still blocks the folder — and why it should not
 
+> **Shipped, and the corpus said something the plan did not expect.**
+>
+> A `patches:` entry naming a strategic-merge document by `path:` is now **tolerated**: the folder
+> is accepted, the render is mirrored, the patch file is retained as read-only build context (never
+> managed, never mirrored over, never swept), and nothing is routed into it. Inline patches,
+> JSON6902, and paths outside the tree are refused **by name**. `images:`/`replicas:` edit-through
+> works in a patched folder, which is the point: a patch on a replica count has nothing to do with
+> an image tag, and refusing the folder refused both.
+>
+> **It accepted zero new candidates in the corpus, and that is the finding.** Every patched overlay
+> in the corpus *also* reads a base from outside its own folder, so `patches` was **masking the real
+> refusal**. `flux-monorepo/apps/{staging,production}` now report
+> `overlay-fan-out-unsupported` — the verdict §5 records as *never having been observed*, because
+> `refused-structural` always fired first and hid it. The single blocker on the corpus's most
+> tractable layout is therefore §4 (render-root scoping), not patches.
+>
+> The prerequisite named at the end of this section turned out to be a different one, and a
+> load-bearing one: **the writer was mirroring the build's own output back into the build's input**
+> (§2). A patched base would have absorbed one environment's values, and *no re-render can catch
+> that* — the patch re-imposes its value, so the render comes out identical either way. That is
+> fixed first ([`sourceForm`](../../../internal/manifestanalyzer/source_form.go)), and tolerating
+> patches without it would have been silent corruption.
+
 Patch authoring is deferred, and this document does not un-defer it. Writing a
 strategic-merge patch means modelling merge keys, `$patch` directives, and CRD fallback
 behaviour, and it is priced against the tier-2 metrics for a reason.
@@ -339,15 +365,32 @@ silently lost**. That is the gate on all of this, and it is the right one.
 
 ## 7. The order of work
 
-1. **The minimal-overlay fixture.** Until it exists, the overlay code path is unobserved.
+1. ~~**The minimal-overlay fixture.**~~ — **done.** `2-rendered/kustomize-overlay-minimal` in
+   the corpus (`namespace` + `images` over `../../base`, nothing else) is the first fixture to
+   report `kustomize-overlay` / `overlay-fan-out-unsupported` in
+   [support-today.md](../../../test/fixtures/gitops-layouts/support-today.md), rather than have
+   `refused-structural` fire first and hide the verdict.
 2. **Tier-2 accounting** — `FullyReflected` per edit; refused edits reported and reverted.
+   Partially in force through this work: a base-owned edit an overlay cannot express is
+   **refused and reported** (§4), never silently written into the base. The per-edit
+   `FullyReflected` set proper still belongs to
+   [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md).
 3. ~~**The oracle**~~ — **done.** krusty, sandboxed, in the acceptance gate (#232) and in the
    write-plan precondition (`VerifyBatchRenders`). The differential test against
    `simulateImageRender` was overtaken: the simulation is deleted, and the corpus test that
    replaced it makes the stronger claim that an in-sync folder projects to a no-op.
-4. **Render-root scoping proper**: read `../../base`; bases become declared read-only
-   context; generalise `fanInPrecondition` to any file reachable from more than one render
-   root.
+4. ~~**Render-root scoping proper**~~ — **done.** The writer re-roots its scan at renderBase —
+   the lowest common ancestor of `spec.path` and every base it reaches — so `../../base` is
+   read as context while the write jail stays at `spec.path`
+   ([`render_scope.go`](../../../internal/git/render_scope.go)). The whole store, attribution,
+   and the oracle run in that one coordinate system, so a base an overlay renders is
+   materialised, an `images:`/`replicas:` edit routes to the overlay's own entry, and a
+   base-owned field edit is refused rather than written through. `fanInPrecondition` is
+   generalised to any file reachable from more than one render root
+   (`ReachedByMultipleRenderRoots`), no longer only the override-ambiguous case.
+   *Deferred to a follow-up:* the discovery-side flip (scan-repo still reports
+   `overlay-fan-out-unsupported`) and a dedicated cluster e2e — the write path is covered by
+   unit tests that execute real kustomize builds.
 5. **Entry creation** (`replicas:`/`images:` entries that do not yet exist), oracle-gated.
 6. **Tolerate-don't-author**: patches, `namePrefix`/`nameSuffix`, and hash-free generators
    become read-only context; refusals move from the folder to the edit.

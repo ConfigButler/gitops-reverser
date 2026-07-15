@@ -162,7 +162,7 @@ func TestPlanFlush_DeleteInsideARenderRootIsVerified(t *testing.T) {
 
 	scan, err := scanWorktreeSubtree(root)
 	require.NoError(t, err)
-	batch := newWriteBatch(context.Background(), writer, configMapMapper(), scan, nil)
+	batch := newWriteBatch(context.Background(), writer, configMapMapper(), scan, nil, "")
 	batch.applyDelete(context.Background(), deleteConfigMapEvent("delete-me"))
 
 	assert.True(t, batch.putToKustomize,

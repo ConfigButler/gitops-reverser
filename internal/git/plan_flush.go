@@ -48,12 +48,12 @@ func (w *BranchWorker) flushEventsToWorktree(
 	policy *manifestanalyzer.PlacementPolicy,
 ) (bool, error) {
 	root := worktree.Filesystem.Root()
-	scan, err := scanWorktreeSubtree(filepath.Join(root, base))
+	scoped, err := scanRenderScope(root, base)
 	if err != nil {
 		return false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan, policy)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scoped.scan, policy, scoped.writeSubdir)
 	if err := batch.refusal(); err != nil {
 		return false, err
 	}
@@ -62,7 +62,10 @@ func (w *BranchWorker) flushEventsToWorktree(
 			return false, err
 		}
 	}
-	return batch.flush(ctx, worktree, root, base)
+	// The flush is anchored at renderBase — spec.path, or the common ancestor of spec.path
+	// and every base it reads. The write jail (writeSubdir) is enforced inside the batch, so
+	// a planned write outside spec.path is refused even though the scan reached past it.
+	return batch.flush(ctx, worktree, root, scoped.renderBase)
 }
 
 // writeBatch is the commit-scoped plan-then-flush working set for one GitTarget
@@ -91,6 +94,13 @@ type writeBatch struct {
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to sibling inference and then the canonical path.
 	policy *manifestanalyzer.PlacementPolicy
+	// writeSubdir is spec.path expressed relative to the render anchor (renderBase) — the
+	// write jail. It is "" for a self-contained subtree (renderBase == spec.path), where
+	// every scanned path is writable; it is non-empty only when the scan reached past
+	// spec.path into a base it renders (render-root scoping), and then a planned write must
+	// stay within it. The store and every path in it are keyed relative to renderBase, so a
+	// writable path is one under writeSubdir. See internal/git/render_scope.go.
+	writeSubdir string
 	// coldBundles tracks, per path, the new resources this batch has placed at a
 	// path that held no document before the batch started (keyed the same as
 	// buffers). It exists so several new resources that render to the same
@@ -125,6 +135,7 @@ func newWriteBatch(
 	mapper typeset.Lookup,
 	scan manifestanalyzer.FolderScan,
 	policy *manifestanalyzer.PlacementPolicy,
+	writeSubdir string,
 ) *writeBatch {
 	// The writer allowlist retains build directives (kustomization.yaml) and the operator's
 	// own .sops.yaml bootstrap config outside the managed model — these are auxiliary input,
@@ -152,6 +163,7 @@ func newWriteBatch(
 		contentByPath: contentByPath,
 		buffers:       map[string]*fileBuffer{},
 		policy:        policy,
+		writeSubdir:   writeSubdir,
 	}
 }
 
@@ -294,10 +306,15 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		kind = event.Object.GetKind()
 	}
 	sensitive := wb.writer.isSensitiveIdentifier(event.Identifier)
+	// WriteScope tells placement the write jail: when render-root scoping re-rooted the scan
+	// past spec.path, a declared/canonical path is rebased under the jail rather than escaping
+	// it (see finishPlacement). It is "" for a self-contained subtree, where placement already
+	// resolves relative to spec.path.
 	placement, err := manifestanalyzer.LocateNew(wb.store, wb.policy, manifestanalyzer.PlacementRequest{
 		Identifier: event.Identifier,
 		Kind:       kind,
 		Sensitive:  sensitive,
+		WriteScope: wb.writeSubdir,
 	})
 	if err != nil {
 		log.FromContext(ctx).Info("Skipping new resource: placement could not be resolved safely",
@@ -1282,7 +1299,12 @@ func (wb *writeBatch) ignoreShadowPrecondition() error {
 		if !buf.dirty() && !buf.deleted() {
 			continue
 		}
-		if pattern := wb.store.Ignore.MatchingPattern(rel, false); pattern != "" {
+		// The .gittargetignore matcher is scoped to spec.path and matches spec.path-relative
+		// paths, but a buffer is keyed relative to the render anchor. Translate it back to the
+		// write scope before matching; a buffer outside the write jail is refused by the
+		// path-scope precondition and never reaches a legitimate ignore match here.
+		specRel := relUnder(wb.writeSubdir, rel)
+		if pattern := wb.store.Ignore.MatchingPattern(specRel, false); pattern != "" {
 			issues = append(issues, manifestanalyzer.AcceptanceIssue{
 				Kind: manifestanalyzer.IssueIgnoreShadowsManaged,
 				Path: rel,
@@ -1314,7 +1336,7 @@ func (wb *writeBatch) pathScopePrecondition() error {
 		if !buf.dirty() && !buf.deleted() {
 			continue
 		}
-		if writePathEscapesScope(rel) {
+		if wb.writePathEscapesScope(rel) {
 			issues = append(issues, manifestanalyzer.AcceptanceIssue{
 				Kind: manifestanalyzer.IssueWriteEscapesScope,
 				Path: rel,
@@ -1331,26 +1353,33 @@ func (wb *writeBatch) pathScopePrecondition() error {
 	return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
 }
 
-// writePathEscapesScope reports whether a base-relative planned write path would land outside
-// the GitTarget subtree — an empty path (no destination), an absolute path, or one whose
-// cleaned form still climbs above the base with "..".
-func writePathEscapesScope(rel string) bool {
+// writePathEscapesScope reports whether a render-anchor-relative planned write path would
+// land outside the GitTarget write scope — an empty path (no destination), an absolute path,
+// one whose cleaned form climbs above the anchor with "..", or (when render-root scoping
+// re-rooted the scan past spec.path) one that is not within the write jail writeSubdir. A
+// read-only base the overlay renders is scanned but never written: its path is outside
+// writeSubdir, so a planned write to it is refused here rather than corrupting shared context.
+func (wb *writeBatch) writePathEscapesScope(rel string) bool {
 	if rel == "" || path.IsAbs(rel) {
 		return true
 	}
 	clean := path.Clean(rel)
-	return clean == ".." || strings.HasPrefix(clean, "../")
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return true
+	}
+	return wb.writeSubdir != "" && !pathWithin(clean, wb.writeSubdir)
 }
 
 // fanInPrecondition enforces the L2 write-boundary invariant: never write a live change
-// through into a source file more than one kustomize render path reaches with override
-// entries at stake (write-fan-in > 1). It refuses the whole flush — one IssueWriteFanIn per
-// offending path — when a dirty/deleted buffer targets a file the store flagged
-// reasonAmbiguousOverrides. This replaces the former warn-and-write-through fallback with a
-// refusal, so the fan-in guarantee no longer depends on the emergent side effect of namespace
-// ambiguity blocking the match. It fires only on an actual planned write, so the legitimate
-// base-sharing layout (a base doc reached by distinct overlays is NamespaceNone and never
-// dirty) is not refused — per-render-root scoping would generalize the check.
+// through into a source file that more than one kustomize render root reaches (write-fan-in
+// > 1). It refuses the whole flush — one IssueWriteFanIn per offending path — when a
+// dirty/deleted buffer targets a file the store flags either as override-ambiguous
+// (reasonAmbiguousOverrides) or, since render-root scoping, as reachable from more than one
+// render root at all (ReachedByMultipleRenderRoots). The generalised check no longer leans on
+// the emergent side effect that a namespace-ambiguous base with no override entries never
+// becomes dirty: any file two roots read is refused for in-place editing, whether or not an
+// images/replicas entry is at stake. It fires only on an actual planned write, so a base
+// reached by a single overlay (write-fan-in = 1) is edited through normally.
 func (wb *writeBatch) fanInPrecondition() error {
 	var issues []manifestanalyzer.AcceptanceIssue
 	for _, rel := range sortedBufferKeys(wb.buffers) {
@@ -1358,13 +1387,13 @@ func (wb *writeBatch) fanInPrecondition() error {
 		if !buf.dirty() && !buf.deleted() {
 			continue
 		}
-		if wb.store.OverridesAmbiguousAt(rel) {
+		if wb.store.OverridesAmbiguousAt(rel) || wb.store.ReachedByMultipleRenderRoots(rel) {
 			issues = append(issues, manifestanalyzer.AcceptanceIssue{
 				Kind: manifestanalyzer.IssueWriteFanIn,
 				Path: rel,
 				Message: fmt.Sprintf(
 					"planned write to %q would edit in place a source file that more than one kustomize render "+
-						"path reaches with override entries at stake (write-fan-in must be 1); refusing rather than "+
+						"root reaches (write-fan-in must be 1); refusing rather than "+
 						"writing the change through into context shared by multiple render roots",
 					rel),
 			})

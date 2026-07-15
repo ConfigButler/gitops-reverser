@@ -30,26 +30,37 @@ import (
 //     reaches with override entries at stake (write-fan-in must be 1).
 
 // TestWritePathEscapesScope pins the L1 containment predicate: only an absolute, empty, or
-// "..".-escaping base-relative path leaves the write scope; nested paths and a "../" that
-// cleans back inside stay in.
+// "..".-escaping anchor-relative path leaves the write scope; nested paths and a "../" that
+// cleans back inside stay in. With render-root scoping, a non-empty writeSubdir tightens the
+// jail: a path outside it (a base the overlay renders) is refused too.
 func TestWritePathEscapesScope(t *testing.T) {
 	cases := []struct {
-		rel  string
-		want bool
+		writeSubdir string
+		rel         string
+		want        bool
 	}{
-		{"default/pods/web.yaml", false},
-		{"a/b/c.yaml", false},
-		{"a/../b.yaml", false}, // cleans to b.yaml, still inside
-		{"", true},
-		{"/etc/passwd", true},
-		{"..", true},
-		{"../escape.yaml", true},
-		{"../../base/deployment.yaml", true},
-		{"a/../../escape.yaml", true},
+		// Self-contained subtree (writeSubdir == ""): identity behaviour.
+		{"", "default/pods/web.yaml", false},
+		{"", "a/b/c.yaml", false},
+		{"", "a/../b.yaml", false}, // cleans to b.yaml, still inside
+		{"", "", true},
+		{"", "/etc/passwd", true},
+		{"", "..", true},
+		{"", "../escape.yaml", true},
+		{"", "../../base/deployment.yaml", true},
+		{"", "a/../../escape.yaml", true},
+		// Render-root scoping: the scan is anchored at the common ancestor, so the write jail
+		// is the overlay subtree. Its own files write; the base it renders does not.
+		{"overlays/production", "overlays/production/kustomization.yaml", false},
+		{"overlays/production", "overlays/production/deploy.yaml", false},
+		{"overlays/production", "base/deployment.yaml", true},
+		{"overlays/production", "overlays/staging/kustomization.yaml", true},
+		{"overlays/production", "", true},
 	}
 	for _, c := range cases {
-		if got := writePathEscapesScope(c.rel); got != c.want {
-			t.Errorf("writePathEscapesScope(%q) = %v, want %v", c.rel, got, c.want)
+		wb := &writeBatch{writeSubdir: c.writeSubdir}
+		if got := wb.writePathEscapesScope(c.rel); got != c.want {
+			t.Errorf("writePathEscapesScope(writeSubdir=%q, %q) = %v, want %v", c.writeSubdir, c.rel, got, c.want)
 		}
 	}
 }

@@ -527,12 +527,21 @@ A target path may contain `kustomization.yaml` files. The operator retains them 
   removes entries. Note that one entry is a shared knob, exactly as in kustomize itself: updating it
   affects every resource in the build whose image matches.
 
-Anything outside that subset **refuses the whole target path before anything is written**:
-`patches`/`patchesStrategicMerge`/`patchesJson6902`, generators, `components`, Helm fields,
-`replacements`, `transformers`, `namePrefix`/`nameSuffix`, remote bases, and `images:`/`replicas:`
-values that do not parse (those would fail `kustomize build` too). A refusal is loud: the target
-reports `GitPathAccepted=False`, `Stalled=True`, and `Ready=False` with reason `UnsupportedContent`
-until the path is cleaned up.
+Two kustomize shapes beyond that subset are **supported without being authored**:
+
+- A **path-based strategic-merge `patches:` entry** is tolerated as read-only build context: the
+  folder is accepted and what it renders is mirrored, but nothing is ever written into a patch
+  file, and an edit to a field the patch *owns* is refused per object (not per folder).
+- An **overlay that reads a base outside its own folder** (`resources: [../../base]`) is rendered
+  by reading that base as read-only context; writes stay inside `spec.path`, and an image/replica
+  edit lands on the overlay's own entry.
+
+Everything else outside the modelled subset **refuses the whole target path before anything is
+written**: inline or JSON6902 patches and the deprecated `patchesStrategicMerge`/`patchesJson6902`
+spellings, generators, `components`, Helm fields, `replacements`, `transformers`,
+`namePrefix`/`nameSuffix`, remote bases, and `images:`/`replicas:` values that do not parse (those
+would fail `kustomize build` too). A refusal is loud: the target reports `GitPathAccepted=False`,
+`Stalled=True`, and `Ready=False` with reason `UnsupportedContent` until the path is cleaned up.
 
 Two situations fall back to plain in-place editing of the source manifest instead of refusing:
 a resource file reachable from more than one render root with differing override chains

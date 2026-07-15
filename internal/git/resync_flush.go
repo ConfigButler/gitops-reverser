@@ -291,12 +291,12 @@ func (w *BranchWorker) executeResyncPendingWrite(
 
 func (w *BranchWorker) refuseUnsafeWorktree(ctx context.Context, worktree *gogit.Worktree, base string) error {
 	root := worktree.Filesystem.Root()
-	scan, err := scanWorktreeSubtree(filepath.Join(root, base))
+	scoped, err := scanRenderScope(root, base)
 	if err != nil {
 		return err
 	}
 	// The acceptance gate never places a resource, so no placement policy is needed here.
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan, nil)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scoped.scan, nil, scoped.writeSubdir)
 	return batch.refusal()
 }
 
@@ -329,12 +329,12 @@ func (w *BranchWorker) applyResyncToWorktree(
 	policy *manifestanalyzer.PlacementPolicy,
 ) (ResyncStats, bool, error) {
 	root := worktree.Filesystem.Root()
-	scan, err := scanWorktreeSubtree(filepath.Join(root, base))
+	scoped, err := scanRenderScope(root, base)
 	if err != nil {
 		return ResyncStats{}, false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scan, policy)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scoped.scan, policy, scoped.writeSubdir)
 	// First materialization is the adoption gate: refuse a subtree that holds content the
 	// operator cannot safely manage (unsupported kustomization, duplicate identity, impure
 	// or non-KRM files, foreign content, a catastrophic .gittargetignore) and commit nothing,
@@ -347,13 +347,14 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
 	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
 	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
-	plan := resyncPlan(batch.store, scan.YAMLFiles, desired, scopeGVR)
+	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scopeGVR)
 
 	stats, err := batch.applyResyncPlan(ctx, desired, plan)
 	if err != nil {
 		return ResyncStats{}, false, err
 	}
-	changed, err := batch.flush(ctx, worktree, root, base)
+	// Anchored at renderBase; the write jail (writeSubdir) is enforced inside the flush.
+	changed, err := batch.flush(ctx, worktree, root, scoped.renderBase)
 	return stats, changed, err
 }
 

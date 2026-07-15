@@ -199,7 +199,7 @@ func scanRepoFS(ctx context.Context, fsys fs.FS) RepoReport {
 
 	return RepoReport{
 		Candidates: candidates,
-		Summary:    summarize(candidates, fsys, kustContent),
+		Summary:    summarize(candidates, fsys, kusts),
 	}
 }
 
@@ -224,7 +224,7 @@ func classifyRenderRoot(
 		c.AcceptedByOperator = false
 		c.RefusalReasons = []RefusalReason{{
 			Code:   ReasonRefusedStructural,
-			Detail: refusedStructuralDetail(kustContent[rootDir]),
+			Detail: refusedStructuralDetail(kusts[rootDir], kustContent[rootDir]),
 		}}
 		c.Resources = countResources(store, rootDir, rendered)
 		return c
@@ -440,9 +440,13 @@ func overlayFanOutDetail(base string, kusts map[string]*kustomizationDoc) string
 }
 
 // refusedStructuralDetail names the specific unsupported kustomize features so the
-// refusal is actionable, not a bare "refused".
-func refusedStructuralDetail(content []byte) string {
-	features := unsupportedKustomizeFeatures(content)
+// refusal is actionable, not a bare "refused". The features come off the parsed doc, which is
+// the same judgement the acceptance gate reads, so the scan and the operator cannot drift.
+func refusedStructuralDetail(doc *kustomizationDoc, content []byte) string {
+	var features []string
+	if doc != nil {
+		features = doc.features
+	}
 	if len(features) == 0 {
 		return "kustomization uses an unsupported feature the operator cannot map back to editable source"
 	}
@@ -592,7 +596,7 @@ func detectOverlaps(candidates []RepoCandidate) {
 // signal read from the repo's top-level directories. Unsupported constructs are
 // recomputed from each refused-structural candidate's kustomization bytes, so the
 // summary shares one source of truth with the per-candidate detail.
-func summarize(candidates []RepoCandidate, fsys fs.FS, kustContent map[string][]byte) RepoSummary {
+func summarize(candidates []RepoCandidate, fsys fs.FS, kusts map[string]*kustomizationDoc) RepoSummary {
 	s := RepoSummary{CandidatesByLayout: map[Layout]int{}}
 	constructs := map[string]struct{}{}
 	for _, c := range candidates {
@@ -602,8 +606,8 @@ func summarize(candidates []RepoCandidate, fsys fs.FS, kustContent map[string][]
 		} else {
 			s.Refused++
 		}
-		if c.Layout == LayoutRefusedStructural {
-			for _, f := range unsupportedKustomizeFeatures(kustContent[c.Path]) {
+		if doc := kusts[c.Path]; c.Layout == LayoutRefusedStructural && doc != nil {
+			for _, f := range doc.features {
 				constructs[f] = struct{}{}
 			}
 		}

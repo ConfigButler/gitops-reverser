@@ -42,6 +42,14 @@ type PlacementRequest struct {
 	Identifier types.ResourceIdentifier
 	Kind       string
 	Sensitive  bool
+	// WriteScope is the write jail relative to the scanned (render) root, set only when
+	// render-root scoping re-rooted the scan past spec.path into a base an overlay reads.
+	// Placement is documented as relative to spec.path, so a resolved path that would land
+	// outside the jail (a declared/canonical path resolved against the render anchor, or an
+	// inference from a read-only base sibling) is rebased under WriteScope rather than escaping
+	// it. Empty for a self-contained subtree, where the scan root IS spec.path and every
+	// resolved path is already in scope.
+	WriteScope string
 }
 
 // PlacementSource names which mechanism produced a PlacementResult's Path, for
@@ -158,6 +166,13 @@ func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, b
 		if k.Unsupported {
 			continue
 		}
+		// Under render-root scoping the scan also holds the read-only base kustomizations, so
+		// "one supported kustomization" must mean one WRITABLE one. Skipping the out-of-jail
+		// bases lets an overlay resolve to its own single root (and a new object land beside it,
+		// governed) instead of declining as ambiguous because the base counts as a second root.
+		if req.WriteScope != "" && !pathWithin(slashDir(k.Path), req.WriteScope) {
+			continue
+		}
 		if only != nil {
 			return "", false, false
 		}
@@ -176,6 +191,17 @@ func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, b
 // finishPlacement fills in the parts of a PlacementResult that depend only on the
 // resolved path (whether it already exists, and whether its directory needs a
 // kustomize resources: entry), and enforces the "sensitive never appends" rule.
+// rebaseIntoWriteScope pulls a resolved placement path back under the write jail when
+// render-root scoping anchored the scan past spec.path, so placement stays relative to
+// spec.path as documented. A no-op for a self-contained subtree (scope == "") and for a path
+// already in scope.
+func rebaseIntoWriteScope(scope, resolvedPath string) string {
+	if scope == "" || pathWithin(resolvedPath, scope) {
+		return resolvedPath
+	}
+	return cleanJoin(scope, resolvedPath)
+}
+
 func finishPlacement(
 	store *ManifestStore,
 	req PlacementRequest,
@@ -184,6 +210,11 @@ func finishPlacement(
 	cohort string,
 	namespaceInherited bool,
 ) (PlacementResult, error) {
+	// Render-root scoping re-roots the scan at the common ancestor of spec.path and the bases
+	// it reads, so a resolved path is anchored there, not at spec.path. Placement is documented
+	// as relative to spec.path, so rebase a path that would land outside the write jail back
+	// under it before it is validated, checked for append, or matched to a kustomization.
+	resolvedPath = rebaseIntoWriteScope(req.WriteScope, resolvedPath)
 	// This is the one gate every resolution path — declared, inferred, the
 	// kustomize-root fallback, and canonical alike — funnels through before a
 	// byte is ever written, so a rendered path can never escape the GitTarget's
@@ -230,11 +261,28 @@ func finishPlacement(
 			req.Identifier.String(), resolvedPath,
 		)
 	}
-	if k := store.Kustomizations[slashDir(resolvedPath)]; k != nil && !k.Unsupported &&
+	if k := governingKustomization(store, req.WriteScope, resolvedPath); k != nil && !k.Unsupported &&
 		!kustomizationListsResource(k, resolvedPath) {
 		res.Kustomization = k
 	}
 	return res, nil
+}
+
+// governingKustomization returns the kustomization whose resources: list a new file at
+// resolvedPath must join to render: the one in its own directory, or — under render-root
+// scoping, when the file lands in a subdirectory of the overlay that has no kustomization of
+// its own — the write scope's own render root, which reaches the file by a relative resources
+// entry. Without this an overlay's new object would be committed to a file no kustomization
+// includes, so it would never render and the oracle (armed only for governed writes) would not
+// catch it — a silent divergence.
+func governingKustomization(store *ManifestStore, writeScope, resolvedPath string) *KustomizationInfo {
+	if k := store.Kustomizations[slashDir(resolvedPath)]; k != nil {
+		return k
+	}
+	if writeScope != "" {
+		return store.Kustomizations[writeScope]
+	}
+	return nil
 }
 
 func kustomizationListsResource(k *KustomizationInfo, resolvedPath string) bool {
@@ -519,8 +567,14 @@ func IdentityCompletePlacementTemplate(tmpl string, narrowedToOneType bool) bool
 // why step 3 is not implemented.
 func resolveInferred(store *ManifestStore, req PlacementRequest) (string, string, bool, bool) {
 	id := req.Identifier
+	// Render-root scoping puts the read-only base documents in the store too; a new write must
+	// never be inferred to sit beside one — that path is outside the jail, and rebasing it would
+	// duplicate a base object under the overlay. Restrict every cohort to writable siblings.
+	// The identity when there is no jail (WriteScope == ""), so self-contained placement is
+	// unchanged.
+	writable := writableCohort(store, req.WriteScope)
 
-	if members := cohortMembers(
+	if members := writable(cohortMembers(
 		store,
 		id.Group,
 		id.Version,
@@ -528,7 +582,7 @@ func resolveInferred(store *ManifestStore, req PlacementRequest) (string, string
 		id.Namespace,
 		true,
 		req.Sensitive,
-	); len(
+	)); len(
 		members,
 	) > 0 {
 		if path, cohort, nsInherited, ok := cohortDestination(
@@ -551,7 +605,9 @@ func resolveInferred(store *ManifestStore, req PlacementRequest) (string, string
 	// one namespace (a bundle) or lives in a single shared directory regardless of
 	// namespace (singleton style); an unseen namespace then correctly falls through to
 	// the canonical path, which builds the right namespace segment directly.
-	if members := cohortMembers(store, id.Group, id.Version, id.Resource, "", false, req.Sensitive); len(members) > 0 {
+	if members := writable(
+		cohortMembers(store, id.Group, id.Version, id.Resource, "", false, req.Sensitive),
+	); len(members) > 0 {
 		if path, cohort, nsInherited, ok := cohortDestination(
 			store,
 			members,
@@ -563,6 +619,27 @@ func resolveInferred(store *ManifestStore, req PlacementRequest) (string, string
 		}
 	}
 	return "", "", false, false
+}
+
+// writableCohort returns a filter that keeps only documents inside the write jail, so sibling
+// inference never places a new write beside a read-only base document render-root scoping
+// pulled into the store. With no jail (writeScope == "") it is the identity, so self-contained
+// placement is byte-for-byte unchanged. DocumentLocations is resolved once, only when a jail
+// is in force.
+func writableCohort(store *ManifestStore, writeScope string) func([]*DocumentModel) []*DocumentModel {
+	if writeScope == "" {
+		return func(dms []*DocumentModel) []*DocumentModel { return dms }
+	}
+	locs := store.DocumentLocations()
+	return func(dms []*DocumentModel) []*DocumentModel {
+		out := make([]*DocumentModel, 0, len(dms))
+		for _, dm := range dms {
+			if pathWithin(locs[dm].FilePath, writeScope) {
+				out = append(out, dm)
+			}
+		}
+		return out
+	}
 }
 
 // cohortMembers collects every existing document of the given type (optionally

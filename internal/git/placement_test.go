@@ -244,7 +244,7 @@ func TestPlacement_UndecodableKustomization_RefusesTheFlush(t *testing.T) {
 func newTestWriteBatch(t *testing.T) *writeBatch {
 	t.Helper()
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
-	return newWriteBatch(context.Background(), writer, nil, manifestanalyzer.FolderScan{}, nil)
+	return newWriteBatch(context.Background(), writer, nil, manifestanalyzer.FolderScan{}, nil, "")
 }
 
 func TestAppendYAMLDocument(t *testing.T) {

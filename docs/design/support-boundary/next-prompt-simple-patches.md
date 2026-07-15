@@ -1,5 +1,26 @@
 # Prompt: tolerate `patches:`, and route a simple one
 
+> **Stage 1 shipped (#235), and stage 0 turned out to exist (#234).** Read this before using the
+> prompt below, because three of its premises are now wrong:
+>
+> - **The gate was not the deny-list, it was the projection.** The writer was mirroring the build's
+>   own output back into the build's input — measured on `labels:`/`commonAnnotations:`, which we
+>   accept *today*. A patched base would have absorbed one environment's values, and **no re-render
+>   catches that** (the patch re-imposes its value, so the render is identical either way). Fixed
+>   first: *where the live object and the render agree, the source keeps its bytes*
+>   ([`sourceForm`](../../../internal/manifestanalyzer/source_form.go)).
+> - **`FixKustomization` does NOT fold the deprecated spellings** into `Patches` (the prompt below
+>   suspects it does). Measured; pinned by a test.
+> - **Tolerating patches accepted zero new corpus candidates.** Every patched overlay in the corpus
+>   *also* reads a base from outside its own folder, so `patches` was masking the real refusal.
+>   `flux-monorepo` now reports `overlay-fan-out-unsupported`. **Render-root scoping, not patches,
+>   is the blocker on the corpus's best layout.**
+>
+> Also measured, and load-bearing for stage 3: kustomize's strategic merge **prepends** a container
+> a patch adds, so aligning a source list with the render by *position* is wrong, not merely
+> fragile. Stages 2–4 (attribute a patch scalar, route into the patch, per-field accounting) are
+> still open, and the sections below still describe them correctly.
+
 Copy everything below the line into a fresh session.
 
 ---
