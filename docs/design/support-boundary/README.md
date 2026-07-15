@@ -44,13 +44,14 @@ flowchart LR
 | Write boundary | Writes never leave `spec.path`, and a file read by more than one render root is never edited in place. |
 | Foreign-content boundary | A GitTarget subtree is operator-exclusive: loose scripts, binaries, and symlinks refuse the folder. Inert repo-hygiene passengers — documentation (`*.md`), a license, and `.gitignore`/`.gitattributes`/`.gitkeep` — are accepted so adopting an existing repo does not stall on them. Anything else is named in a root `.gittargetignore`. |
 
-Two overlay capabilities are now shipped and verified by re-render: creating a **new object**
-(an overlay-local file plus its `resources:` entry), and **authoring a missing `images:`/`replicas:`
-entry** when a base-supplied image or replica count is changed in one environment — so editing a
-specific environment adds the override for you. The remaining overlay gap is **patch authoring**:
-a strategic-merge patch for a base-owned field that is not an image/replica, and `$patch: delete`
-for an inherited object. `scan-repo` likewise still labels external-base overlays as unsupported
-while its discovery classification catches up with the runtime.
+Three overlay capabilities are now shipped and verified by re-render: creating a **new object**
+(an overlay-local file plus its `resources:` entry); **authoring a missing `images:`/`replicas:`
+entry** when a base-supplied image or replica count is changed in one environment; and
+**`$patch: delete`** for an object the overlay inherits from its base — so editing a specific
+environment adds the override, or the deletion, for you. The remaining overlay gap is a
+strategic-merge patch for a base-owned *field* that is not an image, replica, or whole-object
+delete. `scan-repo` likewise still labels external-base overlays as unsupported while its
+discovery classification catches up with the runtime.
 
 ## Active design work
 

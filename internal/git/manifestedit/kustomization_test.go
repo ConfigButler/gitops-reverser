@@ -250,6 +250,34 @@ func TestAppendKustomizationOverride_RefusesUnknownSection(t *testing.T) {
 	}
 }
 
+func TestAppendKustomizationPatch_CreatesPatchesSectionWhenAbsent(t *testing.T) {
+	src := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nnamespace: app\n" +
+		"resources:\n  - ../../base\n"
+	res, diags := AppendKustomizationPatch("kustomization.yaml", []byte(src), "shared-delete.yaml")
+	if res.Mode != EditPatched {
+		t.Fatalf("Mode = %q, want patched (diags %+v)", res.Mode, diags)
+	}
+	got := string(res.Content)
+	if !strings.Contains(got, "patches:") || !strings.Contains(got, "path: shared-delete.yaml") {
+		t.Errorf("expected a new patches: section naming the file:\n%s", got)
+	}
+	if !strings.Contains(got, "- ../../base") {
+		t.Errorf("resources: must be untouched:\n%s", got)
+	}
+}
+
+func TestAppendKustomizationPatch_IdempotentWhenAlreadyListed(t *testing.T) {
+	src := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
+		"patches:\n  - path: shared-delete.yaml\n"
+	res, _ := AppendKustomizationPatch("kustomization.yaml", []byte(src), "shared-delete.yaml")
+	if res.Mode != EditNoChange {
+		t.Fatalf("Mode = %q, want no-change for a patch already listed", res.Mode)
+	}
+	if string(res.Content) != src {
+		t.Errorf("a no-op must leave the bytes byte-identical")
+	}
+}
+
 func TestRemoveKustomizationResource_DropsEntryPreservingHandAuthoring(t *testing.T) {
 	withExtra, _ := AppendKustomizationResource(
 		"kustomization.yaml",

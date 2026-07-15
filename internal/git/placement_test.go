@@ -391,6 +391,44 @@ func TestOverlayAuthors_Idempotent_OnResync(t *testing.T) {
 		"the authored images: entry must appear exactly once")
 }
 
+// TestOverlayAuthors_DeletePatch_ForInheritedObject deletes an object the overlay inherits from
+// its base: the writer authors a $patch: delete in the overlay (file + patches: entry), the
+// re-render oracle proves the object leaves the render, and the read-only base is untouched.
+func TestOverlayAuthors_DeletePatch_ForInheritedObject(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - cm.yaml\n")
+	seedPlacedManifest(t, worktree, "base/cm.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n  namespace: podinfo-test\ndata:\n  k: v\n")
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml",
+		"namespace: podinfo-test\nresources:\n  - ../../base\n")
+
+	del := Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]interface{}{"name": "shared", "namespace": "podinfo-test"}}},
+		Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "podinfo-test", "shared"),
+		Operation:  "DELETE",
+	}
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	_, err := w.flushEventsToWorktree(context.Background(), worktree, "overlays/test", []Event{del}, nil)
+	require.NoError(t, err, "deleting an inherited object must author a $patch: delete, not refuse")
+
+	patch, err := os.ReadFile(filepath.Join(root, "overlays/test/configmap-shared-delete.yaml"))
+	require.NoError(t, err, "the overlay must gain a $patch: delete file")
+	assert.Contains(t, string(patch), "$patch: delete")
+	assert.Contains(t, string(patch), "name: shared")
+
+	kust, err := os.ReadFile(filepath.Join(root, "overlays/test/kustomization.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(kust), "patches:")
+	assert.Contains(t, string(kust), "configmap-shared-delete.yaml")
+
+	base, err := os.ReadFile(filepath.Join(root, "base/cm.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(base), "name: shared", "the read-only base object must be untouched")
+}
+
 func newTestWriteBatch(t *testing.T) *writeBatch {
 	t.Helper()
 	writer := newContentWriter(types.SensitiveResourcePolicy{})

@@ -1123,6 +1123,13 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	if !ok {
 		return
 	}
+	// An object the overlay INHERITS from its read-only base cannot be deleted from the base
+	// (that is out of the write jail and shared by other environments). Author a $patch: delete
+	// in the overlay instead; the re-render oracle proves the object leaves the render.
+	if authorInto := wb.overlayAuthorKustomization(target.filePath); authorInto != "" {
+		wb.authorInheritedDelete(ctx, event, target, authorInto)
+		return
+	}
 	wb.intend(manifestanalyzer.WriteIntent{
 		SourcePath: target.filePath,
 		Kind:       target.id.Kind,
@@ -1146,6 +1153,64 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	// only half the delete.
 	buf.current = nil
 	wb.dropKustomizationResource(ctx, event, target.filePath)
+}
+
+// authorInheritedDelete removes an object the overlay INHERITS from its read-only base by
+// authoring a `$patch: delete` in the overlay, rather than deleting the base document (which is
+// out of the write jail and shared by other environments). It writes the patch file inside
+// spec.path, names it in the overlay's own patches:, and declares the Removed intent so the
+// re-render oracle proves the object leaves the render — a patch that fails to match is refused
+// there, and the base is never touched.
+func (wb *writeBatch) authorInheritedDelete(
+	ctx context.Context,
+	event Event,
+	target deleteTarget,
+	authorInto string,
+) {
+	patchName := inheritedDeletePatchName(target.id)
+	patchPath := cleanSlash(path.Join(path.Dir(authorInto), patchName))
+	wb.buffer(patchPath).current = inheritedDeletePatchDocument(target.id)
+
+	buf := wb.buffer(authorInto)
+	res, diags := manifestedit.AppendKustomizationPatch(authorInto, buf.current, patchName)
+	switch res.Mode {
+	case manifestedit.EditPatched:
+		buf.current = res.Content
+		log.FromContext(ctx).Info("Authored $patch: delete for an inherited object",
+			"kustomization", authorInto, "patch", patchName, "resource", event.Identifier.String())
+	case manifestedit.EditNoChange:
+	case manifestedit.EditSkipped, manifestedit.EditWholeReplace, manifestedit.EditDeleted:
+		logManifestDiagnostics(ctx, diags)
+	}
+	wb.intend(manifestanalyzer.WriteIntent{
+		SourcePath: target.filePath,
+		Kind:       target.id.Kind,
+		Name:       target.id.Name,
+		Removed:    true,
+	})
+	wb.putToKustomize = true
+}
+
+// inheritedDeletePatchName is the deterministic file name for an inherited-object delete patch:
+// kind and name are DNS-safe, and the overlay resolves one namespace, so kind+name is unique in
+// its render.
+func inheritedDeletePatchName(id manifestedit.Identity) string {
+	return strings.ToLower(id.Kind) + "-" + id.Name + "-delete.yaml"
+}
+
+// inheritedDeletePatchDocument is the strategic-merge `$patch: delete` document that removes the
+// object from the overlay's render. kustomize matches a strategic-merge patch by full identity —
+// apiVersion/kind/namespace/name — so the patch pins the object's namespace when it has one
+// (a base that declares the namespace, or the live object's namespace). If the proposed patch
+// does not match the render, the oracle refuses the flush; nothing is committed on a bad match.
+func inheritedDeletePatchDocument(id manifestedit.Identity) []byte {
+	meta := "  name: " + id.Name + "\n"
+	if id.Namespace != "" {
+		meta = "  namespace: " + id.Namespace + "\n" + meta
+	}
+	return []byte(fmt.Sprintf(
+		"apiVersion: %s\nkind: %s\nmetadata:\n%s$patch: delete\n",
+		id.APIVersion, id.Kind, meta))
 }
 
 // dropKustomizationResource removes the resources: entry naming a file this flush deleted,

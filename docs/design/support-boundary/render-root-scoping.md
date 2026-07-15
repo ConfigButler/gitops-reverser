@@ -2,10 +2,11 @@
 
 > **Implementation record.** External-base overlay support is shipped for existing
 > overlay-local documents, declared `images`/`replicas` entries, **creating a new
-> overlay-local object** (a new file plus its `resources:` entry), and **authoring a missing
+> overlay-local object** (a new file plus its `resources:` entry), **authoring a missing
 > `images`/`replicas` entry** when a base-supplied image or replica count is changed in one
-> environment — all verified by re-render. Patch authoring (including `$patch: delete` for an
-> inherited object) remains separate work.
+> environment, and **`$patch: delete`** for an object the overlay inherits from its base — all
+> verified by re-render. Strategic-merge patch authoring for a base-owned *field* (not an
+> image/replica) remains separate work.
 >
 > Related: [support contract](support-contract.md),
 > [Kustomize boundary](kustomize-support-boundary.md),
@@ -47,11 +48,16 @@ flowchart LR
   re-render verifying it before the commit. A new object whose field a folder-level
   `images:`/`replicas:` entry would override is refused loudly by that oracle instead of
   committed as a non-converging write.
+- Deleting an object the overlay **inherits from its base** authors a `$patch: delete` in the
+  overlay (a patch file plus a `patches:` entry) rather than deleting the read-only base — the
+  base, and every other environment that reads it, is untouched. The re-render verifies the
+  object leaves the overlay's render; a patch that does not match is refused there, not committed.
 - A source file reached by more than one render root is read-only. The entire flush is refused
   before a commit when a plan would write it.
 - A path-based strategic-merge patch is read-only build context. It no longer rejects the
   whole overlay merely by existing.
-- A base-owned field is refused rather than written through to the shared base.
+- A base-owned *field* (not an image, replica, or whole-object delete) is refused rather than
+  written through to the shared base — strategic-merge field patch authoring is still planned.
 
 The discovery report has not caught up: `scan-repo` still uses
 `overlay-fan-out-unsupported` for these layouts. That is a classification follow-up, not a
@@ -95,17 +101,18 @@ refuses the edit. See [render attribution](render-attribution.md) for the method
 | Replica count | overlay `replicas:` entry — edited if declared, **authored if the base supplies it** | Editable |
 | Existing overlay-local document field | that document | Editable |
 | New object | overlay-local file plus `resources:` entry | **Editable** — placed in the overlay, registered in its own kustomization, verified by re-render |
-| Base-owned field (not image/replica) | operator-authored strategic-merge patch | Refused pending [patch authoring](patch-authoring.md) |
-| Delete inherited object in one overlay | `$patch: delete` | Refused pending [patch authoring](patch-authoring.md) |
+| Delete inherited object in one overlay | overlay `$patch: delete` (patch file plus `patches:` entry) | **Editable** — authored in the overlay, verified by re-render; the base is untouched |
+| Base-owned field (not image/replica/delete) | operator-authored strategic-merge patch | Refused pending [patch authoring](patch-authoring.md) |
 
 Entry creation is distinct from editing an entry, and both are now shipped for images/replicas.
 Creating a **new object** — an overlay-local file plus a `resources:` entry in the overlay's
 **own** kustomization (the base's is out of the write jail) — is shipped. **Authoring a missing
 `images:`/`replicas:` entry** is too: when a base supplies an image component or replica count
 and the environment changes it, the writer creates the entry (and the section, if absent) in the
-overlay rather than writing the read-only base, and the re-render adjudicates the proposal. What
-remains is a strategic-merge patch for a base-owned field that is *not* an image or replica, and
-`$patch: delete` for an inherited object — both patch authoring.
+overlay rather than writing the read-only base, and the re-render adjudicates the proposal.
+**Deleting an inherited object** authors a `$patch: delete` in the overlay under the same
+verification. What remains is a strategic-merge patch for a base-owned field that is *not* an
+image, replica, or whole-object delete.
 
 ## 5. Remaining work
 

@@ -242,6 +242,61 @@ func AppendKustomizationOverride(
 	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
 }
 
+// AppendKustomizationPatch adds a path-based `patches:` entry (`{ path: <patchPath> }`) to a
+// kustomization.yaml, creating the patches: sequence if it has none — the mechanism half of
+// authoring a `$patch: delete` for an object an overlay inherits from its base
+// (docs/design/support-boundary/render-root-scoping.md §4). The patch document itself is written
+// separately; this only names it so kustomize applies it.
+//
+// It is idempotent (an entry that already names patchPath is EditNoChange) and all-or-nothing
+// like its siblings. The re-render oracle verifies the object actually disappears from the render
+// before the flush can commit, so a patch that does not match is refused there, not committed.
+func AppendKustomizationPatch(path string, content []byte, patchPath string) (EditResult, []Diagnostic) {
+	skip := func(format string, args ...interface{}) (EditResult, []Diagnostic) {
+		return EditResult{Content: content, Mode: EditSkipped},
+			[]Diagnostic{diag(DiagWarning, Location{Path: path}, format, args...)}
+	}
+
+	docs, idx, root, reason, ok := locateKustomizationDocument(path, content)
+	if !ok {
+		return skip("%s", reason)
+	}
+	target := docs[idx].body
+
+	seq := nodeMapGet(root, "patches")
+	if seq != nil && seq.Kind != yaml.SequenceNode {
+		return skip("kustomization %s: patches is not a sequence", path)
+	}
+	if seq == nil {
+		seq = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		root.Content = append(root.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "patches"}, seq)
+	}
+	for _, item := range seq.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		if p := nodeMapGet(item, "path"); p != nil && strings.TrimSpace(p.Value) == strings.TrimSpace(patchPath) {
+			return EditResult{Content: content, Mode: EditNoChange}, nil // already listed
+		}
+	}
+	seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: "path"},
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: patchPath},
+	}})
+
+	encoded, err := encodeNode(root)
+	if err != nil {
+		return skip("kustomization %s: re-encode failed: %v", path, err)
+	}
+	body := reskinDocument(target, string(encoded))
+	if body == target {
+		return EditResult{Content: content, Mode: EditNoChange}, nil
+	}
+	docs[idx].body = body
+	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
+}
+
 // overrideEntryPresent reports whether the sequence already holds an entry named name that sets
 // field to value — the idempotency check that keeps a resync from appending a duplicate.
 func overrideEntryPresent(seq *yaml.Node, name, field, value string) bool {
