@@ -26,12 +26,12 @@ Reading rules:
 |---|---:|---|---:|---:|---|---|---|
 | 1-desired-state/argocd-app-of-apps | 0 | All reported candidates accepted | 4 | 0 | plain=4 | - | None |
 | 1-desired-state/argocd-plain | 0 | Partial | 1 | 1 | plain=2 | - | non-krm-yaml: ci-metadata.yaml: YAML is not a Kubernetes manifest |
-| 1-desired-state/flux-monorepo | 0 | Partial | 4 | 2 | kustomize-overlay=2, kustomize-single=4 | - | overlay-fan-out-unsupported: base "apps/base/frontend" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required<br>overlay-fan-out-unsupported: base "apps/base/frontend" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required |
+| 1-desired-state/flux-monorepo | 0 | All reported candidates accepted | 6 | 0 | kustomize-overlay=2, kustomize-single=4 | - | None |
 | 1-desired-state/repo-per-environment | 0 | Partial | 6 | 3 | plain=9 | - | foreign-file: .gitignore: foreign file .gitignore is not a managed manifest; remove it or name it in .gittargetignore<br>foreign-file: .gitignore: foreign file .gitignore is not a managed manifest; remove it or name it in .gittargetignore<br>foreign-file: .gitignore: foreign file .gitignore is not a managed manifest; remove it or name it in .gittargetignore |
 | 2-rendered/argocd-external-helm | 0 | Partial | 2 | 1 | plain=3 | - | non-krm-yaml: values.yaml: YAML is not a Kubernetes manifest |
 | 2-rendered/helm-chart | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 2-rendered/helm-environment-values | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
-| 2-rendered/kustomize-overlay-minimal | 0 | No reported candidates accepted | 0 | 2 | kustomize-overlay=2 | - | overlay-fan-out-unsupported: base "base" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required<br>overlay-fan-out-unsupported: base "base" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required |
+| 2-rendered/kustomize-overlay-minimal | 0 | All reported candidates accepted | 2 | 0 | kustomize-overlay=2 | - | None |
 | 2-rendered/kustomize-overlays | 0 | Partial | 1 | 3 | kustomize-single=1, refused-structural=3 | configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator | refused-structural: kustomization uses unsupported feature(s): remote-base<br>refused-structural: kustomization uses unsupported feature(s): configMapGenerator, nameSuffix, secretGenerator<br>refused-structural: kustomization uses unsupported feature(s): configMapGenerator, namePrefix |
 | 2-rendered/rendered-manifests | 0 | Partial | 3 | 2 | plain=3, refused-structural=2 | namePrefix | refused-structural: kustomization uses unsupported feature(s): namePrefix<br>refused-structural: kustomization uses unsupported feature(s): namePrefix |
 | 3-expanded/argocd-applicationset-directories | 0 | All reported candidates accepted | 5 | 0 | plain=5 | - | None |
@@ -68,13 +68,13 @@ Unsupported constructs: `none`. Fleet root: `false`.
 
 ## 1-desired-state/flux-monorepo
 
-Reported rc `0`. Accepted `4`, refused `2`.
+Reported rc `0`. Accepted `6`, refused `0`.
 Unsupported constructs: `none`. Fleet root: `false`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `apps/production` | `kustomize-overlay` | false | `production` | 2/0/0 | overlay-fan-out-unsupported: base "apps/base/frontend" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required |
-| `apps/staging` | `kustomize-overlay` | false | `staging` | 2/0/0 | overlay-fan-out-unsupported: base "apps/base/frontend" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required |
+| `apps/production` | `kustomize-overlay` | true | `production` | 2/0/0 | none |
+| `apps/staging` | `kustomize-overlay` | true | `staging` | 2/0/0 | none |
 | `clusters/production` | `kustomize-single` | true | `flux-system` | 7/7/0 | none |
 | `clusters/staging` | `kustomize-single` | true | `flux-system` | 7/7/0 | none |
 | `infrastructure/configs` | `kustomize-single` | true | `-` | 1/1/0 | none |
@@ -128,13 +128,13 @@ Unsupported constructs: `none`. Fleet root: `false`.
 
 ## 2-rendered/kustomize-overlay-minimal
 
-Reported rc `0`. Accepted `0`, refused `2`.
+Reported rc `0`. Accepted `2`, refused `0`.
 Unsupported constructs: `none`. Fleet root: `false`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `overlays/production` | `kustomize-overlay` | false | `frontend-production` | 2/0/0 | overlay-fan-out-unsupported: base "base" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required |
-| `overlays/staging` | `kustomize-overlay` | false | `frontend-staging` | 2/0/0 | overlay-fan-out-unsupported: base "base" is read from outside this folder's subtree and is shared by 2 render root(s); render-root scoping required |
+| `overlays/production` | `kustomize-overlay` | true | `frontend-production` | 2/0/0 | none |
+| `overlays/staging` | `kustomize-overlay` | true | `frontend-staging` | 2/0/0 | none |
 
 ## 2-rendered/kustomize-overlays
 

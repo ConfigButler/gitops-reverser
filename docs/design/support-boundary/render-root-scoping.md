@@ -39,9 +39,10 @@ flowchart LR
   whole overlay merely by existing.
 - A base-owned field is refused rather than written through to the shared base.
 
-The discovery report has not caught up: `scan-repo` still uses
-`overlay-fan-out-unsupported` for these layouts. That is a classification follow-up, not a
-runtime boundary.
+The discovery report has caught up: `scan-repo` runs the same adoption gate over an
+external-base overlay's render scope, so a `kustomize-overlay` candidate is now reported
+**accepted** (the `overlay-fan-out-unsupported` reason is retired) with its `editable` count
+showing how much the overlay owns.
 
 ## 2. Why verification, not inversion
 
@@ -93,7 +94,8 @@ feature.
 
 1. Correct overlay-local new-object placement, including a deterministic `resources:` entry.
 2. Add missing `images:` and `replicas:` declarations only under the same verification proof.
-3. Flip discovery classification and add a dedicated cluster end-to-end overlay case.
+3. Discovery classification is flipped (an external-base overlay reports accepted); a dedicated
+   cluster end-to-end overlay case remains.
 4. Author a narrow scalar strategic-merge patch for base-owned fields; lists, deletes, and
    structural merges require separate decisions.
 

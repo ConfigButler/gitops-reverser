@@ -88,32 +88,46 @@ func checkGoldenFixture(t *testing.T, fixture string) {
 	}
 }
 
-// TestScanRepo_RefusalCodesStayDistinct pins the load-bearing distinction the design
-// calls out: a forward-looking overlay-fan-out-unsupported must never collapse into the
-// permanent refused-structural boundary. base-overlays is the former; helm-inflation and
-// unsupported-kustomize are the latter.
-func TestScanRepo_RefusalCodesStayDistinct(t *testing.T) {
-	cases := []struct {
-		fixture  string
-		wantCode string
-		layout   Layout
-	}{
-		{"unsupported/base-overlays", ReasonOverlayFanOutUnsupported, LayoutKustomizeOverlay},
-		{"unsupported/overlay-parked-base", ReasonOverlayFanOutUnsupported, LayoutKustomizeOverlay},
-		{"unsupported/helm-inflation", ReasonRefusedStructural, LayoutRefusedStructural},
-		{"unsupported/unsupported-kustomize", ReasonRefusedStructural, LayoutRefusedStructural},
+// scanFixtureCandidates scans one corpus fixture and returns its candidates, failing the
+// test on a scan error or an empty candidate set.
+func scanFixtureCandidates(t *testing.T, fixture string) []RepoCandidate {
+	t.Helper()
+	rep, err := ScanRepo(context.Background(), filepath.Join("testdata", "scan-repo", fixture))
+	if err != nil {
+		t.Fatalf("ScanRepo(%s): %v", fixture, err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.fixture, func(t *testing.T) {
-			rep, err := ScanRepo(context.Background(), filepath.Join("testdata", "scan-repo", tc.fixture))
-			if err != nil {
-				t.Fatalf("ScanRepo: %v", err)
+	if len(rep.Candidates) == 0 {
+		t.Fatalf("%s: expected at least one candidate", fixture)
+	}
+	return rep.Candidates
+}
+
+// TestScanRepo_ExternalBaseOverlayAdopted pins that render-root scoping's discovery half
+// shipped: an external-base overlay is ADOPTED (its render scope passes the same gate the
+// live writer runs), no longer refused with the retired overlay-fan-out reason.
+func TestScanRepo_ExternalBaseOverlayAdopted(t *testing.T) {
+	for _, fixture := range []string{"supported/base-overlays", "supported/overlay-parked-base"} {
+		t.Run(fixture, func(t *testing.T) {
+			for _, c := range scanFixtureCandidates(t, fixture) {
+				if c.Layout != LayoutKustomizeOverlay {
+					t.Errorf("%s: candidate %s layout = %q, want %q", fixture, c.Path, c.Layout, LayoutKustomizeOverlay)
+				}
+				if !c.AcceptedByOperator {
+					t.Errorf("%s: external-base overlay %s should now be adopted; reasons=%+v",
+						fixture, c.Path, c.RefusalReasons)
+				}
 			}
-			if len(rep.Candidates) == 0 {
-				t.Fatalf("expected at least one candidate")
-			}
-			for _, c := range rep.Candidates {
-				assertRefused(t, tc.fixture, c, tc.layout, tc.wantCode)
+		})
+	}
+}
+
+// TestScanRepo_StructuralStaysRefused pins the other half of the load-bearing distinction:
+// the permanent refused-structural boundary must never collapse into an adoptable overlay.
+func TestScanRepo_StructuralStaysRefused(t *testing.T) {
+	for _, fixture := range []string{"unsupported/helm-inflation", "unsupported/unsupported-kustomize"} {
+		t.Run(fixture, func(t *testing.T) {
+			for _, c := range scanFixtureCandidates(t, fixture) {
+				assertRefused(t, fixture, c, LayoutRefusedStructural, ReasonRefusedStructural)
 			}
 		})
 	}
@@ -138,7 +152,7 @@ func assertRefused(t *testing.T, fixture string, c RepoCandidate, layout Layout,
 // once (rendered=2 here: base/deployment + base/common/configmap), and readScope must be
 // the minimal [base] rather than [base, base/common]. A regression would report 3.
 func TestScanRepo_RenderedCountDedupesNestedBase(t *testing.T) {
-	fixture := filepath.Join("testdata", "scan-repo", "unsupported", "overlay-nested-base")
+	fixture := filepath.Join("testdata", "scan-repo", "supported", "overlay-nested-base")
 	rep, err := ScanRepo(context.Background(), fixture)
 	if err != nil {
 		t.Fatalf("ScanRepo: %v", err)
@@ -159,7 +173,7 @@ func TestScanRepo_RenderedCountDedupesNestedBase(t *testing.T) {
 // kustomization graph reaches: a base holding a parked.yaml its kustomization does not
 // list must not inflate rendered. overlay-parked-base renders 1 (base/deployment), not 2.
 func TestScanRepo_RenderedExcludesParkedYAML(t *testing.T) {
-	fixture := filepath.Join("testdata", "scan-repo", "unsupported", "overlay-parked-base")
+	fixture := filepath.Join("testdata", "scan-repo", "supported", "overlay-parked-base")
 	rep, err := ScanRepo(context.Background(), fixture)
 	if err != nil {
 		t.Fatalf("ScanRepo: %v", err)

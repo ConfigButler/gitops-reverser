@@ -30,11 +30,15 @@ const (
 	LayoutRefusedStructural Layout = "refused-structural"
 )
 
-// Refusal reason codes. The distinction is load-bearing and a consumer must not collapse
-// it: one is a "not yet", the other is permanent.
+// Refusal reason codes a candidate may carry.
 const (
-	// ReasonOverlayFanOutUnsupported is the forward-looking refusal that flips to accepted
-	// when render-root scoping ships.
+	// ReasonOverlayFanOutUnsupported was the forward-looking refusal for an external-base
+	// overlay. Render-root scoping shipped, so the scanner now ADOPTS such an overlay and no
+	// longer emits this code; it is retained only so a consumer pinning the string still
+	// compiles. A kustomize-overlay candidate is accepted (its editable count shows how much
+	// it owns); an overlay refused for a real fault carries that fault's own code.
+	//
+	// Deprecated: no longer emitted; kept for source compatibility.
 	ReasonOverlayFanOutUnsupported = "overlay-fan-out-unsupported"
 	// ReasonRefusedStructural is the permanent support boundary.
 	ReasonRefusedStructural = "refused-structural"
