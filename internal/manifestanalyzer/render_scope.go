@@ -23,7 +23,9 @@ package manifestanalyzer
 // the store is built: it must know which directories to pull into the scan as read-only
 // render context, and it must know that before it has a store to ask.
 func KustomizationResourceEntries(content []byte) ([]string, bool) {
-	doc, features := parseKustomization(content, "")
+	// A nil tree suffices: this only reads the resources/bases graph to find out-of-scope
+	// bases, never the patch files a non-nil tree would resolve.
+	doc, features := parseKustomization(content, "", nil)
 	if doc == nil {
 		return nil, false
 	}
