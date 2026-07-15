@@ -1169,7 +1169,21 @@ func (wb *writeBatch) authorInheritedDelete(
 ) {
 	patchName := inheritedDeletePatchName(target.id)
 	patchPath := cleanSlash(path.Join(path.Dir(authorInto), patchName))
-	wb.buffer(patchPath).current = inheritedDeletePatchDocument(target.id)
+	want := inheritedDeletePatchDocument(target.id)
+
+	// Never clobber unrelated content: if the deterministic patch path is already occupied by
+	// something that is not this exact delete patch, skip authoring rather than overwrite it. The
+	// inherited object then stays until the collision is resolved (a human renames the passenger
+	// file) and the next resync retries. A path already holding our own patch — an idempotent
+	// resync — matches want and proceeds harmlessly.
+	patchBuf := wb.buffer(patchPath)
+	if patchBuf.current != nil && !bytes.Equal(patchBuf.current, want) {
+		log.FromContext(ctx).Info(
+			"Skipping inherited-object delete: patch path already holds different content",
+			"patch", patchPath, "resource", event.Identifier.String())
+		return
+	}
+	patchBuf.current = want
 
 	buf := wb.buffer(authorInto)
 	res, diags := manifestedit.AppendKustomizationPatch(authorInto, buf.current, patchName)

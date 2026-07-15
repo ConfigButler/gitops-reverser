@@ -59,9 +59,10 @@ flowchart LR
 - A base-owned *field* (not an image, replica, or whole-object delete) is refused rather than
   written through to the shared base — strategic-merge field patch authoring is still planned.
 
-The discovery report has not caught up: `scan-repo` still uses
-`overlay-fan-out-unsupported` for these layouts. That is a classification follow-up, not a
-runtime boundary.
+The discovery report has caught up: `scan-repo` runs the same adoption gate over an
+external-base overlay's render scope, so a `kustomize-overlay` candidate is now reported
+**accepted** (the `overlay-fan-out-unsupported` reason is retired) with its `editable` count
+showing how much the overlay owns.
 
 ## 2. Why verification, not inversion
 
@@ -116,15 +117,17 @@ image, replica, or whole-object delete.
 
 ## 5. Remaining work
 
-1. Flip discovery classification and add a dedicated cluster end-to-end overlay case.
-2. Author a narrow scalar strategic-merge patch for base-owned fields; lists, deletes, and
-   structural merges require separate decisions.
+1. Add a dedicated cluster end-to-end overlay case (discovery classification is already flipped —
+   an external-base overlay reports accepted).
+2. Author a narrow scalar strategic-merge patch for a base-owned *field*; list merges, element
+   deletes, and structural merges require separate decisions.
 
-Overlay-local new-object placement (a new file plus its `resources:` entry) and authoring a
-missing `images:`/`replicas:` entry are both done, covered by
-`TestPlacement_ExternalBaseOverlay_NewObject` and `TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage`
-/ `TestOverlayAuthors_ReplicaEntry_ForBaseSuppliedCount`; they left the list as the write path
-proved them end-to-end.
+Overlay-local new-object placement (a new file plus its `resources:` entry), authoring a missing
+`images:`/`replicas:` entry, and `$patch: delete` for an inherited object are all done, covered by
+`TestPlacement_ExternalBaseOverlay_NewObject`, `TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage`
+/ `..._ReplicaEntry_ForBaseSuppliedCount`, and `TestOverlayAuthors_DeletePatch_ForInheritedObject`;
+they left the list as the write path proved them end-to-end. `scan-repo`'s discovery flip landed
+separately in #243.
 
 The earlier exploratory prompt material was consolidated into this implementation record and
 [patch authoring](patch-authoring.md). Git history retains the detailed experiments without

@@ -429,6 +429,37 @@ func TestOverlayAuthors_DeletePatch_ForInheritedObject(t *testing.T) {
 	assert.Contains(t, string(base), "name: shared", "the read-only base object must be untouched")
 }
 
+// TestOverlayAuthors_DeletePatch_SkipsOnPathCollision proves the delete-patch author never
+// clobbers an unrelated file that happens to occupy the deterministic patch path: the flush skips
+// the delete and leaves the existing file byte-for-byte, rather than overwriting it.
+func TestOverlayAuthors_DeletePatch_SkipsOnPathCollision(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - cm.yaml\n")
+	seedPlacedManifest(t, worktree, "base/cm.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n  namespace: podinfo-test\ndata:\n  k: v\n")
+	// An unrelated overlay-local file already occupies the delete patch's deterministic path.
+	collision := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: keepme\n  namespace: podinfo-test\ndata:\n  x: y\n"
+	seedPlacedManifest(t, worktree, "overlays/test/configmap-shared-delete.yaml", collision)
+	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml",
+		"namespace: podinfo-test\nresources:\n  - ../../base\n  - configmap-shared-delete.yaml\n")
+
+	del := Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]interface{}{"name": "shared", "namespace": "podinfo-test"}}},
+		Identifier: types.NewResourceIdentifier("", "v1", "configmaps", "podinfo-test", "shared"),
+		Operation:  "DELETE",
+	}
+	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
+	_, err := w.flushEventsToWorktree(context.Background(), worktree, "overlays/test", []Event{del}, nil)
+	require.NoError(t, err, "a patch-path collision must be skipped, not error")
+
+	got, err := os.ReadFile(filepath.Join(root, "overlays/test/configmap-shared-delete.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, collision, string(got), "the colliding file must be left byte-for-byte, never overwritten")
+}
+
 func newTestWriteBatch(t *testing.T) *writeBatch {
 	t.Helper()
 	writer := newContentWriter(types.SensitiveResourcePolicy{})

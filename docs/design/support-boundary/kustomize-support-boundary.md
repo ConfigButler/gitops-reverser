@@ -36,9 +36,11 @@ image/replica entry. Its shared base is read-only. Creating a new overlay-local 
 and adding its `resources:` entry is **shipped**, and so is **authoring a missing
 `images:`/`replicas:` entry** when a base-supplied image or replica count is changed in one
 environment — the writer creates the entry (and the section, if absent) in the overlay's own
-kustomization, verified by re-render, rather than writing the base. What remains is patch
-authoring for a base-owned field that is not an image/replica. `scan-repo` still reports
-external-base overlays as unsupported while its classification catches up with the runtime.
+kustomization, verified by re-render, rather than writing the base. A **`$patch: delete`** is
+also authored for an object the overlay inherits from its base. A strategic-merge patch that
+**edits a field** of a base-owned object is *not* authored — it stays read-only build context —
+and that field-patch authoring is the one remaining overlay gap. `scan-repo` now adopts
+external-base overlays too (a `kustomize-overlay` candidate is reported accepted).
 
 ```mermaid
 flowchart LR

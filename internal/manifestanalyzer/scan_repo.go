@@ -31,9 +31,10 @@ import (
 // generation yet, no rename of the existing --mode discovery, and no repo-level
 // --policy refuse exit semantics — see the design doc's "explicitly defer" list.
 
-// Layout is the structural shape of a candidate subtree. Layout and acceptedByOperator
-// are two distinct truths that diverge while overlays stay unsupported: a kustomize-overlay
-// has a well-understood layout yet is not accepted until render-root scoping lands.
+// Layout is the structural shape of a candidate subtree. Layout and acceptedByOperator are
+// two distinct truths: a kustomize-overlay has a well-understood layout and is now adopted
+// when its render scope passes the gate, but its editable count can still be 0 when every
+// rendered field is base-owned.
 type Layout string
 
 const (
@@ -46,9 +47,10 @@ const (
 	LayoutKustomizeSingle Layout = "kustomize-single"
 	// LayoutKustomizeOverlay is a render root that reaches a base kustomization OUTSIDE
 	// its own subtree (the classic base/ + overlays/{env} shape reached via ../../base).
-	// The operator hard-scopes to one subtree and cannot see the base, so it is refused
-	// today with the forward-looking overlay-fan-out-unsupported reason — it flips to
-	// accepted if render-root scoping ships.
+	// Render-root scoping shipped, so the operator adopts it when the adoption gate accepts
+	// its render scope; the editable count shows how much of the render the overlay owns (a
+	// pure passthrough overlay is adopted yet editable: 0). It is a distinct layout from
+	// kustomize-single because it still renders — and cannot edit — an out-of-subtree base.
 	LayoutKustomizeOverlay Layout = "kustomize-overlay"
 	// LayoutRefusedStructural is a render root whose kustomization uses a feature the
 	// contextual-namespace writer cannot map back to editable source (helm inflation,
@@ -57,14 +59,14 @@ const (
 	LayoutRefusedStructural Layout = "refused-structural"
 )
 
-// Refusal reason codes. The distinction between the two is load-bearing:
-// ReasonOverlayFanOutUnsupported is a forward-looking "not yet" that flips to accepted
-// if render-root scoping ships; ReasonRefusedStructural is the permanent boundary. Discovery must
-// never collapse them into one "refused".
-const (
-	ReasonOverlayFanOutUnsupported = "overlay-fan-out-unsupported"
-	ReasonRefusedStructural        = "refused-structural"
-)
+// ReasonRefusedStructural is the permanent support boundary: a render root whose kustomization
+// uses a construct the writer cannot map back to editable source. It is the only render-root
+// refusal reason now that external-base overlays are adopted through render-root scoping (the
+// former forward-looking overlay-fan-out-unsupported reason is retired; the public
+// pkg/manifestanalyzer constant is kept for consumers pinning the string, but the classifier no
+// longer emits it). An overlay refused for a real structural fault carries that fault's own
+// gate-issue code instead.
+const ReasonRefusedStructural = "refused-structural"
 
 // RefusalReason is one machine-readable reason a candidate is not accepted, with a
 // human detail. A candidate carries none when accepted.
@@ -191,7 +193,7 @@ func scanRepoFS(ctx context.Context, fsys fs.FS) RepoReport {
 
 	candidates := make([]RepoCandidate, 0)
 	for _, rootDir := range renderRoots(kusts) {
-		candidates = append(candidates, classifyRenderRoot(ctx, fsys, rootDir, kusts, kustContent, store))
+		candidates = append(candidates, classifyRenderRoot(ctx, fsys, rootDir, scan, kusts, kustContent, store))
 	}
 	candidates = append(candidates, plainCandidates(ctx, fsys, store, kusts, ownedFiles)...)
 
@@ -205,12 +207,15 @@ func scanRepoFS(ctx context.Context, fsys fs.FS) RepoReport {
 }
 
 // classifyRenderRoot classifies one kustomize render root into a candidate: refused
-// (unsupported kustomization), a kustomize-overlay reaching an out-of-subtree base, or
-// a self-contained kustomize-single.
+// (unsupported kustomization), an external-base kustomize-overlay, or a self-contained
+// kustomize-single. An overlay is no longer refused merely for reaching an out-of-subtree
+// base — render-root scoping shipped, so the operator adopts it — and instead runs the same
+// adoption gate over its render scope.
 func classifyRenderRoot(
 	ctx context.Context,
 	fsys fs.FS,
 	rootDir string,
+	scan FolderScan,
 	kusts map[string]*kustomizationDoc,
 	kustContent map[string][]byte,
 	store *ManifestStore,
@@ -233,13 +238,19 @@ func classifyRenderRoot(
 
 	outsideBases := outOfSubtreeBases(rootDir, kusts)
 	if len(outsideBases) > 0 {
+		// External-base overlay: the operator now renders it through render-root scoping, so it
+		// is adopted when the same gate the live writer runs accepts its render scope. The
+		// editable count still shows how much the overlay owns — a pure passthrough overlay is
+		// adoptable yet editable: 0, since every field is base-owned. A gate refusal (foreign
+		// content in the overlay, an unbuildable base, an unsupported nested kustomization)
+		// surfaces as its own reason rather than a blanket overlay refusal.
 		c.Layout = LayoutKustomizeOverlay
-		c.AcceptedByOperator = false
 		c.ReadScope = outsideBases
-		c.RefusalReasons = []RefusalReason{{
-			Code:   ReasonOverlayFanOutUnsupported,
-			Detail: overlayFanOutDetail(outsideBases[0], kusts),
-		}}
+		acc := overlayCandidateAcceptance(ctx, rootDir, scan, kusts)
+		c.AcceptedByOperator = acc.Accepted
+		if !acc.Accepted {
+			c.RefusalReasons = issuesToReasons(acc.Issues)
+		}
 		c.Resources = countResources(store, rootDir, rendered)
 		return c
 	}
@@ -302,6 +313,78 @@ func plainCandidates(
 		out = append(out, cand)
 	}
 	return out
+}
+
+// overlayCandidateAcceptance runs the operator's own adoption gate over an external-base
+// overlay's RENDER SCOPE — the overlay subtree PLUS the exact base files its resources/patches
+// graph reaches — so the discovery report matches what the live writer's render-root scoping
+// (internal/git/render_scope.go) decides. Only the files the graph actually reaches enter the
+// scope, never a whole base directory, so parked YAML a base does not reference can never
+// refuse the overlay (mirroring the runtime's "read scope is the exact reachable file set").
+//
+// The scoped store keeps repo-relative paths, so a `../../base` reference resolves within it
+// exactly as kustomize resolves it. Acceptance here is folder adoption (GitPathAccepted); the
+// write half — editable overlay-local documents and declared images/replicas, but never a
+// base-owned field or a new overlay object — is out of scope for a read-only report, and the
+// candidate's editable count already reflects how much of the render the overlay owns.
+func overlayCandidateAcceptance(
+	ctx context.Context,
+	rootDir string,
+	scan FolderScan,
+	kusts map[string]*kustomizationDoc,
+) Acceptance {
+	reached := renderScopePaths(rootDir, kusts)
+	scoped := FolderScan{}
+	for _, f := range scan.YAMLFiles {
+		if pathWithin(f.Path, rootDir) || setContains(reached, f.Path) {
+			scoped.YAMLFiles = append(scoped.YAMLFiles, f)
+		}
+	}
+	// Only the overlay's OWN non-YAML/foreign content bears on its acceptance; a base's loose
+	// files are never read (the render scope pulls in referenced files only), just as at runtime.
+	for _, p := range scan.NonYAML {
+		if pathWithin(p, rootDir) {
+			scoped.NonYAML = append(scoped.NonYAML, p)
+		}
+	}
+	for _, fe := range scan.Foreign {
+		if pathWithin(fe.Path, rootDir) {
+			scoped.Foreign = append(scoped.Foreign, fe)
+		}
+	}
+	store := buildStore(ctx, scoped, nil, WriterAllowlist())
+	return Accept(store, AcceptancePolicy{Allowlist: WriterAllowlist()})
+}
+
+// renderScopePaths returns the files an overlay render root reaches through its resources and
+// patches graph: every referenced resource file, plus each reached kustomization's own file
+// and strategic-merge patch inputs. These are the exact build inputs kustomize loads, so the
+// scoped acceptance store can render `../../base` without importing a base's unreferenced
+// content. Paths are scan-root-relative slash paths, matching the store's file keys.
+func renderScopePaths(rootDir string, kusts map[string]*kustomizationDoc) map[string]struct{} {
+	paths := map[string]struct{}{}
+	for f := range reachedResourceFilesFrom(rootDir, kusts) {
+		paths[f] = struct{}{}
+	}
+	dirs := reachedKustomizationDirs(rootDir, kusts)
+	dirs[rootDir] = struct{}{}
+	for dir := range dirs {
+		doc := kusts[dir]
+		if doc == nil {
+			continue
+		}
+		paths[doc.path] = struct{}{}
+		for _, patch := range doc.patches {
+			paths[patch] = struct{}{}
+		}
+	}
+	return paths
+}
+
+// setContains reports membership in a set-like map.
+func setContains(set map[string]struct{}, key string) bool {
+	_, ok := set[key]
+	return ok
 }
 
 // candidateAcceptance runs the structure-only adoption gate over the candidate subtree —
@@ -423,21 +506,6 @@ func reachedResourceFiles(kusts map[string]*kustomizationDoc) map[string]struct{
 		}
 	}
 	return out
-}
-
-// overlayFanOutDetail explains why an overlay is unsupported: the shared base and how many
-// render roots reach it from outside their subtree.
-func overlayFanOutDetail(base string, kusts map[string]*kustomizationDoc) string {
-	shared := 0
-	for _, root := range renderRoots(kusts) {
-		if _, ok := reachedKustomizationDirs(root, kusts)[base]; ok && !pathWithin(base, root) {
-			shared++
-		}
-	}
-	return fmt.Sprintf(
-		"base %q is read from outside this folder's subtree and is shared by %d render root(s); "+
-			"render-root scoping required",
-		base, shared)
 }
 
 // refusedStructuralDetail names the specific unsupported kustomize features so the
