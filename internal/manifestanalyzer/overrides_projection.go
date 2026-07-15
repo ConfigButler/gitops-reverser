@@ -33,15 +33,21 @@ type OverrideEdit struct {
 }
 
 // SplitDesiredForOverrides maps the live desired object back through what kustomize actually
-// renders. It returns the object the source document should be compared against — a copy of
-// desired with every override-produced value restored to its SOURCE form, so the file keeps
-// its bytes — plus the entry edits for the values an override entry supplies.
+// renders. It returns the object the source document should be compared against — the SOURCE
+// FORM of the live state, so the file keeps every byte the build supplied — plus the entry edits
+// for the values an override entry supplies.
 //
-// It is driven by RenderedOverrides, which carries both halves of the answer straight from
-// the renderer: what each field renders to, and which entry supplied it (read off a dyed
-// counterfactual build). Nothing in here re-implements a kustomize transformer, which is the
-// entire point of this workstream — every shipped bug in this area came from the
-// re-implementation, and all of them are deleted with it.
+// It is two rules, and neither models a transformer:
+//
+//  1. WHERE THE LIVE OBJECT AND THE RENDER AGREE, THE SOURCE KEEPS ITS BYTES (sourceForm). The
+//     build already produces what the cluster runs, so the source is by construction what
+//     produced it. This is what stops the writer mirroring the build's own output back into the
+//     build's input — an injected label, a patched CPU request — and it needs to know nothing
+//     about labels or patches to do it.
+//  2. WHERE THEY DISAGREE, THE USER CHANGED SOMETHING. If an images:/replicas: entry supplies
+//     that field — which the dye says, read off a counterfactual render — the change is routed
+//     to the ENTRY and the source keeps its bytes there too. Otherwise it is written through to
+//     the source document.
 //
 // Anything it cannot route safely — a component removal an entry supplies, a component a
 // sibling entry clears, or two containers demanding different values for one entry field —
@@ -50,6 +56,10 @@ type OverrideEdit struct {
 // field an entry governs it will not, so it becomes a reported refusal rather than a commit
 // that quietly never converges.
 //
+// The one thing it refuses outright is a list the build and the user BOTH changed whose elements
+// cannot be paired by name (*SourceFormRefusedError): there is no honest way to say which of the
+// source's bytes the user meant to keep, and aligning by position is measurably wrong.
+//
 // gitRaw is the source document parsed as JSON-typed maps (sigs.k8s.io/yaml); desired is the
 // sanitized projection the writer would otherwise compare. The returned object is always a
 // copy; desired is never mutated.
@@ -57,14 +67,18 @@ func SplitDesiredForOverrides(
 	gitRaw map[string]interface{},
 	desired *unstructured.Unstructured,
 	rendered *RenderedOverrides,
-) (*unstructured.Unstructured, []OverrideEdit) {
+) (*unstructured.Unstructured, []OverrideEdit, error) {
 	if rendered == nil || desired == nil || gitRaw == nil {
-		return desired, nil
+		return desired, nil, nil
 	}
-	out := desired.DeepCopy()
-	edits := projectImages(gitRaw, out, rendered.Images)
-	edits = append(edits, projectReplicas(gitRaw, out, rendered.Replicas)...)
-	return out, edits
+	source, err := sourceForm(gitRaw, rendered.Object, desired.Object)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := &unstructured.Unstructured{Object: source}
+	edits := projectImages(gitRaw, desired, out, rendered.Images)
+	edits = append(edits, projectReplicas(gitRaw, desired, out, rendered.Replicas)...)
+	return out, edits, nil
 }
 
 // imageRef is an image reference split into its three overridable components.
@@ -236,7 +250,7 @@ type slotPlan struct {
 // document alone can carry, and the re-render adjudicates it.
 func projectImages(
 	gitRaw map[string]interface{},
-	out *unstructured.Unstructured,
+	live, out *unstructured.Unstructured,
 	rendered map[string]RenderedImage,
 ) []OverrideEdit {
 	if len(rendered) == 0 {
@@ -246,18 +260,27 @@ func projectImages(
 	for _, s := range collectImageSlots(gitRaw) {
 		gitImages[s.key] = s.image
 	}
+	// The slot is READ off the live object and WRITTEN on the source form: they are two
+	// different documents now, and the whole point of this step is that the image the user set
+	// does not have to end up in the file the source form is built from.
+	outSlots := map[string]imageSlot{}
+	for _, s := range collectImageSlots(out.Object) {
+		outSlots[s.key] = s
+	}
 
 	var plans []slotPlan
-	for _, slot := range collectImageSlots(out.Object) {
+	for _, slot := range collectImageSlots(live.Object) {
 		src, inGit := gitImages[slot.key]
 		render, isRendered := rendered[slot.key]
-		if !inGit || !isRendered {
+		target, inSource := outSlots[slot.key]
+		if !inGit || !isRendered || !inSource {
 			continue // a new container writes through; the supplier rule converges it later
 		}
 		plan, routable := invertImage(slot, src, render)
 		if !routable {
 			return nil // one unroutable slot abandons routing for the whole object
 		}
+		plan.slot = target
 		plans = append(plans, plan)
 	}
 	edits, ok := collectConsistentEdits(plans)
@@ -421,13 +444,13 @@ func collectConsistentEdits(plans []slotPlan) ([]OverrideEdit, bool) {
 // kustomize's fieldspec is the authority, and we no longer keep a second opinion about it.
 func projectReplicas(
 	gitRaw map[string]interface{},
-	out *unstructured.Unstructured,
+	live, out *unstructured.Unstructured,
 	rendered *RenderedReplicas,
 ) []OverrideEdit {
 	if rendered == nil || rendered.Entry == nil {
 		return nil // no entry supplies the count; a scale flows into the source document
 	}
-	liveCount, liveHas, err := unstructured.NestedInt64(out.Object, "spec", "replicas")
+	liveCount, liveHas, err := unstructured.NestedInt64(live.Object, "spec", "replicas")
 	if err != nil || !liveHas {
 		return nil
 	}

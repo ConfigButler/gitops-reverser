@@ -213,12 +213,13 @@ func (r *EventRouter) drainScopedResync(
 	gitDest types.ResourceReference,
 	key targetWatchKey,
 	kind string,
+	renderFidelityEpoch uint64,
 	resultCh chan git.ResyncResult,
 ) {
 	select {
 	case result := <-resultCh:
 		if result.Err != nil {
-			r.handleScopedResyncError(gitDest, key, kind, result.Err)
+			r.handleScopedResyncError(gitDest, key, kind, renderFidelityEpoch, result.Err)
 			return
 		}
 		r.Log.V(1).Info("per-type "+kind+" applied",
@@ -226,6 +227,7 @@ func (r *EventRouter) drainScopedResync(
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
 		if r.WatchManager != nil {
 			r.WatchManager.MarkTargetGitPathAccepted(gitDest)
+			r.WatchManager.MarkTargetRenderFidelityScopeClean(gitDest, renderFidelityEpoch, key)
 		}
 		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile
@@ -248,10 +250,20 @@ func (r *EventRouter) handleScopedResyncError(
 	gitDest types.ResourceReference,
 	key targetWatchKey,
 	kind string,
+	renderFidelityEpoch uint64,
 	err error,
 ) {
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	if errors.As(err, &refused) {
+		if refused.AllIssuesOfKinds(manifestanalyzer.IssueRenderDoesNotMatchLive) {
+			r.Log.Info("per-type "+kind+" found a render-vs-live divergence",
+				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
+			if r.WatchManager != nil {
+				r.WatchManager.MarkTargetRenderFidelityScopeDiverged(
+					gitDest, renderFidelityEpoch, key, renderFidelityDivergence(refused))
+			}
+			return
+		}
 		r.Log.Info("per-type "+kind+" refused: unsupported GitTarget path content",
 			"gitDest", gitDest.String(), "gvr", key.GVR.String(), "detail", refused.Error())
 		if r.WatchManager != nil {
@@ -263,6 +275,15 @@ func (r *EventRouter) handleScopedResyncError(
 	r.recordBackgroundResyncFailure(gitDest)
 }
 
+func renderFidelityDivergence(refused *manifestanalyzer.AcceptanceRefusedError) manifestanalyzer.RenderDivergence {
+	for _, issue := range refused.Issues {
+		if issue.Kind == manifestanalyzer.IssueRenderDoesNotMatchLive {
+			return manifestanalyzer.RenderDivergence{Field: issue.Field, Token: issue.Token}
+		}
+	}
+	return manifestanalyzer.RenderDivergence{}
+}
+
 // gitPathRefusalReason picks the GitTarget status reason for a refused path. Two refusal
 // shapes are distinct enough to name, because they tell an operator something the umbrella
 // reason does not:
@@ -270,9 +291,10 @@ func (r *EventRouter) handleScopedResyncError(
 //   - purely the .gittargetignore-shadows-a-write case (§4.3) — the unrecoverable footgun —
 //     gets IgnoreShadowsManagedPath;
 //   - purely write-boundary violations (a planned write escaping spec.path, an in-place edit
-//     of a file more than one render root reaches, or a write kustomize will not vouch for
-//     when the folder is re-rendered with it applied) gets WriteBoundaryRefused: the folder
-//     content is fine, the *edit* had nowhere safe to land.
+//     of a file more than one render root reaches, a write kustomize will not vouch for when the
+//     folder is re-rendered with it applied, or an edit the projection could not place in the
+//     source document) gets WriteBoundaryRefused: the folder content is fine, the *edit* had
+//     nowhere safe to land.
 //
 // Any other refusal, and any mix of shapes, keeps the umbrella UnsupportedContent. The strings
 // mirror the controller's GitTargetReason* constants (the watch package cannot import
@@ -286,6 +308,7 @@ func gitPathRefusalReason(refused *manifestanalyzer.AcceptanceRefusedError) stri
 		manifestanalyzer.IssueWriteEscapesScope,
 		manifestanalyzer.IssueWriteFanIn,
 		manifestanalyzer.IssueRenderRefused,
+		manifestanalyzer.IssueUnplaceableEdit,
 	):
 		return "WriteBoundaryRefused"
 	default:

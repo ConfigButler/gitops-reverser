@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: render-fidelity-postbuild
+  labels:
+    app.kubernetes.io/part-of: render-fidelity
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: render-fidelity-postbuild
+  template:
+    metadata:
+      labels:
+        app: render-fidelity-postbuild
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27
+          env:
+            - name: REGION
+              value: ${REGION}

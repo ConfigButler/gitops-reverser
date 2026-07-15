@@ -68,3 +68,56 @@ func TestReportGitPathRefusal_SatisfiesWorkerManagerReporter(t *testing.T) {
 	var reporter git.PathRefusalReporter = (&Manager{Log: logr.Discard()}).ReportGitPathRefusal
 	assert.NotNil(t, reporter)
 }
+
+func TestRenderFidelityStatus_ReducesCurrentEpochScopes(t *testing.T) {
+	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	manager := &Manager{Log: logr.Discard()}
+	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
+	target := types.NewResourceReference("podinfo-test", "team-a")
+	deployment := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
+	other := targetWatchKey{GVR: configmapsGVR, Namespace: "ops"}
+
+	manager.targetWatchesMu.Lock()
+	manager.beginTargetRenderFidelityEpochLocked(target, []targetWatchKey{deployment, other})
+	epoch := manager.targetRenderFidelity[target.Key()].Epoch
+	manager.targetWatchesMu.Unlock()
+
+	manager.MarkTargetRenderFidelityScopeClean(target, epoch, deployment)
+	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State)
+	manager.MarkTargetRenderFidelityScopeDiverged(target, epoch, other,
+		manifestanalyzer.RenderDivergence{Field: "data.region", Token: "${REGION}"})
+	assert.Equal(t, git.RenderFidelityFalse, manager.RenderFidelityForGitTarget(target).State)
+
+	manager.MarkTargetRenderFidelityScopeClean(target, epoch, other)
+	assert.Equal(t, git.RenderFidelityFalse, manager.RenderFidelityForGitTarget(target).State,
+		"a later clean result cannot overwrite the failed scope in the same epoch")
+
+	manager.targetWatchesMu.Lock()
+	manager.beginTargetRenderFidelityEpochLocked(target, []targetWatchKey{deployment, other})
+	freshEpoch := manager.targetRenderFidelity[target.Key()].Epoch
+	manager.targetWatchesMu.Unlock()
+	manager.MarkTargetRenderFidelityScopeClean(target, epoch, deployment)
+	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State,
+		"a stale result from the previous epoch must be ignored")
+	manager.MarkTargetRenderFidelityScopeClean(target, freshEpoch, deployment)
+	manager.MarkTargetRenderFidelityScopeClean(target, freshEpoch, other)
+	assert.Equal(t, git.RenderFidelityTrue, manager.RenderFidelityForGitTarget(target).State)
+}
+
+func TestReportGitPathRefusal_RenderFidelityKeepsGitPathAccepted(t *testing.T) {
+	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	manager := &Manager{Log: logr.Discard()}
+	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
+	target := types.NewResourceReference("podinfo-test", "team-a")
+
+	manager.ReportGitPathRefusal(target, &manifestanalyzer.AcceptanceRefusedError{
+		Issues: []manifestanalyzer.AcceptanceIssue{{
+			Kind: manifestanalyzer.IssueRenderDoesNotMatchLive, Field: "data.region", Token: "${REGION}",
+		}},
+	})
+
+	assert.True(t, manager.GitPathAcceptanceForGitTarget(target).Accepted)
+	fidelity := manager.RenderFidelityForGitTarget(target)
+	assert.Equal(t, git.RenderFidelityFalse, fidelity.State)
+	assert.Equal(t, "RenderDoesNotMatchLive", fidelity.Reason)
+}

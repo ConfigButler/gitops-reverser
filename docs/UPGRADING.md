@@ -7,6 +7,52 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — the build's output stops leaking into the build's input (next minor; bug fix + behavior change)
+
+**If your kustomization declares `labels:`, `commonLabels:`, `commonAnnotations:` or `namespace:`,
+the operator has been writing those injected values into your source manifests.** Measured, on a
+folder we accept today, with nothing changed in the cluster and nothing changed in the render:
+
+```yaml
+# kustomization.yaml (yours)          # deployment.yaml, after one reconcile (ours)
+labels:                               metadata:
+  - pairs:                              labels:
+      env: prod                           env: prod      # <- the OVERLAY's, absorbed into the BASE
+commonAnnotations:                      annotations:
+  owner: platform                         owner: platform
+```
+
+The writer mirrors a live object into the file that produced it — but under kustomize that file is
+not what the cluster runs, and mirroring the live object straight back writes the build's own
+output into the build's input. Every reconcile of an unchanged folder produced a commit, and the
+file was left wrong: delete the kustomization later and the injected values are now yours forever.
+In a base shared by two overlays, the value baked in is **one environment's**.
+
+The fix needs no model of any transformer, and it is now the rule the writer follows:
+
+> **Where the live object and the render agree, the source keeps its bytes. Where they disagree,
+> the user changed something, and that is what we write.**
+
+**Nothing needs migration** — this is a fix, and it makes the operator stop rewriting files it
+should have left alone. If a past reconcile has already baked injected metadata into a manifest,
+the operator will not remove it for you; remove it by hand and it will not come back.
+
+**Two behavior changes go with it.**
+
+*The re-render now runs for any document a kustomization produces*, not only for one an
+`images:`/`replicas:` entry governs. A change to a field the build supplies (relabelling a live
+object whose label a `labels:` block sets, say) cannot be expressed in the repository: the source
+file cannot hold it, because the build would stamp its own value straight back. That write now
+**refuses the flush** — `GitPathAccepted=False` / `WriteBoundaryRefused`, naming the file and the
+object — where before it was committed and silently never converged.
+
+*A live change the projection cannot place is refused* (`unplaceable-edit`). It fires when the
+build and the live object have **both** rewritten one list whose elements carry no unique `name:`
+to pair them by — the source's `args:` rewritten by a patch, for example. There is no honest way
+to say which of the source's bytes you meant to keep, and pairing the lists by position is
+measurably wrong (kustomize *prepends* a container a patch adds), so the operator refuses rather
+than guesses.
+
 ## Unreleased — kustomize decides what it renders, and what it touched (next minor; bug fixes + behavior change)
 
 The write path no longer contains a re-implementation of kustomize's image and replica

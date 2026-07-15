@@ -3,6 +3,9 @@
 package manifestanalyzer
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"math"
 	"sort"
 	"strconv"
@@ -25,6 +28,14 @@ import (
 // behind each override-produced value. A nil supplier means THE SOURCE DOCUMENT supplies
 // that value — so an edit to it belongs in the file, not in an entry.
 type RenderedOverrides struct {
+	// Object is the whole object kustomize renders this document to. It is what the live
+	// object is compared against, and it is the reason the writer can tell a value the BUILD
+	// supplied from a value the USER set without modelling a single transformer: where the
+	// live object and the render agree, the source keeps its bytes (see sourceForm).
+	//
+	// It is JSON-normalised, because a rendered object is not valid unstructured: kustomize
+	// hands numbers back as Go `int`, which makes DeepCopyJSON panic outright.
+	Object map[string]interface{}
 	// Images is keyed by image slot (the container list path plus the container name), so
 	// the live object, the Git document and the render all address the same field.
 	Images map[string]RenderedImage
@@ -90,13 +101,23 @@ func renderedKey(o renderedObject) chainKey {
 	return chainKey{originPath: o.OriginPath, kind: o.Object.GetKind(), name: o.Object.GetName()}
 }
 
-// readDyes reads the nonces out of ONE document's image slots and replica count.
+// readDyes reads the nonces out of ONE document's image slots and replica count, and keeps the
+// rendered object itself.
 //
-// Only the fields being attributed are read. The whole output is never grepped for a nonce:
-// vars and replacements can carry a dyed value into args, env, or ConfigMap data, and a dye
-// found there says nothing about who supplies the image.
+// Only the fields being attributed are read FOR ATTRIBUTION. The whole output is never grepped
+// for a nonce: vars and replacements can carry a dyed value into args, env, or ConfigMap data,
+// and a dye found there says nothing about who supplies the image.
+//
+// The rendered object is kept whole, though, and that is a different question from attribution:
+// the writer does not need to know WHO supplied a field in order to know THAT the build did —
+// it only has to compare the live object against the render (see sourceForm). So a document with
+// no image slot and no replica count still gets a RenderedOverrides: it has no entry to route
+// to, but the build may still have written into it, and the source must be protected from that.
 func readDyes(plain, dyed renderedObject, plan *dyePlan) *RenderedOverrides {
-	out := &RenderedOverrides{Images: map[string]RenderedImage{}}
+	out := &RenderedOverrides{
+		Object: jsonNormalised(plain.Object.Object),
+		Images: map[string]RenderedImage{},
+	}
 
 	dyedSlots := map[string]imageSlot{}
 	for _, s := range collectImageSlots(dyed.Object.Object) {
@@ -127,7 +148,26 @@ func readDyes(plain, dyed renderedObject, plan *dyePlan) *RenderedOverrides {
 		out.Replicas = replicas
 	}
 
-	if len(out.Images) == 0 && out.Replicas == nil {
+	if out.Object == nil {
+		return nil // an object we cannot even normalise is one we must not compare against
+	}
+	return out
+}
+
+// jsonNormalised round-trips a RENDERED object through JSON.
+//
+// It is not tidiness. A rendered object is not a valid unstructured: kustomize hands numbers
+// back as Go `int`, and DeepCopyJSON accepts only the JSON types, so unstructured.DeepCopy
+// PANICS on one outright ("cannot deep copy int"). The API server hands out JSON, so the live
+// object this is compared against has int64 — and the comparison has to be made between two
+// values a JSON encoder agrees on, not between two Go types that happen to hold the same number.
+func jsonNormalised(obj map[string]interface{}) map[string]interface{} {
+	encoded, err := json.Marshal(obj)
+	if err != nil {
+		return nil
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(encoded, &out); err != nil {
 		return nil
 	}
 	return out
@@ -176,10 +216,39 @@ func renderedReplicaCount(obj map[string]interface{}) (int64, bool) {
 // reaching one document can be compared for agreement exactly as their chains are. This is the
 // sharper question the fan-in check was always trying to ask: do two roots attribute this
 // field to DIFFERENT entries?
+//
+// It covers the whole RENDERED OBJECT as well as the entries, and that is load-bearing rather
+// than thorough. Two overlays that render one base document to different objects — one patching
+// an env var, the other not — agree on every images:/replicas: entry and would fingerprint
+// identically. The writer would then compare a live object from one environment against the
+// other environment's render and call the difference a user edit. Asking whether the two roots
+// RENDER THE SAME OBJECT is the question that has to be asked, and the answer marks the document
+// ambiguous: no attribution, and the fan-in precondition refuses any write to it.
 func fingerprintRendered(rd *RenderedOverrides) string {
 	if rd == nil {
 		return ""
 	}
+	var b strings.Builder
+	b.WriteString(hashObject(rd.Object))
+	b.WriteByte('\x03')
+	b.WriteString(fingerprintEntries(rd))
+	return b.String()
+}
+
+// hashObject digests a rendered object. json.Marshal sorts map keys, so it is key-order
+// independent, and the digest keeps the fingerprint small enough to be a map key.
+func hashObject(obj map[string]interface{}) string {
+	encoded, err := json.Marshal(obj)
+	if err != nil {
+		return "\x00unhashable"
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+// fingerprintEntries reduces the per-field ATTRIBUTION — which entry supplied which value — to a
+// comparable string.
+func fingerprintEntries(rd *RenderedOverrides) string {
 	keys := make([]string, 0, len(rd.Images))
 	for k := range rd.Images {
 		keys = append(keys, k)

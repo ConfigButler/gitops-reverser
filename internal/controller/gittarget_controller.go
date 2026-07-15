@@ -41,6 +41,7 @@ const (
 	GitTargetConditionValidated            = "Validated"
 	GitTargetConditionEncryptionConfigured = "EncryptionConfigured"
 	GitTargetConditionGitPathAccepted      = ConditionTypeGitPathAccepted
+	GitTargetConditionRenderMatchesLive    = ConditionTypeRenderMatchesLive
 	// GitTargetConditionStreamsRunning is the source data-plane axis: True when every tracked type's
 	// watch has crossed its replay watermark or resumed from a durable cursor.
 	GitTargetConditionStreamsRunning = ConditionTypeStreamsRunning
@@ -80,7 +81,10 @@ const (
 	// planned write escaping spec.path (L1), or an in-place edit of a source file more than
 	// one kustomize render root reaches (L2, write-fan-in > 1). Nothing was committed. The
 	// string must stay in sync with the watch package's gitPathRefusalReason.
-	GitTargetReasonWriteBoundaryRefused = "WriteBoundaryRefused"
+	GitTargetReasonWriteBoundaryRefused   = "WriteBoundaryRefused"
+	GitTargetReasonRenderMatchesLive      = "RenderMatchesLive"
+	GitTargetReasonRenderDoesNotMatchLive = "RenderDoesNotMatchLive"
+	GitTargetReasonRenderRechecking       = "Rechecking"
 
 	GitTargetReadyReasonValidationFailed        = "ValidationFailed"
 	GitTargetReadyReasonEncryptionNotConfigured = "EncryptionNotConfigured"
@@ -198,6 +202,9 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		Reason:   GitTargetReasonGitPathAccepted,
 		Message:  "GitTarget path accepted",
 	}
+	renderFidelity := watch.RenderFidelityStatus{
+		State: "True", Reason: GitTargetReasonRenderMatchesLive, Message: "Every rendered token matches live",
+	}
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
 		gitDest := types.NewResourceReference(target.Name, target.Namespace).WithUID(string(target.UID))
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(
@@ -211,15 +218,17 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		streams = r.EventRouter.WatchManager.StreamSummaryForGitTarget(gitDest)
 		gitPath = r.EventRouter.WatchManager.GitPathAcceptanceForGitTarget(gitDest)
+		renderFidelity = r.EventRouter.WatchManager.RenderFidelityForGitTarget(gitDest)
 		target.Status.Streams = gitTargetStreamsStatus(streams)
-		streamsSettling = streamsSettling || !streams.StreamsRunning() || !gitPath.Accepted
+		streamsSettling = streamsSettling || !streams.StreamsRunning() || !gitPath.Accepted ||
+			renderFidelity.State == "Unknown"
 	} else {
 		streams = noResolvedStreamsSummary()
 		target.Status.Streams = gitTargetStreamsStatus(streams)
 		streamsSettling = true
 	}
 
-	r.applyDataPlaneConditions(&target, streams, gitPath)
+	r.applyDataPlaneConditions(&target, streams, gitPath, renderFidelity)
 
 	if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 		return ctrl.Result{}, err
@@ -352,6 +361,13 @@ func (r *GitTargetReconciler) setBlockedDataPlane(target *configbutleraiv1alpha3
 		GitTargetStreamsRunningReasonNotReady,
 		"Blocked by control-plane gate; streams not evaluated",
 	)
+	r.setCondition(
+		target,
+		GitTargetConditionRenderMatchesLive,
+		metav1.ConditionUnknown,
+		GitTargetReasonRenderRechecking,
+		"Blocked by control-plane gate; render fidelity not evaluated",
+	)
 }
 
 func (r *GitTargetReconciler) setGitPathAcceptedUnknown(
@@ -380,10 +396,13 @@ func (r *GitTargetReconciler) applyDataPlaneConditions(
 	target *configbutleraiv1alpha3.GitTarget,
 	streams watch.StreamSummary,
 	gitPath watch.GitPathAcceptanceStatus,
+	renderFidelity watch.RenderFidelityStatus,
 ) {
-	d := deriveGitTargetDataPlaneStatus(streams, gitPath)
+	d := deriveGitTargetDataPlaneStatusWithRenderFidelity(streams, gitPath, renderFidelity)
 	r.setCondition(target, GitTargetConditionStreamsRunning, d.StreamsStatus, d.StreamsReason, d.StreamsMessage)
 	r.setCondition(target, GitTargetConditionGitPathAccepted, d.GitPathStatus, d.GitPathReason, d.GitPathMessage)
+	r.setCondition(target, GitTargetConditionRenderMatchesLive, d.RenderFidelityStatus,
+		d.RenderFidelityReason, d.RenderFidelityMessage)
 	r.setCondition(target, GitTargetConditionReady, d.ReadyStatus, d.ReadyReason, d.ReadyMessage)
 	r.setCondition(
 		target,
@@ -396,21 +415,24 @@ func (r *GitTargetReconciler) applyDataPlaneConditions(
 }
 
 type gitTargetDataPlaneDecision struct {
-	StreamsStatus      metav1.ConditionStatus
-	StreamsReason      string
-	StreamsMessage     string
-	GitPathStatus      metav1.ConditionStatus
-	GitPathReason      string
-	GitPathMessage     string
-	ReadyStatus        metav1.ConditionStatus
-	ReadyReason        string
-	ReadyMessage       string
-	ReconcilingStatus  metav1.ConditionStatus
-	ReconcilingReason  string
-	ReconcilingMessage string
-	StalledStatus      metav1.ConditionStatus
-	StalledReason      string
-	StalledMessage     string
+	StreamsStatus         metav1.ConditionStatus
+	StreamsReason         string
+	StreamsMessage        string
+	GitPathStatus         metav1.ConditionStatus
+	GitPathReason         string
+	GitPathMessage        string
+	RenderFidelityStatus  metav1.ConditionStatus
+	RenderFidelityReason  string
+	RenderFidelityMessage string
+	ReadyStatus           metav1.ConditionStatus
+	ReadyReason           string
+	ReadyMessage          string
+	ReconcilingStatus     metav1.ConditionStatus
+	ReconcilingReason     string
+	ReconcilingMessage    string
+	StalledStatus         metav1.ConditionStatus
+	StalledReason         string
+	StalledMessage        string
 }
 
 func deriveGitTargetDataPlaneStatus(
@@ -509,6 +531,66 @@ func deriveGitTargetDataPlaneStatus(
 		StalledReason:      GitTargetReasonOK,
 		StalledMessage:     "GitTarget is not stalled",
 	}
+}
+
+// deriveGitTargetDataPlaneStatusWithRenderFidelity layers the independent render-vs-live gate
+// over the existing source-stream and Git-path decisions. A divergence stalls the target without
+// changing GitPathAccepted; an incomplete epoch is progress, not failure.
+func deriveGitTargetDataPlaneStatusWithRenderFidelity(
+	streams watch.StreamSummary,
+	gitPath watch.GitPathAcceptanceStatus,
+	renderFidelity watch.RenderFidelityStatus,
+) gitTargetDataPlaneDecision {
+	decision := deriveGitTargetDataPlaneStatus(streams, gitPath)
+	decision.RenderFidelityStatus = metav1.ConditionTrue
+	decision.RenderFidelityReason = GitTargetReasonRenderMatchesLive
+	decision.RenderFidelityMessage = "Every rendered token matches live"
+
+	switch renderFidelity.State {
+	case git.RenderFidelityFalse:
+		decision.RenderFidelityStatus = metav1.ConditionFalse
+		decision.RenderFidelityReason = GitTargetReasonRenderDoesNotMatchLive
+		decision.RenderFidelityMessage = renderFidelity.Message
+	case git.RenderFidelityUnknown:
+		decision.RenderFidelityStatus = metav1.ConditionUnknown
+		decision.RenderFidelityReason = GitTargetReasonRenderRechecking
+		decision.RenderFidelityMessage = renderFidelity.Message
+	case git.RenderFidelityTrue:
+	}
+	if renderFidelity.Reason != "" {
+		decision.RenderFidelityReason = renderFidelity.Reason
+	}
+	if decision.RenderFidelityMessage == "" {
+		decision.RenderFidelityMessage = "Waiting for render-vs-live verification"
+	}
+
+	if !gitPath.Accepted || streams.Blocked > 0 || !streams.StreamsRunning() {
+		return decision
+	}
+	switch renderFidelity.State {
+	case git.RenderFidelityFalse:
+		decision.ReadyStatus = metav1.ConditionFalse
+		decision.ReadyReason = decision.RenderFidelityReason
+		decision.ReadyMessage = decision.RenderFidelityMessage
+		decision.ReconcilingStatus = metav1.ConditionFalse
+		decision.ReconcilingReason = decision.RenderFidelityReason
+		decision.ReconcilingMessage = "Reconciliation is stalled"
+		decision.StalledStatus = metav1.ConditionTrue
+		decision.StalledReason = decision.RenderFidelityReason
+		decision.StalledMessage = decision.RenderFidelityMessage
+	case git.RenderFidelityUnknown:
+		decision.ReadyStatus = metav1.ConditionFalse
+		decision.ReadyReason = decision.RenderFidelityReason
+		decision.ReadyMessage = decision.RenderFidelityMessage
+		decision.ReconcilingStatus = metav1.ConditionTrue
+		decision.ReconcilingReason = decision.RenderFidelityReason
+		decision.ReconcilingMessage = decision.RenderFidelityMessage
+		decision.StalledStatus = metav1.ConditionFalse
+		decision.StalledReason = ReasonProgressing
+		decision.StalledMessage = "Reconciliation is making progress"
+	case git.RenderFidelityTrue:
+	}
+	return decision
 }
 
 func (r *GitTargetReconciler) ensureEventStream(

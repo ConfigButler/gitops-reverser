@@ -58,10 +58,11 @@ func supportedKustomizationFields() map[string]struct{} {
 		"Images":    {},
 		"Replicas":  {},
 
-		// Tolerated exactly as before this change, so it stays a refactor. These
-		// inject metadata into rendered objects and therefore leak into mirrored
-		// source files as drift — a known defect, tracked separately, deliberately
-		// not altered here.
+		// These inject metadata into every rendered object. They used to leak into mirrored
+		// source files as drift — the writer mirrored the live object, injected labels and
+		// all, back into the file the overlay renders. That is fixed at the source: the
+		// projection leaves every field the BUILD supplies to the build (sourceForm), so an
+		// injected label is no longer something the file can absorb.
 		"CommonLabels":      {},
 		"Labels":            {},
 		"CommonAnnotations": {},

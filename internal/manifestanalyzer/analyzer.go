@@ -147,6 +147,10 @@ type AcceptanceIssue struct {
 	Path          string    `json:"path"`
 	DocumentIndex int       `json:"documentIndex"`
 	Message       string    `json:"message"`
+	// Field and Token add structured diagnostics for a render-fidelity refusal. They are empty
+	// for structural acceptance issues, which predate the render-vs-live gate.
+	Field string `json:"field,omitempty"`
+	Token string `json:"token,omitempty"`
 }
 
 // Report is the full result of analyzing a tree.

@@ -1,0 +1,5 @@
+condition: "False"
+reason: "RenderDoesNotMatchLive"
+divergences:
+  - field: metadata.labels.env
+    token: ${ENV}

@@ -125,11 +125,12 @@ func TestApplyDataPlaneConditions_SetsKstatusTrio(t *testing.T) {
 
 	r.applyDataPlaneConditions(target, watch.StreamSummary{
 		Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
-	}, watch.GitPathAcceptanceStatus{Accepted: true})
+	}, watch.GitPathAcceptanceStatus{Accepted: true}, watch.RenderFidelityStatus{State: "True"})
 
 	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionReady))
 	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionStreamsRunning))
 	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionGitPathAccepted))
+	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionRenderMatchesLive))
 	require.False(t, isConditionTrue(target.Status.Conditions, GitTargetConditionReconciling))
 	require.False(t, isConditionTrue(target.Status.Conditions, GitTargetConditionStalled))
 }
@@ -144,4 +145,28 @@ func TestSetBlockedDataPlane_MarksUnknownAndPending(t *testing.T) {
 	require.NotNil(t, streamsRunning)
 	assert.Equal(t, metav1.ConditionUnknown, streamsRunning.Status)
 	assert.Equal(t, GitTargetStreamsRunningReasonNotReady, streamsRunning.Reason)
+	renderMatchesLive := conditionByType(target.Status.Conditions, GitTargetConditionRenderMatchesLive)
+	require.NotNil(t, renderMatchesLive)
+	assert.Equal(t, metav1.ConditionUnknown, renderMatchesLive.Status)
+}
+
+func TestDeriveGitTargetDataPlaneStatusWithRenderFidelity(t *testing.T) {
+	streams := watch.StreamSummary{
+		Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
+	}
+	gitPath := watch.GitPathAcceptanceStatus{Accepted: true}
+
+	unknown := deriveGitTargetDataPlaneStatusWithRenderFidelity(
+		streams, gitPath, watch.RenderFidelityStatus{State: "Unknown", Reason: "Rechecking", Message: "waiting"})
+	assert.Equal(t, metav1.ConditionUnknown, unknown.RenderFidelityStatus)
+	assert.Equal(t, metav1.ConditionTrue, unknown.ReconcilingStatus)
+	assert.Equal(t, metav1.ConditionFalse, unknown.StalledStatus)
+
+	diverged := deriveGitTargetDataPlaneStatusWithRenderFidelity(
+		streams, gitPath,
+		watch.RenderFidelityStatus{State: "False", Reason: "RenderDoesNotMatchLive", Message: "${REGION}"})
+	assert.Equal(t, metav1.ConditionFalse, diverged.RenderFidelityStatus)
+	assert.Equal(t, metav1.ConditionFalse, diverged.ReadyStatus)
+	assert.Equal(t, metav1.ConditionTrue, diverged.StalledStatus)
+	assert.Equal(t, GitTargetReasonRenderDoesNotMatchLive, diverged.StalledReason)
 }

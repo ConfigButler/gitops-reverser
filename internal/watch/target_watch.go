@@ -136,7 +136,11 @@ func (m *Manager) replaceGitTargetWatches(
 			)
 		}
 	}
+	fidelityChanged := m.beginTargetRenderFidelityEpochLocked(table.GitDest, keys)
 	m.targetWatchesMu.Unlock()
+	if fidelityChanged {
+		m.enqueueGitPathChange(table.GitDest)
+	}
 
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 	for _, watchKey := range keys {
@@ -196,6 +200,7 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 	}
 	m.dropTargetStreamStateLocked(gitDest)
 	m.dropTargetGitPathAcceptanceLocked(gitDest)
+	m.dropTargetRenderFidelityLocked(gitDest)
 }
 
 func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
@@ -270,8 +275,14 @@ func (m *Manager) runTargetWatch(
 	key targetWatchKey,
 	ops OperationSet,
 ) {
+	// A target-watch declaration defines the fidelity epoch. Its first session must replay even
+	// when a durable cursor exists: a replacement can add a sibling scope, and resuming an unchanged
+	// scope would otherwise leave that scope pending in the new epoch forever. Later reconnects may
+	// resume from their cursors because they stay within the same declaration and epoch.
+	resumeFromCursor := false
 	for ctx.Err() == nil {
-		err := m.targetWatchReplayAndStream(ctx, log, gitDest, key, ops)
+		err := m.targetWatchReplayAndStream(ctx, log, gitDest, key, ops, resumeFromCursor)
+		resumeFromCursor = true
 		if ctx.Err() != nil {
 			return
 		}
@@ -292,9 +303,10 @@ func (m *Manager) targetWatchReplayAndStream(
 	gitDest types.ResourceReference,
 	key targetWatchKey,
 	ops OperationSet,
+	resumeFromCursor bool,
 ) error {
 	cursorExpired := false
-	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, key); ok {
+	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, key); resumeFromCursor && ok {
 		err := m.targetWatchResumeAndStream(ctx, log, gitDest, key, ops, cursor)
 		if !errors.Is(err, errTargetWatchExpired) {
 			return err
@@ -565,7 +577,9 @@ func (m *Manager) enqueueReplayResync(
 	if m.EventRouter == nil {
 		return nil
 	}
-	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(ctx, gitDest, key.GVR, desired, revision, false)
+	epoch := m.RenderFidelityEpochForGitTarget(gitDest)
+	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
+		ctx, gitDest, key.GVR, desired, revision, false)
 	if err != nil {
 		return err
 	}
@@ -576,7 +590,7 @@ func (m *Manager) enqueueReplayResync(
 	// The key (GVR + namespace) is threaded to the drain for diagnostics. A refused
 	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather
 	// than mutating this stream's watch readiness.
-	go m.EventRouter.drainScopedResync(gitDest, key, "reconcile", resultCh)
+	go m.EventRouter.drainScopedResync(gitDest, key, "reconcile", epoch, resultCh)
 	log.V(1).Info("target replay resync enqueued",
 		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "revision", revision, "count", len(desired))
 	return nil

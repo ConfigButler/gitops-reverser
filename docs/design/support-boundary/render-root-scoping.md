@@ -85,21 +85,37 @@ reimplementation** — a list of everything we chose not to re-derive. That is w
 [images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) says it
 plainly: *"No `kustomize build`, no source maps."*
 
-The fence has a cost we are already paying, and it is not the cost we think:
+The fence had a cost we were already paying, and it was not the cost we thought (both examples
+are now closed — see the note below — but they are what the argument rests on):
 
-- **`vars` is not on the list.** A source document containing `$(SOME_VAR)` renders to a
-  substituted value. Mirroring that live object writes the *substituted* value over the
-  `$(VAR)` in the source. That is silent corruption, in a folder we accept **today**.
-- **`labels` / `commonLabels` / `annotations` are explicitly classed as benign.** They
-  inject metadata into every rendered object; mirroring bakes it into the source file as
-  drift. This is the metadata-transformer leak, live today, in supported folders.
+- **`vars` was not on the deny-list.** A source document containing `$(SOME_VAR)` renders to a
+  substituted value, and mirroring that live object wrote the *substituted* value over the
+  `$(VAR)` in the source: silent corruption, in a folder we accepted. #229 moved `vars` off the
+  tolerated set, so it now refuses the folder.
+- **`labels` / `commonLabels` / `annotations` were classed as benign.** They inject metadata
+  into every rendered object, and mirroring baked it into the source file as drift — the
+  metadata-transformer leak, live in supported folders until `sourceForm` (below) closed it.
 
-So the inversion problem is not something overlay support introduces. **We already have it,
-and we currently handle it in three inconsistent ways**: explicitly and verified for
-`images`/`replicas`; by blanket folder refusal for `patches` and friends; and silently,
-incorrectly, for the transformers we called benign.
+So the inversion problem is not something overlay support introduces. **We already had it, and
+handled it in three inconsistent ways**: explicitly and verified for `images`/`replicas`; by
+blanket folder refusal for `patches` and friends; and silently, incorrectly, for the transformers
+we called benign.
 
 A renderer replaces three policies with one.
+
+> **The leak is fixed, and the fix is one rule, not three policies.**
+> [`sourceForm`](../../../internal/manifestanalyzer/source_form.go): *where the live object and
+> the render agree, the source keeps its bytes; where they disagree, the user changed something,
+> and that is what we write.* Agreement means the build already produces exactly what the cluster
+> runs, so the source is — by construction — what produced it, and there is nothing to write. It
+> needs no model of `commonLabels`, of `namespace`, or of a patch, which is precisely why it
+> closes all three at once and is what makes §6 possible at all.
+>
+> The leak was measured before it was fixed, and it was not theoretical: a folder declaring
+> `labels:` + `commonAnnotations:` and nothing else committed the overlay's `env: prod` into the
+> base manifest on the first reconcile of an *unchanged* folder. The corpus no-op invariant now
+> compares the **whole document** rather than only its images, which is how a projection that
+> quietly rewrote every field we had not modelled passed that test for as long as it did.
 
 ---
 

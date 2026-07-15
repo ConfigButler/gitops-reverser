@@ -1,0 +1,5 @@
+condition: "False"
+reason: "RenderDoesNotMatchLive"
+divergences:
+  - field: spec.template.spec.containers[app].env[REGION].value
+    token: ${REGION}

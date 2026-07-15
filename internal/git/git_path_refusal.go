@@ -9,6 +9,13 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
+func (w *BranchWorker) normalWritesAllowed(targetName, targetNamespace string) bool {
+	if w.renderFidelityGate == nil || targetName == "" || targetNamespace == "" {
+		return true
+	}
+	return w.renderFidelityGate.AllowsWrites(itypes.NewResourceReference(targetName, targetNamespace))
+}
+
 // PathRefusalReporter surfaces a refused write plan to the layer that owns GitTarget
 // status. A refusal is not a transient write fault: the acceptance gate or a write-boundary
 // precondition aborted the flush before any byte was written, nothing was committed, and only

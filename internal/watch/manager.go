@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -157,6 +158,10 @@ type Manager struct {
 	// targetGitPathAcceptance is the target-side acceptance surface. It is keyed by
 	// GitTarget and projected into GitTarget status as GitPathAccepted.
 	targetGitPathAcceptance map[string]GitPathAcceptanceStatus
+	// targetRenderFidelity is the projected state of the shared worker gate. It keeps the
+	// target-watch epoch observable without making a last successful scoped resync overwrite a
+	// sibling scope's divergence.
+	targetRenderFidelity map[string]git.RenderFidelityStatus
 
 	// gitPathEventsCh carries a GenericEvent for a GitTarget whenever its GitPath acceptance
 	// state TRANSITIONS, so the GitTarget controller re-projects GitPathAccepted promptly

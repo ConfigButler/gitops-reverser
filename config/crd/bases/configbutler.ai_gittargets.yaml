@@ -37,6 +37,10 @@ spec:
       name: GitPathAccepted
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="RenderMatchesLive")].status
+      name: RenderMatchesLive
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="StreamsRunning")].status
       name: StreamsRunning
       priority: 1

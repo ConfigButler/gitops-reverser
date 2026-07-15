@@ -134,6 +134,22 @@ const (
 	// next render — so absorbing it would leave a resource silently un-mirrored forever,
 	// which is the exact failure this whole path exists to prevent.
 	IssueRenderRefused IssueKind = "kustomize-render-refused"
+	// IssueRenderDoesNotMatchLive marks a rendered ${...} value whose corresponding live field is
+	// absent or different. It is a runtime fidelity refusal, distinct from structural Git-path
+	// acceptance and from a proposed write that fails the post-write render oracle.
+	IssueRenderDoesNotMatchLive IssueKind = "render-does-not-match-live"
+	// IssueUnplaceableEdit marks a live change the projection could not place in the source
+	// document: the BUILD and the USER both rewrote one list whose elements carry no unique
+	// name to pair the source's with the render's by (see SourceFormRefusedError).
+	//
+	// The alternative to refusing is aligning the two lists by position, and that is not a
+	// conservative guess — it is measurably wrong: kustomize's strategic merge PREPENDS a
+	// container a patch adds, so the source's first element is not the render's first element in
+	// exactly the case where it matters. Writing one element's fields into another is the kind of
+	// corruption no re-render can catch, because the patch re-imposes its own values and the
+	// render comes out identical either way. So this refusal is not the oracle being cautious; it
+	// is the one place the oracle cannot see, and it must fail loudly instead.
+	IssueUnplaceableEdit IssueKind = "unplaceable-edit"
 
 	// A refusal made up purely of the write-boundary kinds above surfaces as the GitTarget
 	// reason WriteBoundaryRefused rather than the umbrella UnsupportedContent: the folder holds

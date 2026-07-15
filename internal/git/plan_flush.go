@@ -674,12 +674,17 @@ func (wb *writeBatch) patchExisting(
 		desired = desired.DeepCopy()
 		desired.SetNamespace("")
 	}
-	projected := manifestreport.Project(desired)
-	var overrideEdits []manifestanalyzer.OverrideEdit
-	if dm.Rendered != nil {
-		if gitRaw, parsed := gitDocRawObject(buf.current, idx); parsed {
-			projected, overrideEdits = manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Rendered)
+	projected, overrideEdits, err := projectThroughKustomize(
+		manifestreport.Project(desired), buf.current, idx, dm)
+	if err != nil {
+		var fidelity *renderFidelityRefusedError
+		if errors.As(err, &fidelity) {
+			return upsertNoChange, renderFidelityRefusal(filePath, id, fidelity)
 		}
+		// The projection could not place the edit. Refusing the whole flush is the point: the
+		// alternative is to write the live object through and silently absorb the build's own
+		// output into the file that feeds it.
+		return upsertNoChange, sourceFormRefusal(filePath, id, err)
 	}
 	c := manifestedit.Comparison{
 		Git:     gitDoc,
@@ -715,13 +720,95 @@ func (wb *writeBatch) patchExisting(
 	// what the second one renders to, so by the time the second is processed there is nothing
 	// left to write. Its render still moves, and it moves onto its own live state — that is
 	// the resource converging, not collateral damage, and only its declared intent says so.
-	if dm.Overrides != nil {
+	//
+	// The oracle is armed for ANY document a render root produces, not only one an override
+	// chain governs, and the difference is a hole rather than a refinement. The source form
+	// leaves a field the build supplies to the source file — but where the live object and the
+	// render DISAGREE the user has changed something, and that change is written through. If a
+	// transformer or a patch owns that field it will be overridden right back, and the write
+	// never converges. Only the re-render can see that, and until now it did not run at all
+	// unless an images:/replicas: entry happened to exist somewhere in the chain.
+	if dm.Rendered != nil {
 		wb.putToKustomize = true
 	}
 	if outcome == upsertUpdated || dm.Overrides != nil {
 		wb.intend(intentFor(event.Object, filePath, dm.Overrides != nil))
 	}
 	return outcome, nil
+}
+
+// projectThroughKustomize turns the live projection into the SOURCE FORM of it: the object the
+// file should hold once everything the build supplies is left to the build, plus the entry edits
+// for the values an images:/replicas: entry supplies.
+//
+// A plain document uses its parsed Git object as its render. A kustomize document uses the
+// DocumentModel's local render. In both cases, a rendered ${...} value that differs in live is
+// refused before source-form projection can write the live expansion back into Git.
+func projectThroughKustomize(
+	projected *unstructured.Unstructured,
+	content []byte,
+	idx int,
+	dm *manifestanalyzer.DocumentModel,
+) (*unstructured.Unstructured, []manifestanalyzer.OverrideEdit, error) {
+	gitRaw, parsed := gitDocRawObject(content, idx)
+	if !parsed {
+		return projected, nil, nil
+	}
+	rendered := gitRaw
+	if dm.Rendered != nil {
+		rendered = dm.Rendered.Object
+	}
+	if divergences := manifestanalyzer.RenderTokenDivergences(rendered, projected.Object); len(divergences) > 0 {
+		return nil, nil, &renderFidelityRefusedError{Divergences: divergences}
+	}
+	if dm.Rendered == nil {
+		return projected, nil, nil
+	}
+	return manifestanalyzer.SplitDesiredForOverrides(gitRaw, projected, dm.Rendered)
+}
+
+// renderFidelityRefusedError travels from the projection seam to patchExisting, where the file
+// and object identity are available to make a normal write-boundary refusal.
+type renderFidelityRefusedError struct {
+	Divergences []manifestanalyzer.RenderDivergence
+}
+
+func (e *renderFidelityRefusedError) Error() string {
+	return "rendered token does not match live"
+}
+
+// sourceFormRefusal turns a projection that could not place an edit into the same reported
+// refusal every other write-boundary violation surfaces as: GitPathAccepted=False / Stalled=True,
+// naming the file and the object. It is not an internal error — the folder is fine and the
+// operator is fine; the EDIT had nowhere honest to land, and saying so is the whole contract.
+func sourceFormRefusal(filePath string, id manifestedit.Identity, err error) error {
+	return &manifestanalyzer.AcceptanceRefusedError{
+		Issues: []manifestanalyzer.AcceptanceIssue{{
+			Kind: manifestanalyzer.IssueUnplaceableEdit,
+			Path: filePath,
+			Message: fmt.Sprintf("%s/%s in %s: %v",
+				id.Kind, id.Name, filePath, err),
+		}},
+	}
+}
+
+func renderFidelityRefusal(
+	filePath string,
+	id manifestedit.Identity,
+	fidelity *renderFidelityRefusedError,
+) error {
+	issues := make([]manifestanalyzer.AcceptanceIssue, 0, len(fidelity.Divergences))
+	for _, divergence := range fidelity.Divergences {
+		issues = append(issues, manifestanalyzer.AcceptanceIssue{
+			Kind:  manifestanalyzer.IssueRenderDoesNotMatchLive,
+			Path:  filePath,
+			Field: divergence.Field,
+			Token: divergence.Token,
+			Message: fmt.Sprintf("%s/%s in %s: rendered token %q at %s does not match live",
+				id.Kind, id.Name, filePath, divergence.Token, divergence.Field),
+		})
+	}
+	return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
 }
 
 // renderPrecondition is the oracle, and it is a write-plan precondition like the three

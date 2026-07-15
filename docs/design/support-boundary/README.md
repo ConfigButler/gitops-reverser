@@ -13,9 +13,10 @@
 | Topic | Docs |
 |---|---|
 | **The boundary** | [support-contract.md](support-contract.md) — the single statement · [kustomize-support-boundary.md](kustomize-support-boundary.md) — field taxonomy + layout allowlist · [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md) — **the write boundary; the one home of fan-in = 1** |
+| **Renderers & provenance** | [render-attribution.md](render-attribution.md) — attribution and verification · [render-root-scoping.md](render-root-scoping.md) — render roots and the oracle · [render-fidelity.md](render-fidelity.md) — **our render is not the orchestrator's; refuse where they diverge** · [render-fidelity-scenarios.md](render-fidelity-scenarios.md) — red-first fidelity fixtures + the folder-gate state matrix · [kustomize-token-writeback-explained.md](kustomize-token-writeback-explained.md) — teaching explainer: the `${...}` writeback problem, the tried simplifications, and the managedFields question · [renderer-abstraction-idea.md](renderer-abstraction-idea.md) — exploration: a pluggable renderer seam (`Owns` + blind spots), starting with FluxKustomize · [kpt-and-krm-functions.md](kpt-and-krm-functions.md) — how Kpt packages, setters, and KRM functions may fit safely |
 | **Orchestrators & expansion** | [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) — renderability vs ownership; claims about paths · [expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md) — provenance; ApplicationSet vs ResourceSet; Helm · [`../../facts/expansion-provenance-markers.md`](../../facts/expansion-provenance-markers.md) — **the measured markers** · [argocd-bi-directional.md](argocd-bi-directional.md) — why `selfHeal` is incompatible |
 | **Documents & secrets** | [resource-capability-model.md](resource-capability-model.md) — what may I do to this document · [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md) — SOPS · [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md) |
-| **Edits with no home** | [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) |
+| **Edits with no home** | [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) — tier-1/2/3 accounting · [admission-consent.md](admission-consent.md) — say yes to a blast-radius refusal · [orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md) — revert a refusal / order around origin drift |
 | **Discovery (read-only)** | [repo-discovery-and-onboarding-scan.md](repo-discovery-and-onboarding-scan.md) |
 | **Shipped** | [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) · [finished/higher-level-krm-documents.md](finished/higher-level-krm-documents.md) |
 | **Evidence** | [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/) — the corpus of real-world repo shapes, and the generated behavioural baseline beside it |
@@ -120,6 +121,11 @@ rather than guessing.
 - **Kustomize `images:` / `replicas:` edit-through** — a live change produced by an
   override entry is written back to that entry, never through into the source manifest
   ([finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md)).
+- **Render-fidelity token gate** — parsed `${...}` values are compared with live state before a
+  write. A mismatch refuses the operation and makes the independent
+  `RenderMatchesLive=False` condition close normal writes until a fresh complete watch epoch is clean
+  ([render-fidelity.md](render-fidelity.md)). Remote-Git revision detection and automatic recovery after
+  a Git repair remain unbuilt.
 - **Higher-level KRM documents** (Flux `HelmRelease`, Argo CD `Application`, KRO
   resources) mirror and edit exactly like core resources — the pipeline is kind-agnostic,
   and is pinned by a corpus plus a HelmRelease mirror+edit e2e

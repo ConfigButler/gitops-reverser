@@ -36,6 +36,8 @@ const (
 	ConditionTypeStreamsRunning = "StreamsRunning"
 	// ConditionTypeGitPathAccepted indicates whether the GitTarget path is safe to materialize.
 	ConditionTypeGitPathAccepted = "GitPathAccepted"
+	// ConditionTypeRenderMatchesLive indicates whether every current render scope agrees with live.
+	ConditionTypeRenderMatchesLive = "RenderMatchesLive"
 	// ConditionTypeGitTargetReady indicates whether the referenced GitTarget is ready for writes.
 	ConditionTypeGitTargetReady = "GitTargetReady"
 	// ConditionTypeStreamsReady is a source-compatibility alias for StreamsRunning.
