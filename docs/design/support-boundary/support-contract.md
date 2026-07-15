@@ -78,7 +78,7 @@ templates, and multi-input ResourceSet templates alike. It is specified once, in
 | Construct | Verdict | Why |
 |---|---|---|
 | kustomize `resources`, `namespace`, `images`, `replicas` | **Editable** | invertible; `images`/`replicas` edit-through is shipped |
-| kustomize base + un-fancy overlays | **Designed, not shipped** | render-root scoping; the base stays read-only context |
+| kustomize base + un-fancy overlays | **Editable** | render-root scoping ships: the operator reads `../../base` as read-only context, renders the overlay, and routes edit-through to the overlay's own entry; the base is never written. Onboarding `scan-repo` still reports these as `overlay-fan-out-unsupported` — the discovery-side flip is a follow-up |
 | kustomize base shared by >1 overlay, edited in place | **Refused** | fan-in > 1 |
 | kustomize `patches:` — a strategic-merge document named by `path:` | **Tolerated, not authored** | the folder is accepted and the render is mirrored; the patch is read-only build context. An edit to a field the patch OWNS is refused per object, not per folder |
 | kustomize `patches:` — inline, JSON6902, or a path outside the tree | **Refused** | not a sparse KRM document we can read; refused by name |

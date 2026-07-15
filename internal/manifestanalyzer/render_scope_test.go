@@ -12,21 +12,23 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
-// KustomizationResourceEntries reports the resources+bases graph a kustomization declares,
-// folding the deprecated bases: spelling into resources: exactly as the builder does. It is
-// what the live writer follows to find the out-of-scope bases an overlay reads.
-func TestKustomizationResourceEntries(t *testing.T) {
-	entries, ok := KustomizationResourceEntries([]byte(
+// KustomizationBuildRefs reports the local files a kustomization loads: its resources+bases
+// graph (deprecated bases: folded into resources:) and its patch path: files. It is what the
+// live writer follows to find the out-of-scope files an overlay reads.
+func TestKustomizationBuildRefs(t *testing.T) {
+	resources, patches, ok := KustomizationBuildRefs([]byte(
 		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
-			"resources:\n  - ../../base\n  - service.yaml\n"))
+			"resources:\n  - ../../base\n  - service.yaml\n" +
+			"patches:\n  - path: ../shared/patch.yaml\n  - patch: \"- op: remove\\n  path: /x\"\n"))
 	require.True(t, ok)
-	assert.Equal(t, []string{"../../base", "service.yaml"}, entries)
+	assert.Equal(t, []string{"../../base", "service.yaml"}, resources)
+	assert.Equal(t, []string{"../shared/patch.yaml"}, patches, "only path: patches name a file; inline is omitted")
 
-	bases, ok := KustomizationResourceEntries([]byte("bases:\n  - ../base\n"))
+	bases, _, ok := KustomizationBuildRefs([]byte("bases:\n  - ../base\n"))
 	require.True(t, ok)
 	assert.Equal(t, []string{"../base"}, bases, "deprecated bases: folds into resources:")
 
-	_, ok = KustomizationResourceEntries([]byte("resources: not-a-list\n"))
+	_, _, ok = KustomizationBuildRefs([]byte("resources: not-a-list\n"))
 	assert.False(t, ok, "an unparseable kustomization is not followed")
 }
 
@@ -55,6 +57,24 @@ func TestReachedByMultipleRenderRoots(t *testing.T) {
 		"a base two render roots read is fan-in > 1")
 	assert.False(t, store.ReachedByMultipleRenderRoots("a/kustomization.yaml"),
 		"a render root's own kustomization is not a shared resource file")
+}
+
+// A file listed as BOTH a resource and a patch is a resource first — materialised and
+// mirrored, never silently retained as a build input. Before, the global patch-file set
+// retained any matching file, so a valid resource that was also patched vanished from the
+// store and was never mirrored.
+func TestPatchFiles_DualRoleResourceIsMirrored(t *testing.T) {
+	files := []manifestedit.FileContent{
+		{Path: "kustomization.yaml", Content: []byte(
+			"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
+				"resources:\n  - cm.yaml\npatches:\n  - path: cm.yaml\n")},
+		{Path: "cm.yaml", Content: []byte(
+			"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\ndata:\n  k: v\n")},
+	}
+	store := BuildStoreFromFiles(context.Background(), files, nil, WriterAllowlist())
+	if _, managed := store.FilesByPath["cm.yaml"]; !managed {
+		t.Fatalf("a file that is both a resource and a patch must be managed, not retained")
+	}
 }
 
 // A single render root reaching its own nested base is fan-in = 1: nothing is flagged, so the

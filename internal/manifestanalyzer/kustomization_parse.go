@@ -189,6 +189,32 @@ func parseKustomization(content []byte, path string, tree map[string][]byte) (*k
 	return doc, out
 }
 
+// KustomizationBuildRefs returns the local files a kustomization loads from disk: its
+// resources+bases graph entries and its patch `path:` files, each raw and relative to the
+// kustomization's own directory (deprecated bases: folded into resources exactly as the
+// builder does). ok is false when the bytes are not a parseable kustomization. Remote and
+// inline entries are omitted — they name no local file to scan.
+//
+// The live writer follows these to resolve the exact files an overlay reads from OUTSIDE its
+// spec.path, so render-root scoping pulls in only what kustomize would load — a referenced
+// file or base kustomization — never a whole sibling directory. See
+// internal/git/render_scope.go and docs/design/support-boundary/render-root-scoping.md §4.
+func KustomizationBuildRefs(content []byte) ([]string, []string, bool) {
+	var k kustypes.Kustomization
+	if err := k.Unmarshal(content); err != nil {
+		return nil, nil, false
+	}
+	k.FixKustomization()
+	resources := trimmedEntries(k.Resources)
+	var patches []string
+	for _, p := range k.Patches {
+		if patchPath := strings.TrimSpace(p.Path); patchPath != "" {
+			patches = append(patches, patchPath)
+		}
+	}
+	return resources, patches, true
+}
+
 // patchRefusals names every patch entry the operator will not tolerate. See the feature constants
 // for why each shape is its own answer rather than a generic "unsupported".
 func patchRefusals(entries []kustypes.Patch, dir string, tree map[string][]byte) []string {
@@ -418,16 +444,24 @@ func contentByPath(files []manifestedit.FileContent) map[string][]byte {
 	return out
 }
 
-// patchFilesOf is every file any kustomization in the scan reads as a patch. They are build
-// inputs, and the store retains them outside the managed model rather than treating a sparse
-// patch as a manifest it may mirror over or sweep away.
-func patchFilesOf(kusts map[string]*kustomizationDoc) map[string]struct{} {
+// patchFilesOf is every file any kustomization in the scan reads as a patch AND reads as
+// nothing else. They are build inputs, and the store retains them outside the managed model
+// rather than treating a sparse patch as a manifest it may mirror over or sweep away.
+//
+// A file listed in BOTH resources: and patches: (in the same or another render root) is a
+// resource first: kustomize renders it as an object, so it must be materialised and mirrored,
+// never silently retained. resourceFiles is that guard — the set of files some kustomization
+// references as a resource — so a dual-role path is excluded from retention here.
+func patchFilesOf(kusts map[string]*kustomizationDoc, resourceFiles map[string]struct{}) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, doc := range kusts {
 		if doc.unsupported {
 			continue // a refused kustomization's patches are not build context, they are the refusal
 		}
 		for _, path := range doc.patches {
+			if _, isResource := resourceFiles[path]; isResource {
+				continue // dual-role: a resource that is also patched is still mirrored, not hidden
+			}
 			out[path] = struct{}{}
 		}
 	}

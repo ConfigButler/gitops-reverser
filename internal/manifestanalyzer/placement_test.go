@@ -90,6 +90,48 @@ func TestLocateNew_EmptyRepo_Canonical(t *testing.T) {
 	}
 }
 
+// With render-root scoping the scan is re-rooted at renderBase, so a canonical path resolves
+// outside spec.path. WriteScope rebases it back under the write jail rather than letting it
+// escape (and be skipped) — placement stays relative to spec.path as documented.
+func TestLocateNew_WriteScope_RebasesCanonicalIntoJail(t *testing.T) {
+	store := placementStore(t, fstest.MapFS{})
+	req := newConfigMapRequest("cache", "app")
+	req.WriteScope = "overlays/production"
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	want := "overlays/production/" + newConfigMapRequest("cache", "app").Identifier.ToGitPath()
+	if res.Path != want {
+		t.Fatalf("got %q, want the canonical path rebased under the jail %q", res.Path, want)
+	}
+	if !pathWithin(res.Path, "overlays/production") {
+		t.Fatalf("resolved path %q escaped the write jail", res.Path)
+	}
+}
+
+// A declared placement template is likewise rebased under the jail, so a GitTarget's declared
+// layout lands inside spec.path for an overlay instead of at renderBase's root (where it would
+// have been silently skipped).
+func TestLocateNew_WriteScope_RebasesDeclared(t *testing.T) {
+	store := placementStore(t, fstest.MapFS{})
+	req := newConfigMapRequest("cache", "app")
+	req.WriteScope = "overlays/production"
+	policy := &PlacementPolicy{Default: "{namespace}/configmaps.yaml"}
+
+	res, err := LocateNew(store, policy, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Source != PlacementSourceDeclared {
+		t.Fatalf("expected a declared placement, got %s", res.Source)
+	}
+	if res.Path != "overlays/production/app/configmaps.yaml" {
+		t.Fatalf("got %q, want the declared path rebased under the jail", res.Path)
+	}
+}
+
 func TestLocateNew_BundleCohort_Appends(t *testing.T) {
 	fsys := fstest.MapFS{
 		"all.yaml": {Data: []byte(configMapYAML("a", "app") + "---\n" + configMapYAML("b", "app"))},

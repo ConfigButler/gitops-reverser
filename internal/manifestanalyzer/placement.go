@@ -42,6 +42,14 @@ type PlacementRequest struct {
 	Identifier types.ResourceIdentifier
 	Kind       string
 	Sensitive  bool
+	// WriteScope is the write jail relative to the scanned (render) root, set only when
+	// render-root scoping re-rooted the scan past spec.path into a base an overlay reads.
+	// Placement is documented as relative to spec.path, so a resolved path that would land
+	// outside the jail (a declared/canonical path resolved against the render anchor, or an
+	// inference from a read-only base sibling) is rebased under WriteScope rather than escaping
+	// it. Empty for a self-contained subtree, where the scan root IS spec.path and every
+	// resolved path is already in scope.
+	WriteScope string
 }
 
 // PlacementSource names which mechanism produced a PlacementResult's Path, for
@@ -176,6 +184,17 @@ func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, b
 // finishPlacement fills in the parts of a PlacementResult that depend only on the
 // resolved path (whether it already exists, and whether its directory needs a
 // kustomize resources: entry), and enforces the "sensitive never appends" rule.
+// rebaseIntoWriteScope pulls a resolved placement path back under the write jail when
+// render-root scoping anchored the scan past spec.path, so placement stays relative to
+// spec.path as documented. A no-op for a self-contained subtree (scope == "") and for a path
+// already in scope.
+func rebaseIntoWriteScope(scope, resolvedPath string) string {
+	if scope == "" || pathWithin(resolvedPath, scope) {
+		return resolvedPath
+	}
+	return cleanJoin(scope, resolvedPath)
+}
+
 func finishPlacement(
 	store *ManifestStore,
 	req PlacementRequest,
@@ -184,6 +203,11 @@ func finishPlacement(
 	cohort string,
 	namespaceInherited bool,
 ) (PlacementResult, error) {
+	// Render-root scoping re-roots the scan at the common ancestor of spec.path and the bases
+	// it reads, so a resolved path is anchored there, not at spec.path. Placement is documented
+	// as relative to spec.path, so rebase a path that would land outside the write jail back
+	// under it before it is validated, checked for append, or matched to a kustomization.
+	resolvedPath = rebaseIntoWriteScope(req.WriteScope, resolvedPath)
 	// This is the one gate every resolution path — declared, inferred, the
 	// kustomize-root fallback, and canonical alike — funnels through before a
 	// byte is ever written, so a rendered path can never escape the GitTarget's

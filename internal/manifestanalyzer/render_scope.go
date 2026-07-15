@@ -14,29 +14,6 @@ package manifestanalyzer
 // spec.path: a planned write outside it is refused. Reads may reach shared context;
 // writes never leave it. See docs/design/support-boundary/render-root-scoping.md §4.
 
-// KustomizationResourceEntries parses a kustomization.yaml's bytes and returns its raw
-// resources + bases entries, relative to the kustomization's own directory (deprecated
-// `bases:` folded into `resources:` exactly as the builder does). ok is false when the
-// bytes are not a parseable kustomization.
-//
-// The live writer calls this to resolve a subtree's out-of-scope base references before
-// the store is built: it must know which directories to pull into the scan as read-only
-// render context, and it must know that before it has a store to ask.
-func KustomizationResourceEntries(content []byte) ([]string, bool) {
-	// A nil tree suffices: this only reads the resources/bases graph to find out-of-scope
-	// bases, never the patch files a non-nil tree would resolve.
-	doc, features := parseKustomization(content, "", nil)
-	if doc == nil {
-		return nil, false
-	}
-	for _, f := range features {
-		if f == featureUnparseable {
-			return nil, false
-		}
-	}
-	return append([]string(nil), doc.resources...), true
-}
-
 // IsRemoteBaseEntry reports whether a resources/bases entry points outside the
 // repository (a URL or a git/host-qualified path). The writer skips such an entry when
 // resolving read scope: a remote base is refused before any build (the operator never

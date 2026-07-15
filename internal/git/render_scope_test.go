@@ -305,6 +305,71 @@ func TestScanRenderScope_TransitiveBaseAndForeignRekey(t *testing.T) {
 		"foreign content in the overlay is carried through re-keyed to render coordinates")
 }
 
+// An external resource that is a FILE (not a directory base) — resources: [../../shared/x.yaml]
+// — is pulled into the render scope. Before, only directory targets were kept, so the build
+// could not load the file and the target was refused.
+func TestScanRenderScope_ExternalResourceFile(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	write := func(rel, content string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	write("apps/frontend/overlays/production/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"namespace: production\nresources:\n  - ../../base\n  - ../../shared/extra.yaml\n")
+	write("apps/frontend/base/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n")
+	write("apps/frontend/base/deployment.yaml", overlayBaseDeploymentYAML)
+	write("apps/frontend/shared/extra.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: extra\ndata:\n  k: v\n")
+
+	scoped, err := scanRenderScope(root, "apps/frontend/overlays/production")
+	require.NoError(t, err)
+	assert.Equal(t, "apps/frontend", scoped.renderBase)
+
+	got := map[string]bool{}
+	for _, f := range scoped.scan.YAMLFiles {
+		got[f.Path] = true
+	}
+	assert.True(t, got["shared/extra.yaml"], "an external resource file must be in the render scope")
+	assert.True(t, got["base/deployment.yaml"], "the directory base is still followed")
+}
+
+// Only the files the resources graph actually references are pulled into the render scope —
+// not the whole base directory. An unrelated (even unsupported) sibling the base does not
+// reference is left out, so it cannot wrongly refuse the target.
+func TestScanRenderScope_UnrelatedBaseContentNotPulled(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	write := func(rel, content string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	write("apps/frontend/overlays/production/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"namespace: production\nresources:\n  - ../../base\n")
+	write("apps/frontend/base/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n")
+	write("apps/frontend/base/deployment.yaml", overlayBaseDeploymentYAML)
+	// An unrelated, unsupported kustomization the base does NOT reference. kustomize never loads
+	// it, so the render scope must not either.
+	write("apps/frontend/base/experimental/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"namePrefix: exp-\nresources:\n  - cm.yaml\n")
+	write("apps/frontend/base/experimental/cm.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: exp\ndata:\n  k: v\n")
+
+	scoped, err := scanRenderScope(root, "apps/frontend/overlays/production")
+	require.NoError(t, err)
+	for _, f := range scoped.scan.YAMLFiles {
+		assert.NotContains(t, f.Path, "experimental",
+			"an unreferenced base sibling must not be pulled into the render scope")
+	}
+}
+
 // A remote base is skipped when resolving read scope — it is refused before any build, never a
 // directory to scan — while a local base beside it is still followed.
 func TestScanRenderScope_SkipsRemoteBase(t *testing.T) {
@@ -350,10 +415,8 @@ func TestRenderScopePathHelpers(t *testing.T) {
 	assert.Empty(t, relUnder("apps/x", "apps/x"), "a path relative to itself is empty")
 	assert.Equal(t, "apps/x", relUnder("", "apps/x"), "an empty ancestor (repo root) returns the child")
 
-	assert.ElementsMatch(t, []string{"a"}, minimalDirs([]string{"a", "a/b", "a/b/c"}),
-		"nested directories collapse to the top-level root")
-	assert.ElementsMatch(t, []string{"a", "b"}, minimalDirs([]string{"a", "b"}),
-		"unrelated directories are all kept")
+	assert.ElementsMatch(t, []string{"a/b", "c"}, dirsOf([]string{"a/b/x.yaml", "c/y.yaml"}),
+		"dirsOf returns each file's containing directory")
 }
 
 // The generalised write-fan-in guard: a base reached by more than one render root — with NO

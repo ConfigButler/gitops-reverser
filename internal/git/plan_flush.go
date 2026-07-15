@@ -306,29 +306,19 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		kind = event.Object.GetKind()
 	}
 	sensitive := wb.writer.isSensitiveIdentifier(event.Identifier)
+	// WriteScope tells placement the write jail: when render-root scoping re-rooted the scan
+	// past spec.path, a declared/canonical path is rebased under the jail rather than escaping
+	// it (see finishPlacement). It is "" for a self-contained subtree, where placement already
+	// resolves relative to spec.path.
 	placement, err := manifestanalyzer.LocateNew(wb.store, wb.policy, manifestanalyzer.PlacementRequest{
 		Identifier: event.Identifier,
 		Kind:       kind,
 		Sensitive:  sensitive,
+		WriteScope: wb.writeSubdir,
 	})
 	if err != nil {
 		log.FromContext(ctx).Info("Skipping new resource: placement could not be resolved safely",
 			"resource", event.Identifier.String(), "reason", err.Error())
-		return upsertSkippedUnsafe, nil
-	}
-
-	// Render-root scoping lets the scan reach past spec.path into the bases an overlay
-	// renders, but a NEW document must still land inside the write jail. Placement resolves
-	// against the render anchor, so a canonical fallback with no sibling to follow can point
-	// at renderBase's root — outside spec.path. Writing there is refused later by the
-	// path-scope precondition (aborting the whole flush); skip this one resource instead, so
-	// the rest of the flush proceeds and the next resync retries once a placement policy or a
-	// sibling makes an in-jail home available. An existing base-derived object never reaches
-	// here — it is edited in place through patchExisting.
-	if wb.writeSubdir != "" && !pathWithin(placement.Path, wb.writeSubdir) {
-		log.FromContext(ctx).Info(
-			"Skipping new resource: no placement inside the GitTarget write scope for an overlay subtree",
-			"resource", event.Identifier.String(), "resolvedPath", placement.Path, "writeScope", wb.writeSubdir)
 		return upsertSkippedUnsafe, nil
 	}
 

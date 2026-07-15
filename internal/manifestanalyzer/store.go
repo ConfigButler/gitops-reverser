@@ -413,7 +413,7 @@ func buildStore(
 	hasNamedRecord := store.materializeRecords(ctx, inv.Records, materializeInputs{
 		lookup:        lookup,
 		allowlist:     allowlist,
-		patchFiles:    patchFilesOf(kusts),
+		patchFiles:    patchFilesOf(kusts, reachedResourceFiles(kusts)),
 		nsAssignments: nsAssignments,
 		ovAssignments: ovAssignments,
 	})
