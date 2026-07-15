@@ -250,6 +250,112 @@ func TestScanRenderScope_RefusesBaseEscapingRepoRoot(t *testing.T) {
 	assert.Contains(t, err.Error(), "escapes the repository root")
 }
 
+// A base that itself reads another out-of-scope base is followed transitively, and renderBase
+// climbs to the common ancestor of the overlay and every base in the chain. Foreign content in
+// the overlay is carried through re-keyed, and a non-manifest file in a base is skipped (a base
+// contributes only its manifests to the render).
+func TestScanRenderScope_TransitiveBaseAndForeignRekey(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	write := func(rel, content string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+
+	// overlay -> ../../base -> ../shared: two hops, both out of spec.path.
+	write("apps/frontend/overlays/production/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"namespace: production\nresources:\n  - ../../base\n")
+	write("apps/frontend/overlays/production/notes.txt", "operator note, not a manifest\n")
+	// A .yml (not .yaml) base kustomization, so readKustomization's fallback name is exercised.
+	write("apps/frontend/base/kustomization.yml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"resources:\n  - deployment.yaml\n  - ../shared\n")
+	write("apps/frontend/base/deployment.yaml", overlayBaseDeploymentYAML)
+	write("apps/frontend/base/README.txt", "a base may carry non-manifest files; they are skipped\n")
+	write("apps/frontend/shared/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - configmap.yaml\n")
+	write("apps/frontend/shared/configmap.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\ndata:\n  k: v\n")
+
+	scoped, err := scanRenderScope(root, "apps/frontend/overlays/production")
+	require.NoError(t, err)
+	assert.Equal(t, "apps/frontend", scoped.renderBase, "renderBase climbs to the ancestor of both bases")
+	assert.Equal(t, "overlays/production", scoped.writeSubdir)
+
+	got := map[string]bool{}
+	for _, f := range scoped.scan.YAMLFiles {
+		got[f.Path] = true
+	}
+	for _, want := range []string{
+		"overlays/production/kustomization.yaml",
+		"base/kustomization.yml", "base/deployment.yaml",
+		"shared/kustomization.yaml", "shared/configmap.yaml",
+	} {
+		assert.True(t, got[want], "expected %q in the re-rooted scan", want)
+	}
+	assert.False(t, got["base/README.txt"], "a base's non-manifest file is not scanned as a manifest")
+
+	foreign := map[string]bool{}
+	for _, fe := range scoped.scan.Foreign {
+		foreign[fe.Path] = true
+	}
+	assert.True(t, foreign["overlays/production/notes.txt"],
+		"foreign content in the overlay is carried through re-keyed to render coordinates")
+}
+
+// A remote base is skipped when resolving read scope — it is refused before any build, never a
+// directory to scan — while a local base beside it is still followed.
+func TestScanRenderScope_SkipsRemoteBase(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+	write := func(rel, content string) {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	write("apps/frontend/overlays/production/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"namespace: production\nresources:\n  - ../../base\n"+
+			"  - github.com/example-org/gitops//apps/remote?ref=v1.0.0\n")
+	write("apps/frontend/base/kustomization.yaml",
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n")
+	write("apps/frontend/base/deployment.yaml", overlayBaseDeploymentYAML)
+
+	scoped, err := scanRenderScope(root, "apps/frontend/overlays/production")
+	require.NoError(t, err, "a remote base is skipped, not an error")
+	assert.Equal(t, "apps/frontend", scoped.renderBase)
+	assert.Equal(t, "overlays/production", scoped.writeSubdir)
+}
+
+// The path helpers underpinning the re-root: common-ancestor, relative-under, and the
+// minimal-directory collapse, at their boundary cases.
+func TestRenderScopePathHelpers(t *testing.T) {
+	ancestor := []struct {
+		in   []string
+		want string
+	}{
+		{[]string{"a/b/c", "a/b/d"}, "a/b"},
+		{[]string{"a/b/c"}, "a/b/c"},
+		{[]string{"a/b", "c/d"}, ""},      // no common prefix -> repo root
+		{[]string{"a/b/c", "a/b"}, "a/b"}, // one contains the other
+		{[]string{}, ""},
+	}
+	for _, c := range ancestor {
+		assert.Equalf(t, c.want, commonAncestor(c.in), "commonAncestor(%v)", c.in)
+	}
+
+	assert.Equal(t, "overlays/prod", relUnder("apps", "apps/overlays/prod"))
+	assert.Empty(t, relUnder("apps/x", "apps/x"), "a path relative to itself is empty")
+	assert.Equal(t, "apps/x", relUnder("", "apps/x"), "an empty ancestor (repo root) returns the child")
+
+	assert.ElementsMatch(t, []string{"a"}, minimalDirs([]string{"a", "a/b", "a/b/c"}),
+		"nested directories collapse to the top-level root")
+	assert.ElementsMatch(t, []string{"a", "b"}, minimalDirs([]string{"a", "b"}),
+		"unrelated directories are all kept")
+}
+
 // The generalised write-fan-in guard: a base reached by more than one render root — with NO
 // override entries at stake anywhere — is refused for in-place editing. The former check only
 // fired on override ambiguity, so this shared-base field write-through is exactly the hole
