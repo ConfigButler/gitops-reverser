@@ -1,7 +1,7 @@
 # RenderMatchesLive gate: implementation record
 
 > **completed (2026-07-15)** — the predicate, fixture corpus, scoped epoch gate, worker enforcement,
-> GitTarget condition, CRD print column, and unit/end-to-end validation are shipped. This document is
+> GitTarget condition, CRD print column, and direct Flux end-to-end validation are shipped. This document is
 > retained as the original implementation brief, with corrections where its assumptions differed from
 > the delivered runtime.
 
@@ -12,7 +12,9 @@
 - `RenderMatchesLive` state machine: `Unknown` and `False` close normal write windows; only every
   current scope clean makes it `True`; stale results and later clean results cannot clear a divergence.
 - Separate `RenderDoesNotMatchLive` reporting; it does not change `GitPathAccepted`.
-- Fixture, gate, writer, watch, controller, CRD, lint, unit, and end-to-end coverage.
+- Fixture, gate, writer, watch, controller, CRD, lint, and unit coverage.
+- A direct Flux `postBuild.substitute` end-to-end fixture: it observes the external render context,
+  stalls the GitTarget, and proves that neither the token nor a later live edit is written to Git.
 
 ## Still open
 
@@ -21,8 +23,7 @@
 - That recovery must be coupled to the retained-intent/orchestrator barrier in
   [orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md), not added as an unsafe
   periodic fetch.
-- The dedicated Flux postBuild end-to-end fixture and the general non-token fence (5b) remain future
-  work.
+- The general non-token fence (5b) remains future work.
 
 ---
 
@@ -108,10 +109,15 @@ gate is the right first cut — do not reach for cleverness to avoid the rare ov
   allowed while blocked so it can measure that epoch. A Git revision or arbitrary GitTarget generation
   does **not** yet start an epoch. Beginning an epoch closes the worker gate; an already-open window is
   discarded if it later finalizes while closed. The worker, not a status update, is the enforcement point.
+  This is target-wide: one scope that cannot complete its replay (for example, persistent missing RBAC)
+  leaves every normal write for that GitTarget closed. The watch retry loop can complete that same epoch
+  when access recovers; a fresh epoch is not required for a pending scope, only to clear a divergence.
 
   The implementation adds a dedicated issue kind + `RenderDoesNotMatchLive` reason. The condition
-  reports one deterministic `(field, token)` representative, while the write refusal also names the
-  file. The status derives from the same epoch state; no scoped-resync
+  reports one representative `(field, token)`, while the write refusal also names the file. Scope
+  reduction and the parsed-field walk are deterministic, but the first diverging document within one
+  replay follows the API replay order and is not a stable cross-run representative. The status derives
+  from the same epoch state; no scoped-resync
   success may unconditionally mark a target healthy.
 
 ## Where it hooks (entry points, verified in the code)
@@ -152,11 +158,12 @@ gate is the right first cut — do not reach for cleverness to avoid the rare ov
 - **Corpus:** regenerate `task gitops-layouts-baseline` and confirm **nothing moves** — the corpus has
   no live objects, so nothing can be diverged. In particular the KRO row must **not** move this time
   (it did under the reverted structural check; that is the difference between this fence and that one).
-- **e2e (still open):** add the dedicated Flux `postBuild` fixture from `render-fidelity-scenarios.md §5`, then keep
-  the **CRD-lifecycle spec** green — it is the one the reverted structural check broke. Run
-  `task test-e2e` and **capture the full log** (`task test-e2e 2>&1 | tail -N` reports `tail`'s exit
-  code, not the suite's — a failing suite reads as green; assert on the `Passed | Failed` summary line
-  or redirect to a file). Docker required (`docker info`).
+- **e2e (shipped):** the dedicated Flux `postBuild` fixture in
+  `test/e2e/fixtures/render-fidelity/` proves the live substitution stalls the target and preserves
+  the Git source form. The **CRD-lifecycle spec** remains the regression guard for the reverted
+  structural check. Run `task test-e2e` and **capture the full log** (`task test-e2e 2>&1 | tail -N`
+  reports `tail`'s exit code, not the suite's — a failing suite reads as green; assert on the
+  `Passed | Failed` summary line or redirect to a file). Docker required (`docker info`).
 
 ## Validation and delivery
 

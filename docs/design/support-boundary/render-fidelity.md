@@ -32,11 +32,14 @@ The shipped implementation is deliberately the narrow, safe token form (§5a):
 - The fixture corpus covers literal CRD/KRO/ConfigMap tokens, comments, `$(...)`, missing live
   fields, nested lists, and source-versus-render label transforms. The gate, writer, watch, and
   controller seams have unit coverage.
+- The direct Flux end-to-end fixture applies a real `postBuild.substitute` value, then proves the
+  resulting divergence stalls the GitTarget and preserves the unresolved source token and later live
+  edits.
 
 Not shipped: a remote-Git revision observer that starts a fresh fidelity epoch after someone changes
 the source, the required retained-intent/orchestrator reconciliation barrier for doing that safely,
-the dedicated Flux postBuild end-to-end fixture, and the general non-token fence (§5b). Until the
-revision observer exists, a Git repair alone does **not** automatically reopen a false gate.
+and the general non-token fence (§5b). Until the revision observer exists, a Git repair alone does
+**not** automatically reopen a false gate.
 
 This document names the gap, records a fence that looked obvious and was **wrong** (and why), and
 proposes the fence that is right: **measure our render against the live object, and refuse where
@@ -283,8 +286,10 @@ produce (Flux postBuild, an Argo override, a direct live edit, admission mutatio
 version), so you learn it **up front, from status, before you waste an edit** — rather than one refusal
 at a time.
 
-The current condition carries one deterministic representative `(field, token)` in its message; the
-per-write refusal retains the file path as well. It is a sibling of the planned
+The current condition carries one representative `(field, token)` in its message; the per-write
+refusal retains the file path as well. Scope reduction and the parsed-field walk are deterministic,
+but the first diverging document in one scope follows API replay order, so the representative is not
+a stable cross-run API. It is a sibling of the planned
 `FullyReflected` condition in
 [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md): `FullyReflected` says *everything you edited was expressed*;
 `RenderMatchesLive` says *our render matches what is running, so we can be trusted at all* — the more
@@ -311,7 +316,7 @@ revision or independently detect source changes. Results from another epoch are 
 | Derived condition | Scope evidence for the current epoch | Normal live writes |
 |---|---|---|
 | `Unknown` / `Rechecking` | One or more active scopes are pending. A newly declared target starts here. | Deny |
-| `False` / `RenderDoesNotMatchLive` | At least one completed scope found a rendered token whose live value differs. Expose one deterministic representative. | Deny |
+| `False` / `RenderDoesNotMatchLive` | At least one completed scope found a rendered token whose live value differs. Expose one representative. | Deny |
 | `True` / `RenderMatchesLive` | Every active scope completed cleanly for the same epoch. | Allow |
 
 The transitions are deliberately strict:
@@ -333,7 +338,16 @@ The transitions are deliberately strict:
    cannot clear it.
 5. A resync is allowed while the gate is `Unknown` or `False`, because it is how a new epoch is
    measured. It evaluates before writing and commits nothing when it finds divergence. Recovery requires
-   a **new complete epoch**; it is never inferred from one unrelated clean scope or a status update.
+   a **new complete epoch** only from `False`; it is never inferred from one unrelated clean scope or a
+   status update.
+
+The denial is deliberately target-wide. One active scope that cannot finish replaying — for example,
+because RBAC permanently forbids its GVR — leaves the whole target `Unknown`, so normal writes for its
+otherwise healthy sibling scopes are denied too. The target-watch retry loop retries the same epoch;
+once access recovers, that scope can report clean and reopen the target without a re-declaration. If
+the scope is intentionally unavailable, an operator must repair access or remove/replace the scope.
+This pending-scope case is distinct from `False`: only a fresh complete epoch can clear a recorded
+divergence, and an incoming Git repair does not start one yet.
 
 The missing transition is intentional and visible: the controller does **not** yet observe an incoming
 Git revision, refresh the source, and begin a complete epoch. Therefore a human Git repair cannot by
