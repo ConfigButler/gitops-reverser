@@ -222,14 +222,14 @@ one diverged token refuses one write, never a whole folder (the failure that bro
 ### 6b. A GitTarget status you can read *before* you edit
 
 The same measurement, aggregated to the folder and surfaced as a standing **GitTarget condition** —
-e.g. `RenderFaithful` — answers a more fundamental question than any single write does:
+e.g. `RenderMatchesLive` — answers a more fundamental question than any single write does:
 
 > **Do we even have a chance of tracking this folder?**
 
 Because if our render does not match what the cluster runs, *nothing* we do on the folder is
 trustworthy — not the mirror, not edit-through, not the refusal decisions themselves — since all of
 them reason from a baseline that is wrong. A per-write refusal tells you *this edit* could not land; a
-`RenderFaithful=False` condition tells you *this whole folder* is deployed with context we cannot
+`RenderMatchesLive=False` condition tells you *this whole folder* is deployed with context we cannot
 reproduce (Flux postBuild, Argo `spec.source.kustomize`, a divergent version), so you learn it **up
 front, from status, before you waste an edit** — rather than one refusal at a time.
 
@@ -237,7 +237,7 @@ It carries a bounded sample of the diverging `(file, field)` pairs, in the style
 `FullyReflected` condition in
 [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md), and it is a
 sibling of that condition: `FullyReflected` says *everything you edited was expressed*;
-`RenderFaithful` says *our render matches what is running, so we can be trusted at all* — the more
+`RenderMatchesLive` says *our render matches what is running, so we can be trusted at all* — the more
 fundamental of the two. It is recomputable: the mark-and-sweep resync rebuilds it from scratch,
 steady-state events keep it current.
 
@@ -248,7 +248,7 @@ signal a user wants.
 
 **And the condition blocks.** A `GitTarget` *is* the claim that a folder can be reverse-GitOps'd —
 live changes captured faithfully back to Git. If our render is not equal to what the cluster runs
-that claim is void: we cannot reverse a state we cannot reproduce. So `RenderFaithful=False` gates
+that claim is void: we cannot reverse a state we cannot reproduce. So `RenderMatchesLive=False` gates
 adoption exactly as a structural refusal does — the folder is **not tracked**, `Ready=False`, with a
 reason naming the diverging fields — not a soft warning beside a folder we quietly mishandle. This is
 deliberately the strict choice, and it can be loosened later (mirror for audit, refuse only the
@@ -266,7 +266,7 @@ not touching — catching the blind spot the oracle cannot.
 
 ## 7. Implementation: where the comparison runs
 
-The blocking decision forces the timing: `RenderFaithful` must be computed where the operator holds
+The blocking decision forces the timing: `RenderMatchesLive` must be computed where the operator holds
 both the Git content and the live objects, and **before any write** — because the first mirror of an
 unfaithful folder *is* the corruption. That point already exists, which is why the shape you
 suggested is the right one.
@@ -300,19 +300,19 @@ subtree *and* replays the live objects — the one moment both halves are in han
 written. Add the predicate as a **resync precondition**, beside the write-boundary ones: render the
 roots (already done for the oracle), walk each rendered object against its live counterpart for a
 token divergence, and if any document is unfaithful, **abort the resync's writes and set
-`RenderFaithful=False`**. That same abort is what stops the corruption — an unfaithful resync would
+`RenderMatchesLive=False`**. That same abort is what stops the corruption — an unfaithful resync would
 otherwise mirror `us-east` over `${REGION}` on the spot. *Cost:* one field-walk on top of a render we
 already do — milliseconds.
 
 **(B) A distinct live-aware acceptance layer.** Keep structure-only `Accept` as it is (fast, no
-cluster), and add a *second* gate — `AcceptRenderFaithful(store, liveObjects)` — that runs at the same
+cluster), and add a *second* gate — `AcceptRenderMatchesLive(store, liveObjects)` — that runs at the same
 resync moment but is named and tested as its own function. Behaviourally this is (A); the difference is
 packaging. Worth it only if the seam buys clarity: structure-only acceptance answers *"can we parse
 and route this?"*, the fidelity gate answers *"does our render match reality?"*, and separate pure
 functions keep each independently testable.
 
 **(C) Derive the folder verdict purely from per-write refusals.** Don't compute a folder pass at all —
-refuse each unfaithful write (§6a) and flip `RenderFaithful=False` the first time one is refused for
+refuse each unfaithful write (§6a) and flip `RenderMatchesLive=False` the first time one is refused for
 this reason. Simplest, and it keeps 6a and 6b in one code path — but it makes the folder *"faithful
 until proven otherwise, one write at a time"*, so a user only learns it is untrackable **after**
 attempting an edit. That is exactly the up-front property 6b exists to give, so (C) delivers 6a and
@@ -327,11 +327,11 @@ condition the moment the first such write is refused — 6a keeps 6b current.
 
 ### How it blocks, and how it clears
 
-`RenderFaithful` is a GitTarget condition. False means the folder is **not tracked**: the resync
+`RenderMatchesLive` is a GitTarget condition. False means the folder is **not tracked**: the resync
 commits nothing, the branch worker opens no window for it, and `Ready=False` carries a reason
-(`RenderNotFaithful`) with a bounded sample of the diverging `(file, field, token)`. It sits second to
+(`RenderDoesNotMatchLive`) with a bounded sample of the diverging `(file, field, token)`. It sits second to
 `GitPathAccepted` — structure-only acceptance is the first gate (*parseable, routable?*),
-`RenderFaithful` the second (*does our render match reality?*), and a folder must pass both. It is
+`RenderMatchesLive` the second (*does our render match reality?*), and a folder must pass both. It is
 **recomputable and self-healing**: rebuilt from scratch on every resync, so removing the postBuild
 config — or moving the tokens out of the tracked subtree — flips it back to True on the next reconcile
 with no manual acknowledgement.
