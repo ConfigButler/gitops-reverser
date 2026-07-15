@@ -136,8 +136,14 @@ kustomize version, all of it. So we need not *predict* the orchestrator's contex
 its output*.
 
 > **Our edit-through is sound exactly where our render equals the live object at the fields we did
-> not set out to change. Where it does not, the orchestrator did something we cannot see — refuse,
-> do not guess.**
+> not set out to change. Where it does not, our render did not produce that value — refuse, do not
+> guess *what* did.**
+
+The divergence proves only that our render is not the source of the live value; the *cause* — Flux
+substitution, a direct live edit, an admission mutation, another controller — is neither knowable
+here nor needed. We cannot faithfully reverse a value we did not render, so refusing is the safe
+answer regardless, and `RenderDoesNotMatchLive` is a claim we can actually stand behind (where "must
+have been substituted" would be a guess).
 
 This is the workstream's own method, one level up. The dye measures *which entry supplies a value*;
 the oracle measures *whether a write reproduces the live object*; this measures *whether our render
@@ -173,17 +179,27 @@ flowchart TD
 
 ### 5a. The precise instance — refuse a write over a diverged token
 
-The cheapest correct fence, and the one with **no false positives**: *when a write would replace a
-source value that still carries a `${...}` token with a different live value, refuse it.* This is the
-render-vs-live rule scoped to the one case we can be certain of. kustomize provably never touches a
-`${...}` token, so **our render always keeps it**; if the live object has a *different* value there,
-something out of band changed it — not the user, not our build. It catches the Flux
-postBuild / envsubst class, per field, and it fires on none of the literal-token documents in §4's
-table, because there the live value still *is* the token.
+The cheapest correct fence: *when a write would replace a **rendered** value that still carries a
+`${...}` token with a different live value, refuse it.* kustomize never creates or resolves a `${...}`
+token ([the token fact](../../facts/kustomize-never-emits-dollar-brace.md)), so a token still present
+in our **render output** came through verbatim from an input. If the live object holds a *different*
+value there, our render did not produce that live value — and it does not matter what did (Flux
+postBuild, a direct live edit, an admission mutation, another controller); we cannot reproduce the
+live value from the source, so we refuse.
 
-It applies to **any** mirrored document, not only kustomize-governed ones: for a plain folder our
-"render" is the source itself, so the rule reduces to *"live differs from a source token ⇒ refuse,"*
-which is exactly right for a plain folder Flux deploys with postBuild.
+**Compare the render, not the source.** kustomize does not *preserve* every token-bearing source
+field: a supported `labels` / `commonLabels` transform overwrites `metadata.labels[...]` wholesale
+(`SetEntry`), so a source `env: ${ENV}` under `labels: {env: prod}` renders to `env: prod` — no token,
+and equal to live. Comparing the *source* to live would falsely refuse that faithful folder; comparing
+the *render* to live does not. The render is `dm.Rendered.Object` for a kustomize-governed document
+and the Git document itself for a plain one — and reading the render also catches a token a `patches:`
+block *injects*, which a source scan would miss.
+
+It never refuses a folder whose render already equals live (the §4 table — CRD descriptions, KRO
+templates, nginx ConfigMaps all pass). And where it *does* refuse, refusing is safe even when the
+cause was a benign live edit: **we would rather block a folder a shade too eagerly than mirror a value
+we cannot faithfully reverse.** Blocking a shade too soon is a nuisance; failing to block writes a
+corrupted source file.
 
 ### 5b. The general version — our render must reproduce live for the untouched set
 
@@ -194,10 +210,13 @@ it to reproduce the live object for every field the write does not deliberately 
 It is strictly more powerful and strictly harder, for one honest reason: **a live object legitimately
 drifts from Git for reasons that are not out-of-band render context.** An HPA changed `replicas`; a
 defaulting webhook filled a field; another controller populated something. A naive *"live ≠ render ⇒
-refuse"* would abort a flush because an HPA scaled a Deployment — which is not ours to police.
+refuse"* would abort a flush because an HPA scaled a Deployment — which is not ours to police. And
+*"block a shade too soon"* (§5a) does **not** rescue it here: nearly every live object drifts from
+Git in some field, so a naive 5b would block nearly everything, not a shade too eagerly.
 Distinguishing *context skew* from *ordinary runtime drift* is the open problem of the general fence
-(§8), and it is why **5a is the right thing to build first**: it sidesteps the problem entirely by
-keying on a token kustomize is *guaranteed* never to produce.
+(§8), and it is why **5a is the right thing to build first**: keying on a token kustomize is
+*guaranteed* never to produce means the only over-blocking it can do is on a field a template
+already governs — narrow, and safe.
 
 ---
 
@@ -275,13 +294,17 @@ suggested is the right one.
 
 Everything reduces to a single per-document test:
 
-> **diverges(doc) := our render of the Git document carries a `${...}` token at a field where the
-> live object holds a resolved value.**
+> **diverges(doc) := the RENDER carries a `${...}` token at a field where the live object holds a
+> different value** — where the render is `dm.Rendered.Object` for a kustomize-governed document and
+> the Git document itself for a plain one.
 
-kustomize never emits a `${...}` token, so our render preserves the ones the source carries; if the
-live object has a *different, resolved* value there, something out of band produced it. The per-write
-refusal (§6a) is this predicate on the one document a write touches; the folder condition (§6b) is the
-same predicate ORed across the folder. Build it once and read it twice.
+kustomize never creates or resolves a `${...}` token, so a token in the render output came from an
+input; if the live object holds a *different* value there, our render did not produce it (whatever
+did). Read the **render**, not the source: a transformer can overwrite a token-bearing source field
+(§5a's `labels` case), and a `patches:` block can inject a token the source never had — the render is
+what the cluster actually gets. The per-write refusal (§6a) is this predicate on the one document a
+write touches; the folder condition (§6b) is the same predicate ORed across the folder. Build it once
+and read it twice.
 
 It is the **token** form (5a) we block on, not the general render≠live form (5b), and that is a
 *requirement* of blocking rather than a shortcut: 5b would flag an HPA that scaled a Deployment, and
@@ -327,14 +350,24 @@ condition the moment the first such write is refused — 6a keeps 6b current.
 
 ### How it blocks, and how it clears
 
-`RenderMatchesLive` is a GitTarget condition. False means the folder is **not tracked**: the resync
-commits nothing, the branch worker opens no window for it, and `Ready=False` carries a reason
-(`RenderDoesNotMatchLive`) with a bounded sample of the diverging `(file, field, token)`. It sits second to
-`GitPathAccepted` — structure-only acceptance is the first gate (*parseable, routable?*),
-`RenderMatchesLive` the second (*does our render match reality?*), and a folder must pass both. It is
-**recomputable and self-healing**: rebuilt from scratch on every resync, so removing the postBuild
-config — or moving the tokens out of the tracked subtree — flips it back to True on the next reconcile
-with no manual acknowledgement.
+`RenderMatchesLive` is a GitTarget condition, and blocking it *correctly* has two requirements a
+naive implementation misses — both because reconcile is per type, not per folder:
+
+- **Aggregate across every scoped resync.** Reconcile runs per type (the M12 scoped resyncs), so the
+  folder's verdict is the OR over *all* scopes: a divergence found while reconciling any one type
+  fails the whole folder. A "last-successful-GVR" status would let a clean type mask a diverging one,
+  which is not a folder-level gate.
+- **Stop writing while failed — do not merely report.** `RenderMatchesLive=False` must prevent any
+  further write window from opening for the target; a status-only refusal that keeps mirroring would
+  violate the gate. Concretely: the resync commits nothing, the branch worker opens no window for the
+  target while it is failed, and `Ready=False` carries the reason `RenderDoesNotMatchLive` with a
+  bounded sample of the diverging `(file, field, token)`.
+
+It sits second to `GitPathAccepted` — structure-only acceptance is the first gate (*parseable,
+routable?*), `RenderMatchesLive` the second (*does our render match reality?*), and a folder must pass
+both. It is **recomputable and self-healing**: rebuilt from scratch on every resync, so removing the
+postBuild config — or moving the tokens out of the tracked subtree — flips it back to True on the next
+reconcile with no manual acknowledgement.
 
 ---
 

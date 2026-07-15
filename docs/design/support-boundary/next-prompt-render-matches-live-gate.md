@@ -43,38 +43,53 @@ they are the guardrail the reverted check failed.
 
 The predicate, computed once:
 
-> `diverges(gitDoc, live)` := the Git document carries a `${...}` token at a field where the live
-> object holds a **different** resolved value.
+> `diverges(doc, live)` := the **RENDER** carries a `${...}` token at a field where the live object
+> holds a **different** value — where the render is `dm.Rendered.Object` for a kustomize-governed
+> document and the **Git document itself** for a plain manifest.
 
-kustomize never emits a `${...}` token, so our render preserves the ones the source carries; a
-diverged live value at such a field is out-of-band substitution, not a user edit. Read **parsed
-values, not raw bytes** (so a comment mentioning `${var}` never counts). Token regex (from the
-reverted `substitution.go`, recoverable from git history):
+**It must be render-vs-live, NOT git-vs-live.** kustomize does not *resolve* a `${...}` token, but it
+does not *preserve* every token-bearing source field either: a supported `labels` / `commonLabels`
+transform overwrites `metadata.labels[...]` via `SetEntry`, so a source `env: ${ENV}` under
+`labels: {env: prod}` renders to `env: prod` — equal to live. A git-vs-live check would **falsely
+refuse** that faithful folder; render-vs-live does not, and it also catches a token a `patches:` block
+*injects* that the source never had. (See `docs/facts/kustomize-never-emits-dollar-brace.md` and
+render-fidelity.md §5a.)
+
+Read **parsed values, not raw bytes** (so a `${var}` in a comment or a CRD schema description never
+counts). Token regex (from the reverted `substitution.go`, recoverable from git history):
 `` `\$\{[A-Za-z0-9_.][^}]*\}` `` — matches `${cluster_domain}` and `${schema.spec.replicas}`; not
-`$(POD_IP)` (native Kubernetes env expansion) and not `${}`.
+`$(POD_IP)` (parens are native / kustomize var syntax) and not `${}`.
 
-- **6a — per-write refusal.** In the write path, refuse a write that would overwrite a token with a
-  diverged live value, aborting the flush. Mirror the existing `sourceFormRefusal` /
+**Do not over-claim the cause, and bias toward blocking.** A rendered token + a diverged live value
+proves only that our render did not produce that value — it could be Flux postBuild, a direct live
+edit, an admission mutation, or another controller. Refusal is safe regardless, which is why the
+reason is `RenderDoesNotMatchLive` (a fact) not "substituted" (a guess). And the guiding bias:
+**blocking a shade too soon is fine; failing to block is not.** A simple, slightly-over-eager token
+gate is the right first cut — do not reach for cleverness to avoid the rare over-block.
+
+- **6a — per-write refusal.** In the write path, refuse a write that would overwrite a rendered token
+  with a diverged live value, aborting the flush. Mirror the existing `sourceFormRefusal` /
   `SourceFormRefusedError` pattern.
-- **6b — the blocking condition.** The same predicate at the reconcile-on-acceptance. You get this
-  almost for free: the resync runs through the **same** write path, so the per-write refusal already
-  fires during the initial resync and blocks the folder. Add a dedicated issue kind and a clear
-  reason (`RenderDoesNotMatchLive`) so the GitTarget status says exactly why. Whether to also add a
-  distinct `RenderMatchesLive` status condition beside `GitPathAccepted`, or to reuse
-  `GitPathAccepted` with the new reason, is a call to make — the reason approach is smaller and
-  already delivers blocking + a legible message. Decide it against how the other write-boundary
-  refusals surface.
-
-The predicate is git-vs-desired, so it covers **plain and kustomize** documents alike and does not
-need `dm.Rendered`.
+- **6b — the blocking folder condition.** The same predicate ORed across the folder — and it has **two
+  integration requirements the per-write refusal alone does NOT give you** (do not assume it comes for
+  free):
+  - **Aggregate across every scoped resync.** Reconcile runs per type (the M12 scoped resyncs); the
+    folder's verdict is the OR over *all* scopes. A divergence in any one type must fail the whole
+    folder — a "last-successful-GVR" status would let a clean type mask a diverging one.
+  - **Stop writing while failed.** `RenderMatchesLive=False` must prevent any further write window from
+    opening for the target; a status-only refusal that keeps mirroring violates the gate.
+  Add a dedicated issue kind + reason (`RenderDoesNotMatchLive`). Whether to add a distinct
+  `RenderMatchesLive` status condition beside `GitPathAccepted`, or reuse `GitPathAccepted` with the
+  reason, is a call to make against how the other write-boundary refusals surface.
 
 ## Where it hooks (entry points, verified in the code)
 
 - **Per-write:** [`internal/git/plan_flush.go`](../../../internal/git/plan_flush.go) `patchExisting`
-  already holds the Git doc (`gitDocRawObject(buf.current, idx)`) and the desired projection. Run
-  `diverges()` there; on divergence return the refusal (see `sourceFormRefusal` for the shape). Note
-  it fires on `patchExisting` — an *existing* Git token being overwritten — which is exactly the
-  corruption (a new doc goes through `createNew` with no token to protect).
+  holds the Git doc (`gitDocRawObject(buf.current, idx)`), the desired/live projection, and `dm`. Use
+  **`dm.Rendered.Object` as the render** for a kustomize doc and the Git doc for a plain one; run
+  `diverges()` against the live projection; on divergence return the refusal (see `sourceFormRefusal`
+  for the shape). It fires on `patchExisting` — an existing *rendered* token being overwritten — which
+  is the corruption (a new doc goes through `createNew`, with no token yet to protect).
 - **Resync (this is what makes it blocking):**
   [`internal/git/resync_flush.go`](../../../internal/git/resync_flush.go)
   `applyResyncToWorktree` → `applyResyncPlan` → `applyUpsert` → `patchExisting`. The refusal fires
@@ -91,7 +106,10 @@ need `dm.Rendered`.
   with `live == git` → **not** diverged; KRO `${schema.spec.*}` `live == git` → **not** diverged;
   nginx ConfigMap `${host}` `live == git` → **not** diverged; Deployment env `${REGION}` with
   `live = us-east` → **diverged**; a token only in a comment → **not** diverged; native `$(VAR)` →
-  **not** a token.
+  **not** a token. **The render-not-source guardrail (do not skip it):** a source
+  `metadata.labels.env: ${ENV}` under a kustomization `labels: {env: prod}` (so the render is
+  `env: prod`) with `live = prod` → **not** diverged — a git-vs-live implementation fails this, a
+  render-vs-live one passes.
 - **Write-path (`internal/git`)**: an out-of-band-substituted doc refuses the flush
   (`WriteBoundaryRefused` / `RenderDoesNotMatchLive`); a folder whose tokens match live (`live == git`)
   mirrors with no refusal.
