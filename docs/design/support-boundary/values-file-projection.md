@@ -1,7 +1,8 @@
 # The values file: refused for where it sits, not for what it is
 
-> **design** — direction-setting; ships no code. Nothing it describes is supported today.
-> Captured: 2026-07-14
+> **design + implementation record** — Move 1 (a referenced values file is read-only context)
+> has shipped; Move 2 (projecting the file as an editable object) is still design.
+> Captured: 2026-07-14. Move 1 shipped: 2026-07-16.
 > Related:
 > [README.md](README.md),
 > [support-contract.md](support-contract.md),
@@ -58,6 +59,16 @@ telling us what it is, in a field we already parse.
 ## 2. Two moves, in order
 
 ### Move 1 (cheap, immediate): a referenced values file is context, not junk
+
+> **Shipped (2026-07-16).** A values file named by an `Application`'s `helm.valueFiles` is
+> read-only context in the acceptance gate: understood, never written, and never a refusal for
+> the folder it sits in. The claim is read in
+> [`internal/manifestanalyzer/valuefiles.go`](../../../internal/manifestanalyzer/valuefiles.go)
+> and suppresses the `non-krm-yaml` refusal in `acceptance.go`; `platform/cert-manager` flips
+> refused → accepted in [support-today.md](../../../test/fixtures/gitops-layouts/support-today.md).
+> Both path-valued spellings ship: an Argo CD `Application`'s `helm.valueFiles` and a Flux
+> `HelmRelease`'s `spec.chart.spec.valuesFiles`, resolved through one candidate set (repo-root
+> `$values/…`, whole-repo, and co-located subtree).
 
 A values file named by an `Application`'s **`helm.valueFiles`**, or by a `HelmRelease`'s
 **`spec.chart.spec.valuesFiles`**, is **Read-only context** — a file we understand, never
@@ -171,11 +182,12 @@ so the detector must not be fooled by either half alone. This residual is alread
 | Change a value via `Application` `parameters` / `valuesObject` | **Editable** today |
 | Change a value held in a hand-written `ConfigMap` (`valuesFrom`) | **Editable** today |
 | Change a value in a values file **referenced by exactly one release** | **Planned: Editable** — §2, Move 2 |
-| Keep a values file in a folder without killing the folder | **Planned: Read-only context** — §2, Move 1 |
+| Keep a values file in a folder without killing the folder | **Read-only context** — §2, Move 1 (shipped) |
 | Change a value in a **shared** values file (`common.yaml`) | **Refused** — fan-in > 1, and correctly so |
 | Change a value that a hidden `.argocd-source.yaml` overrides | **Refused** — say why, loudly |
 | Edit the chart's `templates/` | **Refused**, permanently |
 | Edit a chart-rendered object | **Not mirrored** — expansion layer |
 
-The first four rows already work. What the product is missing is rows five and six, and row
-six is a week's work in the acceptance gate.
+The first four rows already work, and row six (Move 1) now ships — a referenced values file is
+read-only context, so the folder is no longer refused for holding it. What the product is still
+missing is row five: projecting the file as an editable object (§2, Move 2).

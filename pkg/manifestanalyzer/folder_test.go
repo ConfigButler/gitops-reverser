@@ -69,6 +69,80 @@ func TestScanFolder_RefusalIsNotAnError(t *testing.T) {
 		"Helm inflation is the permanent support boundary and must be named as such")
 }
 
+// A folder holding a values file that an Argo CD Application names through helm.valueFiles
+// is adopted, not refused: the values file is read-only context. This is the published
+// contract for the live operator adopting a GitTarget subtree with a co-located release.
+func TestScanFolder_ReferencedValuesFileAccepted(t *testing.T) {
+	t.Parallel()
+
+	const application = `apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+spec:
+  sources:
+    - repoURL: https://charts.jetstack.io
+      chart: cert-manager
+      helm:
+        valueFiles:
+          - $values/platform/cert-manager/values.yaml
+    - repoURL: https://github.com/example-org/gitops.git
+      ref: values
+`
+	const valuesFile = "# helm values -- not a Kubernetes object\nreplicaCount: 2\ninstallCRDs: true\n"
+	const clusterIssuer = "apiVersion: cert-manager.io/v1\nkind: ClusterIssuer\nmetadata:\n  name: le\n"
+
+	fsys := fstest.MapFS{
+		"application.yaml":   {Data: []byte(application)},
+		"values.yaml":        {Data: []byte(valuesFile)},
+		"clusterissuer.yaml": {Data: []byte(clusterIssuer)},
+	}
+	report := manifestanalyzer.ScanFolderFS(context.Background(), fsys)
+
+	require.True(t, report.Accepted, "a referenced values file must not refuse its folder: %+v", report.Issues)
+	for _, issue := range report.Issues {
+		require.NotEqual(t, manifestanalyzer.IssueNonKRM, issue.Kind,
+			"the values file the Application names is context, not a non-krm-yaml refusal")
+	}
+}
+
+// The Flux counterpart to TestScanFolder_ReferencedValuesFileAccepted: a folder holding a
+// values file a HelmRelease names through spec.chart.spec.valuesFiles is adopted, not refused.
+func TestScanFolder_FluxHelmReleaseValuesFileAccepted(t *testing.T) {
+	t.Parallel()
+
+	const helmRelease = `apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: ingress-nginx
+  namespace: flux-system
+spec:
+  chart:
+    spec:
+      chart: ingress-nginx
+      sourceRef:
+        kind: HelmRepository
+        name: ingress-nginx
+      valuesFiles:
+        - values.yaml
+`
+	const valuesFile = "# helm values -- not a Kubernetes object\ncontroller:\n  replicaCount: 2\n"
+
+	fsys := fstest.MapFS{
+		"helmrelease.yaml": {Data: []byte(helmRelease)},
+		"values.yaml":      {Data: []byte(valuesFile)},
+	}
+	report := manifestanalyzer.ScanFolderFS(context.Background(), fsys)
+
+	require.True(t, report.Accepted, "a HelmRelease-referenced values file must not refuse its folder: %+v",
+		report.Issues)
+	for _, issue := range report.Issues {
+		require.NotEqual(t, manifestanalyzer.IssueNonKRM, issue.Kind,
+			"the values file the HelmRelease names is context, not a non-krm-yaml refusal")
+	}
+}
+
 func TestScanFolder_MissingDirIsAnError(t *testing.T) {
 	t.Parallel()
 	_, err := manifestanalyzer.ScanFolder(context.Background(), filepath.Join(t.TempDir(), "absent"))

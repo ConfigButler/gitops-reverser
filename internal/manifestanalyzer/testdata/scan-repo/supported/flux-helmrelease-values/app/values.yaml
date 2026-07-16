@@ -1,0 +1,7 @@
+# Helm values for the ingress-nginx chart -- NOT a Kubernetes object.
+# Named by the co-located HelmRelease through spec.chart.spec.valuesFiles, so it is
+# read-only context: understood, never written, and never a refusal for its folder.
+controller:
+  replicaCount: 2
+  service:
+    type: LoadBalancer

@@ -630,12 +630,13 @@ func reachedResourceFilesFrom(rootDir string, kusts map[string]*kustomizationDoc
 }
 
 // nonKRMUnder counts non-KRM YAML documents and foreign entries under dir. Retained
-// build directives, operator artifacts, and accepted benign passengers are excluded
-// (they are neither KRM nor noise).
+// build directives, operator artifacts, accepted benign passengers, and values files a
+// release names as read-only context are excluded (they are neither KRM nor noise).
 func nonKRMUnder(store *ManifestStore, dir string) int {
 	n := 0
 	for _, d := range store.Diagnostics {
-		if d.Reason == manifestedit.ReasonNotKRM && pathWithin(d.Path, dir) {
+		if d.Reason == manifestedit.ReasonNotKRM && pathWithin(d.Path, dir) &&
+			!store.isReferencedValuesFile(d.Path) {
 			n++
 		}
 	}

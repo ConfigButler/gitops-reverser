@@ -351,6 +351,13 @@ func recordlessRefusal(store *ManifestStore, d manifestedit.Diagnostic) (Accepta
 		if managed {
 			return impureIssue(d, "a non-KRM document"), true
 		}
+		if store.isReferencedValuesFile(d.Path) {
+			// A values file an Argo CD Application names through helm.valueFiles is read-only
+			// context, not a stray: the repository points at it in a field we already parse, so
+			// it is understood (never written) and must not refuse the folder it sits in. See
+			// docs/design/support-boundary/values-file-projection.md §2 (Move 1).
+			return AcceptanceIssue{}, false
+		}
 		return AcceptanceIssue{
 			Kind: IssueNonKRM, Path: d.Path, DocumentIndex: d.DocumentIndex,
 			Message: "YAML is not a Kubernetes manifest",

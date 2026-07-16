@@ -1,0 +1,7 @@
+# Helm values for the cert-manager chart -- NOT a Kubernetes object.
+# Named by the co-located Application through helm.valueFiles ($values ref), so it is
+# read-only context: understood, never written, and never a refusal for its folder.
+installCRDs: true
+replicaCount: 2
+prometheus:
+  enabled: true

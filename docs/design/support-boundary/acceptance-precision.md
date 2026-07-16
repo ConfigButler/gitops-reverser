@@ -87,8 +87,11 @@ read. It fits the closed claim vocabulary in
 path, read from a document we already parse, needing no orchestrator code. Reading it turns
 `ci-metadata.yaml` from a fatal stray into a declared non-target.
 
-**1c. A referenced values file is context.** Handled in
-[values-file-projection.md](values-file-projection.md) §2.
+**1c. A referenced values file is context.** **Shipped (2026-07-16, Argo CD `Application`s and
+Flux `HelmRelease`s).** A `values.yaml` a release names through `helm.valueFiles` or
+`spec.chart.spec.valuesFiles` is now read-only context, so `platform/cert-manager` and its
+`ClusterIssuer` are accepted instead of refused as `non-krm-yaml`. Designed and recorded in
+[values-file-projection.md](values-file-projection.md) §2 (Move 1).
 
 **1d. Consider partial acceptance.** The three fixes above shrink the blast radius but do
 not remove it — the next unknown file still stops the target. Whether an unmanaged file
@@ -187,6 +190,7 @@ Ranked by value per hour, and all five are independent:
    one fixture, and every real repo has a `.gitignore`.
 2. **Per-feature messages** (§4) — the data is already computed; pass it through.
 3. **Referenced values files as context** (§1c) — rescues a folder that holds real config.
+   **Shipped** for Argo CD `Application`s and Flux `HelmRelease`s.
 4. **`Generated{path}`** (§3) — stops us writing into files a script will overwrite.
 5. **The transformer leak** (§2) — the live correctness bug, but last, because it needs the
    subtract-or-refuse decision made first and neither answer is one line.
