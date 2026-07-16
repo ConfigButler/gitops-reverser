@@ -6,6 +6,7 @@ require (
 	filippo.io/age v1.3.1
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/fluxcd/pkg/apis/meta v1.31.0
 	github.com/go-git/go-billy/v5 v5.9.0
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/go-logr/logr v1.4.3
