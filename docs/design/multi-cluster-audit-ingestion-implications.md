@@ -1,6 +1,15 @@
 # Multi-Cluster Audit Ingestion: Implications and Configuration Mapping
 
 > **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+>
+> **Partly superseded.** §5's dedicated `SourceCluster` CRD proposal is replaced by
+> [`config-plane-split.md`](config-plane-split.md), which puts remote-cluster
+> connectivity **inline on `GitTarget`** (Flux's idiom) rather than in a separate
+> onboarding CRD. That proposal's load-bearing rationale — fusing per-cluster
+> **audit identity** with kube-API connectivity — no longer holds: the
+> `/audit-webhook/<cluster-id>` path was removed, so multi-cluster is now purely a
+> kube-API story. The rest of this document (per-cluster **audit ingestion**,
+> routing, fairness, quotas) remains an open, separate workstream.
 
 ## 1. Purpose
 

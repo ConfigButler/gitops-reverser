@@ -66,14 +66,15 @@ says what we support and refuse** — and then its
 kustomize field taxonomy, the write boundary, the orchestrator/expansion line, and
 how secrets are handled.
 
-Nine other open items:
+Ten other open items:
 
 | Doc | Open question |
 |---|---|
+| [`config-plane-split.md`](design/config-plane-split.md) | remote-cluster mirroring via an inline `GitTarget.spec.sourceCluster` — **redesign of #220's #1, awaiting build** |
 | [`watch-and-catalog-architecture.md`](design/watch-and-catalog-architecture.md) | the target three-layer watch model — **needs a human call before building** |
 | [`metrics-observability-plan.md`](design/metrics-observability-plan.md) | the watch-stage metrics do not exist yet |
 | [`reconcile-triggering.md`](design/reconcile-triggering.md) | which controllers still fail to wake up |
-| [`multi-cluster-audit-ingestion-implications.md`](design/multi-cluster-audit-ingestion-implications.md) | there is still no CRD for remote cluster connectivity |
+| [`multi-cluster-audit-ingestion-implications.md`](design/multi-cluster-audit-ingestion-implications.md) | §5's `SourceCluster` CRD is **superseded** by [`config-plane-split.md`](design/config-plane-split.md); the rest (per-cluster audit ingestion) is still open |
 | [`release-image-reuse-plan.md`](design/release-image-reuse-plan.md) | PRs 2–5 unstarted |
 | [`e2e-coverage-gaps-and-improvements-plan.md`](design/e2e-coverage-gaps-and-improvements-plan.md) | tests A/B/C still proposals |
 | [`e2e-finish-plan.md`](design/e2e-finish-plan.md) | remaining e2e harness work |
