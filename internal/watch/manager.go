@@ -9,6 +9,7 @@ package watch
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -27,7 +28,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
-	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // The API-resource catalog reads the two resources that describe the API surface itself, so
@@ -102,10 +102,36 @@ type Manager struct {
 	// against what git already holds. See routeLiveTargetWatchEvent.
 	liveContentDedup sync.Map
 
-	// resourceCatalog is the shared discovery-backed API surface used by rule planning.
+	// SourceClusters resolves a GitTarget's source-cluster id into a rest.Config by reading
+	// the kubeconfig Secret it names from the config plane. Nil is the single-cluster
+	// install: every GitTarget mirrors the cluster the operator runs in.
+	SourceClusters SourceClusterResolver
+
+	// clusters holds one clusterContext per distinct source cluster — its API catalog, type
+	// registry, and clients. LocalClusterID is the cluster the operator runs in, and the only
+	// one a single-cluster install ever creates. See cluster_context.go.
+	clustersMu sync.Mutex
+	clusters   map[string]*clusterContext
+	// clusterOrder is the published, ordered snapshot of clusters (local first). The git
+	// writer's cluster-scoped GVK lookup reads it once per document it scans out of a Git
+	// folder, on the branch-worker goroutine, so it must not contend on clustersMu with the
+	// reconcile loop.
+	clusterOrder atomic.Pointer[[]*clusterContext]
+	// gitTargetClusters maps a GitTarget key to the source-cluster id it mirrors from,
+	// captured on Declare (the gitTargetUIDs pattern). Because spec.kubeConfig is immutable
+	// this is learned once and never changes — no per-rule propagation, no disagreement
+	// window. Guarded by gitTargetClustersMu.
+	gitTargetClustersMu sync.Mutex
+	gitTargetClusters   map[string]string
+
+	// resourceCatalogMu guards every clusterContext's catalog/registry edge-triggered
+	// logging state (catalogDegradedLogged, typeRefusalsLogged).
 	resourceCatalogMu sync.Mutex
-	resourceCatalog   *APIResourceCatalog
-	// discoveryClient overrides REST-config discovery construction in tests.
+	// resourceCatalog seeds the LOCAL cluster's API-resource catalog. Tests set it on a
+	// zero-value Manager to drive resolution without an API server; production leaves it nil
+	// and the local cluster context builds its own. Aliased to localCluster().catalog.
+	resourceCatalog *APIResourceCatalog
+	// discoveryClient overrides REST-config discovery construction for the LOCAL cluster in tests.
 	discoveryClient func() (apiResourceDiscovery, error)
 	// catalogRefreshCh coalesces API-surface trigger watch events into manager reconciliation.
 	catalogRefreshCh chan struct{}
@@ -130,14 +156,6 @@ type Manager struct {
 	// triggersForbiddenLogged records which trigger resources RBAC has already denied, so a
 	// permanently unauthorized resource produces one line per denial, not one per retry.
 	triggersForbiddenLogged map[schema.GroupVersionResource]struct{}
-	// catalogReadyOnce guards the one-time "catalog ready" log line, matching the
-	// firstMessage/firstGroupReady sync.Once pattern used by the audit consumer.
-	catalogReadyOnce sync.Once
-	// catalogDegradedLogged is the degraded group/version set last reflected in
-	// the log; logCatalogTransitions diffs against it to log appear/clear
-	// transitions (degradation can recur, so this is not a one-shot). Guarded by
-	// resourceCatalogMu.
-	catalogDegradedLogged map[schema.GroupVersion]struct{}
 
 	// watchedTypes is the resident, per-GitTarget watched-type table set: the single
 	// source of "what each GitTarget watches", a projection of the type registry's
@@ -178,18 +196,6 @@ type Manager struct {
 	// under the same name never inherits its predecessor's cursor.
 	gitTargetUIDsMu sync.Mutex
 	gitTargetUIDs   map[string]string
-
-	// typeRegistry is the followability decision surface (see
-	// docs/spec/type-followability.md): one typeset.TypeRecord
-	// per served type, refreshed from the catalog scan on every catalog refresh. It
-	// is the inventory/status surface ("is this type followable, and if not, why?");
-	// typeRegistryInit guards its lazy construction for zero-value Managers in tests.
-	typeRegistryInit sync.Once
-	typeRegistry     *typeset.Registry
-	// typeRefusalsLogged is the GVK->summary of every type the registry currently
-	// refuses, so the central "why is this not followable?" log is edge-triggered: a
-	// stable refusal is logged once, not on every refresh. Guarded by resourceCatalogMu.
-	typeRefusalsLogged map[string]string
 
 	// declaredGVRsMu guards declaredGVRs: the type-set each GitTarget last Declared. The watch-first
 	// data plane reads it to drive the per-(GitTarget, type) watch set; re-declaring is idempotent.
@@ -272,26 +278,6 @@ func (m *Manager) initializeManagerState() {
 // NeedLeaderElection ensures only the elected leader runs the watch manager.
 func (m *Manager) NeedLeaderElection() bool {
 	return true
-}
-
-// dynamicClientFromConfig builds a dynamic client from the controller's REST config.
-// If m.dynamicClient is set (e.g. in tests) it is returned directly. It is used by the
-// per-type checkpoint fill (mirrorTypeObjects) — the only API touch on a schedule.
-func (m *Manager) dynamicClientFromConfig(log logr.Logger) dynamic.Interface {
-	if m.dynamicClient != nil {
-		return m.dynamicClient
-	}
-	cfg := m.restConfig()
-	if cfg == nil {
-		log.Info("skipping seed - no rest config available")
-		return nil
-	}
-	dc, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		log.Error(err, "failed to construct dynamic client for seed")
-		return nil
-	}
-	return dc
 }
 
 // ReconcileForRuleChange refreshes the trusted API catalog and the resident watched-type

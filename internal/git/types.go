@@ -158,6 +158,11 @@ type ResolvedTargetMetadata struct {
 	// from spec.placement. Nil when the GitTarget declares none, in which case new
 	// resources are placed by sibling inference and then the canonical path.
 	Placement *manifestanalyzer.PlacementPolicy
+	// SourceClusterID is the id of the cluster the GitTarget mirrors from —
+	// (api/v1alpha3).GitTarget.SourceClusterID(), "" for the local cluster. The resync
+	// mark-and-sweep resolves this subtree's documents' GVK->GVR against that cluster's
+	// registry, so a folder mirroring a remote is swept against the right cluster's mapping.
+	SourceClusterID string
 }
 
 // PendingWrite is the unit retained until a push succeeds.
@@ -335,6 +340,12 @@ type Event struct {
 
 	// GitTargetNamespace is the namespace of the target owning this event.
 	GitTargetNamespace string
+
+	// SourceClusterID is the id of the cluster this object was watched on —
+	// (api/v1alpha3).GitTarget.SourceClusterID(), "" for the local cluster. The writer
+	// resolves this document's GVK->GVR against that cluster's type registry, so a folder
+	// mirroring a remote is never indexed against the local cluster's mapping.
+	SourceClusterID string
 
 	// BootstrapOptions controls path-scoped bootstrap file staging for this event.
 	BootstrapOptions pathBootstrapOptions

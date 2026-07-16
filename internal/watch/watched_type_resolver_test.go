@@ -97,7 +97,7 @@ func TestRefreshWatchedTypeTables_RuleChangeReResolves(t *testing.T) {
 
 func TestResolveWatchedTypeTables_NilRuleStoreIsEmpty(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	assert.Empty(t, m.resolveWatchedTypeTables(0))
+	assert.Empty(t, m.resolveWatchedTypeTables())
 }
 
 func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {

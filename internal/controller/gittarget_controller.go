@@ -210,6 +210,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(
 			ctx,
 			gitDest,
+			target.SourceClusterID(),
 			gitPathWasRefused,
 		); declareErr != nil {
 			log.V(1).Info("stream declaration skipped; surface not observable",

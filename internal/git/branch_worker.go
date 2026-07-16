@@ -75,9 +75,17 @@ type BranchWorker struct {
 	Log           logr.Logger
 	contentWriter *contentWriter
 	// mapper resolves manifest GVKs into resource identities while building the
-	// GitTarget inventory. A nil mapper keeps the writer structure-only, so
-	// object-less deletes have no resource index to target.
+	// GitTarget inventory, for the LOCAL cluster and as the fallback when no source
+	// cluster is named. A nil mapper keeps the writer structure-only, so object-less
+	// deletes have no resource index to target.
 	mapper typeset.Lookup
+
+	// clusterMapper resolves the GVK->GVR lookup for a NAMED source cluster: a folder that
+	// mirrors a remote resolves its documents against that remote's type registry, never a
+	// union of all clusters (two clusters can serve one GVK under different GVRs/scopes). Nil
+	// in the CLI and in tests, which fall back to `mapper`; wired at startup by the
+	// WorkerManager from the watch manager's ClusterTypeLookup.
+	clusterMapper func(clusterID string) typeset.Lookup
 
 	// sshHostKeys configures SSH host-key resolution (install-level default ConfigMap and the
 	// dev-only missing-key opt-out) for this worker's credential reads. Set by the WorkerManager

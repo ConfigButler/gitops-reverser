@@ -62,7 +62,8 @@ func (m *Manager) resolveSnapshotGVRForType(
 	}
 	m.refreshWatchedTypeTables()
 
-	if !m.typeRegistryInstance().Ready() {
+	reg := m.registryForGitTarget(gitDest)
+	if !reg.Ready() {
 		return snapshotGVR{}, false, fmt.Errorf(
 			"aborting per-type reconcile for %s: the cluster API surface has not been observed yet",
 			gitDest.String())
@@ -80,7 +81,7 @@ func (m *Manager) resolveSnapshotGVRForType(
 		return snapshotGVR{}, false, nil
 	}
 
-	if m.typeWobbling(gvr) {
+	if typeWobbling(reg, gvr) {
 		return snapshotGVR{}, false, fmt.Errorf(
 			"aborting per-type reconcile for %s: %s within the removal grace (currently unserved); "+
 				"refusing to reconcile a reduced view",
@@ -106,7 +107,7 @@ func (m *Manager) resolveSnapshotGVRs(
 	}
 	m.refreshWatchedTypeTables()
 
-	if !m.typeRegistryInstance().Ready() {
+	if !m.registryForGitTarget(gitDest).Ready() {
 		return nil, fmt.Errorf(
 			"aborting scope resolution for %s: the cluster API surface has not been observed yet; "+
 				"refusing to reconcile a partial cluster view",
@@ -118,7 +119,7 @@ func (m *Manager) resolveSnapshotGVRs(
 	// A watched type the registry holds as `retained` is followable under the removal grace but
 	// is not actually served right now (a discovery wobble). Reconciling it would sweep a reduced
 	// view and delete a still-valid mirror, so fail closed until the wobble resolves.
-	if retained := m.retainedWatchedTypes(table); len(retained) > 0 {
+	if retained := m.retainedWatchedTypes(gitDest, table); len(retained) > 0 {
 		return nil, fmt.Errorf(
 			"aborting scope resolution for %s: %s within the removal grace (currently unserved); "+
 				"refusing to sweep a reduced cluster view",
@@ -129,23 +130,29 @@ func (m *Manager) resolveSnapshotGVRs(
 }
 
 // retainedWatchedTypes returns the GVKs of the target's watched types the registry currently
-// holds as `retained` (followable under the grace, but not served right now).
-func (m *Manager) retainedWatchedTypes(table WatchedTypeTable) []schema.GroupVersionKind {
+// holds as `retained` (followable under the grace, but not served right now), resolved against
+// the GitTarget's OWN source cluster's registry.
+func (m *Manager) retainedWatchedTypes(
+	gitDest types.ResourceReference,
+	table WatchedTypeTable,
+) []schema.GroupVersionKind {
+	reg := m.registryForGitTarget(gitDest)
 	var out []schema.GroupVersionKind
 	for _, wt := range table.Types {
-		if m.typeWobbling(wt.GVR) {
+		if typeWobbling(reg, wt.GVR) {
 			out = append(out, wt.GVK)
 		}
 	}
 	return out
 }
 
-// typeWobbling reports whether the registry currently holds gvr as `retained` — followable under
+// typeWobbling reports whether a registry currently holds gvr as `retained` — followable under
 // the removal grace, but not actually served right now (a discovery wobble). It is the single
 // "do not reconcile or sweep this type" predicate, shared by the whole-GitTarget scope resolve
-// and the per-type gate, so both fail closed on exactly the same registry verdict.
-func (m *Manager) typeWobbling(gvr schema.GroupVersionResource) bool {
-	rec, ok := m.typeRegistryInstance().ByGVR(gvr)
+// and the per-type gate, so both fail closed on exactly the same registry verdict. The registry
+// is the GitTarget's own source cluster's, so a wobble on one cluster never sweeps another's.
+func typeWobbling(reg *typeset.Registry, gvr schema.GroupVersionResource) bool {
+	rec, ok := reg.ByGVR(gvr)
 	return ok && rec.Followability.Verdict == typeset.VerdictRetained
 }
 

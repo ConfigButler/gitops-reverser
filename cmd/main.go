@@ -40,6 +40,7 @@ import (
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -64,6 +65,11 @@ const (
 	defaultAuditIdleTimeout         = 60 * time.Second
 	defaultAuditShutdownTimeout     = 10 * time.Second
 	defaultBranchBufferMaxSizeStr   = "8Mi"
+	// defaultSourceClusterQPS / -Burst are the client-side throttle for a remote source
+	// cluster reached via GitTarget.spec.kubeConfig — a conservative default since a remote is
+	// reached over a network the in-cluster config is not, and is only read (list/watch/get).
+	defaultSourceClusterQPS   = 20.0
+	defaultSourceClusterBurst = 30
 )
 
 func init() {
@@ -137,6 +143,11 @@ func main() {
 		RuleStore:          ruleStore,
 		EventRouter:        nil, // Will be set below
 		SensitiveResources: cfg.sensitiveResources,
+		// Resolve a GitTarget.spec.kubeConfig into a rest.Config by reading its Secret from the
+		// config plane. The manager client bypasses its cache for Secrets, so a rotated
+		// kubeconfig is seen without a Secret informer.
+		SourceClusters: watch.NewSecretSourceClusterResolver(
+			mgr.GetClient(), cfg.kubeConfigSafety, float32(cfg.sourceClusterQPS), cfg.sourceClusterBurst),
 	}
 
 	// Initialize EventRouter with all dependencies. The streaming-snapshot resync
@@ -154,8 +165,12 @@ func main() {
 
 	// Inject the live followability registry into the writer, so a GVR-only DELETE
 	// event resolves to a manifest moved off its canonical path (M6 in the writer).
-	// The registry is a stable pointer the watch manager refreshes in place.
+	// The registry is a stable pointer the watch manager refreshes in place. SetMapper is
+	// the LOCAL cluster's resolver; SetClusterMapper gives the writer each SOURCE cluster's
+	// registry so a folder mirroring a remote resolves its documents' GVK->GVR against that
+	// remote — never a union of all clusters.
 	workerManager.SetMapper(watchMgr.TypeRegistry())
+	workerManager.SetClusterMapper(watchMgr.ClusterTypeLookup)
 
 	// Give the workers a way to surface a refused live write plan. Live events are committed
 	// off a timer with no result channel, so without this a refusal (acceptance gate or a
@@ -357,7 +372,16 @@ type appConfig struct {
 	branchBufferMaxBytes        int64
 	sensitiveResources          types.SensitiveResourcePolicy
 	sshHostKeys                 git.SSHHostKeyConfig
-	zapOpts                     zap.Options
+	// sourceClusterQPS / sourceClusterBurst bound the rate at which the operator talks to a
+	// source cluster reached through a GitTarget.spec.kubeConfig. A remote is reached over a
+	// network the in-cluster config is not, so it carries client-side throttling by default.
+	sourceClusterQPS   float64
+	sourceClusterBurst int
+	// kubeConfigSafety is the exec / insecure-TLS opt-in for source-cluster kubeconfigs. Both
+	// default OFF: an operator-supplied kubeconfig is attacker-adjacent input, so unsafe
+	// kubeconfigs are REJECTED (a legible Validated=False), diverging from Flux's silent strip.
+	kubeConfigSafety kubeconfig.SafetyPolicy
+	zapOpts          zap.Options
 }
 
 // parseFlags parses CLI flags and returns the application configuration.
@@ -470,6 +494,16 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"",
 		"Comma-separated additional sensitive resources in resource or group/resource form.",
 	)
+	fs.Float64Var(&cfg.sourceClusterQPS, "source-cluster-qps", defaultSourceClusterQPS,
+		"Client-side QPS limit for talking to a source cluster reached via GitTarget.spec.kubeConfig.")
+	fs.IntVar(&cfg.sourceClusterBurst, "source-cluster-burst", defaultSourceClusterBurst,
+		"Client-side burst limit for talking to a source cluster reached via GitTarget.spec.kubeConfig.")
+	fs.BoolVar(&cfg.kubeConfigSafety.AllowExec, "insecure-kubeconfig-exec", false,
+		"Allow a source-cluster kubeconfig to use an exec auth provider (runs a binary in the "+
+			"operator Pod). Rejected by default; enabling this is a deliberate trust decision.")
+	fs.BoolVar(&cfg.kubeConfigSafety.AllowInsecureTLS, "insecure-kubeconfig-tls", false,
+		"Allow a source-cluster kubeconfig to set insecure-skip-tls-verify (disables server cert "+
+			"validation). Rejected by default; enabling this is a deliberate trust decision.")
 	fs.StringVar(&cfg.sshHostKeys.DefaultKnownHostsConfigMap, "default-known-hosts-configmap", "",
 		"Optional install-level ConfigMap (in the controller's namespace) supplying SSH known_hosts "+
 			"for Git hosts when neither the credentials Secret nor the GitProvider's knownHostsRef does.")
