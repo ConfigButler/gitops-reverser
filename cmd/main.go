@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	authzv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -964,6 +965,24 @@ func setupAdmissionWebhooks(mgr ctrl.Manager, commandAuthorStore *queue.CommandA
 	mgr.GetWebhookServer().Register(
 		webhookhandler.ValidateOperatorTypesPath,
 		&ctrladmission.Webhook{Handler: operatorTypesHandler},
+	)
+
+	// Fail-closed guard on GitTarget.spec.kubeConfig.secretRef: deny a requester who cannot
+	// themselves `get` the named kubeconfig Secret (confused-deputy — see the config-plane
+	// split's Security section). A build without a SubjectAccessReview client leaves the
+	// authorizer nil, and the handler then denies any kubeConfig.secretRef — fail closed.
+	var secretAuthorizer webhookhandler.SecretAccessAuthorizer
+	if authzClient, err := authzv1client.NewForConfig(mgr.GetConfig()); err != nil {
+		ctrl.Log.Error(err, "failed to build SubjectAccessReview client; "+
+			"GitTarget kubeConfig admission will fail closed")
+	} else {
+		secretAuthorizer = webhookhandler.NewSubjectAccessReviewSecretAuthorizer(authzClient.SubjectAccessReviews())
+	}
+	mgr.GetWebhookServer().Register(
+		webhookhandler.ValidateGitTargetKubeConfigPath,
+		&ctrladmission.Webhook{
+			Handler: &webhookhandler.ValidateGitTargetKubeConfigHandler{Authorizer: secretAuthorizer},
+		},
 	)
 }
 

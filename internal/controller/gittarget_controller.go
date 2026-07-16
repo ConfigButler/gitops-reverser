@@ -118,6 +118,10 @@ type GitTargetReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 
+// The GitTarget kubeConfig admission webhook issues a SubjectAccessReview to confirm the
+// requester may `get` the referenced kubeconfig Secret (fail-closed confused-deputy guard).
+// +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
+
 // Reconcile validates GitTarget references and drives startup lifecycle gates.
 //
 //nolint:gocognit,cyclop,funlen // Gate pipeline is intentionally explicit to keep status transitions obvious.

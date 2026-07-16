@@ -100,3 +100,36 @@ webhooks:
   # Redis write on real requests; nothing on dry-run (the handler honors NoneOnDryRun).
   sideEffects: NoneOnDryRun
   timeoutSeconds: 2
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: gitops-reverser-service
+      namespace: sut
+      path: /validate-gittarget-kubeconfig
+      port: 9443
+  # Fail (not Ignore): this guard closes the confused-deputy escalation the config-plane
+  # split opens (a tenant naming a kubeconfig Secret they cannot read). A missed check would
+  # silently admit that escalation, so it must fail closed. It is safe to fail closed here —
+  # unlike validate-all, this matches only configbutler.ai/gittargets, never core resources,
+  # so a webhook-down state blocks GitTarget writes but can never deadlock cluster bootstrap.
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: validate-gittarget-kubeconfig.configbutler.ai
+  # Only GitTarget CREATE/UPDATE — the spec.kubeConfig.secretRef reference is immutable, but
+  # UPDATE is guarded too so it cannot be set on a later edit without the same authorization.
+  rules:
+  - apiGroups:
+    - configbutler.ai
+    apiVersions:
+    - v1alpha3
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - gittargets
+    scope: Namespaced
+  # The SubjectAccessReview it issues is a read on the authorization API — no cluster state
+  # changes, so there are no side effects on any request, dry-run or not.
+  sideEffects: None
+  timeoutSeconds: 5
