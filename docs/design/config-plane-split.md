@@ -1,6 +1,6 @@
 # Separating the config plane from the watched cluster
 
-> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **design** — **built** (this PR). Index: [`../INDEX.md`](../INDEX.md)
 > Supersedes the `SourceCluster` CRD proposal in
 > [`multi-cluster-audit-ingestion-implications.md`](multi-cluster-audit-ingestion-implications.md) §5.
 > Redesign of feature #1 from the closed multi-tenant PR (#220), shipped on its own.
@@ -482,8 +482,32 @@ SourceClusterUnreachable`.
   watched cluster holds nothing but the watched resources.
 - On the remote cluster, the kubeconfig's identity needs only **read** access to
   the mirrored types (`get`/`list`/`watch`), plus `apiextensions`/`apiregistration`
-  read for discovery. Least privilege is the operator's to grant on the remote;
-  we document the minimal ClusterRole.
+  read for discovery. Least privilege is the operator's to grant on the remote. The
+  minimal ClusterRole the kubeconfig's identity must be bound to on the **source**
+  cluster (bind it to whichever ServiceAccount/user the kubeconfig authenticates as):
+
+  ```yaml
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    name: gitops-reverser-source-read
+  rules:
+    # Discovery: what types does this cluster serve, and are they followable?
+    - apiGroups: ["apiextensions.k8s.io"]
+      resources: ["customresourcedefinitions"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["apiregistration.k8s.io"]
+      resources: ["apiservices"]
+      verbs: ["get", "list", "watch"]
+    # The mirrored types. `["*"]` grants read on every type; narrow it to exactly the
+    # groups/resources the WatchRules select for a true least-privilege mirror.
+    - apiGroups: ["*"]
+      resources: ["*"]
+      verbs: ["get", "list", "watch"]
+  ```
+
+  The operator never writes to the source cluster, so no write verb is ever needed;
+  narrowing the wildcard rule to the selected types is the recommended hardening.
 - Kubeconfig **rejection** (above) closes the `exec`-provider and insecure-TLS holes
   an operator-supplied kubeconfig would otherwise open.
 - Remote clients carry client-side throttling the in-cluster config does not by

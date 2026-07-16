@@ -70,7 +70,7 @@ Ten other open items:
 
 | Doc | Open question |
 |---|---|
-| [`config-plane-split.md`](design/config-plane-split.md) | remote-cluster mirroring via an inline `GitTarget.spec.sourceCluster` — **redesign of #220's #1, awaiting build** |
+| [`config-plane-split.md`](design/config-plane-split.md) | remote-cluster mirroring via an inline, immutable `GitTarget.spec.kubeConfig` (Flux's `meta.KubeConfigReference`) — **redesign of #220's #1, built** |
 | [`watch-and-catalog-architecture.md`](design/watch-and-catalog-architecture.md) | the target three-layer watch model — **needs a human call before building** |
 | [`metrics-observability-plan.md`](design/metrics-observability-plan.md) | the watch-stage metrics do not exist yet |
 | [`reconcile-triggering.md`](design/reconcile-triggering.md) | which controllers still fail to wake up |

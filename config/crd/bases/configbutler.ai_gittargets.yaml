@@ -45,6 +45,14 @@ spec:
       name: StreamsRunning
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="SourceClusterReachable")].reason
+      name: SourceReachable
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="GitProviderReady")].status
+      name: ProviderReady
+      priority: 1
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Status
       priority: 1
