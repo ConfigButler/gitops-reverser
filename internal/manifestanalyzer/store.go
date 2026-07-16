@@ -93,12 +93,14 @@ type ManifestStore struct {
 	// same surface as any other refusal.
 	IgnoreIssues []AcceptanceIssue
 
-	// ValueFileRefs is the set of scanned files (slash paths) an Argo CD Application names
-	// through helm.valueFiles and that are not themselves KRM — read-only context, not junk.
-	// The acceptance gate consults it so a values file the repository points at no longer
-	// refuses its folder as non-krm-yaml, and the discovery scan does not count it as noise.
-	// It is never materialised, so the operator understands the file yet never writes it. See
-	// docs/design/support-boundary/values-file-projection.md §2 (Move 1).
+	// ValueFileRefs is the set of scanned non-KRM files (slash paths) a release document — an Argo
+	// CD Application's helm.valueFiles or a Flux HelmRelease's spec.chart.spec.valuesFiles — names
+	// by a path that matches locally: NAMED read-only context, not junk, and not proof the deployer
+	// consumes this file. The acceptance gate consults it so a values file the repository points at
+	// no longer refuses its folder as non-krm-yaml, and the discovery scan does not count it as
+	// noise. It is never materialised, so the operator retains the file yet never writes it. See
+	// docs/design/support-boundary/values-file-projection.md §2 (Move 1) and
+	// values-content-architecture.md.
 	ValueFileRefs map[string]struct{}
 
 	// reachedByMultipleRoots is the set of resource-file paths (slash) that more than one
@@ -412,9 +414,10 @@ func buildStore(
 		Ignore:         scan.Ignore,
 		IgnoreIssues:   scan.IgnoreIssues,
 		Kustomizations: kustomizationInfos(kusts),
-		// The read-only-context set: non-KRM values files an Argo CD Application names through
-		// helm.valueFiles. It travels with the store so the acceptance gate stops refusing them
-		// as non-krm-yaml and the discovery scan stops counting them as noise.
+		// The named read-only-context set: non-KRM values files a release (Argo Application or
+		// Flux HelmRelease) names by a locally matching path. It travels with the store so the
+		// acceptance gate stops refusing them as non-krm-yaml and the discovery scan stops counting
+		// them as noise.
 		ValueFileRefs: helmValueFileRefs(yamlFiles),
 		// The generalised write-fan-in set: files more than one render root reaches. It
 		// is derived from the same kustomization graph renderRoots reads, so a base
@@ -508,10 +511,11 @@ func (s *ManifestStore) DocumentLocations() map[*DocumentModel]RecordRef {
 	return documentLocations(s)
 }
 
-// isReferencedValuesFile reports whether a scanned path is a non-KRM values file an Argo CD
-// Application names through helm.valueFiles — read-only context the acceptance gate must not
-// refuse as non-krm-yaml and the discovery scan must not count as noise. filePath is matched as
-// a slash path, the form ValueFileRefs holds.
+// isReferencedValuesFile reports whether a scanned path is a non-KRM values file a release (an
+// Argo CD Application's helm.valueFiles or a Flux HelmRelease's spec.chart.spec.valuesFiles) names
+// by a locally matching path — named read-only context the acceptance gate must not refuse as
+// non-krm-yaml and the discovery scan must not count as noise. filePath is matched as a slash path,
+// the form ValueFileRefs holds.
 func (s *ManifestStore) isReferencedValuesFile(filePath string) bool {
 	if s.ValueFileRefs == nil {
 		return false

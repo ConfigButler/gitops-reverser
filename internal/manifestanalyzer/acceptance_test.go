@@ -121,8 +121,8 @@ func TestAccept_StandaloneNonKRMRefuses(t *testing.T) {
 
 func TestAccept_ReferencedValuesFileIsContext(t *testing.T) {
 	// The hybrid folder the design rescues: an Argo Application, the values.yaml it names
-	// through helm.valueFiles, and a co-located ClusterIssuer. The values file is understood
-	// as read-only context, so the folder is accepted and the ClusterIssuer rides along —
+	// through helm.valueFiles, and a co-located ClusterIssuer. The values file is retained as
+	// named read-only context, so the folder is accepted and the ClusterIssuer rides along —
 	// instead of one stray non-krm-yaml refusing all three.
 	fsys := fstest.MapFS{
 		"application.yaml":   {Data: []byte(argoAppMultiSourceValues)},

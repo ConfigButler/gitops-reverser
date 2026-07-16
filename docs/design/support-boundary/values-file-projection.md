@@ -9,6 +9,7 @@
 > [expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md),
 > [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md),
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md),
+> [values-content-architecture.md](values-content-architecture.md),
 > [acceptance-precision.md](acceptance-precision.md),
 > [finished/higher-level-krm-documents.md](finished/higher-level-krm-documents.md)
 
@@ -16,6 +17,10 @@
 names the free-standing Helm values file as *"the single highest-leverage thing available
 for the Helm story"* and says it *"deserves a design of its own rather than a decision
 here."* This is that design.
+
+The wider architecture — including the distinction between an editable Git content surface and a
+release object's path/reference field, ConfigMap-backed YAML, and the delivery sequence — lives in
+[values-content-architecture.md](values-content-architecture.md).
 
 The boundary it must not move: **we edit the intent layer, never the expansion layer.** We
 never render `templates/`. We never learn what a value *means*. Everything below treats a
@@ -51,14 +56,16 @@ The worst case is worth spelling out. `platform/cert-manager/values.yaml` is:
 - refused as `non-krm-yaml: "YAML is not a Kubernetes manifest"`, which **also takes down a
   perfectly valid `ClusterIssuer`** sitting beside it, because acceptance is all-or-nothing.
 
-We refuse the folder on the grounds that we do not know what the file is. The repository is
-telling us what it is, in a field we already parse.
+We used to refuse the folder on the grounds that we did not know what the file was. The release
+field now gives Move 1 a deliberately limited reason to retain it as named context. That is not yet
+proof that this checkout is the source the deployer consumes; the formal Argo/Flux distinction is
+in [values-content-architecture.md](values-content-architecture.md).
 
 ---
 
 ## 2. Two moves, in order
 
-### Move 1 (cheap, immediate): a referenced values file is context, not junk
+### Move 1 (cheap, immediate): named values context, not junk
 
 > **Shipped (2026-07-16).** A values file named by an `Application`'s `helm.valueFiles` is
 > read-only context in the acceptance gate: understood, never written, and never a refusal for
@@ -67,12 +74,14 @@ telling us what it is, in a field we already parse.
 > and suppresses the `non-krm-yaml` refusal in `acceptance.go`; `platform/cert-manager` flips
 > refused → accepted in [support-today.md](../../../test/fixtures/gitops-layouts/support-today.md).
 > Both path-valued spellings ship: an Argo CD `Application`'s `helm.valueFiles` and a Flux
-> `HelmRelease`'s `spec.chart.spec.valuesFiles`, resolved through one candidate set (repo-root
-> `$values/…`, whole-repo, and co-located subtree).
+> `HelmRelease`'s `spec.chart.spec.valuesFiles`, recognized by one scan-local candidate matcher
+> (repo-root `$values/…`, whole-repo, and co-located subtree). Move 1 does **not** prove that the
+> matching local file is the deployer's source; see [values-content-architecture.md](values-content-architecture.md).
 
-A values file named by an `Application`'s **`helm.valueFiles`**, or by a `HelmRelease`'s
-**`spec.chart.spec.valuesFiles`**, is **Read-only context** — a file we understand, never
-write, and never refuse the folder over.
+A values-shaped YAML file that this matcher associates with an `Application`'s **`helm.valueFiles`**,
+or with a `HelmRelease`'s **`spec.chart.spec.valuesFiles`**, is **Read-only context** — a file we
+retain, never write, and never refuse the folder over. Move 1 deliberately calls this named context,
+not proof that the deployer consumes this particular local file.
 
 **Only the path-valued fields, and this distinction is load-bearing**, because the three
 spellings are three different surfaces and only one of them is a file at all (both verified
@@ -80,7 +89,7 @@ against upstream, not inferred from the names):
 
 | Field | What it holds | Surface |
 |---|---|---|
-| Argo `helm.valueFiles`, Flux `spec.chart.spec.valuesFiles` | a **path** — `$values/platform/cert-manager/values.yaml` | **a file in the repo.** This document's subject. |
+| Argo `helm.valueFiles`, Flux `spec.chart.spec.valuesFiles` | a **path** — `$values/platform/cert-manager/values.yaml` | **a file in a selected source.** Move 1 recognizes a local candidate; source identity is needed before any read-provenance or editability claim. |
 | Argo `helm.valuesObject` (a `runtime.RawExtension`), Flux `spec.values` | **inline YAML**, embedded in the Application/HelmRelease itself | not a file. It is a *field of a KRM document we already parse*, so it is editable exactly as any other field of that document — no projection, no new claim. |
 | Flux `spec.valuesFrom` | a **KRM object reference** — `Secret/my-secret-values`, with a `valuesKey` | not a file either. It names a ConfigMap or Secret, which is *already* a document the store handles (and a Secret drags in [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md), a different problem with a different answer). |
 
@@ -117,11 +126,10 @@ Why this is not chart inflation, and not a widening of the boundary:
   already performs on every manifest — the pipeline is kind-agnostic, which is precisely
   what [finished/higher-level-krm-documents.md](finished/higher-level-krm-documents.md)
   proved when a `HelmRelease` needed no new code.
-- **Fan-in = 1 gates it for free.** The analyzer can already see which
-  `Application`/`HelmRelease` references which file. A values file referenced by exactly one
-  is editable. `values/ingress-nginx/common.yaml` — referenced by several — has fan-in > 1
-  and **is refused by the existing rule with no new machinery**. The corpus contains both
-  cases, plus two orphan values files referenced by nobody.
+- **Fan-in must be modelled separately.** The current analyzer records only a path set; it cannot
+  report consumers or calculate values-file fan-in. A future `InputBinding` graph can refuse a
+  shared `values/ingress-nginx/common.yaml` and accept only a proven, single-consumer input. The
+  existing Kustomize resource fan-in rule does not provide this automatically.
 - **We still never learn what a value means.** `replicaCount: 4` is a scalar at a path. The
   operator edits the field a human pointed it at. It does not know that the chart turns it
   into a `Deployment`.
@@ -153,8 +161,8 @@ and that is probably where it belongs.
 **Layered values.** `helm-environment-values` layers `chart/values.yaml` →
 `values/common.yaml` → `values/<env>.yaml` → the Application's `parameters` → and then a
 hidden `chart/.argocd-source.yaml` that **overrides all of them**. Editing "the value" is
-ambiguous when five files can supply it. Fan-in = 1 refuses the shared layers; the hidden
-dotfile is an `OverriddenBy` claim and must refuse the folder or the edit, loudly. **This
+ambiguous when five files can supply it. A future source-aware fan-in rule must refuse shared
+layers; the hidden dotfile is an `OverriddenBy` claim and must refuse the edit, loudly. **This
 document should not try to resolve the layering. It should refuse it and say so.**
 
 **The `helm.values` string blob.** `Application.spec.source.helm.values` is a YAML document
@@ -165,11 +173,11 @@ to **name `valuesObject` as the supported surface** — structured, ordinary YAM
 with no special case — and to document the string form as a blob we do not reach into.
 `valuesObject` is un-adjudicated in the docs today and this is the moment to adjudicate it.
 
-**What makes a chart a chart?** Move 1 needs to tell a values file apart from a chart's own
-`values.yaml`. `Chart.yaml` + `templates/` is the signal, and the whole chart folder is
-skipped as a unit. `mixed-and-hostile` plants a `templates/` directory with no `Chart.yaml`,
-so the detector must not be fooled by either half alone. This residual is already logged in
-[expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md).
+**What makes a source local?** Move 1 does not need this answer because it only retains context.
+Move 2 does: an Argo `$ref` must resolve to the writable Git target or a Flux `GitRepository`
+source must prove that identity. A bare path on an external chart or a Flux `HelmRepository` is
+inside the fetched chart, not the co-located checkout. Chart-folder recognition (`Chart.yaml` plus
+`templates/`) may be an additional refusal rule, but it is not a substitute for source resolution.
 
 ---
 
@@ -181,9 +189,9 @@ so the detector must not be fooled by either half alone. This residual is alread
 | Change a value on a `HelmRelease` (`spec.values`) | **Editable** today |
 | Change a value via `Application` `parameters` / `valuesObject` | **Editable** today |
 | Change a value held in a hand-written `ConfigMap` (`valuesFrom`) | **Editable** today |
-| Change a value in a values file **referenced by exactly one release** | **Planned: Editable** — §2, Move 2 |
+| Change a value in a values file **proven to be referenced by exactly one release** | **Planned: Editable** — §2, Move 2 |
 | Keep a values file in a folder without killing the folder | **Read-only context** — §2, Move 1 (shipped) |
-| Change a value in a **shared** values file (`common.yaml`) | **Refused** — fan-in > 1, and correctly so |
+| Change a value in a **shared** values file (`common.yaml`) | **Refused** once a source-aware input graph proves fan-in > 1 |
 | Change a value that a hidden `.argocd-source.yaml` overrides | **Refused** — say why, loudly |
 | Edit the chart's `templates/` | **Refused**, permanently |
 | Edit a chart-rendered object | **Not mirrored** — expansion layer |

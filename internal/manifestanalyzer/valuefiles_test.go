@@ -9,9 +9,11 @@ import (
 	"testing/fstest"
 )
 
-// argoAppMultiSourceValues is the load-bearing fixture shape: a multi-source Application whose
-// first source renders an external chart and whose second source (ref: values) exposes this
-// repo, so helm.valueFiles names the co-located values file through a $values ref.
+// argoAppMultiSourceValues is the right SHAPE for an external chart with Git-hosted values: a
+// multi-source Application whose first source renders an external chart and whose second source
+// (ref: values) is a Git source, so helm.valueFiles names a values file through a $values ref.
+// Move 1 only recognizes the spelling and matches the path locally; it does NOT validate the ref
+// or prove the referenced repo is this GitTarget.
 const argoAppMultiSourceValues = `apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -30,8 +32,10 @@ spec:
       ref: values
 `
 
-// argoAppRelativeValues is the simpler single-source spelling: helm.valueFiles names a file by a
-// path relative to the Application's own directory.
+// argoAppRelativeValues is a bare single-source spelling against an EXTERNAL Helm chart
+// (repoURL charts.example.com + chart foo). Upstream, Argo resolves such a bare valueFiles path
+// INSIDE the fetched chart, so the co-located values.yaml here is NOT what Argo reads. Move 1
+// still accepts it as a benign, named passenger — never as a proven or editable deployment input.
 const argoAppRelativeValues = `apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -47,7 +51,10 @@ spec:
 `
 
 // fluxHelmReleaseValues is a Flux HelmRelease naming a values file through
-// spec.chart.spec.valuesFiles — the Flux counterpart to an Argo Application's helm.valueFiles.
+// spec.chart.spec.valuesFiles with a HelmRepository sourceRef — the Flux counterpart to an Argo
+// Application's helm.valueFiles. Upstream, a HelmRepository source reads valuesFiles from the
+// fetched chart package, so the co-located values.yaml here is not what Flux reads; Move 1 accepts
+// it as named context, never as a proven or editable input.
 const fluxHelmReleaseValues = `apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -215,5 +222,22 @@ func TestHelmValueFileRefs_NonApplicationIsIgnored(t *testing.T) {
 	}
 	if refs := valueRefsOf(t, fsys); len(refs) != 0 {
 		t.Fatalf("only an Argo Application names a values file, got %v", refs)
+	}
+}
+
+func TestHelmValueFileRefs_EarlierIncompatibleDocDoesNotHideRelease(t *testing.T) {
+	// Regression: a multi-document file whose FIRST document is an unrelated kind with a
+	// type-incompatible spec (spec is a scalar, not a mapping) must not abort the decode and
+	// hide the release that follows it. decodeReleases splits documents as generic nodes and
+	// skips only the one it cannot read, so the Application still contributes its values file.
+	multiDoc := "apiVersion: example.com/v1\nkind: Weird\nspec: just-a-string\n---\n" +
+		argoAppRelativeValues
+	fsys := fstest.MapFS{
+		"bundle.yaml": {Data: []byte(multiDoc)},
+		"values.yaml": {Data: []byte(helmValuesFile)},
+	}
+	refs := valueRefsOf(t, fsys)
+	if !hasRef(refs, "values.yaml") {
+		t.Fatalf("an incompatible earlier document must not hide a later release's values file, got %v", refs)
 	}
 }

@@ -13,12 +13,21 @@ import (
 )
 
 // This file reads ONE path-valued field of a document we already parse — an Argo CD
-// Application's helm.valueFiles or a Flux HelmRelease's spec.chart.spec.valuesFiles — and turns
-// the file it names into read-only context, so the analyzer stops refusing a folder for holding
-// a values file the repository itself points at. It is
+// Application's helm.valueFiles or a Flux HelmRelease's spec.chart.spec.valuesFiles — and turns a
+// values-shaped file that field names into NAMED read-only context, so the analyzer stops refusing
+// a folder for holding a values file the repository points at. It is
 // docs/design/support-boundary/values-file-projection.md §2 "Move 1" and
 // docs/design/support-boundary/acceptance-precision.md §1c: a values file named by a release is
-// understood, never written, and never a refusal that takes the folder down with it.
+// retained, never written, and never a refusal that takes the folder down with it.
+//
+// This is a scan-LOCAL name match, NOT proof that the deployer consumes this file, and the
+// distinction is deliberate. An Argo bare path on an external Helm/OCI chart, or a Flux
+// HelmRepository source, resolves INSIDE the fetched chart — a same-named file sitting here in the
+// checkout is unrelated to what the release actually reads. Move 1 accepts such a file as a benign,
+// named passenger and NEVER presents it as a proven or editable deployment input. Source identity
+// (Argo $ref → its Git source, Flux sourceRef → a GitRepository, both matched to THIS GitTarget) is
+// a Move 2 prerequisite, not something this classifier claims. The Argo/Flux resolution table and
+// this policy live in docs/design/support-boundary/values-content-architecture.md.
 //
 // The boundary this must not move: we read a PATH-valued field and nothing else. We never
 // render a chart, never learn what a value means, and never reach into inline values
@@ -97,11 +106,12 @@ func groupOf(apiVersion string) string {
 	return apiVersion
 }
 
-// helmValueFileRefs is the set of scanned files (slash paths) that a release document in the scan
-// names through a path-valued values-file field AND that are not themselves Kubernetes manifests
-// — the read-only-context set. A referenced file that IS valid KRM is left to the normal rules
-// (it is a manifest, mirrored as one); only a non-KRM values file is rescued here, which is
-// exactly the file that would otherwise be refused as non-krm-yaml.
+// helmValueFileRefs is the set of scanned files (slash paths) whose path a release document's
+// path-valued values-file field matches by name against the scan AND that are not themselves
+// Kubernetes manifests — the NAMED read-only-context set (a local name match, not proven
+// consumption). A referenced file that IS valid KRM is left to the normal rules (it is a manifest,
+// mirrored as one); only a non-KRM values file is rescued here, which is exactly the file that
+// would otherwise be refused as non-krm-yaml.
 //
 // It mirrors patchFilesOf: parse the directive, resolve the path it names against the scan, and
 // hand the store a set it retains outside the managed model. Fan-in is not gated here — a values
@@ -126,34 +136,44 @@ func helmValueFileRefs(files []manifestedit.FileContent) map[string]struct{} {
 
 // decodeReleases returns every release document (Argo Application or Flux HelmRelease) in one
 // file's bytes. A file may hold several documents (or none that are releases); each is decoded
-// independently and a document this minimal struct cannot read contributes nothing.
+// independently. Documents are first split as generic yaml.Node values, then converted one at a
+// time: a single document this minimal struct cannot read — e.g. an unrelated kind whose spec is
+// type-incompatible, sitting BEFORE a release in the same file — is skipped without aborting the
+// stream, so it can never hide a release that follows it. Only EOF (or an unrecoverable syntax
+// error, which corrupts the stream position anyway) ends the scan.
 func decodeReleases(content []byte) []releaseDoc {
 	var out []releaseDoc
 	dec := yaml.NewDecoder(bytes.NewReader(content))
 	for {
+		var node yaml.Node
+		if err := dec.Decode(&node); err != nil {
+			break // EOF or an unrecoverable stream error: no more documents to read.
+		}
 		var doc releaseDoc
-		if err := dec.Decode(&doc); err != nil {
-			break // EOF, or a document this minimal struct cannot read — neither is our concern
+		if err := node.Decode(&doc); err != nil {
+			continue // this one document is not a shape we can read; a later one still might be.
 		}
 		out = append(out, doc)
 	}
 	return out
 }
 
-// resolveValueFilePath resolves one values-file entry to the scanned file it names, or "" when it
-// names nothing we hold as a non-KRM values file. dir is the referencing release's own directory
-// (slash, relative to the scanned root).
+// resolveValueFilePath matches one values-file entry to a scanned non-KRM file by name, or returns
+// "" when nothing we hold matches. dir is the referencing release's own directory (slash, relative
+// to the scanned root). This is a NAME match against the local scan; it does NOT resolve the
+// release's actual source, so a match is "named context", not proof the deployer reads this file
+// (see the file header and values-content-architecture.md's resolution table).
 //
-// The entry can arrive in three spellings, and the ordered candidates below resolve all of them
-// against both a whole-repo scan and a subtree (the live operator's GitTarget path) scan:
+// The entry can arrive in several spellings; the ordered candidates below try each against both a
+// whole-repo scan and a subtree (the live operator's GitTarget path) scan:
 //
-//   - a $ref-prefixed Argo entry ($values/platform/cert-manager/values.yaml) is repo-root-relative
-//     — the $values ref names a source whose repoURL is this same repo. The leading $ref/ token is
-//     stripped, leaving the repo-root path.
-//   - a Flux valuesFiles entry is a path relative to its SourceRef (the repo), so it too is
-//     effectively repo-root-relative.
-//   - a plain relative entry (values.yaml, ../shared/values.yaml) is resolved against the release's
-//     own directory.
+//   - a $ref-prefixed Argo entry ($values/platform/cert-manager/values.yaml): upstream, the $values
+//     ref selects a Git source and the remainder is rooted at that source's repo. We strip the
+//     leading $ref/ token and match the remainder locally WITHOUT proving that source is this repo.
+//   - a Flux valuesFiles entry is relative to its sourceRef; only a GitRepository sourceRef is a
+//     repo, and we do not read sourceRef.kind, so we match by path without proving the source local.
+//   - a plain relative entry (values.yaml, ../shared/values.yaml) is tried against the release's own
+//     directory — even though a bare path on an external chart is read from the chart, not here.
 //
 // Candidates, first non-KRM match wins: relative to the release's directory (a co-located relative
 // path), the path as a scan-root-relative path (a whole-repo scan of a repo-root-relative

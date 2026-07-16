@@ -62,6 +62,7 @@ overlay owns (a pure passthrough overlay is adopted yet `editable: 0`).
 | Render attribution and proof | [Render attribution](render-attribution.md), [render fidelity](render-fidelity.md) |
 | Out-of-folder Flux/Argo render context | [Render fidelity](render-fidelity.md) |
 | Controller-expanded resources and provenance | [Expansion boundary](expansion-boundary-and-corpus-organisation.md), [orchestrator knowledge](orchestrator-knowledge-boundary.md) |
+| Git-authored Helm values and ConfigMap-backed content | [Values-content architecture](values-content-architecture.md), [values-file projection](values-file-projection.md) |
 | Kpt packages and KRM functions | [Kpt and KRM functions](kpt-and-krm-functions.md) |
 | Secrets and other document capabilities | [Resource capability model](resource-capability-model.md), [write-only encrypted secrets](write-only-encrypted-secrets.md) |
 
@@ -78,6 +79,9 @@ distinguishes those planned gates from the permanent construct boundary.
 - [Renderer abstraction](renderer-abstraction-idea.md) and
   [Kustomize token writeback](kustomize-token-writeback-explained.md) — exploratory and
   teaching records.
+- [Values-content architecture](values-content-architecture.md) — why a values file is a
+  Git content surface rather than a field to copy into an `Application` or `HelmRelease`, and
+  the staged design for safely editing it.
 - [Admission consent](admission-consent.md), [unreflectable edits](unreflectable-edits-and-write-gating.md),
   and [reconcile trigger](orchestrator-reconcile-trigger.md) — write-gating decisions.
 - Historical implementation records: [image/replica edit-through](finished/images-and-replicas-edit-through.md)
