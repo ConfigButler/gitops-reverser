@@ -210,6 +210,49 @@ func TestScanRepo_RefusedPlainSurfacesGateReasons(t *testing.T) {
 	}
 }
 
+// TestScanRepo_ReferencedValuesFileAccepted is the positive counterpart to
+// plain-nonkrm: the same shape (a plain folder holding a non-KRM values.yaml) is ADOPTED
+// once an Argo CD Application names the values file through helm.valueFiles. The values
+// file is read-only context, so it is not counted as non-KRM noise (nonKrm=0) and the
+// co-located ClusterIssuer rides along instead of being refused with the folder.
+func TestScanRepo_ReferencedValuesFileAccepted(t *testing.T) {
+	c := scanFixtureCandidates(t, "supported/argocd-external-helm-values")
+	if len(c) != 1 {
+		t.Fatalf("want 1 candidate, got %d: %+v", len(c), c)
+	}
+	got := c[0]
+	if !got.AcceptedByOperator {
+		t.Fatalf("a folder whose values.yaml is named by a release should be adopted; reasons=%+v",
+			got.RefusalReasons)
+	}
+	if got.Resources.NonKRM != 0 {
+		t.Errorf("the referenced values file is context, not noise: nonKrm = %d, want 0", got.Resources.NonKRM)
+	}
+	if got.Resources.Rendered != 2 || got.Resources.Editable != 2 {
+		t.Errorf("Application + ClusterIssuer should both be managed: rendered=%d editable=%d, want 2/2",
+			got.Resources.Rendered, got.Resources.Editable)
+	}
+}
+
+// TestScanRepo_FluxHelmReleaseValuesFileAccepted is the Flux counterpart to
+// TestScanRepo_ReferencedValuesFileAccepted: a folder holding a non-KRM values.yaml is adopted
+// once a Flux HelmRelease names it through spec.chart.spec.valuesFiles, and the values file is
+// not counted as non-KRM noise.
+func TestScanRepo_FluxHelmReleaseValuesFileAccepted(t *testing.T) {
+	c := scanFixtureCandidates(t, "supported/flux-helmrelease-values")
+	if len(c) != 1 {
+		t.Fatalf("want 1 candidate, got %d: %+v", len(c), c)
+	}
+	got := c[0]
+	if !got.AcceptedByOperator {
+		t.Fatalf("a folder whose values.yaml is named by a HelmRelease should be adopted; reasons=%+v",
+			got.RefusalReasons)
+	}
+	if got.Resources.NonKRM != 0 {
+		t.Errorf("the referenced values file is context, not noise: nonKrm = %d, want 0", got.Resources.NonKRM)
+	}
+}
+
 // TestScanRepo_SopsBootstrapAcceptedLikeWriter guards that scan-repo's acceptance
 // matches the live writer's allowlist: a folder holding the operator's .sops.yaml
 // bootstrap config is accepted (the writer retains it), not refused as non-KRM, and the

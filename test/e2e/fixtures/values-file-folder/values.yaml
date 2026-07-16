@@ -1,0 +1,8 @@
+# e2e-readonly-context-marker: this Helm values file is NOT a Kubernetes object.
+# It is named by the co-located Application through helm.valueFiles, so the operator
+# understands it as read-only context: it must never write or delete this file, and it
+# must never refuse the folder for holding it.
+installCRDs: true
+replicaCount: 2
+prometheus:
+  enabled: true

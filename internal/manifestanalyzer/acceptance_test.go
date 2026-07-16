@@ -119,6 +119,56 @@ func TestAccept_StandaloneNonKRMRefuses(t *testing.T) {
 	onlyIssue(t, acc, IssueNonKRM, "values.yaml", 0)
 }
 
+func TestAccept_ReferencedValuesFileIsContext(t *testing.T) {
+	// The hybrid folder the design rescues: an Argo Application, the values.yaml it names
+	// through helm.valueFiles, and a co-located ClusterIssuer. The values file is retained as
+	// named read-only context, so the folder is accepted and the ClusterIssuer rides along —
+	// instead of one stray non-krm-yaml refusing all three.
+	fsys := fstest.MapFS{
+		"application.yaml":   {Data: []byte(argoAppMultiSourceValues)},
+		"values.yaml":        {Data: []byte(helmValuesFile)},
+		"clusterissuer.yaml": {Data: []byte(clusterIssuerYAML)},
+	}
+	store, acc := acceptanceOf(t, fsys, nil, AcceptancePolicy{})
+	if !acc.Accepted || len(acc.Issues) != 0 {
+		t.Fatalf("a referenced values file must not refuse its folder, got %+v", acc.Issues)
+	}
+	if !store.isReferencedValuesFile("values.yaml") {
+		t.Errorf("values.yaml should be recognised as read-only context")
+	}
+	if store.FilesByPath["values.yaml"] != nil {
+		t.Errorf("a read-only values file must never become managed (it is never written)")
+	}
+}
+
+func TestAccept_FluxHelmReleaseValuesFileIsContext(t *testing.T) {
+	// The Flux counterpart to the Argo case: a HelmRelease names the values.yaml through
+	// spec.chart.spec.valuesFiles, so the values file is read-only context and the folder is
+	// accepted rather than refused as non-krm-yaml.
+	fsys := fstest.MapFS{
+		"helmrelease.yaml": {Data: []byte(fluxHelmReleaseValues)},
+		"values.yaml":      {Data: []byte(helmValuesFile)},
+	}
+	store, acc := acceptanceOf(t, fsys, nil, AcceptancePolicy{})
+	if !acc.Accepted || len(acc.Issues) != 0 {
+		t.Fatalf("a HelmRelease-referenced values file must not refuse its folder, got %+v", acc.Issues)
+	}
+	if !store.isReferencedValuesFile("values.yaml") {
+		t.Errorf("values.yaml should be recognised as read-only context")
+	}
+	if store.FilesByPath["values.yaml"] != nil {
+		t.Errorf("a read-only values file must never become managed (it is never written)")
+	}
+}
+
+func TestAccept_UnreferencedValuesFileStillRefuses(t *testing.T) {
+	// Nothing in the folder names this values file, so it stays the bucket-2 dangerous
+	// unknown — the suppression is reference-driven, never a blanket "tolerate any values.yaml".
+	fsys := fstest.MapFS{"values.yaml": {Data: []byte(helmValuesFile)}}
+	_, acc := acceptanceOf(t, fsys, nil, AcceptancePolicy{})
+	onlyIssue(t, acc, IssueNonKRM, "values.yaml", 0)
+}
+
 func TestAccept_StandaloneInvalidRefuses(t *testing.T) {
 	fsys := fstest.MapFS{"broken.yaml": {Data: []byte(brokenYAML)}}
 	_, acc := acceptanceOf(t, fsys, nil, AcceptancePolicy{})

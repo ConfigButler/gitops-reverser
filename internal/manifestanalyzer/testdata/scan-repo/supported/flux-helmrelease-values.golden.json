@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "path": "app",
+      "layout": "plain",
+      "acceptedByOperator": true,
+      "renderRoot": false,
+      "inferredNamespace": "flux-system",
+      "resources": {
+        "rendered": 1,
+        "editable": 1,
+        "nonKrm": 0
+      }
+    }
+  ],
+  "summary": {
+    "candidatesByLayout": {
+      "plain": 1
+    },
+    "accepted": 1,
+    "refused": 0
+  }
+}

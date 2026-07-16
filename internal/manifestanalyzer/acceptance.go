@@ -351,6 +351,15 @@ func recordlessRefusal(store *ManifestStore, d manifestedit.Diagnostic) (Accepta
 		if managed {
 			return impureIssue(d, "a non-KRM document"), true
 		}
+		if store.isReferencedValuesFile(d.Path) {
+			// A values file a release names by a locally matching path — an Argo CD Application's
+			// helm.valueFiles or a Flux HelmRelease's spec.chart.spec.valuesFiles — is NAMED
+			// read-only context, not a stray: the repository points at it in a field we already
+			// parse, so it is retained (never written) and must not refuse the folder it sits in.
+			// This is a name match, not proof the deployer consumes the file. See
+			// docs/design/support-boundary/values-file-projection.md §2 (Move 1).
+			return AcceptanceIssue{}, false
+		}
 		return AcceptanceIssue{
 			Kind: IssueNonKRM, Path: d.Path, DocumentIndex: d.DocumentIndex,
 			Message: "YAML is not a Kubernetes manifest",

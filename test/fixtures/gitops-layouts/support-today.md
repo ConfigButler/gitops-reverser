@@ -28,7 +28,7 @@ Reading rules:
 | 1-desired-state/argocd-plain | 0 | Partial | 1 | 1 | plain=2 | - | non-krm-yaml: ci-metadata.yaml: YAML is not a Kubernetes manifest |
 | 1-desired-state/flux-monorepo | 0 | All reported candidates accepted | 6 | 0 | kustomize-overlay=2, kustomize-single=4 | - | None |
 | 1-desired-state/repo-per-environment | 0 | All reported candidates accepted | 9 | 0 | plain=9 | - | None |
-| 2-rendered/argocd-external-helm | 0 | Partial | 2 | 1 | plain=3 | - | non-krm-yaml: values.yaml: YAML is not a Kubernetes manifest |
+| 2-rendered/argocd-external-helm | 0 | All reported candidates accepted | 3 | 0 | plain=3 | - | None |
 | 2-rendered/helm-chart | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 2-rendered/helm-environment-values | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 2-rendered/kustomize-overlay-minimal | 0 | All reported candidates accepted | 2 | 0 | kustomize-overlay=2 | - | None |
@@ -99,14 +99,14 @@ Unsupported constructs: `none`. Fleet root: `false`.
 
 ## 2-rendered/argocd-external-helm
 
-Reported rc `0`. Accepted `2`, refused `1`.
+Reported rc `0`. Accepted `3`, refused `0`.
 Unsupported constructs: `none`. Fleet root: `false`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
 | `applications` | `plain` | true | `argocd` | 3/3/0 | none |
 | `extras/ingress-nginx` | `plain` | true | `ingress-nginx` | 2/2/0 | none |
-| `platform/cert-manager` | `plain` | false | `argocd` | 2/2/1 | non-krm-yaml: values.yaml: YAML is not a Kubernetes manifest |
+| `platform/cert-manager` | `plain` | true | `argocd` | 2/2/0 | none |
 
 ## 2-rendered/helm-chart
 
