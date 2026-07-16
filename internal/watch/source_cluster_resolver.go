@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/rest"
@@ -13,6 +14,13 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 )
+
+// sourceClusterDialTimeout bounds every call the operator makes to a remote source cluster
+// (discovery, list, watch establishment). A remote is reached over a network the in-cluster
+// config is not, so without a timeout an unreachable API server would hang the catalog-refresh
+// loop indefinitely — exactly the SourceClusterReachable=False case the reachability split
+// exists to surface promptly. It bounds the "controller never blocks forever on a dial" promise.
+const sourceClusterDialTimeout = 15 * time.Second
 
 // secretSourceClusterResolver resolves a source-cluster id — "<namespace>/<name>/<key>", as
 // (api/v1alpha3).GitTarget.SourceClusterID() renders it — into a rest.Config, by reading that
@@ -105,6 +113,9 @@ func (r *secretSourceClusterResolver) ResolveSourceCluster(
 		cfg.QPS = r.qps
 		cfg.Burst = r.burst
 	}
+	// Bound every dial so an unreachable remote surfaces as SourceClusterReachable=False
+	// promptly instead of hanging the refresh loop.
+	cfg.Timeout = sourceClusterDialTimeout
 
 	// The Secret's resourceVersion is the version token: it changes on every rotation, and on
 	// nothing else. The kubeconfig bytes themselves are dropped here — only the built

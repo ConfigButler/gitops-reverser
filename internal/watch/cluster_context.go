@@ -316,6 +316,44 @@ func classifySourceClusterReachFailure(err error) sourceClusterReachability {
 	return sourceClusterReachability{state: reachFalse, reason: reason, message: err.Error()}
 }
 
+// SourceClusterReachableStatus is the kstatus-shaped projection of a source cluster's
+// reachability, for the GitTarget controller to set as the SourceClusterReachable condition.
+// State is "True" | "False" | "Unknown"; the controller maps it to metav1.ConditionStatus.
+type SourceClusterReachableStatus struct {
+	State   string
+	Reason  string
+	Message string
+}
+
+// reasonAwaitingDiscovery is the SourceClusterReachable=Unknown reason before the data plane
+// has made its first discovery attempt against a remote source cluster.
+const reasonAwaitingDiscovery = "AwaitingDiscovery"
+
+// SourceClusterReachable projects a source cluster's runtime reachability for a GitTarget's
+// SourceClusterReachable condition. The local cluster is always reachable; a remote is Unknown
+// until the data plane's first discovery attempt, then True or False with a classified reason.
+func (m *Manager) SourceClusterReachable(clusterID string) SourceClusterReachableStatus {
+	r := m.clusterReachability(clusterID)
+	switch r.state {
+	case reachTrue:
+		reason := r.reason
+		if reason == "" {
+			reason = reasonSourceClusterReachable
+		}
+		return SourceClusterReachableStatus{State: "True", Reason: reason, Message: r.message}
+	case reachFalse:
+		return SourceClusterReachableStatus{State: "False", Reason: r.reason, Message: r.message}
+	case reachUnknown:
+		return SourceClusterReachableStatus{
+			State:   "Unknown",
+			Reason:  reasonAwaitingDiscovery,
+			Message: "source cluster not yet reached; awaiting first discovery",
+		}
+	default:
+		return SourceClusterReachableStatus{State: "Unknown", Reason: reasonAwaitingDiscovery}
+	}
+}
+
 // clusterReachability returns a snapshot of a cluster's SourceClusterReachable state for
 // projection onto its GitTargets. An unknown id is reported Unknown.
 func (m *Manager) clusterReachability(clusterID string) sourceClusterReachability {
