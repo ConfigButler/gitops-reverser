@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.36.0...v0.37.0) (2026-07-16)
+
+
+### Features
+
+* **acceptance:** accept benign repo-hygiene passengers instead of refusing the folder ([#242](https://github.com/ConfigButler/gitops-reverser/issues/242)) ([49327fd](https://github.com/ConfigButler/gitops-reverser/commit/49327fd4e72b9f9d086172bfc1efb7c36417ef39))
+* **acceptance:** treat a release-referenced values file as read-only context ([#245](https://github.com/ConfigButler/gitops-reverser/issues/245)) ([d25c013](https://github.com/ConfigButler/gitops-reverser/commit/d25c0134dbb0dc423b67ca648534aa2daebeb439))
+* **overlay:** prove new-object placement; author images/replicas overrides and $patch:delete ([#244](https://github.com/ConfigButler/gitops-reverser/issues/244)) ([38590d1](https://github.com/ConfigButler/gitops-reverser/commit/38590d1086498492c9f83f4574c19eaedd797e22))
+* render-root scoping + tolerate patches  and patched overlays reading ../../base ([#239](https://github.com/ConfigButler/gitops-reverser/issues/239)) ([e9d6be1](https://github.com/ConfigButler/gitops-reverser/commit/e9d6be1bea2e6db5a55e9c3b17d64f2df7b81231))
+* **scan-repo:** adopt external-base overlays instead of refusing them ([#243](https://github.com/ConfigButler/gitops-reverser/issues/243)) ([c7650f9](https://github.com/ConfigButler/gitops-reverser/commit/c7650f9e25c3b95e19615ff0e4afd1f507824f13))
+
+
+### Bug Fixes
+
+* **kustomize:** stop writing the build's own output into the build's input ([#234](https://github.com/ConfigButler/gitops-reverser/issues/234)) ([8444cd0](https://github.com/ConfigButler/gitops-reverser/commit/8444cd000c9159d7b0fd128e1d7ac72d03aac050))
+
+
+### Documentation
+
+* **boundary:** consolidate support records ([#241](https://github.com/ConfigButler/gitops-reverser/issues/241)) ([3b937f9](https://github.com/ConfigButler/gitops-reverser/commit/3b937f902bbb5e94d90c9336b8ef1d6b93bfaf65))
+
 ## [0.36.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.35.0...gitops-reverser-v0.36.0) (2026-07-14)
 
 
