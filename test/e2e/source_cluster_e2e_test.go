@@ -143,7 +143,9 @@ func writeKubeConfigSecret(ns, name, key, kubeconfig string) {
 func applyGitTargetWithKubeConfig(ns, name, provider, path, secretName, key string) (string, error) {
 	keyLine := ""
 	if key != "" {
-		keyLine = "\n        key: " + key
+		// key: must be a sibling of name: (6-space indent, under secretRef:), not nested
+		// under it — an 8-space indent produces "mapping values are not allowed here".
+		keyLine = "\n      key: " + key
 	}
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
