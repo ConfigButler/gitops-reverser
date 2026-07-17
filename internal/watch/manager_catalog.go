@@ -113,6 +113,26 @@ func (m *Manager) refreshRemoteCatalogsConcurrently(ctx context.Context, remotes
 	wg.Wait()
 }
 
+// refreshClusterForDeclare refreshes ONE source cluster's credentials, catalog, and reachability —
+// the on-declare path for a single GitTarget. It deliberately touches only that GitTarget's own
+// cluster: refreshing every active cluster on the declare path (which runs on the single GitTarget
+// controller worker) blocks on any UNREACHABLE cluster's full dial timeout, starving healthy
+// targets. The background RefreshAPIResourceCatalog loop keeps every OTHER cluster fresh. A remote's
+// refresh error is not returned — the caller gates on registryForGitTarget().Ready() instead, so an
+// unreachable remote simply leaves its own target "not observed yet" without failing the declare.
+func (m *Manager) refreshClusterForDeclare(ctx context.Context, clusterID string) error {
+	cc := m.cluster(clusterID)
+	if !cc.isLocal() {
+		m.refreshClusterCredentials(ctx, cc)
+	}
+	err := m.refreshClusterCatalog(ctx, cc)
+	m.recordClusterReachability(cc, err)
+	if cc.isLocal() {
+		return err
+	}
+	return nil
+}
+
 // refreshClusterCatalog refreshes ONE cluster's discovery-backed catalog and republishes its
 // type registry — the per-cluster body of what used to be a single manager-wide refresh. The
 // refresh metrics and the API-surface trigger informers stay local-cluster only: the metrics

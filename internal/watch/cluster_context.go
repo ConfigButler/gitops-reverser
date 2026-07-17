@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -411,48 +412,74 @@ func (m *Manager) resolveRemoteConfig(ctx context.Context, cc *clusterContext) (
 	return cfg, version, nil
 }
 
-// refreshClusterCredentials re-reads a remote cluster's kubeconfig Secret and, when it has
-// rotated, drops the cached clients so the next use rebuilds them. It runs on the
-// catalog-refresh cadence (every 30s and on every rule change), never on the hot watch
-// reconnect path — one Secret read per cluster per refresh, not one per watch.
-//
-// A watch already streaming on the old credential keeps working until that credential stops
-// being accepted; the reconnect that follows picks up the rebuilt client.
+// refreshClusterCredentials re-reads a remote cluster's kubeconfig Secret on the catalog-refresh
+// cadence (every 30s and on every rule change), never on the hot watch reconnect path. It is the
+// data plane's half of the reconcile model: it does not watch Secrets, it RE-CHECKS them, and a
+// changed or vanished value is the moment to clean up. On a value CHANGE (rotation, or a repoint at
+// a different server) it rebuilds the cached clients and invalidates the active watches so they
+// re-establish on the fresh client; on a definitive LOSS (Secret deleted, key gone, or contents now
+// unsafe/unparseable) it drops the clients fail-closed and invalidates the watches so mirroring
+// stops — the enqueued reconcile then holds each GitTarget Validated=False. A transient read error
+// (slow apiserver, momentary blip) changes nothing: the next refresh retries.
 func (m *Manager) refreshClusterCredentials(ctx context.Context, cc *clusterContext) {
 	if cc.isLocal() {
 		return
 	}
 	cfg, version, err := m.resolveRemoteConfig(ctx, cc)
 	if err != nil {
-		// A transient resolve error (a slow apiserver, a momentary network blip) must not kill a
-		// healthy stream — the reconnect that follows picks the credential back up, and the catalog
-		// refresh reports it on SourceClusterReachable. But a DEFINITIVE credential failure — the
-		// Secret was deleted, its key vanished, or its contents are now unsafe/unparseable — means
-		// the credential this cluster's clients were built from no longer exists. Keeping the cached
-		// clients would let active watches keep reconnecting to a remote the operator can no longer
-		// legitimately reach, while every GitTarget on it reports Validated=False. Drop them so the
-		// next client build fails closed with the config plane's verdict rather than silently reusing
-		// a revoked credential. (The controller separately forgets the declaration, cancelling the
-		// in-flight watches; this closes the catalog-refresh-cadence window before that reconcile.)
-		if isDefinitiveCredentialFailure(err) {
-			m.dropClusterClients(cc)
+		if isDefinitiveCredentialFailure(err) && m.dropClusterClients(cc) {
+			m.invalidateClusterWatches(cc.id)
 		}
 		return
 	}
 
 	cc.clientsMu.Lock()
-	defer cc.clientsMu.Unlock()
 	if cc.restConfig != nil && version == cc.configVersion {
+		cc.clientsMu.Unlock()
 		return
 	}
-	if cc.restConfig != nil {
-		m.Log.Info("source cluster kubeconfig rotated; rebuilding clients",
+	rotated := cc.restConfig != nil
+	if rotated {
+		m.Log.Info("source cluster kubeconfig changed; rebuilding clients and invalidating watches",
 			"clusterID", cc.id, "version", version)
 	}
 	cc.restConfig = cfg
 	cc.configVersion = version
 	cc.dynamicClient = nil
 	cc.discovery = nil
+	cc.clientsMu.Unlock()
+
+	if rotated {
+		m.invalidateClusterWatches(cc.id)
+	}
+}
+
+// invalidateClusterWatches cancels the active watches of every GitTarget mirroring from a cluster
+// and enqueues those targets for reconcile. It is how a credential CHANGE or LOSS is cleaned up on
+// the refresh cadence instead of waiting for a chance disconnect. The GitTarget->cluster mapping is
+// kept (only the watches are cancelled), so the enqueued reconcile re-declares each target — which
+// rebuilds its watch on the freshly-rebuilt client for a rotation, or holds it Validated=False for a
+// revocation. No Secret watch is involved; this rides the existing catalog-refresh loop.
+func (m *Manager) invalidateClusterWatches(clusterID string) {
+	m.gitTargetClustersMu.Lock()
+	affected := make([]types.ResourceReference, 0)
+	for key, id := range m.gitTargetClusters {
+		if id == clusterID {
+			affected = append(affected, resourceReferenceFromKey(key))
+		}
+	}
+	m.gitTargetClustersMu.Unlock()
+	for _, gitDest := range affected {
+		m.forgetGitTargetWatches(gitDest)
+		m.enqueueGitPathChange(gitDest)
+	}
+}
+
+// resourceReferenceFromKey reconstructs the ResourceReference a gitTargetClusters key encodes. The
+// key is ResourceReference.Key() == "namespace/name"; neither a namespace nor a name can contain "/".
+func resourceReferenceFromKey(key string) types.ResourceReference {
+	namespace, name, _ := strings.Cut(key, "/")
+	return types.NewResourceReference(name, namespace)
 }
 
 // isDefinitiveCredentialFailure reports whether a source-cluster resolve error means the
@@ -472,17 +499,22 @@ func isDefinitiveCredentialFailure(err error) bool {
 // per-cluster lock, forcing the next use to re-resolve the credential and rebuild them. It is the
 // fail-closed half of the credential refresh: called when the credential a cluster's clients were
 // built from is definitively gone, so a watch reconnect cannot silently reuse a revoked credential.
-func (m *Manager) dropClusterClients(cc *clusterContext) {
+// It reports whether it actually dropped anything (clients were cached), so the caller invalidates
+// the watches only on the transition to gone — not on every subsequent refresh of a still-broken
+// cluster.
+func (m *Manager) dropClusterClients(cc *clusterContext) bool {
 	cc.clientsMu.Lock()
 	defer cc.clientsMu.Unlock()
-	if cc.restConfig != nil {
-		m.Log.Info("source cluster credential no longer resolvable; dropping cached clients (fail-closed)",
-			"clusterID", cc.id)
+	if cc.restConfig == nil {
+		return false
 	}
+	m.Log.Info("source cluster credential no longer resolvable; dropping cached clients (fail-closed)",
+		"clusterID", cc.id)
 	cc.restConfig = nil
 	cc.configVersion = ""
 	cc.dynamicClient = nil
 	cc.discovery = nil
+	return true
 }
 
 // clusterDynamicClient returns the dynamic client a cluster's watches and lists run on.

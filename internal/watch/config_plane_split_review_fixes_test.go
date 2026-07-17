@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
@@ -141,6 +142,96 @@ func TestRefreshClusterCredentials_KeepsClientsOnTransientError(t *testing.T) {
 	assert.NotNil(t, cc.restConfig, "a transient resolve error must not kill a healthy stream")
 	assert.NotNil(t, cc.dynamicClient)
 	assert.Equal(t, "7", cc.configVersion, "the version token is untouched on a transient error")
+}
+
+func TestResourceReferenceFromKey_RoundTrips(t *testing.T) {
+	for _, ref := range []types.ResourceReference{
+		types.NewResourceReference("t", "team-a"),
+		types.NewResourceReference("cluster-scoped", ""),
+	} {
+		assert.Equal(t, ref, resourceReferenceFromKey(ref.Key()))
+	}
+}
+
+// installFakeWatch records a cancellable watch set for a GitTarget and returns a pointer that flips
+// true when its context is cancelled (forgetGitTargetWatches calls set.cancel()).
+func installFakeWatch(m *Manager, ref types.ResourceReference) *bool {
+	cancelled := new(bool)
+	m.targetWatchesMu.Lock()
+	if m.targetWatches == nil {
+		m.targetWatches = map[string]*targetWatchSet{}
+	}
+	m.targetWatches[ref.Key()] = &targetWatchSet{
+		cancel: func() { *cancelled = true },
+		specs:  map[targetWatchKey]string{},
+	}
+	m.targetWatchesMu.Unlock()
+	return cancelled
+}
+
+func drainEnqueuedNames(ch <-chan event.GenericEvent, limit int) []string {
+	var names []string
+	for range limit {
+		select {
+		case e := <-ch:
+			names = append(names, e.Object.GetName())
+		default:
+			return names
+		}
+	}
+	return names
+}
+
+func TestInvalidateClusterWatches_CancelsAndEnqueuesOnlyThatClusterTargets(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+	const clusterA, clusterB = "team-a/kc/value", "team-b/kc/value"
+	m.rememberGitTargetCluster(gd("a1"), clusterA)
+	m.rememberGitTargetCluster(gd("a2"), clusterA)
+	m.rememberGitTargetCluster(gd("b1"), clusterB)
+	a1 := installFakeWatch(m, gd("a1"))
+	a2 := installFakeWatch(m, gd("a2"))
+	b1 := installFakeWatch(m, gd("b1"))
+	ch := m.GitPathEvents()
+
+	m.invalidateClusterWatches(clusterA)
+
+	assert.True(t, *a1, "cluster A target watch cancelled")
+	assert.True(t, *a2, "cluster A target watch cancelled")
+	assert.False(t, *b1, "cluster B target is untouched")
+
+	m.targetWatchesMu.Lock()
+	_, a1Present := m.targetWatches[gd("a1").Key()]
+	_, b1Present := m.targetWatches[gd("b1").Key()]
+	m.targetWatchesMu.Unlock()
+	assert.False(t, a1Present, "cancelled watch set is removed")
+	assert.True(t, b1Present, "cluster B's watch set is kept")
+
+	assert.ElementsMatch(t, []string{"a1", "a2"}, drainEnqueuedNames(ch, 4),
+		"only cluster A's targets are enqueued for reconcile")
+
+	// The cluster->GitTarget mapping is KEPT so the enqueued reconcile can re-declare.
+	assert.Equal(t, clusterA, m.clusterIDForGitTarget(gd("a1")))
+}
+
+func TestRefreshClusterCredentials_InvalidatesWatchesOnRotation(t *testing.T) {
+	m := &Manager{
+		Log:            logr.Discard(),
+		SourceClusters: stubSourceClusterResolver{cfg: &rest.Config{Host: "h"}, version: "v2"},
+	}
+	const cluster = "team-a/kc/value"
+	cc := m.cluster(cluster)
+	cc.restConfig = &rest.Config{Host: "h"}
+	cc.configVersion = "v1" // the watches were built on the old version
+	m.rememberGitTargetCluster(gd("t"), cluster)
+	cancelled := installFakeWatch(m, gd("t"))
+	ch := m.GitPathEvents()
+
+	m.refreshClusterCredentials(context.Background(), cc)
+
+	assert.Equal(t, "v2", cc.configVersion, "clients rebuilt to the new version")
+	assert.Nil(t, cc.dynamicClient, "cached dynamic client dropped so the next use rebuilds it")
+	assert.True(t, *cancelled, "a rotated Secret invalidates the active watch so it re-establishes")
+	assert.Equal(t, []string{"t"}, drainEnqueuedNames(ch, 2))
 }
 
 // --- P1(b) -----------------------------------------------------------------------------------

@@ -73,7 +73,12 @@ func (m *Manager) EnsureGitTargetWatches(
 	if m.EventRouter == nil {
 		return nil
 	}
-	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
+	// Refresh ONLY this GitTarget's own source cluster on the declare path — never every active
+	// cluster. Refreshing all of them here means a healthy target's declare (which runs on the
+	// single GitTarget controller worker) blocks on an UNREACHABLE other cluster's full dial
+	// timeout, starving that healthy target's status. Cross-cluster catalog freshness and every
+	// cluster's SourceClusterReachable ride the background RefreshAPIResourceCatalog loop instead.
+	if err := m.refreshClusterForDeclare(ctx, m.clusterIDForGitTarget(gitDest)); err != nil {
 		return fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
 	}
 	m.refreshWatchedTypeTables()
