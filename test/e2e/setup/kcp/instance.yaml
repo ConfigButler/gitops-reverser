@@ -18,6 +18,10 @@ metadata:
   name: root
   namespace: kcp
 spec:
+  # Single replica: this is an e2e control plane on a single-node runner shared with the whole
+  # gitops-reverser stack (gitea, valkey, prometheus, flux, cert-manager). The operator defaults
+  # the shard and front-proxy to 2 each; HA is not what these specs test, so halve the footprint.
+  replicas: 1
   external:
     hostname: frontproxy-front-proxy.kcp.svc.cluster.local
     port: 6443
@@ -44,6 +48,7 @@ metadata:
   name: frontproxy
   namespace: kcp
 spec:
+  replicas: 1
   rootShard:
     ref:
       name: root
