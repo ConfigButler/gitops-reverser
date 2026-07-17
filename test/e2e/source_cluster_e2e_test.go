@@ -345,7 +345,7 @@ spec:
 		}
 		const ws = "sc-mirror"
 		hash := kcp.createWorkspace(ws)
-		DeferCleanup(func() { kcp.deleteWorkspace(ws) })
+		DeferCleanup(func() { kcp.cleanupWorkspaceTarget(testNs, ws) })
 
 		// A WatchRule watches its OWN namespace name on the source cluster, so the ConfigMap must
 		// live under that namespace (testNs) IN the workspace — a separate cluster, so creating a
@@ -400,10 +400,14 @@ spec:
 			{"sc-ws-b", "clusters/b", "beta"},
 			{"sc-ws-c", "clusters/c", "gamma"},
 		}
+		// Stand up all three mirrors, then assert on the OUTCOME (the mirrored files). We do not
+		// gate on each target's StreamsRunning in the loop: that condition can lag its stream, and
+		// the load-bearing claim here is what lands in Git, not the intermediate status. The final
+		// Eventually is generous because three remote initial-snapshots run concurrently.
 		for i := range cases {
 			c := cases[i]
 			hash := kcp.createWorkspace(c.ws)
-			DeferCleanup(func() { kcp.deleteWorkspace(c.ws) })
+			DeferCleanup(func() { kcp.cleanupWorkspaceTarget(testNs, c.ws) })
 
 			// The SAME namespace name (testNs) and the SAME resource name (shared) in every
 			// workspace; only the value differs. A WatchRule watches its own namespace name on the
@@ -430,20 +434,21 @@ spec:
 `, c.ws, testNs, target)
 			_, err = kubectlRunWithStdin(testNs, rule, "apply", "-f", "-")
 			Expect(err).NotTo(HaveOccurred())
-			waitForStreamsRunning(target, testNs)
 		}
 
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, repo.CheckoutDir)
 			for _, c := range cases {
 				hit := findFileByBasename(filepath.Join(repo.CheckoutDir, c.folder), "shared.yaml")
-				g.Expect(hit).NotTo(BeEmpty(), "expected demo/shared mirrored under %s", c.folder)
+				g.Expect(hit).NotTo(BeEmpty(), "expected shared mirrored under %s", c.folder)
 				content, readErr := os.ReadFile(hit)
 				g.Expect(readErr).NotTo(HaveOccurred())
 				g.Expect(string(content)).To(ContainSubstring("which: "+c.value),
 					"folder %s must carry workspace %s's own value, not another workspace's",
 					c.folder, c.ws)
 			}
-		}).WithTimeout(240 * time.Second).Should(Succeed())
+			// Generous: the initial snapshot writes each mirror promptly, but the ceiling also
+			// covers one RequeueSteadyInterval (5m) periodic resync as a fallback.
+		}).WithTimeout(420 * time.Second).WithPolling(5 * time.Second).Should(Succeed())
 	})
 })

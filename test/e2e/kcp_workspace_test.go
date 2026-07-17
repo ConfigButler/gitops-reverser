@@ -164,6 +164,18 @@ func (t *kcpTunnel) deleteWorkspace(name string) {
 	_, _ = kubectlWithKubeconfig(t.rootKubeconfig, "", "delete", "workspace", name, "--ignore-not-found")
 }
 
+// cleanupWorkspaceTarget tears down everything a workspace-mirror spec created, in dependency
+// order: the WatchRule and GitTarget FIRST (so the operator forgets the source cluster and stops
+// watching before its workspace disappears), then the Secret, then the workspace. Deleting these
+// between specs matters — a GitTarget left pointing at a deleted workspace churns the operator
+// (failing discovery every reconcile) and can starve a following spec's initial resync.
+func (t *kcpTunnel) cleanupWorkspaceTarget(ns, ws string) {
+	_, _ = kubectlRunInNamespace(ns, "delete", "watchrule", ws+"-rule", "--ignore-not-found")
+	_, _ = kubectlRunInNamespace(ns, "delete", "gittarget", ws+"-target", "--ignore-not-found")
+	_, _ = kubectlRunInNamespace(ns, "delete", "secret", ws+"-kubeconfig", "--ignore-not-found")
+	t.deleteWorkspace(ws)
+}
+
 // wsKubectl runs kubectl against a workspace (test-runner form), lazily writing that workspace's
 // runner kubeconfig on first use.
 func (t *kcpTunnel) wsKubectl(hash string, args ...string) (string, error) {
