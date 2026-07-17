@@ -817,24 +817,25 @@ Each step leaves the system correct and is independently reviewable.
 ## E2E and integration test plan
 
 The e2e harness ([`test/e2e/`](../../test/e2e/)) is kubectl-driven — CRs are rendered
-YAML applied to the cluster — and today provisions **exactly one** k3d cluster. Two
-consequences shape this plan:
+YAML applied to the cluster. The source-cluster corner is its own gated leg
+(`task test-e2e-source-cluster`, label `source-cluster`), the same idiom as
+`E2E_ENABLE_BI_DIRECTIONAL`. Two consequences shape this plan:
 
-- **Most scenarios need only one cluster.** Input validation, the reachability
-  split, credential rotation, and the authorization gate all exercise the source
-  path against a kubeconfig Secret without a genuinely separate cluster — a Secret
-  can name an unreachable server, or the management cluster's *own* API reached
-  through a kubeconfig (a "self-referencing remote" that drives the whole resolver /
-  `clusterContext` / rotation path on one cluster).
-- **Only the GVK→GVR test genuinely needs a second cluster** — it is the one place
-  two registries must legitimately *disagree*. It carries new harness infra (a small
-  second k3d cluster + a kubeconfig Secret reachable from the operator pod), so it is
-  **gated behind an env flag and dormant** until that infra lands, following the
-  existing `E2E_ENABLE_BI_DIRECTIONAL` idiom. A scaffold ships red-first
-  ([`test/e2e/source_cluster_e2e_test.go`](../../test/e2e/source_cluster_e2e_test.go)):
-  the specs compile today (kubeconfig is untyped YAML) and **fail** when run with
-  `E2E_ENABLE_SOURCE_CLUSTER=true` against the not-yet-built feature, then go green as
-  it lands.
+- **The reachability/validation scenarios need no separate cluster.** Input validation
+  and the `Validated`/`SourceClusterReachable` split exercise the source path against a
+  kubeconfig Secret whose server is unreachable — no genuinely remote cluster required.
+- **The mirror and GVK→GVR scenarios use real REMOTE clusters — kcp workspaces.**
+  Rather than provision a second k3d cluster, the corner installs kcp
+  ([`test/e2e/setup/kcp`](../../test/e2e/setup/kcp)) **by Flux**, like every other e2e
+  dependency, and mirrors kcp *workspaces*: cheap logical clusters, each a real
+  Kubernetes API reached at
+  `frontproxy-front-proxy.kcp.svc.cluster.local:6443/clusters/<hash>` over verifiable
+  TLS. Because kcp allows isolated copies of the same Kind across workspaces, three
+  workspaces holding the *same* namespace + resource is the cheapest possible proof that
+  state is keyed by source cluster — no second k3d, no two disagreeing CRDs to hand-wire.
+  The harness lives in
+  [`test/e2e/kcp_workspace_test.go`](../../test/e2e/kcp_workspace_test.go); the specs
+  Skip when kcp is absent, so a default `task test-e2e` never runs them.
 
 ### The scenarios
 
@@ -857,17 +858,19 @@ consequences shape this plan:
    `SourceClusterReachable=True` reason `LocalCluster`. The single-cluster
    compatibility guard.
 
-4. **Self-referencing remote round-trip** (single cluster). Point `kubeConfig` at a
-   Secret holding a kubeconfig for the management cluster's *own* API (in-cluster URL
-   + a read-only ServiceAccount token). Wire a `WatchRule` for ConfigMaps, create one,
-   and assert it mirrors to Git, with `SourceClusterReachable=True` and
-   `StreamsRunning=True`. Exercises the full resolver → `clusterContext` → watch path
-   — a distinct non-local context keyed by the Secret ref — without a second cluster.
+4. **Remote round-trip through a kcp workspace** (real remote). Create a kcp workspace,
+   put a ConfigMap in it, point a `GitTarget`'s `kubeConfig` at that workspace, wire a
+   `WatchRule` for ConfigMaps, and assert it mirrors to Git with
+   `SourceClusterReachable=True` and `StreamsRunning=True`. Exercises the full resolver →
+   `clusterContext` → per-cluster discovery → watch → target-scoped writer path against an
+   actually-remote API (a workspace is a distinct logical cluster), not a self-referencing
+   in-cluster fake — so it can tell a mistakenly-local watch from a remote one.
 
-5. **Credential rotation is transparent** (single cluster, builds on #4). Rotate the
-   Secret's contents (new token, same cluster). Assert mirroring continues, the
-   clients rebuild once, and the cluster identity is **unchanged** — no retarget, same
-   folder. Guards the rotation-on-refresh-cadence path and that rotation ≠ retarget.
+5. **Credential rotation is transparent** (deferred). Rotate the Secret's contents (new
+   token, same cluster). Assert mirroring continues, the clients rebuild once, and the
+   cluster identity is **unchanged** — no retarget, same folder. Not yet implemented as a
+   spec; the rotation-on-refresh-cadence path is unit-tested
+   (`refreshClusterCredentials`).
 
 6. **Credential-reference authorization is namespace-scoped** (single cluster).
    `spec.kubeConfig.secretRef` resolves only from the GitTarget's own namespace — a
@@ -881,19 +884,20 @@ consequences shape this plan:
    `GitProviderReady=False` and `Ready=False`, and recovers when the provider does —
    which also exercises the `Watches(&GitProvider{})` reconcile trigger.
 
-8. **GVK→GVR resolution is source-cluster scoped — the centerpiece** (two clusters,
-   gated/dormant). The local cluster serves `example.io/v1 Widget` as **`widgets`,
-   Namespaced**; the second small k3d serves the *same GVK* as **`widgetz`,
-   Cluster-scoped**. A remote `GitTarget` watches `Widget`; create one on the second
-   cluster. **Assert it mirrors at the remote's identity** — a path under
-   `…/example.io/widgetz/…` at cluster scope. A union / first-wins lookup (PR #220)
-   resolves the document against the *local* registry and would file it under
-   `{namespace}/example.io/widgets/…` — wrong plural and wrong scope. Verified sound
-   at the code level: [`typeset`](../../internal/typeset/observe.go) derives the GVR
-   from the served resource name and the scope from `Namespaced`, and refuses a
-   *within-registry* GVK→two-GVR clash ([`funnel.go`](../../internal/typeset/funnel.go)
-   `ReasonGVKNotUnique`) — so the clash can only arise from a cross-cluster union,
-   which is precisely what this test proves unsafe and the scoped resolver fixes.
+8. **Source-cluster identity is load-bearing — the centerpiece** (three kcp workspaces).
+   Three workspaces each hold the **same namespace + the same resource name**
+   (`<ns>`/`ConfigMap`/`shared`) with **different content**; three `GitTarget`s mirror
+   them into three folders. **Assert three distinct files, each carrying its own
+   workspace's value.** If the operator keyed state by `(namespace, GVR)` alone — a union
+   / first-wins lookup (PR #220) — the three identical identities would collapse into one;
+   that they land as three distinct, correctly-valued files is the proof that everything is
+   keyed by source cluster. This is the same invariant the original two-disagreeing-CRDs
+   plan targeted, proven more directly and far more cheaply with kcp's isolated-per-workspace
+   API surfaces. Verified sound at the code level too:
+   [`typeset`](../../internal/typeset/observe.go) derives the GVR from the served resource
+   name and the scope from `Namespaced`, and refuses a *within-registry* GVK→two-GVR clash
+   ([`funnel.go`](../../internal/typeset/funnel.go) `ReasonGVKNotUnique`) — so a clash can
+   only arise from a cross-cluster union, which the scoped resolver rules out.
 
 ### Unit / integration coverage (faster, no cluster)
 
