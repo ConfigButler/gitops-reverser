@@ -36,8 +36,17 @@ type watchedTypeStore struct {
 	refreshMu sync.Mutex
 	mu        sync.Mutex
 	tables    map[string]WatchedTypeTable
-	revision  uint64
-	rulesFP   uint64
+	// registriesFP fingerprints each active cluster's id paired with its registry revision, so a
+	// discovery change on any source cluster re-projects. Unlike a naked sum of revisions it also
+	// moves when the SET of active clusters changes even if the totals coincide.
+	registriesFP uint64
+	rulesFP      uint64
+	// clusterFP fingerprints the GitTarget->source-cluster mapping. It is the third leg of the
+	// re-projection gate: registriesFP knows the active clusters but not which GitTarget maps to
+	// which, so it cannot see two GitTargets swapping clusters at a fixed active set; and the rules
+	// fingerprint knows nothing about clusters at all. Without it a retargeted GitTarget could keep
+	// the previous cluster's GVR table.
+	clusterFP uint64
 	resolved  bool
 }
 
@@ -66,15 +75,20 @@ func (m *Manager) refreshWatchedTypeTables() {
 		}
 	}
 
-	// The revision spans every active cluster, so a remote CRD change re-projects the tables
-	// even when the local registry is unchanged.
-	revision := m.combinedRegistryRevision()
+	// registriesFP spans every active cluster's (id, revision), so a remote CRD change — or a
+	// change in the set of active clusters — re-projects the tables even when the local registry
+	// is unchanged.
+	registriesFP := m.activeRegistriesFingerprint()
 	fingerprint := m.rulesFingerprint()
+	// The cluster mapping fingerprint catches a GitTarget switching source clusters at a fixed
+	// active set, which neither registriesFP nor the rules fingerprint can see.
+	clusterFP := m.clusterMappingFingerprint()
 
 	m.watchedTypes.mu.Lock()
 	upToDate := m.watchedTypes.resolved &&
-		m.watchedTypes.revision == revision &&
-		m.watchedTypes.rulesFP == fingerprint
+		m.watchedTypes.registriesFP == registriesFP &&
+		m.watchedTypes.rulesFP == fingerprint &&
+		m.watchedTypes.clusterFP == clusterFP
 	m.watchedTypes.mu.Unlock()
 	if upToDate {
 		return
@@ -85,8 +99,9 @@ func (m *Manager) refreshWatchedTypeTables() {
 	m.watchedTypes.mu.Lock()
 	previous := m.watchedTypes.tables
 	m.watchedTypes.tables = tables
-	m.watchedTypes.revision = revision
+	m.watchedTypes.registriesFP = registriesFP
 	m.watchedTypes.rulesFP = fingerprint
+	m.watchedTypes.clusterFP = clusterFP
 	m.watchedTypes.resolved = true
 	m.watchedTypes.mu.Unlock()
 
@@ -181,16 +196,38 @@ type targetSelections struct {
 	selections []watchSelection
 }
 
-// combinedRegistryRevision sums the registry revisions of every active cluster, so the
-// watched-type re-projection gate fires whenever ANY source cluster's discovery changes, not
-// only the local one. Registry revisions are monotonic counters, so the sum is a sound change
-// detector. In a single-cluster install it is exactly the local registry's revision.
-func (m *Manager) combinedRegistryRevision() uint64 {
-	var sum uint64
-	for _, id := range m.activeClusterIDs() {
-		sum += m.cluster(id).registry.Revision()
+// activeRegistriesFingerprint hashes each active cluster's id paired with its registry revision,
+// so the watched-type re-projection gate fires whenever ANY source cluster's discovery changes —
+// and, unlike a naked SUM of revisions, it also moves when the SET of active clusters changes even
+// if the totals happen to coincide (a cluster added and another removed at the same revision).
+// Registry revisions are monotonic per cluster, so (sorted id, revision) pairs are a sound change
+// detector. In a single-cluster install it is just the local registry's (id, revision).
+func (m *Manager) activeRegistriesFingerprint() uint64 {
+	ids := m.activeClusterIDs() // already sorted
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, fmt.Sprintf("%s=%d", id, m.cluster(id).registry.Revision()))
 	}
-	return sum
+	return xxhash.Sum64String(strings.Join(parts, "\x00"))
+}
+
+// clusterMappingFingerprint hashes the GitTarget->source-cluster mapping so the watched-type
+// re-projection gate fires whenever a GitTarget's source cluster changes. The combined registry
+// revision is a sum across active clusters and the rules fingerprint carries no cluster identity,
+// so neither notices a GitTarget being retargeted (delete + recreate against a different cluster)
+// when the old and new clusters happen to have equal registry revisions. Folding this in means a
+// recreated GitTarget always re-resolves its table against the cluster it now mirrors, never
+// keeping the previous cluster's GVRs. In a single-cluster install the mapping is empty (every
+// target is local) and this is a constant, so the gate behaves exactly as before.
+func (m *Manager) clusterMappingFingerprint() uint64 {
+	m.gitTargetClustersMu.Lock()
+	parts := make([]string, 0, len(m.gitTargetClusters))
+	for gitTargetKey, clusterID := range m.gitTargetClusters {
+		parts = append(parts, gitTargetKey+"\x1f"+clusterID)
+	}
+	m.gitTargetClustersMu.Unlock()
+	sort.Strings(parts)
+	return xxhash.Sum64String(strings.Join(parts, "\x00"))
 }
 
 // resolveWatchedTypeTables projects every GitTarget's rules onto ITS OWN source cluster's

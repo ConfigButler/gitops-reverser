@@ -5,6 +5,7 @@ package watch
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -15,12 +16,18 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 )
 
-// sourceClusterDialTimeout bounds every call the operator makes to a remote source cluster
-// (discovery, list, watch establishment). A remote is reached over a network the in-cluster
-// config is not, so without a timeout an unreachable API server would hang the catalog-refresh
-// loop indefinitely — exactly the SourceClusterReachable=False case the reachability split
-// exists to surface promptly. It bounds the "controller never blocks forever on a dial" promise.
+// sourceClusterDialTimeout bounds CONNECTION ESTABLISHMENT to a remote source cluster (the TCP
+// dial + TLS handshake), not the whole request. A remote is reached over a network the in-cluster
+// config is not, so an unreachable API server must surface as SourceClusterReachable=False
+// promptly instead of hanging the catalog-refresh loop. It is applied as a dialer timeout (not
+// rest.Config.Timeout), so a long-lived watch built from the same config is NEVER cut off after
+// this interval; finite discovery calls get it as a request timeout on a separate config copy
+// (see clusterDiscovery).
 const sourceClusterDialTimeout = 15 * time.Second
+
+// sourceClusterKeepAlive is the TCP keep-alive on the dialer above, so an idle watch connection
+// to a remote is kept healthy rather than silently half-open.
+const sourceClusterKeepAlive = 30 * time.Second
 
 // secretSourceClusterResolver resolves a source-cluster id — "<namespace>/<name>/<key>", as
 // (api/v1alpha3).GitTarget.SourceClusterID() renders it — into a rest.Config, by reading that
@@ -113,9 +120,13 @@ func (r *secretSourceClusterResolver) ResolveSourceCluster(
 		cfg.QPS = r.qps
 		cfg.Burst = r.burst
 	}
-	// Bound every dial so an unreachable remote surfaces as SourceClusterReachable=False
-	// promptly instead of hanging the refresh loop.
-	cfg.Timeout = sourceClusterDialTimeout
+	// Bound CONNECTION SETUP so an unreachable remote surfaces as SourceClusterReachable=False
+	// promptly — but do NOT set rest.Config.Timeout, which applies to the full HTTP request and
+	// would cut off a long-lived watch every interval and churn reconnects. A dialer timeout bounds
+	// the TCP/TLS handshake only; the established watch stream then stays open indefinitely. Finite
+	// discovery/list calls are bounded separately (clusterDiscovery copies the config with a request
+	// timeout; list callers pass a context deadline).
+	cfg.Dial = (&net.Dialer{Timeout: sourceClusterDialTimeout, KeepAlive: sourceClusterKeepAlive}).DialContext
 
 	// The Secret's resourceVersion is the version token: it changes on every rotation, and on
 	// nothing else. The kubeconfig bytes themselves are dropped here — only the built

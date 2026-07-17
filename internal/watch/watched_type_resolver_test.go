@@ -108,14 +108,14 @@ func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {
 	)
 	manager.refreshWatchedTypeTables()
 	manager.watchedTypes.mu.Lock()
-	firstRev := manager.watchedTypes.revision
+	firstRegFP := manager.watchedTypes.registriesFP
 	firstFP := manager.watchedTypes.rulesFP
 	manager.watchedTypes.mu.Unlock()
 
 	// A second refresh with no rule or registry change is a no-op gate hit.
 	manager.refreshWatchedTypeTables()
 	manager.watchedTypes.mu.Lock()
-	assert.Equal(t, firstRev, manager.watchedTypes.revision)
+	assert.Equal(t, firstRegFP, manager.watchedTypes.registriesFP)
 	assert.Equal(t, firstFP, manager.watchedTypes.rulesFP)
 	manager.watchedTypes.mu.Unlock()
 }

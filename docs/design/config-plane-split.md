@@ -513,48 +513,39 @@ SourceClusterUnreachable`.
 - Remote clients carry client-side throttling the in-cluster config does not by
   default.
 
-### Credential-reference authorization — the real multi-tenant boundary
-
-This is the security decision the feature turns on, and it needs an explicit answer
-before merge.
+### Credential-reference authorization — the namespace is the boundary
 
 The operator reads the kubeconfig Secret with **its own** credentials, not the
-spec author's. Under ordinary namespace RBAC that is harmless: whoever can create a
-`GitTarget` in namespace *N* can already read Secrets in *N*, so naming one grants
-nothing new. The boundary **breaks in exactly the multi-tenant split this feature
-enables**: a tenant granted create/update on `GitTarget` but **not** blanket
-Secret-read in their namespace could name a privileged kubeconfig Secret they
-cannot themselves read, and the operator — which can — would then mirror that
-remote cluster's state into a Git destination the tenant controls. A classic
-**confused-deputy** escalation. A read-only kubeconfig does not defuse it: the
-escalation is *reading a remote's state into a repo you control*, and read access
-is enough for that.
+spec author's. Under ordinary namespace RBAC that is harmless: `spec.kubeConfig.secretRef`
+is resolved **only from the GitTarget's own namespace** (there is no cross-namespace
+Secret reference), and whoever can create a `GitTarget` in namespace *N* can already
+read Secrets in *N* — so naming one grants nothing new. **The namespace is the trust
+boundary**, exactly as it already is for `GitProvider.spec.secretRef` (Git credentials),
+which has lived in one trust zone since day one. This is the model the feature ships with,
+and it is picked up entirely on the reconcile loop — no admission webhook.
 
-v1 must close this, and there are two shapes:
+The one residual case this does *not* close is a **fine-grained intra-namespace RBAC
+split**: a subject granted create/update on `GitTarget` in namespace *N* but **denied**
+Secret-read in that same namespace could name a privileged kubeconfig Secret they cannot
+themselves read, and the operator — which can — would mirror that remote cluster's state
+into a Git destination the subject controls (a confused-deputy read escalation). This
+requires an unusual RBAC posture (write-GitTarget-yes, read-Secret-no, same namespace); a
+namespace is normally a single tenant's compartment, so the split rarely exists in
+practice. **It is deliberately not closed by an admission webhook.** An earlier revision of
+this design guarded it with a fail-closed `SubjectAccessReview` at admission on the
+requesting user's `get` of the named Secret; that was removed because the product model is
+**all configuration is picked up on the reconcile loop, like every other resource** — and
+a reconcile runs as the operator ServiceAccount, with no requesting-user identity to review.
 
-1. **Admission check (fits the inline model).** An admitting webhook on `GitTarget`,
-   when `spec.kubeConfig` is set, issues a `SubjectAccessReview` for the requesting
-   user's `get` on the named Secret and denies if they lack it. This repo **already
-   issues `SubjectAccessReview` from admission** for the asserted-author guard, so
-   the machinery exists. Unlike the `failurePolicy: Ignore` operator-types webhook,
-   this one must be **fail-closed**: no verdict → reject the `kubeConfig`.
-2. **Platform-admin-authored.** Restrict who may set `spec.kubeConfig` at all.
-   Because RBAC cannot gate a *field value*, in practice this is either the same
-   admission webhook (a subject allow-list) **or** moving the credential reference to
-   a platform-owned `ClusterConnection`/`SourceCluster` CRD that only platform admins
-   may create. Which means: **if self-service multi-tenant remote clusters are a near
-   requirement, the dedicated-CRD escape hatch becomes valuable sooner than the
-   [Decision](#decision) implies.** The inline field stays correct for the
-   platform-admin-authored case; a CRD is what makes *tenant self-service* safe
-   without per-field admission.
-
-The same confused-deputy exists in principle for `GitProvider.spec.secretRef`
-today, but has never mattered because Git credentials and `GitProvider` creation
-have lived in one trust zone. `spec.kubeConfig` is the first place the split is a
-*designed-for* scenario, so it is the first place the check is load-bearing.
-Deferring workload identity and impersonation (see *Remote auth mechanisms*) is
-partly downstream of this: both widen what a chosen credential/identity can reach,
-so neither should land until this boundary is settled.
+If self-service multi-tenant remote clusters with per-subject Secret isolation *inside* one
+namespace ever becomes a real requirement, the right shape is **not** a per-field admission
+webhook but a platform-owned `ClusterConnection`/`SourceCluster` CRD that only platform
+admins may create (RBAC on the *object*, which the reconcile loop can honor natively),
+referenced by name from the `GitTarget`. That keeps the "everything reconciles" model intact
+while moving the credential out of the tenant's write reach. Deferring workload identity and
+impersonation (see *Remote auth mechanisms*) is partly downstream of this: both widen what a
+chosen credential/identity can reach, so neither should land before that CRD, if it is ever
+needed.
 
 ## Explicitly out of scope (and why it's safe to defer)
 
@@ -811,9 +802,10 @@ Each step leaves the system correct and is independently reviewable.
    `DeclareForGitTarget` (the `gitTargetUIDs` pattern); resolve rules and open
    watches against that cluster's context; **target-scoped GVK→GVR resolution** for
    the writer (each write carries its cluster id — *not* a union).
-5. **Credential-reference authorization** — the fail-closed admission
-   `SubjectAccessReview` on `spec.kubeConfig` (*Security*). This gates the
-   multi-tenant story and must land with the feature, not after it.
+5. **Credential-reference authorization** — the namespace is the boundary
+   (*Security*): `spec.kubeConfig.secretRef` resolves only from the GitTarget's own
+   namespace, so the model is the same one `GitProvider.spec.secretRef` already uses.
+   No admission webhook — all validation is on the reconcile loop.
 6. **Status conditions** (*Status and conditions*) — `Validated` extended with the
    `KubeConfig*` reasons in the controller (inputs, no dial); the new
    `SourceClusterReachable` set from the data plane's discovery (`Unknown` →
@@ -877,10 +869,12 @@ consequences shape this plan:
    clients rebuild once, and the cluster identity is **unchanged** — no retarget, same
    folder. Guards the rotation-on-refresh-cadence path and that rotation ≠ retarget.
 
-6. **Credential-reference authorization** (single cluster). Using the harness's
-   impersonation client, a subject that may create `GitTarget` but lacks `get` on the
-   referenced Secret is **denied at admission** (fail-closed `SubjectAccessReview`); a
-   subject that has both succeeds. Guards the confused-deputy boundary (*Security*).
+6. **Credential-reference authorization is namespace-scoped** (single cluster).
+   `spec.kubeConfig.secretRef` resolves only from the GitTarget's own namespace — a
+   Secret named in another namespace is never read. Assert a same-namespace reference
+   validates and a cross-namespace name does not resolve. The boundary is namespace RBAC
+   (whoever can write GitTargets in *N* can already read Secrets in *N*), not an
+   admission check (*Security*).
 
 7. **`GitProviderReady` projection** (single cluster). Make the referenced
    `GitProvider` un-ready (bad repo URL). Assert the `GitTarget` reflects
@@ -921,12 +915,13 @@ consequences shape this plan:
    kubeconfig but get two contexts. Accept the duplicate, or canonicalize the id
    after the first successful read? (Proposal: accept it; canonicalizing couples
    identity to a network read.)
-2. **Credential-reference authorization shape** (the load-bearing one — *Security*).
-   Ship the **fail-closed admission `SubjectAccessReview`** on the referenced Secret
-   (proposed), and/or restrict `spec.kubeConfig` to platform admins, and/or bring the
-   `ClusterConnection` CRD forward for self-service tenancy? The admission check is
-   the minimum for v1; the CRD is the answer if tenant self-service is a near
-   requirement.
+2. **Credential-reference authorization shape** (*Security*). **Decided:** the
+   namespace is the boundary — `secretRef` resolves only from the GitTarget's own
+   namespace, same as `GitProvider.spec.secretRef`, and everything is picked up on the
+   reconcile loop (no admission webhook). The fine-grained intra-namespace RBAC split is
+   left open by design; if per-subject Secret isolation inside one namespace is ever a
+   real requirement, the answer is a platform-owned `ClusterConnection` CRD (RBAC on the
+   object) referenced by name — never a per-field admission webhook.
 3. **Unsafe-kubeconfig default.** Ship `exec`/insecure-TLS **rejected by default**
    (proposed, diverging from Flux's silent strip) with opt-in flags, or warn-and-
    allow? Rejecting is the safe default; confirm it will not surprise operators who

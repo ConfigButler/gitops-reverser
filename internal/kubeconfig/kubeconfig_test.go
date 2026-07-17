@@ -60,6 +60,43 @@ users:
     token: dummy-token
 `
 
+// tokenFileKubeConfig names a token by file path — client-go would read it from the operator
+// Pod's filesystem. The CA is embedded so ONLY the file reference is the fault under test.
+const tokenFileKubeConfig = `apiVersion: v1
+kind: Config
+clusters:
+- name: c
+  cluster:
+    server: https://192.0.2.1:6443
+    certificate-authority-data: dGVzdA==
+contexts:
+- name: c
+  context: {cluster: c, user: u}
+current-context: c
+users:
+- name: u
+  user:
+    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+`
+
+// caFileKubeConfig names the cluster CA by file path — another in-Pod read vector.
+const caFileKubeConfig = `apiVersion: v1
+kind: Config
+clusters:
+- name: c
+  cluster:
+    server: https://192.0.2.1:6443
+    certificate-authority: /etc/ssl/certs/ca.crt
+contexts:
+- name: c
+  context: {cluster: c, user: u}
+current-context: c
+users:
+- name: u
+  user:
+    token: dummy-token
+`
+
 func TestResolveKey_ExplicitKeyWins(t *testing.T) {
 	data := map[string][]byte{"value": []byte("a"), "custom": []byte("b")}
 	raw, used, ok := ResolveKey(data, "custom")
@@ -102,6 +139,8 @@ func TestCheck_RejectsUnsafeByDefault(t *testing.T) {
 		{"garbage", "this is not a kubeconfig", ReasonInvalid},
 		{"exec", execKubeConfig, ReasonExecNotAllowed},
 		{"insecureTLS", insecureKubeConfig, ReasonInsecureTLSNotAllowed},
+		{"tokenFile", tokenFileKubeConfig, ReasonFileReferenceNotAllowed},
+		{"caFile", caFileKubeConfig, ReasonFileReferenceNotAllowed},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -117,6 +156,17 @@ func TestCheck_AllowsSafeAndOptedIn(t *testing.T) {
 	assert.Nil(t, Check([]byte(validKubeConfig), SafetyPolicy{}), "a token kubeconfig is safe")
 	assert.Nil(t, Check([]byte(execKubeConfig), SafetyPolicy{AllowExec: true}), "exec opted in")
 	assert.Nil(t, Check([]byte(insecureKubeConfig), SafetyPolicy{AllowInsecureTLS: true}), "insecure TLS opted in")
+}
+
+// A file-backed reference is a pod-filesystem read vector with no legitimate use for a remote
+// kubeconfig, so it is rejected UNCONDITIONALLY — even with every safety opt-in enabled.
+func TestCheck_FileReferencesRejectedEvenWhenOptedIn(t *testing.T) {
+	all := SafetyPolicy{AllowExec: true, AllowInsecureTLS: true}
+	for name, raw := range map[string]string{"tokenFile": tokenFileKubeConfig, "caFile": caFileKubeConfig} {
+		rej := Check([]byte(raw), all)
+		require.NotNil(t, rej, "%s must be rejected regardless of policy", name)
+		assert.Equal(t, ReasonFileReferenceNotAllowed, rej.Reason)
+	}
 }
 
 func TestBuildRESTConfig(t *testing.T) {

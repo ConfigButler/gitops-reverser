@@ -73,7 +73,7 @@ func gitTargetWithKubeConfig(secretName, key string) *configbutleraiv1alpha3.Git
 	return t
 }
 
-func TestValidateKubeConfig(t *testing.T) {
+func TestValidateKubeConfig_AllScenarios(t *testing.T) {
 	tests := []struct {
 		name       string
 		secretName string
@@ -141,7 +141,7 @@ func TestValidateKubeConfig(t *testing.T) {
 	}
 }
 
-func TestGitProviderReadiness(t *testing.T) {
+func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 	provider := func(conds []metav1.Condition) *configbutleraiv1alpha3.GitProvider {
 		return &configbutleraiv1alpha3.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "prov", Namespace: "team-a"},

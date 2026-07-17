@@ -55,6 +55,11 @@ type GitProviderReference struct {
 // but not yet implemented here; reject it at admission so the v1alpha3 contract is "secretRef only".
 // Deleting this one rule, plus wiring the provider path in the resolver, is the whole future enablement.
 // +kubebuilder:validation:XValidation:rule="!has(self.kubeConfig) || !has(self.kubeConfig.configMapRef)",message="spec.kubeConfig.configMapRef (provider auth) is not yet supported; use secretRef"
+//
+// secretRef.name comes from the external meta.KubeConfigReference schema, which marks it required but
+// permits the empty string; an empty name is meaningless (it can never resolve a Secret), so reject it
+// at admission rather than letting it surface later as a Validated=False "Secret not found".
+// +kubebuilder:validation:XValidation:rule="!has(self.kubeConfig) || !has(self.kubeConfig.secretRef) || size(self.kubeConfig.secretRef.name) > 0",message="spec.kubeConfig.secretRef.name must not be empty"
 type GitTargetSpec struct {
 	// ProviderRef references the GitProvider that backs this target.
 	// Immutable: delete and recreate the GitTarget to change its destination.

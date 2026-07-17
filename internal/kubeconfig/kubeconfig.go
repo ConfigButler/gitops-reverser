@@ -34,6 +34,13 @@ const (
 	// ReasonInsecureTLSNotAllowed: the kubeconfig sets insecure-skip-tls-verify and
 	// --insecure-kubeconfig-tls is not set.
 	ReasonInsecureTLSNotAllowed = "KubeConfigInsecureTLSNotAllowed"
+	// ReasonFileReferenceNotAllowed: the kubeconfig names a credential or CA by file PATH
+	// (tokenFile, client-certificate, client-key, or certificate-authority) instead of embedding
+	// it. client-go reads those paths from the operator Pod's OWN filesystem when it builds the
+	// REST config, so an operator-supplied (attacker-adjacent) kubeconfig could point at in-Pod
+	// Secrets and ship them to a remote API server it names. Always rejected — there is no safe
+	// opt-in, unlike exec/insecure-TLS: require the embedded *-data (or inline token) forms.
+	ReasonFileReferenceNotAllowed = "KubeConfigFileReferenceNotAllowed"
 )
 
 // SafetyPolicy is the operator's opt-in to the two footguns this package rejects by default.
@@ -111,7 +118,58 @@ func checkParsed(cfg *clientcmdapi.Config, policy SafetyPolicy) *RejectionError 
 			}
 		}
 	}
+	if rej := checkNoFileReferences(cfg); rej != nil {
+		return rej
+	}
 	return nil
+}
+
+// checkNoFileReferences rejects any credential or CA named by file PATH. client-go resolves
+// tokenFile / client-certificate / client-key / certificate-authority against the process's own
+// filesystem when it builds the REST config, so a remote kubeconfig that named an in-Pod path
+// would make the operator read its own Secrets and send them to the server the kubeconfig points
+// at. There is no legitimate reason for an operator-supplied remote kubeconfig to reference the
+// operator Pod's files, and no safe opt-in — so this is unconditional (unlike exec/insecure-TLS).
+func checkNoFileReferences(cfg *clientcmdapi.Config) *RejectionError {
+	for name, auth := range cfg.AuthInfos {
+		if auth == nil {
+			continue
+		}
+		if field := fileBackedAuthField(auth); field != "" {
+			return &RejectionError{
+				Reason: ReasonFileReferenceNotAllowed,
+				Message: fmt.Sprintf(
+					"kubeconfig user %q names %s by file path, which client-go would read from the operator "+
+						"Pod's filesystem; rejected. Embed the credential with its *-data field (client-"+
+						"certificate-data / client-key-data) or use an inline token.", name, field),
+			}
+		}
+	}
+	for name, cluster := range cfg.Clusters {
+		if cluster != nil && cluster.CertificateAuthority != "" {
+			return &RejectionError{
+				Reason: ReasonFileReferenceNotAllowed,
+				Message: fmt.Sprintf(
+					"kubeconfig cluster %q names certificate-authority by file path, which client-go would "+
+						"read from the operator Pod's filesystem; rejected. Embed it with "+
+						"certificate-authority-data.", name),
+			}
+		}
+	}
+	return nil
+}
+
+// fileBackedAuthField reports the first file-path credential field an AuthInfo sets, or "".
+func fileBackedAuthField(auth *clientcmdapi.AuthInfo) string {
+	switch {
+	case auth.ClientCertificate != "":
+		return "client-certificate"
+	case auth.ClientKey != "":
+		return "client-key"
+	case auth.TokenFile != "":
+		return "tokenFile"
+	}
+	return ""
 }
 
 // BuildRESTConfig parses raw kubeconfig bytes, applies the safety policy, and returns the

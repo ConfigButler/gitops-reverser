@@ -118,10 +118,6 @@ type GitTargetReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 
-// The GitTarget kubeConfig admission webhook issues a SubjectAccessReview to confirm the
-// requester may `get` the referenced kubeconfig Secret (fail-closed confused-deputy guard).
-// +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
-
 // Reconcile validates GitTarget references and drives startup lifecycle gates.
 //
 //nolint:gocognit,cyclop,funlen // Gate pipeline is intentionally explicit to keep status transitions obvious.
@@ -143,6 +139,13 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, validationErr
 	}
 	if !validated {
+		// A remote-source GitTarget whose kubeConfig stopped validating (Secret deleted, key gone,
+		// or contents now unsafe/unparseable) must have its data plane STOPPED, not merely marked
+		// blocked. Otherwise its watches keep mirroring the remote on the cached credential while
+		// status claims Validated=False. Forgetting the declaration cancels those watches and
+		// releases the source-cluster context; a later recovery re-declares and re-snapshots. A
+		// local GitTarget names no source cluster, so its streams are left untouched.
+		r.stopSourceClusterMirror(&target)
 		r.setCondition(
 			&target,
 			GitTargetConditionEncryptionConfigured,
@@ -394,6 +397,21 @@ func (r *GitTargetReconciler) evaluateWorkerWiringGate(
 
 // setBlockedDataPlane marks stream readiness as not-yet-evaluated when a control-plane gate
 // blocked the reconcile before watches could be declared.
+// stopSourceClusterMirror tears down the data plane of a remote-source GitTarget that is no longer
+// Validated, so a dead credential can never keep an active mirror running behind a Validated=False
+// status. It is a no-op for a local GitTarget (nothing remote to stop) and idempotent across
+// requeues while the target stays blocked. A later recovery re-declares the watches and re-snapshots.
+func (r *GitTargetReconciler) stopSourceClusterMirror(target *configbutleraiv1alpha3.GitTarget) {
+	if target.SourceClusterID() == "" {
+		return
+	}
+	if r.EventRouter == nil || r.EventRouter.WatchManager == nil {
+		return
+	}
+	gitDest := types.NewResourceReference(target.Name, target.Namespace)
+	r.EventRouter.WatchManager.ForgetGitTargetDeclaration(gitDest)
+}
+
 func (r *GitTargetReconciler) setBlockedDataPlane(target *configbutleraiv1alpha3.GitTarget) {
 	r.setCondition(
 		target,

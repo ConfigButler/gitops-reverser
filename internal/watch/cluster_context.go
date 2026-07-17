@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -423,7 +424,19 @@ func (m *Manager) refreshClusterCredentials(ctx context.Context, cc *clusterCont
 	}
 	cfg, version, err := m.resolveRemoteConfig(ctx, cc)
 	if err != nil {
-		// The catalog refresh that follows reports this on SourceClusterReachable; nothing to drop.
+		// A transient resolve error (a slow apiserver, a momentary network blip) must not kill a
+		// healthy stream — the reconnect that follows picks the credential back up, and the catalog
+		// refresh reports it on SourceClusterReachable. But a DEFINITIVE credential failure — the
+		// Secret was deleted, its key vanished, or its contents are now unsafe/unparseable — means
+		// the credential this cluster's clients were built from no longer exists. Keeping the cached
+		// clients would let active watches keep reconnecting to a remote the operator can no longer
+		// legitimately reach, while every GitTarget on it reports Validated=False. Drop them so the
+		// next client build fails closed with the config plane's verdict rather than silently reusing
+		// a revoked credential. (The controller separately forgets the declaration, cancelling the
+		// in-flight watches; this closes the catalog-refresh-cadence window before that reconcile.)
+		if isDefinitiveCredentialFailure(err) {
+			m.dropClusterClients(cc)
+		}
 		return
 	}
 
@@ -438,6 +451,36 @@ func (m *Manager) refreshClusterCredentials(ctx context.Context, cc *clusterCont
 	}
 	cc.restConfig = cfg
 	cc.configVersion = version
+	cc.dynamicClient = nil
+	cc.discovery = nil
+}
+
+// isDefinitiveCredentialFailure reports whether a source-cluster resolve error means the
+// credential is now gone or unusable — as opposed to a transient read error worth retrying. A
+// deleted Secret (NotFound) and any kubeconfig RejectionError (key not found, unsafe, or
+// unparseable content) are definitive: retrying cannot make them succeed, so the cached clients
+// must be dropped rather than reused. Both are unwrapped through the resolver's fmt.Errorf wrapping.
+func isDefinitiveCredentialFailure(err error) bool {
+	if apierrors.IsNotFound(err) {
+		return true
+	}
+	_, rejected := kubeconfig.AsRejection(err)
+	return rejected
+}
+
+// dropClusterClients releases a source cluster's cached REST/dynamic/discovery clients under the
+// per-cluster lock, forcing the next use to re-resolve the credential and rebuild them. It is the
+// fail-closed half of the credential refresh: called when the credential a cluster's clients were
+// built from is definitively gone, so a watch reconnect cannot silently reuse a revoked credential.
+func (m *Manager) dropClusterClients(cc *clusterContext) {
+	cc.clientsMu.Lock()
+	defer cc.clientsMu.Unlock()
+	if cc.restConfig != nil {
+		m.Log.Info("source cluster credential no longer resolvable; dropping cached clients (fail-closed)",
+			"clusterID", cc.id)
+	}
+	cc.restConfig = nil
+	cc.configVersion = ""
 	cc.dynamicClient = nil
 	cc.discovery = nil
 }
@@ -486,7 +529,17 @@ func (m *Manager) clusterDiscovery(ctx context.Context, clusterID string) (apiRe
 	if err != nil {
 		return nil, err
 	}
-	disco, err := discovery.NewDiscoveryClientForConfig(cfg)
+	discoCfg := cfg
+	if !cc.isLocal() {
+		// Discovery uses the legacy, non-context ServerGroupsAndResources(), and a remote config
+		// deliberately carries no request-level timeout (its watches must stay open). Bound the
+		// finite discovery call with a request timeout on a COPY, so a remote that accepts the
+		// connection but hangs on the response cannot stall the catalog refresh — without ever
+		// deadlining a watch built from the shared config.
+		discoCfg = rest.CopyConfig(cfg)
+		discoCfg.Timeout = sourceClusterDialTimeout
+	}
+	disco, err := discovery.NewDiscoveryClientForConfig(discoCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create discovery client for cluster %q: %w", describeCluster(clusterID), err)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -23,6 +24,7 @@ import (
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
@@ -61,17 +63,54 @@ func apiServiceTriggerGVR() schema.GroupVersionResource {
 // their unready registries and a SourceClusterReachable=False projection), never the local
 // cluster's reconcile. A remote rotation is also picked up here, on the refresh cadence.
 func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
-	var localErr error
+	var (
+		localErr error
+		remotes  []*clusterContext
+	)
 	for _, id := range m.activeClusterIDs() {
 		cc := m.cluster(id)
-		m.refreshClusterCredentials(ctx, cc)
-		err := m.refreshClusterCatalog(ctx, cc)
-		m.recordClusterReachability(cc, err)
-		if id == LocalClusterID {
-			localErr = err
+		if cc.isLocal() {
+			// The local cluster stays on the caller's goroutine: it owns localErr (the only error
+			// returned) and re-arms the API-surface trigger informers, and it is never slow.
+			localErr = m.refreshClusterCatalog(ctx, cc)
+			m.recordClusterReachability(cc, localErr)
+			continue
 		}
+		remotes = append(remotes, cc)
 	}
+	m.refreshRemoteCatalogsConcurrently(ctx, remotes)
 	return localErr
+}
+
+// maxConcurrentCatalogRefreshes bounds how many remote source clusters refresh at once, so a
+// large tenant fan-out cannot open an unbounded number of simultaneous discovery connections.
+const maxConcurrentCatalogRefreshes = 8
+
+// refreshRemoteCatalogsConcurrently refreshes each remote source cluster's credentials and catalog
+// independently, with bounded concurrency. Serial refresh made total latency grow as
+// remoteCount × the discovery timeout — one unreachable remote could burn the full timeout before
+// the next even started, delaying every other tenant. Each clusterContext has its own client lock
+// and registry and shares no mutable state, so the refreshes are safe to run in parallel; the only
+// shared structures they touch (the reachability field and the per-cluster log-dedup maps) are
+// guarded by their existing manager-wide locks.
+func (m *Manager) refreshRemoteCatalogsConcurrently(ctx context.Context, remotes []*clusterContext) {
+	if len(remotes) == 0 {
+		return
+	}
+	sem := make(chan struct{}, maxConcurrentCatalogRefreshes)
+	var wg sync.WaitGroup
+	for _, cc := range remotes {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(cc *clusterContext) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			m.refreshClusterCredentials(ctx, cc)
+			err := m.refreshClusterCatalog(ctx, cc)
+			m.recordClusterReachability(cc, err)
+		}(cc)
+	}
+	wg.Wait()
 }
 
 // refreshClusterCatalog refreshes ONE cluster's discovery-backed catalog and republishes its
@@ -240,12 +279,6 @@ func (m *Manager) typeRegistryInstance() *typeset.Registry {
 	return m.localCluster().registry
 }
 
-// refreshTypeRegistry republishes the LOCAL cluster's registry from its catalog scan. It is
-// the back-compatible no-arg form; refreshClusterTypeRegistry does the work for any cluster.
-func (m *Manager) refreshTypeRegistry() {
-	m.refreshClusterTypeRegistry(m.localCluster())
-}
-
 // refreshClusterTypeRegistry publishes one cluster's catalog scan to its typeset registry,
 // which owns ALL cross-scan judgement (retain-on-error, the removal grace for omissions —
 // docs/spec/typeset-owns-discovery-grace.md). It runs after every catalog refresh, so the
@@ -321,7 +354,10 @@ type ruleResourceSelector struct {
 }
 
 // ResolveWatchRuleResources reports one WatchRule's resource-resolution status for
-// controller feedback. See resolveRuleResourceStatus.
+// controller feedback. See resolveRuleResourceStatus. A WatchRule's GitTarget lives in the
+// WatchRule's own namespace, and the status resolves against THAT GitTarget's source cluster —
+// so a remote-only CRD is reported as watched, and a local-only CRD selected by a remote target
+// is not, instead of both being answered from the local registry.
 func (m *Manager) ResolveWatchRuleResources(
 	_ context.Context,
 	rule configv1alpha3.WatchRule,
@@ -333,11 +369,14 @@ func (m *Manager) ResolveWatchRuleResources(
 			scope: configv1alpha3.ResourceScopeNamespaced,
 		})
 	}
-	return m.resolveRuleResourceStatus(selectors)
+	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+	return m.resolveRuleResourceStatus(gitDest, selectors)
 }
 
 // ResolveClusterWatchRuleResources reports one ClusterWatchRule's resource-resolution
-// status for controller feedback. See resolveRuleResourceStatus.
+// status for controller feedback. See resolveRuleResourceStatus. A ClusterWatchRule is
+// cluster-scoped, so its targetRef names both the GitTarget and its namespace; the status
+// resolves against that GitTarget's source cluster.
 func (m *Manager) ResolveClusterWatchRuleResources(
 	_ context.Context,
 	rule configv1alpha3.ClusterWatchRule,
@@ -348,7 +387,8 @@ func (m *Manager) ResolveClusterWatchRuleResources(
 			groups: rr.APIGroups, versions: rr.APIVersions, resources: rr.Resources, scope: rr.Scope,
 		})
 	}
-	return m.resolveRuleResourceStatus(selectors)
+	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)
+	return m.resolveRuleResourceStatus(gitDest, selectors)
 }
 
 // resolveRuleResourceStatus reports a rule's resource-resolution status from the type
@@ -357,9 +397,18 @@ func (m *Manager) ResolveClusterWatchRuleResources(
 // explain why an individual selector matched nothing: absent, refused, and not-yet-served
 // are all the same to a mirror. Status only reports catalog readiness and how many distinct
 // followable types the rule currently watches.
-func (m *Manager) resolveRuleResourceStatus(selectors []ruleResourceSelector) (bool, string) {
-	m.refreshTypeRegistry()
-	reg := m.typeRegistryInstance()
+func (m *Manager) resolveRuleResourceStatus(
+	gitDest types.ResourceReference,
+	selectors []ruleResourceSelector,
+) (bool, string) {
+	// Resolve against the GitTarget's OWN source cluster, not a manager-wide union: a WatchRule
+	// scoped to a remote GitTarget must report the remote's followable set. clusterIDForGitTarget
+	// is the Declare-time capture (LocalClusterID until the first Declare, so a status read racing
+	// bootstrap falls back to local — the same fallback the watched-type tables use). The registry
+	// republish reads the already-scanned catalog and never dials.
+	cc := m.cluster(m.clusterIDForGitTarget(gitDest))
+	m.refreshClusterTypeRegistry(cc)
+	reg := cc.registry
 	if !reg.Ready() {
 		return false, "API resource catalog is not ready"
 	}
