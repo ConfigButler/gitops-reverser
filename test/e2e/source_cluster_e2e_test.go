@@ -13,33 +13,29 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// This file is the RED-FIRST scaffold for the config-plane split
-// (docs/design/config-plane-split.md): a GitTarget may name the cluster it mirrors
-// FROM via spec.kubeConfig (Flux's meta.KubeConfigReference).
+// This file is the source-cluster corner for the config-plane split
+// (docs/design/config-plane-split.md): a GitTarget may name the cluster it mirrors FROM via
+// spec.kubeConfig (Flux's meta.KubeConfigReference).
 //
-// The feature does not exist yet. These specs are written first, on purpose:
-//   - They COMPILE today, because CRs are applied as untyped YAML — a spec.kubeConfig
-//     block is just a string until the CRD gains the field.
-//   - They are DORMANT in the default suite (BeforeAll calls skipUnlessSourceClusterEnabled).
-//   - Run them with E2E_ENABLE_SOURCE_CLUSTER=true and they FAIL (red) against the
-//     current, feature-less operator; they go GREEN as the feature lands.
+// Two kinds of spec live here:
+//   - Input-validation / reachability specs (Scenarios 1-3) need no remote cluster: they
+//     assert the controller's Validated / SourceClusterReachable projection from bad, valid-
+//     but-unroutable, and omitted kubeconfigs.
+//   - Remote-mirror specs (Scenarios 4, 8) mirror real REMOTE clusters — kcp WORKSPACES,
+//     cheap logical clusters installed by Flux (test/e2e/setup/kcp, see kcp_workspace_test.go).
+//     Scenario 8 is the centerpiece: three workspaces holding the SAME namespace + resource
+//     with different content, proving state is keyed by source cluster, not (namespace, GVR).
 //
-// The two-cluster GVK->GVR spec additionally needs a small SECOND k3d cluster whose
-// kubeconfig is reachable from the operator pod, provided via
-// E2E_SOURCE_CLUSTER_KUBECONFIG; without it that one spec skips (the harness infra is
-// not built yet). See the "E2E and integration test plan" in the design doc.
+// The whole suite is gated by skipUnlessSourceClusterEnabled() (env E2E_ENABLE_SOURCE_CLUSTER),
+// and the kcp specs additionally Skip when kcp is not installed — so a default `task test-e2e`
+// (which installs no kcp) never turns them red. Run the corner with `task test-e2e-source-cluster`.
 
 const (
-	sourceClusterEnabledEnv    = "E2E_ENABLE_SOURCE_CLUSTER"
-	secondClusterKubeConfigEnv = "E2E_SOURCE_CLUSTER_KUBECONFIG"
+	sourceClusterEnabledEnv = "E2E_ENABLE_SOURCE_CLUSTER"
 	// unreachableAPIServer is an RFC 5737 TEST-NET-1 address: syntactically a valid
 	// server, guaranteed not to route, so a kubeconfig pointing at it parses cleanly
 	// (Validated=True) yet can never be dialed (SourceClusterReachable=False).
 	unreachableAPIServer = "https://192.0.2.1:6443"
-	// inClusterAPIServer is reachable from inside the management cluster's pod network,
-	// so a kubeconfig whose only change is this server drives the whole remote path
-	// (resolver -> clusterContext -> watch) against the cluster the operator runs in.
-	inClusterAPIServer = "https://kubernetes.default.svc:443"
 )
 
 func sourceClusterEnabled() bool {
@@ -51,15 +47,16 @@ func skipUnlessSourceClusterEnabled() {
 	GinkgoHelper()
 	if !sourceClusterEnabled() {
 		Skip(fmt.Sprintf(
-			"config-plane split is disabled; set %s=true to run these specs "+
-				"(they are red until GitTarget.spec.kubeConfig ships)", sourceClusterEnabledEnv))
+			"source-cluster corner is disabled; run `task test-e2e-source-cluster` "+
+				"(sets %s=true and installs kcp)", sourceClusterEnabledEnv))
 	}
 }
 
 // rawKubeConfigWithServer returns the current cluster's real, self-contained kubeconfig
-// (embedded CA + client credential) with only the API server address swapped. Swapping to
-// an unroutable address yields "valid but unreachable"; swapping to the in-cluster address
-// yields a self-referencing "remote" that actually works from the operator pod.
+// (embedded CA + client credential) with only the API server address swapped. Swapping to an
+// unroutable address yields a "valid but unreachable" kubeconfig — Validated=True yet
+// SourceClusterReachable=False — which is what the reachability specs assert. (Real remote
+// mirroring is exercised against kcp workspaces, not a server swap; see kcp_workspace_test.go.)
 func rawKubeConfigWithServer(server string) string {
 	GinkgoHelper()
 	raw, err := kubectlRun("config", "view", "--raw", "--minify", "-o", "yaml")
@@ -120,6 +117,28 @@ users:
 `
 }
 
+// fileReferenceKubeConfig is structurally valid but names its token by FILE PATH — client-go
+// would read that path from the operator Pod's own filesystem, so the operator must reject it
+// (KubeConfigFileReferenceNotAllowed) rather than let a remote kubeconfig exfiltrate in-Pod files.
+func fileReferenceKubeConfig() string {
+	return `apiVersion: v1
+kind: Config
+clusters:
+- name: c
+  cluster:
+    server: ` + unreachableAPIServer + `
+    certificate-authority-data: dGVzdA==
+contexts:
+- name: c
+  context: {cluster: c, user: u}
+current-context: c
+users:
+- name: u
+  user:
+    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+`
+}
+
 // writeKubeConfigSecret applies a Secret holding a kubeconfig under the given key.
 func writeKubeConfigSecret(ns, name, key, kubeconfig string) {
 	GinkgoHelper()
@@ -138,8 +157,10 @@ func writeKubeConfigSecret(ns, name, key, kubeconfig string) {
 }
 
 // applyGitTargetWithKubeConfig applies a GitTarget whose spec.kubeConfig.secretRef names a
-// kubeconfig Secret. It returns the kubectl error so a spec can distinguish an admission
-// rejection (the red state before the CRD field exists) from a later status assertion.
+// kubeconfig Secret. It returns the kubectl error so a spec can assert the apply succeeded (the
+// spec is well-formed; the kubeconfig, not the CR, is what a validation case makes bad).
+//
+//nolint:unparam // provider is kept an explicit argument for readability; the corner uses one.
 func applyGitTargetWithKubeConfig(ns, name, provider, path, secretName, key string) (string, error) {
 	keyLine := ""
 	if key != "" {
@@ -184,6 +205,9 @@ var _ = Describe("Manager source cluster / config-plane split", Label("source-cl
 	var (
 		testNs string
 		repo   *RepoArtifacts
+		// kcp is the workspace harness for the remote-mirror specs. It is nil when kcp is not
+		// installed (a default `task test-e2e` run) — those specs then Skip rather than fail.
+		kcp *kcpTunnel
 	)
 
 	BeforeAll(func() {
@@ -197,9 +221,18 @@ var _ = Describe("Manager source cluster / config-plane split", Label("source-cl
 		Expect(err).NotTo(HaveOccurred(), "failed to apply repo secrets")
 
 		createReadyGitProvider(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
+
+		if kcpAvailable() {
+			kcp = startKcpTunnel()
+		}
 	})
 
-	AfterAll(func() { cleanupNamespace(testNs) })
+	AfterAll(func() {
+		if kcp != nil {
+			kcp.stop()
+		}
+		cleanupNamespace(testNs)
+	})
 
 	SetDefaultEventuallyTimeout(60 * time.Second)
 	SetDefaultEventuallyPollingInterval(2 * time.Second)
@@ -248,13 +281,25 @@ var _ = Describe("Manager source cluster / config-plane split", Label("source-cl
 				return "sc-insecure", ""
 			},
 		},
+		{
+			name:   "a file-path credential",
+			reason: "KubeConfigFileReferenceNotAllowed",
+			setup: func(ns string) (string, string) {
+				writeKubeConfigSecret(ns, "sc-filepath", "value", fileReferenceKubeConfig())
+				return "sc-filepath", ""
+			},
+		},
 	}
 	for _, tc := range inputCases {
 		It("fails Validated (no dial) for "+tc.name+" with reason "+tc.reason, func() {
 			secretName, key := tc.setup(testNs)
 			target := "sc-input-" + strings.ToLower(tc.reason)
 			path := "clusters/input/" + tc.reason
-			_, _ = applyGitTargetWithKubeConfig(testNs, target, providerName, path, secretName, key)
+			// The GitTarget spec is well-formed (the kubeconfig is bad, not the CR), so the apply
+			// itself must succeed — the controller then reports the typed reason on Validated. A
+			// discarded apply error would hide a real rejection as a 90s "condition not found".
+			_, err := applyGitTargetWithKubeConfig(testNs, target, providerName, path, secretName, key)
+			Expect(err).NotTo(HaveOccurred())
 			verifyResourceCondition("gittarget", target, testNs, "Validated", "False", tc.reason, "")
 		})
 	}
@@ -290,70 +335,115 @@ spec:
 			"SourceClusterReachable", "True", "LocalCluster", "")
 	})
 
-	// Scenario 4 — a self-referencing "remote": the whole remote path on one cluster.
-	It("mirrors through a self-referencing remote kubeconfig", func() {
-		writeKubeConfigSecret(testNs, "sc-self", "value", rawKubeConfigWithServer(inClusterAPIServer))
-		target := "sc-self-target"
-		_, err := applyGitTargetWithKubeConfig(testNs, target, providerName, "clusters/self", "sc-self", "")
-		Expect(err).NotTo(HaveOccurred())
-		verifyResourceCondition("gittarget", target, testNs, "SourceClusterReachable", "True", "", "", "150s")
+	// Scenario 4 — a REAL remote cluster: mirror a ConfigMap out of one kcp workspace. Proves
+	// the whole remote path end to end (resolver -> per-cluster clientContext -> per-cluster
+	// discovery -> per-cluster watch -> target-scoped writer) against an actually-remote API,
+	// not the self-referencing in-cluster server the scaffold used to fake it with.
+	It("mirrors a ConfigMap from a kcp workspace", func() {
+		if kcp == nil {
+			Skip("kcp is not installed; run this corner via `task test-e2e-source-cluster`")
+		}
+		const ws = "sc-mirror"
+		hash := kcp.createWorkspace(ws)
+		DeferCleanup(func() { kcp.deleteWorkspace(ws) })
 
-		ruleManifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+		// A WatchRule watches its OWN namespace name on the source cluster, so the ConfigMap must
+		// live under that namespace (testNs) IN the workspace — a separate cluster, so creating a
+		// namespace of that name there is independent of the local one.
+		_, err := kcp.wsKubectl(hash, "create", "namespace", testNs)
+		Expect(err).NotTo(HaveOccurred(), "create watched namespace in the workspace")
+		_, err = kcp.wsKubectl(hash, "-n", testNs, "create", "configmap", "sc-remote-cm",
+			"--from-literal=hello=from-kcp")
+		Expect(err).NotTo(HaveOccurred(), "create ConfigMap in the workspace")
+
+		writeKubeConfigSecret(testNs, ws+"-kubeconfig", "value", kcp.operatorKubeConfig(hash))
+		target := ws + "-target"
+		_, err = applyGitTargetWithKubeConfig(testNs, target, providerName, "clusters/kcp", ws+"-kubeconfig", "")
+		Expect(err).NotTo(HaveOccurred())
+		verifyResourceCondition("gittarget", target, testNs, "SourceClusterReachable", "True", "", "", "180s")
+
+		rule := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
-metadata: {name: sc-self-rule, namespace: %s}
+metadata: {name: %s-rule, namespace: %s}
 spec:
   targetRef: {kind: GitTarget, name: %s}
   rules:
   - resources: ["configmaps"]
-`, testNs, target)
-		_, err = kubectlRunWithStdin(testNs, ruleManifest, "apply", "-f", "-")
+`, ws, testNs, target)
+		_, err = kubectlRunWithStdin(testNs, rule, "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
 		waitForStreamsRunning(target, testNs)
 
-		_, err = kubectlRunInNamespace(testNs, "create", "configmap", "sc-self-cm", "--from-literal=hello=world")
-		Expect(err).NotTo(HaveOccurred())
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+			hit := findFileByBasename(filepath.Join(repo.CheckoutDir, "clusters/kcp"), "sc-remote-cm.yaml")
+			g.Expect(hit).NotTo(BeEmpty(), "expected the ConfigMap mirrored from the kcp workspace")
+			content, readErr := os.ReadFile(hit)
+			g.Expect(readErr).NotTo(HaveOccurred())
+			g.Expect(string(content)).To(ContainSubstring("from-kcp"))
+		}).WithTimeout(180 * time.Second).Should(Succeed())
+	})
+
+	// Scenario 8 — the centerpiece: source-cluster identity is load-bearing. Three workspaces
+	// each hold the SAME namespace + the SAME resource name (demo/ConfigMap "shared") with
+	// DIFFERENT content, mirrored by three GitTargets into three folders. If the operator keyed
+	// state by (namespace, GVR) alone — a union / first-wins lookup — the three identical
+	// identities would collapse into one; that they land as three distinct files, each carrying
+	// its own workspace's value, is the proof that everything is keyed by SOURCE CLUSTER.
+	It("mirrors identical resources from three workspaces as distinct GitOps state", func() {
+		if kcp == nil {
+			Skip("kcp is not installed; run this corner via `task test-e2e-source-cluster`")
+		}
+		type wsCase struct{ ws, folder, value string }
+		cases := []wsCase{
+			{"sc-ws-a", "clusters/a", "alpha"},
+			{"sc-ws-b", "clusters/b", "beta"},
+			{"sc-ws-c", "clusters/c", "gamma"},
+		}
+		for i := range cases {
+			c := cases[i]
+			hash := kcp.createWorkspace(c.ws)
+			DeferCleanup(func() { kcp.deleteWorkspace(c.ws) })
+
+			// The SAME namespace name (testNs) and the SAME resource name (shared) in every
+			// workspace; only the value differs. A WatchRule watches its own namespace name on the
+			// source cluster, so testNs is created inside each workspace (a distinct cluster).
+			_, err := kcp.wsKubectl(hash, "create", "namespace", testNs)
+			Expect(err).NotTo(HaveOccurred(), "create namespace in %s", c.ws)
+			_, err = kcp.wsKubectl(hash, "-n", testNs, "create", "configmap", "shared",
+				"--from-literal=which="+c.value)
+			Expect(err).NotTo(HaveOccurred(), "create ConfigMap shared in %s", c.ws)
+
+			writeKubeConfigSecret(testNs, c.ws+"-kubeconfig", "value", kcp.operatorKubeConfig(hash))
+			target := c.ws + "-target"
+			_, err = applyGitTargetWithKubeConfig(testNs, target, providerName, c.folder, c.ws+"-kubeconfig", "")
+			Expect(err).NotTo(HaveOccurred())
+			verifyResourceCondition("gittarget", target, testNs, "SourceClusterReachable", "True", "", "", "180s")
+
+			rule := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata: {name: %s-rule, namespace: %s}
+spec:
+  targetRef: {kind: GitTarget, name: %s}
+  rules:
+  - resources: ["configmaps"]
+`, c.ws, testNs, target)
+			_, err = kubectlRunWithStdin(testNs, rule, "apply", "-f", "-")
+			Expect(err).NotTo(HaveOccurred())
+			waitForStreamsRunning(target, testNs)
+		}
 
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, repo.CheckoutDir)
-			g.Expect(findFileByBasename(repo.CheckoutDir, "sc-self-cm.yaml")).
-				NotTo(BeEmpty(), "expected the ConfigMap mirrored from the self-referencing remote")
-		}).WithTimeout(120 * time.Second).Should(Succeed())
+			for _, c := range cases {
+				hit := findFileByBasename(filepath.Join(repo.CheckoutDir, c.folder), "shared.yaml")
+				g.Expect(hit).NotTo(BeEmpty(), "expected demo/shared mirrored under %s", c.folder)
+				content, readErr := os.ReadFile(hit)
+				g.Expect(readErr).NotTo(HaveOccurred())
+				g.Expect(string(content)).To(ContainSubstring("which: "+c.value),
+					"folder %s must carry workspace %s's own value, not another workspace's",
+					c.folder, c.ws)
+			}
+		}).WithTimeout(240 * time.Second).Should(Succeed())
 	})
-
-	// Scenario 8 — the centerpiece: GVK->GVR resolution is source-cluster scoped, proven
-	// by making two clusters legitimately DISAGREE on one GVK. Needs a real second cluster
-	// (E2E_SOURCE_CLUSTER_KUBECONFIG). Dormant until that harness infra lands.
-	//
-	// Local:  example.io/v1 Widget served as `widgets`  (Namespaced).
-	// Remote: example.io/v1 Widget served as `widgetz`  (Cluster-scoped).
-	// A remote GitTarget watching Widget must mirror the remote object at the REMOTE's
-	// identity: a path under .../example.io/widgetz/... at cluster scope. A union / first-
-	// wins lookup would resolve against the LOCAL registry and file it under
-	// {namespace}/example.io/widgets/... — wrong plural AND wrong scope.
-	It("resolves GVK->GVR against the source cluster, not a union", func() {
-		kubeconfigPath := strings.TrimSpace(os.Getenv(secondClusterKubeConfigEnv))
-		if kubeconfigPath == "" {
-			Skip(fmt.Sprintf(
-				"needs a second k3d cluster reachable from the operator pod; set %s to its kubeconfig "+
-					"(second-cluster harness not implemented yet — see the design doc test plan)",
-				secondClusterKubeConfigEnv))
-		}
-
-		// --- Intended body once the second-cluster harness exists (kept explicit so the
-		// implementer wires provisioning, not test logic): ---
-		//  1. Install CRD widgets.example.io  (kind Widget, Namespaced) on the LOCAL cluster.
-		//  2. Install CRD widgetz.example.io  (kind Widget, Cluster-scoped) on the REMOTE.
-		//  3. writeKubeConfigSecret(testNs, "sc-widget-remote", "value", <remote kubeconfig>).
-		//  4. applyGitTargetWithKubeConfig(..., "clusters/widget", "sc-widget-remote", "")
-		//     + a ClusterWatchRule selecting example.io/v1 Widget; waitForStreamsRunning.
-		//  5. Create a Widget on the REMOTE cluster (kubectl --kubeconfig=<remote>).
-		//  6. Assert the mirrored file path contains "example.io/widgetz" at cluster scope,
-		//     and assert it does NOT appear under a "widgets" / namespaced path (the union bug).
-		Fail("second-cluster GVK->GVR scenario is scaffolded but not yet runnable; " +
-			"provisioning helper is the remaining infra (design doc: E2E test plan)")
-	})
-
-	// Scenarios 5 (credential rotation), 6 (credential-reference authorization / admission
-	// SubjectAccessReview) and 7 (GitProviderReady projection) are described in the design
-	// doc's E2E test plan and land alongside the corresponding controller/webhook code.
 })

@@ -1,0 +1,8 @@
+# The kcp control plane's namespace. Holds etcd, the root shard (root-kcp), and the
+# front-proxy (frontproxy-front-proxy) that GitTargets reach a workspace through. The
+# kcp-operator itself installs into its own namespace (kcp-operator), created by the
+# HelmRelease.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kcp

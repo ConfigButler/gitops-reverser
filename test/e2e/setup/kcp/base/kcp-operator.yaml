@@ -1,0 +1,53 @@
+# kcp-operator runs kcp declaratively: the RootShard / FrontProxy / Kubeconfig CRs in
+# instance.yaml describe the control plane and the operator reconciles the Deployments, PKI
+# (via the kcp-pki cert-manager Issuer), and the front-proxy. It is installed BY Flux from
+# the official chart — the same pattern as every other e2e dependency (cert-manager, gitea,
+# valkey, prometheus-operator in ../flux/releases). We use the operator rather than a
+# hand-rolled StatefulSet or the plain kcp chart because it mints the admin kubeconfig
+# Secret declaratively (a Kubeconfig CR) and issues cert-manager serving certs with the
+# right SAN — exactly what a GitTarget needs to dial a workspace over verifiable TLS.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: kcp
+  namespace: flux-system
+spec:
+  interval: 30m
+  url: https://kcp-dev.github.io/helm-charts
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kcp-operator
+  namespace: flux-system
+spec:
+  interval: 30m
+  timeout: 5m
+  releaseName: kcp-operator
+  # cert-manager is a hard prerequisite (the operator issues shard/front-proxy PKI via it).
+  # It is the first HelmRelease in the e2e setup to declare a dependsOn — the others
+  # reconcile in parallel, but kcp-operator's CRDs/certs must not race cert-manager's webhook.
+  dependsOn:
+    - name: cert-manager
+      namespace: cert-manager
+  chart:
+    spec:
+      # Pinned for reproducibility (the gitops-api reference leaves it floating). kcp-operator
+      # 0.7.7 deploys kcp v0.8.x, which serves tenancy.kcp.io/v1alpha1 Workspaces — all this
+      # harness needs.
+      chart: kcp-operator
+      version: "0.7.7"
+      sourceRef:
+        kind: HelmRepository
+        name: kcp
+        namespace: flux-system
+  targetNamespace: kcp-operator
+  install:
+    createNamespace: true
+    crds: Create
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3

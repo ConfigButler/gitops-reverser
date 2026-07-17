@@ -1,0 +1,77 @@
+# The kcp control-plane instance, declared as kcp-operator CRs. Applied AFTER the operator
+# and its CRDs are Established (see hack/e2e/setup-kcp.sh). The operator reconciles the
+# root-shard + front-proxy Deployments and all PKI (via the kcp-pki Issuer), and mints the
+# admin kubeconfig into Secret kcp/kcp-admin-kubeconfig.
+#
+# external.hostname is the front-proxy's IN-CLUSTER Service DNS on purpose: the gitops-reverser
+# operator dials a workspace at https://frontproxy-front-proxy.kcp.svc.cluster.local:6443/
+# clusters/<hash>, and the operator-issued serving cert carries that name as a SAN, so the
+# GitTarget's kubeconfig verifies TLS with the real kcp CA (no insecure-skip-tls-verify).
+#
+# No audit stream and no per-workspace OIDC here (unlike the gitops-api reference): the
+# reverser mirrors a workspace by WATCHING it, and the e2e mints an admin-derived kubeconfig
+# per workspace rather than using Dex. So the WorkspaceAuthentication feature gate, the audit
+# ConfigMap/Secret, and the WorkspaceType/WorkspaceAuthenticationConfiguration are all omitted.
+apiVersion: operator.kcp.io/v1alpha1
+kind: RootShard
+metadata:
+  name: root
+  namespace: kcp
+spec:
+  external:
+    hostname: frontproxy-front-proxy.kcp.svc.cluster.local
+    port: 6443
+  certificates:
+    issuerRef:
+      group: cert-manager.io
+      kind: Issuer
+      name: kcp-pki
+  cache:
+    embedded:
+      enabled: true
+  etcd:
+    endpoints:
+      - http://etcd.kcp.svc.cluster.local:2379
+  # ServiceAccount auth lets in-cluster clients reach workspaces with a mounted SA; harmless
+  # here (the GitTarget uses the admin-derived kubeconfig) and matches the reference topology.
+  auth:
+    serviceAccount:
+      enabled: true
+---
+apiVersion: operator.kcp.io/v1alpha1
+kind: FrontProxy
+metadata:
+  name: frontproxy
+  namespace: kcp
+spec:
+  rootShard:
+    ref:
+      name: root
+  serviceTemplate:
+    spec:
+      # ClusterIP: reached in-cluster by the operator; no cloud LoadBalancer in e2e.
+      type: ClusterIP
+  auth:
+    serviceAccount:
+      enabled: true
+---
+# A declarative admin kubeconfig (system:kcp:admin) written to Secret kcp/kcp-admin-kubeconfig.
+# The e2e derives each workspace's GitTarget kubeconfig from this one by re-pointing the
+# server at /clusters/<workspace-hash>. It is a self-contained client-certificate kubeconfig
+# (embedded CA + cert + key, no file paths, no insecure-skip-tls-verify), so it passes the
+# operator's kubeconfig safety checks unchanged.
+apiVersion: operator.kcp.io/v1alpha1
+kind: Kubeconfig
+metadata:
+  name: admin
+  namespace: kcp
+spec:
+  username: kcp-admin
+  groups:
+    - system:kcp:admin
+  validity: 8766h
+  secretRef:
+    name: kcp-admin-kubeconfig
+  target:
+    frontProxyRef:
+      name: frontproxy

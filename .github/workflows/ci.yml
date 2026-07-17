@@ -779,10 +779,10 @@ jobs:
             k3d_agent_count: "0"
           - name: full-core
             script: "task test-e2e"
-            # `bi-directional` moved out to its own leg (it needs an Argo CD
-            # install that `task prepare-e2e` does not perform), so this filter is
-            # now a strict subset of what it used to run.
-            e2e_label_filter: "!manager && !image-refresh && !bi-directional"
+            # `bi-directional` and `source-cluster` moved out to their own legs (they
+            # install Argo CD / kcp that `task prepare-e2e` does not perform), so this
+            # filter is now a strict subset of what it used to run.
+            e2e_label_filter: "!manager && !image-refresh && !bi-directional && !source-cluster"
             e2e_report_name: "full-core"
             needs_artifact: false
             coverage: "1"
@@ -802,6 +802,23 @@ jobs:
           - name: bi-directional
             script: "task test-e2e-bi-directional"
             e2e_report_name: "bi-directional"
+            needs_artifact: false
+            coverage: "1"
+            k3d_agent_count: "0"
+          # The source-cluster corner: the only leg that installs kcp, and the only
+          # place gitops-reverser mirrors REMOTE clusters (GitTarget.spec.kubeConfig).
+          # kcp workspaces are cheap logical clusters, so its own runner installs a
+          # small kcp control plane and provisions three workspaces as source clusters.
+          # docs/design/config-plane-split.md.
+          #
+          # `task test-e2e-source-cluster` pins its own label filter and Ginkgo procs
+          # (SOURCE_CLUSTER_GINKGO_PROCS=1 — the specs share one kcp port-forward), so
+          # e2e_label_filter and e2e_ginkgo_procs are deliberately absent here. It uses
+          # the default config-dir install, so it carries the GOCOVERDIR overlay and its
+          # coverage unions with the others'.
+          - name: source-cluster
+            script: "task test-e2e-source-cluster"
+            e2e_report_name: "source-cluster"
             needs_artifact: false
             coverage: "1"
             k3d_agent_count: "0"
