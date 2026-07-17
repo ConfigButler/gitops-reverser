@@ -22,7 +22,11 @@ NAMESPACE="${NAMESPACE:-gitops-reverser}"
 WEBHOOK_CONFIG="${WEBHOOK_CONFIG:-test/e2e/cluster/audit/webhook-config.yaml}"
 CONTROLLER_DEPLOY_SELECTOR="${CONTROLLER_DEPLOY_SELECTOR:-app.kubernetes.io/part-of=gitops-reverser}"
 CERT_READY_TIMEOUT="${CERT_READY_TIMEOUT:-120s}"
-MANAGER_ROLLOUT_TIMEOUT="${MANAGER_ROLLOUT_TIMEOUT:-180s}"
+# 300s (was 180s): restarting the k3d SERVER node reschedules the manager pod, and on a
+# single-node CI runner that means the whole control plane comes back at once — heavier than the
+# initial deploy, which already gets 300s. The extra headroom only affects a slow recovery; a
+# healthy manager is back in well under a minute and never reaches the timeout.
+MANAGER_ROLLOUT_TIMEOUT="${MANAGER_ROLLOUT_TIMEOUT:-300s}"
 AUDIT_WARMUP_TIMEOUT="${AUDIT_WARMUP_TIMEOUT:-150}"
 SERVER_CONTAINER="k3d-${CLUSTER_NAME}-server-0"
 WARMUP_NS="gitops-reverser-audit-warmup"
@@ -63,8 +67,17 @@ resolve_manager_deploy() {
 # killed has rolled a Ready pod back out, so its audit ingress endpoint is up.
 wait_for_manager_rollout() {
     echo "⏳ Waiting for the manager (${MANAGER_DEPLOY}) to recover after the node restart..."
-    kubectl --context "${CTX}" -n "${NAMESPACE}" rollout status "${MANAGER_DEPLOY}" \
-        --timeout="${MANAGER_ROLLOUT_TIMEOUT}"
+    if kubectl --context "${CTX}" -n "${NAMESPACE}" rollout status "${MANAGER_DEPLOY}" \
+        --timeout="${MANAGER_ROLLOUT_TIMEOUT}"; then
+        return 0
+    fi
+    echo "❌ Manager did not recover after the node restart; dumping diagnostics." >&2
+    kubectl --context "${CTX}" -n "${NAMESPACE}" get pods -o wide >&2 || true
+    kubectl --context "${CTX}" -n "${NAMESPACE}" describe "${MANAGER_DEPLOY}" >&2 || true
+    kubectl --context "${CTX}" -n "${NAMESPACE}" logs "${MANAGER_DEPLOY}" --tail=80 >&2 || true
+    kubectl --context "${CTX}" get events -n "${NAMESPACE}" \
+        --sort-by=.lastTimestamp 2>/dev/null | tail -30 >&2 || true
+    return 1
 }
 
 # warmup_audit_path drives a throwaway audited write on every iteration and waits
