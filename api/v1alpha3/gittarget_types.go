@@ -3,6 +3,7 @@
 package v1alpha3
 
 import (
+	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -45,6 +46,20 @@ type GitProviderReference struct {
 // +kubebuilder:validation:XValidation:rule="self.providerRef == oldSelf.providerRef",message="spec.providerRef is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.path == oldSelf.path",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
+//
+// spec.kubeConfig is immutable — the source of a folder's content is destination identity, like
+// providerRef/branch/path above. Delete and recreate to change the cluster a GitTarget mirrors.
+// +kubebuilder:validation:XValidation:rule="has(self.kubeConfig) == has(oldSelf.kubeConfig) && (!has(self.kubeConfig) || self.kubeConfig == oldSelf.kubeConfig)",message="spec.kubeConfig is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
+//
+// configMapRef (provider / workload-identity auth) is present in meta.KubeConfigReference's schema
+// but not yet implemented here; reject it at admission so the v1alpha3 contract is "secretRef only".
+// Deleting this one rule, plus wiring the provider path in the resolver, is the whole future enablement.
+// +kubebuilder:validation:XValidation:rule="!has(self.kubeConfig) || !has(self.kubeConfig.configMapRef)",message="spec.kubeConfig.configMapRef (provider auth) is not yet supported; use secretRef"
+//
+// secretRef.name comes from the external meta.KubeConfigReference schema, which marks it required but
+// permits the empty string; an empty name is meaningless (it can never resolve a Secret), so reject it
+// at admission rather than letting it surface later as a Validated=False "Secret not found".
+// +kubebuilder:validation:XValidation:rule="!has(self.kubeConfig) || !has(self.kubeConfig.secretRef) || size(self.kubeConfig.secretRef.name) > 0",message="spec.kubeConfig.secretRef.name must not be empty"
 type GitTargetSpec struct {
 	// ProviderRef references the GitProvider that backs this target.
 	// Immutable: delete and recreate the GitTarget to change its destination.
@@ -80,6 +95,19 @@ type GitTargetSpec struct {
 	// change only affects resources created after the change.
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
+
+	// KubeConfig names the SOURCE CLUSTER this GitTarget mirrors FROM: the kubeconfig
+	// determines both the cluster and the credentials to reach it. Omitted means the cluster
+	// the operator runs in, the single-cluster default that behaves exactly as before. Its
+	// Secret is read from the GitTarget's OWN namespace, on the cluster the operator runs in —
+	// the credential for a cluster never has to live on that cluster. When SecretRef.Key is
+	// empty the resolver reads "value" then "value.yaml" (Flux's order). Immutable: the source
+	// of a folder's content is part of what the folder means; delete and recreate to change it.
+	// Only kubeConfig.secretRef is honored in v1alpha3 (configMapRef is rejected at admission);
+	// unsafe kubeconfigs (exec auth providers, insecure-skip-tls-verify) are rejected by the
+	// controller with a legible Validated=False reason unless the operator opts in via flags.
+	// +optional
+	KubeConfig *meta.KubeConfigReference `json:"kubeConfig,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document
@@ -180,6 +208,8 @@ type GitTargetStreamsStatus struct {
 // +kubebuilder:printcolumn:name="GitPathAccepted",type=string,JSONPath=`.status.conditions[?(@.type=="GitPathAccepted")].status`,priority=1
 // +kubebuilder:printcolumn:name="RenderMatchesLive",type=string,JSONPath=`.status.conditions[?(@.type=="RenderMatchesLive")].status`,priority=1
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
+// +kubebuilder:printcolumn:name="SourceReachable",type=string,JSONPath=`.status.conditions[?(@.type=="SourceClusterReachable")].reason`,priority=1
+// +kubebuilder:printcolumn:name="ProviderReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitProviderReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Encryption",type=string,JSONPath=`.spec.encryption.provider`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
@@ -199,6 +229,24 @@ type GitTarget struct {
 	// status defines the observed state of GitTarget
 	// +optional
 	Status GitTargetStatus `json:"status,omitempty,omitzero"`
+}
+
+// SourceClusterID renders the identity the watch data plane keys a GitTarget's source
+// cluster on: "<namespace>/<name>/<key>", where namespace/name locate the kubeconfig Secret
+// in the GitTarget's own (config-plane) namespace and key is the SecretRef key AS WRITTEN in
+// spec — an empty key is its own identity, distinct from an explicit one, because the
+// resolver's value→value.yaml fallback only runs when the key is omitted. A GitTarget with no
+// spec.kubeConfig (or no secretRef) mirrors the cluster the operator runs in and returns "",
+// the local-cluster id every source-cluster-unaware code path already lands on.
+//
+// Neither a namespace, a Secret name, nor a Secret data key may contain "/", so the three
+// segments are unambiguous; the resolver splits them back with SplitN(id, "/", 3).
+func (g *GitTarget) SourceClusterID() string {
+	if g.Spec.KubeConfig == nil || g.Spec.KubeConfig.SecretRef == nil {
+		return ""
+	}
+	ref := g.Spec.KubeConfig.SecretRef
+	return g.Namespace + "/" + ref.Name + "/" + ref.Key
 }
 
 // +kubebuilder:object:root=true

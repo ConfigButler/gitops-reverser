@@ -40,6 +40,30 @@ import (
 // a single-identity intent — an upsert (create/patch/replace) for an object-bearing
 // event, or a delete-document for a DELETE — and the writer NEVER mark-and-sweeps a
 // batch. Whole-folder mark-and-sweep is the resync mechanism (M8), not steady state.
+// mapperForCluster returns the GVK->GVR lookup for a source cluster: the per-cluster registry
+// when a cluster is named and a cluster resolver is wired, else the default (local) mapper.
+// The CLI and tests leave clusterMapper nil, so they always resolve against `mapper`.
+func (w *BranchWorker) mapperForCluster(clusterID string) typeset.Lookup {
+	if clusterID != "" && w.clusterMapper != nil {
+		if lk := w.clusterMapper(clusterID); lk != nil {
+			return lk
+		}
+	}
+	return w.mapper
+}
+
+// clusterIDForEvents returns the source cluster the events in one base belong to. Events in a
+// single flush share a GitTarget (they are grouped by base), so they share a cluster; the
+// first non-empty id wins, and an all-empty set is the local cluster.
+func clusterIDForEvents(events []Event) string {
+	for _, ev := range events {
+		if ev.SourceClusterID != "" {
+			return ev.SourceClusterID
+		}
+	}
+	return ""
+}
+
 func (w *BranchWorker) flushEventsToWorktree(
 	ctx context.Context,
 	worktree *gogit.Worktree,
@@ -53,7 +77,10 @@ func (w *BranchWorker) flushEventsToWorktree(
 		return false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scoped.scan, policy, scoped.writeSubdir)
+	// Every event in a base shares one GitTarget (events are grouped by base), so they share
+	// one source cluster; resolve this subtree's GVK->GVR against that cluster's registry.
+	mapper := w.mapperForCluster(clusterIDForEvents(events))
+	batch := newWriteBatch(ctx, w.contentWriter, mapper, scoped.scan, policy, scoped.writeSubdir)
 	if err := batch.refusal(); err != nil {
 		return false, err
 	}

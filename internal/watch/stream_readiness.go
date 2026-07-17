@@ -128,10 +128,13 @@ func (m *Manager) StreamSummaryForGitTarget(gitDest types.ResourceReference) Str
 	return m.streamSummaryForExpectedKeys(gitDest, sortedTargetWatchSpecKeys(specs), names)
 }
 
-// StreamSummaryForWatchRule reports stream readiness for one namespaced WatchRule.
+// StreamSummaryForWatchRule reports stream readiness for one namespaced WatchRule, resolved
+// against the source cluster its GitTarget mirrors from.
 func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) StreamSummary {
-	m.refreshTypeRegistry()
-	records := m.typeRegistryInstance().Followable()
+	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+	reg := m.registryForGitTarget(gitDest)
+	m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
+	records := reg.Followable()
 	var keys []targetWatchKey
 	names := map[schema.GroupVersionResource]string{}
 	for _, rr := range rule.Spec.Rules {
@@ -143,17 +146,16 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 			names[rec.Identity.GVR] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
-	return m.streamSummaryForExpectedKeys(
-		types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace),
-		deduplicateTargetWatchKeys(keys),
-		names,
-	)
+	return m.streamSummaryForExpectedKeys(gitDest, deduplicateTargetWatchKeys(keys), names)
 }
 
-// StreamSummaryForClusterWatchRule reports stream readiness for one ClusterWatchRule.
+// StreamSummaryForClusterWatchRule reports stream readiness for one ClusterWatchRule, resolved
+// against the source cluster its GitTarget mirrors from.
 func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) StreamSummary {
-	m.refreshTypeRegistry()
-	records := m.typeRegistryInstance().Followable()
+	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)
+	reg := m.registryForGitTarget(gitDest)
+	m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
+	records := reg.Followable()
 	var keys []targetWatchKey
 	names := map[schema.GroupVersionResource]string{}
 	for _, rr := range rule.Spec.Rules {
@@ -163,11 +165,7 @@ func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWa
 			names[rec.Identity.GVR] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
-	return m.streamSummaryForExpectedKeys(
-		types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace),
-		deduplicateTargetWatchKeys(keys),
-		names,
-	)
+	return m.streamSummaryForExpectedKeys(gitDest, deduplicateTargetWatchKeys(keys), names)
 }
 
 func (m *Manager) streamSummaryForExpectedKeys(

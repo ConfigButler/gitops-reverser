@@ -1,0 +1,65 @@
+# Backing store for the kcp root shard. kcp-operator does not embed etcd — the RootShard
+# references this external endpoint (instance.yaml -> spec.etcd.endpoints). A single-node
+# etcd is right for an e2e control plane; it is a small, well-understood component, so a
+# plain StatefulSet is the correct tool here (kcp itself is managed by the operator).
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: kcp
+  labels: { app: etcd }
+spec:
+  clusterIP: None
+  selector: { app: etcd }
+  ports:
+    - { name: client, port: 2379 }
+    - { name: peer, port: 2380 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+  namespace: kcp
+  labels: { app: etcd }
+spec:
+  serviceName: etcd
+  replicas: 1
+  selector:
+    matchLabels: { app: etcd }
+  template:
+    metadata:
+      labels: { app: etcd }
+    spec:
+      containers:
+        - name: etcd
+          image: gcr.io/etcd-development/etcd:v3.5.17
+          command: ["/usr/local/bin/etcd"]
+          args:
+            - --name=etcd0
+            - --data-dir=/var/run/etcd/data
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --advertise-client-urls=http://etcd.kcp.svc.cluster.local:2379
+            - --listen-peer-urls=http://0.0.0.0:2380
+            - --initial-advertise-peer-urls=http://etcd.kcp.svc.cluster.local:2380
+            - --initial-cluster=etcd0=http://etcd.kcp.svc.cluster.local:2380
+            - --initial-cluster-state=new
+            - --auto-compaction-retention=1
+          ports:
+            - { name: client, containerPort: 2379 }
+            - { name: peer, containerPort: 2380 }
+          readinessProbe:
+            httpGet: { path: /health, port: 2379 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/run/etcd }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests: { storage: 1Gi }

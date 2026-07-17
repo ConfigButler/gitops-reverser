@@ -149,6 +149,13 @@ vars:
   ARGOCD_DIR: '{{.ARGOCD_DIR | default "test/e2e/setup/argocd"}}'
   ARGOCD_PORT: '{{.ARGOCD_PORT | default "18080"}}'
   ARGOCD_WAIT_TIMEOUT: '{{.ARGOCD_WAIT_TIMEOUT | default "300s"}}'
+  # kcp — installed ONLY for the source-cluster corner (docs/design/config-plane-split.md),
+  # the same way Argo CD hangs off the bi-directional corner. kcp-operator arrives as a Flux
+  # HelmRelease (test/e2e/setup/kcp/base), like every other e2e dependency; the source-cluster
+  # specs mirror kcp *workspaces* (cheap logical clusters) as remote source clusters. Not a
+  # dependency of prepare-e2e, so the other CI legs never pay for it.
+  KCP_DIR: '{{.KCP_DIR | default "test/e2e/setup/kcp"}}'
+  KCP_WAIT_TIMEOUT: '{{.KCP_WAIT_TIMEOUT | default "300s"}}'
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'
   DEMO_PULL_SECRET: '{{.DEMO_MANIFESTS_DIR}}/vote/pull-secret.yaml'
@@ -244,7 +251,7 @@ tasks:
         # E2E_REPORT_NAME keeps each shard's Ginkgo JSON report distinct.
         go run github.com/onsi/ginkgo/v2/ginkgo \
           --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
-          --label-filter='{{.E2E_LABEL_FILTER | default "!image-refresh && !bi-directional"}}' \
+          --label-filter='{{.E2E_LABEL_FILTER | default "!image-refresh && !bi-directional && !source-cluster"}}' \
           --output-dir="{{.CS}}/{{.NAMESPACE}}" \
           --json-report=ginkgo-report-{{.E2E_REPORT_NAME | default "full"}}.json \
           ./test/e2e/
@@ -320,6 +327,35 @@ tasks:
           --label-filter='bi-directional' \
           --output-dir="{{.CS}}/{{.NAMESPACE}}" \
           --json-report=ginkgo-report-{{.E2E_REPORT_NAME | default "bi-directional"}}.json \
+          ./test/e2e/
+
+  test-e2e-source-cluster:
+    desc: >-
+      Run the source-cluster corner: kcp workspaces as remote source clusters
+      (GitTarget.spec.kubeConfig). Installs kcp into the cluster.
+    vars:
+      # One process: the specs share the kcp front-proxy port-forward and the workspaces
+      # they provision, and the suite is Ordered — parallel processes would contend on the
+      # local forward port and the shared control plane.
+      SOURCE_CLUSTER_GINKGO_PROCS: '{{.SOURCE_CLUSTER_GINKGO_PROCS | default "1"}}'
+      SOURCE_CLUSTER_TIMEOUT: '{{.SOURCE_CLUSTER_TIMEOUT | default "25m"}}'
+    cmds:
+      # Sequential, not deps: _prepare-e2e-ready restarts the k3d server node when it injects
+      # the webhook TLS cert, which would disrupt a kcp install running concurrently — the
+      # same reason test-e2e-bi-directional chains rather than fans.
+      - task: prepare-e2e
+      - task: _kcp-ready
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        export E2E_ENABLE_SOURCE_CLUSTER=true
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.SOURCE_CLUSTER_GINKGO_PROCS}} --timeout="{{.SOURCE_CLUSTER_TIMEOUT}}" -v \
+          --label-filter='source-cluster' \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" \
+          --json-report=ginkgo-report-{{.E2E_REPORT_NAME | default "source-cluster"}}.json \
           ./test/e2e/
 
   argocd-ui:
@@ -959,6 +995,31 @@ tasks:
         # Record the chart version and helm repo so the status gate above can detect
         # a bump or a repo/mirror switch.
         printf '%s\n%s\n' "{{.ARGOCD_CHART_VERSION}}" "{{.ARGOCD_HELM_REPO}}" > "{{.CS}}/argocd.installed"
+
+  _kcp-ready:
+    # kcp for the source-cluster corner. NOT a dependency of prepare-e2e — only
+    # test-e2e-source-cluster pulls it in, so the other CI legs never install kcp.
+    # See docs/design/config-plane-split.md. Modeled on _argocd-installed.
+    #
+    # _cluster-ready + _flux-setup-ready, because the kcp-operator HelmRelease needs Flux
+    # and its dependsOn: cert-manager (both arrive via the Flux setup).
+    method: timestamp
+    deps:
+      - _flux-setup-ready
+    sources:
+      - '{{.CS}}/flux-setup.ready'
+      - '{{.KCP_DIR}}/**/*'
+      - 'hack/e2e/setup-kcp.sh'
+    generates:
+      - '{{.CS}}/kcp.ready'
+    status:
+      - test -f "{{.CS}}/kcp.ready"
+      - test -z "$(find "{{.KCP_DIR}}" hack/e2e/setup-kcp.sh -type f -newer "{{.CS}}/kcp.ready" -print -quit)"
+      - |
+        kubectl --context "{{.CTX}}" -n kcp get secret kcp-admin-kubeconfig >/dev/null 2>&1
+    cmds:
+      - CTX="{{.CTX}}" KCP_DIR="{{.KCP_DIR}}" KCP_WAIT_TIMEOUT="{{.KCP_WAIT_TIMEOUT}}" bash hack/e2e/setup-kcp.sh
+      - touch "{{.CS}}/kcp.ready"
 
   _aggregated-api-ready:
     method: timestamp

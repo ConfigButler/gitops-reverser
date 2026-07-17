@@ -7,6 +7,7 @@
 package v1alpha3
 
 import (
+	"github.com/fluxcd/pkg/apis/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -614,6 +615,11 @@ func (in *GitTargetSpec) DeepCopyInto(out *GitTargetSpec) {
 	if in.Placement != nil {
 		in, out := &in.Placement, &out.Placement
 		*out = new(GitTargetPlacementSpec)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.KubeConfig != nil {
+		in, out := &in.KubeConfig, &out.KubeConfig
+		*out = new(meta.KubeConfigReference)
 		(*in).DeepCopyInto(*out)
 	}
 }

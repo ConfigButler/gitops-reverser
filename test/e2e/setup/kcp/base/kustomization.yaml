@@ -1,0 +1,11 @@
+# The kcp control plane's Flux-installable base: namespace, etcd, the PKI Issuer, and the
+# kcp-operator HelmRepository + HelmRelease. Applied by hack/e2e/setup-kcp.sh, which then
+# waits for the operator + its CRDs before applying ../instance.yaml (the RootShard /
+# FrontProxy / Kubeconfig CRs need the operator.kcp.io CRDs to exist first).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - etcd.yaml
+  - issuer.yaml
+  - kcp-operator.yaml

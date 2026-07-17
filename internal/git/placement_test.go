@@ -682,7 +682,7 @@ func TestPlacement_ColdBundleCollision_ViaResync(t *testing.T) {
 	}
 
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
-	_, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil, policy)
+	_, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", desired, nil, policy)
 
 	require.NoError(t, err)
 	assert.True(t, changed)

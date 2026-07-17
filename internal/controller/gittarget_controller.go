@@ -29,6 +29,7 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
@@ -106,6 +107,10 @@ type GitTargetReconciler struct {
 	Scheme        *runtime.Scheme
 	WorkerManager *git.WorkerManager
 	EventRouter   *watch.EventRouter
+	// KubeConfigSafety is the exec / insecure-TLS opt-in applied by the Validated gate when a
+	// GitTarget names spec.kubeConfig. It mirrors the resolver's policy so the controller's
+	// legibility verdict and the data plane's dial never disagree on what is safe.
+	KubeConfigSafety kubeconfig.SafetyPolicy
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch;create;update;patch;delete
@@ -134,6 +139,13 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, validationErr
 	}
 	if !validated {
+		// A remote-source GitTarget whose kubeConfig stopped validating (Secret deleted, key gone,
+		// or contents now unsafe/unparseable) must have its data plane STOPPED, not merely marked
+		// blocked. Otherwise its watches keep mirroring the remote on the cached credential while
+		// status claims Validated=False. Forgetting the declaration cancels those watches and
+		// releases the source-cluster context; a later recovery re-declares and re-snapshots. A
+		// local GitTarget names no source cluster, so its streams are left untouched.
+		r.stopSourceClusterMirror(&target)
 		r.setCondition(
 			&target,
 			GitTargetConditionEncryptionConfigured,
@@ -210,6 +222,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(
 			ctx,
 			gitDest,
+			target.SourceClusterID(),
 			gitPathWasRefused,
 		); declareErr != nil {
 			log.V(1).Info("stream declaration skipped; surface not observable",
@@ -229,6 +242,24 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	r.applyDataPlaneConditions(&target, streams, gitPath, renderFidelity)
+
+	// Project source-cluster reachability (runtime) and GitProvider readiness (destination-side)
+	// and fold both into Ready. This runs AFTER applyDataPlaneConditions so it can only downgrade
+	// Ready — a source/provider problem holds the target below Ready, but a healthy pair never
+	// overrides a still-replaying stream.
+	// A GitTarget with no source cluster mirrors the cluster the operator runs in, which is
+	// reachable by definition — so the default (used when no watch manager is wired, e.g. in
+	// tests) is True/LocalCluster for a local target and Unknown only for a remote one.
+	sourceReach := watch.SourceClusterReachableStatus{State: "True", Reason: "LocalCluster"}
+	if target.SourceClusterID() != "" {
+		sourceReach = watch.SourceClusterReachableStatus{State: "Unknown", Reason: "AwaitingDiscovery"}
+	}
+	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
+		sourceReach = r.EventRouter.WatchManager.SourceClusterReachable(target.SourceClusterID())
+	}
+	providerStatus, providerReason, providerMessage := r.gitProviderReadiness(ctx, &target, providerNS)
+	r.projectSourceAndProvider(&target, sourceReach, providerStatus, providerReason, providerMessage)
+	streamsSettling = streamsSettling || sourceReach.State != "True" || providerStatus != metav1.ConditionTrue
 
 	if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 		return ctrl.Result{}, err
@@ -274,12 +305,25 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
 	}
 
+	// spec.kubeConfig legibility gate: read/parse the kubeconfig Secret and apply the exec/TLS
+	// safety policy WITHOUT dialing. Reachability is a runtime observation the data plane records
+	// on SourceClusterReachable, so this only ever fails on a directly-readable input problem.
+	kcOK, kcReason, kcMsg, kcErr := r.validateKubeConfig(ctx, target)
+	if kcErr != nil {
+		return false, "", nil, kcErr
+	}
+	if !kcOK {
+		r.setCondition(target, GitTargetConditionValidated, metav1.ConditionFalse, kcReason, kcMsg)
+		result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
+		return false, fmt.Sprintf("Validated gate failed: %s", kcReason), &result, nil
+	}
+
 	r.setCondition(
 		target,
 		GitTargetConditionValidated,
 		metav1.ConditionTrue,
 		GitTargetReasonOK,
-		"Provider, branch, and placement policy validation passed",
+		"Provider, branch, placement, and kubeconfig validation passed",
 	)
 	return true, "", nil, nil
 }
@@ -353,6 +397,21 @@ func (r *GitTargetReconciler) evaluateWorkerWiringGate(
 
 // setBlockedDataPlane marks stream readiness as not-yet-evaluated when a control-plane gate
 // blocked the reconcile before watches could be declared.
+// stopSourceClusterMirror tears down the data plane of a remote-source GitTarget that is no longer
+// Validated, so a dead credential can never keep an active mirror running behind a Validated=False
+// status. It is a no-op for a local GitTarget (nothing remote to stop) and idempotent across
+// requeues while the target stays blocked. A later recovery re-declares the watches and re-snapshots.
+func (r *GitTargetReconciler) stopSourceClusterMirror(target *configbutleraiv1alpha3.GitTarget) {
+	if target.SourceClusterID() == "" {
+		return
+	}
+	if r.EventRouter == nil || r.EventRouter.WatchManager == nil {
+		return
+	}
+	gitDest := types.NewResourceReference(target.Name, target.Namespace)
+	r.EventRouter.WatchManager.ForgetGitTargetDeclaration(gitDest)
+}
+
 func (r *GitTargetReconciler) setBlockedDataPlane(target *configbutleraiv1alpha3.GitTarget) {
 	r.setCondition(
 		target,

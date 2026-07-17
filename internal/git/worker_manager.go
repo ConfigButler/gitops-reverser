@@ -35,8 +35,14 @@ type WorkerManager struct {
 	ctx     context.Context
 	// mapper is the GVK->GVR resolver injected into every worker so store scans build a
 	// resource-identity inventory. It is set once at startup (SetMapper) before any
-	// worker is created; a nil mapper keeps workers structure-only.
+	// worker is created; a nil mapper keeps workers structure-only. It is the LOCAL cluster's
+	// resolver and the fallback when a GitTarget names no source cluster.
 	mapper typeset.Lookup
+	// clusterMapper resolves the GVK->GVR lookup for a NAMED source cluster, so a worker
+	// serving a GitTarget that mirrors a remote resolves that folder against the remote's
+	// registry — never a union. Set once at startup (SetClusterMapper); nil in the CLI and
+	// in tests, which fall back to `mapper`.
+	clusterMapper func(clusterID string) typeset.Lookup
 
 	// sshHostKeys configures SSH host-key resolution for every worker's credential reads. Set
 	// once at startup (SetSSHHostKeyConfig) before any worker is created.
@@ -89,6 +95,15 @@ func (m *WorkerManager) SetMapper(mapper typeset.Lookup) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mapper = mapper
+}
+
+// SetClusterMapper injects the per-source-cluster GVK->GVR resolver used by every worker's
+// store scan when a GitTarget names a source cluster. Like SetMapper, it is called once at
+// startup before any worker is created, so each worker created by EnsureWorker carries it.
+func (m *WorkerManager) SetClusterMapper(resolver func(clusterID string) typeset.Lookup) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clusterMapper = resolver
 }
 
 // SetSSHHostKeyConfig injects the SSH host-key resolution config used by every worker's credential
@@ -164,6 +179,7 @@ func (m *WorkerManager) EnsureWorker(
 		// goroutine Start spawns, so setting it here (under m.mu, before that goroutine
 		// exists) is race-free.
 		worker.mapper = m.mapper
+		worker.clusterMapper = m.clusterMapper
 		worker.sshHostKeys = m.sshHostKeys
 		worker.pathRefusal = m.pathRefusal
 		worker.renderFidelityGate = m.renderFidelityGate

@@ -36,8 +36,17 @@ type watchedTypeStore struct {
 	refreshMu sync.Mutex
 	mu        sync.Mutex
 	tables    map[string]WatchedTypeTable
-	revision  uint64
-	rulesFP   uint64
+	// registriesFP fingerprints each active cluster's id paired with its registry revision, so a
+	// discovery change on any source cluster re-projects. Unlike a naked sum of revisions it also
+	// moves when the SET of active clusters changes even if the totals coincide.
+	registriesFP uint64
+	rulesFP      uint64
+	// clusterFP fingerprints the GitTarget->source-cluster mapping. It is the third leg of the
+	// re-projection gate: registriesFP knows the active clusters but not which GitTarget maps to
+	// which, so it cannot see two GitTargets swapping clusters at a fixed active set; and the rules
+	// fingerprint knows nothing about clusters at all. Without it a retargeted GitTarget could keep
+	// the previous cluster's GVR table.
+	clusterFP uint64
 	resolved  bool
 }
 
@@ -56,33 +65,43 @@ func (m *Manager) refreshWatchedTypeTables() {
 	m.watchedTypes.refreshMu.Lock()
 	defer m.watchedTypes.refreshMu.Unlock()
 
-	// Lazily populate the registry the first time (unit tests drive this path without
-	// RefreshAPIResourceCatalog); in production the catalog refresh keeps it current, so
-	// the heavy scan→registry rebuild stays off this path.
-	if !m.typeRegistryInstance().Ready() {
-		m.refreshTypeRegistry()
+	// Lazily populate each active cluster's registry the first time (unit tests drive this
+	// path without RefreshAPIResourceCatalog); in production the catalog refresh keeps them
+	// current, so the heavy scan→registry rebuild stays off this path.
+	for _, id := range m.activeClusterIDs() {
+		cc := m.cluster(id)
+		if !cc.registry.Ready() {
+			m.refreshClusterTypeRegistry(cc)
+		}
 	}
 
-	reg := m.typeRegistryInstance()
-	revision := reg.Revision()
+	// registriesFP spans every active cluster's (id, revision), so a remote CRD change — or a
+	// change in the set of active clusters — re-projects the tables even when the local registry
+	// is unchanged.
+	registriesFP := m.activeRegistriesFingerprint()
 	fingerprint := m.rulesFingerprint()
+	// The cluster mapping fingerprint catches a GitTarget switching source clusters at a fixed
+	// active set, which neither registriesFP nor the rules fingerprint can see.
+	clusterFP := m.clusterMappingFingerprint()
 
 	m.watchedTypes.mu.Lock()
 	upToDate := m.watchedTypes.resolved &&
-		m.watchedTypes.revision == revision &&
-		m.watchedTypes.rulesFP == fingerprint
+		m.watchedTypes.registriesFP == registriesFP &&
+		m.watchedTypes.rulesFP == fingerprint &&
+		m.watchedTypes.clusterFP == clusterFP
 	m.watchedTypes.mu.Unlock()
 	if upToDate {
 		return
 	}
 
-	tables := m.resolveWatchedTypeTables(reg.Generation())
+	tables := m.resolveWatchedTypeTables()
 
 	m.watchedTypes.mu.Lock()
 	previous := m.watchedTypes.tables
 	m.watchedTypes.tables = tables
-	m.watchedTypes.revision = revision
+	m.watchedTypes.registriesFP = registriesFP
 	m.watchedTypes.rulesFP = fingerprint
+	m.watchedTypes.clusterFP = clusterFP
 	m.watchedTypes.resolved = true
 	m.watchedTypes.mu.Unlock()
 
@@ -177,15 +196,62 @@ type targetSelections struct {
 	selections []watchSelection
 }
 
-// resolveWatchedTypeTables projects every GitTarget's rules onto the type registry's
-// followable set: a WatchRule scopes its records to its own namespace, a ClusterWatchRule
-// streams them cluster-wide. A GitTarget whose rules select nothing followable is kept as
-// an empty table so a transient discovery gap does not look like rule removal.
-func (m *Manager) resolveWatchedTypeTables(generation uint64) map[string]WatchedTypeTable {
+// activeRegistriesFingerprint hashes each active cluster's id paired with its registry revision,
+// so the watched-type re-projection gate fires whenever ANY source cluster's discovery changes —
+// and, unlike a naked SUM of revisions, it also moves when the SET of active clusters changes even
+// if the totals happen to coincide (a cluster added and another removed at the same revision).
+// Registry revisions are monotonic per cluster, so (sorted id, revision) pairs are a sound change
+// detector. In a single-cluster install it is just the local registry's (id, revision).
+func (m *Manager) activeRegistriesFingerprint() uint64 {
+	ids := m.activeClusterIDs() // already sorted
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, fmt.Sprintf("%s=%d", id, m.cluster(id).registry.Revision()))
+	}
+	return xxhash.Sum64String(strings.Join(parts, "\x00"))
+}
+
+// clusterMappingFingerprint hashes the GitTarget->source-cluster mapping so the watched-type
+// re-projection gate fires whenever a GitTarget's source cluster changes. The combined registry
+// revision is a sum across active clusters and the rules fingerprint carries no cluster identity,
+// so neither notices a GitTarget being retargeted (delete + recreate against a different cluster)
+// when the old and new clusters happen to have equal registry revisions. Folding this in means a
+// recreated GitTarget always re-resolves its table against the cluster it now mirrors, never
+// keeping the previous cluster's GVRs. In a single-cluster install the mapping is empty (every
+// target is local) and this is a constant, so the gate behaves exactly as before.
+func (m *Manager) clusterMappingFingerprint() uint64 {
+	m.gitTargetClustersMu.Lock()
+	parts := make([]string, 0, len(m.gitTargetClusters))
+	for gitTargetKey, clusterID := range m.gitTargetClusters {
+		parts = append(parts, gitTargetKey+"\x1f"+clusterID)
+	}
+	m.gitTargetClustersMu.Unlock()
+	sort.Strings(parts)
+	return xxhash.Sum64String(strings.Join(parts, "\x00"))
+}
+
+// resolveWatchedTypeTables projects every GitTarget's rules onto ITS OWN source cluster's
+// followable set — never a union: a WatchRule scopes its records to its own namespace, a
+// ClusterWatchRule streams them cluster-wide, and a GitTarget that mirrors a remote resolves
+// against that remote's registry. A GitTarget whose rules select nothing followable is kept as
+// an empty table so a transient discovery gap does not look like rule removal. The per-target
+// table is stamped with its own cluster's registry generation.
+func (m *Manager) resolveWatchedTypeTables() map[string]WatchedTypeTable {
 	if m.RuleStore == nil {
 		return map[string]WatchedTypeTable{}
 	}
-	records := m.typeRegistryInstance().Followable()
+
+	// Followable records are resolved per source cluster and cached, so several GitTargets
+	// sharing one cluster fold against one snapshot.
+	recordsByCluster := map[string][]typeset.TypeRecord{}
+	recordsFor := func(clusterID string) []typeset.TypeRecord {
+		if r, ok := recordsByCluster[clusterID]; ok {
+			return r
+		}
+		r := m.cluster(clusterID).registry.Followable()
+		recordsByCluster[clusterID] = r
+		return r
+	}
 
 	byTarget := map[string]*targetSelections{}
 	get := func(ref types.ResourceReference, providerNS, provider, branch, path string) *targetSelections {
@@ -199,11 +265,12 @@ func (m *Manager) resolveWatchedTypeTables(generation uint64) map[string]Watched
 		return ts
 	}
 
-	m.collectWatchRuleSelections(records, get)
-	m.collectClusterWatchRuleSelections(records, get)
+	m.collectWatchRuleSelections(recordsFor, get)
+	m.collectClusterWatchRuleSelections(recordsFor, get)
 
 	tables := make(map[string]WatchedTypeTable, len(byTarget))
 	for key, ts := range byTarget {
+		generation := m.cluster(m.clusterIDForGitTarget(ts.gitDest)).registry.Generation()
 		table := buildWatchedTypeTable(ts.gitDest, generation, ts.selections)
 		table.Dest = ts.dest
 		tables[key] = table
@@ -211,17 +278,17 @@ func (m *Manager) resolveWatchedTypeTables(generation uint64) map[string]Watched
 	return tables
 }
 
-// collectWatchRuleSelections folds every namespaced WatchRule into its GitTarget's
-// selected records, scoping each record to the rule's own namespace.
+// collectWatchRuleSelections folds every namespaced WatchRule into its GitTarget's selected
+// records, scoping each record to the rule's own namespace and resolving against the
+// GitTarget's own source cluster's followable set.
 func (m *Manager) collectWatchRuleSelections(
-	records []typeset.TypeRecord,
+	recordsFor func(clusterID string) []typeset.TypeRecord,
 	get func(types.ResourceReference, string, string, string, string) *targetSelections,
 ) {
 	for _, rule := range m.RuleStore.SnapshotWatchRules() {
-		ts := get(
-			types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace),
-			rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path,
-		)
+		targetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		records := recordsFor(m.clusterIDForGitTarget(targetRef))
+		ts := get(targetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
 		for _, rr := range rule.ResourceRules {
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
@@ -234,17 +301,16 @@ func (m *Manager) collectWatchRuleSelections(
 	}
 }
 
-// collectClusterWatchRuleSelections folds every ClusterWatchRule into its GitTarget's
-// selected records as cluster-wide streams.
+// collectClusterWatchRuleSelections folds every ClusterWatchRule into its GitTarget's selected
+// records as cluster-wide streams, resolving against the GitTarget's own source cluster.
 func (m *Manager) collectClusterWatchRuleSelections(
-	records []typeset.TypeRecord,
+	recordsFor func(clusterID string) []typeset.TypeRecord,
 	get func(types.ResourceReference, string, string, string, string) *targetSelections,
 ) {
 	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
-		ts := get(
-			types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace),
-			rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path,
-		)
+		targetRef := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		records := recordsFor(m.clusterIDForGitTarget(targetRef))
+		ts := get(targetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
 		for _, rr := range rule.Rules {
 			matched := matchFollowableRecords(records, rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
 			for _, rec := range matched {

@@ -73,17 +73,22 @@ func (m *Manager) EnsureGitTargetWatches(
 	if m.EventRouter == nil {
 		return nil
 	}
-	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
+	// Refresh ONLY this GitTarget's own source cluster on the declare path — never every active
+	// cluster. Refreshing all of them here means a healthy target's declare (which runs on the
+	// single GitTarget controller worker) blocks on an UNREACHABLE other cluster's full dial
+	// timeout, starving that healthy target's status. Cross-cluster catalog freshness and every
+	// cluster's SourceClusterReachable ride the background RefreshAPIResourceCatalog loop instead.
+	if err := m.refreshClusterForDeclare(ctx, m.clusterIDForGitTarget(gitDest)); err != nil {
 		return fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
 	}
 	m.refreshWatchedTypeTables()
-	if !m.typeRegistryInstance().Ready() {
+	if !m.registryForGitTarget(gitDest).Ready() {
 		return fmt.Errorf("aborting watch setup for %s: the cluster API surface has not been observed yet",
 			gitDest.String())
 	}
 
 	table := m.residentWatchedTypeTable(gitDest)
-	if retained := m.retainedWatchedTypes(table); len(retained) > 0 {
+	if retained := m.retainedWatchedTypes(gitDest, table); len(retained) > 0 {
 		return fmt.Errorf("aborting watch setup for %s: %s within the removal grace (currently unserved)",
 			gitDest.String(), gvkListSummary(retained))
 	}
@@ -343,7 +348,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		"target watch replay in progress",
 	)
 	replaying := true
-	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, opts)
+	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), key.GVR, key.Namespace, opts)
 	if err != nil {
 		if watchListUnsupported(err) {
 			log.Error(err, "WARNING: sendInitialEvents unsupported; falling back to LIST plus buffered WATCH",
@@ -392,7 +397,7 @@ func (m *Manager) targetWatchResumeAndStream(
 	ops OperationSet,
 	cursor string,
 ) error {
-	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, metav1.ListOptions{
+	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), key.GVR, key.Namespace, metav1.ListOptions{
 		ResourceVersion:     cursor,
 		AllowWatchBookmarks: true,
 	})
@@ -434,7 +439,8 @@ func (m *Manager) targetWatchListAndStream(
 	key targetWatchKey,
 	ops OperationSet,
 ) error {
-	w, err := m.openTargetWatch(ctx, key.GVR, key.Namespace, metav1.ListOptions{
+	clusterID := m.clusterIDForGitTarget(gitDest)
+	w, err := m.openTargetWatch(ctx, clusterID, key.GVR, key.Namespace, metav1.ListOptions{
 		AllowWatchBookmarks: true,
 	})
 	if err != nil {
@@ -455,7 +461,7 @@ func (m *Manager) targetWatchListAndStream(
 	buffered := make(chan watch.Event, targetWatchBufferCapacity)
 	go bufferTargetWatchEvents(ctx, w.ResultChan(), buffered)
 
-	list, err := m.openTargetList(ctx, key.GVR, key.Namespace, metav1.ListOptions{})
+	list, err := m.openTargetList(ctx, clusterID, key.GVR, key.Namespace, metav1.ListOptions{})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -689,6 +695,9 @@ func (m *Manager) routeLiveTargetWatchEvent(
 			return rv, nil
 		}
 		event := targetWatchGitEvent(key.GVR, u, op)
+		// Carry the source cluster so the git writer resolves this document's GVK->GVR
+		// against the cluster it was watched on, never a union of all clusters.
+		event.SourceClusterID = m.clusterIDForGitTarget(gitDest)
 		// Drop a no-op UPDATE before it reaches the worker: a /status-only change
 		// sanitizes to identical git content but ships unattributed (its /status audit
 		// is dropped), so routing it would split an open commit window on the author
@@ -856,8 +865,13 @@ func (s OperationSet) Match(op string) bool {
 	return ok
 }
 
+// openTargetWatch opens a watch against the cluster the GitTarget mirrors from. clusterID is
+// LocalClusterID for a single-cluster GitTarget, which resolves to the in-cluster dynamic
+// client exactly as before; a remote id resolves to that source cluster's dynamic client,
+// built from its kubeconfig Secret.
 func (m *Manager) openTargetWatch(
 	ctx context.Context,
+	clusterID string,
 	gvr schema.GroupVersionResource,
 	namespace string,
 	opts metav1.ListOptions,
@@ -865,9 +879,9 @@ func (m *Manager) openTargetWatch(
 	if m.targetWatchOpen != nil {
 		return m.targetWatchOpen(ctx, gvr, namespace, opts)
 	}
-	dc := m.dynamicClientFromConfig(m.Log)
-	if dc == nil {
-		return nil, errors.New("no dynamic client for target watch")
+	dc, err := m.clusterDynamicClient(ctx, clusterID)
+	if err != nil {
+		return nil, err
 	}
 	resource := dc.Resource(gvr)
 	if namespace != "" {
@@ -878,6 +892,7 @@ func (m *Manager) openTargetWatch(
 
 func (m *Manager) openTargetList(
 	ctx context.Context,
+	clusterID string,
 	gvr schema.GroupVersionResource,
 	namespace string,
 	opts metav1.ListOptions,
@@ -885,9 +900,9 @@ func (m *Manager) openTargetList(
 	if m.targetWatchList != nil {
 		return m.targetWatchList(ctx, gvr, namespace, opts)
 	}
-	dc := m.dynamicClientFromConfig(m.Log)
-	if dc == nil {
-		return nil, errors.New("no dynamic client for target watch list")
+	dc, err := m.clusterDynamicClient(ctx, clusterID)
+	if err != nil {
+		return nil, err
 	}
 	resource := dc.Resource(gvr)
 	if namespace != "" {

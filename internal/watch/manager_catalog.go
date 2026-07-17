@@ -4,10 +4,10 @@ package watch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -16,7 +16,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/rest"
@@ -25,6 +24,7 @@ import (
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
@@ -57,47 +57,137 @@ func apiServiceTriggerGVR() schema.GroupVersionResource {
 	}
 }
 
-// RefreshAPIResourceCatalog refreshes trusted catalog data from Kubernetes discovery.
+// RefreshAPIResourceCatalog refreshes trusted catalog data from Kubernetes discovery, for the
+// local cluster and every source cluster a GitTarget currently mirrors from. It returns the
+// LOCAL cluster's error only: a remote that cannot be reached fails its OWN GitTargets (through
+// their unready registries and a SourceClusterReachable=False projection), never the local
+// cluster's reconcile. A remote rotation is also picked up here, on the refresh cadence.
 func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
-	catalog := m.apiResourceCatalog()
-	disco, err := m.apiResourceDiscovery()
+	var (
+		localErr error
+		remotes  []*clusterContext
+	)
+	for _, id := range m.activeClusterIDs() {
+		cc := m.cluster(id)
+		if cc.isLocal() {
+			// The local cluster stays on the caller's goroutine: it owns localErr (the only error
+			// returned) and re-arms the API-surface trigger informers, and it is never slow.
+			localErr = m.refreshClusterCatalog(ctx, cc)
+			m.recordClusterReachability(cc, localErr)
+			continue
+		}
+		remotes = append(remotes, cc)
+	}
+	m.refreshRemoteCatalogsConcurrently(ctx, remotes)
+	return localErr
+}
+
+// maxConcurrentCatalogRefreshes bounds how many remote source clusters refresh at once, so a
+// large tenant fan-out cannot open an unbounded number of simultaneous discovery connections.
+const maxConcurrentCatalogRefreshes = 8
+
+// refreshRemoteCatalogsConcurrently refreshes each remote source cluster's credentials and catalog
+// independently, with bounded concurrency. Serial refresh made total latency grow as
+// remoteCount × the discovery timeout — one unreachable remote could burn the full timeout before
+// the next even started, delaying every other tenant. Each clusterContext has its own client lock
+// and registry and shares no mutable state, so the refreshes are safe to run in parallel; the only
+// shared structures they touch (the reachability field and the per-cluster log-dedup maps) are
+// guarded by their existing manager-wide locks.
+func (m *Manager) refreshRemoteCatalogsConcurrently(ctx context.Context, remotes []*clusterContext) {
+	if len(remotes) == 0 {
+		return
+	}
+	sem := make(chan struct{}, maxConcurrentCatalogRefreshes)
+	var wg sync.WaitGroup
+	for _, cc := range remotes {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(cc *clusterContext) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			m.refreshClusterCredentials(ctx, cc)
+			err := m.refreshClusterCatalog(ctx, cc)
+			m.recordClusterReachability(cc, err)
+		}(cc)
+	}
+	wg.Wait()
+}
+
+// refreshClusterForDeclare refreshes ONE source cluster's credentials, catalog, and reachability —
+// the on-declare path for a single GitTarget. It deliberately touches only that GitTarget's own
+// cluster: refreshing every active cluster on the declare path (which runs on the single GitTarget
+// controller worker) blocks on any UNREACHABLE cluster's full dial timeout, starving healthy
+// targets. The background RefreshAPIResourceCatalog loop keeps every OTHER cluster fresh. A remote's
+// refresh error is not returned — the caller gates on registryForGitTarget().Ready() instead, so an
+// unreachable remote simply leaves its own target "not observed yet" without failing the declare.
+func (m *Manager) refreshClusterForDeclare(ctx context.Context, clusterID string) error {
+	cc := m.cluster(clusterID)
+	if !cc.isLocal() {
+		m.refreshClusterCredentials(ctx, cc)
+	}
+	err := m.refreshClusterCatalog(ctx, cc)
+	m.recordClusterReachability(cc, err)
+	if cc.isLocal() {
+		return err
+	}
+	return nil
+}
+
+// refreshClusterCatalog refreshes ONE cluster's discovery-backed catalog and republishes its
+// type registry — the per-cluster body of what used to be a single manager-wide refresh. The
+// refresh metrics and the API-surface trigger informers stay local-cluster only: the metrics
+// carry no cluster label, and the trigger informers (a "refresh sooner than the 30s tick"
+// latency optimization) run against the config plane, so a remote cluster's catalog freshness
+// rides the periodic refresh instead.
+func (m *Manager) refreshClusterCatalog(ctx context.Context, cc *clusterContext) error {
+	disco, err := m.clusterDiscovery(ctx, cc.id)
 	if err != nil {
 		return err
 	}
 	start := time.Now()
-	changed, refreshErr := catalog.Refresh(disco)
-	recordCatalogRefresh(ctx, changed, refreshErr, time.Since(start))
-	if refreshErr == nil {
-		// Re-derive the followability records from the fresh scan before logging, so
-		// the ready line can report how many served types are followable.
-		m.refreshTypeRegistry()
-		stats := catalog.Stats()
+	changed, refreshErr := cc.catalog.Refresh(disco)
+	if cc.isLocal() {
+		recordCatalogRefresh(ctx, changed, refreshErr, time.Since(start))
+	}
+	if refreshErr != nil {
+		return refreshErr
+	}
+	// Re-derive the followability records from the fresh scan before logging, so the ready
+	// line can report how many served types are followable.
+	m.refreshClusterTypeRegistry(cc)
+	stats := cc.catalog.Stats()
+	if cc.isLocal() {
 		recordCatalogStats(ctx, stats)
-		m.logCatalogTransitions(catalog, stats)
+	}
+	m.logCatalogTransitions(cc, stats)
+	if cc.isLocal() {
 		// The fresh scan is the only source of truth for which trigger resources this API
 		// server actually serves, so trigger informers are (re-)armed here rather than once
 		// at startup. An aggregation layer installed later is picked up on its refresh.
 		m.ensureAPISurfaceTriggerInformers(m.Log.WithName("catalog-triggers"))
 	}
-	return refreshErr
+	return nil
 }
 
 // logCatalogTransitions emits an Info line on edge-triggered catalog changes
 // only: the first successful build, and when the set of group/versions that
 // discovery cannot serve appears or clears. Steady-state refreshes - which run
 // on every rule change, periodic tick, and CRD/APIService event - stay silent.
-func (m *Manager) logCatalogTransitions(catalog *APIResourceCatalog, stats CatalogStats) {
+func (m *Manager) logCatalogTransitions(cc *clusterContext, stats CatalogStats) {
 	log := m.Log.WithName("catalog")
+	if !cc.isLocal() {
+		log = log.WithValues("clusterID", cc.id)
+	}
 
-	if catalog.Ready() {
-		m.catalogReadyOnce.Do(func() {
+	if cc.catalog.Ready() {
+		cc.catalogReadyOnce.Do(func() {
 			log.Info("API resource catalog ready",
 				"allowedResources", stats.AllowedResources,
 				"excludedResources", stats.ExcludedResources,
 				"trustedGroupVersions", stats.TrustedGroupVersions,
 				"degradedGroupVersions", stats.DegradedGroupVersions,
-				"followableTypes", len(m.FollowableTypeRecords()),
-				"knownTypes", len(m.TypeRecords()),
+				"followableTypes", len(cc.registry.Followable()),
+				"knownTypes", len(cc.registry.All()),
 				"generation", stats.Generation)
 		})
 	}
@@ -107,19 +197,19 @@ func (m *Manager) logCatalogTransitions(catalog *APIResourceCatalog, stats Catal
 
 	current := make(map[schema.GroupVersion]struct{})
 	var appeared []schema.GroupVersion
-	for _, gv := range catalog.DegradedGroupVersions() {
+	for _, gv := range cc.catalog.DegradedGroupVersions() {
 		current[gv] = struct{}{}
-		if _, known := m.catalogDegradedLogged[gv]; !known {
+		if _, known := cc.catalogDegradedLogged[gv]; !known {
 			appeared = append(appeared, gv)
 		}
 	}
 	var cleared []schema.GroupVersion
-	for gv := range m.catalogDegradedLogged {
+	for gv := range cc.catalogDegradedLogged {
 		if _, still := current[gv]; !still {
 			cleared = append(cleared, gv)
 		}
 	}
-	m.catalogDegradedLogged = current
+	cc.catalogDegradedLogged = current
 
 	if len(appeared) > 0 {
 		log.Info("API discovery degraded - the cluster cannot serve these group/versions; "+
@@ -195,44 +285,36 @@ func recordCatalogStats(ctx context.Context, stats CatalogStats) {
 	}
 }
 
+// apiResourceCatalog returns the LOCAL cluster's discovery-backed API surface catalog. It is
+// the back-compatible accessor every source-cluster-unaware caller uses; per-cluster callers
+// read cc.catalog directly.
 func (m *Manager) apiResourceCatalog() *APIResourceCatalog {
-	m.resourceCatalogMu.Lock()
-	defer m.resourceCatalogMu.Unlock()
-	if m.resourceCatalog == nil {
-		m.resourceCatalog = NewAPIResourceCatalog()
-	}
-	return m.resourceCatalog
+	return m.localCluster().catalog
 }
 
-// typeRegistryInstance returns the lazily-built followability registry, so a
-// zero-value Manager (used widely in tests) needs no explicit setup.
+// typeRegistryInstance returns the LOCAL cluster's followability registry, so a zero-value
+// Manager (used widely in tests) needs no explicit setup. Per-cluster callers read
+// cc.registry directly.
 func (m *Manager) typeRegistryInstance() *typeset.Registry {
-	m.typeRegistryInit.Do(func() {
-		if m.typeRegistry == nil {
-			m.typeRegistry = typeset.NewRegistry()
-		}
-	})
-	return m.typeRegistry
+	return m.localCluster().registry
 }
 
-// refreshTypeRegistry publishes the catalog's latest normalized scan to the typeset
-// registry, which owns ALL cross-scan judgement (retain-on-error, the removal grace
-// for omissions — docs/spec/typeset-owns-discovery-grace.md). It runs after every
-// catalog refresh, so the registry tracks discovery and its grace clocks advance on
-// the same cadence the catalog scans do. It is the "Scan -> Registry" pipeline of
-// docs/spec/type-followability.md.
-func (m *Manager) refreshTypeRegistry() {
-	// Only publish once the catalog holds trusted data, so the registry's readiness
-	// tracks the catalog's: an unready catalog must leave the registry unready, which
-	// is what makes the live mapper fall closed (CatalogUnavailable) rather than treat
-	// an empty scan as a trusted "nothing is served".
-	scan, ok := m.apiResourceCatalog().Scan(m.SensitiveResources)
+// refreshClusterTypeRegistry publishes one cluster's catalog scan to its typeset registry,
+// which owns ALL cross-scan judgement (retain-on-error, the removal grace for omissions —
+// docs/spec/typeset-owns-discovery-grace.md). It runs after every catalog refresh, so the
+// registry tracks discovery and its grace clocks advance on the same cadence the catalog
+// scans do. It is the "Scan -> Registry" pipeline of docs/spec/type-followability.md.
+func (m *Manager) refreshClusterTypeRegistry(cc *clusterContext) {
+	// Only publish once the catalog holds trusted data, so the registry's readiness tracks the
+	// catalog's: an unready catalog must leave the registry unready, which is what makes the
+	// live mapper fall closed (CatalogUnavailable) rather than treat an empty scan as a
+	// trusted "nothing is served".
+	scan, ok := cc.catalog.Scan(m.SensitiveResources)
 	if !ok {
 		return
 	}
-	reg := m.typeRegistryInstance()
-	reg.UpdateFromScan(scan)
-	m.logTypeRefusals(reg)
+	cc.registry.UpdateFromScan(scan)
+	m.logTypeRefusals(cc, cc.registry)
 }
 
 // logTypeRefusals is the single central place that explains why a served type is not
@@ -240,9 +322,12 @@ func (m *Manager) refreshTypeRegistry() {
 // summary, so a stable refusal (a policy-excluded kind, a verb-poor type) is logged
 // once rather than on every refresh. The full machine-readable answer always lives on
 // the registry record (TypeRecords / FollowableTypeRecords), so callers that need it
-// read there rather than parse logs.
-func (m *Manager) logTypeRefusals(reg *typeset.Registry) {
+// read there rather than parse logs. The edge-trigger state is per cluster.
+func (m *Manager) logTypeRefusals(cc *clusterContext, reg *typeset.Registry) {
 	log := m.Log.WithName("followability")
+	if !cc.isLocal() {
+		log = log.WithValues("clusterID", cc.id)
+	}
 	m.resourceCatalogMu.Lock()
 	defer m.resourceCatalogMu.Unlock()
 	current := map[string]string{}
@@ -252,47 +337,32 @@ func (m *Manager) logTypeRefusals(reg *typeset.Registry) {
 		}
 		key := rec.Identity.GVK.String()
 		current[key] = rec.Followability.Summary
-		if prev, known := m.typeRefusalsLogged[key]; !known || prev != rec.Followability.Summary {
+		if prev, known := cc.typeRefusalsLogged[key]; !known || prev != rec.Followability.Summary {
 			log.V(1).Info("type is not followable",
 				"gvk", key, "gvr", rec.Identity.GVR.String(), "reason", rec.Followability.Summary)
 		}
 	}
-	m.typeRefusalsLogged = current
+	cc.typeRefusalsLogged = current
 }
 
-// TypeRegistry returns the live followability registry, the single decision surface
-// (a typeset.Lookup). The git worker reads it to resolve manifest GVKs; the manager
-// refreshes it in place, so the returned pointer tracks discovery updates.
+// TypeRegistry returns the LOCAL cluster's followability registry. Retained for the git
+// writer's manager-wide mapper wiring (cmd/main.go); the cluster-scoped writer lookup uses
+// ClusterTypeLookup instead (see gvr.go / Step 4).
 func (m *Manager) TypeRegistry() *typeset.Registry {
-	return m.typeRegistryInstance()
+	return m.localCluster().registry
 }
 
-// FollowableTypeRecords returns every currently-followable type record (verdict
-// followable or retained), sorted by identity. It is the inventory the status and
-// visibility surfaces read; it never recomputes followability.
+// FollowableTypeRecords returns the LOCAL cluster's currently-followable type records (verdict
+// followable or retained), sorted by identity. It is the inventory the status and visibility
+// surfaces read; it never recomputes followability.
 func (m *Manager) FollowableTypeRecords() []typeset.TypeRecord {
-	return m.typeRegistryInstance().Followable()
+	return m.localCluster().registry.Followable()
 }
 
-// TypeRecords returns every known type record — followable, retained, and refused —
-// for inventory and "why is this type not picked up?" views.
+// TypeRecords returns every known type record — followable, retained, and refused — for the
+// LOCAL cluster, for inventory and "why is this type not picked up?" views.
 func (m *Manager) TypeRecords() []typeset.TypeRecord {
-	return m.typeRegistryInstance().All()
-}
-
-func (m *Manager) apiResourceDiscovery() (apiResourceDiscovery, error) {
-	if m.discoveryClient != nil {
-		return m.discoveryClient()
-	}
-	cfg := m.restConfig()
-	if cfg == nil {
-		return nil, errors.New("no REST config available for API resource discovery")
-	}
-	disco, err := discovery.NewDiscoveryClientForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("create API resource discovery client: %w", err)
-	}
-	return disco, nil
+	return m.localCluster().registry.All()
 }
 
 // ruleResourceSelector is one rule's (apiGroups, apiVersions, resources, scope) tuple,
@@ -304,7 +374,10 @@ type ruleResourceSelector struct {
 }
 
 // ResolveWatchRuleResources reports one WatchRule's resource-resolution status for
-// controller feedback. See resolveRuleResourceStatus.
+// controller feedback. See resolveRuleResourceStatus. A WatchRule's GitTarget lives in the
+// WatchRule's own namespace, and the status resolves against THAT GitTarget's source cluster —
+// so a remote-only CRD is reported as watched, and a local-only CRD selected by a remote target
+// is not, instead of both being answered from the local registry.
 func (m *Manager) ResolveWatchRuleResources(
 	_ context.Context,
 	rule configv1alpha3.WatchRule,
@@ -316,11 +389,14 @@ func (m *Manager) ResolveWatchRuleResources(
 			scope: configv1alpha3.ResourceScopeNamespaced,
 		})
 	}
-	return m.resolveRuleResourceStatus(selectors)
+	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+	return m.resolveRuleResourceStatus(gitDest, selectors)
 }
 
 // ResolveClusterWatchRuleResources reports one ClusterWatchRule's resource-resolution
-// status for controller feedback. See resolveRuleResourceStatus.
+// status for controller feedback. See resolveRuleResourceStatus. A ClusterWatchRule is
+// cluster-scoped, so its targetRef names both the GitTarget and its namespace; the status
+// resolves against that GitTarget's source cluster.
 func (m *Manager) ResolveClusterWatchRuleResources(
 	_ context.Context,
 	rule configv1alpha3.ClusterWatchRule,
@@ -331,7 +407,8 @@ func (m *Manager) ResolveClusterWatchRuleResources(
 			groups: rr.APIGroups, versions: rr.APIVersions, resources: rr.Resources, scope: rr.Scope,
 		})
 	}
-	return m.resolveRuleResourceStatus(selectors)
+	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)
+	return m.resolveRuleResourceStatus(gitDest, selectors)
 }
 
 // resolveRuleResourceStatus reports a rule's resource-resolution status from the type
@@ -340,9 +417,18 @@ func (m *Manager) ResolveClusterWatchRuleResources(
 // explain why an individual selector matched nothing: absent, refused, and not-yet-served
 // are all the same to a mirror. Status only reports catalog readiness and how many distinct
 // followable types the rule currently watches.
-func (m *Manager) resolveRuleResourceStatus(selectors []ruleResourceSelector) (bool, string) {
-	m.refreshTypeRegistry()
-	reg := m.typeRegistryInstance()
+func (m *Manager) resolveRuleResourceStatus(
+	gitDest types.ResourceReference,
+	selectors []ruleResourceSelector,
+) (bool, string) {
+	// Resolve against the GitTarget's OWN source cluster, not a manager-wide union: a WatchRule
+	// scoped to a remote GitTarget must report the remote's followable set. clusterIDForGitTarget
+	// is the Declare-time capture (LocalClusterID until the first Declare, so a status read racing
+	// bootstrap falls back to local — the same fallback the watched-type tables use). The registry
+	// republish reads the already-scanned catalog and never dials.
+	cc := m.cluster(m.clusterIDForGitTarget(gitDest))
+	m.refreshClusterTypeRegistry(cc)
+	reg := cc.registry
 	if !reg.Ready() {
 		return false, "API resource catalog is not ready"
 	}

@@ -132,7 +132,7 @@ func TestRetainedWatchedTypes_NoneWhenAllServed(t *testing.T) {
 	m.refreshWatchedTypeTables()
 	table := m.residentWatchedTypeTable(myTargetRef())
 	require.NotEmpty(t, table.Types)
-	assert.Empty(t, m.retainedWatchedTypes(table), "served types are not retained")
+	assert.Empty(t, m.retainedWatchedTypes(table.GitDest, table), "served types are not retained")
 }
 
 func TestGVKListSummary(t *testing.T) {

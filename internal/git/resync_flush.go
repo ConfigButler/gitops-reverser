@@ -230,7 +230,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	target := pendingWrite.Target()
 	base := sanitizePath(target.Path)
 
-	if err := w.refuseUnsafeWorktree(ctx, worktree, base); err != nil {
+	if err := w.refuseUnsafeWorktree(ctx, worktree, base, target.SourceClusterID); err != nil {
 		return 0, err
 	}
 
@@ -248,7 +248,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	}
 
 	stats, anyChanges, err := w.applyResyncToWorktree(
-		ctx, worktree, base, pendingWrite.Desired, pendingWrite.ScopeGVR, target.Placement,
+		ctx, worktree, base, target.SourceClusterID, pendingWrite.Desired, pendingWrite.ScopeGVR, target.Placement,
 	)
 	if err != nil {
 		return 0, err
@@ -289,14 +289,18 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	return 1, nil
 }
 
-func (w *BranchWorker) refuseUnsafeWorktree(ctx context.Context, worktree *gogit.Worktree, base string) error {
+func (w *BranchWorker) refuseUnsafeWorktree(
+	ctx context.Context,
+	worktree *gogit.Worktree,
+	base, clusterID string,
+) error {
 	root := worktree.Filesystem.Root()
 	scoped, err := scanRenderScope(root, base)
 	if err != nil {
 		return err
 	}
 	// The acceptance gate never places a resource, so no placement policy is needed here.
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scoped.scan, nil, scoped.writeSubdir)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapperForCluster(clusterID), scoped.scan, nil, scoped.writeSubdir)
 	return batch.refusal()
 }
 
@@ -323,7 +327,7 @@ func (w *BranchWorker) refuseUnsafeWorktree(ctx context.Context, worktree *gogit
 func (w *BranchWorker) applyResyncToWorktree(
 	ctx context.Context,
 	worktree *gogit.Worktree,
-	base string,
+	base, clusterID string,
 	desired []manifestanalyzer.DesiredResource,
 	scopeGVR *schema.GroupVersionResource,
 	policy *manifestanalyzer.PlacementPolicy,
@@ -334,7 +338,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 		return ResyncStats{}, false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, scoped.scan, policy, scoped.writeSubdir)
+	batch := newWriteBatch(ctx, w.contentWriter, w.mapperForCluster(clusterID), scoped.scan, policy, scoped.writeSubdir)
 	// First materialization is the adoption gate: refuse a subtree that holds content the
 	// operator cannot safely manage (unsupported kustomization, duplicate identity, impure
 	// or non-KRM files, foreign content, a catastrophic .gittargetignore) and commit nothing,

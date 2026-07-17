@@ -65,7 +65,7 @@ func applyResyncViaWorktree(
 ) (ResyncStats, bool) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil, nil)
+	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", desired, nil, nil)
 	require.NoError(t, err)
 	return stats, changed
 }
@@ -222,7 +222,7 @@ func TestResync_ScopedSweepDropsOnlyTargetType(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
 	scope := &schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", nil, scope, nil)
+	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", nil, scope, nil)
 	require.NoError(t, err)
 	require.True(t, changed, "the removed type's document is swept")
 	assert.Equal(t, 1, stats.Deleted, "exactly the configmap is swept, not the secret")
@@ -314,7 +314,7 @@ func TestResync_UnsafePlacementCountsAsPlacementSkipped(t *testing.T) {
 	}
 
 	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
-	stats, _, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil, policy)
+	stats, _, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", desired, nil, policy)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, stats.PlacementSkipped,
@@ -362,6 +362,7 @@ func TestResync_SensitiveUpdateCountsAsUpdatedNotSkipped(t *testing.T) {
 	stats, changed, err := w.applyResyncToWorktree(
 		context.Background(),
 		worktree,
+		"",
 		"",
 		[]manifestanalyzer.DesiredResource{desired},
 		nil,

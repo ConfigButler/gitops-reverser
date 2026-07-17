@@ -1,0 +1,12 @@
+# The trust root for kcp's PKI. kcp-operator builds the shard + front-proxy CA/certs from
+# this cert-manager Issuer. A self-signed issuer is what kcp-operator's own quickstart uses;
+# cert-manager (already installed in the e2e cluster for gitops-reverser) does the rest,
+# giving the front-proxy a real serving cert whose SAN is the in-cluster Service DNS the
+# operator dials — so a GitTarget mirroring a workspace gets a verifiable TLS connection.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: kcp-pki
+  namespace: kcp
+spec:
+  selfSigned: {}
