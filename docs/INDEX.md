@@ -2,7 +2,7 @@
 
 > Rebuilt 2026-07-11, when the tree went from 180 documents to 117.
 
-There are 117 markdown files here. **About 35 of them bind.** This page names
+There are 136 tracked markdown files here. **About 35 of them bind.** This page names
 those. If a document is not on this page, it is either a user guide (see
 [`README.md`](README.md)) or history you can safely not read.
 
@@ -66,16 +66,14 @@ says what we support and refuse** — and then its
 kustomize field taxonomy, the write boundary, the orchestrator/expansion line, and
 how secrets are handled.
 
-Ten other open items:
+Nine other open items:
 
 | Doc | Open question |
 |---|---|
 | [`watch-and-catalog-architecture.md`](design/watch-and-catalog-architecture.md) | the target three-layer watch model — **needs a human call before building** |
 | [`metrics-observability-plan.md`](design/metrics-observability-plan.md) | the watch-stage metrics do not exist yet |
 | [`reconcile-triggering.md`](design/reconcile-triggering.md) | which controllers still fail to wake up |
-| [`multi-cluster-audit-ingestion-implications.md`](design/multi-cluster-audit-ingestion-implications.md) | §5's `SourceCluster` CRD is **superseded** by [`config-plane-split.md`](finished/config-plane-split.md); the rest (per-cluster audit ingestion) is still open |
-| [`multi-cluster-author-attribution.md`](design/multi-cluster-author-attribution.md) | closes the attribution gap [`config-plane-split.md`](finished/config-plane-split.md) deferred, via a cluster-scoped **`ClusterProvider`** (read-side peer of `GitProvider`, **replaces** inline `kubeConfig` — unreleased): admin-chosen **name** routes `/audit-webhook/<name>` **and** keys the fact index; per-provider **namespace authorization** + **authenticated ingress** required; local is a `default` provider that `clusterProviderRef` defaults to (concrete ref, no isDefault; `default` is a name, not a reserved in-cluster identity); admission/workload-identity/managed-clusters deferred |
-| [`clusterprovider-fact-purge.md`](design/clusterprovider-fact-purge.md) | should a `ClusterProvider` purge attribution facts on delete? **Resolved:** no. A purge-on-delete finalizer needs a living operator and can strand Helm uninstall; exact facts cannot match a re-provisioned cluster's fresh object UIDs, and the remaining rv-only edge expires with the short TTL. The controller sheds the retired finalizer from pre-release objects. |
+| [`multi-source-audit-ingress-hardening.md`](design/multi-source-audit-ingress-hardening.md) | how independent sources authenticate to a named audit route, when annotation routing is trustworthy, and how multi-provider ingestion remains fair |
 | [`release-image-reuse-plan.md`](design/release-image-reuse-plan.md) | PRs 2–5 unstarted |
 | [`e2e-coverage-gaps-and-improvements-plan.md`](design/e2e-coverage-gaps-and-improvements-plan.md) | tests A/B/C still proposals |
 | [`e2e-finish-plan.md`](design/e2e-finish-plan.md) | remaining e2e harness work |
@@ -94,7 +92,7 @@ three open RBAC items. Five more ideas sit beside them.
 
 ## History — [`finished/`](finished/)
 
-Twenty shipped plans and closed investigations. **Nothing here binds.** Read one
+Twenty-two shipped plans and closed investigations. **Nothing here binds.** Read one
 only when you want to know *why* something is the way it is; the answer to *what it
 is* always lives in `spec/`.
 

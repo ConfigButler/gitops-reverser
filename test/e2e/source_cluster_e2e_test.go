@@ -14,7 +14,7 @@ import (
 )
 
 // This file is the source-cluster corner for multi-cluster author attribution
-// (docs/design/multi-cluster-author-attribution.md): a GitTarget names the cluster it mirrors
+// (docs/finished/multi-cluster-author-attribution.md): a GitTarget names the cluster it mirrors
 // FROM by referencing a cluster-scoped ClusterProvider (spec.clusterProviderRef). The
 // ClusterProvider is the home for that cluster's kubeconfig credential (spec.kubeConfig, a Flux
 // meta.KubeConfigReference resolved from the operator namespace), namespace-access authorization,

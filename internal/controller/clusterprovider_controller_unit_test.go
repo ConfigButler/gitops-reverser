@@ -143,7 +143,7 @@ func TestClusterProviderReconcile_InClusterDefault(t *testing.T) {
 // ClusterProvider undeletable. Nothing has to happen before one goes away — attribution facts are
 // keyed by (cluster, group/resource, uid, resourceVersion) and expire on their own, so a
 // re-provisioned cluster reusing a provider name mints different object UIDs and cannot join a
-// stale fact. See docs/design/clusterprovider-fact-purge.md.
+// stale fact. See docs/finished/clusterprovider-fact-purge.md.
 func TestClusterProviderReconcile_TakesNoFinalizer(t *testing.T) {
 	provider := clusterProviderWithKubeConfig("default", "", "")
 	cl := fake.NewClientBuilder().

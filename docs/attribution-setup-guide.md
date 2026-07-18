@@ -53,10 +53,11 @@ attribution — configure that cluster's apiserver to POST audit events to `/aud
 certificate** the chart mints, exactly as the local apiserver does, and the operator accepts the
 named route only for a `ClusterProvider` that exists. (Binding a distinct client certificate to each
 provider is a future hardening; today the trust boundary is CA-level.) Remote attribution needs a
-self-managed control plane — EKS/GKE/AKS are not supported (see *When it fits*). The full model is in
-[multi-cluster author attribution](design/multi-cluster-author-attribution.md). See
-[SECURITY.md](../SECURITY.md#shared-audit-ingress-trust-model) for the accepted shared-credential
-trust assumption and its limits.
+self-managed control plane — EKS/GKE/AKS are not supported (see *When it fits*). The current model is
+in [the architecture guide](architecture.md#optional-attribution); the remaining multi-source hardening
+work is in [multi-source audit-ingress hardening](design/multi-source-audit-ingress-hardening.md). See
+[SECURITY.md](../SECURITY.md#shared-audit-ingress-trust-model) for the accepted shared-credential trust
+assumption and its limits.
 
 ## Prerequisites
 

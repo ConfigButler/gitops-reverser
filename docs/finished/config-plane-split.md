@@ -2,8 +2,8 @@
 
 > **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
 
-> Shipped 2026-07-17 as [#249](https://github.com/ConfigButler/gitops-reverser/pull/249). Supersedes the `SourceCluster` CRD proposal in
-> [`multi-cluster-audit-ingestion-implications.md`](../design/multi-cluster-audit-ingestion-implications.md) §5.
+> Shipped 2026-07-17 as [#249](https://github.com/ConfigButler/gitops-reverser/pull/249). Supersedes
+> the now-retired `SourceCluster` CRD proposal.
 > Redesign of feature #1 from the closed multi-tenant PR (#220), shipped on its own.
 
 ## One sentence
@@ -113,8 +113,7 @@ wrapper today.
 
 ### Why inline, not a dedicated `SourceCluster` CRD
 
-[`multi-cluster-audit-ingestion-implications.md`](../design/multi-cluster-audit-ingestion-implications.md)
-§5 proposed a dedicated `SourceCluster` CRD fusing **audit-ingress identity** and
+An earlier design proposed a dedicated `SourceCluster` CRD fusing **audit-ingress identity** and
 **kube-API connectivity** into one onboarding object. Its load-bearing rationale
 is gone: `main` **removed** the `/audit-webhook/<cluster-id>` path — the handler
 now rejects any cluster-id segment
@@ -663,10 +662,9 @@ No `observedDestination` / `retargetingTo` — those belong to #6.
 
 - `spec.kubeConfig` is a new optional field. Existing installs are unaffected:
   absent → local cluster → today's behavior, byte for byte.
-- The stale [`multi-cluster-audit-ingestion-implications.md`](../design/multi-cluster-audit-ingestion-implications.md)
-  should have its §5 `SourceCluster` CRD proposal marked superseded by this doc,
-  and its INDEX line updated from "there is still no CRD for remote cluster
-  connectivity" to point here (the connectivity model is now inline, by choice).
+- This design intentionally closed the older `SourceCluster` CRD proposal. The later
+  [`ClusterProvider` attribution design record](multi-cluster-author-attribution.md) explains why
+  the source connection was subsequently given a cluster-scoped home.
 
 ## Future shape (designed-in, not built)
 

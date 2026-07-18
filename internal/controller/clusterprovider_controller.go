@@ -38,7 +38,7 @@ import (
 // if the object is force-removed. Nor is the purge needed: facts are keyed by
 // (cluster, group/resource, uid, resourceVersion) and expire on their own, so a re-provisioned
 // cluster reusing a provider name produces different object UIDs and cannot join a stale fact on
-// the exact key. See docs/design/clusterprovider-fact-purge.md.
+// the exact key. See docs/finished/clusterprovider-fact-purge.md.
 const LegacyClusterProviderFinalizer = "configbutler.ai/clusterprovider-fact-purge"
 
 // ClusterProviderReconciler reconciles a ClusterProvider object. It is the read-side peer of the

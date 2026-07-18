@@ -110,7 +110,7 @@ from the code:
 ### Still-open design (9) — `docs/design/`
 
 `e2e-coverage-gaps-and-improvements-plan.md`, `e2e-finish-plan.md`,
-`metrics-observability-plan.md`, `multi-cluster-audit-ingestion-implications.md`,
+`metrics-observability-plan.md`, `multi-source-audit-ingress-hardening.md`,
 `reconcile-triggering.md`, `release-image-reuse-plan.md`,
 `sensitive-resource-diagnostics-follow-up.md`, `watch-and-catalog-architecture.md`,
 `stream/residual-e2e-flakes-2026-06-19.md`.
