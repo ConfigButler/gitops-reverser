@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.37.0...v0.38.0) (2026-07-18)
+
+
+### Features
+
+* ClusterProvider — source clusters by name, reconcile-time namespace authorization ([#251](https://github.com/ConfigButler/gitops-reverser/issues/251)) ([5065b09](https://github.com/ConfigButler/gitops-reverser/commit/5065b09ebbc533065ce323313b0151aef1f94e5e))
+* config-plane split, immutable GitTarget.spec.kubeConfig for remote-cluster mirroring ([#249](https://github.com/ConfigButler/gitops-reverser/issues/249)) ([9dc5da7](https://github.com/ConfigButler/gitops-reverser/commit/9dc5da7293fd09e3a84c3a0980be10d485954e92))
+
 ## [0.37.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.36.0...v0.37.0) (2026-07-16)
 
 
