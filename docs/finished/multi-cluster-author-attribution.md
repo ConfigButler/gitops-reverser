@@ -1,64 +1,35 @@
-# Author attribution across source clusters (via a `ClusterProvider`)
+# `ClusterProvider` multi-cluster author-attribution design record
 
-> **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current
+> behaviour see [`../architecture.md`](../architecture.md), [`../configuration.md`](../configuration.md),
+> and [`../../SECURITY.md`](../../SECURITY.md). Index: [`../INDEX.md`](../INDEX.md)
 >
-> Closes the attribution gap [`config-plane-split.md`](../finished/config-plane-split.md) shipped
-> without (its §"Explicitly out of scope", first bullet), via a dedicated **`ClusterProvider`** —
-> the `ClusterConnection`/`SourceCluster` CRD config-plane-split named as its migration path and
-> deferred only because the audit story was out of scope. config-plane-split is **merged but not
-> released**, so there is no released API to keep compatible — inline `spec.kubeConfig` is removed
-> outright. Advances [`multi-cluster-audit-ingestion-implications.md`](./multi-cluster-audit-ingestion-implications.md)
-> §5.
->
-> **v2 — revised after review.** Five things changed from the first draft, all argued below: the
-> fact key is the provider **name, not a UID** (the UID has no value for an implicit-local cluster,
-> and does not solve incarnation safety anyway); a cluster-scoped shared provider needs **namespace
-> authorization** (Secret-pinning does not close the confused-deputy — it is a *data-export*
-> escalation, not a credential-read one); **authenticated ingress is a prerequisite**, moved ahead
-> of routing; **admission attribution is deferred entirely** (it does not unlock managed clusters —
-> its callback auth needs the same apiserver flags audit does); and provider `kubeConfig` is
-> **immutable in v1** (mutable endpoint repointing is a misattribution footgun).
->
-> **v3 — local is the reserved `default` provider.** Local is a **shipped `ClusterProvider` named
-> `default`** (kubeConfig omitted = in-cluster). `GitTarget.spec.clusterProviderRef` **defaults to
-> `{name: "default"}`** rather than being an implicit `nil` — so every reference is concrete and
-> jumpable (for a future "follow reference"/F12 traversal), and `default` == in-cluster is enforced by
-> **per-object CEL** (name-uniqueness gives the singleton; no validating webhook for it). No `isDefault`
-> (`default` is a fixed reserved name on an immutable object, not a movable pointer). `watchLocal` on by
-> default.
->
-> **v4 — `default` is not reserved, and audit routes are named. Supersedes the v3 bullet above and
-> every "reserved"/`watchLocal` claim below.** `default` is only *the name an omitted
-> `spec.clusterProviderRef` points at*. The per-object CEL tying that name to an absent `kubeConfig`
-> is **removed**: `kubeConfig` is optional for any provider (omitted = the operator's in-cluster
-> config), so a provider named `default` may mirror a **remote** cluster. Audit routes are all
-> **named** — `/audit-webhook/default` included, existence-gated like every other name — and the bare
-> `/audit-webhook` is instead the **shared-stream** endpoint that resolves each event's provider from
-> `attribution.clusterAnnotationKey`, rejecting the request with 400 while that key is unset and
-> rejecting an unroutable *event* (no annotation, or an unknown provider) without failing its batch.
-> The chart value is now `clusterProvider.createDefault` (+ `clusterProvider.default.*`), not
-> `attribution.watchLocal`/`localAllowedNamespaces`: the provider is required for **all** mirroring,
-> not just attribution, and it may be remote — so both halves of the old name misled. The operator
-> still **never** creates a `ClusterProvider`. See
-> [`../configuration.md`](../configuration.md) for the shipped model.
->
-> The **data plane matches**: `LocalClusterID` is gone. The watch engine now separates the **config
-> plane** (the operator's own cluster — the API-surface trigger informers, the singleton catalog
-> metrics; never a source, never torn down) from **source clusters**, one context per
-> `ClusterProvider` name. Whether a source is in-cluster is *resolved* from its provider — an absent
-> `spec.kubeConfig` — and never inferred from its name, so a `default` that carries a kubeConfig is
-> genuinely remote. `SourceClusterResolver` is the single authority: it answers "in-cluster" with a
-> nil `rest.Config`, and it is required for any GitTarget to mirror, single-cluster installs included.
+> This design produced the cluster-scoped `ClusterProvider`, immutable
+> `GitTarget.spec.clusterProviderRef`, provider-name-partitioned attribution facts, reconcile-time
+> namespace authorization, and named audit routes. The remaining multi-source ingress work is tracked
+> separately in [`../design/multi-source-audit-ingress-hardening.md`](../design/multi-source-audit-ingress-hardening.md).
 
-## One sentence
+## Final implemented shape
 
-Introduce a cluster-scoped **`ClusterProvider`** — the read-side peer of `GitProvider` — that a
-`GitTarget` references by a **stable, admin-chosen name**; make that **name** the cluster's identity
-everywhere (the `/audit-webhook/<name>` route *and* the fact-index key), authenticate each source
-with a **per-provider client certificate** bound to the provider, authorize **which namespaces** may
-reference it, and ship a reserved **`default` `ClusterProvider`** for the operator's own cluster that
-`clusterProviderRef` *defaults to* (a concrete ref, never `nil`) — retiring the `SourceClusterID` string
-entirely.
+`ClusterProvider` is the cluster-scoped read-side peer of `GitProvider`. A `GitTarget` references a
+provider by immutable name; an omitted reference defaults to `default`, which is only a convention —
+any provider name may use the in-cluster client or a remote kubeconfig. That provider name partitions
+the source client, discovery and watch state, and author-attribution facts. Its
+`spec.allowedNamespaces` policy is deny-by-default and is checked on every reconcile before watches
+start.
+
+Audit ingestion uses `/audit-webhook/<provider>` and stores facts in that provider's partition. The
+current server verifies that the sender is signed by the audit CA and that the named provider exists;
+it does **not** bind an individual certificate to a provider. This is an accepted shared-control-plane
+trust boundary, not tenant isolation. The outstanding provider-bound identity, annotation-routing
+trust, and ingress-fairness decisions are deliberately kept out of this archived design.
+
+## Design history
+
+The material below is the working record that led to the shipped shape. It retains alternatives that
+were rejected or deliberately not implemented — especially the earlier reserved-`default`, admission
+webhook, finalizer, and per-provider-certificate proposals — and must not be read as the current API
+contract.
 
 ## Problem
 

@@ -1,6 +1,7 @@
-# Purging attribution facts: decided, we do neither
+# Fact purge for `ClusterProvider`: decision record
 
-> **decided** — implemented. Index: [`../INDEX.md`](../INDEX.md)
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current
+> behaviour see [`../architecture.md`](../architecture.md). Index: [`../INDEX.md`](../INDEX.md)
 >
 > Prompted by a real failure: `helm uninstall` stranded the `default` `ClusterProvider` in
 > `Terminating` forever, which then blocked reinstalling. This document asked whether
