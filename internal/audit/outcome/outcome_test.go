@@ -26,6 +26,8 @@ func TestOutcomeCategory(t *testing.T) {
 		RVLessEmptyHighWater:     Dropped,
 		OlderThanHighWater:       Dropped,
 		NonNumericRV:             Dropped,
+		MissingClusterAnnotation: Dropped,
+		UnknownClusterProvider:   Dropped,
 		WriteError:               Error,
 	}
 	for o, want := range cases {

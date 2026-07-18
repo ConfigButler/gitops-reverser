@@ -1,8 +1,9 @@
 # Separating the config plane from the watched cluster
 
-> **design** — **built** (this PR). Index: [`../INDEX.md`](../INDEX.md)
-> Supersedes the `SourceCluster` CRD proposal in
-> [`multi-cluster-audit-ingestion-implications.md`](multi-cluster-audit-ingestion-implications.md) §5.
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
+
+> Shipped 2026-07-17 as [#249](https://github.com/ConfigButler/gitops-reverser/pull/249). Supersedes the `SourceCluster` CRD proposal in
+> [`multi-cluster-audit-ingestion-implications.md`](../design/multi-cluster-audit-ingestion-implications.md) §5.
 > Redesign of feature #1 from the closed multi-tenant PR (#220), shipped on its own.
 
 ## One sentence
@@ -112,7 +113,7 @@ wrapper today.
 
 ### Why inline, not a dedicated `SourceCluster` CRD
 
-[`multi-cluster-audit-ingestion-implications.md`](multi-cluster-audit-ingestion-implications.md)
+[`multi-cluster-audit-ingestion-implications.md`](../design/multi-cluster-audit-ingestion-implications.md)
 §5 proposed a dedicated `SourceCluster` CRD fusing **audit-ingress identity** and
 **kube-API connectivity** into one onboarding object. Its load-bearing rationale
 is gone: `main` **removed** the `/audit-webhook/<cluster-id>` path — the handler
@@ -662,7 +663,7 @@ No `observedDestination` / `retargetingTo` — those belong to #6.
 
 - `spec.kubeConfig` is a new optional field. Existing installs are unaffected:
   absent → local cluster → today's behavior, byte for byte.
-- The stale [`multi-cluster-audit-ingestion-implications.md`](multi-cluster-audit-ingestion-implications.md)
+- The stale [`multi-cluster-audit-ingestion-implications.md`](../design/multi-cluster-audit-ingestion-implications.md)
   should have its §5 `SourceCluster` CRD proposal marked superseded by this doc,
   and its INDEX line updated from "there is still no CRD for remote cluster
   connectivity" to point here (the connectivity model is now inline, by choice).
@@ -933,11 +934,11 @@ YAML applied to the cluster. The source-cluster corner is its own gated leg
 4. **Least-privilege ClusterRole shape on the remote.** Ship a documented broad
    read ClusterRole, or require the operator to grant per-type read and degrade
    unobservable cells gracefully (ties into
-   [`watch-and-catalog-architecture.md`](watch-and-catalog-architecture.md) §1.7)?
+   [`watch-and-catalog-architecture.md`](../design/watch-and-catalog-architecture.md) §1.7)?
 5. **`GitProviderReady` projection trigger and `Ready` gating.** Wire a
    `Watches(&GitProvider{})` so a provider going un-ready promptly re-reconciles its
    GitTargets (best, but adds an edge to the set that
-   [`reconcile-triggering.md`](reconcile-triggering.md) tracks), or lean on the
+   [`reconcile-triggering.md`](../design/reconcile-triggering.md) tracks), or lean on the
    5-minute periodic reconcile (simpler, laggier)? And does
    `SourceClusterReachable=Unknown` (pre-first-discovery) hold `Ready` at `Unknown`,
    or is `Ready` allowed to settle on the other axes first? (Proposal: `Watches`, and

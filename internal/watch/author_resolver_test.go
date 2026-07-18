@@ -24,13 +24,15 @@ type fakeLookup struct {
 	hitAfter         int
 	calls            int
 	lastExactCapable bool
+	lastProvider     string
 }
 
 func (f *fakeLookup) LookupAuthorResolution(
-	_ context.Context, _ schema.GroupVersionResource, _ k8stypes.UID, _ string, exactCapable bool,
+	_ context.Context, providerName string, _ schema.GroupVersionResource, _ k8stypes.UID, _ string, exactCapable bool,
 ) queue.AuthorResolution {
 	f.calls++
 	f.lastExactCapable = exactCapable
+	f.lastProvider = providerName
 	if f.calls >= f.hitAfter {
 		return f.resolution
 	}
@@ -49,7 +51,7 @@ func TestAuthorResolver_HumanHit(t *testing.T) {
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "uid-1", "101", true)
+	ui, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
 	require.True(t, ok)
 	assert.Equal(t, "alice", ui.Username)
 	assert.Equal(t, "a@x.io", ui.Email)
@@ -73,7 +75,7 @@ func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "uid-1", "101", true)
+	ui, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
 	require.True(t, ok, "a matched service account is named, not collapsed to the committer")
 	assert.Equal(t, sa, ui.Username)
 
@@ -94,7 +96,7 @@ func TestAuthorResolver_MissExpiresToCommitter(t *testing.T) {
 
 	// A zero grace does a single lookup and, on a miss, ships as committer (ok=false).
 	// There is no longer a miss-marker write-back.
-	_, ok := r.ResolveAuthor(context.Background(), resolverGVR, "uid-1", "101", true)
+	_, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
 	assert.False(t, ok)
 	assert.Equal(t, 1, lookup.calls)
 }
@@ -109,7 +111,7 @@ func TestAuthorResolver_DeleteEventIsNotExactCapable(t *testing.T) {
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	_, ok := r.ResolveAuthor(context.Background(), resolverGVR, "uid-1", "999", false)
+	_, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "999", false)
 	require.True(t, ok)
 	assert.False(t, lookup.lastExactCapable, "a removal event may consult the /last pointer")
 }
@@ -124,7 +126,7 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 	}
 	r := NewAuthorResolver(lookup, 2*time.Second, logr.Discard())
 
-	ui, ok := r.ResolveAuthor(context.Background(), resolverGVR, "uid-1", "101", true)
+	ui, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
 	require.True(t, ok)
 	assert.Equal(t, "bob", ui.Username)
 	assert.GreaterOrEqual(t, lookup.calls, 3)
@@ -132,6 +134,6 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 
 func TestAuthorResolver_NilLookupIsCommitter(t *testing.T) {
 	r := NewAuthorResolver(nil, DefaultAttributionGraceWindow, logr.Discard())
-	_, ok := r.ResolveAuthor(context.Background(), resolverGVR, "uid-1", "101", true)
+	_, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
 	assert.False(t, ok)
 }

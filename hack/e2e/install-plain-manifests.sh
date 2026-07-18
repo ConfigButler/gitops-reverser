@@ -30,6 +30,13 @@ KUBECTL="${KUBECTL:-kubectl}"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "${tmpdir}"' EXIT
 
+# CRDs ship as their own file and must exist (and be Established) BEFORE the bundle is applied:
+# dist/install.yaml contains the reserved `default` ClusterProvider, a custom resource kubectl
+# cannot map if its CRD is created in the same apply. This mirrors the documented two-step user
+# flow (kubectl apply -f crds.yaml, then -f install.yaml), so the e2e exercises it for real.
+"${KUBECTL}" --context "${CTX}" apply -f dist/crds.yaml
+"${KUBECTL}" --context "${CTX}" wait --for=condition=Established --timeout=60s -f dist/crds.yaml
+
 cp dist/install.yaml "${tmpdir}/install.yaml"
 
 # Patch Redis address

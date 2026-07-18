@@ -21,35 +21,62 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// LocalClusterID identifies the cluster the operator runs in — the config plane, which is
-// also the watched cluster in a single-cluster install. It is the zero value on purpose:
-// every code path that does not know about source clusters lands on it. It matches
-// (api/v1alpha3).GitTarget.SourceClusterID()'s "" return for an omitted spec.kubeConfig.
-const LocalClusterID = ""
+// configPlaneClusterID identifies the CONFIG PLANE context — the cluster the operator itself runs
+// in, where its own CRs live. It owns the operator's own duties (the CRD/APIService trigger
+// informers, the singleton catalog metrics, the injected test clients) and is always present.
+//
+// It is deliberately the empty string, which no ClusterProvider name can ever be (name is required,
+// MinLength=1), so the config plane can never collide with — or be mistaken for — a source cluster.
+// NO PROVIDER NAME IS SPECIAL: what makes a source cluster in-cluster is an absent
+// spec.kubeConfig, resolved per provider, never the name "default".
+const configPlaneClusterID = ""
 
-// SourceClusterResolver turns a GitTarget's source-cluster id into a rest.Config by reading
-// the kubeconfig Secret it names from the config plane. It is an interface so the watch
-// manager grows no Kubernetes client of its own for this, and so tests can stand up a
-// remote cluster without a Secret. The concrete implementation lives in
-// source_cluster_resolver.go.
+// inClusterConfigVersion is the version token the resolver returns for a provider that omits
+// kubeConfig. It is constant because there is no Secret to rotate: the in-cluster config is fixed
+// for the process, so a credential refresh can never see it "change".
+const inClusterConfigVersion = "in-cluster"
+
+// SourceClusterResolver turns a source-cluster NAME (a ClusterProvider's name) into a rest.Config
+// by looking up the ClusterProvider and reading the kubeconfig Secret it names from the operator
+// namespace. It is an interface so the watch manager grows no Kubernetes client of its own for
+// this, and so tests can stand up a remote cluster without a Secret. The concrete implementation
+// lives in source_cluster_resolver.go.
 type SourceClusterResolver interface {
-	// ResolveSourceCluster returns the rest.Config for a cluster id, and an opaque version
-	// token that changes when the underlying kubeconfig changes (the Secret's
-	// resourceVersion). An unknown or unreadable id is an error: mirroring the wrong
-	// cluster into a folder is worse than mirroring none.
-	ResolveSourceCluster(ctx context.Context, clusterID string) (cfg *rest.Config, version string, err error)
+	// ResolveSourceCluster returns the rest.Config for a ClusterProvider name, and an opaque
+	// version token that changes when the resolved config changes (the provider generation and
+	// the kubeconfig Secret's resourceVersion). An unknown or unreadable name is an error:
+	// mirroring the wrong cluster into a folder is worse than mirroring none.
+	//
+	// A NIL config with a nil error means the provider omits spec.kubeConfig and therefore names
+	// the operator's OWN cluster — the in-cluster answer, available to every provider name. This
+	// is the ONLY authority on whether a source cluster is in-cluster; nothing keys that off the
+	// provider's name.
+	ResolveSourceCluster(ctx context.Context, providerName string) (cfg *rest.Config, version string, err error)
 }
 
 // clusterContext holds everything that used to be a Manager-wide singleton and is in fact a
 // property of ONE cluster: its API surface catalog, the followability registry derived from
 // it, and the clients that reach it.
 //
-// A single-cluster install has exactly one, keyed by LocalClusterID, and behaves exactly as
-// before — the trigger informers, the catalog refresh, and the type registry all land on it.
-// A GitTarget that names a source cluster (spec.kubeConfig) gets its own, created on first
-// use and torn down when the last such GitTarget is gone.
+// There are two kinds. The CONFIG PLANE context (configPlaneClusterID) is the operator's own
+// cluster: it owns the API-surface trigger informers, the singleton catalog metrics, and the
+// injected test clients, and it is never torn down. A SOURCE context is one per ClusterProvider a
+// GitTarget mirrors from, created on first use and torn down when the last such GitTarget is gone;
+// whether it talks to the operator's own cluster or a remote is decided by RESOLVING its provider
+// (spec.kubeConfig absent ⇒ in-cluster), never by its name.
 type clusterContext struct {
 	id string
+
+	// configPlane marks the operator's own context (id configPlaneClusterID). It is set at
+	// construction and never changes.
+	configPlane bool
+
+	// inCluster records that this SOURCE cluster resolved to the operator's own cluster — its
+	// ClusterProvider omits spec.kubeConfig. It is RESOLVED, not inferred from the id: it is
+	// false until the first successful resolution, so an unreached provider is treated as remote
+	// (fail-closed — a cluster we have not resolved never silently borrows in-cluster
+	// credentials). Guarded by clientsMu alongside the config fields below.
+	inCluster bool
 
 	// catalog and registry are the "Scan -> Registry" pipeline for this cluster. A CRD
 	// installed only on the remote is followable only there — and, more importantly, a type
@@ -129,13 +156,25 @@ func newClusterContext(id string) *clusterContext {
 	}
 }
 
-// isLocal reports whether this context is the cluster the operator runs in.
-func (c *clusterContext) isLocal() bool { return c.id == LocalClusterID }
+// isLocal reports whether this context talks to the cluster the operator runs in — either because
+// it IS the config plane, or because its ClusterProvider resolved without a kubeConfig. It is never
+// a test on the provider's name.
+func (c *clusterContext) isLocal() bool {
+	if c.configPlane {
+		return true
+	}
+	c.clientsMu.Lock()
+	defer c.clientsMu.Unlock()
+	return c.inCluster
+}
 
-// describeCluster renders a cluster id for logs. The local cluster has no name of its own.
+// isLocalLocked is isLocal for callers already holding clientsMu.
+func (c *clusterContext) isLocalLocked() bool { return c.configPlane || c.inCluster }
+
+// describeCluster renders a cluster id for logs. The config plane has no provider name of its own.
 func describeCluster(id string) string {
-	if id == LocalClusterID {
-		return "local"
+	if id == configPlaneClusterID {
+		return "config-plane"
 	}
 	return id
 }
@@ -154,8 +193,9 @@ func (m *Manager) cluster(id string) *clusterContext {
 		return cc
 	}
 	cc := newClusterContext(id)
-	if id == LocalClusterID {
-		m.seedLocalClusterLocked(cc)
+	if id == configPlaneClusterID {
+		cc.configPlane = true
+		m.seedConfigPlaneLocked(cc)
 	} else {
 		m.Log.Info("source cluster registered", "clusterID", id)
 	}
@@ -164,10 +204,10 @@ func (m *Manager) cluster(id string) *clusterContext {
 	return cc
 }
 
-// seedLocalClusterLocked wires the local context's catalog to m.resourceCatalog (a test may
+// seedConfigPlaneLocked wires the config-plane context's catalog to m.resourceCatalog (a test may
 // have injected one; otherwise the two are aliased so apiResourceCatalog() and the context see
 // the same object) and marks it reachable — the operator runs in it. Must hold clustersMu.
-func (m *Manager) seedLocalClusterLocked(cc *clusterContext) {
+func (m *Manager) seedConfigPlaneLocked(cc *clusterContext) {
 	if m.resourceCatalog != nil {
 		cc.catalog = m.resourceCatalog
 	} else {
@@ -176,9 +216,10 @@ func (m *Manager) seedLocalClusterLocked(cc *clusterContext) {
 	cc.reachable = sourceClusterReachability{state: reachTrue, reason: reasonLocalCluster}
 }
 
-// localCluster is the config plane, and the watched cluster of every GitTarget that does
-// not name a source.
-func (m *Manager) localCluster() *clusterContext { return m.cluster(LocalClusterID) }
+// configPlaneCluster is the operator's OWN cluster: where its CRs live, what the API-surface
+// trigger informers watch, and what the singleton catalog metrics describe. It is not a source
+// cluster and has no ClusterProvider — a GitTarget mirrors from a provider, never from this.
+func (m *Manager) configPlaneCluster() *clusterContext { return m.cluster(configPlaneClusterID) }
 
 // registryForGitTarget returns the followability registry of the cluster a GitTarget mirrors
 // from — its OWN cluster's surface, never a union. A single-cluster GitTarget resolves against
@@ -201,13 +242,13 @@ func (m *Manager) ClusterTypeLookup(clusterID string) typeset.Lookup {
 	return m.cluster(clusterID).registry
 }
 
-// activeClusterIDs is every cluster some GitTarget currently mirrors from, plus the local
-// one. The local cluster is always active: the operator's own CRs live there, and a
-// rule-less install still refreshes its catalog. The remote ids come from the Declare-time
-// capture (gitTargetClusters), not from the rules — spec.kubeConfig is immutable and a
-// GitTarget property, so there is no rules-disagree window to reconcile.
+// activeClusterIDs is every source cluster some GitTarget currently mirrors from, plus the config
+// plane. The config plane is always active: the operator's own CRs live there and its catalog arms
+// the API-surface trigger informers, so a rule-less install still refreshes it. The source ids come
+// from the Declare-time capture (gitTargetClusters), not from the rules — spec.clusterProviderRef
+// is immutable and a GitTarget property, so there is no rules-disagree window to reconcile.
 func (m *Manager) activeClusterIDs() []string {
-	seen := map[string]struct{}{LocalClusterID: {}}
+	seen := map[string]struct{}{configPlaneClusterID: {}}
 	m.gitTargetClustersMu.Lock()
 	for _, id := range m.gitTargetClusters {
 		seen[id] = struct{}{}
@@ -223,7 +264,7 @@ func (m *Manager) activeClusterIDs() []string {
 
 // rememberGitTargetCluster captures the source cluster a GitTarget mirrors from, keyed by
 // GitTarget — the same capture-on-Declare pattern as rememberGitTargetUID. Because
-// spec.kubeConfig is immutable, this is learned once and never changes for a given
+// spec.clusterProviderRef is immutable, this is learned once and never changes for a given
 // GitTarget, so there is no per-rule propagation and no cross-rule disagreement window.
 func (m *Manager) rememberGitTargetCluster(gitDest types.ResourceReference, clusterID string) {
 	m.gitTargetClustersMu.Lock()
@@ -234,13 +275,29 @@ func (m *Manager) rememberGitTargetCluster(gitDest types.ResourceReference, clus
 	m.gitTargetClusters[gitDest.Key()] = clusterID
 }
 
+// DeclaredSourceCluster reports the source cluster captured for a GitTarget at Declare time and
+// whether that GitTarget has declared at all. It is the observable form of the capture-on-Declare
+// contract: a GitTarget the controller's Validated gate refused never reaches DeclareForGitTarget,
+// so it never appears here. That makes "an unauthorized namespace starts no watch" assertable from
+// outside this package — unlike clusterIDForGitTarget, which deliberately hides the
+// not-yet-declared case behind the local-cluster default.
+func (m *Manager) DeclaredSourceCluster(gitDest types.ResourceReference) (string, bool) {
+	m.gitTargetClustersMu.Lock()
+	defer m.gitTargetClustersMu.Unlock()
+	id, ok := m.gitTargetClusters[gitDest.Key()]
+	return id, ok
+}
+
 // clusterIDForGitTarget resolves the source cluster of a GitTarget from the Declare-time
 // capture, defaulting to the local cluster for a GitTarget that has not declared yet (a
 // status read racing the first Declare) or that names no source cluster.
 func (m *Manager) clusterIDForGitTarget(gitDest types.ResourceReference) string {
 	m.gitTargetClustersMu.Lock()
 	defer m.gitTargetClustersMu.Unlock()
-	return m.gitTargetClusters[gitDest.Key()]
+	if id := m.gitTargetClusters[gitDest.Key()]; id != "" {
+		return id
+	}
+	return configPlaneClusterID
 }
 
 // forgetGitTargetCluster drops a deleted GitTarget's captured cluster and tears down that
@@ -262,7 +319,7 @@ func (m *Manager) forgetGitTargetCluster(gitDest types.ResourceReference) {
 	}
 	m.gitTargetClustersMu.Unlock()
 
-	if !had || clusterID == LocalClusterID || stillReferenced {
+	if !had || clusterID == configPlaneClusterID || stillReferenced {
 		return
 	}
 	m.teardownCluster(clusterID)
@@ -270,9 +327,9 @@ func (m *Manager) forgetGitTargetCluster(gitDest types.ResourceReference) {
 
 // teardownCluster drops a source cluster's context once no GitTarget references it: its
 // clients and catalog/registry are released so a deleted remote GitTarget leaks nothing. The
-// local cluster is never torn down.
+// config plane is never torn down — it is the operator's own cluster, not a source.
 func (m *Manager) teardownCluster(clusterID string) {
-	if clusterID == LocalClusterID {
+	if clusterID == configPlaneClusterID {
 		return
 	}
 	m.clustersMu.Lock()
@@ -286,17 +343,24 @@ func (m *Manager) teardownCluster(clusterID string) {
 }
 
 // recordClusterReachability updates a source cluster's SourceClusterReachable state from the
-// outcome of a discovery attempt. The local cluster is always reachable — the operator runs in
-// it — so it is never touched here. A remote's failure class (unreachable / auth / access
-// denied) is derived by classifySourceClusterReachFailure.
+// outcome of a discovery attempt. Only the CONFIG PLANE is skipped — it is the operator's own
+// cluster, reachable by definition and not a source. A source cluster that resolved in-cluster is
+// still recorded from its real attempt (it reports reasonLocalCluster on success), because "this
+// provider omits kubeConfig" is a resolved fact, not an assumption made from its name. A failure
+// class (unreachable / auth / access denied) is derived by classifySourceClusterReachFailure.
 func (m *Manager) recordClusterReachability(cc *clusterContext, err error) {
-	if cc.isLocal() {
+	if cc.configPlane {
 		return
 	}
+	inCluster := cc.isLocal()
 	m.clustersMu.Lock()
 	defer m.clustersMu.Unlock()
 	if err == nil {
-		cc.reachable = sourceClusterReachability{state: reachTrue, reason: reasonSourceClusterReachable}
+		reason := reasonSourceClusterReachable
+		if inCluster {
+			reason = reasonLocalCluster
+		}
+		cc.reachable = sourceClusterReachability{state: reachTrue, reason: reason}
 		return
 	}
 	cc.reachable = classifySourceClusterReachFailure(err)
@@ -359,7 +423,7 @@ func (m *Manager) SourceClusterReachable(clusterID string) SourceClusterReachabl
 // clusterReachability returns a snapshot of a cluster's SourceClusterReachable state for
 // projection onto its GitTargets. An unknown id is reported Unknown.
 func (m *Manager) clusterReachability(clusterID string) sourceClusterReachability {
-	if clusterID == LocalClusterID {
+	if clusterID == configPlaneClusterID {
 		return sourceClusterReachability{state: reachTrue, reason: reasonLocalCluster}
 	}
 	m.clustersMu.Lock()
@@ -380,36 +444,64 @@ func (m *Manager) clusterRESTConfigLocked(ctx context.Context, cc *clusterContex
 	if cc.restConfig != nil {
 		return cc.restConfig, nil
 	}
-	if cc.isLocal() {
-		cfg, err := ctrl.GetConfig()
+	if cc.configPlane {
+		cfg, err := inClusterRESTConfig()
 		if err != nil {
-			return nil, fmt.Errorf("no REST config for the local cluster: %w", err)
+			return nil, err
 		}
 		cc.restConfig = cfg
+		cc.configVersion = inClusterConfigVersion
 		return cfg, nil
 	}
-	cfg, version, err := m.resolveRemoteConfig(ctx, cc)
+	cfg, version, inCluster, err := m.resolveSourceConfig(ctx, cc)
 	if err != nil {
 		return nil, err
 	}
 	cc.restConfig = cfg
 	cc.configVersion = version
+	cc.inCluster = inCluster
 	return cfg, nil
 }
 
-// resolveRemoteConfig reads a remote cluster's kubeconfig Secret from the config plane.
-func (m *Manager) resolveRemoteConfig(ctx context.Context, cc *clusterContext) (*rest.Config, string, error) {
-	if m.SourceClusters == nil {
-		return nil, "", fmt.Errorf("cannot reach source cluster %q: no source-cluster resolver configured", cc.id)
-	}
-	cfg, version, err := m.SourceClusters.ResolveSourceCluster(ctx, cc.id)
+// inClusterRESTConfig is the operator's own cluster config, used by the config plane and by any
+// ClusterProvider that omits spec.kubeConfig.
+func inClusterRESTConfig() (*rest.Config, error) {
+	cfg, err := ctrl.GetConfig()
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve source cluster %q: %w", cc.id, err)
+		return nil, fmt.Errorf("no REST config for the operator's own cluster: %w", err)
 	}
-	if cfg == nil {
-		return nil, "", fmt.Errorf("resolve source cluster %q: nil REST config", cc.id)
+	return cfg, nil
+}
+
+// resolveSourceConfig resolves a SOURCE cluster's config from its ClusterProvider, and reports
+// whether that provider turned out to be in-cluster. This is the ONLY place in-cluster-ness is
+// decided for a source cluster: a provider that omits spec.kubeConfig resolves to the operator's
+// own config whatever it is named, and one that sets it is remote even if it is named "default".
+//
+// It returns the verdict rather than storing it, because one caller resolves OUTSIDE clientsMu
+// (the credential refresh) and must not race the field. The returns are, in order: the config, its
+// opaque version token, whether the provider resolved in-cluster, and the error.
+func (m *Manager) resolveSourceConfig(
+	ctx context.Context,
+	cc *clusterContext,
+) (*rest.Config, string, bool, error) {
+	if m.SourceClusters == nil {
+		return nil, "", false, fmt.Errorf(
+			"cannot reach source cluster %q: no source-cluster resolver configured", cc.id)
 	}
-	return cfg, version, nil
+	resolved, version, err := m.SourceClusters.ResolveSourceCluster(ctx, cc.id)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("resolve source cluster %q: %w", cc.id, err)
+	}
+	if resolved == nil {
+		// The provider omits kubeConfig: it names the operator's own cluster.
+		local, localErr := inClusterRESTConfig()
+		if localErr != nil {
+			return nil, "", false, localErr
+		}
+		return local, inClusterConfigVersion, true, nil
+	}
+	return resolved, version, false, nil
 }
 
 // refreshClusterCredentials re-reads a remote cluster's kubeconfig Secret on the catalog-refresh
@@ -425,7 +517,7 @@ func (m *Manager) refreshClusterCredentials(ctx context.Context, cc *clusterCont
 	if cc.isLocal() {
 		return
 	}
-	cfg, version, err := m.resolveRemoteConfig(ctx, cc)
+	cfg, version, inCluster, err := m.resolveSourceConfig(ctx, cc)
 	if err != nil {
 		if isDefinitiveCredentialFailure(err) && m.dropClusterClients(cc) {
 			m.invalidateClusterWatches(cc.id)
@@ -434,6 +526,7 @@ func (m *Manager) refreshClusterCredentials(ctx context.Context, cc *clusterCont
 	}
 
 	cc.clientsMu.Lock()
+	cc.inCluster = inCluster
 	if cc.restConfig != nil && version == cc.configVersion {
 		cc.clientsMu.Unlock()
 		return
@@ -562,7 +655,9 @@ func (m *Manager) clusterDiscovery(ctx context.Context, clusterID string) (apiRe
 		return nil, err
 	}
 	discoCfg := cfg
-	if !cc.isLocal() {
+	// isLocalLocked, not isLocal: clientsMu is held here, and clusterRESTConfigLocked has just
+	// resolved cc.inCluster, so this reads the freshly-decided verdict.
+	if !cc.isLocalLocked() {
 		// Discovery uses the legacy, non-context ServerGroupsAndResources(), and a remote config
 		// deliberately carries no request-level timeout (its watches must stay open). Bound the
 		// finite discovery call with a request timeout on a COPY, so a remote that accepts the
@@ -591,9 +686,9 @@ func (m *Manager) orderedClusters() []*clusterContext {
 	if snapshot := m.clusterOrder.Load(); snapshot != nil {
 		return *snapshot
 	}
-	// No cluster has been created yet: force the local one into existence, which publishes
+	// No cluster has been created yet: force the config plane into existence, which publishes
 	// the first snapshot.
-	m.localCluster()
+	m.configPlaneCluster()
 	if snapshot := m.clusterOrder.Load(); snapshot != nil {
 		return *snapshot
 	}
@@ -619,7 +714,14 @@ func (m *Manager) publishClusterOrderLocked() {
 	for id := range m.clusters {
 		ids = append(ids, id)
 	}
-	sort.Strings(ids) // LocalClusterID is "" and sorts first.
+	// Sort deterministically with the config plane first, then source clusters by name, so a
+	// status read sees a stable order.
+	sort.Slice(ids, func(i, j int) bool {
+		if (ids[i] == configPlaneClusterID) != (ids[j] == configPlaneClusterID) {
+			return ids[i] == configPlaneClusterID
+		}
+		return ids[i] < ids[j]
+	})
 	out := make([]*clusterContext, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, m.clusters[id])

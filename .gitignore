@@ -41,8 +41,10 @@ __debug*
 charts/gitops-reverser/crds/*.yaml
 charts/gitops-reverser/config/*.yaml
 
-# Generated single-file installer artifact (not tracked).
-/dist/install.yaml
+# Generated installer artifacts (not tracked). `task dist-install` emits the split bundle
+# — crds.yaml (applied first) + install.yaml — and CI regenerates both before packaging a
+# release. Ignore the whole directory so a new artifact never lands in a commit by accident.
+/dist/
 
 *.o.yaml
 *.ignore.*

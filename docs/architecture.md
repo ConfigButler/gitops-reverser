@@ -13,6 +13,13 @@ operator's short-lived coordination state.** Read the [Ground Rules](#ground-rul
 together. The later sections give the reference detail behind each piece. If a detail here ever disagrees
 with the source, the source wins; deeper design records live under [docs/design/](design/).
 
+Source and destination connections deliberately have different scopes. A namespaced `GitProvider` is a
+team's Git write boundary: its credential, branch policy, and targets usually belong together.
+`ClusterProvider` is cluster-scoped because it represents one shared source identity whose client,
+discovery surface, watch state, and attribution partition must remain consistent across namespaces.
+`allowedNamespaces` then explicitly controls which control-cluster namespaces may reference that shared
+source; it does not grant source-cluster RBAC or select source namespaces.
+
 ***
 
 ## Ground Rules
@@ -24,9 +31,10 @@ API. State is ingested by **watch**; these paths never treat Git as authority. W
 with a newer remote commit, the operator fetches the new remote state, resets its local clone, and
 replays its retained writes from the API.
 
-**Watch is the only object-state source.** Each `GitTarget` opens one Kubernetes watch per claimed
-`(GVR, scope)` with `sendInitialEvents=true`. Every Git write derives from persisted state the watch
-observed. Audit never defines *what* changed — it only, optionally, explains *who* caused it.
+**Watch is the only object-state source.** Each `GitTarget` names one `ClusterProvider` and opens one
+Kubernetes watch per claimed `(GVR, scope)` against that source, with `sendInitialEvents=true`. Every
+Git write derives from persisted state the watch observed. Audit never defines *what* changed — it only,
+optionally, explains *who* caused it.
 
 **Sensitive resources are never written in plaintext.** Core Secrets and configured sensitive resource
 types must be encrypted before they touch the Git worktree. If encryption cannot be configured, the write
@@ -43,10 +51,10 @@ attribution, CommitRequest author capture, and HA. Attributed-author mode requir
 require it as the shared store across replicas.
 
 **Audit is an optional attribution lookup.** When attribution is enabled, kube-apiserver posts audit
-events to `/audit-webhook`; the operator extracts a minimal attribution fact (auditID, user, verb,
-resourceVersion, GVR/namespace/name/UID, status, timestamps) into a Redis attribution index keyed for a
-join, and a resolver attaches the commit author to a watch event by matching a fact within a bounded
-grace window. A missing, late, or absent fact never blocks state capture; it only changes the author.
+events to `/audit-webhook/<cluster-provider-name>` (or a configured annotation-routed shared endpoint).
+The operator stores a minimal fact under that source-provider partition and joins it to a watch event
+within a bounded grace window. A missing, late, or absent fact never blocks state capture; it only
+changes the author.
 
 **Behavior is deterministic and proven by tests.** Given the same observed Kubernetes state, configuration,
 and Git base, the operator makes the same materialization decisions. Ordering, attribution fallbacks,
@@ -99,7 +107,7 @@ optional and only add *who* did something:
 |---|---|---|---|
 | **Discovery** (CRD/APIService) | *what types exist* | yes | the API surface — served GVRs, scope, preferred version, subresources; rules resolve against it |
 | **Watch** (per claimed `(GVR, scope)`) | *what changed* | yes | the object body, ordered per type; the only object-state source, with deletes reconciled via `sendInitialEvents` replay + mark-and-sweep |
-| **Audit webhook** (`/audit-webhook`) | *who changed mirrored state* | no | a post-persist attribution fact, joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
+| **Audit webhook** (`/audit-webhook/<provider>`) | *who changed mirrored state* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
 | **Validating admission webhook** (`/validate-operator-types`) | *who issued a command* | no | the submitter of a `CommitRequest`, captured at admission and keyed 1:1 by UID ([CommitRequest Finalize](#commitrequest-finalize)) |
 
 With both optional sources off, the product still mirrors state correctly — every commit is simply authored
@@ -148,9 +156,10 @@ capture audit and admission with **no** resulting watch event.
 
 ## Configuration Model
 
-You configure GitOps Reverser entirely through five CRDs (group `configbutler.ai`, version
-`v1alpha3`). `WatchRule` and `ClusterWatchRule` choose which Kubernetes resources enter the pipeline.
-`CommitRequest` can ask for the current window to be saved. `GitTarget` chooses the branch and path.
+You configure GitOps Reverser through six CRDs (group `configbutler.ai`, version `v1alpha3`).
+`WatchRule` and `ClusterWatchRule` choose which Kubernetes resources enter the pipeline.
+`CommitRequest` can ask for the current window to be saved. `GitTarget` joins one source cluster to one
+Git destination. `ClusterProvider` supplies the source connection and authorization boundary;
 `GitProvider` supplies the repository, credentials, commit settings, and push policy.
 
 ```mermaid
@@ -158,9 +167,11 @@ graph LR
     WR[WatchRule] -->|targetRef| GT[GitTarget]
     CWR[ClusterWatchRule] -->|targetRef| GT
     CR[CommitRequest] -->|targetRef| GT
+    GT -->|clusterProviderRef| CP[ClusterProvider]
     GT -->|providerRef| GP[GitProvider]
 
     style GP fill:#e8f4fd,stroke:#2196f3
+    style CP fill:#e8f4fd,stroke:#2196f3
     style GT fill:#e8f4fd,stroke:#2196f3
     style WR fill:#fff3e0,stroke:#ff9800
     style CWR fill:#fff3e0,stroke:#ff9800
@@ -172,7 +183,8 @@ graph LR
 | `WatchRule` | namespaced | which resources in *this* namespace route to a GitTarget |
 | `ClusterWatchRule` | cluster | which cluster scoped or cluster wide resources route to a GitTarget |
 | `CommitRequest` | namespaced | a one shot "save the open window now" signal |
-| `GitTarget` | namespaced | one materialization destination `(provider, branch, path)` |
+| `GitTarget` | namespaced | one materialization from a source provider to `(provider, branch, path)` |
+| `ClusterProvider` | cluster | one source-cluster connection plus namespace access policy |
 | `GitProvider` | namespaced | a Git repo + credentials + commit/signing config |
 
 ### WatchRule / ClusterWatchRule
@@ -227,18 +239,20 @@ How attribution and finalization interact is described under
 * **Source**: [api/v1alpha3/gittarget_types.go](../api/v1alpha3/gittarget_types.go)
 * **Controller**: [internal/controller/gittarget_controller.go](../internal/controller/gittarget_controller.go)
 
-One materialization destination: `(provider, branch, path)`. Key fields:
+One materialization from a source provider to a Git destination: `(cluster provider, provider, branch, path)`.
+Key fields:
 
 * `spec.providerRef`: a `GitProvider` in the same namespace (`group`/`kind` default to
   `configbutler.ai`/`GitProvider`, the only accepted values).
+* `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
 * `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
 * `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
   chosen explicitly).
 * `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
 
-`providerRef`, `branch`, and `path` are immutable so a target cannot silently orphan an old
-materialization. The controller also rejects path overlaps between GitTargets sharing a provider and
-branch.
+`providerRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
+orphan an old materialization or change its source cluster. The controller also rejects path overlaps
+between GitTargets sharing a provider and branch.
 
 Status has a kstatus-compatible summary layer plus domain conditions:
 
@@ -248,6 +262,8 @@ Status has a kstatus-compatible summary layer plus domain conditions:
 * `Validated` and `EncryptionConfigured` explain control-plane health.
 * `StreamsRunning` explains the source side: every tracked type is past initial replay and routing live
   events.
+* `ClusterProviderReady` and `SourceClusterReachable` distinguish valid source configuration from a
+  source API the data plane can currently reach.
 * `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
   materialize.
 * `status.streams` is a bounded count summary, not a per-type list.
@@ -279,6 +295,21 @@ ecosystems is the credentials Secret, not a foreign repository object. The crede
 Kubernetes native, Flux, and Argo CD Secret key dialects (see
 [design/git-credentials-interop.md](finished/git-credentials-interop.md)).
 
+### ClusterProvider
+
+`ClusterProvider` is the read-side peer of `GitProvider`. A `GitTarget` references it by the immutable
+`spec.clusterProviderRef`; omission defaults to the conventional name `default`. The name is only a
+defaulting convention: a provider without `spec.kubeConfig` uses the operator's in-cluster client, while
+any name (including `default`) may instead carry a remote kubeconfig resolved from the operator namespace.
+
+Its cluster scope is intentional. Several namespaces may mirror one source cluster, but the source
+identity must not vary by target because it keys source clients, discovery, watches, and attribution.
+`spec.allowedNamespaces` is therefore a deny-by-default control-cluster policy, enforced on every
+reconcile before watches start — so tightening it also stops an already-existing `GitTarget`, which an
+admission-time check could not do. It guards which tenant may cause the operator to export a shared source; it
+does not expand that source credential's Kubernetes permissions. The `ClusterProvider` validates its
+connection inputs, while a `GitTarget` projects provider readiness and live source reachability.
+
 ***
 
 ## Common Flows
@@ -291,7 +322,7 @@ flowchart TD
     subgraph K8S["Kubernetes API server"]
         WATCH["WATCH + sendInitialEvents replay<br/>(per claimed GVR + scope)"]
         DISC["Discovery: CRDs / APIServices"]
-        AUDIT["/audit-webhook (optional)"]
+        AUDIT["/audit-webhook/&lt;provider&gt; (optional)"]
     end
 
     subgraph PERGT["Per GitTarget: internal/watch + internal/reconcile"]
@@ -350,9 +381,9 @@ Following the ConfigMap edit:
    the remote moved).
 
 Separately, the audit path (only when attribution is enabled): kube-apiserver POSTs audit events to
-`/audit-webhook`; [AuditHandler](../internal/webhook/audit_handler.go) extracts a minimal attribution
-fact and writes it to the Redis attribution index with a short TTL. That index is read only by the
-resolver in step 3; it never creates or repairs object state.
+`/audit-webhook/<provider>`; [AuditHandler](../internal/webhook/audit_handler.go) extracts a minimal
+attribution fact and writes it to that provider's Redis partition with a short TTL. That index is read
+only by the resolver in step 3; it never creates or repairs object state.
 
 **And if the watch had been lost?** A delete that happened while no watch was running is reconciled on
 the next watch (re)connect: the `sendInitialEvents` replay plus **mark-and-sweep** removes any Git file
@@ -514,19 +545,22 @@ per-mutation change log.
 * **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
 * **Resolver (grace window join)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
 
-Attribution runs **only when attribution is enabled** (`--author-attribution`, the default); Redis — always
-required — is its state store. The Kubernetes API server POSTs audit `EventList`
-payloads to a **single** HTTP endpoint, `/audit-webhook`; there is no supplementary body endpoint and no
+Attribution runs only when `--author-attribution=true`; Redis is then its required state store. A normal
+source posts audit `EventList` payloads to `/audit-webhook/<cluster-provider-name>`. The bare
+`/audit-webhook` endpoint is enabled only with `--author-attribution-cluster-annotation-key`, for a
+trusted control plane that puts a provider name in each event. There is no supplementary body endpoint or
 body joiner, because watch — not audit — carries the object body. The handler applies an intrinsic accept
 gate (StageResponseComplete, a mutating verb, success, non-dry-run, a changed resourceVersion, and the
-`/scale` subresource only), extracts a minimal attribution fact, and writes it to the Redis attribution
-index with a short TTL.
+`/scale` subresource only), then writes the minimal attribution fact to the provider's Redis partition.
 
 | Endpoint | Role |
 |---|---|
-| `/audit-webhook` | Audit source (kube-apiserver) for the optional attribution index |
+| `/audit-webhook/<provider>` | One source provider's audit stream; the provider must exist |
+| `/audit-webhook` | Shared stream only when annotation routing is configured; each event names its provider |
 
-Cluster ID path segments are rejected; multi cluster routing is not modeled yet.
+The handler accepts a client certificate signed by the audit CA, but it does not yet bind that certificate
+to a named provider. Do not treat named routes as an isolation boundary for independently administered
+remote sources that share a client credential; provider-bound ingress authentication remains outstanding.
 
 ### Optional, but never casual
 
@@ -539,11 +573,10 @@ to clearly record that the operator made a change than to assert an actor we are
 
 Two engineering choices follow directly from that stance:
 
-* **mTLS on the audit ingress is on by default.** An attribution fact names a human or a service account,
-  so the channel that delivers it must be trustworthy. The audit server requires and verifies a client
+* **mTLS on the audit ingress is on by default.** The audit server requires and verifies a client
   certificate (`tls.RequireAndVerifyClientCert` against a configured CA; `--audit-insecure` defaults to
-  `false`), so nothing can **impersonate the kube-apiserver** and inject forged facts. Disabling
-  verification is an explicit, deliberate opt-out.
+  `false`). This authenticates membership in that CA's client set. It is not yet a sender-to-provider
+  binding, so multi-source deployments must not share a credential across independently trusted sources.
 * **Tests pin the behavior.** Because a misattribution is a real harm, the attribution and resolver paths
   carry unit and e2e tests that prove the concrete cases — strong match, weak/last-key match, deletes whose
   audit RV differs from the watch RV, missing/late/expired facts, service-account vs human actor,
@@ -559,14 +592,15 @@ The fact is the smallest thing needed to name an author, not an object log:
 | `user` / `impersonatedUser` | author candidate (human *or* service account) |
 | `verb`, `subresource` | explain the write |
 | `responseStatus.code`, `dryRun` | reject failures and non-persistent requests (at the handler gate) |
-| GVR, namespace, name, UID | exact join keys |
+| source provider, GVR, namespace, name, UID | source partition plus exact join keys |
 | response object resourceVersion | exact watch-event match |
 | stage timestamp | recency |
 
-The index writes the fact under several join keys, strongest first: exact `(GVR, ns, name, uid, rv)`,
-then `(GVR, ns, name, uid)` (for deletes whose watch RV differs from the audit RV), then
-`(GVR, ns, name, rv)` (when UID is absent). Each key carries the same short TTL (minutes, not hours);
-old facts are never needed for correctness because watch owns state.
+The index writes the fact under several join keys, all prefixed by the `ClusterProvider` name: exact
+`(provider, GVR, ns, name, uid, rv)`, then `(provider, GVR, ns, name, uid)` (for deletes whose watch RV
+differs from the audit RV), then `(provider, GVR, ns, name, rv)` (when UID is absent). Each key carries
+the same short TTL (minutes, not hours); old facts are never needed for correctness because watch owns
+state.
 
 ### The resolver and its grace window
 
@@ -912,7 +946,7 @@ hydrates only touched files into buffers for the commit, and flushes only change
   entry in the document's kustomization chain is written back to that entry (comment-preserving, only
   fields the entry already declares); the source manifest keeps its bytes. Anything the inversion cannot
   express falls back to the plain in-place patch. See
-  [gitops-api/finished/images-and-replicas-edit-through.md](design/support-boundary/finished/images-and-replicas-edit-through.md).
+  [images-and-replicas edit-through design](design/support-boundary/finished/images-and-replicas-edit-through.md).
 * **Deletes:** use the manifest identity index, so a moved manifest can still be deleted even when it is
   not at the canonical path.
 * **Field patches** (currently `/scale` → parent `spec.replicas`) are intentionally narrow: they only
@@ -1000,20 +1034,25 @@ admission by the validating webhook, not derived from the audit attribution inde
 
 Controllers watch their dependencies so dependents reconcile quickly after spec changes:
 
-* `GitTargetReconciler` watches `GitProvider`, `WatchRule`, `ClusterWatchRule`, and the encryption
-  `Secret`; it resolves the GitTarget's claimed `(GVR, scope)` watch set and derives the `Synced` condition
-  + materialization summary.
+* `GitTargetReconciler` watches `GitProvider`, `ClusterProvider`, `Namespace`, `WatchRule`, and
+  `ClusterWatchRule`. Provider readiness/spec changes and namespace-label changes promptly re-check
+  source authorization; rules re-declare the claimed `(GVR, scope)` set. It deliberately does **not**
+  watch encryption Secrets, so their recovery is picked up by periodic reconciliation without retaining
+  every Secret value in the control-plane cache.
 * `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate the
   RuleStore, and trigger the rule-change reconcile.
 * `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
+* `ClusterProviderReconciler` validates source-connection inputs and projects its readiness to dependent
+  targets. It also removes the retired fact-purge finalizer from pre-release objects during an upgrade.
 * `CommitRequestReconciler` runs with `MaxConcurrentReconciles=1` and attributes/attaches as above; its
   optional `AuthorLookup` is the command-author cache populated by the `/validate-operator-types` webhook
   (wired whenever the admission webhook is enabled — independent of `--author-attribution` — and nil
   otherwise, so the request finalizes as the committer).
 
-Dependency watches use generation change predicates to avoid queueing again on status only heartbeats.
-`GitProvider`, `GitTarget`, and `CommitRequest` carry immutability constraints where a spec change would
-orphan a materialized subtree or invalidate an in-flight finalize.
+Dependency watches use narrow predicates to avoid status-only heartbeat churn: a `ClusterProvider` also
+admits a `Ready` transition, and a `Namespace` admits only label changes. `GitProvider`, `GitTarget`, and
+`CommitRequest` carry immutability constraints where a spec change would orphan a materialized subtree or
+invalidate an in-flight finalize.
 
 ***
 
@@ -1038,7 +1077,7 @@ flowchart TD
     Hq -->|no| J[Configured-author: no attribution index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
-    K --> L[Register GitProvider + GitTarget + CommitRequest controllers]
+    K --> L[Register GitProvider + ClusterProvider + GitTarget + CommitRequest controllers]
     L --> M[Add cert watchers + health checks]
     M --> N[mgr.Start]
 ```
@@ -1046,11 +1085,12 @@ flowchart TD
 Redis is optional in configured-author mode. When `--redis-addr` is set, the cursor store is wired and a
 Redis readiness gate keeps the pod not-ready until Redis is reachable; watches resume from their last
 stored resourceVersion after a restart. When `--redis-addr` is empty, the cursor store is skipped and
-watches cold-replay from scratch on restart instead. With `--author-attribution` on (the default), a
-non-empty `--redis-addr` is required: the attribution index is built on the Redis connection, the audit
-HTTP handler is wired with the fact extractor, the watch manager gets the author resolver, and the audit
-ingress is added to `/readyz`. With `--author-attribution=false` (configured-author) no attribution index is
-built and the audit webhook is skipped entirely; every commit is committer-authored.
+watches cold-replay from scratch on restart instead. The binary's `--author-attribution` flag defaults to
+on, which requires a non-empty `--redis-addr`: the attribution index is built on the Redis connection, the
+audit HTTP handler is wired with the fact extractor, the watch manager gets the author resolver, and the
+audit ingress is added to `/readyz`. The Helm chart deliberately passes `--author-attribution=false` by
+default, so a first install runs configured-author with no attribution index or audit webhook and every
+commit is committer-authored.
 
 ***
 
@@ -1089,7 +1129,10 @@ Current limitations:
   `sendInitialEvents` replay or LIST + mark-and-sweep.
 * **Per-watch and per-attribution metrics are not yet emitted** (see [Observability](#observability)).
 * **No pull request creation;** the operator writes directly to branches.
-* **No multi cluster routing;** cluster ID path segments on `/audit-webhook` are rejected.
+* **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
+  annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
+  certificate is not bound to one provider. This is an accepted privileged-control-plane assumption, not
+  tenant isolation; see [SECURITY.md](../SECURITY.md#shared-audit-ingress-trust-model).
 * **`deletecollection`** is reconciled by the watch (each item arrives as its own `DELETED`, or the
   mark-and-sweep reconciles them on replay).
 * **A fail-safe placement skip has no dedicated status condition.** A resource the writer refuses to

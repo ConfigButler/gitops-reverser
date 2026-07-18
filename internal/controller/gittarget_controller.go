@@ -21,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -29,7 +30,6 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
@@ -107,10 +107,6 @@ type GitTargetReconciler struct {
 	Scheme        *runtime.Scheme
 	WorkerManager *git.WorkerManager
 	EventRouter   *watch.EventRouter
-	// KubeConfigSafety is the exec / insecure-TLS opt-in applied by the Validated gate when a
-	// GitTarget names spec.kubeConfig. It mirrors the resolver's policy so the controller's
-	// legibility verdict and the data plane's dial never disagree on what is safe.
-	KubeConfigSafety kubeconfig.SafetyPolicy
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch;create;update;patch;delete
@@ -222,7 +218,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(
 			ctx,
 			gitDest,
-			target.SourceClusterID(),
+			target.SourceCluster(),
 			gitPathWasRefused,
 		); declareErr != nil {
 			log.V(1).Info("stream declaration skipped; surface not observable",
@@ -251,15 +247,18 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// reachable by definition — so the default (used when no watch manager is wired, e.g. in
 	// tests) is True/LocalCluster for a local target and Unknown only for a remote one.
 	sourceReach := watch.SourceClusterReachableStatus{State: "True", Reason: "LocalCluster"}
-	if target.SourceClusterID() != "" {
+	if !target.IsLocalSource() {
 		sourceReach = watch.SourceClusterReachableStatus{State: "Unknown", Reason: "AwaitingDiscovery"}
 	}
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
-		sourceReach = r.EventRouter.WatchManager.SourceClusterReachable(target.SourceClusterID())
+		sourceReach = r.EventRouter.WatchManager.SourceClusterReachable(target.SourceCluster())
 	}
 	providerStatus, providerReason, providerMessage := r.gitProviderReadiness(ctx, &target, providerNS)
-	r.projectSourceAndProvider(&target, sourceReach, providerStatus, providerReason, providerMessage)
-	streamsSettling = streamsSettling || sourceReach.State != "True" || providerStatus != metav1.ConditionTrue
+	cpStatus, cpReason, cpMessage := r.clusterProviderReadiness(ctx, &target)
+	r.projectSourceAndProvider(&target, sourceReach, providerStatus, providerReason, providerMessage,
+		cpStatus, cpReason, cpMessage)
+	streamsSettling = streamsSettling || sourceReach.State != "True" ||
+		providerStatus != metav1.ConditionTrue || cpStatus == metav1.ConditionFalse
 
 	if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 		return ctrl.Result{}, err
@@ -305,17 +304,22 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, fmt.Sprintf("Validated gate failed: %s", GitTargetReasonInvalidConfig), nil, nil
 	}
 
-	// spec.kubeConfig legibility gate: read/parse the kubeconfig Secret and apply the exec/TLS
-	// safety policy WITHOUT dialing. Reachability is a runtime observation the data plane records
-	// on SourceClusterReachable, so this only ever fails on a directly-readable input problem.
-	kcOK, kcReason, kcMsg, kcErr := r.validateKubeConfig(ctx, target)
-	if kcErr != nil {
-		return false, "", nil, kcErr
+	// The source cluster's connectivity inputs (kubeConfig) are validated on the referenced
+	// ClusterProvider now, not here — the GitTarget only NAMES its source cluster. The
+	// ClusterProvider's readiness is projected onto the GitTarget as a separate condition.
+
+	// Namespace authorization: a GitTarget may reference a ClusterProvider only from a namespace
+	// its spec.allowedNamespaces admits. Enforced HERE and only here, on every reconcile — which
+	// also covers a policy tightened after the GitTarget was created. Failing this gate returns
+	// before DeclareForGitTarget below, so an unauthorized target starts no watch and writes no Git.
+	authorized, authReason, authMsg, authErr := r.checkSourceAuthorization(ctx, target)
+	if authErr != nil {
+		return false, "", nil, authErr
 	}
-	if !kcOK {
-		r.setCondition(target, GitTargetConditionValidated, metav1.ConditionFalse, kcReason, kcMsg)
+	if !authorized {
+		r.setCondition(target, GitTargetConditionValidated, metav1.ConditionFalse, authReason, authMsg)
 		result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
-		return false, fmt.Sprintf("Validated gate failed: %s", kcReason), &result, nil
+		return false, fmt.Sprintf("Validated gate failed: %s", authReason), &result, nil
 	}
 
 	r.setCondition(
@@ -323,7 +327,7 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		GitTargetConditionValidated,
 		metav1.ConditionTrue,
 		GitTargetReasonOK,
-		"Provider, branch, placement, and kubeconfig validation passed",
+		"Provider, branch, and placement validation passed",
 	)
 	return true, "", nil, nil
 }
@@ -397,14 +401,15 @@ func (r *GitTargetReconciler) evaluateWorkerWiringGate(
 
 // setBlockedDataPlane marks stream readiness as not-yet-evaluated when a control-plane gate
 // blocked the reconcile before watches could be declared.
-// stopSourceClusterMirror tears down the data plane of a remote-source GitTarget that is no longer
-// Validated, so a dead credential can never keep an active mirror running behind a Validated=False
-// status. It is a no-op for a local GitTarget (nothing remote to stop) and idempotent across
-// requeues while the target stays blocked. A later recovery re-declares the watches and re-snapshots.
+// stopSourceClusterMirror tears down the data plane of a GitTarget that is no longer Validated, so
+// a dead credential — or a source ClusterProvider that was deleted (including the reserved
+// "default" for the LOCAL cluster) — can never keep an active mirror running behind a
+// Validated=False status. It applies to local AND remote targets: a local target references the
+// "default" ClusterProvider, so if that provider is gone the local mirror must stop too, never
+// falling back to an implicit in-cluster identity that bypasses the authorization policy. It is
+// idempotent across requeues while the target stays blocked; a later recovery re-declares the
+// watches and re-snapshots.
 func (r *GitTargetReconciler) stopSourceClusterMirror(target *configbutleraiv1alpha3.GitTarget) {
-	if target.SourceClusterID() == "" {
-		return
-	}
 	if r.EventRouter == nil || r.EventRouter.WatchManager == nil {
 		return
 	}
@@ -1125,6 +1130,26 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToGitTargets),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
+		// React to the referenced (cluster-scoped) ClusterProvider becoming Ready/NotReady so the
+		// projected ClusterProviderReady condition and the namespace-authorization refusal re-run
+		// promptly instead of waiting for the periodic reconcile. A plain GenerationChangedPredicate
+		// would miss a Ready flip (a STATUS-only update), so this fires on spec changes OR a change
+		// in the provider's Ready condition status (plus create/delete).
+		Watches(
+			&configbutleraiv1alpha3.ClusterProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToGitTargets),
+			builder.WithPredicates(clusterProviderReadyOrSpecChanged()),
+		).
+		// React to a Namespace's LABELS changing: a ClusterProvider's allowedNamespaces selector is
+		// evaluated against namespace labels, so a label change can grant or revoke a GitTarget's
+		// authorization. Re-enqueue the GitTargets in that namespace so the reconcile-time refusal
+		// converges instead of waiting for the periodic reconcile. LabelChangedPredicate ignores the
+		// unrelated namespace churn (annotations, status).
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.namespaceToGitTargets),
+			builder.WithPredicates(predicate.LabelChangedPredicate{}),
+		).
 		// React to a GitTarget's WatchRule/ClusterWatchRule set changing so it re-reconciles and
 		// re-Declares its watched-type set promptly (the R3 replacement for the deleted whole-target
 		// rule-change resync). Without this a rule added after the GitTarget went Ready would not be
@@ -1207,4 +1232,83 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 		})
 	}
 	return requests
+}
+
+// clusterProviderToGitTargets maps a ClusterProvider event to every GitTarget that references it,
+// across ALL namespaces (the provider is cluster-scoped). It re-enqueues dependents when the
+// provider's Ready flips or its allowedNamespaces policy changes, so the projected
+// ClusterProviderReady and the namespace-authorization refusal converge without waiting for the
+// periodic reconcile.
+func (r *GitTargetReconciler) clusterProviderToGitTargets(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var targets configbutleraiv1alpha3.GitTargetList
+	if err := r.List(ctx, &targets); err != nil {
+		logDependencyListError(ctx, err, "GitTargets", obj)
+		return nil
+	}
+
+	var requests []ctrlreconcile.Request
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		if t.SourceCluster() != obj.GetName() {
+			continue
+		}
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: k8stypes.NamespacedName{Name: t.Name, Namespace: t.Namespace},
+		})
+	}
+	return requests
+}
+
+// namespaceToGitTargets maps a Namespace label change to every GitTarget in that namespace, so the
+// reconcile-time ClusterProvider authorization (which may match the namespace's labels via a
+// selector) re-runs and grants/revokes the target promptly.
+func (r *GitTargetReconciler) namespaceToGitTargets(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var targets configbutleraiv1alpha3.GitTargetList
+	if err := r.List(ctx, &targets, client.InNamespace(obj.GetName())); err != nil {
+		logDependencyListError(ctx, err, "GitTargets", obj)
+		return nil
+	}
+	requests := make([]ctrlreconcile.Request, 0, len(targets.Items))
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: k8stypes.NamespacedName{Name: t.Name, Namespace: t.Namespace},
+		})
+	}
+	return requests
+}
+
+// clusterProviderReadyStatus returns a ClusterProvider's Ready condition status ("" if absent), so
+// a watch predicate can react to a Ready FLIP that arrives as a status-only update.
+func clusterProviderReadyStatus(cp *configbutleraiv1alpha3.ClusterProvider) metav1.ConditionStatus {
+	if c := findCondition(cp.Status.Conditions, ConditionTypeReady); c != nil {
+		return c.Status
+	}
+	return ""
+}
+
+// clusterProviderReadyOrSpecChanged is the ClusterProvider watch predicate for the GitTarget
+// controller: fire on create/delete, and on an update when the SPEC changed (generation) OR the
+// Ready condition status changed — the latter a status-only update GenerationChangedPredicate drops.
+func clusterProviderReadyOrSpecChanged() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldCP, ok1 := e.ObjectOld.(*configbutleraiv1alpha3.ClusterProvider)
+			newCP, ok2 := e.ObjectNew.(*configbutleraiv1alpha3.ClusterProvider)
+			if !ok1 || !ok2 {
+				return true
+			}
+			return oldCP.Generation != newCP.Generation ||
+				clusterProviderReadyStatus(oldCP) != clusterProviderReadyStatus(newCP)
+		},
+	}
 }

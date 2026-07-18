@@ -87,12 +87,12 @@ func TestRedisStore_KeyPrefixReachesEveryKeyFamily(t *testing.T) {
 		store.watchCursorKey("gtuid-3", gvr, "team-a"))
 
 	idx := store.AttributionIndex(0)
-	require.Equal(t, "cell-a:tenant-7:author:v1:audit:apps/deployments:object:uid-1:101",
-		idx.factKeyExact("apps/deployments", "uid-1", "101"))
-	require.Equal(t, "cell-a:tenant-7:author:v1:audit:apps/deployments:object:uid-1:last",
-		idx.factKeyLast("apps/deployments", "uid-1"))
-	require.Equal(t, "cell-a:tenant-7:author:v1:audit:apps/deployments:rv:101",
-		idx.factKeyRV("apps/deployments", "101"))
+	require.Equal(t, "cell-a:tenant-7:author:v1:audit:cluster:default:apps/deployments:object:uid-1:101",
+		idx.factKeyExact("default", "apps/deployments", "uid-1", "101"))
+	require.Equal(t, "cell-a:tenant-7:author:v1:audit:cluster:default:apps/deployments:object:uid-1:last",
+		idx.factKeyLast("default", "apps/deployments", "uid-1"))
+	require.Equal(t, "cell-a:tenant-7:author:v1:audit:cluster:default:apps/deployments:rv:101",
+		idx.factKeyRV("default", "apps/deployments", "101"))
 
 	require.Equal(t, "cell-a:tenant-7:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
 }
@@ -119,7 +119,8 @@ func TestRedisStore_ZeroValueStoreStillWritesPrefixedKeys(t *testing.T) {
 	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
 		store.watchCursorKey("gtuid-3", coreConfigmapsGVR(), ""))
 	require.Equal(t, "gitops-reverser:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
-	require.Equal(t, "gitops-reverser:author:v1:audit:", store.AttributionIndex(0).factKeyBase(""))
+	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:default:",
+		store.AttributionIndex(0).clusterFactPrefix("default"))
 }
 
 // Two reversers sharing one Redis/Valkey and one logical database must not read each
@@ -152,13 +153,14 @@ func TestRedisStore_DistinctPrefixesIsolateCursors(t *testing.T) {
 	require.Equal(t, "111", rv, "tenant-b's write must not clobber tenant-a's cursor")
 }
 
-// The attribution telemetry gauge SCANs "<prefix>:author:v1:audit:*". A prefix that
-// contained a glob metacharacter would make it count the wrong keyspace; validation
-// rejects those, so the pattern is always a literal prefix plus one trailing star.
+// The attribution telemetry gauge SCANs "<prefix>:author:v1:audit:*" and the per-provider purge
+// SCANs "<prefix>:author:v1:audit:cluster:<name>:*". A prefix that contained a glob metacharacter
+// would make either count/delete the wrong keyspace; validation rejects those, so the pattern is
+// always a literal prefix plus one trailing star.
 func TestAttributionIndex_ScanPatternIsPrefixed(t *testing.T) {
 	t.Parallel()
 
 	store := newPrefixedRedisStore(t, "tenant-a")
 	idx := store.AttributionIndex(0)
-	require.Equal(t, "tenant-a:author:v1:audit:", idx.factKeyBase(""))
+	require.Equal(t, "tenant-a:author:v1:audit:cluster:prod-eu-1:", idx.clusterFactPrefix("prod-eu-1"))
 }

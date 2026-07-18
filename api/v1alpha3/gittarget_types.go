@@ -3,7 +3,6 @@
 package v1alpha3
 
 import (
-	meta "github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -47,19 +46,11 @@ type GitProviderReference struct {
 // +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.path == oldSelf.path",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
 //
-// spec.kubeConfig is immutable — the source of a folder's content is destination identity, like
-// providerRef/branch/path above. Delete and recreate to change the cluster a GitTarget mirrors.
-// +kubebuilder:validation:XValidation:rule="has(self.kubeConfig) == has(oldSelf.kubeConfig) && (!has(self.kubeConfig) || self.kubeConfig == oldSelf.kubeConfig)",message="spec.kubeConfig is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
-//
-// configMapRef (provider / workload-identity auth) is present in meta.KubeConfigReference's schema
-// but not yet implemented here; reject it at admission so the v1alpha3 contract is "secretRef only".
-// Deleting this one rule, plus wiring the provider path in the resolver, is the whole future enablement.
-// +kubebuilder:validation:XValidation:rule="!has(self.kubeConfig) || !has(self.kubeConfig.configMapRef)",message="spec.kubeConfig.configMapRef (provider auth) is not yet supported; use secretRef"
-//
-// secretRef.name comes from the external meta.KubeConfigReference schema, which marks it required but
-// permits the empty string; an empty name is meaningless (it can never resolve a Secret), so reject it
-// at admission rather than letting it surface later as a Validated=False "Secret not found".
-// +kubebuilder:validation:XValidation:rule="!has(self.kubeConfig) || !has(self.kubeConfig.secretRef) || size(self.kubeConfig.secretRef.name) > 0",message="spec.kubeConfig.secretRef.name must not be empty"
+// spec.clusterProviderRef names the SOURCE cluster a GitTarget mirrors FROM (see its field doc). It
+// is immutable — a folder's source cluster is part of what the folder means, like
+// providerRef/branch/path above — and defaults to a ClusterProvider named "default", so it is
+// always populated (never nil) and always jumpable.
+// +kubebuilder:validation:XValidation:rule="self.clusterProviderRef == oldSelf.clusterProviderRef",message="spec.clusterProviderRef is immutable; delete and recreate the GitTarget to change the cluster it mirrors"
 type GitTargetSpec struct {
 	// ProviderRef references the GitProvider that backs this target.
 	// Immutable: delete and recreate the GitTarget to change its destination.
@@ -96,18 +87,17 @@ type GitTargetSpec struct {
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
 
-	// KubeConfig names the SOURCE CLUSTER this GitTarget mirrors FROM: the kubeconfig
-	// determines both the cluster and the credentials to reach it. Omitted means the cluster
-	// the operator runs in, the single-cluster default that behaves exactly as before. Its
-	// Secret is read from the GitTarget's OWN namespace, on the cluster the operator runs in —
-	// the credential for a cluster never has to live on that cluster. When SecretRef.Key is
-	// empty the resolver reads "value" then "value.yaml" (Flux's order). Immutable: the source
-	// of a folder's content is part of what the folder means; delete and recreate to change it.
-	// Only kubeConfig.secretRef is honored in v1alpha3 (configMapRef is rejected at admission);
-	// unsafe kubeconfigs (exec auth providers, insecure-skip-tls-verify) are rejected by the
-	// controller with a legible Validated=False reason unless the operator opts in via flags.
+	// ClusterProviderRef names the SOURCE cluster this GitTarget mirrors FROM, by referencing a
+	// cluster-scoped ClusterProvider by name. The ClusterProvider is the home for that cluster's
+	// connectivity credential, namespace-access authorization, and author-attribution mode. This
+	// DEFAULTS to {name: "default"} — a user-created provider by that conventional name, which may
+	// be in-cluster or remote — so a target that omits it persists with a concrete, jumpable ref
+	// rather than an implicit nil. The operator never creates that provider; a GitTarget naming one
+	// that does not exist is held unready. Immutable: a folder's source cluster is part of what the
+	// folder means; delete and recreate to change it.
+	// +kubebuilder:default={name: "default"}
 	// +optional
-	KubeConfig *meta.KubeConfigReference `json:"kubeConfig,omitempty"`
+	ClusterProviderRef *ClusterProviderReference `json:"clusterProviderRef,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document
@@ -210,6 +200,7 @@ type GitTargetStreamsStatus struct {
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
 // +kubebuilder:printcolumn:name="SourceReachable",type=string,JSONPath=`.status.conditions[?(@.type=="SourceClusterReachable")].reason`,priority=1
 // +kubebuilder:printcolumn:name="ProviderReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitProviderReady")].status`,priority=1
+// +kubebuilder:printcolumn:name="ClusterProviderReady",type=string,JSONPath=`.status.conditions[?(@.type=="ClusterProviderReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Encryption",type=string,JSONPath=`.spec.encryption.provider`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
@@ -231,22 +222,25 @@ type GitTarget struct {
 	Status GitTargetStatus `json:"status,omitempty,omitzero"`
 }
 
-// SourceClusterID renders the identity the watch data plane keys a GitTarget's source
-// cluster on: "<namespace>/<name>/<key>", where namespace/name locate the kubeconfig Secret
-// in the GitTarget's own (config-plane) namespace and key is the SecretRef key AS WRITTEN in
-// spec — an empty key is its own identity, distinct from an explicit one, because the
-// resolver's value→value.yaml fallback only runs when the key is omitted. A GitTarget with no
-// spec.kubeConfig (or no secretRef) mirrors the cluster the operator runs in and returns "",
-// the local-cluster id every source-cluster-unaware code path already lands on.
-//
-// Neither a namespace, a Secret name, nor a Secret data key may contain "/", so the three
-// segments are unambiguous; the resolver splits them back with SplitN(id, "/", 3).
-func (g *GitTarget) SourceClusterID() string {
-	if g.Spec.KubeConfig == nil || g.Spec.KubeConfig.SecretRef == nil {
-		return ""
+// SourceCluster is the identity the watch data plane keys a GitTarget's source cluster on: the
+// referenced ClusterProvider's NAME. It defaults to "default" when clusterProviderRef is unset —
+// so a source-cluster-unaware caller still gets a concrete, non-empty name, and there is no ""
+// sentinel. That name is a convention, not a claim about which physical cluster it is. The name is
+// the cluster's identity everywhere: the fact-index key, the GVK→GVR registry key, and the
+// /audit-webhook/<name> route.
+func (g *GitTarget) SourceCluster() string {
+	if g.Spec.ClusterProviderRef == nil || g.Spec.ClusterProviderRef.Name == "" {
+		return DefaultClusterProviderName
 	}
-	ref := g.Spec.KubeConfig.SecretRef
-	return g.Namespace + "/" + ref.Name + "/" + ref.Key
+	return g.Spec.ClusterProviderRef.Name
+}
+
+// IsLocalSource reports whether this GitTarget references the "default" ClusterProvider, which the
+// watch data plane maps to its local cluster context. It is a NAME test, not a claim about the
+// physical cluster: a "default" provider may carry a kubeConfig. It only supplies the pre-discovery
+// default for SourceClusterReachable, which the watch manager overwrites as soon as it is wired.
+func (g *GitTarget) IsLocalSource() bool {
+	return g.SourceCluster() == DefaultClusterProviderName
 }
 
 // +kubebuilder:object:root=true

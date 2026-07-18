@@ -7,7 +7,10 @@ set -euo pipefail
 CTX="${CTX:-k3d-gitops-reverser-test-e2e}"
 NAMESPACE="${NAMESPACE:-gitops-reverser}"
 AUDIT_CLUSTER_ID="${AUDIT_CLUSTER_ID:-kind-e2e}"
-AUDIT_WEBHOOK_SERVER_URL="${AUDIT_WEBHOOK_SERVER_URL:-https://127.0.0.1:30444/audit-webhook}"
+# Audit routes are NAMED (/audit-webhook/<cluster-provider-name>); "default" is the provider a
+# GitTarget references when it omits spec.clusterProviderRef. The bare /audit-webhook is the
+# shared, annotation-routed endpoint and 400s unless the cluster annotation key is configured.
+AUDIT_WEBHOOK_SERVER_URL="${AUDIT_WEBHOOK_SERVER_URL:-https://127.0.0.1:30444/audit-webhook/default}"
 AUDIT_TLS_SERVER_NAME="${AUDIT_TLS_SERVER_NAME:-gitops-reverser-audit.${NAMESPACE}.svc}"
 WAIT_RETRIES="${WAIT_RETRIES:-60}"
 WAIT_SECONDS="${WAIT_SECONDS:-2}"

@@ -213,6 +213,43 @@ attribution:
   # Bounded per-event wait for a matching audit fact before a watch event ships as the committer.
   # Larger values raise attribution hit-rate at the cost of commit latency.
   grace: "3s"
+  # Audit-event annotation naming the ClusterProvider each event belongs to. Audit routes are
+  # normally NAMED (/audit-webhook/<name>, including /audit-webhook/default), and this is empty.
+  # Set it only for a control plane that emits ONE shared audit stream for several logical
+  # clusters: it enables the bare /audit-webhook endpoint, which reads this annotation from every
+  # event, so one batch may fan out to several source clusters. An event with no annotation, or
+  # naming a ClusterProvider that does not exist, is rejected (counted and logged) and never
+  # credited to a fallback. See docs/configuration.md.
+  clusterAnnotationKey: ""
+
+# The source cluster a GitTarget mirrors FROM is a ClusterProvider, and a GitTarget that omits
+# spec.clusterProviderRef references one named "default". The operator NEVER creates a
+# ClusterProvider, so that object has to come from somewhere: either you commit it yourself, or the
+# chart renders it from here. This is a rendering convenience, not runtime behavior — it is not
+# limited to attribution (every mirror needs a provider) and "default" is just a name, so the
+# provider it renders may be in-cluster or remote.
+clusterProvider:
+  # Render and OWN a ClusterProvider named "default". Chart-owned: turn this off and Helm deletes
+  # the provider it created on the next upgrade, so ownership never silently splits — plan that
+  # switch together with committing your own object, because a missing provider holds its
+  # GitTargets unready via the "provider not found" path. The `quickstart` values never create one.
+  createDefault: true
+  # Spec of the rendered "default" ClusterProvider.
+  default:
+    # Which cluster "default" names. Leave secretRef.name empty for the operator's OWN in-cluster
+    # cluster; set it to a Secret (in the release namespace) holding a kubeconfig to make "default"
+    # mirror a REMOTE cluster instead. Immutable once created: to repoint the name, delete and
+    # recreate. key is optional — empty reads "value" then "value.yaml".
+    kubeConfig:
+      secretRef:
+        name: ""
+        key: ""
+    # Which namespaces may reference this provider from a GitTarget — deny-by-default authorization
+    # in the CONTROL cluster (names OR selector), not a filter on the source cluster. The chart
+    # default is an empty selector, which matches EVERY namespace, so a single-cluster install works
+    # out of the box; tighten it to a names list or a label selector in a real install.
+    allowedNamespaces:
+      selector: {}
 
 # RBAC configuration
 rbac:

@@ -3,7 +3,7 @@
 > **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
 >
 > **Partly superseded.** §5's dedicated `SourceCluster` CRD proposal is replaced by
-> [`config-plane-split.md`](config-plane-split.md), which puts remote-cluster
+> [`config-plane-split.md`](../finished/config-plane-split.md), which puts remote-cluster
 > connectivity **inline on `GitTarget`** (Flux's idiom) rather than in a separate
 > onboarding CRD. That proposal's load-bearing rationale — fusing per-cluster
 > **audit identity** with kube-API connectivity — no longer holds: the

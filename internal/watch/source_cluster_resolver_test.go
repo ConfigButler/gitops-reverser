@@ -6,14 +6,20 @@ import (
 	"context"
 	"testing"
 
+	meta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
 )
+
+const resolverOperatorNS = "gitops-reverser-system"
 
 const resolverKubeConfig = `apiVersion: v1
 kind: Config
@@ -50,70 +56,90 @@ users:
       interactiveMode: Never
 `
 
-func TestParseSourceClusterID(t *testing.T) {
-	ref, err := parseSourceClusterID("team-a/kc/value")
-	require.NoError(t, err)
-	assert.Equal(t, sourceClusterRef{Namespace: "team-a", Name: "kc", Key: "value"}, ref)
-
-	// An empty key segment is valid — an omitted spec key is its own identity.
-	ref, err = parseSourceClusterID("team-a/kc/")
-	require.NoError(t, err)
-	assert.Equal(t, sourceClusterRef{Namespace: "team-a", Name: "kc", Key: ""}, ref)
-
-	for _, bad := range []string{"", "onlyone", "ns/name", "/name/key", "ns//key"} {
-		_, err := parseSourceClusterID(bad)
-		assert.Error(t, err, "malformed id %q must error", bad)
-	}
+func resolverScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	require.NoError(t, configv1alpha3.AddToScheme(s))
+	require.NoError(t, corev1.AddToScheme(s))
+	return s
 }
 
-func newResolver(t *testing.T, secret *corev1.Secret, safety kubeconfig.SafetyPolicy) SourceClusterResolver {
-	t.Helper()
-	builder := fake.NewClientBuilder()
-	if secret != nil {
-		builder = builder.WithObjects(secret)
+// clusterProvider builds the remote ClusterProvider "prod-eu-1" whose kubeconfig Secret is "kc"
+// under the given data key.
+func clusterProvider(key string) *configv1alpha3.ClusterProvider {
+	return &configv1alpha3.ClusterProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod-eu-1"},
+		Spec: configv1alpha3.ClusterProviderSpec{
+			KubeConfig: &meta.KubeConfigReference{SecretRef: &meta.SecretKeyReference{Name: "kc", Key: key}},
+		},
 	}
-	return NewSecretSourceClusterResolver(builder.Build(), safety, 20, 30)
 }
 
 func kubeconfigSecret(key, body string) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "kc"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: resolverOperatorNS, Name: "kc"},
 		Data:       map[string][]byte{key: []byte(body)},
 	}
 }
 
-func TestResolveSourceCluster_ValidAppliesThrottleAndVersion(t *testing.T) {
-	secret := kubeconfigSecret("value", resolverKubeConfig)
-	r := newResolver(t, secret, kubeconfig.SafetyPolicy{})
+func newResolver(t *testing.T, safety kubeconfig.SafetyPolicy, objs ...client.Object) SourceClusterResolver {
+	t.Helper()
+	cl := fake.NewClientBuilder().WithScheme(resolverScheme(t)).WithObjects(objs...).Build()
+	return NewSecretSourceClusterResolver(cl, resolverOperatorNS, safety, 20, 30)
+}
 
-	cfg, version, err := r.ResolveSourceCluster(context.Background(), "team-a/kc/value")
+func TestResolveSourceCluster_ValidAppliesThrottleAndVersion(t *testing.T) {
+	r := newResolver(t, kubeconfig.SafetyPolicy{},
+		clusterProvider("value"), kubeconfigSecret("value", resolverKubeConfig))
+
+	cfg, version, err := r.ResolveSourceCluster(context.Background(), "prod-eu-1")
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	assert.Equal(t, "https://192.0.2.1:6443", cfg.Host)
-	assert.InDelta(t, 20.0, cfg.QPS, 0.001, "source-cluster QPS applied")
-	assert.Equal(t, 30, cfg.Burst, "source-cluster burst applied")
-	assert.NotEmpty(t, version, "the Secret resourceVersion is the version token")
+	assert.InDelta(t, 20.0, cfg.QPS, 0.001, "global source-cluster QPS applied")
+	assert.Equal(t, 30, cfg.Burst, "global source-cluster burst applied")
+	assert.NotEmpty(t, version, "the provider generation + Secret resourceVersion form the version token")
+}
+
+func TestResolveSourceCluster_PerProviderThrottleOverride(t *testing.T) {
+	qps := int32(5)
+	burst := int32(7)
+	provider := clusterProvider("value")
+	provider.Spec.QPS = &qps
+	provider.Spec.Burst = &burst
+	r := newResolver(t, kubeconfig.SafetyPolicy{}, provider, kubeconfigSecret("value", resolverKubeConfig))
+
+	cfg, _, err := r.ResolveSourceCluster(context.Background(), "prod-eu-1")
+	require.NoError(t, err)
+	assert.InDelta(t, 5.0, cfg.QPS, 0.001, "per-provider QPS overrides the global default")
+	assert.Equal(t, 7, cfg.Burst, "per-provider burst overrides the global default")
 }
 
 func TestResolveSourceCluster_KeyFallbackValueYaml(t *testing.T) {
-	// Secret stores under value.yaml (Flux Kustomization shape); id has an empty key segment.
-	secret := kubeconfigSecret("value.yaml", resolverKubeConfig)
-	r := newResolver(t, secret, kubeconfig.SafetyPolicy{})
+	// Secret stores under value.yaml (Flux Kustomization shape); the provider's secretRef.key is empty.
+	r := newResolver(t, kubeconfig.SafetyPolicy{},
+		clusterProvider(""), kubeconfigSecret("value.yaml", resolverKubeConfig))
 
-	cfg, _, err := r.ResolveSourceCluster(context.Background(), "team-a/kc/")
+	cfg, _, err := r.ResolveSourceCluster(context.Background(), "prod-eu-1")
 	require.NoError(t, err)
 	assert.Equal(t, "https://192.0.2.1:6443", cfg.Host)
 }
 
-func TestResolveSourceCluster_MissingSecretAndKey(t *testing.T) {
-	r := newResolver(t, nil, kubeconfig.SafetyPolicy{})
-	_, _, err := r.ResolveSourceCluster(context.Background(), "team-a/absent/value")
+func TestResolveSourceCluster_MissingProviderSecretAndKey(t *testing.T) {
+	// Absent ClusterProvider -> error.
+	r := newResolver(t, kubeconfig.SafetyPolicy{})
+	_, _, err := r.ResolveSourceCluster(context.Background(), "absent")
+	require.Error(t, err, "an absent ClusterProvider is an error, not a nil config")
+
+	// Provider present, kubeconfig Secret absent -> error.
+	r = newResolver(t, kubeconfig.SafetyPolicy{}, clusterProvider("value"))
+	_, _, err = r.ResolveSourceCluster(context.Background(), "prod-eu-1")
 	require.Error(t, err, "an absent Secret is an error, not a nil config")
 
 	// Secret present but no kubeconfig under the resolved key -> typed KeyNotFound.
-	secret := kubeconfigSecret("elsewhere", resolverKubeConfig)
-	r = newResolver(t, secret, kubeconfig.SafetyPolicy{})
-	_, _, err = r.ResolveSourceCluster(context.Background(), "team-a/kc/value")
+	r = newResolver(t, kubeconfig.SafetyPolicy{},
+		clusterProvider("value"), kubeconfigSecret("elsewhere", resolverKubeConfig))
+	_, _, err = r.ResolveSourceCluster(context.Background(), "prod-eu-1")
 	require.Error(t, err)
 	rej, ok := kubeconfig.AsRejection(err)
 	require.True(t, ok)
@@ -121,16 +147,17 @@ func TestResolveSourceCluster_MissingSecretAndKey(t *testing.T) {
 }
 
 func TestResolveSourceCluster_RejectsUnsafe(t *testing.T) {
-	secret := kubeconfigSecret("value", resolverExecKubeConfig)
-	r := newResolver(t, secret, kubeconfig.SafetyPolicy{})
-	_, _, err := r.ResolveSourceCluster(context.Background(), "team-a/kc/value")
+	r := newResolver(t, kubeconfig.SafetyPolicy{},
+		clusterProvider("value"), kubeconfigSecret("value", resolverExecKubeConfig))
+	_, _, err := r.ResolveSourceCluster(context.Background(), "prod-eu-1")
 	require.Error(t, err)
 	rej, ok := kubeconfig.AsRejection(err)
 	require.True(t, ok)
 	assert.Equal(t, kubeconfig.ReasonExecNotAllowed, rej.Reason)
 
 	// Opting in (a deliberate trust decision) lets it through.
-	r = newResolver(t, secret, kubeconfig.SafetyPolicy{AllowExec: true})
-	_, _, err = r.ResolveSourceCluster(context.Background(), "team-a/kc/value")
+	r = newResolver(t, kubeconfig.SafetyPolicy{AllowExec: true},
+		clusterProvider("value"), kubeconfigSecret("value", resolverExecKubeConfig))
+	_, _, err = r.ResolveSourceCluster(context.Background(), "prod-eu-1")
 	require.NoError(t, err)
 }

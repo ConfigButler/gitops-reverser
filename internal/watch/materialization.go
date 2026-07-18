@@ -9,10 +9,11 @@ import (
 )
 
 // DeclareForGitTarget ensures the GitTarget's watch-first data plane is running against the
-// source cluster it mirrors from. clusterID is (api/v1alpha3).GitTarget.SourceClusterID() — ""
-// for the cluster the operator runs in. It is captured here, the same capture-on-Declare
-// pattern as the UID: because spec.kubeConfig is immutable it is learned once and never
-// changes, so there is no per-rule propagation and no cross-rule disagreement window.
+// source cluster it mirrors from. clusterID is (api/v1alpha3).GitTarget.SourceCluster() — the
+// referenced ClusterProvider's name, "default" for the cluster the operator runs in. It is
+// captured here, the same capture-on-Declare pattern as the UID: because spec.clusterProviderRef
+// is immutable it is learned once and never changes, so there is no per-rule propagation and no
+// cross-rule disagreement window.
 func (m *Manager) DeclareForGitTarget(
 	ctx context.Context,
 	gitDest types.ResourceReference,

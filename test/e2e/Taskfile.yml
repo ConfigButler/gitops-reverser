@@ -149,7 +149,7 @@ vars:
   ARGOCD_DIR: '{{.ARGOCD_DIR | default "test/e2e/setup/argocd"}}'
   ARGOCD_PORT: '{{.ARGOCD_PORT | default "18080"}}'
   ARGOCD_WAIT_TIMEOUT: '{{.ARGOCD_WAIT_TIMEOUT | default "300s"}}'
-  # kcp — installed ONLY for the source-cluster corner (docs/design/config-plane-split.md),
+  # kcp — installed ONLY for the source-cluster corner (docs/finished/config-plane-split.md),
   # the same way Argo CD hangs off the bi-directional corner. kcp-operator arrives as a Flux
   # HelmRelease (test/e2e/setup/kcp/base), like every other e2e dependency; the source-cluster
   # specs mirror kcp *workspaces* (cheap logical clusters) as remote source clusters. Not a
@@ -999,7 +999,7 @@ tasks:
   _kcp-ready:
     # kcp for the source-cluster corner. NOT a dependency of prepare-e2e — only
     # test-e2e-source-cluster pulls it in, so the other CI legs never install kcp.
-    # See docs/design/config-plane-split.md. Modeled on _argocd-installed.
+    # See docs/finished/config-plane-split.md. Modeled on _argocd-installed.
     #
     # _cluster-ready + _flux-setup-ready, because the kcp-operator HelmRelease needs Flux
     # and its dependsOn: cert-manager (both arrive via the Flux setup).
@@ -1229,10 +1229,38 @@ tasks:
           mv "${tmp_manifest}" "{{.CS}}/{{.NAMESPACE}}/helm/install.yaml"
         fi
 
+  # _crds-installed applies the project CRDs and waits for them to be Established BEFORE any
+  # kustomize/flat-file install applies a custom resource of them. The config-dir bundle (and,
+  # once regenerated, dist/install.yaml) ships the reserved `default` ClusterProvider CR in the
+  # SAME `kubectl apply` as its CRD; kubectl builds its RESTMapper up front, so a CR whose CRD
+  # is created in that same apply fails with `no matches for kind "ClusterProvider"`. Applying
+  # the CRDs first — and waiting for Established — closes that race. Re-runs whenever the
+  # generated CRDs change (sources). The Helm chart ships CRDs in charts/gitops-reverser/crds/
+  # (helm's own first phase), so _install-helm deliberately does NOT depend on this: the
+  # helm/quickstart legs must keep exercising helm's own CRD install.
+  _crds-installed:
+    deps:
+      - _cluster-ready
+      - manifests
+    sources:
+      - config/crd/bases/*.yaml
+    generates:
+      - '{{.CS}}/crds.installed'
+    cmds:
+      - mkdir -p "{{.CS}}"
+      - '{{.KUSTOMIZE}} build config/crd | {{.KUBECTL}} --context "{{.CTX}}" apply -f -'
+      - |
+        {{.KUBECTL}} --context "{{.CTX}}" wait --for=condition=Established --timeout=60s \
+          crd/clusterproviders.configbutler.ai crd/clusterwatchrules.configbutler.ai \
+          crd/commitrequests.configbutler.ai crd/gitproviders.configbutler.ai \
+          crd/gittargets.configbutler.ai crd/watchrules.configbutler.ai
+      - touch "{{.CS}}/crds.installed"
+
   _install-config-dir:
     deps:
       - _services-ready
       - manifests
+      - _crds-installed
       - _install-cleanup
     sources:
       - '{{.CS}}/services.ready'
@@ -1250,12 +1278,17 @@ tasks:
 
   _install-plain-manifests-file:
     method: timestamp
+    # Deliberately does NOT depend on _crds-installed: install-plain-manifests.sh applies
+    # dist/crds.yaml itself (then dist/install.yaml), so this leg exercises the real two-step
+    # user flow end to end. Pre-installing the CRDs from config/crd here would mask whether the
+    # shipped dist/crds.yaml actually works.
     deps:
       - _services-ready
       - dist-install
       - _install-cleanup
     sources:
       - '{{.CS}}/services.ready'
+      - dist/crds.yaml
       - dist/install.yaml
     generates:
       - '{{.CS}}/{{.NAMESPACE}}/plain-manifests-file/install.yaml'

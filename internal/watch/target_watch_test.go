@@ -504,7 +504,7 @@ func TestOpenTargetWatch_UsesConfiguredHook(t *testing.T) {
 
 	w, err := manager.openTargetWatch(
 		context.Background(),
-		LocalClusterID,
+		configPlaneClusterID,
 		configmapsGVR,
 		"apps",
 		metav1.ListOptions{ResourceVersion: "42"},

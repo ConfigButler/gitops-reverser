@@ -232,15 +232,15 @@ var _ = Describe("WatchRule Controller", func() {
 			// until the GitTarget settles on its deterministic Ready=False/Progressing state
 			// (no streams run in envtest) so the WatchRule reconcile observes a stable dependency.
 			gitTarget := &configbutleraiv1alpha3.GitTarget{}
-			ready := eventuallyConditionStatus(
+			eventuallyConditionStatusReason(
 				ctx,
 				types.NamespacedName{Name: "local-target", Namespace: "default"},
 				gitTarget,
 				func() []metav1.Condition { return gitTarget.Status.Conditions },
 				ConditionTypeReady,
 				metav1.ConditionFalse,
+				ReasonProgressing,
 			)
-			Expect(ready.Reason).To(Equal(ReasonProgressing))
 
 			By("Reconciling the WatchRule directly")
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{

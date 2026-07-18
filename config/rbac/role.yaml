@@ -39,6 +39,7 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
+  - clusterproviders
   - clusterwatchrules
   - gitproviders
   - gittargets
@@ -54,6 +55,7 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
+  - clusterproviders/status
   - clusterwatchrules/status
   - commitrequests/status
   - gitproviders/status

@@ -274,7 +274,56 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "ttl": { "$ref": "#/$defs/duration" },
-        "grace": { "$ref": "#/$defs/duration" }
+        "grace": { "$ref": "#/$defs/duration" },
+        "clusterAnnotationKey": {
+          "type": "string",
+          "description": "Audit-event annotation naming the ClusterProvider each event belongs to. Empty (default) keeps audit routes named (/audit-webhook/<name>); set it only for one shared audit stream carrying several logical clusters, which enables the bare /audit-webhook endpoint."
+        }
+      }
+    },
+
+    "clusterProvider": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Rendering of the 'default' ClusterProvider — the source cluster a GitTarget mirrors from when it omits spec.clusterProviderRef. The operator never creates one.",
+      "properties": {
+        "createDefault": {
+          "type": "boolean",
+          "description": "Render and own a ClusterProvider named 'default'. Off means Helm deletes the one it created; you then commit the object yourself."
+        },
+        "default": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Spec of the rendered 'default' ClusterProvider.",
+          "properties": {
+            "kubeConfig": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Which cluster 'default' names. An empty secretRef.name means the operator's own in-cluster cluster; a Secret name points it at a remote cluster instead.",
+              "properties": {
+                "secretRef": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "Secret (in the release namespace) holding the kubeconfig. Empty means in-cluster."
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "Key within the Secret. Empty reads 'value' then 'value.yaml'."
+                    }
+                  }
+                }
+              }
+            },
+            "allowedNamespaces": {
+              "type": "object",
+              "description": "Deny-by-default control-cluster namespace policy (names and/or selector) for which namespaces may reference this provider from a GitTarget.",
+              "additionalProperties": true
+            }
+          }
+        }
       }
     },
 

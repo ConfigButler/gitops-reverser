@@ -1,0 +1,28 @@
+{{- if .Values.clusterProvider.createDefault }}
+---
+# The "default" ClusterProvider — the source cluster a GitTarget mirrors FROM when it omits
+# spec.clusterProviderRef. The operator never creates this object; the chart renders and OWNS it, so
+# clusterProvider.createDefault=false makes Helm delete it again. "default" is only a name: omitting
+# kubeConfig means the operator's own in-cluster cluster, and setting it points the same name at a
+# remote cluster. allowedNamespaces is deny-by-default; the chart default (an empty selector) admits
+# every namespace — tighten it via clusterProvider.default.allowedNamespaces.
+apiVersion: configbutler.ai/v1alpha3
+kind: ClusterProvider
+metadata:
+  name: default
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.clusterProvider.default.kubeConfig }}
+  {{- if .secretRef.name }}
+  kubeConfig:
+    secretRef:
+      name: {{ .secretRef.name }}
+      {{- with .secretRef.key }}
+      key: {{ . }}
+      {{- end }}
+  {{- end }}
+  {{- end }}
+  allowedNamespaces:
+    {{- toYaml .Values.clusterProvider.default.allowedNamespaces | nindent 4 }}
+{{- end }}

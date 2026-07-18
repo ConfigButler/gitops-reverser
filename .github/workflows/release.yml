@@ -219,8 +219,11 @@ jobs:
             sbom.spdx.json.intoto.jsonl
           body: |
             ## Installation
-            ### Quick Install (Single YAML)
+            ### Quick Install (plain manifests)
+            The CRDs ship as their own file and must be applied **first** — the bundle
+            contains a custom resource that cannot be created before its CRD exists:
             ```bash
+            kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/download/${{ needs.release-please.outputs.tag_name }}/crds.yaml
             kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/download/${{ needs.release-please.outputs.tag_name }}/install.yaml
             ```
             ### Helm Chart
@@ -314,11 +317,16 @@ jobs:
 
       # The chart is already signed above via its OCI digest, but OpenSSF
       # Scorecard's Signed-Releases check only looks at the GitHub *release
-      # assets*, not the OCI registry. Sign and attest install.yaml directly so
-      # the release carries a signature (*.sigstore.json) and SLSA provenance
-      # (*.intoto.jsonl) next to it.
+      # assets*, not the OCI registry. Sign and attest BOTH installer files
+      # directly so the release carries a signature (*.sigstore.json) and SLSA
+      # provenance (*.intoto.jsonl) next to each. The installer ships as two
+      # files — crds.yaml is applied first, then install.yaml (see the release
+      # notes); each is signed independently so either can be verified alone.
       - name: Sign install.yaml (cosign keyless)
         run: cosign sign-blob --bundle install.yaml.sigstore.json --yes dist/install.yaml
+
+      - name: Sign crds.yaml (cosign keyless)
+        run: cosign sign-blob --bundle crds.yaml.sigstore.json --yes dist/crds.yaml
 
       - name: Attest SLSA provenance for install.yaml
         id: attest-install-yaml
@@ -329,7 +337,16 @@ jobs:
       - name: Rename provenance bundle to the Scorecard-recognized suffix
         run: cp "${{ steps.attest-install-yaml.outputs.bundle-path }}" install.yaml.intoto.jsonl
 
-      - name: Upload install.yaml as release asset
+      - name: Attest SLSA provenance for crds.yaml
+        id: attest-crds-yaml
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: dist/crds.yaml
+
+      - name: Rename crds provenance bundle to the Scorecard-recognized suffix
+        run: cp "${{ steps.attest-crds-yaml.outputs.bundle-path }}" crds.yaml.intoto.jsonl
+
+      - name: Upload installer bundle as release assets
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
@@ -338,6 +355,9 @@ jobs:
           # uploads).
           draft: true
           files: |
+            dist/crds.yaml
+            crds.yaml.sigstore.json
+            crds.yaml.intoto.jsonl
             dist/install.yaml
             install.yaml.sigstore.json
             install.yaml.intoto.jsonl

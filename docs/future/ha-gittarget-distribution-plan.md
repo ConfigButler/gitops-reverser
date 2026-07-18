@@ -1,469 +1,287 @@
-# High Availability and GitTarget Distribution Plan
+# High Availability and Durable Delivery Plan
 
 Status: **proposed** (not started)
 
-> **Reconciliation note (watch-first rewrite).** This plan predates
-> [watch-first ingestion](../finished/watch-first-ingestion-architecture.md), which removed the
-> audit-as-correctness pipeline. The **branch-ownership core is unchanged and remains the HA target**:
-> the `BranchWriteShard` model, the shard-ownership leases (HA-0 → HA-2), durable per-shard write
-> queues, and the `PushAtomic` compare-and-swap fence. What changed is the **ingress half**: object
-> state now comes from a per-GitTarget Kubernetes **WATCH** (`sendInitialEvents` replay +
-> mark-and-sweep), not from a shared canonical audit stream with per-type sequencing. So "Current
-> Shape", "Audit Ingress Fan-In", and "Resource-Type Sequencing Queues" below describe the retired
-> model; in the new model the durable write-shard queues (HA-1) are fed by the watch
-> [`EventRouter`](../../internal/watch/event_router.go), and audit is only an optional
-> [attribution lookup](../../internal/queue/attribution_index.go) that names the commit author.
->
-> **Redis stays a hard dependency for HA.** It already holds the attribution facts; for multi-pod it
-> additionally holds the per-`(GVR, scope) → RV` watch **resume cursors** (so a failover resumes a
-> watch instead of cold-replaying), the **branch-shard ownership leases**, and the **durable write-shard
-> queues**. Committer-only single-replica operation is the only mode that runs without Redis.
+## Scope and Definition of Done
 
-## Goal
+This plan updates the previous HA proposal for the current watch-first
+architecture. Kubernetes WATCH is the source of mirrored object state. Audit is
+optional attribution only; it is not a source of object state or a write queue.
 
-Make GitOps Reverser run safely with multiple pods while preserving the most
-important write invariant:
+The first release is active/passive HA, not active/active scheduling:
 
-> At any moment, only one pod should own work for a given Git branch, and every
-> push must still be protected by remote-branch compare-and-swap semantics.
+- Run at least two controller Pods.
+- One elected Pod owns controllers, target watches, and Git branch workers.
+- Other Pods remain ready to serve admission and audit endpoints, and can become
+  the active Pod after the leader fails.
+- Losing one controller Pod must not silently drop a Kubernetes-to-Git state
+  change. The replacement may replay a change or create a no-op Git attempt.
 
-The cluster's Kubernetes state should be observable from multiple
-`gitops-reverser` pods, and `GitTarget`s should be distributable across those
-pods. The write path must still serialize every write that can touch the same
-branch. The safety model is at-least-once delivery plus idempotent replay, not
-exactly-once processing.
+The durability contract is eventual state convergence: after recovery, Git
+matches the watched Kubernetes state. It is not a promise of one Git commit for
+every Kubernetes mutation, nor an exactly-once event history.
 
-## Current Shape
+This contract assumes the Kubernetes API, Git remote, and durable queue remain
+available. A single Redis or Valkey Pod is therefore not sufficient for an
+installation that also needs to survive loss of any one dependency Pod.
 
-The current implementation is intentionally single-active:
+## Current State
 
-- `AuditConsumer` (retired with watch-first) used Redis consumer groups under
-  leader election to drain the canonical audit stream. Object state now comes from
-  a per-GitTarget watch on the leader instead — see
-  [`watch.Manager`](../../internal/watch/manager.go) and
-  [`target_watch.go`](../../internal/watch/target_watch.go).
-- [WorkerManager](../../internal/git/worker_manager.go) also participates in
-  leader election. It creates in-process [BranchWorker](../../internal/git/branch_worker.go)
-  instances keyed by `(GitProvider namespace, GitProvider name, branch)`.
-- [BranchWorker](../../internal/git/branch_worker.go) serializes commits and
-  pushes for that branch key inside one pod. This protects the branch locally,
-  but does not by itself protect a multi-pod deployment.
-- [GitTargetEventStream](../../internal/reconcile/git_target_event_stream.go)
-  buffers live events while snapshots are reconciling and deduplicates events
-  per target, but its state is in memory and pod-local.
-- [watch.Manager](../../internal/watch/manager.go) is also leader-elected, so
-  discovery, informer lifecycle, and snapshot emission happen on one active pod.
+The repository has useful foundations, but it is not HA today.
 
-This means Redis/Valkey already helps with ingress durability and future
-failover, but the Git write ownership boundary is still process-local.
+- The Helm chart rejects a replica count greater than one. See
+  [validate-replica-count.yaml](../../charts/gitops-reverser/templates/validate-replica-count.yaml).
+- The watch manager and worker manager declare that they need leader election,
+  but the controller-runtime manager does not enable it. See
+  [manager.go](../../internal/watch/manager.go) and
+  [worker_manager.go](../../internal/git/worker_manager.go).
+- Each GitTarget runs per-GVR, per-scope watches with initial-event replay and a
+  mark-and-sweep resync. See [target_watch.go](../../internal/watch/target_watch.go).
+- A live watch event currently goes through EventRouter and
+  GitTargetEventStream into an in-memory BranchWorker FIFO. See
+  [event_router.go](../../internal/watch/event_router.go) and
+  [git_target_event_stream.go](../../internal/reconcile/git_target_event_stream.go).
+- Redis currently stores resume cursors and author-attribution data. A cursor is
+  written after the event enters the in-memory FIFO, but before the eventual Git
+  push. A Pod crash in that interval can make a replacement resume past work
+  that only existed in RAM. This is the blocker for lossless failover.
+- BranchWorker keeps open commit windows, local commits, unpushed writes, and
+  CommitRequest outcomes in memory. Its local clone is disposable.
+- Git pushes already use a remote reference compare-and-swap. PushAtomic remains
+  the final protection against a stale owner or an external remote update. See
+  [git_atomic_push.go](../../internal/git/git_atomic_push.go).
+- The chart has a PDB and preferred Pod anti-affinity, but these only improve
+  placement; they do not make the data path durable or coordinate writers.
 
-## Audit Ingress Fan-In
+## Target Architecture: HA v1
 
-All pods can safely serve the audit webhook and append to the same canonical
-audit stream, as long as webhook handling stays a **producer-only** path:
+HA v1 retains one active data-plane owner for the whole release. This is the
+smallest design that satisfies loss of one controller Pod without introducing
+distributed watch ownership.
 
-- each pod receives `/audit-webhook` traffic;
-- each pod performs request decode, validation, audit body joining, and
-  canonical event preparation;
-- each pod appends accepted events to a shared Redis/Valkey stream (the
-  `RedisAuditQueue` that backed this — retired with watch-first; in the new model
-  the durable handoff is the per-shard write queue fed by the watch event router);
-- no ingress pod routes directly to a local `BranchWorker`.
+    Kubernetes API WATCH
+            |
+            v
+    active watch manager
+            |
+            v
+    durable branch-shard journal  <---- Redis/Valkey, durable and HA
+            |
+            v
+    active branch worker
+            |
+            v
+    Git remote with compare-and-swap
 
-Redis stream append is atomic across producers, so multiple pods can `XADD` to
-the same stream. The Redis-backed audit joiner is also compatible with multiple
-ingress pods because body parking, decision claims, commit, and release all use
-shared Redis keys keyed by audit ID.
+The standby controller does not run target watches or branch workers. It does
+run the non-leader HTTP servers, so admission and audit traffic can use the
+Service endpoints on either Pod. Audit writes attribution facts to the shared
+store and never directly writes Git.
 
-This does not create a new perfect ordering guarantee. The canonical stream
-orders events by enqueue time, not by Kubernetes resource version or by a global
-API-server sequence. With multiple API servers, webhook retries, load-balanced
-HTTP requests, and optional additional audit sources, Kubernetes audit delivery
-can already arrive slightly out of order. Multiple ingress pods can make that
-arrival-order reality more visible, but they are not the fundamental source of
-it.
+Controller-runtime leader election owns the active/passive transition. The
+leader lock must use a release-scoped Kubernetes Lease in the release namespace.
+On lock loss, the old owner stops reading new durable work and cancels its
+watches. A stalled old owner may still finish an already-started push; the
+remote compare-and-swap rejects it if a newer owner has moved the ref.
 
-The design response should be:
+## Durable Write Journal
 
-- treat the canonical audit stream as an at-least-once ingress log, not an
-  exactly-once ordered history;
-- preserve event metadata such as deterministic event id, audit ID, stage
-  timestamp, user, object reference, operation, and object resource version when
-  available;
-- keep ordering-sensitive Git writes serialized later by branch write shard;
-- make replay and duplicate handling idempotent in the shard writer;
-- use snapshot/reconcile as the correction path when audit ordering or delivery
-  produces an uncertain derived Git view.
+Redis or Valkey becomes mandatory in HA mode. Add a versioned durable journal
+under a branch-write-shard key, with Redis Streams used for delivery and
+consumer-group recovery.
 
-So the answer is "yes, all pods can push audit events to the same queue," but
-that only solves ingress availability. It does not by itself make consumers,
-branch workers, or snapshots active/active-safe.
+### Shard identity
 
-## Resource-Type Sequencing Queues
+The journal and worker key must be:
 
-An optional layer between audit ingress and branch-shard writes is a set of
-small **resource-type queues**:
+    BranchWriteShard = canonical remote identity + branch
 
-```text
-ResourceTypeQueue = API group + resource type
-```
+The current GitProvider namespace/name plus branch key is not sufficient:
+multiple GitProvider objects can name the same repository and branch. The
+canonical remote identity should normalize the resolved Git URL and be hashed
+for key and Lease names. It must be exposed in logs, metrics, and target status.
 
-This is deliberately narrower than "API group." Kubernetes `resourceVersion`
-ordering is only meaningful for objects from the same API group and resource
-type when served by kube-apiserver, per the Kubernetes
-[resource versions](https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions)
-rules. For example, two `apps/deployments` resource versions can be ordered, but
-`apps/deployments` and `apps/replicasets` cannot be ordered just because both
-are in the `apps` group. For extension API servers, numeric ordering is only
-safe when both resource version strings parse as decimal numbers; otherwise
-equality-only comparison is the safe fallback.
+Every GitTarget maps to exactly one branch write shard. Targets sharing a remote
+branch use one journal and one worker, even when they have different paths.
+Overlapping paths must remain a reconciliation-time and writer-time refusal.
 
-The useful shape is:
+### Journal record
 
-1. Audit ingress appends to the canonical stream, or directly to a
-   resource-type stream after lightweight GVR extraction.
-2. A resource-type sequencer consumes events for one group/resource.
-3. It holds a short reorder window, sorts comparable arrived events by
-   `metadata.resourceVersion`, and coalesces stale updates for the same
-   `(namespace, name)`.
-4. It fans the resulting event to every active `GitTarget` whose `WatchRule` or
-   `ClusterWatchRule` matches that resource type.
-5. The fan-out still writes to branch-shard queues, where Git ordering and
-   branch ownership are enforced.
+Introduce a versioned record that includes:
 
-This can improve local ordering and reduce redundant writes for noisy resource
-types. It also gives a clean fan-out point: one Kubernetes mutation can be
-sequenced once, then delivered to many target-specific branch queues.
+- target UID, namespace, and name;
+- source cluster, GVR, namespace scope, resource identity, operation, and
+  resource version;
+- a deterministic idempotency key;
+- the sanitized object or delete/field-patch payload;
+- author attribution when available;
+- the resolved branch-shard identity and target path;
+- a kind for live event, snapshot member, snapshot start, or snapshot complete.
 
-The reorder window must stay bounded. Resource versions are orderable, but they
-are not a promise of contiguous per-type integers that lets a client prove "RV
-123 is missing, so wait until it arrives." Gaps may be normal. The sequencer can
-delay briefly to let near-simultaneous out-of-order deliveries settle; after the
-window expires, it should emit what it has and rely on idempotent replay plus
-snapshot/reconcile for correction.
+The object payload must be encrypted before it is written to Redis when it
+contains a sensitive resource. Today plaintext sensitive content is only
+transient in the Pod before the Git writer encrypts it. A durable queue changes
+that boundary. Queue encryption needs a Kubernetes Secret-backed key, rotation
+plan, TLS in transit, and tests proving plaintext secret fields are absent from
+Redis values.
 
-Queue key choice should probably be **group/resource** rather than full GVR.
-Different served versions of the same group/resource represent the same
-underlying objects, while `WatchRule` planning and routing can still retain the
-observed API version in the event payload. If implementation convenience starts
-with GVR queues, the design should still normalize high-water marks and
-deduplication at the group/resource level where Kubernetes comparison rules
-apply.
+### Atomic handoff and acknowledgement
 
-This layer is not a prerequisite for branch-safe HA. It is a later refinement if
-audit ordering noise or fan-out cost becomes visible in practice.
+For each watched GVR and scope, persist the journal record and its resume cursor
+in one idempotent Redis operation. A Lua script or transaction must make a
+successful enqueue and cursor advancement inseparable. The key layout must also
+work in Redis Cluster, including its same-hash-slot constraints.
 
-## Desired Model
+The source watch may advance only after this durable handoff succeeds:
 
-Move from "one leader owns everything" to "many pods may ingest and route, but
-each write shard has exactly one owner."
+1. WATCH receives an event.
+2. The active leader derives a journal record.
+3. It atomically records the event and the new cursor.
+4. The branch worker consumes the record and may create local commits.
+5. It acknowledges the record only after the corresponding state reaches the
+   remote Git branch successfully.
 
-The first durable shard should be a **branch write shard**:
+If the leader dies before step 3, the cursor is not advanced and the watch
+replays. If it dies after step 3 but before step 5, the consumer group reclaims
+the unacknowledged record. If it dies after the remote push but before the
+acknowledgement, replay is harmless because the write is idempotent against the
+current remote tree.
 
-```text
-BranchWriteShard = canonical Git remote identity + branch
-```
+The worker must not rely on its local clone for recovery. A new owner fetches
+the remote branch, replays retained journal records, and lets the existing
+PushAtomic conflict/rebuild behavior settle external changes.
 
-Using only `GitProvider namespace/name + branch` is not sufficient forever,
-because two `GitProvider` objects may point at the same repository and branch.
-That collision is already tracked in [TODO.md](../TODO.md). HA should resolve
-that at the same time by normalizing branch ownership around the remote identity
-that actually receives the push.
+### Snapshot and replay delivery
 
-Each `GitTarget` maps to exactly one branch write shard, while one branch write
-shard may serve many `GitTarget`s that write to different paths.
+Initial events and the list fallback currently produce an in-memory resync
+request before storing the cursor. They need the same durable handoff as live
+events.
 
-`GitTarget`s can still be spread across pods. The distribution rule is that
-their **write owner** is selected by branch shard, not by target name alone. A
-pod may own many branch shards, and a branch shard may own many targets.
+Do not store an unbounded full snapshot in one Redis value. Journal a snapshot
+start marker, ordered per-object snapshot members, and a snapshot-complete marker
+with the collection resourceVersion. The branch worker applies the scoped
+mark-and-sweep only after it has received the complete marker. A failed or
+superseded snapshot remains replayable; a new leader can also enqueue a fresh
+complete replay after the retained journal tail. HTTP 410 Gone continues to mean
+fresh replay, never loss of the old journal tail.
 
-## Why Not One Queue Per GitTarget First?
+## Implementation Phases
 
-A per-`GitTarget` queue is attractive because it isolates target backlogs and
-matches the user's mental model. It is not sufficient as the first HA primitive:
-two targets can write different paths on the same branch, and two independent
-target queues could then produce two independent push loops.
+### HA-0: Specify and expose branch ownership
 
-The safer shape is:
+Before changing delivery:
 
-- route events with target identity preserved;
-- partition durable write queues by branch write shard;
-- optionally add per-target subqueues or priority lanes inside the shard later;
-- let exactly one branch owner coalesce, commit, and push all target events for
-  that branch.
+- Add BranchWriteShard resolution from normalized remote URL plus branch.
+- Update WorkerManager, EventRouter, metrics, and GitTarget status to use and
+  report the shard identity.
+- Detect multiple providers naming one remote branch and converge them on the
+  same shard.
+- Add overlap checks for target paths on a shard.
+- Add a feature gate for the durable delivery path. Existing single-Pod installs
+  retain the current direct in-memory path until migration is complete.
 
-That gives the desired spread across pods without violating the branch-push
-invariant.
+### HA-1: Add the durable journal in single-active mode
 
-## Delivery and Fencing Model
+Add a journal package beside the existing Redis store:
 
-The durable write path should assume **at-least-once** delivery:
+- publish idempotent work records;
+- create consumer groups, claim abandoned pending records, and acknowledge only
+  remote-successful work;
+- encode and encrypt sensitive payloads;
+- atomically couple cursor advancement to durable publication;
+- route both live events and snapshot/replay markers through the journal.
 
-- Redis/Valkey streams retain work until it is acknowledged after the Git write
-  path reaches a durable terminal point.
-- Crash recovery may replay already-seen events.
-- Replayed events must be safe through deterministic event ids, content hashes,
-  current remote state, and existing `PushAtomic` conflict handling.
+Refactor EventRouter so it publishes durable work instead of directly calling a
+local GitTargetEventStream. Refactor BranchWorker so a durable consumer, rather
+than its process-local FIFO, owns the acknowledgement lifecycle. The commit
+window may remain in memory because unacknowledged records reconstruct it after
+failover; local commits must be treated as disposable.
 
-The branch-owner lease is an ownership and coordination mechanism, not the final
-correctness fence for Git itself. Git remotes do not provide a native fencing
-token that can reject a push because a Redis or Kubernetes lease changed while
-the network operation was in flight. A lease check immediately before `git push`
-would still be a time-of-check/time-of-use race.
+Ship and exercise this phase with one active Pod first. It removes the existing
+crash-loss window independently of multi-Pod scheduling.
 
-Therefore the true write fence remains the remote ref compare-and-swap performed
-by [PushAtomic](../../internal/git/git_atomic_push.go): a push is valid only if
-the remote branch is still at the expected root. The lease prevents duplicate
-work and keeps one intended owner per branch shard; `PushAtomic` protects the
-remote branch if a stale owner races during failover or a slow push.
+### HA-2: Enable active/passive controller failover
 
-## First Work Item: Queue-Based Branch Ownership
+Enable controller-runtime leader election in the manager configuration and use a
+release-specific Lease ID and namespace. Add explicit configuration for lease
+durations rather than relying on undocumented defaults.
 
-This is the first HA milestone because it moves branch work onto a durable
-handoff before informer or snapshot work is spread across pods. HA-0 and HA-1
-do **not** by themselves unlock multiple active writer pods; they prepare the
-write path while it is still leader-elected. HA-2 is the phase that makes
-active writer distribution safe.
+- Controllers, WatchManager, journal consumers, and BranchWorkers must require
+  leadership.
+- Admission, audit, metrics, health checks, and Redis readiness remain
+  non-leader services.
+- On leadership loss, stop consumption before starting any new Git work; leave
+  unacknowledged records for the next leader.
+- On startup, claim pending records, rebuild workers from remote Git, then
+  establish watches from their durable cursors or fresh replay.
+- Persist CommitRequest terminal results in Kubernetes status. A failover must
+  not depend on an in-memory outcome map to decide whether a command completed.
 
-### Phase HA-0: Make Same-Branch Ownership Explicit
+### HA-3: Release the supported Helm mode
 
-Introduce a small abstraction around the current branch key:
+Only after HA-1 and HA-2 pass end-to-end fault tests:
 
-- compute a canonical `BranchWriteShardID` from resolved `GitProvider` remote
-  identity and branch;
-- keep the current `BranchWorker` behavior, but key worker creation by
-  `BranchWriteShardID`;
-- expose the computed shard in logs, metrics, and possibly `GitTarget.status`;
-- detect multiple `GitProvider`s that resolve to the same remote + branch and
-  make them converge onto the same shard;
-- reject or clearly degrade configurations where two `GitTarget`s would write
-  overlapping paths on the same shard.
+- remove the replica-count rejection;
+- reject HA configuration without a Redis endpoint, queue-encryption key, and
+  TLS unless an explicitly documented trusted development exception is chosen;
+- add leader-election and durable-queue values to the chart schema;
+- add Lease RBAC and regenerate the chart RBAC artifact;
+- use at least two replicas, RollingUpdate with maxUnavailable zero and
+  maxSurge one, and a PDB with minAvailable one;
+- make hostname anti-affinity and topology spread required for the HA profile;
+  offer a zone-spread profile where clusters have multiple zones;
+- document a supported Redis or Valkey durability topology. It must survive the
+  failure model being advertised, not merely pass a ping.
 
-Overlapping-path detection should start as controller reconciliation logic that
-sets a degraded status condition before registering the target with the shard.
-Admission-time validation is useful for simple literal paths, but it cannot be
-the only guard if future target paths become templated or otherwise dynamic.
-Runtime conflict detection in the branch owner should remain a defense-in-depth
-check before committing a batch.
+The existing PDB can remain for single-Pod installs, but it must not be described
+as HA by itself.
 
-This can still run single-pod. The purpose is to name the invariant in code
-before distributing it.
+### HA-4: Fault-injection acceptance suite
 
-### Phase HA-1: Per-Shard Redis Work Queues
+Add e2e tests for each durable boundary:
 
-Split the current single audit-consumer-to-local-worker handoff into durable
-per-shard queues:
+- kill the active Pod before durable publication;
+- kill it after publication and cursor advancement, before local commit;
+- kill it after local commit, before remote push;
+- kill it after remote push, before journal acknowledgement;
+- force a slow push and leader handoff to exercise a stale writer;
+- force remote branch movement and verify replay plus PushAtomic;
+- force expired watch cursors and verify replay plus mark-and-sweep;
+- roll the deployment with queued, replay, delete, and sensitive-resource work.
 
-1. The canonical audit stream remains the ingress queue from kube-apiserver.
-2. The active consumer reads audit events, matches them against rules, sanitizes
-   the object, and produces one `git.Event` per matched `GitTarget`.
-3. Instead of directly calling the local `GitTargetEventStream` / `BranchWorker`,
-   the router appends each write event to the Redis stream for that target's
-   `BranchWriteShardID`.
-4. The still-leader-elected branch owner consumes that shard stream and owns the
-   in-memory `GitTargetEventStream`s plus the single `BranchWorker` for the
-   shard.
+Every case must assert final remote Git state, no lost deletion, no divergent
+ref, no permanently pending journal record, and a healthy replacement leader.
+Run the normal repository validation sequence after implementation: task fmt,
+task generate where needed, task vet, task lint, task test, and task test-e2e.
 
-HA-1 is a compatibility and durability step, not active/active writing. It can
-coexist with the current direct handoff behind a feature flag or versioned
-runtime mode: existing installs keep direct in-process routing, while the new
-mode writes to `gitopsreverser.write.shard.v1.*` streams. The `v1` stream name
-is intentionally versioned so payload changes can be introduced without
-silently confusing old consumers.
+## Optional Follow-on: Active/Active Branch Shards
 
-Once HA-2 adds shard leases, any active consumer may read audit events, match
-them against rules, sanitize the object, and append the resulting write events
-to the appropriate shard queue. A branch owner pod then consumes that shard
-stream and owns the in-memory `GitTargetEventStream`s plus the single
-`BranchWorker` for the shard.
+Do not make this a prerequisite for HA v1. It improves throughput and isolation,
+but creates a second distributed-systems problem.
 
-Suggested stream shape:
+When needed, assign each BranchWriteShard its own Kubernetes Lease. Any Pod may
+publish durable records, but only the shard-Lease holder consumes that shard and
+pushes its Git branch. The lease is coordination, not the final Git fence; the
+remote compare-and-swap remains mandatory.
 
-```text
-gitopsreverser.write.shard.v1.{shardID}
-```
+Tracking and watching can remain leader-owned initially. Distributing target
+watches or GVR scopes should happen only after the snapshot markers, replay
+watermarks, deduplication, and completeness state are proven durable. A target
+with several watched scopes must never sweep Git state until every required
+scope has completed its authoritative replay.
 
-Payload should include enough context to route without re-reading mutable CRDs:
-target namespace/name, target path, provider identity, branch, resource
-identifier, operation, user, timestamp, sanitized object payload or tombstone,
-and a deterministic event id for deduplication.
+## Acceptance Criteria for Supported HA
 
-This preserves event ordering per branch shard. Once HA-2 enables multiple
-active consumers, the same partitioning also keeps ordering stable even if
-several pods ingest audit events. It lets a remote outage stall only the
-affected shard queue.
-
-### Phase HA-2: Lease Branch Shards
-
-Add ownership leases for branch write shards:
-
-- each shard has one owner pod and a short renewable lease;
-- only the lease holder may consume that shard's write stream or attempt to push
-  that branch;
-- when ownership changes, the new owner claims pending Redis messages, rebuilds
-  any required local clone state from the remote branch, and resumes;
-- shutdown drains or hands off without acknowledging work that has not reached
+- A two-Pod controller deployment survives loss of the active Pod without
+  silently skipping Kubernetes state.
+- No durable cursor can advance past work that is absent from the journal.
+- No journal record is acknowledged before its state is recoverable from remote
   Git.
-
-This is the point where the deployment can safely run multiple active writer
-pods. The Redis consumer group alone is not enough: consumer groups prevent two
-pods from receiving the same queue entry, but they do not prevent two different
-local branch workers from pushing to the same branch after independent routing.
-The lease backend choice affects operational behavior and failover latency, but
-not the final Git safety property: stale owners must still lose to the remote
-ref compare-and-swap.
-
-### Phase HA-3: Durable Per-Target Stream State
-
-Move the correctness state currently held by `GitTargetEventStream` out of the
-pod:
-
-- reconciliation state (`RECONCILING` vs `LIVE_PROCESSING`);
-- buffered live events during snapshot/reconcile;
-- processed content hashes;
-- pending snapshot/reconcile delivery markers.
-
-This can be stored in Redis first. Some low-churn status markers may also belong
-in `GitTarget.status`, but the hot dedup and buffering path should not depend on
-Kubernetes status writes.
-
-Where the snapshot path needs a freshness boundary, prefer a collection
-`resourceVersion` watermark over open-ended content-hash buffering: a snapshot is
-authoritative as of the collection RV it was listed at, so only live events newer
-than that RV (for the same group/resource) need to be replayed on top, and
-anything at or below it is already reflected. Content hashes then become a
-secondary idempotency guard rather than the primary buffering mechanism. See
-HA-4 for the resume side of the same watermark.
-
-This makes branch-owner failover safe during an in-flight snapshot, not merely
-during ordinary live-event processing.
-
-## Replicating Kubernetes State Across Pods
-
-After branch ownership is safe, the Kubernetes observation side can evolve in
-two layers.
-
-### Phase HA-4: Active/Passive Snapshot State
-
-Keep one active `watch.Manager`, but persist enough state that a newly elected
-leader can resume instead of starting from an empty in-memory contract:
-
-- pending and last-delivered rule-set hashes;
-- per-target snapshot delivery status;
-- tracked GVR completeness and degraded discovery state;
-- last-seen resource hashes or resource versions used for deduplication.
-
-Persisting the per-`(group/resource[, namespace])` collection `resourceVersion`
-lets a newly elected leader **resume the watch from that point** instead of
-relisting cold, and gives snapshot reconciliation a precise watermark rather than
-relying only on content hashes. Kubernetes
-[consistent reads from the watch cache](https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions)
-graduated to GA in 1.34 and is stable in 1.35+, so a consistent LIST now returns
-a trustworthy collection `resourceVersion` cheaply from cache instead of forcing
-a quorum read against etcd. HA can therefore lean on RV-based watermarks and
-watch resume more than earlier client guidance allowed. Two constraints still
-hold and must be coded for: RV remains comparable only within one group/resource
-(never collated across resource types), and a persisted RV that has aged past the
-API server's compaction horizon returns `410 Gone` and must fall back to a fresh
-relist.
-
-This matches the low-risk path already sketched in
-[design-snapshot-engine-evolution.md](../architecture.md#34-multi-pod--ha).
-
-### Phase HA-5: Active/Active Tracking Shards
-
-Only after the state model is durable, shard tracking across pods by
-`(GVR, namespace)` or another explicit tracked-set key. Each tracking shard has
-its own lease, informer lifecycle, and completeness state.
-
-Snapshots then become a fan-in problem: a single `GitTarget` may need state from
-many tracking shards. Snapshot emission should therefore be a queued operation
-that waits for all required shards to be synced before producing authoritative
-absence/deletion facts.
-
-## Relationship To WatchRule Wildcards
-
-[WatchRule wildcard support](../spec/type-followability.md) increases the
-number of GVRs a single target may watch. That stresses informer scale and
-snapshot completeness, but it should not be the first distributed-systems
-problem solved.
-
-Recommended ordering:
-
-1. Ship HA-0/HA-1 branch-shard queueing first, so wildcard events can be routed
-   to a durable per-branch stream instead of a local in-process worker.
-2. Then implement wildcard resolver expansion and status visibility.
-3. Gate "wildcard support is done" on snapshot robustness, especially per-GVR
-   list failure handling.
-4. Only later shard the watch/tracking engine across pods.
-
-This lets wildcard work proceed without accidentally creating a world where
-multiple pods can push the same branch.
-
-## Failure Cases To Design For
-
-- **Pod dies after dequeue, before push.** Redis pending-entry reclaim must make
-  the event visible to the new shard owner.
-- **Pod dies after local commit, before push.** The new owner rebuilds from the
-  remote and replays retained/pending writes; local commits are disposable.
-- **Pod dies after push, before ACK.** Replayed events must be idempotent via
-  deterministic event ids, content hashes, and remote-state replay.
-- **Lease expires during slow push.** The stale owner may complete wasted work,
-  but the remote ref compare-and-swap must prevent it from overwriting a newer
-  owner. The owner should keep renewing during long operations to reduce churn,
-  but renewal is not the Git fence.
-- **Graceful handoff during rolling deploy.** The old owner should stop reading
-  new shard work, finish or abandon in-flight work without premature ACKs, and
-  let the new owner resume from the shard stream without duplicate divergent
-  commits.
-- **Remote branch moves externally.** Existing `PushAtomic` conflict handling
-  still applies, but replay must draw from the shard queue/state rather than only
-  local memory.
-- **Two providers point to the same branch.** They must map to one
-  `BranchWriteShardID`; otherwise HA is unsafe even if each provider-local
-  worker is serialized.
-- **Persisted resource version too old (HTTP 410 Gone).** A resume `resourceVersion`
-  that has aged past the API server compaction horizon must trigger a fresh relist
-  and reconcile rather than a hard failure. Watch bookmarks should be used to keep
-  the persisted RV recent and reduce how often this fallback fires.
-
-## Acceptance Criteria
-
-- Multiple pods can receive audit webhook traffic and append canonical audit
-  events.
-- Official and additional audit payloads may land on different ingress pods and
-  still produce one canonical event decision per audit ID.
-- Multiple pods can route matched events to write-shard queues.
-- For a given canonical remote + branch, exactly one pod owns the branch worker
-  and pushes at a time.
-- Killing the owner pod during queued, committed-but-unpushed, and post-push
-  windows does not lose events or produce duplicate divergent commits.
-- Rolling deploys and voluntary lease handoff do not lose events or produce
-  duplicate divergent commits.
-- Independent branch shards continue processing when one remote or branch is
-  slow, broken, or rate-limited.
-- The README can remove the blanket "HA is not supported yet" statement only
-  after branch-shard ownership and failover are covered by e2e tests.
-
-## Open Decisions
-
-- What is the canonical remote identity: normalized URL, provider UID plus URL,
-  resolved host/repo pair, or an explicit `GitProvider.status.remoteID`?
-- Should per-shard queues be created lazily per active shard, or should Redis
-  store all write events in one stream with `shardID` fields and consumer-group
-  partitioning? Redis Cluster topology is a factor: stream-per-shard can
-  distribute load naturally, while a single stream is simpler but can become a
-  hotspot.
-- Should Redis or Kubernetes `Lease` objects own branch-shard coordination?
-  Either way, the lease is advisory for Git correctness; the remote ref
-  compare-and-swap is the push fence.
-- How much of `GitTargetEventStream` state belongs in Redis versus
-  `GitTarget.status`?
-- Should active/active audit consumers perform full rule matching, or should a
-  central matcher fan out to shard queues first?
-- Do shard writers need a per-resource monotonicity guard using resource version
-  or timestamp, or is snapshot/reconcile correction enough for rare out-of-order
-  audit delivery?
-- Is a resource-type sequencing layer worth the extra streams and dynamic CRD
-  lifecycle handling, or should branch-shard queues absorb audit events directly
-  until ordering noise becomes a measured problem?
+- A stale or partitioned owner cannot overwrite a newer Git ref.
+- Replays, queue claims, and post-push-before-ack crashes converge without
+  divergent commits.
+- Sensitive resource content is never stored as plaintext in the durable queue.
+- The chart prevents unsupported HA configurations and documents dependencies
+  that must themselves be highly available.
+- README and chart documentation remove the single-Pod limitation only after
+  the fault-injection suite passes.

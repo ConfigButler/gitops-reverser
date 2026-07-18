@@ -9,6 +9,7 @@ resources:
 - deployment.yaml
 - certs
 - webhook
+- clusterprovider-default.yaml
 images:
 - name: gitops-reverser
   newName: gitops-reverser

@@ -446,6 +446,7 @@ jobs:
         with:
           name: release-bundle
           path: |
+            dist/crds.yaml
             dist/install.yaml
             gitops-reverser.tgz
           if-no-files-found: error
@@ -809,7 +810,7 @@ jobs:
           # place gitops-reverser mirrors REMOTE clusters (GitTarget.spec.kubeConfig).
           # kcp workspaces are cheap logical clusters, so its own runner installs a
           # small kcp control plane and provisions three workspaces as source clusters.
-          # docs/design/config-plane-split.md.
+          # docs/finished/config-plane-split.md.
           #
           # `task test-e2e-source-cluster` pins its own label filter and Ginkgo procs
           # (SOURCE_CLUSTER_GINKGO_PROCS=1 — the specs share one kcp port-forward), so

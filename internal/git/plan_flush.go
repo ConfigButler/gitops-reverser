@@ -57,8 +57,8 @@ func (w *BranchWorker) mapperForCluster(clusterID string) typeset.Lookup {
 // first non-empty id wins, and an all-empty set is the local cluster.
 func clusterIDForEvents(events []Event) string {
 	for _, ev := range events {
-		if ev.SourceClusterID != "" {
-			return ev.SourceClusterID
+		if ev.SourceCluster != "" {
+			return ev.SourceCluster
 		}
 	}
 	return ""

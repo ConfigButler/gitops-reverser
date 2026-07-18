@@ -37,19 +37,39 @@ func TestMain(m *testing.M) {
 // fakeFactRecorder is an in-memory AuditFactRecorder. It appends every accepted
 // event and can be told to fail with an injectable error.
 type fakeFactRecorder struct {
-	mu     sync.Mutex
-	err    error
-	events []auditv1.Event
+	mu        sync.Mutex
+	err       error
+	events    []auditv1.Event
+	providers []string
 }
 
-func (r *fakeFactRecorder) RecordFact(_ context.Context, event auditv1.Event) error {
+func (r *fakeFactRecorder) RecordFact(_ context.Context, providerName string, event auditv1.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.err != nil {
 		return r.err
 	}
 	r.events = append(r.events, event)
+	r.providers = append(r.providers, providerName)
 	return nil
+}
+
+// lastProvider returns the provider name threaded into the most recent RecordFact call.
+func (r *fakeFactRecorder) lastProvider() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.providers) == 0 {
+		return ""
+	}
+	return r.providers[len(r.providers)-1]
+}
+
+// recordedProviders returns the provider name threaded into each RecordFact call, in order — the
+// fan-out a single annotation-routed batch produced.
+func (r *fakeFactRecorder) recordedProviders() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.providers...)
 }
 
 func (r *fakeFactRecorder) auditIDs() []string {
@@ -88,6 +108,22 @@ func eventListFixtureBody(t *testing.T, path string) string {
 	return string(body)
 }
 
+// defaultRoute is the named audit route for a ClusterProvider called "default". Audit routes are
+// NAMED, and the bare /audit-webhook is the shared, annotation-routed endpoint that is off unless
+// ClusterAnnotationKey is set — so every test about event classification (rather than routing)
+// posts here, exactly as a single-cluster apiserver would.
+const defaultRoute = "/audit-webhook/default"
+
+// routedConfig fills in the ProviderResolver that defaultRoute is existence-gated on, so a
+// classification test can keep stating only what it is actually about. A test that cares about the
+// gate supplies its own resolver, which is left untouched.
+func routedConfig(config AuditHandlerConfig) AuditHandlerConfig {
+	if config.ProviderResolver == nil {
+		config.ProviderResolver = fakeProviderResolver{existing: map[string]bool{"default": true}}
+	}
+	return config
+}
+
 // serveBody runs one POST request through the handler and returns the recorder.
 func serveBody(t *testing.T, handler *AuditHandler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -106,20 +142,235 @@ const acceptedCreateEvent = `{"kind":"Event","level":"RequestResponse","auditID"
 	`"responseStatus":{"code":200},` +
 	`"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"default"}}}`
 
+// TestAuditHandler_NamedDefaultRouteThreadsItsProvider checks that /audit-webhook/default is an
+// ordinary named route: it records its facts under the "default" ClusterProvider name.
+func TestAuditHandler_NamedDefaultRouteThreadsItsProvider(t *testing.T) {
+	recorder := &fakeFactRecorder{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` + acceptedCreateEvent + `]}`
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, body)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, []string{"create-1"}, recorder.auditIDs())
+	assert.Equal(t, "default", recorder.lastProvider(), "the named default route keys facts by its own name")
+}
+
+// fakeProviderResolver answers ProviderExists from a fixed set, or with an injectable error.
+type fakeProviderResolver struct {
+	existing map[string]bool
+	err      error
+}
+
+func (f fakeProviderResolver) ProviderExists(_ context.Context, name string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.existing[name], nil
+}
+
+// TestAuditHandler_NamedRouting checks the /audit-webhook/<name> gate: an existing provider is
+// served and its facts keyed by name; a missing provider is 404 (for "default" too); a resolver
+// error is 503; and the bare endpoint is not a fallback for any of them.
+func TestAuditHandler_NamedRouting(t *testing.T) {
+	body := eventListBody(acceptedCreateEvent)
+
+	t.Run("existing provider records under its name", func(t *testing.T) {
+		recorder := &fakeFactRecorder{}
+		handler, err := NewAuditHandler(AuditHandlerConfig{
+			FactRecorder:     recorder,
+			ProviderResolver: fakeProviderResolver{existing: map[string]bool{"prod-eu-1": true}},
+		})
+		require.NoError(t, err)
+		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body)
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "prod-eu-1", recorder.lastProvider())
+	})
+
+	t.Run("missing provider is 404, records nothing", func(t *testing.T) {
+		recorder := &fakeFactRecorder{}
+		handler, err := NewAuditHandler(AuditHandlerConfig{
+			FactRecorder:     recorder,
+			ProviderResolver: fakeProviderResolver{existing: map[string]bool{}},
+		})
+		require.NoError(t, err)
+		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/gone", body)
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.Zero(t, recorder.len())
+	})
+
+	t.Run("resolver error is 503", func(t *testing.T) {
+		handler, err := NewAuditHandler(AuditHandlerConfig{
+			FactRecorder:     &fakeFactRecorder{},
+			ProviderResolver: fakeProviderResolver{err: assert.AnError},
+		})
+		require.NoError(t, err)
+		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body)
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	})
+
+	t.Run("default is existence-gated like any other name", func(t *testing.T) {
+		recorder := &fakeFactRecorder{}
+		handler, err := NewAuditHandler(AuditHandlerConfig{
+			FactRecorder:     recorder,
+			ProviderResolver: fakeProviderResolver{existing: map[string]bool{}}, // default absent
+		})
+		require.NoError(t, err)
+		w := serveBody(t, handler, http.MethodPost, defaultRoute, body)
+		assert.Equal(t, http.StatusNotFound, w.Code, "default has no privileged route")
+		assert.Zero(t, recorder.len())
+	})
+
+	t.Run("bare endpoint is 400 while no annotation key is configured", func(t *testing.T) {
+		recorder := &fakeFactRecorder{}
+		handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+		require.NoError(t, err)
+		w := serveBody(t, handler, http.MethodPost, "/audit-webhook", body)
+		assert.Equal(t, http.StatusBadRequest, w.Code,
+			"the bare endpoint resolves no provider of its own, so a producer posting to it is misconfigured")
+		assert.Zero(t, recorder.len())
+	})
+}
+
+// clusterAnnotation is the annotation key a shared audit stream stamps its source cluster into.
+const clusterAnnotation = "example.io/source-cluster"
+
+// annotatedEvent builds an otherwise-acceptable create event carrying an audit-event annotation
+// map. A nil map is an event a producer did not stamp at all.
+func annotatedEvent(auditID string, annotations map[string]string) string {
+	encoded, err := json.Marshal(annotations)
+	if err != nil {
+		panic(err)
+	}
+	return `{"kind":"Event","level":"RequestResponse","auditID":"` + auditID + `",` +
+		`"stage":"ResponseComplete","verb":"create","user":{"username":"test-user"},` +
+		`"requestURI":"/api/v1/namespaces/default/configmaps",` +
+		`"annotations":` + string(encoded) + `,` +
+		`"objectRef":{"resource":"configmaps","namespace":"default","name":"cm","apiVersion":"v1"},` +
+		`"responseStatus":{"code":200},` +
+		`"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"default"}}}`
+}
+
+// TestAuditHandler_AnnotationRouting pins the shared-stream contract: with an annotation key
+// configured the bare endpoint resolves the ClusterProvider PER EVENT, so one batch fans out to
+// several source clusters, and an event that names none — or names one that does not exist — is
+// rejected by itself, never credited to a fallback, while the rest of the batch still lands.
+func TestAuditHandler_AnnotationRouting(t *testing.T) {
+	newHandler := func(t *testing.T, recorder *fakeFactRecorder, resolver AuditProviderResolver) *AuditHandler {
+		t.Helper()
+		handler, err := NewAuditHandler(AuditHandlerConfig{
+			FactRecorder:         recorder,
+			ProviderResolver:     resolver,
+			ClusterAnnotationKey: clusterAnnotation,
+		})
+		require.NoError(t, err)
+		return handler
+	}
+	known := fakeProviderResolver{existing: map[string]bool{"prod-eu-1": true, "prod-us-1": true}}
+
+	t.Run("one batch fans out to several source clusters", func(t *testing.T) {
+		recorder := &fakeFactRecorder{}
+		handler := newHandler(t, recorder, known)
+
+		w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(
+			annotatedEvent("eu", map[string]string{clusterAnnotation: "prod-eu-1"}),
+			annotatedEvent("us", map[string]string{clusterAnnotation: "prod-us-1"}),
+		))
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, []string{"eu", "us"}, recorder.auditIDs())
+		assert.Equal(t, []string{"prod-eu-1", "prod-us-1"}, recorder.recordedProviders())
+	})
+
+	t.Run("an unstamped or unknown event is rejected without failing the batch", func(t *testing.T) {
+		for _, tt := range []struct {
+			name        string
+			annotations map[string]string
+		}{
+			{"no annotation at all", nil},
+			{"the key present but empty", map[string]string{clusterAnnotation: ""}},
+			{"a different key", map[string]string{"other.io/cluster": "prod-eu-1"}},
+			{"an unknown provider", map[string]string{clusterAnnotation: "never-created"}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				recorder := &fakeFactRecorder{}
+				handler := newHandler(t, recorder, known)
+
+				w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(
+					annotatedEvent("rejected", tt.annotations),
+					annotatedEvent("kept", map[string]string{clusterAnnotation: "prod-eu-1"}),
+				))
+				require.Equal(t, http.StatusOK, w.Code,
+					"a heterogeneous stream must not be retried wholesale for one bad event")
+				assert.Equal(t, []string{"kept"}, recorder.auditIDs(), "the rejected event produces no fact")
+				assert.Equal(t, []string{"prod-eu-1"}, recorder.recordedProviders(),
+					"and is never credited to a fallback provider")
+			})
+		}
+	})
+
+	t.Run("a resolver failure retries the whole batch", func(t *testing.T) {
+		recorder := &fakeFactRecorder{}
+		handler := newHandler(t, recorder, fakeProviderResolver{err: assert.AnError})
+
+		w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(
+			annotatedEvent("eu", map[string]string{clusterAnnotation: "prod-eu-1"}),
+		))
+		assert.Equal(t, http.StatusInternalServerError, w.Code,
+			"a lookup failure is transient, not a verdict that the provider is absent")
+		assert.Zero(t, recorder.len())
+	})
+
+	t.Run("named routes ignore the annotation", func(t *testing.T) {
+		recorder := &fakeFactRecorder{}
+		handler := newHandler(t, recorder, known)
+
+		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-us-1", eventListBody(
+			annotatedEvent("eu", map[string]string{clusterAnnotation: "prod-eu-1"}),
+		))
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, []string{"prod-us-1"}, recorder.recordedProviders(),
+			"a named route fixes the source cluster for its whole batch")
+	})
+}
+
+// TestNewAuditHandler_AnnotationRoutingRequiresResolver pins the startup guard: annotation routing
+// must be able to reject an unknown provider, so it cannot be configured without a resolver.
+func TestNewAuditHandler_AnnotationRoutingRequiresResolver(t *testing.T) {
+	_, err := NewAuditHandler(AuditHandlerConfig{ClusterAnnotationKey: clusterAnnotation})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ProviderResolver")
+}
+
+// TestProviderRouteForPath covers the path -> (provider, named) mapping directly. The bare path
+// names no provider at all: it is the shared, annotation-routed endpoint.
+func TestProviderRouteForPath(t *testing.T) {
+	name, named := providerRouteForPath("/audit-webhook")
+	assert.Empty(t, name, "the bare path resolves no provider by itself")
+	assert.False(t, named)
+
+	name, named = providerRouteForPath("/audit-webhook/prod-eu-1")
+	assert.Equal(t, "prod-eu-1", name)
+	assert.True(t, named, "a segment names a provider")
+
+	name, named = providerRouteForPath(defaultRoute)
+	assert.Equal(t, "default", name, "default is an ordinary named route")
+	assert.True(t, named)
+}
+
 func TestNewAuditHandler_DefaultsMaxBody(t *testing.T) {
-	handler, err := NewAuditHandler(AuditHandlerConfig{})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{}))
 	require.NoError(t, err)
 	assert.Equal(t, DefaultAuditMaxRequestBodyBytes, handler.config.MaxRequestBodyBytes)
 
-	handler, err = NewAuditHandler(AuditHandlerConfig{MaxRequestBodyBytes: 4096})
+	handler, err = NewAuditHandler(routedConfig(AuditHandlerConfig{MaxRequestBodyBytes: 4096}))
 	require.NoError(t, err)
 	assert.Equal(t, int64(4096), handler.config.MaxRequestBodyBytes)
 }
 
 // TestAuditHandler_MethodAndPathValidation pins the HTTP-method and path gates:
-// only POST to the canonical /audit-webhook is accepted; the removed
+// only POST to a named /audit-webhook/<name> is accepted; the removed
 // /audit-webhook-additional endpoint, trailing slashes, and extra segments are
-// all 400.
+// all 400, and so is the bare endpoint while annotation routing is off.
 func TestAuditHandler_MethodAndPathValidation(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -127,19 +378,24 @@ func TestAuditHandler_MethodAndPathValidation(t *testing.T) {
 		path       string
 		wantStatus int
 	}{
-		{"valid POST", http.MethodPost, "/audit-webhook", http.StatusOK},
-		{"GET rejected", http.MethodGet, "/audit-webhook", http.StatusMethodNotAllowed},
-		{"PUT rejected", http.MethodPut, "/audit-webhook", http.StatusMethodNotAllowed},
-		{"DELETE rejected", http.MethodDelete, "/audit-webhook", http.StatusMethodNotAllowed},
+		{"valid POST to a named route", http.MethodPost, defaultRoute, http.StatusOK},
+		{"GET rejected", http.MethodGet, defaultRoute, http.StatusMethodNotAllowed},
+		{"PUT rejected", http.MethodPut, defaultRoute, http.StatusMethodNotAllowed},
+		{"DELETE rejected", http.MethodDelete, defaultRoute, http.StatusMethodNotAllowed},
 		{"trailing slash rejected", http.MethodPost, "/audit-webhook/", http.StatusBadRequest},
 		{"removed additional endpoint rejected", http.MethodPost, "/audit-webhook-additional", http.StatusBadRequest},
-		{"extra segment rejected", http.MethodPost, "/audit-webhook/extra", http.StatusBadRequest},
+		{"two segments rejected", http.MethodPost, "/audit-webhook/a/b", http.StatusBadRequest},
 		{"unrelated path rejected", http.MethodPost, "/wrong", http.StatusBadRequest},
+		// The bare endpoint only means something with an annotation key configured; this handler has
+		// none, so a producer posting there is misconfigured rather than routed to a default.
+		{"bare endpoint rejected without an annotation key", http.MethodPost, "/audit-webhook", http.StatusBadRequest},
+		// A name with no ClusterProvider behind it is 404 — the gate applies to every name.
+		{"unknown named route is 404", http.MethodPost, "/audit-webhook/prod-eu-1", http.StatusNotFound},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler, err := NewAuditHandler(AuditHandlerConfig{})
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{}))
 			require.NoError(t, err)
 
 			w := serveBody(t, handler, tt.method, tt.path, eventListBody(acceptedCreateEvent))
@@ -157,8 +413,8 @@ func TestValidateAuditWebhookPath(t *testing.T) {
 		{"canonical", "/audit-webhook", false},
 		{"trailing slash", "/audit-webhook/", true},
 		{"removed additional endpoint", "/audit-webhook-additional", true},
-		{"extra segment", "/audit-webhook/extra", true},
-		{"cluster id segment", "/audit-webhook/cluster-a", true},
+		{"named provider segment is valid", "/audit-webhook/prod-eu-1", false},
+		{"two segments", "/audit-webhook/a/b", true},
 		{"unrelated", "/healthz", true},
 		{"root", "/", true},
 	}
@@ -188,10 +444,10 @@ func TestAuditHandler_DecodeErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 			require.NoError(t, err)
 
-			w := serveBody(t, handler, http.MethodPost, "/audit-webhook", tt.body)
+			w := serveBody(t, handler, http.MethodPost, defaultRoute, tt.body)
 			assert.Equal(t, http.StatusBadRequest, w.Code)
 			assert.Zero(t, recorder.len(), "a decode failure records no facts")
 		})
@@ -200,10 +456,10 @@ func TestAuditHandler_DecodeErrors(t *testing.T) {
 
 func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
 	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{MaxRequestBodyBytes: 32, FactRecorder: recorder})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{MaxRequestBodyBytes: 32, FactRecorder: recorder}))
 	require.NoError(t, err)
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(acceptedCreateEvent))
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent))
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "request body too large")
 	assert.Zero(t, recorder.len())
@@ -211,10 +467,10 @@ func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
 
 func TestAuditHandler_EmptyEventListRecordsNothing(t *testing.T) {
 	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 	require.NoError(t, err)
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody())
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody())
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Zero(t, recorder.len(), "an empty event list records no facts")
 }
@@ -223,10 +479,10 @@ func TestAuditHandler_EmptyEventListRecordsNothing(t *testing.T) {
 // mutating event reaches the FactRecorder and the request returns 200.
 func TestAuditHandler_AcceptedEventRecordsFact(t *testing.T) {
 	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 	require.NoError(t, err)
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(acceptedCreateEvent))
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent))
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, []string{"create-1"}, recorder.auditIDs())
 }
@@ -234,10 +490,10 @@ func TestAuditHandler_AcceptedEventRecordsFact(t *testing.T) {
 // TestAuditHandler_NilRecorderAcceptsWithoutRecording confirms configured-author
 // mode: a nil FactRecorder records nothing yet still returns 200.
 func TestAuditHandler_NilRecorderAcceptsWithoutRecording(t *testing.T) {
-	handler, err := NewAuditHandler(AuditHandlerConfig{}) // FactRecorder nil
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{})) // FactRecorder nil
 	require.NoError(t, err)
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(acceptedCreateEvent))
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent))
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
@@ -245,7 +501,7 @@ func TestAuditHandler_NilRecorderAcceptsWithoutRecording(t *testing.T) {
 // the whole list, recording each accepted event in order.
 func TestAuditHandler_RecordsEveryAcceptedEventInBatch(t *testing.T) {
 	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 	require.NoError(t, err)
 
 	second := `{"kind":"Event","auditID":"update-1","stage":"ResponseComplete","verb":"update",` +
@@ -254,7 +510,7 @@ func TestAuditHandler_RecordsEveryAcceptedEventInBatch(t *testing.T) {
 		`"namespace":"prod","name":"web"},"responseStatus":{"code":200},` +
 		`"responseObject":{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","resourceVersion":"7"}}}`
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(acceptedCreateEvent, second))
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent, second))
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, []string{"create-1", "update-1"}, recorder.auditIDs())
 }
@@ -263,10 +519,10 @@ func TestAuditHandler_RecordsEveryAcceptedEventInBatch(t *testing.T) {
 // fact-store failure surfaces as 500 so the API server redelivers.
 func TestAuditHandler_RecordFactErrorFailsRequest(t *testing.T) {
 	recorder := &fakeFactRecorder{err: errors.New("fact store down")}
-	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 	require.NoError(t, err)
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(acceptedCreateEvent))
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent))
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Contains(t, w.Body.String(), "fact store down")
 }
@@ -352,10 +608,10 @@ func TestAuditHandler_RejectedEventsAreDropped(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 			require.NoError(t, err)
 
-			w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(tt.event))
+			w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(tt.event))
 			assert.Equal(t, http.StatusOK, w.Code, tt.why)
 			assert.Zero(t, recorder.len(), tt.why)
 		})
@@ -398,10 +654,10 @@ func TestAuditHandler_AcceptedEdgeCases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 			require.NoError(t, err)
 
-			w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(tt.event))
+			w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(tt.event))
 			assert.Equal(t, http.StatusOK, w.Code)
 			assert.Equal(t, []string{tt.auditID}, recorder.auditIDs())
 		})
@@ -413,14 +669,14 @@ func TestAuditHandler_AcceptedEdgeCases(t *testing.T) {
 // the whole request is 500.
 func TestAuditHandler_BatchStopsOnFirstRecordError(t *testing.T) {
 	recorder := &fakeFactRecorder{err: errors.New("fact store down")}
-	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 	require.NoError(t, err)
 
 	second := `{"kind":"Event","auditID":"update-1","stage":"ResponseComplete","verb":"update",` +
 		`"objectRef":{"resource":"configmaps","apiVersion":"v1"},` +
 		`"responseObject":{"metadata":{"resourceVersion":"5"}}}`
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(acceptedCreateEvent, second))
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent, second))
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Zero(t, recorder.len(), "no facts persist when the recorder errors")
 }
@@ -434,10 +690,10 @@ func TestAuditHandler_ForwardsRealScaleSubresourceRecording(t *testing.T) {
 	require.NoError(t, err, "the captured scale recording must be readable")
 
 	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 	require.NoError(t, err)
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(string(recording)))
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(string(recording)))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, 1, recorder.len(), "the real deployments/scale recording must be recorded")
 
@@ -462,10 +718,10 @@ func TestAuditHandler_FixtureDryRunAndUnchangedRVDropped(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 			require.NoError(t, err)
 
-			w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListFixtureBody(t, tt.fixture))
+			w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListFixtureBody(t, tt.fixture))
 			assert.Equal(t, http.StatusOK, w.Code)
 			assert.Zero(t, recorder.len(), "filtered events must not be recorded")
 		})
@@ -496,10 +752,10 @@ func TestAuditHandler_FixturePersistedAndCreateRecorded(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 			require.NoError(t, err)
 
-			w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListFixtureBody(t, tt.fixture))
+			w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListFixtureBody(t, tt.fixture))
 			assert.Equal(t, http.StatusOK, w.Code)
 			assert.Equal(t, []string{tt.wantID}, recorder.auditIDs())
 		})
