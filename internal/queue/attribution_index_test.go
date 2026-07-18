@@ -78,9 +78,9 @@ func TestAttributionIndex_RecordAndLookupExact(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "101", "alice")))
 
-	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "101", true)
+	fact, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "101", true)
 	require.True(t, ok)
 	require.Equal(t, "alice", fact.Author)
 	require.Equal(t, "101", fact.ResourceVersion)
@@ -95,11 +95,11 @@ func TestAttributionIndex_LookupByUIDWhenRVDiffers(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("delete", "uid-1", "101", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("delete", "uid-1", "101", "alice")))
 
 	// Watch DELETE lands at a later RV; the uid-latest :last pointer still resolves the
 	// author (a delete is not exact-capable, so it may consult :last).
-	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "999", false)
+	fact, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "999", false)
 	require.True(t, ok)
 	require.Equal(t, "alice", fact.Author)
 }
@@ -108,9 +108,9 @@ func TestAttributionIndex_LookupResolutionWeakWhenExactMisses(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("delete", "uid-1", "101", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("delete", "uid-1", "101", "alice")))
 
-	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "999", false)
+	resolution := idx.LookupAuthorResolution(ctx, "default", appsDeploymentGVR(), "uid-1", "999", false)
 	require.Equal(t, AttributionWeak, resolution.Result)
 	require.Equal(t, "alice", resolution.Fact.Author)
 }
@@ -120,15 +120,15 @@ func TestAttributionIndex_ExactCapableDoesNotFallThroughToLast(t *testing.T) {
 	ctx := context.Background()
 
 	// alice's write seeds both the exact key (uid-1:101) and the :last pointer.
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "101", "alice")))
 
 	// An exact-capable event at a different RV whose exact key is absent must NOT borrow
 	// the :last author — it is absent and ships as committer.
-	res := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "202", true)
+	res := idx.LookupAuthorResolution(ctx, "default", appsDeploymentGVR(), "uid-1", "202", true)
 	require.Equal(t, AttributionAbsent, res.Result)
 
 	// The same miss for a known RV-mismatch event DOES consult :last.
-	weak := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "202", false)
+	weak := idx.LookupAuthorResolution(ctx, "default", appsDeploymentGVR(), "uid-1", "202", false)
 	require.Equal(t, AttributionWeak, weak.Result)
 	require.Equal(t, "alice", weak.Fact.Author)
 }
@@ -138,19 +138,19 @@ func TestAttributionIndex_BurstKeepsEachWritePrecise(t *testing.T) {
 	ctx := context.Background()
 
 	// Two authors write the same object in a burst at distinct RVs.
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "1", "alice")))
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "2", "bob")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "1", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "2", "bob")))
 
 	// Each watch event hits its own immutable exact key → both precise, no conflict.
-	f1, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "1", true)
+	f1, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "1", true)
 	require.True(t, ok)
 	require.Equal(t, "alice", f1.Author)
-	f2, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "2", true)
+	f2, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "2", true)
 	require.True(t, ok)
 	require.Equal(t, "bob", f2.Author)
 
 	// :last is last-writer-wins (bob), consulted only by an RV-mismatch event.
-	fl, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "999", false)
+	fl, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "999", false)
 	require.True(t, ok)
 	require.Equal(t, "bob", fl.Author)
 }
@@ -159,15 +159,15 @@ func TestAttributionIndex_NoUIDFactWritesRVKeyOnly(t *testing.T) {
 	idx, mr := newTestAttributionIndexWithRedis(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "", "202", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "", "202", "alice")))
 
 	// The §5 escape hatch: a no-UID fact writes the type-scoped rv-only key and no
 	// object keys.
-	require.True(t, mr.Exists(idx.factKeyRV("apps/deployments", "202")))
-	require.False(t, mr.Exists(idx.factKeyLast("apps/deployments", "")))
+	require.True(t, mr.Exists(idx.factKeyRV("default", "apps/deployments", "202")))
+	require.False(t, mr.Exists(idx.factKeyLast("default", "apps/deployments", "")))
 
 	// An exact-capable watch event (which carries a UID) joins it via the rv-only fallback.
-	res := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-live", "202", true)
+	res := idx.LookupAuthorResolution(ctx, "default", appsDeploymentGVR(), "uid-live", "202", true)
 	require.Equal(t, AttributionWeak, res.Result)
 	require.Equal(t, "alice", res.Fact.Author)
 }
@@ -176,11 +176,11 @@ func TestAttributionIndex_UIDFactWritesNoDeadRVKey(t *testing.T) {
 	idx, mr := newTestAttributionIndexWithRedis(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "303", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "303", "alice")))
 
-	require.True(t, mr.Exists(idx.factKeyExact("apps/deployments", "uid-1", "303")))
-	require.True(t, mr.Exists(idx.factKeyLast("apps/deployments", "uid-1")))
-	require.False(t, mr.Exists(idx.factKeyRV("apps/deployments", "303")),
+	require.True(t, mr.Exists(idx.factKeyExact("default", "apps/deployments", "uid-1", "303")))
+	require.True(t, mr.Exists(idx.factKeyLast("default", "apps/deployments", "uid-1")))
+	require.False(t, mr.Exists(idx.factKeyRV("default", "apps/deployments", "303")),
 		"a UID-bearing fact's rv-only key would be dead, so it is not written")
 }
 
@@ -188,10 +188,10 @@ func TestAttributionIndex_ServiceAccountFlagged(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "303",
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "303",
 		"system:serviceaccount:flux-system:kustomize-controller")))
 
-	fact, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "303", true)
+	fact, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "303", true)
 	require.True(t, ok)
 	require.True(t, fact.IsServiceAccount)
 }
@@ -200,15 +200,15 @@ func TestAttributionIndex_NoUserIsNoOp(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "101", "")))
 
-	_, ok := idx.LookupAuthor(ctx, appsDeploymentGVR(), "uid-1", "101", true)
+	_, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "101", true)
 	require.False(t, ok)
 }
 
 func TestAttributionIndex_LookupMiss(t *testing.T) {
 	idx := newTestAttributionIndex(t)
-	_, ok := idx.LookupAuthor(context.Background(), appsDeploymentGVR(), "uid-x", "1", true)
+	_, ok := idx.LookupAuthor(context.Background(), "default", appsDeploymentGVR(), "uid-x", "1", true)
 	require.False(t, ok)
 }
 
@@ -217,12 +217,12 @@ func TestAttributionIndex_AgedOutFactIsAbsent(t *testing.T) {
 	idx := store.AttributionIndex(time.Minute)
 
 	ctx := context.Background()
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "101", "alice")))
 
 	mr.FastForward(time.Minute + time.Second)
 
 	// No tombstone: an aged-out fact is indistinguishable from one that never arrived.
-	resolution := idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "101", true)
+	resolution := idx.LookupAuthorResolution(ctx, "default", appsDeploymentGVR(), "uid-1", "101", true)
 	require.Equal(t, AttributionAbsent, resolution.Result)
 }
 
@@ -232,8 +232,8 @@ func TestAttributionIndex_FactLifecycleMetrics(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, mutationEvent("update", "uid-1", "101", "alice")))
-	_ = idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "101", true)
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "101", "alice")))
+	_ = idx.LookupAuthorResolution(ctx, "default", appsDeploymentGVR(), "uid-1", "101", true)
 
 	written, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_fact_events_total",
 		map[string]string{"op": "written"})
@@ -254,17 +254,20 @@ func TestAttributionIndex_RecordFactNoOpCases(t *testing.T) {
 	ctx := context.Background()
 
 	// No objectRef → nothing to key on.
-	require.NoError(t, idx.RecordFact(ctx, auditv1.Event{Verb: "create", User: authnv1.UserInfo{Username: "a"}}))
+	require.NoError(
+		t,
+		idx.RecordFact(ctx, "default", auditv1.Event{Verb: "create", User: authnv1.UserInfo{Username: "a"}}),
+	)
 
 	// Empty resource → cannot build a key.
-	require.NoError(t, idx.RecordFact(ctx, auditv1.Event{
+	require.NoError(t, idx.RecordFact(ctx, "default", auditv1.Event{
 		Verb:      "create",
 		User:      authnv1.UserInfo{Username: "a"},
 		ObjectRef: &auditv1.ObjectReference{APIGroup: "apps", Name: "web"},
 	}))
 
 	// No resolvable name → no author can be attributed to an object.
-	require.NoError(t, idx.RecordFact(ctx, auditv1.Event{
+	require.NoError(t, idx.RecordFact(ctx, "default", auditv1.Event{
 		Verb:      "create",
 		User:      authnv1.UserInfo{Username: "a"},
 		ObjectRef: &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments"},
@@ -327,11 +330,14 @@ func TestAttributionIndex_FactTTLConfigurable(t *testing.T) {
 	store, mr := newTestRedisStoreWithRedis(t)
 	idx := store.AttributionIndex(5 * time.Minute)
 
-	require.NoError(t, idx.RecordFact(context.Background(), mutationEvent("update", "uid-1", "101", "alice")))
+	require.NoError(
+		t,
+		idx.RecordFact(context.Background(), "default", mutationEvent("update", "uid-1", "101", "alice")),
+	)
 
 	for _, key := range []string{
-		idx.factKeyExact("apps/deployments", "uid-1", "101"),
-		idx.factKeyLast("apps/deployments", "uid-1"),
+		idx.factKeyExact("default", "apps/deployments", "uid-1", "101"),
+		idx.factKeyLast("default", "apps/deployments", "uid-1"),
 	} {
 		require.Equal(t, 5*time.Minute, mr.TTL(key), "fact key %q", key)
 	}
@@ -341,9 +347,12 @@ func TestAttributionIndex_FactTTLDefaultsWhenUnset(t *testing.T) {
 	store, mr := newTestRedisStoreWithRedis(t)
 	idx := store.AttributionIndex(0)
 
-	require.NoError(t, idx.RecordFact(context.Background(), mutationEvent("update", "uid-1", "101", "alice")))
+	require.NoError(
+		t,
+		idx.RecordFact(context.Background(), "default", mutationEvent("update", "uid-1", "101", "alice")),
+	)
 
-	require.Equal(t, DefaultAttributionFactTTL, mr.TTL(idx.factKeyExact("apps/deployments", "uid-1", "101")))
+	require.Equal(t, DefaultAttributionFactTTL, mr.TTL(idx.factKeyExact("default", "apps/deployments", "uid-1", "101")))
 }
 
 func TestEscapeKeyField(t *testing.T) {
@@ -367,19 +376,247 @@ func TestGroupResourceKey(t *testing.T) {
 	require.Equal(t, "rbac.authorization.k8s.io/roles", groupResourceKey("rbac.authorization.k8s.io", "roles"))
 }
 
+// rawObject wraps a JSON body the way the audit pipeline delivers request/response bodies.
+func rawObject(body string) *runtime.Unknown {
+	return &runtime.Unknown{Raw: []byte(body)}
+}
+
+// deploymentBody renders a minimal Deployment whose metadata.resourceVersion is rv.
+func deploymentBody(rv string) string {
+	return fmt.Sprintf(`{"apiVersion":"apps/v1","kind":"Deployment",`+
+		`"metadata":{"name":"web","namespace":"team-a","uid":"uid-1","resourceVersion":%q}}`, rv)
+}
+
+// TestResourceVersionFromEvent_Precedence pins the RV precedence the join depends on. The RV is
+// half of the fact key, so reading the wrong one files the fact under an object version that will
+// never be looked up — the write silently ships the committer instead of its real author. Only the
+// POST-write RV identifies the version a mutation produced: that lives in responseObject.
+// requestObject carries the PRE-write RV and must never be consulted, and objectRef.resourceVersion
+// is usually the empty precondition RV on writes, so it is a last resort only.
+func TestResourceVersionFromEvent_Precedence(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*auditv1.Event)
+		wantRV  string
+		wantWhy string
+	}{
+		{
+			name: "response object wins over a different objectRef RV",
+			mutate: func(e *auditv1.Event) {
+				e.ResponseObject = rawObject(deploymentBody("202"))
+				e.ObjectRef.ResourceVersion = "101"
+			},
+			wantRV:  "202",
+			wantWhy: "the post-write RV in the response body is authoritative",
+		},
+		{
+			name: "request object is ignored even when the response object has none",
+			mutate: func(e *auditv1.Event) {
+				e.RequestObject = rawObject(deploymentBody("101"))
+				e.ResponseObject = nil
+				e.ObjectRef.ResourceVersion = ""
+			},
+			wantRV:  "",
+			wantWhy: "requestObject holds the pre-write RV and is never a source",
+		},
+		{
+			name: "request object never outranks the response object",
+			mutate: func(e *auditv1.Event) {
+				e.RequestObject = rawObject(deploymentBody("101"))
+				e.ResponseObject = rawObject(deploymentBody("202"))
+			},
+			wantRV:  "202",
+			wantWhy: "responseObject is consulted first and short-circuits",
+		},
+		{
+			name: "objectRef is the fallback when the response object is absent",
+			mutate: func(e *auditv1.Event) {
+				e.ResponseObject = nil
+				e.ObjectRef.ResourceVersion = "101"
+			},
+			wantRV:  "101",
+			wantWhy: "objectRef is the last resort, not the first choice",
+		},
+		{
+			name: "objectRef is the fallback when the response body carries no RV",
+			mutate: func(e *auditv1.Event) {
+				e.ResponseObject = rawObject(`{"metadata":{"name":"web"}}`)
+				e.ObjectRef.ResourceVersion = "101"
+			},
+			wantRV:  "101",
+			wantWhy: "a shallow body yields nothing, so the fallback still applies",
+		},
+		{
+			name: "objectRef is the fallback when the response body is malformed",
+			mutate: func(e *auditv1.Event) {
+				e.ResponseObject = rawObject(`{"metadata":`)
+				e.ObjectRef.ResourceVersion = "101"
+			},
+			wantRV:  "101",
+			wantWhy: "an unparseable body must not poison the fallback",
+		},
+		{
+			name: "empty precondition RV on objectRef yields nothing",
+			mutate: func(e *auditv1.Event) {
+				e.ResponseObject = nil
+				e.ObjectRef.ResourceVersion = ""
+			},
+			wantRV:  "",
+			wantWhy: "writes usually leave objectRef.resourceVersion empty",
+		},
+		{
+			name: "nil objectRef and nil response object yield nothing",
+			mutate: func(e *auditv1.Event) {
+				e.ResponseObject = nil
+				e.ObjectRef = nil
+			},
+			wantRV:  "",
+			wantWhy: "collection verbs and deletes legitimately have no RV",
+		},
+		{
+			name: "nil objectRef does not fall through to the request object",
+			mutate: func(e *auditv1.Event) {
+				e.ResponseObject = nil
+				e.ObjectRef = nil
+				e.RequestObject = rawObject(deploymentBody("101"))
+			},
+			wantRV:  "",
+			wantWhy: "requestObject stays ignored on every path",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			event := mutationEvent("update", "uid-1", "202", "alice")
+			c.mutate(&event)
+			require.Equal(t, c.wantRV, resourceVersionFromEvent(event), c.wantWhy)
+		})
+	}
+}
+
+// TestRVFromRawObject_Cases covers the body shapes the audit stream actually delivers. Every
+// non-answer must be "" rather than a partial or panicking read: a truncated or bodyless audit
+// event has to degrade into "no RV recorded", not into a bogus RV that keys a fact nobody finds.
+func TestRVFromRawObject_Cases(t *testing.T) {
+	cases := []struct {
+		name string
+		obj  *runtime.Unknown
+		want string
+	}{
+		{name: "nil object", obj: nil, want: ""},
+		{name: "nil raw bytes", obj: &runtime.Unknown{}, want: ""},
+		{name: "zero-length raw bytes", obj: &runtime.Unknown{Raw: []byte{}}, want: ""},
+		{name: "malformed json", obj: rawObject(`{"metadata":{"resourceVersion":`), want: ""},
+		{name: "non-object json", obj: rawObject(`"a string"`), want: ""},
+		{name: "empty json object", obj: rawObject(`{}`), want: ""},
+		{name: "object without metadata", obj: rawObject(`{"kind":"Deployment"}`), want: ""},
+		{name: "metadata without resourceVersion", obj: rawObject(`{"metadata":{"name":"web"}}`), want: ""},
+		{name: "explicitly empty resourceVersion", obj: rawObject(`{"metadata":{"resourceVersion":""}}`), want: ""},
+		{name: "well-formed body", obj: rawObject(deploymentBody("101")), want: "101"},
+		{
+			name: "resourceVersion alongside unknown fields",
+			obj:  rawObject(`{"spec":{"replicas":3},"metadata":{"name":"web","resourceVersion":"99"}}`),
+			want: "99",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			require.Equal(t, c.want, rvFromRawObject(c.obj))
+		})
+	}
+}
+
+// TestAttributionIndex_CrossClusterIsolation is the multi-cluster centerpiece: two clusters
+// record the SAME object identity (uid, rv) with different authors, and each cluster's read joins
+// ONLY its own fact — never the other's. A third cluster that recorded nothing misses (ships
+// committer) instead of borrowing a neighbor's author.
+func TestAttributionIndex_CrossClusterIsolation(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	require.NoError(t, idx.RecordFact(ctx, "prod-eu-1", mutationEvent("update", "uid-1", "101", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "prod-us-1", mutationEvent("update", "uid-1", "101", "bob")))
+
+	a, ok := idx.LookupAuthor(ctx, "prod-eu-1", appsDeploymentGVR(), "uid-1", "101", true)
+	require.True(t, ok)
+	require.Equal(t, "alice", a.Author)
+
+	b, ok := idx.LookupAuthor(ctx, "prod-us-1", appsDeploymentGVR(), "uid-1", "101", true)
+	require.True(t, ok)
+	require.Equal(t, "bob", b.Author)
+
+	_, ok = idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "101", true)
+	require.False(t, ok, "a cluster with no fact for this identity must miss, not cross-join")
+}
+
+// TestAttributionIndex_RVOnlyHatchIsClusterScoped proves the correctness fix: the no-UID rv-only
+// hatch is keyed by cluster, so the same RV in two clusters resolves to each cluster's own author
+// (RV is not globally unique).
+func TestAttributionIndex_RVOnlyHatchIsClusterScoped(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	require.NoError(t, idx.RecordFact(ctx, "prod-eu-1", mutationEvent("update", "", "202", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "prod-us-1", mutationEvent("update", "", "202", "bob")))
+
+	eu := idx.LookupAuthorResolution(ctx, "prod-eu-1", appsDeploymentGVR(), "uid-live", "202", true)
+	require.Equal(t, AttributionWeak, eu.Result)
+	require.Equal(t, "alice", eu.Fact.Author)
+
+	us := idx.LookupAuthorResolution(ctx, "prod-us-1", appsDeploymentGVR(), "uid-live", "202", true)
+	require.Equal(t, "bob", us.Fact.Author, "same RV in another cluster must not leak across")
+}
+
+// TestAttributionIndex_PurgeClusterFacts checks the delete-on-provider purge removes exactly one
+// cluster's facts and leaves the others intact.
+func TestAttributionIndex_PurgeClusterFacts(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	require.NoError(t, idx.RecordFact(ctx, "prod-eu-1", mutationEvent("update", "uid-1", "101", "alice")))
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-2", "1", "bob")))
+
+	removed, err := idx.PurgeClusterFacts(ctx, "prod-eu-1")
+	require.NoError(t, err)
+	require.Positive(t, removed)
+
+	_, ok := idx.LookupAuthor(ctx, "prod-eu-1", appsDeploymentGVR(), "uid-1", "101", true)
+	require.False(t, ok, "purged cluster's facts are gone")
+	other, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-2", "1", true)
+	require.True(t, ok, "another cluster's facts are untouched")
+	require.Equal(t, "bob", other.Author)
+}
+
+// TestAttributionIndex_SingleProviderMatchesBareInstall proves a single-(default)-provider install
+// round-trips correctly: what RecordFact writes under "default" is exactly what a "default" read
+// joins, so a bare single-cluster install behaves as before the cluster dimension existed.
+func TestAttributionIndex_SingleProviderMatchesBareInstall(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "101", "alice")))
+	fact, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "101", true)
+	require.True(t, ok)
+	require.Equal(t, "alice", fact.Author)
+}
+
 func TestAttributionIndex_FactKeyReadableFormat(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 
-	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:object:uid-1:101",
-		idx.factKeyExact("apps/deployments", "uid-1", "101"))
-	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:object:uid-1:last",
-		idx.factKeyLast("apps/deployments", "uid-1"))
-	require.Equal(t, "gitops-reverser:author:v1:audit:apps/deployments:rv:101",
-		idx.factKeyRV("apps/deployments", "101"))
+	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:default:apps/deployments:object:uid-1:101",
+		idx.factKeyExact("default", "apps/deployments", "uid-1", "101"))
+	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:default:apps/deployments:object:uid-1:last",
+		idx.factKeyLast("default", "apps/deployments", "uid-1"))
+	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:default:apps/deployments:rv:101",
+		idx.factKeyRV("default", "apps/deployments", "101"))
+
+	// A remote provider keys under its own name, so its facts never collide with the local ones.
+	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:prod-eu-1:apps/deployments:object:uid-1:101",
+		idx.factKeyExact("prod-eu-1", "apps/deployments", "uid-1", "101"))
 
 	// The core group drops the group segment.
-	require.Equal(t, "gitops-reverser:author:v1:audit:configmaps:object:uid-2:last",
-		idx.factKeyLast("configmaps", "uid-2"))
+	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:default:configmaps:object:uid-2:last",
+		idx.factKeyLast("default", "configmaps", "uid-2"))
 }
 
 func TestRedisStore_WatchCursorKeyReadableFormat(t *testing.T) {

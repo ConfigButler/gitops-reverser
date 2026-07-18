@@ -23,6 +23,42 @@ On a managed platform, either front it with a self-managed control plane or stay
 mode. The [audit webhook connectivity design](facts/audit-webhook-api-server-connectivity.md) has
 the full reasoning on hosting.
 
+## Source clusters — the `ClusterProvider`
+
+Each source cluster a `GitTarget` mirrors FROM is named by a cluster-scoped **`ClusterProvider`**,
+the read-side peer of `GitProvider`. `GitTarget.spec.clusterProviderRef` **defaults to
+`{name: "default"}`** — a provider you create by that conventional name, which the chart can render
+for you with `clusterProvider.createDefault: true`. `default` is only the name an omitted reference
+points at: that provider may omit `spec.kubeConfig` (the operator's own cluster) or set it to mirror
+a remote one.
+
+The provider's **name is the cluster's identity everywhere** — the attribution fact-index key and
+the `/audit-webhook/<name>` audit route — so a fact from one cluster can never name
+the author of an object watched on another. A provider also carries a deny-by-default
+`spec.allowedNamespaces` policy: a `GitTarget` may reference it only from an admitted namespace
+(enforced on every reconcile, before that target's watches start — so tightening the policy also
+stops a `GitTarget` that already exists).
+
+**No provider, no streaming.** A `GitTarget` may mirror a source cluster only through an *existing*
+`ClusterProvider` — `default` included — and the operator **never creates one**. If you set
+`clusterProvider.createDefault: false` without committing your own `default`, a `GitTarget` that
+references it is held `NotReady` (`ClusterProviderNotFound`) and never falls back to an implicit
+in-cluster identity. Commit the object yourself, or point such targets at another `ClusterProvider`.
+
+**Remote source clusters.** Create a `ClusterProvider` with a `spec.kubeConfig.secretRef` (the
+kubeconfig Secret lives in the operator namespace) for the outbound *watch* connection, and — for
+attribution — configure that cluster's apiserver to POST audit events to `/audit-webhook/<name>`
+(the provider's name). The audit server already requires a CA-signed client certificate
+(`RequireAndVerifyClientCert`); the remote apiserver presents the **cert-manager-issued audit client
+certificate** the chart mints, exactly as the local apiserver does, and the operator accepts the
+named route only for a `ClusterProvider` that exists. (Binding a distinct client certificate to each
+provider is a future hardening; today the trust boundary is CA-level.) Remote attribution needs a
+self-managed control plane — EKS/GKE/AKS are not supported (see *When it fits*). The current model is
+in [the architecture guide](architecture.md#optional-attribution); the remaining multi-source hardening
+work is in [multi-source audit-ingress hardening](design/multi-source-audit-ingress-hardening.md). See
+[SECURITY.md](../SECURITY.md#shared-audit-ingress-trust-model) for the accepted shared-credential trust
+assumption and its limits.
+
 ## Prerequisites
 
 - GitOps Reverser installed and producing configured-author commits.
@@ -44,10 +80,16 @@ helm upgrade gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
   --namespace gitops-reverser \
   --reuse-values \
-  --set attribution.enabled=true
+  --set attribution.enabled=true \
+  --set queue.redis.addr=valkey.example.internal:6379
 
 helm get notes gitops-reverser -n gitops-reverser
 ```
+
+Use the address of the Redis/Valkey service you prepared in the prerequisites. For an authenticated
+instance, also set `queue.redis.auth.existingSecret` (and, if needed,
+`queue.redis.auth.existingSecretKey`). The chart rejects attribution without a Redis address rather
+than starting an audit receiver that cannot retain facts.
 
 With `attribution.enabled=true` the chart additionally deploys the audit receiver, its Service, and
 (via cert-manager) the audit TLS materials — a root CA Secret and a kube-apiserver client-cert

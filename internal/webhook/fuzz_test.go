@@ -36,7 +36,9 @@ func FuzzDecodeEventList(f *testing.F) {
 		f.Add([]byte(s))
 	}
 
-	handler, err := NewAuditHandler(AuditHandlerConfig{MaxRequestBodyBytes: 1 << 20})
+	// A served route, not the bare endpoint: a bare request is rejected before the body is read, so
+	// fuzzing it would never reach the decoder this target exists to exercise.
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{MaxRequestBodyBytes: 1 << 20}))
 	if err != nil {
 		f.Fatalf("NewAuditHandler: %v", err)
 	}
@@ -44,7 +46,7 @@ func FuzzDecodeEventList(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		// The full ingress path must never panic on an untrusted body and must
 		// always answer with a syntactically valid HTTP status code.
-		req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, defaultRoute, bytes.NewReader(body))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 		if w.Code < 100 || w.Code > 599 {

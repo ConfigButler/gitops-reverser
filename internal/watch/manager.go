@@ -102,14 +102,17 @@ type Manager struct {
 	// against what git already holds. See routeLiveTargetWatchEvent.
 	liveContentDedup sync.Map
 
-	// SourceClusters resolves a GitTarget's source-cluster id into a rest.Config by reading
-	// the kubeconfig Secret it names from the config plane. Nil is the single-cluster
-	// install: every GitTarget mirrors the cluster the operator runs in.
+	// SourceClusters resolves a GitTarget's source cluster — a ClusterProvider NAME — into a
+	// rest.Config, reading the kubeconfig Secret the provider names from the config plane. It is
+	// required for any GitTarget to mirror, single-cluster installs included: a source cluster is
+	// always a ClusterProvider, and only this resolver can say whether that provider is in-cluster
+	// (kubeConfig omitted) or remote. Nil leaves every source cluster unresolvable; only the config
+	// plane, which needs no provider, still works.
 	SourceClusters SourceClusterResolver
 
-	// clusters holds one clusterContext per distinct source cluster — its API catalog, type
-	// registry, and clients. LocalClusterID is the cluster the operator runs in, and the only
-	// one a single-cluster install ever creates. See cluster_context.go.
+	// clusters holds one clusterContext per distinct cluster — its API catalog, type registry,
+	// and clients. configPlaneClusterID is the operator's own cluster (always present, never a
+	// source); every other key is a ClusterProvider name. See cluster_context.go.
 	clustersMu sync.Mutex
 	clusters   map[string]*clusterContext
 	// clusterOrder is the published, ordered snapshot of clusters (local first). The git
@@ -118,7 +121,7 @@ type Manager struct {
 	// reconcile loop.
 	clusterOrder atomic.Pointer[[]*clusterContext]
 	// gitTargetClusters maps a GitTarget key to the source-cluster id it mirrors from,
-	// captured on Declare (the gitTargetUIDs pattern). Because spec.kubeConfig is immutable
+	// captured on Declare (the gitTargetUIDs pattern). Because spec.clusterProviderRef is immutable
 	// this is learned once and never changes — no per-rule propagation, no disagreement
 	// window. Guarded by gitTargetClustersMu.
 	gitTargetClustersMu sync.Mutex

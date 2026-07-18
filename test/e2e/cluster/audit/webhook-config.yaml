@@ -9,7 +9,10 @@ preferences: {}
 clusters:
 - name: audit-webhook
   cluster:
-    server: https://127.0.0.1:30444/audit-webhook
+    # Audit routes are NAMED: this cluster's source identity is the "default" ClusterProvider the
+    # install creates. The bare /audit-webhook is the shared, annotation-routed endpoint and is
+    # rejected with 400 unless --author-attribution-cluster-annotation-key is set.
+    server: https://127.0.0.1:30444/audit-webhook/default
     insecure-skip-tls-verify: true
 contexts:
 - name: webhook

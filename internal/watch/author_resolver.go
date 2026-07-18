@@ -36,6 +36,7 @@ type AttributionLookup interface {
 	// (also consult the last-writer-wins /last pointer).
 	LookupAuthorResolution(
 		ctx context.Context,
+		providerName string,
 		gvr schema.GroupVersionResource,
 		uid k8stypes.UID,
 		rv string,
@@ -72,6 +73,7 @@ type AuthorResolver interface {
 	// ADDED/MODIFIED events (true) from known RV-mismatch removals (false).
 	ResolveAuthor(
 		ctx context.Context,
+		providerName string,
 		gvr schema.GroupVersionResource,
 		uid k8stypes.UID,
 		rv string,
@@ -99,6 +101,7 @@ func NewAuthorResolver(
 
 func (r *attributionResolver) ResolveAuthor(
 	ctx context.Context,
+	providerName string,
 	gvr schema.GroupVersionResource,
 	uid k8stypes.UID,
 	rv string,
@@ -111,7 +114,7 @@ func (r *attributionResolver) ResolveAuthor(
 	}
 	deadline := time.Now().Add(r.grace)
 	for {
-		resolution := r.lookup.LookupAuthorResolution(ctx, gvr, uid, rv, exactCapable)
+		resolution := r.lookup.LookupAuthorResolution(ctx, providerName, gvr, uid, rv, exactCapable)
 		if resolution.Result != queue.AttributionAbsent {
 			ui, ok, result := r.userInfoForResolution(resolution)
 			recordAttributionResolution(ctx, gvr, result, time.Since(start))

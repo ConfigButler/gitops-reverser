@@ -39,6 +39,29 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
+  - clusterproviders
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - configbutler.ai
+  resources:
+  - clusterproviders/status
+  - clusterwatchrules/status
+  - commitrequests/status
+  - gitproviders/status
+  - gittargets/status
+  - watchrules/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - configbutler.ai
+  resources:
   - clusterwatchrules
   - gitproviders
   - gittargets
@@ -51,18 +74,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - clusterwatchrules/status
-  - commitrequests/status
-  - gitproviders/status
-  - gittargets/status
-  - watchrules/status
-  verbs:
-  - get
-  - patch
-  - update
 - apiGroups:
   - configbutler.ai
   resources:

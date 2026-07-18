@@ -60,14 +60,14 @@ func deleteCollectionEvent(username string, items ...dcItem) auditv1.Event {
 // proving the join is by UID (the body item carried no RV at all) via the :last pointer.
 // A collection removal is a known RV-mismatch event, so it is not exact-capable.
 func resolveDC(ctx context.Context, idx *AttributionIndex, _, uid string) AuthorResolution {
-	return idx.LookupAuthorResolution(ctx, coreConfigmapsGVR(), k8stypes.UID(uid), "9999", false)
+	return idx.LookupAuthorResolution(ctx, "default", coreConfigmapsGVR(), k8stypes.UID(uid), "9999", false)
 }
 
 func TestRecordDeleteCollectionFacts_ExpandsListToPerObjectFacts(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, deleteCollectionEvent("alice",
+	require.NoError(t, idx.RecordFact(ctx, "default", deleteCollectionEvent("alice",
 		dcItem{namespace: "team-a", name: "a", uid: "uid-a"},
 		dcItem{namespace: "team-a", name: "b", uid: "uid-b"},
 		dcItem{namespace: "team-a", name: "c", uid: "uid-c"},
@@ -87,7 +87,7 @@ func TestRecordDeleteCollectionFacts_FinalizerItemAttributed(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, deleteCollectionEvent("alice",
+	require.NoError(t, idx.RecordFact(ctx, "default", deleteCollectionEvent("alice",
 		dcItem{namespace: "team-a", name: "plain", uid: "uid-plain"},
 		dcItem{namespace: "team-a", name: "stuck", uid: "uid-stuck", terminating: true},
 	)))
@@ -108,15 +108,15 @@ func TestRecordDeleteCollectionFacts_HollowBodyWritesNothing(t *testing.T) {
 
 	statusEvent := deleteCollectionEvent("alice")
 	statusEvent.ResponseObject = &runtime.Unknown{Raw: []byte(`{"kind":"Status","status":"Success"}`)}
-	require.NoError(t, idx.RecordFact(ctx, statusEvent))
+	require.NoError(t, idx.RecordFact(ctx, "default", statusEvent))
 
 	absentEvent := deleteCollectionEvent("alice")
 	absentEvent.ResponseObject = nil
-	require.NoError(t, idx.RecordFact(ctx, absentEvent))
+	require.NoError(t, idx.RecordFact(ctx, "default", absentEvent))
 
 	badEvent := deleteCollectionEvent("alice")
 	badEvent.ResponseObject = &runtime.Unknown{Raw: []byte(`{not json`)}
-	require.NoError(t, idx.RecordFact(ctx, badEvent))
+	require.NoError(t, idx.RecordFact(ctx, "default", badEvent))
 
 	require.Equal(t, AttributionAbsent, resolveDC(ctx, idx, "anything", "uid-x").Result)
 }
@@ -128,7 +128,7 @@ func TestRecordDeleteCollectionFacts_PartialListOnlyWritesPresent(t *testing.T) 
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, deleteCollectionEvent("alice",
+	require.NoError(t, idx.RecordFact(ctx, "default", deleteCollectionEvent("alice",
 		dcItem{namespace: "team-a", name: "a", uid: "uid-a"},
 		dcItem{namespace: "team-a", name: "b", uid: "uid-b"},
 	)))
@@ -145,7 +145,7 @@ func TestRecordDeleteCollectionFacts_SkipsItemsMissingUIDOrName(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordFact(ctx, deleteCollectionEvent("alice",
+	require.NoError(t, idx.RecordFact(ctx, "default", deleteCollectionEvent("alice",
 		dcItem{namespace: "team-a", name: "good", uid: "uid-good"},
 		dcItem{namespace: "team-a", name: "", uid: "uid-noname"},
 		dcItem{namespace: "team-a", name: "nouid", uid: ""},
@@ -161,7 +161,7 @@ func TestRecordDeleteCollectionFacts_ServiceAccountActor(t *testing.T) {
 	ctx := context.Background()
 	const sa = "system:serviceaccount:flux-system:kustomize-controller"
 
-	require.NoError(t, idx.RecordFact(ctx, deleteCollectionEvent(sa,
+	require.NoError(t, idx.RecordFact(ctx, "default", deleteCollectionEvent(sa,
 		dcItem{namespace: "team-a", name: "a", uid: "uid-a"},
 	)))
 
@@ -176,7 +176,10 @@ func TestRecordDeleteCollectionFacts_NonDeleteCollectionVerbIsNoOp(t *testing.T)
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()
 
-	require.NoError(t, idx.RecordDeleteCollectionFacts(ctx, mutationEvent("delete", "uid-1", "101", "alice")))
+	require.NoError(
+		t,
+		idx.RecordDeleteCollectionFacts(ctx, "default", mutationEvent("delete", "uid-1", "101", "alice")),
+	)
 	require.Equal(t, AttributionAbsent,
-		idx.LookupAuthorResolution(ctx, appsDeploymentGVR(), "uid-1", "101", true).Result)
+		idx.LookupAuthorResolution(ctx, "default", appsDeploymentGVR(), "uid-1", "101", true).Result)
 }

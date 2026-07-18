@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -90,6 +91,13 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = (&ClusterProviderReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: "default",
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	err = (&GitTargetReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
@@ -125,6 +133,17 @@ var _ = BeforeSuite(func() {
 
 	// Note: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
 	// Webhook tests are handled separately in webhook package
+
+	// Ship the reserved "default" ClusterProvider the way a real install (chart / config SUT) does,
+	// so a GitTarget that references it (the schema default) passes the reconcile-time hard gate
+	// that now REQUIRES the referenced ClusterProvider to exist. Its empty selector admits every
+	// namespace, matching the chart default.
+	Expect(k8sClient.Create(ctx, &configbutleraiv1alpha3.ClusterProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: configbutleraiv1alpha3.DefaultClusterProviderName},
+		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
+			AllowedNamespaces: &configbutleraiv1alpha3.AllowedNamespaces{Selector: &metav1.LabelSelector{}},
+		},
+	})).To(Succeed())
 
 	go func() {
 		defer GinkgoRecover()

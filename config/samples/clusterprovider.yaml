@@ -1,0 +1,31 @@
+# The conventionally named "default" provider, here in-cluster. Omitting kubeConfig means "the
+# cluster the operator runs in" — an option open to ANY provider name, not a property of this one.
+# GitTarget.spec.clusterProviderRef defaults to {name: default}, so a single-cluster install needs
+# no ClusterProvider of its own beyond this one (the chart renders it when
+# clusterProvider.createDefault is true; the operator never creates one). allowedNamespaces is
+# deny-by-default: only the listed/selected namespaces may bind it.
+apiVersion: configbutler.ai/v1alpha3
+kind: ClusterProvider
+metadata:
+  name: default
+spec:
+  # no kubeConfig => in-cluster. Set it here instead to make "default" mirror a remote cluster.
+  allowedNamespaces:
+    names:
+      - team-a
+---
+# A remote source cluster. Its name is the cluster's identity everywhere: the
+# /audit-webhook/prod-eu-1 audit route and the attribution fact-index key. kubeConfig is immutable
+# and its Secret is resolved from the operator's namespace (never from the source cluster).
+apiVersion: configbutler.ai/v1alpha3
+kind: ClusterProvider
+metadata:
+  name: prod-eu-1
+spec:
+  kubeConfig:
+    secretRef:
+      name: prod-eu-1-kubeconfig
+  allowedNamespaces:
+    selector:
+      matchLabels:
+        tier: trusted

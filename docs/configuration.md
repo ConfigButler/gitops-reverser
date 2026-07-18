@@ -6,6 +6,7 @@ steps in the [root README](../README.md).
 The short version:
 
 - `GitProvider` defines where and how to push
+- `ClusterProvider` defines the Kubernetes source cluster a target mirrors from
 - `GitTarget` defines which branch and repository path to write into
 - `WatchRule` defines which namespaced resources should produce Git writes
 - `ClusterWatchRule` does the same for cluster-scoped or cross-namespace watching
@@ -25,12 +26,40 @@ attribution later only when you need named Kubernetes users or service accounts 
 The usual flow is:
 
 1. Create a `GitProvider` for repository access and commit behavior.
-2. Create a `GitTarget` that points at that provider plus a branch and repository path.
-3. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
-4. Create a `CommitRequest` only when you want to flush an open window before the normal timer.
+2. Create a `ClusterProvider` for the source cluster, including the `default` provider when a target
+   omits its source reference.
+3. Create a `GitTarget` that points at the Git provider, source cluster, branch, and repository path.
+4. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
+5. Create a `CommitRequest` only when you want to flush an open window before the normal timer.
 
 That means one repository connection can back multiple targets, and one target can be fed by
 multiple watch rules.
+
+## Why the two provider types have different scopes
+
+`GitProvider` and `ClusterProvider` are both named connections, but their scope follows what they
+identify and who normally owns their credentials—not a desire to make the API symmetric. A Git
+destination is normally a team's write boundary, so a namespaced `GitProvider` keeps the repository
+credential and its consumers together. A source cluster is a shared physical identity: its client,
+discovery surface, watch state, and attribution partition must mean the same thing to every target
+that uses it. That makes `ClusterProvider` cluster-scoped.
+
+| Object | Scope | What it represents | Why |
+|---|---|---|---|
+| `GitProvider` | Namespace | A Git destination and the credentials allowed to write it | A repository destination is normally owned by one team. Keeping the provider and its Secret in that team's namespace makes the ownership boundary direct. |
+| `ClusterProvider` | Cluster | One physical Kubernetes source cluster | A source cluster can feed targets in several namespaces, while its connection, watch state, and attribution identity must stay the same everywhere. |
+
+There is no default `GitProvider`: the operator cannot infer a safe repository, branch, or write
+credential. `GitTarget.spec.clusterProviderRef` instead defaults to the conventionally opinionated
+name `default`. That is a convenient, concrete reference—not a claim that `default` is always the
+local cluster.
+
+`ClusterProvider.spec.allowedNamespaces` is the control-cluster authorization boundary for that
+shared source connection: it determines which namespaces may contain `GitTarget`s that reference
+the provider. It does not select namespaces in the source cluster or grant permissions there. If a
+platform later needs a shared, platform-owned Git destination, that should be a separate
+cluster-scoped Git-destination concept with an explicit ownership model, rather than changing the
+meaning of the namespaced `GitProvider`.
 
 ## `GitProvider`
 
@@ -313,6 +342,88 @@ want custom `spec.commit` behavior because the starter values do not currently e
 For the platform-facing behavior behind "valid signature" versus "verified badge", see
 [commit-signing.md](commit-signing.md).
 
+## `ClusterProvider`
+
+`ClusterProvider` names the Kubernetes cluster a `GitTarget` mirrors **from**. It is the read-side
+peer of `GitProvider`: a target has one source cluster and one Git destination.
+
+`default` is the conventionally opinionated provider name, not an operator-generated object and not
+a synonym for the local cluster. Its only special behavior is that a `GitTarget` which omits
+`spec.clusterProviderRef` references a user-created `ClusterProvider` named `default`. That provider
+may omit `spec.kubeConfig` to use the operator's in-cluster configuration, or set it to mirror a
+remote cluster.
+
+For a remote source cluster, create a provider with a kubeconfig Secret. The Secret is resolved from
+the operator's namespace; it is connection material for the operator, not a per-target setting.
+
+```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: ClusterProvider
+metadata:
+  name: prod-eu-1
+spec:
+  kubeConfig:
+    secretRef:
+      name: default-source-kubeconfig
+  allowedNamespaces:
+    names: [team-a]
+    selector:
+      matchLabels:
+        gitops.configbutler.ai/source-access: "true"
+```
+
+`allowedNamespaces` is evaluated against namespaces in the **control cluster**, where
+`GitTarget`s live. In this example, a `GitTarget` in `team-a`, or in a control-cluster namespace
+with the shown label, may reference `prod-eu-1`. It has no effect on which namespaces are read from
+the source cluster; that remains entirely the source connection's Kubernetes RBAC. `names` and
+`selector` are ORed, and an omitted policy admits no control-cluster namespace.
+
+`spec.kubeConfig` and `GitTarget.spec.clusterProviderRef` are immutable: changing either would silently
+make an existing materialization mean a different source cluster. Rotate credential *contents* in the
+referenced Secret instead. `qps` and `burst` optionally tune a remote provider's client; the
+`ClusterProvider` conditions validate its configuration, while the consuming `GitTarget` reports the
+live source reachability and stream state.
+
+### Creating and managing the `default` provider
+
+The operator **never creates a `ClusterProvider`**, and never re-creates one you delete. If a
+`GitTarget` references a provider that does not exist — including `default` — the target is held
+unready through the ordinary "provider not found" path. That is deliberate: a source cluster is a
+connection with credentials and an authorization policy, so it is yours to declare, review, and roll
+back like any other resource under GitOps.
+
+There are two supported ways to get one, and both are fully declarative:
+
+- **Commit it yourself.** The object above is ordinary YAML. Put it in the repository that manages
+  this install. This is the recommended path once you are past a first trial.
+- **Let the chart render it.** The chart can create and own a `ClusterProvider` named `default`,
+  including its `allowedNamespaces`, from a single value — see
+  [charts/gitops-reverser/README.md](../charts/gitops-reverser/README.md). Turn that value off to
+  manage the object yourself. Helm then deletes the provider it created on the next upgrade, so
+  ownership never silently splits between Helm and you. Because a missing provider holds its targets
+  unready, plan that switch together with committing your own object.
+
+The chart value is a rendering convenience, not runtime behavior: with it off, nothing in the
+operator brings the object back.
+
+The chart renders the `default` provider by default, including when its optional `quickstart` starter
+resources are enabled. It gives the starter `GitTarget` a declared in-cluster source without adding a
+source reference to its manifest. Turn `clusterProvider.createDefault` off only when you manage that
+provider yourself.
+
+Use another provider name when a target needs a different source cluster:
+
+```yaml
+spec:
+  clusterProviderRef:
+    name: prod-eu-1
+```
+
+The provider name is deliberately stable. It is the source-cluster identity used for watches and,
+when audit attribution is enabled, for joining an audit event to the corresponding watch event.
+Changing a target's source cluster changes what its folder means, so `clusterProviderRef` is
+immutable.
+
 ## `GitTarget`
 
 `GitTarget` decides where inside the repository resources are written.
@@ -320,6 +431,8 @@ For the platform-facing behavior behind "valid signature" versus "verified badge
 The important fields are:
 
 - `spec.providerRef`: which `GitProvider` backs this target
+- `spec.clusterProviderRef`: which `ClusterProvider` supplies resources; omit it to reference the
+  user-created `default` provider
 - `spec.branch`: which allowed branch to write to
 - `spec.path`: required relative path inside the repository; use `.` only when you deliberately
   want the repository root
@@ -339,6 +452,8 @@ metadata:
 spec:
   providerRef:
     name: example-provider
+  # Omit clusterProviderRef to reference the user-created ClusterProvider named "default".
+  # clusterProviderRef: {name: prod-eu-1} selects a different source provider.
   branch: main
   path: live-cluster
 ```
@@ -356,6 +471,12 @@ and age details, see [sops-age-guide.md](sops-age-guide.md).
 
 `spec.providerRef` references a `GitProvider` in the same namespace as the `GitTarget`. Its `group`
 and `kind` default to `configbutler.ai` / `GitProvider`, so in practice you only set `name`.
+
+`spec.clusterProviderRef` references a cluster-scoped `ClusterProvider`. It defaults to
+`{name: default}` when omitted. That is intentionally different from `providerRef`: a source cluster
+is a shared physical identity, while a Git destination and its credential normally belong to the
+target's namespace. The default name can represent either an in-cluster or remote source according
+to the `ClusterProvider` the user created.
 
 The most useful status fields are:
 
@@ -681,12 +802,50 @@ Progress and outcome are reported through kstatus-compatible **conditions** (no 
 ## Audit ingestion settings
 
 Object state comes from Kubernetes **watch**, not from audit. Audit is an optional attribution lookup:
-kube-apiserver posts audit events to a single HTTP path, `/audit-webhook`, and the operator extracts a
-minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID,
+kube-apiserver posts audit events to a named path, `/audit-webhook/<cluster-provider-name>`, and the
+operator extracts a minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID,
 status, timestamps) into a Redis attribution index keyed for the join. A resolver attaches the commit
 author to each watch event by matching a fact (by resourceVersion/UID) within a bounded grace window.
 The same Redis connection also stores per-watch resume cursors, so short reconnects can resume a normal
 watch from the last processed resourceVersion when the apiserver can still serve that history.
+
+Named ingress is currently authenticated to the shared audit CA and gated on the provider name existing;
+it does **not** yet bind a particular client certificate to that provider. Do not use one shared audit
+client credential to attribute several independently administered source clusters. A deployment that
+needs that boundary should keep sources isolated until provider-bound ingress authentication is shipped.
+
+### Route a shared audit stream by event annotation
+
+Most audit streams represent one source cluster and must use a named route, including
+`/audit-webhook/default`. Some control planes emit one shared stream for several logical clusters.
+For that shape, the bare `/audit-webhook` endpoint is available only when the configuration model's
+annotation key is set:
+
+```yaml
+attribution:
+  clusterAnnotationKey: example.io/source-cluster
+```
+
+When this option is set, the receiver reads `example.io/source-cluster` from each event. Its value is
+the name of the `ClusterProvider` that owns the event, so events in the same batch may route to
+different source clusters.
+
+**The bare endpoint never guesses a source cluster.** Rejection happens at two levels:
+
+| Situation | Result |
+|---|---|
+| A request reaches `/audit-webhook` while `clusterAnnotationKey` is unset | The whole request is rejected with **400**. The bare endpoint is not enabled, so a producer posting to it is misconfigured. |
+| An event carries no annotation, or names a `ClusterProvider` that does not exist | That **event** is rejected: it produces no attribution fact and is never credited to a fallback provider. The request still returns 200, so correctly-annotated events in the same batch are kept. |
+
+The second row is a per-event rejection rather than a per-request one on purpose. A shared stream is
+heterogeneous by definition, so failing the whole batch would discard events that routed correctly and
+leave the apiserver retrying a batch that can never succeed. Rejected events are counted and logged, so
+a producer that is not stamping the annotation is visible rather than silent — if that count rises,
+point the producer at `/audit-webhook/<name>` instead.
+
+Use an annotation that the producing control plane sets consistently as source metadata. This is
+routing metadata only: it keeps the audit fact and the watch event in the same source-cluster
+partition, so a user from one logical cluster can never be credited for a matching object in another.
 
 Valkey/Redis is **optional in configured-author mode**: when `--redis-addr` is set, watch resume cursors are
 stored so restarts pick up where they left off; when left empty, watches cold-replay from scratch on

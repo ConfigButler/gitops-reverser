@@ -1,0 +1,318 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: clusterproviders.configbutler.ai
+spec:
+  group: configbutler.ai
+  names:
+    kind: ClusterProvider
+    listKind: ClusterProviderList
+    plural: clusterproviders
+    singular: clusterprovider
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Validated")].status
+      name: Validated
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Status
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha3
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster
+          a GitTarget mirrors FROM, and is the home for that cluster's connectivity credential
+          (spec.kubeConfig), namespace-access authorization (spec.allowedNamespaces), and per-cluster
+          status. Its NAME is the cluster's identity everywhere: the /audit-webhook/<name> ingress route
+          and the attribution fact-index key. No name is special: "default" is merely the name
+          GitTarget.spec.clusterProviderRef defaults to when omitted. Whether a provider is the operator's
+          own cluster or a remote follows from spec.kubeConfig (omitted = in-cluster), not from its name,
+          so "default" may just as well name a remote cluster.
+
+          Security model:
+            - ClusterProvider is cluster-scoped and requires platform-admin permissions to create.
+            - A GitTarget may reference it only from a namespace its spec.allowedNamespaces admits
+              (deny-by-default), enforced at admission AND before any watch starts.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ClusterProvider.
+            properties:
+              allowedNamespaces:
+                description: |-
+                  AllowedNamespaces is the deny-by-default policy for which namespaces may reference this
+                  provider from a GitTarget. Empty (or omitted) means no namespace may reference it.
+                properties:
+                  names:
+                    description: Names is an explicit allow-list of namespace names
+                      that may reference this provider.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  selector:
+                    description: |-
+                      Selector is a label selector matched against Namespace labels; a namespace whose labels
+                      match may reference this provider. ORed with Names.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
+              burst:
+                description: |-
+                  Burst overrides the operator's outgoing kube-client burst for this cluster. Omitted, the
+                  operator-wide --source-cluster-burst applies. Ignored when kubeConfig is omitted.
+                format: int32
+                minimum: 1
+                type: integer
+              kubeConfig:
+                description: |-
+                  KubeConfig names the SOURCE CLUSTER this provider represents and the credentials to reach
+                  it (Flux's meta.KubeConfigReference, embedded verbatim). OMITTED means the operator's own
+                  in-cluster cluster, for any provider name. IMMUTABLE. The referenced Secret is
+                  resolved from the operator's namespace — the credential for a cluster never has to live on
+                  that cluster. When secretRef.key is empty the resolver reads "value" then "value.yaml"
+                  (Flux's order). Only secretRef is honored (configMapRef is rejected); unsafe kubeconfigs
+                  (exec auth, insecure-skip-tls-verify) are rejected with a Validated=False reason unless the
+                  operator opts in via flags.
+                properties:
+                  configMapRef:
+                    description: |-
+                      ConfigMapRef holds an optional name of a ConfigMap that contains
+                      the following keys:
+
+                      - `provider`: the provider to use. One of `aws`, `azure`, `gcp`, or
+                         `generic`. Required.
+                      - `cluster`: the fully qualified resource name of the Kubernetes
+                         cluster in the cloud provider API. Not used by the `generic`
+                         provider. Required when one of `address` or `ca.crt` is not set.
+                      - `address`: the address of the Kubernetes API server. Required
+                         for `generic`. For the other providers, if not specified, the
+                         first address in the cluster resource will be used, and if
+                         specified, it must match one of the addresses in the cluster
+                         resource.
+                         If audiences is not set, will be used as the audience for the
+                         `generic` provider.
+                      - `ca.crt`: the optional PEM-encoded CA certificate for the
+                         Kubernetes API server. If not set, the controller will use the
+                         CA certificate from the cluster resource.
+                      - `audiences`: the optional audiences as a list of
+                         line-break-separated strings for the Kubernetes ServiceAccount
+                         token. Defaults to the `address` for the `generic` provider, or
+                         to specific values for the other providers depending on the
+                         provider.
+                      -  `serviceAccountName`: the optional name of the Kubernetes
+                         ServiceAccount in the same namespace that should be used
+                         for authentication. If not specified, the controller
+                         ServiceAccount will be used.
+
+                      Mutually exclusive with SecretRef.
+                    properties:
+                      name:
+                        description: Name of the referent.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  secretRef:
+                    description: |-
+                      SecretRef holds an optional name of a secret that contains a key with
+                      the kubeconfig file as the value. If no key is set, the key will default
+                      to 'value'. Mutually exclusive with ConfigMapRef.
+                      It is recommended that the kubeconfig is self-contained, and the secret
+                      is regularly updated if credentials such as a cloud-access-token expire.
+                      Cloud specific `cmd-path` auth helpers will not function without adding
+                      binaries and credentials to the Pod that is responsible for reconciling
+                      Kubernetes resources. Supported only for the generic provider.
+                    properties:
+                      key:
+                        description: Key in the Secret, when not specified an implementation-specific
+                          default key is used.
+                        type: string
+                      name:
+                        description: Name of the Secret.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of spec.kubeConfig.configMapRef or spec.kubeConfig.secretRef
+                    must be specified
+                  rule: has(self.configMapRef) || has(self.secretRef)
+                - message: exactly one of spec.kubeConfig.configMapRef or spec.kubeConfig.secretRef
+                    must be specified
+                  rule: '!has(self.configMapRef) || !has(self.secretRef)'
+              qps:
+                description: |-
+                  QPS overrides the operator's outgoing kube-client query-per-second throttle for this
+                  cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
+                  Ignored when kubeConfig is omitted (the in-cluster client is not per-provider).
+                format: int32
+                minimum: 1
+                type: integer
+            type: object
+            x-kubernetes-validations:
+            - message: spec.kubeConfig is immutable; delete and recreate the ClusterProvider
+                to point a name at a different cluster
+              rule: has(self.kubeConfig) == has(oldSelf.kubeConfig) && (!has(self.kubeConfig)
+                || self.kubeConfig == oldSelf.kubeConfig)
+            - message: spec.kubeConfig.configMapRef (workload-identity auth) is not
+                yet supported; use secretRef
+              rule: '!has(self.kubeConfig) || !has(self.kubeConfig.configMapRef)'
+            - message: spec.kubeConfig.secretRef.name must not be empty
+              rule: '!has(self.kubeConfig) || !has(self.kubeConfig.secretRef) || size(self.kubeConfig.secretRef.name)
+                > 0'
+          status:
+            description: status defines the observed state of ClusterProvider.
+            properties:
+              conditions:
+                description: |-
+                  Conditions report the provider's readiness: Validated (kubeconfig inputs are safe and
+                  resolvable, asserted without a network dial) plus the aggregated Ready and the kstatus
+                  Reconciling/Stalled pair. Runtime reachability/discovery health and a last-audit-event
+                  timestamp are deferred until authenticated remote ingest wires them from the watch engine.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by the controller.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

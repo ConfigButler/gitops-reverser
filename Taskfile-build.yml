@@ -399,7 +399,7 @@ tasks:
           IMG: '{{.DEV_IMG}}'
 
   dist-install:
-    desc: Generate consolidated YAML from the Helm chart
+    desc: Generate the split installer bundle (dist/crds.yaml + dist/install.yaml) from the Helm chart
     deps:
       - helm-sync
     sources:
@@ -409,6 +409,7 @@ tasks:
       - charts/gitops-reverser/Chart.yaml
       - charts/gitops-reverser/values.yaml
       - charts/gitops-reverser/templates/**
+      - charts/gitops-reverser/crds/*.yaml
       - exclude: api/**/*_test.go
       - exclude: internal/**/*_test.go
       - exclude: cmd/**/*_test.go
@@ -416,17 +417,26 @@ tasks:
       - exclude: internal/**/zz_generated.deepcopy.go
       - exclude: cmd/**/zz_generated.deepcopy.go
     generates:
+      - dist/crds.yaml
       - dist/install.yaml
     cmds:
       - |
         mkdir -p dist
+        # CRDs ship as their OWN file, applied FIRST. The bundle contains the reserved `default`
+        # ClusterProvider — a custom resource that cannot be applied in the same `kubectl apply` as
+        # the CRD defining it: kubectl builds its RESTMapper up front and fails with
+        # `no matches for kind "ClusterProvider"`. So: kubectl apply -f dist/crds.yaml, then
+        # kubectl apply -f dist/install.yaml. `helm install` is unaffected — it installs
+        # charts/gitops-reverser/crds/ in its own first phase, which is why --include-crds is gone
+        # here. Each chart CRD file already begins with its own `---`, so a plain cat is valid
+        # multi-doc YAML.
+        cat charts/gitops-reverser/crds/*.yaml > dist/crds.yaml
         {{.HELM}} template {{.INSTALL_NAME}} charts/gitops-reverser \
           --namespace {{.NAMESPACE}} \
           --set labels.managedBy=kubectl \
           --set createNamespace=true \
           --set queue.redis.addr={{.DEFAULT_AUDIT_REDIS_ADDR}} \
           --set queue.redis.auth.existingSecret=valkey-auth \
-          --include-crds \
           > dist/install.yaml
 
   clean:

@@ -94,7 +94,11 @@ step merges those exact digests into a multi-arch manifest tagged with the semve
 | --- | --- | --- |
 | Multi-arch image (`linux/amd64`, `linux/arm64`) | `ghcr.io/configbutler/gitops-reverser` | cosign keyless signature, SLSA build provenance attestation, SPDX SBOM attestation |
 | Helm chart | `oci://ghcr.io/configbutler/charts/gitops-reverser` | cosign keyless signature |
-| `install.yaml`, `sbom.spdx.json` | GitHub release assets | each signed directly (`<asset>.sigstore.json`) and SLSA-attested (`<asset>.intoto.jsonl`), also uploaded as release assets |
+| `crds.yaml`, `install.yaml`, `sbom.spdx.json` | GitHub release assets | each signed directly (`<asset>.sigstore.json`) and SLSA-attested (`<asset>.intoto.jsonl`), also uploaded as release assets |
+
+The plain-manifest installer ships as **two** files: `crds.yaml` is applied first, then
+`install.yaml` (which contains a custom resource that cannot be created before its CRD exists).
+Each is signed and attested independently, so either can be verified on its own.
 
 Verify an image (also embedded in every release's notes):
 

@@ -1,0 +1,13 @@
+# The "default" ClusterProvider for the SUT / config-dir install, mirroring what the Helm chart
+# renders when clusterProvider.createDefault is true. A GitTarget's clusterProviderRef defaults to
+# {name: default}, and the reconcile-time hard gate REQUIRES the referenced ClusterProvider to
+# exist, so local mirroring needs this object — the operator never creates it. The empty selector
+# admits every namespace (matching the chart default); tighten in a real install.
+apiVersion: configbutler.ai/v1alpha3
+kind: ClusterProvider
+metadata:
+  name: default
+spec:
+  # no kubeConfig => the operator's own in-cluster config (optional for any provider name)
+  allowedNamespaces:
+    selector: {}

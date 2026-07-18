@@ -13,18 +13,22 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// This file is the source-cluster corner for the config-plane split
-// (docs/design/config-plane-split.md): a GitTarget may name the cluster it mirrors FROM via
-// spec.kubeConfig (Flux's meta.KubeConfigReference).
+// This file is the source-cluster corner for multi-cluster author attribution
+// (docs/finished/multi-cluster-author-attribution.md): a GitTarget names the cluster it mirrors
+// FROM by referencing a cluster-scoped ClusterProvider (spec.clusterProviderRef). The
+// ClusterProvider is the home for that cluster's kubeconfig credential (spec.kubeConfig, a Flux
+// meta.KubeConfigReference resolved from the operator namespace), namespace-access authorization,
+// and connectivity status.
 //
 // Two kinds of spec live here:
-//   - Input-validation / reachability specs (Scenarios 1-3) need no remote cluster: they
-//     assert the controller's Validated / SourceClusterReachable projection from bad, valid-
-//     but-unroutable, and omitted kubeconfigs.
-//   - Remote-mirror specs (Scenarios 4, 8) mirror real REMOTE clusters — kcp WORKSPACES,
-//     cheap logical clusters installed by Flux (test/e2e/setup/kcp, see kcp_workspace_test.go).
-//     Scenario 8 is the centerpiece: three workspaces holding the SAME namespace + resource
-//     with different content, proving state is keyed by source cluster, not (namespace, GVR).
+//   - Input-validation specs (Scenario 1) assert the ClusterProvider reconciler's Validated
+//     verdict on bad kubeconfigs, without a remote cluster and without a dial.
+//   - Reachability specs (Scenarios 2-3) assert the GitTarget's SourceClusterReachable projection
+//     for valid-but-unroutable and default (local) providers.
+//   - Remote-mirror specs (Scenarios 4, 8) mirror real REMOTE clusters — kcp WORKSPACES, cheap
+//     logical clusters installed by Flux (test/e2e/setup/kcp, see kcp_workspace_test.go).
+//     Scenario 8 is the centerpiece: three workspaces holding the SAME namespace + resource with
+//     different content, proving state is keyed by source cluster, not (namespace, GVR).
 //
 // The whole suite is gated by skipUnlessSourceClusterEnabled() (env E2E_ENABLE_SOURCE_CLUSTER),
 // and the kcp specs additionally Skip when kcp is not installed — so a default `task test-e2e`
@@ -36,6 +40,9 @@ const (
 	// server, guaranteed not to route, so a kubeconfig pointing at it parses cleanly
 	// (Validated=True) yet can never be dialed (SourceClusterReachable=False).
 	unreachableAPIServer = "https://192.0.2.1:6443"
+	// sourceClusterOperatorNS is the namespace a ClusterProvider's kubeConfig Secret is pinned to
+	// (the operator's own namespace). A cluster-scoped provider has no namespace of its own.
+	sourceClusterOperatorNS = defaultE2ENamespace
 )
 
 func sourceClusterEnabled() bool {
@@ -139,8 +146,9 @@ users:
 `
 }
 
-// writeKubeConfigSecret applies a Secret holding a kubeconfig under the given key.
-func writeKubeConfigSecret(ns, name, key, kubeconfig string) {
+// writeKubeConfigSecret applies a Secret holding a kubeconfig under the given key, in the OPERATOR
+// namespace — a ClusterProvider's secretRef is resolved from there, never from the source cluster.
+func writeKubeConfigSecret(name, key, kubeconfig string) {
 	GinkgoHelper()
 	f, err := os.CreateTemp("", "e2e-kubeconfig-*.yaml")
 	Expect(err).NotTo(HaveOccurred())
@@ -149,25 +157,46 @@ func writeKubeConfigSecret(ns, name, key, kubeconfig string) {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(f.Close()).To(Succeed())
 
-	manifest, err := kubectlRunInNamespace(ns, "create", "secret", "generic", name,
+	manifest, err := kubectlRunInNamespace(sourceClusterOperatorNS, "create", "secret", "generic", name,
 		"--from-file="+key+"="+f.Name(), "--dry-run=client", "-o", "yaml")
 	Expect(err).NotTo(HaveOccurred(), "failed to render kubeconfig Secret manifest")
-	_, err = kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
+	_, err = kubectlRunWithStdin(sourceClusterOperatorNS, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply kubeconfig Secret")
 }
 
-// applyGitTargetWithKubeConfig applies a GitTarget whose spec.kubeConfig.secretRef names a
-// kubeconfig Secret. It returns the kubectl error so a spec can assert the apply succeeded (the
-// spec is well-formed; the kubeconfig, not the CR, is what a validation case makes bad).
-//
-//nolint:unparam // provider is kept an explicit argument for readability; the corner uses one.
-func applyGitTargetWithKubeConfig(ns, name, provider, path, secretName, key string) (string, error) {
+// applyClusterProvider applies a cluster-scoped ClusterProvider whose kubeConfig.secretRef names a
+// kubeconfig Secret in the operator namespace, allowing the given namespace to reference it. It
+// returns the kubectl error so a spec can assert the apply succeeded (the CR is well-formed; the
+// kubeconfig, not the CR, is what a validation case makes bad).
+func applyClusterProvider(name, secretName, key, allowedNS string) (string, error) {
 	keyLine := ""
 	if key != "" {
-		// key: must be a sibling of name: (6-space indent, under secretRef:), not nested
-		// under it — an 8-space indent produces "mapping values are not allowed here".
 		keyLine = "\n      key: " + key
 	}
+	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: ClusterProvider
+metadata:
+  name: %s
+spec:
+  kubeConfig:
+    secretRef:
+      name: %s%s
+  allowedNamespaces:
+    names: [%s]
+`, name, secretName, keyLine, allowedNS)
+	return kubectlRunWithStdin("", manifest, "apply", "-f", "-")
+}
+
+// deleteClusterProvider removes a cluster-scoped ClusterProvider (not covered by namespace cleanup).
+func deleteClusterProvider(name string) {
+	_, _ = kubectlRun("delete", "clusterprovider", name, "--ignore-not-found", "--wait=false")
+}
+
+// applyGitTargetWithClusterProvider applies a GitTarget whose spec.clusterProviderRef names a
+// ClusterProvider (the source cluster it mirrors from).
+//
+//nolint:unparam // gitProvider is kept an explicit argument for readability; the corner uses one.
+func applyGitTargetWithClusterProvider(ns, name, gitProvider, path, clusterProvider string) (string, error) {
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
 metadata:
@@ -179,10 +208,9 @@ spec:
     name: %s
   branch: main
   path: %s
-  kubeConfig:
-    secretRef:
-      name: %s%s
-`, name, ns, provider, path, secretName, keyLine)
+  clusterProviderRef:
+    name: %s
+`, name, ns, gitProvider, path, clusterProvider)
 	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 }
 
@@ -199,7 +227,7 @@ func findFileByBasename(root, basename string) string {
 	return hit
 }
 
-var _ = Describe("Manager source cluster / config-plane split", Label("source-cluster"), Ordered, func() {
+var _ = Describe("Manager source cluster / ClusterProvider attribution", Label("source-cluster"), Ordered, func() {
 	const providerName = "sc-provider"
 
 	var (
@@ -237,11 +265,11 @@ var _ = Describe("Manager source cluster / config-plane split", Label("source-cl
 	SetDefaultEventuallyTimeout(60 * time.Second)
 	SetDefaultEventuallyPollingInterval(2 * time.Second)
 
-	// Scenario 1 — input validation is legible, and never dials.
+	// Scenario 1 — the ClusterProvider reconciler's input validation is legible, and never dials.
 	inputCases := []struct {
 		name   string
 		reason string
-		setup  func(ns string) (secretName, key string)
+		setup  func(cpName string) (secretName, key string)
 	}{
 		{
 			name:   "a missing Secret",
@@ -251,74 +279,78 @@ var _ = Describe("Manager source cluster / config-plane split", Label("source-cl
 		{
 			name:   "a missing key",
 			reason: "KubeConfigKeyNotFound",
-			setup: func(ns string) (string, string) {
-				kubeconfig := rawKubeConfigWithServer(unreachableAPIServer)
-				writeKubeConfigSecret(ns, "sc-wrongkey", "somewhere-else", kubeconfig)
-				return "sc-wrongkey", "value"
+			setup: func(cp string) (string, string) {
+				writeKubeConfigSecret(cp+"-kc", "somewhere-else", rawKubeConfigWithServer(unreachableAPIServer))
+				return cp + "-kc", "value"
 			},
 		},
 		{
 			name:   "an unparseable kubeconfig",
 			reason: "KubeConfigInvalid",
-			setup: func(ns string) (string, string) {
-				writeKubeConfigSecret(ns, "sc-garbage", "value", "this is not a kubeconfig")
-				return "sc-garbage", ""
+			setup: func(cp string) (string, string) {
+				writeKubeConfigSecret(cp+"-kc", "value", "this is not a kubeconfig")
+				return cp + "-kc", ""
 			},
 		},
 		{
 			name:   "an exec auth provider",
 			reason: "KubeConfigExecNotAllowed",
-			setup: func(ns string) (string, string) {
-				writeKubeConfigSecret(ns, "sc-exec", "value", execKubeConfig())
-				return "sc-exec", ""
+			setup: func(cp string) (string, string) {
+				writeKubeConfigSecret(cp+"-kc", "value", execKubeConfig())
+				return cp + "-kc", ""
 			},
 		},
 		{
 			name:   "insecure TLS",
 			reason: "KubeConfigInsecureTLSNotAllowed",
-			setup: func(ns string) (string, string) {
-				writeKubeConfigSecret(ns, "sc-insecure", "value", insecureKubeConfig())
-				return "sc-insecure", ""
+			setup: func(cp string) (string, string) {
+				writeKubeConfigSecret(cp+"-kc", "value", insecureKubeConfig())
+				return cp + "-kc", ""
 			},
 		},
 		{
 			name:   "a file-path credential",
 			reason: "KubeConfigFileReferenceNotAllowed",
-			setup: func(ns string) (string, string) {
-				writeKubeConfigSecret(ns, "sc-filepath", "value", fileReferenceKubeConfig())
-				return "sc-filepath", ""
+			setup: func(cp string) (string, string) {
+				writeKubeConfigSecret(cp+"-kc", "value", fileReferenceKubeConfig())
+				return cp + "-kc", ""
 			},
 		},
 	}
 	for _, tc := range inputCases {
-		It("fails Validated (no dial) for "+tc.name+" with reason "+tc.reason, func() {
-			secretName, key := tc.setup(testNs)
-			target := "sc-input-" + strings.ToLower(tc.reason)
-			path := "clusters/input/" + tc.reason
-			// The GitTarget spec is well-formed (the kubeconfig is bad, not the CR), so the apply
-			// itself must succeed — the controller then reports the typed reason on Validated. A
-			// discarded apply error would hide a real rejection as a 90s "condition not found".
-			_, err := applyGitTargetWithKubeConfig(testNs, target, providerName, path, secretName, key)
+		It("fails ClusterProvider Validated (no dial) for "+tc.name+" with reason "+tc.reason, func() {
+			cpName := "sc-input-" + strings.ToLower(tc.reason)
+			secretName, key := tc.setup(cpName)
+			DeferCleanup(func() { deleteClusterProvider(cpName) })
+			// The ClusterProvider CR is well-formed (the kubeconfig is bad, not the CR), so the
+			// apply itself must succeed — the controller then reports the typed reason on Validated.
+			_, err := applyClusterProvider(cpName, secretName, key, testNs)
 			Expect(err).NotTo(HaveOccurred())
-			verifyResourceCondition("gittarget", target, testNs, "Validated", "False", tc.reason, "")
+			verifyResourceCondition("clusterprovider", cpName, "", "Validated", "False", tc.reason, "")
 		})
 	}
 
-	// Scenario 2 — a valid kubeconfig that cannot be dialed: Validated=True, reachability=False.
+	// Scenario 2 — a valid kubeconfig that cannot be dialed: the ClusterProvider is Validated=True,
+	// and the GitTarget that references it projects SourceClusterReachable=False.
 	It("separates Validated (inputs) from SourceClusterReachable (runtime)", func() {
-		writeKubeConfigSecret(testNs, "sc-unreachable", "value", rawKubeConfigWithServer(unreachableAPIServer))
-		target := "sc-unreachable-target"
-		_, err := applyGitTargetWithKubeConfig(
-			testNs, target, providerName, "clusters/unreachable", "sc-unreachable", "")
+		const cpName = "sc-unreachable"
+		writeKubeConfigSecret(cpName+"-kc", "value", rawKubeConfigWithServer(unreachableAPIServer))
+		DeferCleanup(func() { deleteClusterProvider(cpName) })
+		_, err := applyClusterProvider(cpName, cpName+"-kc", "", testNs)
 		Expect(err).NotTo(HaveOccurred())
+		verifyResourceCondition("clusterprovider", cpName, "", "Validated", "True", "Validated", "")
 
+		target := "sc-unreachable-target"
+		_, err = applyGitTargetWithClusterProvider(testNs, target, providerName, "clusters/unreachable", cpName)
+		Expect(err).NotTo(HaveOccurred())
 		verifyResourceCondition("gittarget", target, testNs, "Validated", "True", "OK", "")
 		verifyResourceCondition("gittarget", target, testNs,
 			"SourceClusterReachable", "False", "SourceClusterUnreachable", "", "150s")
 	})
 
-	// Scenario 3 — omitted kubeConfig is unchanged local behavior.
-	It("treats an omitted kubeConfig as the local cluster", func() {
+	// Scenario 3 — the default (in-cluster) provider: an omitted clusterProviderRef defaults to
+	// {name: default} and mirrors the operator's own cluster.
+	It("treats an omitted clusterProviderRef as the default (local) cluster", func() {
 		target := "sc-local-target"
 		manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitTarget
@@ -335,10 +367,24 @@ spec:
 			"SourceClusterReachable", "True", "LocalCluster", "")
 	})
 
-	// Scenario 4 — a REAL remote cluster: mirror a ConfigMap out of one kcp workspace. Proves
-	// the whole remote path end to end (resolver -> per-cluster clientContext -> per-cluster
-	// discovery -> per-cluster watch -> target-scoped writer) against an actually-remote API,
-	// not the self-referencing in-cluster server the scaffold used to fake it with.
+	// Scenario 3b — the hard gate: a GitTarget that references a ClusterProvider which does NOT
+	// exist is held NotReady (Validated=False, ClusterProviderNotFound) and never mirrors. This is
+	// the regression for "clusterProvider.createDefault: false" — with no default provider a
+	// GitTarget referencing it (or any missing provider) does not fall back to an implicit local
+	// identity, and the operator never creates the object to rescue it.
+	It("holds a GitTarget NotReady when its ClusterProvider does not exist (no bypass)", func() {
+		target := "sc-missing-cp-target"
+		_, err := applyGitTargetWithClusterProvider(
+			testNs, target, providerName, "clusters/missing", "sc-does-not-exist")
+		Expect(err).NotTo(HaveOccurred())
+		verifyResourceCondition("gittarget", target, testNs,
+			"Validated", "False", "ClusterProviderNotFound", "")
+	})
+
+	// Scenario 4 — a REAL remote cluster: mirror a ConfigMap out of one kcp workspace. Proves the
+	// whole remote path end to end (ClusterProvider resolver -> per-cluster clientContext ->
+	// per-cluster discovery -> per-cluster watch -> target-scoped writer) against an actually-remote
+	// API, not the self-referencing in-cluster server the scaffold used to fake it with.
 	It("mirrors a ConfigMap from a kcp workspace", func() {
 		if kcp == nil {
 			Skip("kcp is not installed; run this corner via `task test-e2e-source-cluster`")
@@ -346,6 +392,7 @@ spec:
 		const ws = "sc-mirror"
 		hash := kcp.createWorkspace(ws)
 		DeferCleanup(func() { kcp.cleanupWorkspaceTarget(testNs, ws) })
+		DeferCleanup(func() { deleteClusterProvider(ws) })
 
 		// A WatchRule watches its OWN namespace name on the source cluster, so the ConfigMap must
 		// live under that namespace (testNs) IN the workspace — a separate cluster, so creating a
@@ -356,9 +403,11 @@ spec:
 			"--from-literal=hello=from-kcp")
 		Expect(err).NotTo(HaveOccurred(), "create ConfigMap in the workspace")
 
-		writeKubeConfigSecret(testNs, ws+"-kubeconfig", "value", kcp.operatorKubeConfig(hash))
+		writeKubeConfigSecret(ws+"-kubeconfig", "value", kcp.operatorKubeConfig(hash))
+		_, err = applyClusterProvider(ws, ws+"-kubeconfig", "", testNs)
+		Expect(err).NotTo(HaveOccurred())
 		target := ws + "-target"
-		_, err = applyGitTargetWithKubeConfig(testNs, target, providerName, "clusters/kcp", ws+"-kubeconfig", "")
+		_, err = applyGitTargetWithClusterProvider(testNs, target, providerName, "clusters/kcp", ws)
 		Expect(err).NotTo(HaveOccurred())
 		verifyResourceCondition("gittarget", target, testNs, "SourceClusterReachable", "True", "", "", "180s")
 
@@ -384,12 +433,13 @@ spec:
 		}).WithTimeout(180 * time.Second).Should(Succeed())
 	})
 
-	// Scenario 8 — the centerpiece: source-cluster identity is load-bearing. Three workspaces
-	// each hold the SAME namespace + the SAME resource name (demo/ConfigMap "shared") with
-	// DIFFERENT content, mirrored by three GitTargets into three folders. If the operator keyed
-	// state by (namespace, GVR) alone — a union / first-wins lookup — the three identical
-	// identities would collapse into one; that they land as three distinct files, each carrying
-	// its own workspace's value, is the proof that everything is keyed by SOURCE CLUSTER.
+	// Scenario 8 — the centerpiece: source-cluster identity is load-bearing. Three workspaces each
+	// hold the SAME namespace + the SAME resource name (demo/ConfigMap "shared") with DIFFERENT
+	// content, mirrored by three GitTargets (each naming its own ClusterProvider) into three
+	// folders. If the operator keyed state by (namespace, GVR) alone — a union / first-wins lookup —
+	// the three identical identities would collapse into one; that they land as three distinct
+	// files, each carrying its own workspace's value, is the proof that everything is keyed by
+	// SOURCE CLUSTER (the ClusterProvider name).
 	It("mirrors identical resources from three workspaces as distinct GitOps state", func() {
 		if kcp == nil {
 			Skip("kcp is not installed; run this corner via `task test-e2e-source-cluster`")
@@ -408,6 +458,7 @@ spec:
 			c := cases[i]
 			hash := kcp.createWorkspace(c.ws)
 			DeferCleanup(func() { kcp.cleanupWorkspaceTarget(testNs, c.ws) })
+			DeferCleanup(func() { deleteClusterProvider(c.ws) })
 
 			// The SAME namespace name (testNs) and the SAME resource name (shared) in every
 			// workspace; only the value differs. A WatchRule watches its own namespace name on the
@@ -418,9 +469,11 @@ spec:
 				"--from-literal=which="+c.value)
 			Expect(err).NotTo(HaveOccurred(), "create ConfigMap shared in %s", c.ws)
 
-			writeKubeConfigSecret(testNs, c.ws+"-kubeconfig", "value", kcp.operatorKubeConfig(hash))
+			writeKubeConfigSecret(c.ws+"-kubeconfig", "value", kcp.operatorKubeConfig(hash))
+			_, err = applyClusterProvider(c.ws, c.ws+"-kubeconfig", "", testNs)
+			Expect(err).NotTo(HaveOccurred())
 			target := c.ws + "-target"
-			_, err = applyGitTargetWithKubeConfig(testNs, target, providerName, c.folder, c.ws+"-kubeconfig", "")
+			_, err = applyGitTargetWithClusterProvider(testNs, target, providerName, c.folder, c.ws)
 			Expect(err).NotTo(HaveOccurred())
 			verifyResourceCondition("gittarget", target, testNs, "SourceClusterReachable", "True", "", "", "180s")
 

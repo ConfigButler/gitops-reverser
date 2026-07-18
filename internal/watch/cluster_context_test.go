@@ -19,38 +19,83 @@ func gd(name string) types.ResourceReference {
 	return types.NewResourceReference(name, "team-a")
 }
 
-func TestLocalCluster_SeededAndReachable(t *testing.T) {
+func TestConfigPlaneCluster_SeededAndReachable(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	local := m.localCluster()
-	assert.True(t, local.isLocal())
-	assert.Same(t, local, m.cluster(LocalClusterID), "the local id is stable")
-	assert.Same(t, local.catalog, m.apiResourceCatalog(), "apiResourceCatalog() is the local catalog")
+	cp := m.configPlaneCluster()
+	assert.True(t, cp.isLocal())
+	assert.True(t, cp.configPlane, "the config plane is not a source cluster")
+	assert.Same(t, cp, m.cluster(configPlaneClusterID), "the config-plane id is stable")
+	assert.Same(t, cp.catalog, m.apiResourceCatalog(), "apiResourceCatalog() is the config-plane catalog")
 
-	reach := m.clusterReachability(LocalClusterID)
+	reach := m.clusterReachability(configPlaneClusterID)
 	assert.Equal(t, reachTrue, reach.state)
 	assert.Equal(t, reasonLocalCluster, reach.reason)
 }
 
+// TestSourceClusterInClusterIsResolvedNotNamed pins the model: a source cluster is in-cluster
+// because its ClusterProvider omits kubeConfig, never because of what it is called. A provider
+// named "default" is an ordinary source context and starts out un-resolved (fail-closed).
+func TestSourceClusterInClusterIsResolvedNotNamed(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+
+	named := m.cluster("default")
+	assert.False(t, named.configPlane, "no provider name is the config plane")
+	assert.False(t, named.isLocal(),
+		"un-resolved source clusters are treated as remote until their provider says otherwise")
+	assert.NotSame(t, m.configPlaneCluster(), named, "\"default\" is a source, distinct from the config plane")
+}
+
 func TestActiveClusterIDs_FromDeclareCapture(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	assert.Equal(t, []string{LocalClusterID}, m.activeClusterIDs(), "only local before any declare")
+	assert.Equal(t, []string{configPlaneClusterID}, m.activeClusterIDs(),
+		"only the config plane before any declare")
 
-	m.rememberGitTargetCluster(gd("a"), "team-a/kc/value")
-	m.rememberGitTargetCluster(gd("b"), "team-a/kc/value") // same remote, shared
-	m.rememberGitTargetCluster(gd("c"), "team-b/kc2/value")
+	m.rememberGitTargetCluster(gd("a"), "prod-eu-1")
+	m.rememberGitTargetCluster(gd("b"), "prod-eu-1") // same provider, shared
+	m.rememberGitTargetCluster(gd("c"), "prod-us-1")
 
 	assert.ElementsMatch(t,
-		[]string{LocalClusterID, "team-a/kc/value", "team-b/kc2/value"},
+		[]string{configPlaneClusterID, "prod-eu-1", "prod-us-1"},
 		m.activeClusterIDs(),
-		"active ids are the deduped Declare-captured remotes plus local")
+		"active ids are the deduped Declare-captured providers plus the config plane")
 
-	assert.Equal(t, "team-a/kc/value", m.clusterIDForGitTarget(gd("a")))
-	assert.Equal(t, LocalClusterID, m.clusterIDForGitTarget(gd("never-declared")))
+	assert.Equal(t, "prod-eu-1", m.clusterIDForGitTarget(gd("a")))
+	assert.Equal(t, configPlaneClusterID, m.clusterIDForGitTarget(gd("never-declared")))
+}
+
+// TestDeclaredSourceCluster_ReportsCaptureAndDeclaration pins the difference between
+// DeclaredSourceCluster and clusterIDForGitTarget: the latter defaults a never-declared GitTarget
+// to the config plane, which is indistinguishable from one that declared it. Only the ok flag makes
+// "a GitTarget the Validated gate refused starts no watch" assertable from outside this package,
+// so a refused (never-declared) target must report ok=false even for the config-plane id.
+func TestDeclaredSourceCluster_ReportsCaptureAndDeclaration(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+
+	id, ok := m.DeclaredSourceCluster(gd("refused"))
+	assert.False(t, ok, "a GitTarget that never reached Declare has no captured cluster")
+	assert.Empty(t, id)
+
+	m.rememberGitTargetCluster(gd("remote"), "prod-eu-1")
+	m.rememberGitTargetCluster(gd("local"), configPlaneClusterID)
+
+	id, ok = m.DeclaredSourceCluster(gd("remote"))
+	assert.True(t, ok)
+	assert.Equal(t, "prod-eu-1", id, "the cluster captured at Declare time is reported verbatim")
+
+	id, ok = m.DeclaredSourceCluster(gd("local"))
+	assert.True(t, ok, "declaring the config plane is still a declaration, not an absence")
+	assert.Equal(t, configPlaneClusterID, id)
+
+	// Forgetting a deleted GitTarget returns it to the never-declared state, so a torn-down
+	// target cannot be mistaken for one still mirroring the config plane.
+	m.forgetGitTargetCluster(gd("remote"))
+	_, ok = m.DeclaredSourceCluster(gd("remote"))
+	assert.False(t, ok)
 }
 
 func TestRefcountedTeardown(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	const remote = "team-a/kc/value"
+	const remote = "prod-eu-1"
 
 	// Two GitTargets mirror the same remote; create its context.
 	m.rememberGitTargetCluster(gd("a"), remote)
@@ -66,30 +111,30 @@ func TestRefcountedTeardown(t *testing.T) {
 	m.forgetGitTargetCluster(gd("b"))
 	assert.Nil(t, m.clusterContextByID(remote), "last referencing GitTarget gone -> torn down")
 
-	// The local cluster is never torn down by a forget, even when the forgotten GitTarget
+	// The config plane is never torn down by a forget, even when the forgotten GitTarget
 	// mapped to it.
-	require.NotNil(t, m.localCluster())
-	m.rememberGitTargetCluster(gd("c"), LocalClusterID)
+	require.NotNil(t, m.configPlaneCluster())
+	m.rememberGitTargetCluster(gd("c"), configPlaneClusterID)
 	m.forgetGitTargetCluster(gd("c"))
-	assert.NotNil(t, m.clusterContextByID(LocalClusterID))
+	assert.NotNil(t, m.clusterContextByID(configPlaneClusterID))
 }
 
 func TestRegistryForGitTarget_PerCluster(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	m.rememberGitTargetCluster(gd("remote"), "team-a/kc/value")
+	m.rememberGitTargetCluster(gd("remote"), "prod-eu-1")
 
 	localReg := m.registryForGitTarget(gd("local-target"))
 	remoteReg := m.registryForGitTarget(gd("remote"))
-	assert.Same(t, m.localCluster().registry, localReg)
+	assert.Same(t, m.configPlaneCluster().registry, localReg)
 	assert.NotSame(t, localReg, remoteReg, "a remote GitTarget resolves against its own registry, not local")
 }
 
 func TestClusterTypeLookup(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	// Local lookup is the local registry.
-	assert.Same(t, m.localCluster().registry, m.ClusterTypeLookup(LocalClusterID))
+	// The config-plane lookup is its registry.
+	assert.Same(t, m.configPlaneCluster().registry, m.ClusterTypeLookup(configPlaneClusterID))
 	// An unknown remote yields a (fresh, unready) registry that fails closed, never nil.
-	lk := m.ClusterTypeLookup("team-a/kc/value")
+	lk := m.ClusterTypeLookup("prod-eu-1")
 	require.NotNil(t, lk)
 	assert.False(t, lk.Ready(), "an unobserved remote registry is not ready — the writer falls closed")
 }

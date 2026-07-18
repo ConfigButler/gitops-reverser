@@ -2,7 +2,9 @@
 
 > **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
 
-GitOps Reverser relies on the Kubernetes [audit webhook backend](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend): the kube-apiserver POSTs audit events to an HTTPS endpoint using a kubeconfig file written on the control-plane node(s). This works best on clusters you fully control — k3s, k3d, Talos, Kamaji. Managed platforms (EKS, GKE, AKS) restrict access to apiserver configuration; running on them requires switching to a self-managed control plane or a platform that does expose it.
+GitOps Reverser relies on the Kubernetes [audit webhook backend](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend): the kube-apiserver POSTs audit events to an HTTPS endpoint using a kubeconfig file written on the control-plane node(s).
+
+> **The path names the source cluster.** Audit routes are `/audit-webhook/<cluster-provider-name>` — the `ClusterProvider` whose facts this stream carries. The examples below use `/audit-webhook/default`, matching a `GitTarget` that omits `spec.clusterProviderRef`; substitute your provider's name. The bare `/audit-webhook` is the shared-stream endpoint for one audit feed carrying several logical clusters, and it is rejected with **400** unless `attribution.clusterAnnotationKey` is set — see [configuration.md](../configuration.md). This works best on clusters you fully control — k3s, k3d, Talos, Kamaji. Managed platforms (EKS, GKE, AKS) restrict access to apiserver configuration; running on them requires switching to a self-managed control plane or a platform that does expose it.
 
 ## The problem
 
@@ -131,7 +133,7 @@ spec:
   clusterIP: 10.43.200.200
 
 # webhook kubeconfig
-server: https://10.43.200.200:9444/audit-webhook
+server: https://10.43.200.200:9444/audit-webhook/default
 ```
 
 **TLS**: Use `insecure-skip-tls-verify: true` for development. For production, pre-generate a certificate with a SAN for this IP and include its CA in `certificate-authority-data`.
@@ -150,7 +152,7 @@ server: https://10.43.200.200:9444/audit-webhook
 Run the audit consumer with `hostNetwork: true` or a `hostPort`, so the apiserver can reach it at a loopback or node IP address.
 
 ```yaml
-server: https://127.0.0.1:9444/audit-webhook
+server: https://127.0.0.1:9444/audit-webhook/default
 ```
 
 **TLS**: A certificate with `localhost` or the node IP as a SAN is straightforward to provision.
@@ -169,7 +171,7 @@ server: https://127.0.0.1:9444/audit-webhook
 Route audit events to a stable external URL: a LoadBalancer service, a NodePort, or a tunnel (e.g. Cloudflare Tunnel, ngrok).
 
 ```yaml
-server: https://audit.example.com/audit-webhook
+server: https://audit.example.com/audit-webhook/default
 ```
 
 **TLS**: Standard — use a publicly trusted certificate or any cert your apiserver trusts.
@@ -209,7 +211,7 @@ spec:
     nodePort: 30444
 
 # webhook kubeconfig
-server: https://127.0.0.1:30444/audit-webhook
+server: https://127.0.0.1:30444/audit-webhook/default
 ```
 
 **TLS**: Issue a cert with `localhost` or the node IP as a SAN. Works naturally with cert-manager if you provision the cert before writing the kubeconfig (two-phase setup), or use a pre-generated cert.
@@ -228,7 +230,7 @@ server: https://127.0.0.1:30444/audit-webhook
 Run the audit receiver as a [static Pod](https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/) — a manifest placed in `/etc/kubernetes/manifests/` (or the kubelet's configured staticPodPath). Kubelet starts static pods independently of the API server, before the rest of the cluster is up. With `hostNetwork: true` the pod binds directly to the node's network stack at `127.0.0.1`.
 
 ```yaml
-server: https://127.0.0.1:9444/audit-webhook
+server: https://127.0.0.1:9444/audit-webhook/default
 ```
 
 **TLS**: The pod can mount a cert from a host path, provisioned during cluster bootstrap alongside the other control-plane certs.
@@ -268,7 +270,7 @@ socat TCP-LISTEN:9444,fork TCP:10.43.200.200:9444
 [Kamaji](https://kamaji.clastix.io/) runs tenant control planes as pods inside a parent cluster. The tenant kube-apiserver is itself a workload, and its audit webhook kubeconfig can point directly at any service in the parent cluster using standard in-cluster DNS — because the parent cluster's CoreDNS *is* available to the tenant apiserver pod.
 
 ```yaml
-server: https://gitops-reverser.gitops-reverser.svc.cluster.local:9444/audit-webhook
+server: https://gitops-reverser.gitops-reverser.svc.cluster.local:9444/audit-webhook/default
 ```
 
 **TLS**: Normal in-cluster TLS with cert-manager. The parent cluster's service infrastructure handles it.

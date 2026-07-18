@@ -86,7 +86,7 @@ Push to main
 
 4. **When Release PR is Merged**:
    - GitHub Release created with tag (e.g., `v0.2.0`) — first as a **draft**, so every signed
-     asset (`install.yaml`, SBOM, `.sigstore.json` signatures, `.intoto.jsonl` attestations)
+     asset (`crds.yaml`, `install.yaml`, SBOM, `.sigstore.json` signatures, `.intoto.jsonl` attestations)
      can be attached before it goes public; immutable releases reject post-publish uploads, so
      `publish-release` flips the draft to published only after every asset is in place.
    - The linux/amd64 + linux/arm64 image digests already built and scanned by that

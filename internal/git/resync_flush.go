@@ -230,7 +230,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	target := pendingWrite.Target()
 	base := sanitizePath(target.Path)
 
-	if err := w.refuseUnsafeWorktree(ctx, worktree, base, target.SourceClusterID); err != nil {
+	if err := w.refuseUnsafeWorktree(ctx, worktree, base, target.SourceCluster); err != nil {
 		return 0, err
 	}
 
@@ -248,7 +248,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	}
 
 	stats, anyChanges, err := w.applyResyncToWorktree(
-		ctx, worktree, base, target.SourceClusterID, pendingWrite.Desired, pendingWrite.ScopeGVR, target.Placement,
+		ctx, worktree, base, target.SourceCluster, pendingWrite.Desired, pendingWrite.ScopeGVR, target.Placement,
 	)
 	if err != nil {
 		return 0, err

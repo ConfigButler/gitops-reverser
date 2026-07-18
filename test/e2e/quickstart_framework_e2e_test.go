@@ -137,6 +137,11 @@ func (r *quickstartFrameworkRun) helmInstallReadmeQuickstart() {
 		chart = "charts/gitops-reverser"
 	}
 
+	// ONE apply, exactly as the README's step 4 does it. This works because no webhook this chart
+	// installs is failurePolicy: Fail — the starter GitTarget is gated by nothing, so it is admitted
+	// while the Deployment it rolls is still coming up. Namespace authorization is enforced at
+	// reconcile instead (checkSourceAuthorization, inside the Validated gate), which does not need
+	// the manager to be reachable at admission time.
 	args := []string{
 		"--kube-context", ctx,
 		"upgrade", "--install", release, chart,

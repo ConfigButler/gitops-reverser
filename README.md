@@ -118,7 +118,9 @@ Production use should follow an environment-specific review. Deferred directions
 This brings up the **demo**: a starter `GitProvider`, `GitTarget`, and `WatchRule` in a
 `gitops-reverser-quickstart-demo` namespace. It watches ConfigMaps in that namespace and writes them
 to `<your-repo>/live-cluster` on the `main` branch. It runs in **`configured-author` mode** (one
-committer identity, no Redis) by default.
+committer identity, no Redis) by default. The chart also renders the cluster-scoped `default`
+`ClusterProvider`, so the starter target's omitted source reference resolves to the operator's own
+cluster.
 
 ![Config basics diagram showing the relationship between GitProvider, GitTarget, and WatchRule](docs/images/config-basics.excalidraw.svg)
 
@@ -164,9 +166,9 @@ credentials Secrets are accepted as-is (they must have **write** access). See
 [`docs/github-setup-guide.md`](docs/github-setup-guide.md) for the full GitHub guide and HTTPS/PAT
 fallback.
 
-**4. Install GitOps Reverser with the demo**
+**4. Install GitOps Reverser with the demo enabled**
 
-A single install enables the demo and points the starter `GitProvider` at your repo:
+Point the starter `GitProvider` at your repo and install:
 
 ```bash
 helm install gitops-reverser \

@@ -40,14 +40,26 @@ type auditHandlerFirsts struct {
 	request           sync.Once
 	factRecorded      sync.Once
 	impersonatedEvent sync.Once
+	unroutableEvent   sync.Once
 }
 
 // AuditFactRecorder stores the minimal author-attribution fact for one accepted,
-// mutating audit event. It is the only thing the audit webhook does now: watch
-// carries the object body, so audit is a pure attribution lookup table. A nil
-// recorder means configured-author mode — the handler is not wired at all.
+// mutating audit event under a SOURCE CLUSTER (a ClusterProvider name), so a fact from
+// one cluster never joins a watch event from another. It is the only thing the audit
+// webhook does now: watch carries the object body, so audit is a pure attribution lookup
+// table. A nil recorder means configured-author mode — the handler is not wired at all.
 type AuditFactRecorder interface {
-	RecordFact(ctx context.Context, event auditv1.Event) error
+	RecordFact(ctx context.Context, providerName string, event auditv1.Event) error
+}
+
+// AuditProviderResolver reports whether a named source cluster (a ClusterProvider) exists, so an
+// /audit-webhook/<name> route is accepted only for a configured cluster. It is the gate behind the
+// connection's mTLS: the audit server already requires a CA-signed client cert
+// (RequireAndVerifyClientCert), so an unauthenticated apiserver never reaches here; this then
+// refuses a route for a provider that does not exist, rather than accumulating orphan facts. Every
+// name is gated the same way, "default" included. A nil resolver means no route can be served.
+type AuditProviderResolver interface {
+	ProviderExists(ctx context.Context, name string) (bool, error)
 }
 
 // AuditHandlerConfig contains configuration for the audit handler.
@@ -58,6 +70,16 @@ type AuditHandlerConfig struct {
 	// A write failure returns an audit-request error so the API server retries
 	// delivery; mirrored-resource author attribution depends on these facts.
 	FactRecorder AuditFactRecorder
+	// ProviderResolver gates every /audit-webhook/<name> route on the ClusterProvider existing.
+	// Nil means named routes are all 404.
+	ProviderResolver AuditProviderResolver
+	// ClusterAnnotationKey enables the bare /audit-webhook endpoint for a SHARED audit stream that
+	// carries several logical clusters: the owning ClusterProvider is read PER EVENT from this
+	// audit-event annotation, so one batch may fan out to several source clusters. Empty (the
+	// default) means the bare endpoint is NOT enabled and every producer must post to a named
+	// /audit-webhook/<name>. Setting it requires a ProviderResolver — an annotation naming an
+	// unknown provider must be rejected, never guessed.
+	ClusterAnnotationKey string
 }
 
 // AuditHandler receives kube-apiserver audit events on /audit-webhook and records
@@ -74,6 +96,11 @@ type AuditHandler struct {
 func NewAuditHandler(config AuditHandlerConfig) (*AuditHandler, error) {
 	if config.MaxRequestBodyBytes <= 0 {
 		config.MaxRequestBodyBytes = DefaultAuditMaxRequestBodyBytes
+	}
+	// Annotation routing must be able to reject an unknown provider, so it cannot run without a
+	// resolver. Fail at startup rather than 400-ing every bare request at runtime.
+	if config.ClusterAnnotationKey != "" && config.ProviderResolver == nil {
+		return nil, errors.New("cluster annotation routing requires a ProviderResolver")
 	}
 
 	scheme := runtime.NewScheme()
@@ -115,15 +142,80 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	route, ok := h.resolveRoute(ctx, w, r)
+	if !ok {
+		return
+	}
+
 	start := time.Now()
-	result, eventCount := h.serveEventListRequest(ctx, w, r, log)
+	result, eventCount := h.serveEventListRequest(ctx, route, w, r, log)
 	h.recordEventListRequest(ctx, result, eventCount, time.Since(start))
+}
+
+// resolveRoute maps an already-syntactically-valid path to the route its events belong to. It
+// writes the rejection itself and reports ok=false when the request cannot be served at all — as
+// opposed to a per-event rejection, which still returns 200 for the rest of the batch.
+func (h *AuditHandler) resolveRoute(ctx context.Context, w http.ResponseWriter, r *http.Request) (auditRoute, bool) {
+	providerName, named := providerRouteForPath(r.URL.Path)
+	if !named {
+		// The bare endpoint never guesses a source cluster. It exists only to demultiplex a SHARED
+		// stream by annotation, so without a configured key there is nothing it could mean and the
+		// producer is simply misconfigured: reject the whole request rather than silently dropping
+		// every event in it.
+		if h.config.ClusterAnnotationKey == "" {
+			http.Error(w, "the bare /audit-webhook endpoint is not enabled; post to "+
+				"/audit-webhook/<cluster-provider-name>", http.StatusBadRequest)
+			return auditRoute{}, false
+		}
+		return auditRoute{annotationKey: h.config.ClusterAnnotationKey}, true
+	}
+
+	// The connection is already CA-authenticated (the audit server requires a client cert), so gate
+	// on the named ClusterProvider existing rather than accepting facts for an unknown cluster.
+	// Every name is gated, "default" included — it is an ordinary provider.
+	if h.config.ProviderResolver == nil {
+		http.NotFound(w, r)
+		return auditRoute{}, false
+	}
+	exists, err := h.config.ProviderResolver.ProviderExists(ctx, providerName)
+	if err != nil {
+		http.Error(w, "resolve source cluster", http.StatusServiceUnavailable)
+		return auditRoute{}, false
+	}
+	if !exists {
+		http.NotFound(w, r)
+		return auditRoute{}, false
+	}
+	return auditRoute{provider: providerName}, true
+}
+
+// auditRoute is how one accepted request maps its events to SOURCE CLUSTERS. Exactly one field is
+// set: a named /audit-webhook/<name> route fixes `provider` for the whole batch, while the bare
+// /audit-webhook route carries `annotationKey` and resolves a provider PER EVENT, so a single batch
+// from a shared stream may fan out to several source clusters.
+type auditRoute struct {
+	provider      string
+	annotationKey string
+}
+
+// providerRouteForPath maps an accepted audit route to the SOURCE CLUSTER its facts belong to and
+// whether it is a NAMED route. Audit routes are named: /audit-webhook/<name> carries the provider
+// (named=true), including /audit-webhook/default. The bare /audit-webhook names no provider —
+// it is the shared, annotation-routed endpoint, so it returns ("", false) and the caller resolves
+// each event separately. validateAuditWebhookPath has already accepted the path syntactically.
+func providerRouteForPath(path string) (string, bool) {
+	segment := strings.TrimPrefix(path, "/audit-webhook/")
+	if segment == path || segment == "" {
+		return "", false
+	}
+	return segment, true
 }
 
 // serveEventListRequest decodes and processes one EventList request, returning the
 // bounded outcome and the number of decoded event items for the ingress metrics.
 func (h *AuditHandler) serveEventListRequest(
 	ctx context.Context,
+	route auditRoute,
 	w http.ResponseWriter,
 	r *http.Request,
 	log logr.Logger,
@@ -148,7 +240,7 @@ func (h *AuditHandler) serveEventListRequest(
 		reqLog.Info("Received first audit request", "eventCount", eventCount)
 	})
 
-	if err := h.processEvents(ctx, eventListV1.Items); err != nil {
+	if err := h.processEvents(ctx, route, eventListV1.Items); err != nil {
 		reqLog.Error(err, "Failed to process audit events")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return outcomeProcessError, eventCount
@@ -208,21 +300,23 @@ func (h *AuditHandler) decodeEventList(r *http.Request) (*auditv1.EventList, err
 	return &eventListV1, nil
 }
 
-// processEvents processes a list of audit events.
-func (h *AuditHandler) processEvents(ctx context.Context, events []auditv1.Event) error {
+// processEvents processes a list of audit events for one route. On the annotation-routed bare
+// endpoint the events in one list may belong to different source clusters, so each is resolved
+// independently and an unroutable event only drops itself.
+func (h *AuditHandler) processEvents(ctx context.Context, route auditRoute, events []auditv1.Event) error {
 	for i := range events {
-		if err := h.processEvent(ctx, events[i]); err != nil {
+		if err := h.processEvent(ctx, route, events[i]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// processEvent applies the intrinsic accept gate and records the attribution fact
-// for an accepted, mutating event. A rejected event is recorded with its terminal
-// outcome and dropped; only a fact-store failure returns an error (the API server
-// then retries delivery).
-func (h *AuditHandler) processEvent(ctx context.Context, event auditv1.Event) error {
+// processEvent applies the intrinsic accept gate, resolves the event's source cluster, and records
+// the attribution fact for an accepted, mutating event. A rejected event is recorded with its
+// terminal outcome and dropped; only a fact-store or provider-lookup failure returns an error (the
+// API server then retries delivery).
+func (h *AuditHandler) processEvent(ctx context.Context, route auditRoute, event auditv1.Event) error {
 	log := logf.Log.WithName("audit-handler")
 	h.logAuditEventReceived(event)
 
@@ -239,8 +333,16 @@ func (h *AuditHandler) processEvent(ctx context.Context, event auditv1.Event) er
 		return nil
 	}
 
+	providerName, routed, err := h.resolveEventProvider(ctx, route, &event)
+	if err != nil {
+		return err
+	}
+	if !routed {
+		return nil
+	}
+
 	if h.config.FactRecorder != nil {
-		if err := h.config.FactRecorder.RecordFact(ctx, event); err != nil {
+		if err := h.config.FactRecorder.RecordFact(ctx, providerName, event); err != nil {
 			outcome.Record(ctx, &event, outcome.WriteError)
 			return fmt.Errorf("record attribution fact %q: %w", event.AuditID, err)
 		}
@@ -254,6 +356,71 @@ func (h *AuditHandler) processEvent(ctx context.Context, event auditv1.Event) er
 		"gvr", extractGVR(&event), "verb", event.Verb, "auditID", event.AuditID,
 		"user", effectiveAuditUsername(event))
 	return nil
+}
+
+// resolveEventProvider returns the ClusterProvider that owns one accepted event, and whether it
+// routed at all. On a named route that is the route's provider, unconditionally. On the shared,
+// annotation-routed bare endpoint it is read from the event's own annotations and existence-checked:
+// an event carrying no annotation, or naming a ClusterProvider that does not exist, is REJECTED —
+// it produces no fact and is never credited to a fallback provider, because a wrong source cluster
+// would let a user from one logical cluster author a matching object in another. The rejection is
+// per EVENT so correctly-annotated events in the same batch still land. A resolver failure is
+// transient rather than a verdict, so it is returned as an error and the API server retries the
+// whole batch.
+func (h *AuditHandler) resolveEventProvider(
+	ctx context.Context,
+	route auditRoute,
+	event *auditv1.Event,
+) (string, bool, error) {
+	if route.annotationKey == "" {
+		return route.provider, true, nil
+	}
+
+	name := event.Annotations[route.annotationKey]
+	if name == "" {
+		h.rejectUnroutableEvent(ctx, event, outcome.MissingClusterAnnotation, route.annotationKey, name)
+		return "", false, nil
+	}
+
+	exists, err := h.config.ProviderResolver.ProviderExists(ctx, name)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve source cluster %q: %w", name, err)
+	}
+	if !exists {
+		h.rejectUnroutableEvent(ctx, event, outcome.UnknownClusterProvider, route.annotationKey, name)
+		return "", false, nil
+	}
+	return name, true, nil
+}
+
+// rejectUnroutableEvent counts and logs one event the shared endpoint could not route. Counting it
+// on the ordinary per-event outcome counter is the point: a producer that is not stamping the
+// annotation shows up as a rising drop rate rather than as silence. The first rejection is logged
+// at Info so the misconfiguration is visible without reading metrics; the rest stay at V(1) so a
+// steady stream of them cannot flood the log.
+func (h *AuditHandler) rejectUnroutableEvent(
+	ctx context.Context,
+	event *auditv1.Event,
+	reason outcome.Outcome,
+	annotationKey string,
+	sourceCluster string,
+) {
+	outcome.Record(ctx, event, reason)
+
+	log := logf.Log.WithName("audit-handler")
+	fields := []any{
+		"reason", string(reason),
+		"annotationKey", annotationKey,
+		"sourceCluster", sourceCluster,
+		"auditID", event.AuditID,
+		"gvr", extractGVR(event),
+	}
+	h.firsts.unroutableEvent.Do(func() {
+		log.Info("Rejected an unroutable audit event on the shared /audit-webhook endpoint; it names no "+
+			"existing ClusterProvider and is never credited to a fallback. Stamp the annotation, or point "+
+			"this producer at /audit-webhook/<cluster-provider-name>", fields...)
+	})
+	log.V(1).Info("Rejected unroutable audit event", fields...)
 }
 
 // logAuditEventReceived emits the structured "audit event received" log (and the
@@ -389,21 +556,25 @@ func effectiveAuditUsername(event auditv1.Event) string {
 	return event.User.Username
 }
 
-// validateAuditWebhookPath accepts only the canonical /audit-webhook path. The
-// aggregated-API body proxy and its /audit-webhook-additional endpoint were removed
-// with the watch-first rewrite — watch carries the body, so there is no body to join.
+// validateAuditWebhookPath accepts the bare shared /audit-webhook and a single-segment
+// /audit-webhook/<cluster-provider-name>. It is a purely SYNTACTIC check; whether the named provider
+// actually exists, and whether the bare endpoint is enabled at all, is enforced in ServeHTTP. It
+// rejects a trailing slash and any extra path segment.
 func validateAuditWebhookPath(path string) error {
-	switch path {
-	case "/audit-webhook":
+	if path == "/audit-webhook" {
 		return nil
-	case "/audit-webhook/":
-		return errors.New("audit webhook path must not include a trailing slash")
-	default:
-		if strings.HasPrefix(path, "/audit-webhook/") {
-			return errors.New("audit webhook path must not include a cluster ID or extra path segment")
-		}
-		return errors.New("invalid path; expected /audit-webhook")
 	}
+	if !strings.HasPrefix(path, "/audit-webhook/") {
+		return errors.New("invalid path; expected /audit-webhook or /audit-webhook/<cluster-provider-name>")
+	}
+	segment := strings.TrimPrefix(path, "/audit-webhook/")
+	if segment == "" {
+		return errors.New("audit webhook path must not include a trailing slash")
+	}
+	if strings.Contains(segment, "/") {
+		return errors.New("audit webhook path must name exactly one ClusterProvider: /audit-webhook/<name>")
+	}
+	return nil
 }
 
 // gvrParts splits an audit event's objectRef into bounded group/version/resource

@@ -54,6 +54,21 @@ const (
 	// remote repository.
 	ConditionTypePushed = "Pushed"
 
+	// ClusterProviderConditionValidated reports whether a ClusterProvider's inputs are safe and
+	// resolvable: the in-cluster "default" provider is trivially Validated; a remote provider is
+	// Validated once its kubeconfig Secret is present, keyed, and passes the exec/TLS safety
+	// policy. It is asserted WITHOUT a network dial — runtime reachability/discovery health are
+	// deferred until authenticated remote ingest wires them from the watch engine.
+	ClusterProviderConditionValidated = "Validated"
+
+	// ReasonValidated is the Validated=True reason.
+	ReasonValidated = "Validated"
+	// ReasonInCluster is the Validated=True reason for the in-cluster "default" provider.
+	ReasonInCluster = "InCluster"
+	// ReasonKubeConfigInvalid is the Validated=False reason for a malformed or unsafe kubeconfig
+	// whose specific cause is carried in the message.
+	ReasonKubeConfigInvalid = "KubeConfigInvalid"
+
 	// MsgSnapshotCompleted is returned as the condition message when the initial
 	// cluster snapshot has been successfully committed to Git.
 	MsgSnapshotCompleted = "Initial snapshot reconciliation completed"

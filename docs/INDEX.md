@@ -2,7 +2,7 @@
 
 > Rebuilt 2026-07-11, when the tree went from 180 documents to 117.
 
-There are 117 markdown files here. **About 35 of them bind.** This page names
+There are 136 tracked markdown files here. **About 35 of them bind.** This page names
 those. If a document is not on this page, it is either a user guide (see
 [`README.md`](README.md)) or history you can safely not read.
 
@@ -66,15 +66,14 @@ says what we support and refuse** — and then its
 kustomize field taxonomy, the write boundary, the orchestrator/expansion line, and
 how secrets are handled.
 
-Ten other open items:
+Nine other open items:
 
 | Doc | Open question |
 |---|---|
-| [`config-plane-split.md`](design/config-plane-split.md) | remote-cluster mirroring via an inline, immutable `GitTarget.spec.kubeConfig` (Flux's `meta.KubeConfigReference`) — **redesign of #220's #1, built** |
 | [`watch-and-catalog-architecture.md`](design/watch-and-catalog-architecture.md) | the target three-layer watch model — **needs a human call before building** |
 | [`metrics-observability-plan.md`](design/metrics-observability-plan.md) | the watch-stage metrics do not exist yet |
 | [`reconcile-triggering.md`](design/reconcile-triggering.md) | which controllers still fail to wake up |
-| [`multi-cluster-audit-ingestion-implications.md`](design/multi-cluster-audit-ingestion-implications.md) | §5's `SourceCluster` CRD is **superseded** by [`config-plane-split.md`](design/config-plane-split.md); the rest (per-cluster audit ingestion) is still open |
+| [`multi-source-audit-ingress-hardening.md`](design/multi-source-audit-ingress-hardening.md) | how independent sources authenticate to a named audit route, when annotation routing is trustworthy, and how multi-provider ingestion remains fair |
 | [`release-image-reuse-plan.md`](design/release-image-reuse-plan.md) | PRs 2–5 unstarted |
 | [`e2e-coverage-gaps-and-improvements-plan.md`](design/e2e-coverage-gaps-and-improvements-plan.md) | tests A/B/C still proposals |
 | [`e2e-finish-plan.md`](design/e2e-finish-plan.md) | remaining e2e harness work |
@@ -93,7 +92,7 @@ three open RBAC items. Five more ideas sit beside them.
 
 ## History — [`finished/`](finished/)
 
-Eighteen shipped plans and closed investigations. **Nothing here binds.** Read one
+Twenty-two shipped plans and closed investigations. **Nothing here binds.** Read one
 only when you want to know *why* something is the way it is; the answer to *what it
 is* always lives in `spec/`.
 

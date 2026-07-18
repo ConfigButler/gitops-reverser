@@ -168,7 +168,7 @@ func (w *BranchWorker) resolveTargetMetadata(
 		BootstrapOptions: buildBootstrapOptions(encryptionConfig),
 		EncryptionConfig: encryptionConfig,
 		Placement:        resolvePlacementPolicy(target.Spec.Placement),
-		SourceClusterID:  target.SourceClusterID(),
+		SourceCluster:    target.SourceCluster(),
 	}, nil
 }
 

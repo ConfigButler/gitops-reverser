@@ -697,7 +697,7 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		event := targetWatchGitEvent(key.GVR, u, op)
 		// Carry the source cluster so the git writer resolves this document's GVK->GVR
 		// against the cluster it was watched on, never a union of all clusters.
-		event.SourceClusterID = m.clusterIDForGitTarget(gitDest)
+		event.SourceCluster = m.clusterIDForGitTarget(gitDest)
 		// Drop a no-op UPDATE before it reaches the worker: a /status-only change
 		// sanitizes to identical git content but ships unattributed (its /status audit
 		// is dropped), so routing it would split an open commit window on the author
@@ -741,8 +741,12 @@ func (m *Manager) attachAuthor(
 	// author fact's post-write RV, so it may consult the /last pointer; a create/update is
 	// exact-capable and must not fall through to /last.
 	exactCapable := event.Operation != string(configv1alpha3.OperationDelete)
+	// event.SourceCluster (stamped just above, before this call) is the SOURCE CLUSTER — the
+	// ClusterProvider name — this event was watched on. It keys the author read against exactly
+	// the facts the audit handler recorded for that cluster, so a fact from cluster A can never
+	// name the author of an object watched on cluster B.
 	if userInfo, ok := m.AuthorResolver.ResolveAuthor(
-		ctx, gvr, u.GetUID(), u.GetResourceVersion(), exactCapable,
+		ctx, event.SourceCluster, gvr, u.GetUID(), u.GetResourceVersion(), exactCapable,
 	); ok {
 		event.UserInfo = userInfo
 	}

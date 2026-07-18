@@ -289,14 +289,14 @@ func recordCatalogStats(ctx context.Context, stats CatalogStats) {
 // the back-compatible accessor every source-cluster-unaware caller uses; per-cluster callers
 // read cc.catalog directly.
 func (m *Manager) apiResourceCatalog() *APIResourceCatalog {
-	return m.localCluster().catalog
+	return m.configPlaneCluster().catalog
 }
 
 // typeRegistryInstance returns the LOCAL cluster's followability registry, so a zero-value
 // Manager (used widely in tests) needs no explicit setup. Per-cluster callers read
 // cc.registry directly.
 func (m *Manager) typeRegistryInstance() *typeset.Registry {
-	return m.localCluster().registry
+	return m.configPlaneCluster().registry
 }
 
 // refreshClusterTypeRegistry publishes one cluster's catalog scan to its typeset registry,
@@ -349,20 +349,20 @@ func (m *Manager) logTypeRefusals(cc *clusterContext, reg *typeset.Registry) {
 // writer's manager-wide mapper wiring (cmd/main.go); the cluster-scoped writer lookup uses
 // ClusterTypeLookup instead (see gvr.go / Step 4).
 func (m *Manager) TypeRegistry() *typeset.Registry {
-	return m.localCluster().registry
+	return m.configPlaneCluster().registry
 }
 
 // FollowableTypeRecords returns the LOCAL cluster's currently-followable type records (verdict
 // followable or retained), sorted by identity. It is the inventory the status and visibility
 // surfaces read; it never recomputes followability.
 func (m *Manager) FollowableTypeRecords() []typeset.TypeRecord {
-	return m.localCluster().registry.Followable()
+	return m.configPlaneCluster().registry.Followable()
 }
 
 // TypeRecords returns every known type record — followable, retained, and refused — for the
 // LOCAL cluster, for inventory and "why is this type not picked up?" views.
 func (m *Manager) TypeRecords() []typeset.TypeRecord {
-	return m.localCluster().registry.All()
+	return m.configPlaneCluster().registry.All()
 }
 
 // ruleResourceSelector is one rule's (apiGroups, apiVersions, resources, scope) tuple,

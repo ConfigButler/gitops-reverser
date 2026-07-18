@@ -42,7 +42,7 @@ live invariant.** They are not finished at all. The worst case:
 
 > **`docs/finished/current-manifest-support-review.md`** is the live specification
 > of `internal/manifestanalyzer`. It is cited by section name from eight Go files,
-> and it is a cited input to the *active* gitops-api workstream. It holds the
+> and it is a cited input to active downstream work. It holds the
 > non-negotiable rules — *a GitTarget makes an all-or-nothing claim on a folder*;
 > *never partially materialize a multi-doc file*; *refuse the folder rather than
 > prune unwatched KRM*. It is filed under "finished."
@@ -110,7 +110,7 @@ from the code:
 ### Still-open design (9) — `docs/design/`
 
 `e2e-coverage-gaps-and-improvements-plan.md`, `e2e-finish-plan.md`,
-`metrics-observability-plan.md`, `multi-cluster-audit-ingestion-implications.md`,
+`metrics-observability-plan.md`, `multi-source-audit-ingress-hardening.md`,
 `reconcile-triggering.md`, `release-image-reuse-plan.md`,
 `sensitive-resource-diagnostics-follow-up.md`, `watch-and-catalog-architecture.md`,
 `stream/residual-e2e-flakes-2026-06-19.md`.
@@ -124,7 +124,7 @@ from the code:
 
 ### Still wanted (8) — `docs/future/`
 
-`idea-application-editing.md` (the product seed of the gitops-api workstream —
+`idea-application-editing.md` (the product seed of a future application-editing workstream —
 still holds the branch/session grouping strategies nothing else covers),
 `ha-gittarget-distribution-plan.md` (cited three times by `architecture.md`),
 `least-privilege-remaining-work.md`, `design-commit-request-phase-2.md` (verified
@@ -244,7 +244,7 @@ Superseded, closed investigations, archaeology, stale. Extract the three code-ci
 facts first (noted above). Git keeps everything; nothing is lost that a
 `git log --follow` cannot recover.
 
-### Phase 5 — the gitops-api consolidation
+### Phase 5 — documentation consolidation
 
 Separately proposed in
 [expansion-boundary-and-corpus-organisation.md](../design/support-boundary/expansion-boundary-and-corpus-organisation.md):
@@ -268,7 +268,7 @@ invariant into one, and de-duplicate the `--dry-run=server` evidence table.
 **Should `docs/design/manifest/` survive at all?** Its three subsystems —
 `internal/typeset`, `internal/git/manifestedit`, `internal/manifestreport` — have
 all shipped, so most of its 19 files are archaeology. But it is also where the
-*reasoning* behind the manifest model lives, and the gitops-api workstream is built
+*reasoning* behind the manifest model lives, and downstream work is built
 directly on top of it. My instinct is that two or three docs graduate to `spec/`
 (`contextual-namespace-and-kustomize-folder-editing.md`,
 `version2/gittarget-new-file-placement-rules.md`,

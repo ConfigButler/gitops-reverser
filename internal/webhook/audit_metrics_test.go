@@ -91,10 +91,10 @@ func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 			if tt.recorderErr {
 				recorder.err = errAuditTest
 			}
-			handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 			require.NoError(t, err)
 
-			w := serveBody(t, handler, http.MethodPost, "/audit-webhook", tt.body)
+			w := serveBody(t, handler, http.MethodPost, defaultRoute, tt.body)
 			assert.Equal(t, tt.wantStatus, w.Code)
 
 			match := map[string]string{"outcome": tt.wantOutcome}
@@ -125,10 +125,10 @@ func TestServeHTTP_AcceptedEventQueuedOutcome(t *testing.T) {
 	require.NoError(t, err)
 
 	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 	require.NoError(t, err)
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(acceptedCreateEvent))
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent))
 	require.Equal(t, http.StatusOK, w.Code)
 
 	queued, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
@@ -137,6 +137,47 @@ func TestServeHTTP_AcceptedEventQueuedOutcome(t *testing.T) {
 	})
 	require.True(t, ok, "expected a queued outcome sample for the accepted configmaps create")
 	assert.Equal(t, int64(1), queued)
+}
+
+// TestServeHTTP_UnroutableEventOutcomes confirms an event the shared endpoint could not route is
+// counted on audit_events_total under its own outcome, so a producer that stops stamping the
+// annotation shows up as a rising drop rate instead of as silence.
+func TestServeHTTP_UnroutableEventOutcomes(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		wantOutcome string
+	}{
+		{"unstamped event", nil, "missing_cluster_annotation"},
+		{"unknown provider", map[string]string{clusterAnnotation: "never-created"}, "unknown_cluster_provider"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader, err := telemetry.InitTestExporter()
+			require.NoError(t, err)
+
+			recorder := &fakeFactRecorder{}
+			handler, err := NewAuditHandler(AuditHandlerConfig{
+				FactRecorder:         recorder,
+				ProviderResolver:     fakeProviderResolver{existing: map[string]bool{"prod-eu-1": true}},
+				ClusterAnnotationKey: clusterAnnotation,
+			})
+			require.NoError(t, err)
+
+			w := serveBody(t, handler, http.MethodPost, "/audit-webhook",
+				eventListBody(annotatedEvent("unroutable", tt.annotations)))
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Zero(t, recorder.len())
+
+			dropped, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
+				"outcome": tt.wantOutcome, "category": "dropped",
+				"resource": "configmaps", "verb": "create",
+			})
+			require.True(t, ok, "expected a %s outcome sample", tt.wantOutcome)
+			assert.Equal(t, int64(1), dropped)
+		})
+	}
 }
 
 // TestServeHTTP_NonScaleSubresourceDropped confirms a non-/scale subresource
@@ -148,10 +189,10 @@ func TestServeHTTP_NonScaleSubresourceDropped(t *testing.T) {
 	require.NoError(t, err)
 
 	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
 	require.NoError(t, err)
 
-	w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(subresourceExecEvent))
+	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(subresourceExecEvent))
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Zero(t, recorder.len(), "pods/exec must not be recorded")
 
