@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	meta "github.com/fluxcd/pkg/apis/meta"
@@ -12,9 +13,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/kubeconfig"
@@ -208,6 +212,81 @@ func TestClusterProviderReconcile_ShedsLegacyFinalizer(t *testing.T) {
 			assert.Empty(t, got.Finalizers, "the retired finalizer must be shed")
 		})
 	}
+}
+
+// TestClusterProviderReconcile_ShedFinalizerUpdateFails pins the retry contract for the upgrade
+// path. A stranded object gets no further events of its own, so if the finalizer-shedding Update
+// fails the reconcile MUST return the error — that is the only thing that re-queues it. Swallowing
+// the failure would leave the object in Terminating until the operator restarts.
+func TestClusterProviderReconcile_ShedFinalizerUpdateFails(t *testing.T) {
+	provider := clusterProviderWithKubeConfig("prod-eu-1", "kc", "")
+	provider.Finalizers = []string{LegacyClusterProviderFinalizer}
+	now := metav1.Now()
+	provider.DeletionTimestamp = &now
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scScheme(t)).
+		WithStatusSubresource(&configbutleraiv1alpha3.ClusterProvider{}).
+		WithObjects(provider).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(
+				_ context.Context,
+				_ client.WithWatch,
+				_ client.Object,
+				_ ...client.UpdateOption,
+			) error {
+				return apierrors.NewConflict(
+					schema.GroupResource{Group: "configbutler.ai", Resource: "clusterproviders"},
+					"prod-eu-1", errors.New("conflict"),
+				)
+			},
+		}).
+		Build()
+	r := &ClusterProviderReconciler{Client: cl, OperatorNamespace: cpOperatorNS}
+
+	_, err := r.Reconcile(
+		context.Background(),
+		ctrl.Request{NamespacedName: k8stypes.NamespacedName{Name: "prod-eu-1"}},
+	)
+	require.Error(t, err, "a failed finalizer shed must requeue, not silently give up")
+	assert.Contains(t, err.Error(), "remove retired finalizer")
+
+	// The object is still held, which is exactly why the retry has to happen.
+	var got configbutleraiv1alpha3.ClusterProvider
+	require.NoError(t, cl.Get(context.Background(), k8stypes.NamespacedName{Name: "prod-eu-1"}, &got))
+	assert.Contains(t, got.Finalizers, LegacyClusterProviderFinalizer)
+}
+
+// TestClusterProviderReconcile_InvalidStatusWriteFails checks that a failed status write on the
+// INVALID path is propagated. The verdict itself (a bad kubeconfig) is not an error, but failing to
+// record it is: without the error the provider would report a stale status for a whole steady
+// interval before anything looked again.
+func TestClusterProviderReconcile_InvalidStatusWriteFails(t *testing.T) {
+	provider := clusterProviderWithKubeConfig("prod-eu-1", "absent-kc", "")
+	cl := fake.NewClientBuilder().
+		WithScheme(scScheme(t)).
+		WithObjects(provider).
+		WithStatusSubresource(&configbutleraiv1alpha3.ClusterProvider{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(
+				_ context.Context,
+				_ client.Client,
+				_ string,
+				_ client.Object,
+				_ ...client.SubResourceUpdateOption,
+			) error {
+				return errors.New("status write boom")
+			},
+		}).
+		Build()
+	r := &ClusterProviderReconciler{Client: cl, OperatorNamespace: cpOperatorNS}
+
+	_, err := r.Reconcile(
+		context.Background(),
+		ctrl.Request{NamespacedName: k8stypes.NamespacedName{Name: "prod-eu-1"}},
+	)
+	require.Error(t, err, "a failed status write must requeue rather than report success")
+	assert.Contains(t, err.Error(), "status write boom")
 }
 
 // TestClusterProviderReconcile_NotFound checks a deleted provider reconciles to a no-op.

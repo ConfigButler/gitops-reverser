@@ -63,6 +63,36 @@ func TestActiveClusterIDs_FromDeclareCapture(t *testing.T) {
 	assert.Equal(t, configPlaneClusterID, m.clusterIDForGitTarget(gd("never-declared")))
 }
 
+// TestDeclaredSourceCluster_ReportsCaptureAndDeclaration pins the difference between
+// DeclaredSourceCluster and clusterIDForGitTarget: the latter defaults a never-declared GitTarget
+// to the config plane, which is indistinguishable from one that declared it. Only the ok flag makes
+// "a GitTarget the Validated gate refused starts no watch" assertable from outside this package,
+// so a refused (never-declared) target must report ok=false even for the config-plane id.
+func TestDeclaredSourceCluster_ReportsCaptureAndDeclaration(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+
+	id, ok := m.DeclaredSourceCluster(gd("refused"))
+	assert.False(t, ok, "a GitTarget that never reached Declare has no captured cluster")
+	assert.Empty(t, id)
+
+	m.rememberGitTargetCluster(gd("remote"), "prod-eu-1")
+	m.rememberGitTargetCluster(gd("local"), configPlaneClusterID)
+
+	id, ok = m.DeclaredSourceCluster(gd("remote"))
+	assert.True(t, ok)
+	assert.Equal(t, "prod-eu-1", id, "the cluster captured at Declare time is reported verbatim")
+
+	id, ok = m.DeclaredSourceCluster(gd("local"))
+	assert.True(t, ok, "declaring the config plane is still a declaration, not an absence")
+	assert.Equal(t, configPlaneClusterID, id)
+
+	// Forgetting a deleted GitTarget returns it to the never-declared state, so a torn-down
+	// target cannot be mistaken for one still mirroring the config plane.
+	m.forgetGitTargetCluster(gd("remote"))
+	_, ok = m.DeclaredSourceCluster(gd("remote"))
+	assert.False(t, ok)
+}
+
 func TestRefcountedTeardown(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 	const remote = "prod-eu-1"

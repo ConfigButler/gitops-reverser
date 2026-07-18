@@ -68,7 +68,9 @@ type clusterProviderLogFirsts struct {
 	validationSuccess sync.Once
 }
 
-// +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch;create;update;patch;delete
+// This reconciler reads providers, updates them to shed the retired finalizer, and writes status.
+// It never creates or deletes one, so it takes neither verb.
+// +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders/status,verbs=get;update;patch
 
 // Reconcile validates a ClusterProvider's inputs and updates its status.
@@ -89,7 +91,11 @@ func (r *ClusterProviderReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// This controller takes NO finalizer. It only sheds the legacy one, so an object created by
 	// an older operator can still be deleted after an upgrade. Deletion is otherwise ordinary:
 	// nothing has to happen before a ClusterProvider goes away.
-	if r.shedLegacyFinalizer(ctx, log, &provider) {
+	shed, err := r.shedLegacyFinalizer(ctx, log, &provider)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if shed {
 		return ctrl.Result{}, nil
 	}
 	if !provider.DeletionTimestamp.IsZero() {
@@ -105,20 +111,24 @@ func (r *ClusterProviderReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 // This is the upgrade path, and it must run BEFORE the deletion check: an object stuck in
 // Terminating from an older operator is only recoverable by removing the finalizer, and a
 // controller that returns early on deletionTimestamp would leave it stranded forever.
+//
+// A failed Update is returned as an error rather than swallowed: a stranded object gets no further
+// events of its own, so dropping a transient conflict here would leave it in Terminating until an
+// operator restart. The error is what makes the workqueue retry.
 func (r *ClusterProviderReconciler) shedLegacyFinalizer(
 	ctx context.Context,
 	log logr.Logger,
 	provider *configbutleraiv1alpha3.ClusterProvider,
-) bool {
+) (bool, error) {
 	if !controllerutil.RemoveFinalizer(provider, LegacyClusterProviderFinalizer) {
-		return false
+		return false, nil
 	}
 	if err := r.Update(ctx, provider); err != nil {
 		log.Error(err, "remove retired ClusterProvider finalizer failed; will retry", "name", provider.Name)
-		return false
+		return false, fmt.Errorf("remove retired finalizer from ClusterProvider %s: %w", provider.Name, err)
 	}
 	log.Info("removed the retired fact-purge finalizer", "name", provider.Name)
-	return true
+	return true, nil
 }
 
 // reconcileClusterProvider performs the main validation logic.
@@ -142,8 +152,9 @@ func (r *ClusterProviderReconciler) reconcileClusterProvider(
 	if !valid {
 		r.setCondition(provider, ClusterProviderConditionValidated, metav1.ConditionFalse, reason, message)
 		r.setStalledConditions(provider, reason, message)
-		result, _ := r.updateStatusAndRequeue(ctx, provider)
-		return result, nil
+		// A failed status write is a real failure, not a verdict: propagate it so the invalid
+		// provider is retried rather than left reporting a stale status for a whole steady interval.
+		return r.updateStatusAndRequeue(ctx, provider)
 	}
 
 	r.setCondition(provider, ClusterProviderConditionValidated, metav1.ConditionTrue, reason, message)

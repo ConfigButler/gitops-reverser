@@ -132,12 +132,18 @@ func (r *GitTargetReconciler) clusterProviderReadiness(
 	case c.Status == metav1.ConditionTrue:
 		return metav1.ConditionTrue, GitTargetReasonClusterProviderReady,
 			fmt.Sprintf("referenced ClusterProvider %q is Ready", name)
-	default:
+	case c.Status == metav1.ConditionFalse:
 		msg := fmt.Sprintf("referenced ClusterProvider %q is not Ready", name)
 		if c.Message != "" {
 			msg = fmt.Sprintf("referenced ClusterProvider %q is not Ready: %s", name, c.Message)
 		}
 		return metav1.ConditionFalse, GitTargetReasonClusterProviderNotReady, msg
+	default:
+		// Ready=Unknown is the provider saying it does not know yet, which is exactly the case the
+		// contract above refuses to downgrade on. Collapsing it into False would hold a GitTarget
+		// down on a provider mid-reconcile.
+		return metav1.ConditionUnknown, GitTargetReasonClusterProviderNotReady,
+			fmt.Sprintf("referenced ClusterProvider %q readiness is unknown", name)
 	}
 }
 

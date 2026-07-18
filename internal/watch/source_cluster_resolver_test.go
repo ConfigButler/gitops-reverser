@@ -146,6 +146,25 @@ func TestResolveSourceCluster_MissingProviderSecretAndKey(t *testing.T) {
 	assert.Equal(t, kubeconfig.ReasonKeyNotFound, rej.Reason)
 }
 
+// TestDescribeKey covers the hint a "key not found" error carries. An omitted secretRef.key is
+// not "no key": the resolver tried both fallbacks, and the message must say so or the human is
+// told to look for a key they never wrote.
+func TestDescribeKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		specKey string
+		want    string
+	}{
+		{"omitted key names both fallbacks", "", "value or value.yaml"},
+		{"explicit key is reported verbatim", "kubeconfig", "kubeconfig"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, describeKey(tc.specKey))
+		})
+	}
+}
+
 func TestResolveSourceCluster_RejectsUnsafe(t *testing.T) {
 	r := newResolver(t, kubeconfig.SafetyPolicy{},
 		clusterProvider("value"), kubeconfigSecret("value", resolverExecKubeConfig))

@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -17,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -157,6 +159,48 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			},
 			providerRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
 		},
+		{
+			name: "provider allows the namespace by label selector",
+			objects: []client.Object{
+				provider(&configbutleraiv1alpha3.AllowedNamespaces{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
+				}), ns,
+			},
+			providerRef: "prod-eu-1", wantAuthorized: true,
+		},
+		{
+			// A selector the API accepted but that cannot compile must FAIL CLOSED. Treating an
+			// unevaluatable policy as "allow" would hand a namespace access it was never granted.
+			name: "invalid allowedNamespaces selector -> refused, not allowed",
+			objects: []client.Object{
+				provider(&configbutleraiv1alpha3.AllowedNamespaces{
+					Selector: &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{Key: "tier", Operator: "BogusOperator", Values: []string{"trusted"}},
+						},
+					},
+				}), ns,
+			},
+			providerRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
+		},
+		{
+			// A missing Namespace object is not an error: the policy is still evaluated, just with
+			// no labels. A name-based allow still works; a selector-only policy then denies.
+			name: "namespace object absent -> evaluated with no labels, name allow still holds",
+			objects: []client.Object{
+				provider(&configbutleraiv1alpha3.AllowedNamespaces{Names: []string{"team-a"}}),
+			},
+			providerRef: "prod-eu-1", wantAuthorized: true,
+		},
+		{
+			name: "namespace object absent -> selector-only policy denies (no labels to match)",
+			objects: []client.Object{
+				provider(&configbutleraiv1alpha3.AllowedNamespaces{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
+				}),
+			},
+			providerRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -171,6 +215,100 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCheckSourceAuthorization_ReadErrorsRequeue pins the fail-closed contract for TRANSIENT
+// failures. A read error is not a verdict: the gate must return an error so the reconcile requeues,
+// rather than returning authorized=false (which would look like a policy denial and flap the
+// GitTarget's status) or authorized=true (which would open a watch on an unevaluated policy).
+func TestCheckSourceAuthorization_ReadErrorsRequeue(t *testing.T) {
+	target := &configbutleraiv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
+		Spec: configbutleraiv1alpha3.GitTargetSpec{
+			ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: "prod-eu-1"},
+		},
+	}
+	provider := &configbutleraiv1alpha3.ClusterProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "prod-eu-1"},
+		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
+			AllowedNamespaces: &configbutleraiv1alpha3.AllowedNamespaces{Names: []string{"team-a"}},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		failOn  func(client.Object) bool
+		wantErr string
+	}{
+		{
+			name:    "ClusterProvider read fails",
+			failOn:  func(o client.Object) bool { _, ok := o.(*configbutleraiv1alpha3.ClusterProvider); return ok },
+			wantErr: "read ClusterProvider",
+		},
+		{
+			name:    "Namespace read fails",
+			failOn:  func(o client.Object) bool { _, ok := o.(*corev1.Namespace); return ok },
+			wantErr: "read namespace",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cl := fake.NewClientBuilder().
+				WithScheme(scScheme(t)).
+				WithObjects(provider).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(
+						ctx context.Context,
+						c client.WithWatch,
+						key client.ObjectKey,
+						obj client.Object,
+						opts ...client.GetOption,
+					) error {
+						if tc.failOn(obj) {
+							return errors.New("api server unavailable")
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				}).
+				Build()
+			r := &GitTargetReconciler{Client: cl}
+
+			ok, reason, _, err := r.checkSourceAuthorization(context.Background(), target)
+			require.Error(t, err, "a transient read failure must requeue, not decide the policy")
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.False(t, ok)
+			assert.Empty(t, reason, "an error carries no verdict reason")
+		})
+	}
+}
+
+// TestConditionStatusFromString maps the watch layer's stringly-typed state onto the API type.
+// Anything unrecognised must land on Unknown rather than being read as a False (which would
+// downgrade a GitTarget on a state the data plane never actually reported).
+func TestConditionStatusFromString(t *testing.T) {
+	tests := []struct {
+		state string
+		want  metav1.ConditionStatus
+	}{
+		{"True", metav1.ConditionTrue},
+		{"False", metav1.ConditionFalse},
+		{"Unknown", metav1.ConditionUnknown},
+		{"", metav1.ConditionUnknown},
+		{"true", metav1.ConditionUnknown},
+		{"garbage", metav1.ConditionUnknown},
+	}
+	for _, tc := range tests {
+		t.Run("state="+tc.state, func(t *testing.T) {
+			assert.Equal(t, tc.want, conditionStatusFromString(tc.state))
+		})
+	}
+}
+
+// TestDescribeKubeConfigKey checks the "key not found" hint names the value→value.yaml fallback
+// when the spec omitted a key, so the message tells the user what was actually tried.
+func TestDescribeKubeConfigKey(t *testing.T) {
+	assert.Equal(t, "value or value.yaml", describeKubeConfigKey(""))
+	assert.Equal(t, "kubeconfig", describeKubeConfigKey("kubeconfig"))
 }
 
 // TestReconcile_UnauthorizedNamespaceStartsNoWatch pins the whole security property in one place,
@@ -266,6 +404,13 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 		Message: "nope",
 	}
 
+	unknownReady := metav1.Condition{
+		Type:    ConditionTypeReady,
+		Status:  metav1.ConditionUnknown,
+		Reason:  "Checking",
+		Message: "validating",
+	}
+
 	tests := []struct {
 		name string
 		cp   *configbutleraiv1alpha3.ClusterProvider
@@ -275,6 +420,13 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 		{"not ready -> False (downgrades)", provider([]metav1.Condition{notReady}), metav1.ConditionFalse},
 		{"no condition -> Unknown (does not downgrade)", provider(nil), metav1.ConditionUnknown},
 		{"absent provider -> Unknown", nil, metav1.ConditionUnknown},
+		// Only an EXPLICIT Ready=False downgrades. A provider reporting Ready=Unknown is mid-flight,
+		// not broken, so it must not hold its GitTargets down.
+		{
+			"explicit Ready=Unknown -> Unknown (does not downgrade)",
+			provider([]metav1.Condition{unknownReady}),
+			metav1.ConditionUnknown,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
