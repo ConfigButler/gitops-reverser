@@ -11,10 +11,13 @@
 
 # GitOps Reverser
 
-GitOps Reverser is a Kubernetes operator that turns live Kubernetes API activity into clean,
-versioned YAML in Git: an audit trail, reviewable history, and a GitOps-reconcilable repo, without
-giving up API-first workflows. The broader pattern is described at
-[reversegitops.dev](https://reversegitops.dev).
+GitOps Reverser is a Kubernetes operator that turns Kubernetes API resources into clean YAML in Git.
+It is configurable, and can be used as:
+
+* a live audit trail, or
+* a "reverse" GitOps-reconcilable repo — without giving up API-first workflows.
+
+The broader pattern is described at [reversegitops.dev](https://reversegitops.dev).
 
 <div align="center"><img src="docs/demo/demo.gif" alt="Demo: kubectl apply triggers a sanitized Git commit within seconds" width="100%"></div>
 
@@ -24,19 +27,29 @@ in [ConfigButler/example-audit](https://github.com/ConfigButler/example-audit).
 
 ## What it does
 
-- Keep using the Kubernetes API as the write path.
-- Capture those live changes as stable manifests in Git.
-- Keep configuration file-backed, reviewable, and reusable.
+- Reconciles existing Kubernetes API state into Git: the repo reflects the exact current state.
+- Captures live changes through watches.
+- Includes real actors for every change if you configure [kube-api server audit webhooks](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend).
 
 ![Overview diagram showing how API events flow through the operator into Git](docs/images/overview.excalidraw.svg)
 
+## What it can't
+
+It edits the **intent layer** — the documents a human authored — never the **expansion layer** a
+controller derived from them. So it cannot reverse Helm-rendered resources into a clean `values.yaml`,
+and it will not invent structure for templating it does not model. Simple Kustomize layouts *are*
+supported ([see below](#simple-kustomize-support)); the full verdict table is in
+[`support-contract.md`](docs/design/support-boundary/support-contract.md).
+
 ## When it fits
+
+Good fit if you want API-first and Git at the same time.
 
 | Good fit | Poor fit |
 |---|---|
 | Clusters where you can grant watch/RBAC and write to Git (optionally run Valkey/Redis for the full feature set) | Production HA requirements today |
 | Teams that want API-to-Git capture first, then named author attribution later | Shared paths with two always-on writers fighting over the same resources |
-| API-first or hybrid teams that still want Git history; brownfield discovery, hotfix capture, migration toward GitOps | Workflows that need a guaranteed per-mutation change log rather than a state mirror |
+| API-first or hybrid teams that still want Git history; brownfield discovery, hotfix capture, migration toward GitOps | Teams who want Git to stay the write path, with humans editing manifests first |
 
 ## How it works
 
@@ -53,74 +66,86 @@ It can also:
 - Group changes within a time window into a single commit.
 - Take your own commit message and "why" from a `CommitRequest`.
 
-### Operating modes
+### Who authors the commits
 
-Every install shares one base: Kubernetes watch/RBAC access, Git credentials, and cert-manager. The
-only thing that varies is **who shows up as the commit author**.
+Every commit carries a Git *author* and a Git *committer*. By default both are one configured
+identity (`configured-author`). Turn on attribution and the **author** becomes the real Kubernetes
+actor — user, service account, or CI identity — while the committer never moves. That needs
+kube-apiserver audit delivery (managed control planes like EKS/GKE/AKS generally do not expose it)
+plus Valkey/Redis: see the [attribution setup guide](docs/attribution-setup-guide.md).
 
-| Mode | Git author | Git committer | Also needs |
-|---|---|---|---|
-| **`configured-author`** *(default)* | the configured identity | the configured identity | None |
-| **`attributed-author`** | the authenticated Kubernetes actor | the configured identity | audit delivery + Valkey/Redis |
+**Valkey/Redis is optional but advised.** Without it the default mode works fine; adding it unlocks
+warm-restart cursors, `CommitRequest` author capture, and attribution.
 
-Every commit carries both a Git *author* and a Git *committer*. In `configured-author` mode they are
-the same configured identity (say, `ConfigButler Bot`). Turn on `attribution.enabled` and only the
-**author** changes; it becomes whoever actually made the change, while the committer stays put:
+### Delivery guarantees
 
-| Who made the change (Kubernetes actor) | Git author | Git committer |
-|---|---|---|
-| Human user (`simon@example.com`) | Simon | `ConfigButler Bot` |
-| Service account (`system:serviceaccount:team-a:deployer`) | the `team-a/deployer` service account | `ConfigButler Bot` |
-| CI / GitHub App identity | that CI / App identity | `ConfigButler Bot` |
+While the watch is connected the operator sees each individual update and commits it, so Git tracks
+changes as they happen. Across a *gap* — pod restart, disconnect, `410 Gone` — it reconciles to
+current state instead of replaying versions it never saw, so edits made during the gap collapse into
+one commit. Nothing is lost or left stale; deletes are reconciled on reconnect. See
+[`docs/architecture.md`](docs/architecture.md) for replay and `410 Gone` details.
 
-The committer column never moves. That is the point. On a strong audit match the actor becomes the
-author; with no match, the commit still lands, authored by the committer. `attributed-author` needs
-kube-apiserver audit delivery (which managed control planes like EKS/GKE/AKS generally do not expose)
-plus Valkey/Redis. See the [attribution setup guide](docs/attribution-setup-guide.md).
+## Simple Kustomize support
 
-**Valkey/Redis is optional but advised.** The default runs without it in `configured-author` mode.
-Add a reachable Valkey/Redis to unlock warm-restart cursors (watches resume instead of cold-replaying),
-CommitRequest author capture (the admission webhook is installed by default but only records authors
-once Redis is present, a form of author attribution), and attributed-author mode. `configured-author`
-needs none of it.
+The write path runs **kustomize itself** (`sigs.k8s.io/kustomize/api`) in memory — no plugins, no
+exec, no network, no remote bases — and uses the render to decide where a change belongs and to check
+the result before committing. What it can do:
 
-Because object state comes from **watch**, GitOps Reverser is a *state mirror*: it reflects current
-object state, not every intermediate mutation, and no delete is silently lost (one missed while no
-watch was running is reconciled on reconnect). See [`docs/architecture.md`](docs/architecture.md) for
-replay and `410 Gone` details.
+- Edit `resources:` (and `bases:`), `namespace:`, `images:`, and `replicas:` as real declarations.
+- Write a change where the value actually lives — the source document, or the governing
+  `images:`/`replicas:` entry — rather than mirroring rendered output over your source files.
+- Add a new file to the right `resources:` list in the same commit, and remove the entry when that
+  file's last document is deleted, so the repo never stops building.
+- Support `base/` + `overlays/{env}/`: the base is read-only context, never written through an overlay.
+- Create a missing `images:`/`replicas:` entry in an overlay, so one environment changes without
+  touching a shared base, and author a `$patch: delete` for an object an overlay inherits.
+- Read `patches:` (local strategic-merge files), `commonLabels`, `labels`, and `commonAnnotations` as
+  read-only build context.
+- Verify every commit by re-rendering before and after, refusing it unless your change lands exactly
+  and nothing else moves.
 
-## Boundaries
-
-GitOps Reverser reconstructs clean Kubernetes manifests from live cluster state. It does **not**
-reconstruct higher-level authoring intent that is no longer in the cluster: it writes back stable
-Kubernetes YAML, but it cannot reverse Helm-rendered resources into a clean `values.yaml`, and it
-generally cannot infer the original structure of arbitrary templates or overlays.
-
-That boundary is intentional. The goal is deployable cluster intent in Git, not magical recovery of
-every upstream abstraction.
+It refuses by name — before writing anything, reported as `Stalled=True` — generators, `components`,
+`namePrefix`/`nameSuffix`, `replacements`, `vars`, `helmCharts`, plugins, inline and JSON6902 patches,
+remote bases, and any field it does not model. One known gap: a strategic-merge patch that *edits a
+field* of a base-owned object is not authored yet. Reasoning in
+[`kustomize-support-boundary.md`](docs/design/support-boundary/kustomize-support-boundary.md).
 
 ## Status
 
 Early-stage software; CRDs and behavior may still change.
 
-- Single controller pod (`replicas=1`); HA is not supported yet.
+- Runs as a single controller pod (`replicas=1`).
 - Shared-resource bi-directional workflows need explicit coordination.
-- Source recovery is limited to Kubernetes manifests, not Helm/Kustomize authoring models.
+- Source recovery covers Kubernetes manifests and simple Kustomize layouts, not Helm authoring models.
 - Tested against Kubernetes `1.36`; other versions may work but are not in the matrix.
 - Runtime behavior is deterministic: no AI or heuristic mutation at runtime.
 
 Good fit for pilots, lab clusters, brownfield discovery, and design partners who can tolerate change.
-Production use should follow an environment-specific review. Deferred directions live in
-[docs/TODO.md](docs/TODO.md) and [docs/future/](docs/future/).
+Production use should follow an environment-specific review.
+
+### On the road to 1.0
+
+Roughly in priority order:
+
+- **High availability** — `replicaCount > 1` is rejected today; needs leader/ownership coordination so
+  two replicas never write the same `GitTarget`. Redis becomes required rather than advised.
+- **A stabilized configuration surface** — all six CRDs are `v1alpha3` with no conversion path yet.
+- **More documentation** — day-2 operations, troubleshooting, and worked examples per layout.
+- **A durable worker queue** — a crash between advancing the watch cursor and landing the write can
+  currently skip work on restart.
+- **Write-collision safety** across `GitProvider` objects sharing a repository. Until then, keep one
+  `GitProvider` per repository.
+- **Better queue and worker observability** — enough metrics to run it without reading logs.
+- **More control over output layout**, plus filtering cluster-generated noise out of the Git view.
+
+Backlog in [docs/TODO.md](docs/TODO.md); longer-range directions in [docs/future/](docs/future/).
 
 ## Quick start
 
 This brings up the **demo**: a starter `GitProvider`, `GitTarget`, and `WatchRule` in a
-`gitops-reverser-quickstart-demo` namespace. It watches ConfigMaps in that namespace and writes them
-to `<your-repo>/live-cluster` on the `main` branch. It runs in **`configured-author` mode** (one
-committer identity, no Redis) by default. The chart also renders the cluster-scoped `default`
-`ClusterProvider`, so the starter target's omitted source reference resolves to the operator's own
-cluster.
+`gitops-reverser-quickstart-demo` namespace, watching ConfigMaps there and writing them to
+`<your-repo>/live-cluster` on `main`. It runs in `configured-author` mode (no Redis) by default. The
+chart also renders the cluster-scoped `default` `ClusterProvider` the starter target resolves against.
 
 ![Config basics diagram showing the relationship between GitProvider, GitTarget, and WatchRule](docs/images/config-basics.excalidraw.svg)
 
@@ -128,8 +153,12 @@ cluster.
 
 **1. Install cert-manager**
 
+The controller mounts an admission certificate at startup, so cert-manager must be healthy *before*
+you install the chart. (`--set servers.admission.enabled=false` drops the dependency; the
+[chart README](charts/gitops-reverser/README.md) covers bring-your-own certificates.)
+
 ```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.20.3/cert-manager.yaml
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.0/cert-manager.yaml
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
 ```
 
@@ -181,22 +210,29 @@ helm install gitops-reverser \
 
 Replace `OWNER/REPO` with your repository (angle brackets would be parsed by the shell).
 
-This runs without Redis, so warm-restart cursors and author capture (CommitRequest and
-attributed-author) stay inactive; the operator is healthy regardless. To enable them, point it at a
-reachable Valkey/Redis with `--set queue.redis.addr=HOST:PORT` (add
-`--set queue.redis.auth.existingSecret=SECRET` if it requires auth; see the
-[chart README](charts/gitops-reverser/README.md)).
+Three things worth knowing about this install:
 
-The starter `GitTarget` has SOPS encryption enabled, so on first reconcile the controller generates a
-`sops-age-key` Secret in the demo namespace and annotates it with a backup reminder. That is expected;
-it only matters once you mirror `Secret` resources (the demo watches ConfigMaps). Back up that key if
-you keep the demo around.
+- **No Redis**, so warm-restart cursors and author capture stay inactive. Add one with
+  `--set queue.redis.addr=HOST:PORT` (plus `queue.redis.auth.existingSecret` if it needs auth).
+- **Cluster-wide read on every watchable type, including Secrets** (`rbac.watchTypes.mode=any`) — fine
+  for a demo, probably not for a real cluster. [`docs/rbac.md`](docs/rbac.md) narrows it.
+- **SOPS is on for the starter target**, so a `sops-age-key` Secret is generated in the demo namespace
+  with a backup reminder. Only matters once you mirror Secrets; back it up if you keep the demo.
 
-Check the starter resources become ready:
+Wait for the controller — on a fresh install this waits on cert-manager issuing the certificate:
+
+```bash
+kubectl rollout status deployment/gitops-reverser -n gitops-reverser --timeout=300s
+```
+
+Then check the starter resources:
 
 ```bash
 kubectl get gitprovider,gittarget,watchrule -n gitops-reverser-quickstart-demo
 ```
+
+The `GitProvider` and `WatchRule` report `Ready=True`; the `GitTarget` reports **`Validated=True`** —
+its aggregate `Ready` stays `Unknown` until first source discovery, which is expected, not a failure.
 
 **5. Test it**
 
@@ -211,15 +247,22 @@ kubectl logs -n gitops-reverser deploy/gitops-reverser
 kubectl describe gitprovider,gittarget,watchrule -n gitops-reverser-quickstart-demo
 ```
 
+Two `GitTarget` conditions stop the data plane and are worth recognising: `ClusterProviderNotFound`
+(the `default` `ClusterProvider` is missing) and `NamespaceNotAuthorized` (its `allowedNamespaces`
+selector does not cover the demo namespace).
+
 To tear the demo down: `helm uninstall gitops-reverser -n gitops-reverser` and
 `kubectl delete namespace gitops-reverser-quickstart-demo`.
 
+> **Note:** the `default` `ClusterProvider` is cluster-scoped and chart-owned, so uninstalling takes
+> it with it — holding *every* other `GitTarget` in the cluster unready. Mind that if you run the demo
+> alongside a real deployment.
+
 ### Want named users on your commits?
 
-Every Git commit has both an author and a committer. Turn on **`attributed-author` mode** and the
-real Kubernetes actor (user, service account, or CI identity) becomes the Git author, while the
-configured identity stays the committer. It needs kube-apiserver audit delivery and Valkey/Redis; the
-[attribution setup guide](docs/attribution-setup-guide.md) walks through the setup.
+Turn on `attributed-author` mode so the real Kubernetes actor becomes the Git author. Needs audit
+delivery and Valkey/Redis — the [attribution setup guide](docs/attribution-setup-guide.md) walks it
+through.
 
 ### Rather have it managed?
 
