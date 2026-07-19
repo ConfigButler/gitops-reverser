@@ -35,11 +35,6 @@
       "description": "cosign is pinned twice and must move together: the devcontainer ENV block and the cosign-installer input in release.yml. Keep both in one PR.",
       "matchDepNames": ["sigstore/cosign"],
       "groupName": "cosign"
-    },
-    {
-      "description": "Hold Gitea on the 12.5.x chart line (Gitea 1.25.x). Gitea 1.26 removed the _csrf form input and cookie from /user/login, which internal/giteaclient's WebSession scrapes to verify SSH signing keys; the signing e2e spec fails on 12.6.0+. Drop this rule once that helper is reworked.",
-      "matchDepNames": ["gitea"],
-      "allowedVersions": "<12.6.0"
     }
   ],
   "customManagers": [

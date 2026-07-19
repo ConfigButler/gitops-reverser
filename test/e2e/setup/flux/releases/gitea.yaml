@@ -13,11 +13,7 @@ spec:
         kind: HelmRepository
         name: gitea-charts
         namespace: flux-system
-      # Pinned to the 12.5.x line (Gitea 1.25.5) deliberately: Gitea 1.26+ removed the `_csrf`
-      # form input and cookie from /user/login, which internal/giteaclient's WebSession scrapes to
-      # log in and verify an SSH signing key. Moving to chart 12.6.0/12.7.0 needs that helper
-      # reworked first — see the signing e2e spec.
-      version: 12.5.3
+      version: 12.7.0
   install:
     createNamespace: false
     remediation:

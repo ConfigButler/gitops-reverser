@@ -10,7 +10,6 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 )
 
@@ -19,9 +18,7 @@ const (
 	debugMatchContextAfter  = 120
 	flashErrorPreviewSize   = 400
 	httpErrorThreshold      = 400
-	csrfMatchGroupCount     = 3
 	sessionCookieName       = "i_like_gitea"
-	csrfCookieName          = "_csrf"
 )
 
 // WebSession drives Gitea's web UI for flows the REST API does not expose
@@ -51,16 +48,14 @@ func NewWebSession(ctx context.Context, baseURL, username, password string, debu
 		Debug:      debug,
 	}
 
-	// Step 1: GET the login page to receive a _csrf cookie and form token.
-	csrf, err := s.fetchCSRF(ctx, "/user/login")
-	if err != nil {
-		return nil, fmt.Errorf("fetch login CSRF: %w", err)
-	}
-
-	// Step 2: POST credentials. On success Gitea sets the session cookie
+	// POST credentials. On success Gitea sets the session cookie
 	// (`i_like_gitea`) and 302-redirects away from /user/login.
+	//
+	// No CSRF token is sent. Gitea 1.26 replaced form-token CSRF with Go's
+	// stdlib http.CrossOriginProtection (routers/web/web.go), which allows any
+	// request carrying neither Sec-Fetch-Site nor Origin — i.e. every non-browser
+	// client. /user/login is additionally exempt, being SignOutRequired.
 	form := url.Values{}
-	form.Set("_csrf", csrf)
 	form.Set("user_name", username)
 	form.Set("password", password)
 	form.Set("remember", "off")
@@ -98,14 +93,7 @@ func NewWebSession(ctx context.Context, baseURL, username, password string, debu
 // block produced by `ssh-keygen -Y sign -n gitea` over the token from
 // /user/gpg_key_token.
 func (s *WebSession) VerifySSHKey(ctx context.Context, publicKey, fingerprint, signature string) error {
-	// Gitea's keys settings page renders a fresh CSRF token we must echo back.
-	csrf, err := s.fetchCSRF(ctx, "/user/settings/keys")
-	if err != nil {
-		return fmt.Errorf("fetch keys-page CSRF: %w", err)
-	}
-
 	form := url.Values{}
-	form.Set("_csrf", csrf)
 	form.Set("type", "verify_ssh")
 	// The browser-rendered form sets title=none unconditionally and posts the
 	// public key in `content`. Replicate both exactly.
@@ -136,49 +124,6 @@ func (s *WebSession) VerifySSHKey(ctx context.Context, publicKey, fingerprint, s
 	// form state.
 	return verifySSHFailure(resp.StatusCode, string(body), fingerprint)
 }
-
-// fetchCSRF GETs the given path and extracts the form CSRF token. Gitea
-// renders it as: <input ... name="_csrf" value="...">.
-func (s *WebSession) fetchCSRF(ctx context.Context, path string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+path, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := s.HTTPClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	token := extractCSRFToken(string(body))
-	if token != "" {
-		return token, nil
-	}
-	if token = s.cookieValue(csrfCookieName); token != "" {
-		return token, nil
-	}
-	return "", fmt.Errorf("no _csrf input or cookie found at %s (HTTP %d)", path, resp.StatusCode)
-}
-
-func extractCSRFToken(html string) string {
-	m := csrfInputRE.FindStringSubmatch(html)
-	if len(m) < csrfMatchGroupCount {
-		return ""
-	}
-	if m[1] != "" {
-		return m[1]
-	}
-	return m[2]
-}
-
-// csrfInputRE matches `<input ... name="_csrf" value="TOKEN">` in either order.
-var csrfInputRE = regexp.MustCompile(
-	`<input[^>]*\bname="_csrf"[^>]*\bvalue="([^"]+)"|` +
-		`<input[^>]*\bvalue="([^"]+)"[^>]*\bname="_csrf"`,
-)
 
 func (s *WebSession) hasCookie(name string) bool {
 	return s.cookieValue(name) != ""
