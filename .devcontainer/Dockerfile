@@ -65,15 +65,15 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUSTOMIZE_VERSION=5.8.1 \
     KUBEBUILDER_VERSION=4.15.0 \
     GOLANGCI_LINT_VERSION=v2.12.2 \
-    HELM_VERSION=v4.2.0 \
+    HELM_VERSION=v4.2.3 \
     K3D_VERSION=v5.9.0 \
-    FLUX_VERSION=2.9.0 \
-    FLUX_OPERATOR_VERSION=0.53.0 \
-    TASK_VERSION=v3.51.1 \
+    FLUX_VERSION=2.9.2 \
+    FLUX_OPERATOR_VERSION=0.55.0 \
+    TASK_VERSION=v3.52.0 \
     ACTIONLINT_VERSION=1.7.12 \
     HADOLINT_VERSION=2.14.0 \
     VALKEY_VERSION=9.1.0 \
-    COSIGN_VERSION=v3.1.1
+    COSIGN_VERSION=v3.1.2
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \

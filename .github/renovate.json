@@ -1,0 +1,175 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard"
+  ],
+  "description": [
+    "Renovate covers only the pins Dependabot cannot see. Dependabot (.github/dependabot.yml) owns",
+    "gomod, github-actions, and Dockerfile FROM lines; those managers stay disabled here so the two",
+    "bots never open competing PRs. What is left is the class that silently rotted: Flux HelmRelease",
+    "chart versions, the hand-maintained tool pins in the devcontainer ENV block, and version numbers",
+    "embedded in a URL or a workflow input."
+  ],
+  "enabledManagers": [
+    "flux",
+    "custom.regex"
+  ],
+  "flux": {
+    "managerFilePatterns": [
+      "/^test/e2e/setup/.+\\.yaml$/"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "The e2e cluster charts are test infrastructure — review them as one PR.",
+      "matchManagers": ["flux"],
+      "groupName": "e2e cluster charts"
+    },
+    {
+      "description": "Group the devcontainer toolchain so a refresh is one image rebuild, not ten.",
+      "matchFileNames": [".devcontainer/Dockerfile"],
+      "groupName": "devcontainer toolchain"
+    },
+    {
+      "description": "cosign is pinned twice and must move together: the devcontainer ENV block and the cosign-installer input in release.yml. Keep both in one PR.",
+      "matchDepNames": ["sigstore/cosign"],
+      "groupName": "cosign"
+    },
+    {
+      "description": "Hold Gitea on the 12.5.x chart line (Gitea 1.25.x). Gitea 1.26 removed the _csrf form input and cookie from /user/login, which internal/giteaclient's WebSession scrapes to verify SSH signing keys; the signing e2e spec fails on 12.6.0+. Drop this rule once that helper is reworked.",
+      "matchDepNames": ["gitea"],
+      "allowedVersions": "<12.6.0"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "cert-manager release manifest URL in the README quick start",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": [
+        "cert-manager/cert-manager/releases/download/(?<currentValue>v[0-9.]+)/cert-manager\\.yaml"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "cert-manager/cert-manager"
+    },
+    {
+      "customType": "regex",
+      "description": "cosign-release input for sigstore/cosign-installer",
+      "managerFilePatterns": ["/^\\.github/workflows/release\\.yml$/"],
+      "matchStrings": ["cosign-release:\\s*(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "sigstore/cosign"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: kubectl",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["KUBECTL_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "kubernetes/kubernetes"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: kustomize (tags are kustomize/vX.Y.Z, the ENV holds a bare X.Y.Z)",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["KUSTOMIZE_VERSION=(?<currentValue>[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "kubernetes-sigs/kustomize",
+      "extractVersionTemplate": "^kustomize/v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: kubebuilder",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["KUBEBUILDER_VERSION=(?<currentValue>[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "kubernetes-sigs/kubebuilder",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: golangci-lint",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["GOLANGCI_LINT_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "golangci/golangci-lint"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: helm",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["HELM_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "helm/helm"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: k3d",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["K3D_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "k3d-io/k3d"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: flux2 CLI (also rendered into the e2e FluxInstance via FLUX_VERSION)",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["FLUX_VERSION=(?<currentValue>[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "fluxcd/flux2",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: flux-operator",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["FLUX_OPERATOR_VERSION=(?<currentValue>[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "controlplaneio-fluxcd/flux-operator",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: task",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["TASK_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "go-task/task"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: actionlint",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["ACTIONLINT_VERSION=(?<currentValue>[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "rhysd/actionlint",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: hadolint",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["HADOLINT_VERSION=(?<currentValue>[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "hadolint/hadolint",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: valkey server (tags carry no leading v)",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["VALKEY_VERSION=(?<currentValue>[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "valkey-io/valkey"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: cosign",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["COSIGN_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "sigstore/cosign"
+    }
+  ]
+}
