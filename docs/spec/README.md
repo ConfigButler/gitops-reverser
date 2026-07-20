@@ -33,6 +33,7 @@ If you change one of these behaviours, change the document in the same commit.
 | [`type-followability.md`](type-followability.md) | is a type followable, and if not, the single reason |
 | [`type-lifecycle-events-and-wobble-settling.md`](type-lifecycle-events-and-wobble-settling.md) | removal grace and flap coalescing |
 | [`gvk-gvr-mapping-layer.md`](gvk-gvr-mapping-layer.md) | the GVK↔GVR bijection contract |
+| [`where-validation-lives.md`](where-validation-lives.md) | schema → CEL → **the reconciler**; a webhook only for what exists solely at admission |
 | [`sops-single-file-no-multidoc.md`](sops-single-file-no-multidoc.md) | one encrypted file is one document |
 | [`scale-subresource-audit-rehydration.md`](scale-subresource-audit-rehydration.md) | `/scale` → bounded field patch; every other subresource ignored |
 | [`commit-window-refactor.md`](commit-window-refactor.md) | one grouped commit = one (author, GitTarget) |
