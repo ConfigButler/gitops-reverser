@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 )
 
 // bootstrapRuleStore loads existing WatchRule and ClusterWatchRule objects into the in-memory RuleStore
@@ -77,6 +78,22 @@ func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1al
 	})
 	if err != nil {
 		return err
+	}
+
+	// Re-apply the referenced GitTarget's ClusterProvider admission before seeding. Bootstrap runs
+	// BEFORE the first reconcile on every restart, so a gate the reconciler alone enforced would be
+	// bypassed for the whole startup window — long enough to compile a rule and plan a stream for a
+	// target the provider never admitted. A denial is not fatal to startup: the rule is simply left
+	// out of the store, and the reconciler's own gate re-decides (and can grant it) as soon as the
+	// controller's initial sync reaches this rule.
+	admitted, admitErr := authz.GitTargetAdmitted(ctx, m.Client, &target)
+	if admitErr != nil {
+		return fmt.Errorf("evaluating ClusterProvider admission for GitTarget %s/%s: %w",
+			target.Namespace, target.Name, admitErr)
+	}
+	if !admitted.Allowed {
+		return fmt.Errorf("ClusterWatchRule %q may not compile against GitTarget %s/%s: %s",
+			rule.Name, target.Namespace, target.Name, admitted.Message)
 	}
 
 	m.RuleStore.AddOrUpdateClusterWatchRule(

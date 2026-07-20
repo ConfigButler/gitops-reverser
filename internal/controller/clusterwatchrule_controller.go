@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -20,6 +22,7 @@ import (
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
@@ -35,6 +38,15 @@ const (
 	ClusterWatchRuleReasonReady                 = "Ready"
 	ClusterWatchRuleReasonResourcesResolved     = "Resolved"
 	ClusterWatchRuleReasonUnresolvedResources   = "UnresolvedResources"
+
+	// ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized is the terminal reason when the
+	// referenced GitTarget's namespace is not admitted by that target's ClusterProvider — either
+	// because spec.allowedNamespaces excludes it or because the provider does not exist at all.
+	//
+	// One rule-side reason covers both provider-side causes on purpose: from the ClusterWatchRule's
+	// point of view the single fact that matters is that this rule may not compile against this
+	// target. The Message carries which of the two it was.
+	ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized = "GitTargetNamespaceNotAuthorized"
 )
 
 // ClusterWatchRuleReconciler reconciles a ClusterWatchRule object.
@@ -50,6 +62,8 @@ type ClusterWatchRuleReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterwatchrules/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -168,6 +182,11 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	}
 	r.setGitTargetReadyCondition(clusterRule, target)
 
+	// ClusterProvider namespace admission — see gateGitTargetAdmission.
+	if handled, result, err := r.gateGitTargetAdmission(ctx, clusterRule, target, log); handled {
+		return result, err
+	}
+
 	// Resolve GitProvider from target
 	providerName := target.Spec.ProviderRef.Name
 	providerNS := target.Namespace // Same as GitTarget
@@ -221,6 +240,98 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 
 	log.Info("ClusterWatchRule reconciliation via GitTarget successful", "name", clusterRule.Name)
 	return r.setReadyAndUpdateStatusWithTarget(ctx, clusterRule)
+}
+
+// gateGitTargetAdmission applies the ClusterProvider namespace admission to the GitTarget a
+// ClusterWatchRule references. A ClusterWatchRule is cluster-scoped and its targetRef carries a
+// REQUIRED namespace, so it may name a GitTarget in ANY namespace and widen that target's mirror
+// scope cluster-wide. Compiling such a rule without re-applying the target's own provider
+// admission would let it mirror through a credential whose allowedNamespaces never admitted that
+// target — so the same decision the GitTarget reconciler makes is made here too, at the second
+// call site that compiles rules. See internal/authz.
+//
+// It returns handled=false when the rule may proceed; handled=true means the reconcile is over and
+// the caller must return the accompanying result and error unchanged.
+func (r *ClusterWatchRuleReconciler) gateGitTargetAdmission(
+	ctx context.Context,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
+	target configbutleraiv1alpha3.GitTarget,
+	log logr.Logger,
+) (bool, ctrl.Result, error) {
+	admitted, err := authz.GitTargetAdmitted(ctx, r.Client, &target)
+	if err != nil {
+		// A transient apiserver failure must NOT tear down a running stream: leave the compiled
+		// rule in place and requeue with the error so the gate re-runs on real data.
+		log.Error(err, "Failed to evaluate ClusterProvider admission for referenced GitTarget",
+			"gitTargetName", target.Name, "gitTargetNamespace", target.Namespace)
+		return true, ctrl.Result{}, err
+	}
+	if admitted.Allowed {
+		return false, ctrl.Result{}, nil
+	}
+
+	result, refuseErr := r.refuseUnauthorizedGitTarget(ctx, clusterRule, target, admitted, log)
+	return true, result, refuseErr
+}
+
+// refuseUnauthorizedGitTarget is the denial half of the ClusterProvider admission gate.
+//
+// Order is the contract, not an implementation detail: the compiled rule is removed and the watch
+// manager is replanned BEFORE any status is written. A gate that only writes a condition is not a
+// gate — it leaves the stream running while announcing that it is not. Any test that asserts the
+// terminal condition must therefore also be able to assert the rule is already gone.
+//
+// The refusal is terminal (Stalled=True, Reconciling=False) rather than a retry: nothing this
+// controller does will change the verdict. Recovery arrives as an event — a ClusterProvider policy
+// change or a Namespace label change — through the mappers registered in SetupWithManager.
+func (r *ClusterWatchRuleReconciler) refuseUnauthorizedGitTarget(
+	ctx context.Context,
+	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
+	target configbutleraiv1alpha3.GitTarget,
+	decision authz.Decision,
+	log logr.Logger,
+) (ctrl.Result, error) {
+	log.Info("Refusing ClusterWatchRule: referenced GitTarget's namespace is not admitted by its ClusterProvider",
+		"name", clusterRule.Name,
+		"gitTargetName", target.Name,
+		"gitTargetNamespace", target.Namespace,
+		"clusterProvider", target.SourceCluster(),
+		"reason", decision.Reason)
+
+	// 1. Stop the data plane: drop any rule compiled by an earlier, admitted reconcile...
+	r.RuleStore.DeleteClusterWatchRule(types.NamespacedName{Name: clusterRule.Name})
+
+	// ...and replan so the watch manager tears down a stream this rule was keeping alive.
+	if r.WatchManager != nil {
+		if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
+			log.Error(err, "Failed to reconcile watch manager after refusing cluster rule",
+				"name", clusterRule.Name)
+			// Don't fail the reconciliation: the rule is already out of the store, so the next
+			// replan from any source converges. Publishing the refusal matters more than this.
+		}
+	}
+
+	// 2. Only now publish the terminal status.
+	msg := fmt.Sprintf(
+		"ClusterWatchRule may not compile against GitTarget '%s/%s': %s",
+		target.Namespace, target.Name, decision.Message)
+	r.setTypedCondition(
+		clusterRule,
+		ConditionTypeGitTargetReady,
+		metav1.ConditionFalse,
+		ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized,
+		msg,
+	)
+	r.setTypedCondition(
+		clusterRule,
+		ConditionTypeStreamsRunning,
+		metav1.ConditionFalse,
+		ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized,
+		"No streams: the referenced GitTarget is not authorized to use its ClusterProvider",
+	)
+	r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitTargetNamespaceNotAuthorized, msg)
+
+	return r.updateStatusAndRequeue(ctx, clusterRule)
 }
 
 // setReadyAndUpdateStatusWithTarget sets Ready with target message and updates status with retry.
@@ -454,8 +565,106 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToClusterWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
+		// React to a ClusterProvider's allowedNamespaces changing. Without this, REVOKING a
+		// namespace stops the GitTarget (which does watch ClusterProvider) but leaves this rule's
+		// compiled entry resident until the next periodic reconcile, so the admission gate would
+		// converge on a ~10m delay instead of on the event. The GitTarget's own status flip cannot
+		// carry it: that is a status-only update, which GenerationChangedPredicate above drops.
+		Watches(
+			&configbutleraiv1alpha3.ClusterProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToClusterWatchRules),
+			builder.WithPredicates(clusterProviderReadyOrSpecChanged()),
+		).
+		// React to a Namespace's LABELS changing: allowedNamespaces may admit by selector, so a
+		// label change on a GitTarget's namespace grants or revokes every ClusterWatchRule pointing
+		// at a target in it. LabelChangedPredicate ignores unrelated namespace churn.
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.namespaceToClusterWatchRules),
+			builder.WithPredicates(predicate.LabelChangedPredicate{}),
+		).
 		Named("clusterwatchrule").
 		Complete(r)
+}
+
+// clusterProviderToClusterWatchRules maps a ClusterProvider policy change to every ClusterWatchRule
+// whose referenced GitTarget mirrors through that provider, so an admission grant or revocation
+// converges on the event rather than on the periodic reconcile.
+func (r *ClusterWatchRuleReconciler) clusterProviderToClusterWatchRules(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var targets configbutleraiv1alpha3.GitTargetList
+	if err := r.List(ctx, &targets); err != nil {
+		logDependencyListError(ctx, err, "GitTargets", obj)
+		return nil
+	}
+
+	affected := make(map[types.NamespacedName]struct{}, len(targets.Items))
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		if t.SourceCluster() != obj.GetName() {
+			continue
+		}
+		affected[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}
+	}
+
+	return r.clusterWatchRulesTargeting(ctx, affected, obj)
+}
+
+// namespaceToClusterWatchRules maps a Namespace label change to every ClusterWatchRule whose
+// referenced GitTarget lives in that namespace — the selector half of allowedNamespaces.
+func (r *ClusterWatchRuleReconciler) namespaceToClusterWatchRules(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var targets configbutleraiv1alpha3.GitTargetList
+	if err := r.List(ctx, &targets, client.InNamespace(obj.GetName())); err != nil {
+		logDependencyListError(ctx, err, "GitTargets", obj)
+		return nil
+	}
+
+	affected := make(map[types.NamespacedName]struct{}, len(targets.Items))
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		affected[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}
+	}
+
+	return r.clusterWatchRulesTargeting(ctx, affected, obj)
+}
+
+// clusterWatchRulesTargeting returns a request for every ClusterWatchRule whose targetRef names one
+// of the given GitTargets. Requests carry a name only — ClusterWatchRule is cluster-scoped.
+func (r *ClusterWatchRuleReconciler) clusterWatchRulesTargeting(
+	ctx context.Context,
+	targets map[types.NamespacedName]struct{},
+	obj client.Object,
+) []ctrlreconcile.Request {
+	if len(targets) == 0 {
+		return nil
+	}
+
+	var rules configbutleraiv1alpha3.ClusterWatchRuleList
+	if err := r.List(ctx, &rules); err != nil {
+		logDependencyListError(ctx, err, "ClusterWatchRules", obj)
+		return nil
+	}
+
+	var requests []ctrlreconcile.Request
+	for i := range rules.Items {
+		rule := &rules.Items[i]
+		key := types.NamespacedName{
+			Name:      rule.Spec.TargetRef.Name,
+			Namespace: rule.Spec.TargetRef.Namespace,
+		}
+		if _, ok := targets[key]; !ok {
+			continue
+		}
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: types.NamespacedName{Name: rule.Name},
+		})
+	}
+	return requests
 }
 
 // gitTargetToClusterWatchRules maps a GitTarget event to every ClusterWatchRule

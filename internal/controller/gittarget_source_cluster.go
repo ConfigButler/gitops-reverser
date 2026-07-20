@@ -6,74 +6,45 @@ import (
 	"context"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
 // GitTargetReasonNamespaceNotAuthorized is the Validated=False reason when a GitTarget's namespace
-// is not admitted by its referenced ClusterProvider's spec.allowedNamespaces. This is the SINGLE
-// enforcement point for that policy: it runs on every reconcile, so a policy tightened AFTER a
-// GitTarget was created stops that target's watches too.
-const GitTargetReasonNamespaceNotAuthorized = "NamespaceNotAuthorized"
+// is not admitted by its referenced ClusterProvider's spec.allowedNamespaces. It runs on every
+// reconcile, so a policy tightened AFTER a GitTarget was created stops that target's watches too.
+const GitTargetReasonNamespaceNotAuthorized = authz.ReasonNamespaceNotAuthorized
 
 // GitTargetReasonClusterProviderNotFound is the Validated=False reason when a GitTarget's
 // referenced ClusterProvider does not exist. This is a HARD GATE: a GitTarget may mirror a source
 // cluster ONLY through an existing ClusterProvider, "default" included. The operator never creates
 // one, so a target whose provider was never declared is held NotReady and its data plane stopped
 // rather than mirroring on an implicit local identity.
-const GitTargetReasonClusterProviderNotFound = "ClusterProviderNotFound"
+const GitTargetReasonClusterProviderNotFound = authz.ReasonClusterProviderNotFound
 
-// checkSourceAuthorization is the reconcile-time source-cluster gate. It first REQUIRES the
-// referenced ClusterProvider to exist — a missing provider ("default" included) is a hard NotReady
-// gate, so a GitTarget can never mirror a source cluster the operator was not configured for, and
-// local mirroring is never an implicit bypass of the authorization policy.
-// Then it enforces the provider's namespace-access policy. This is the ONLY place that policy is
-// enforced, and it is enforced on every reconcile rather than only at admission — so a policy
-// tightened AFTER a GitTarget was created stops that target's watches too. Its caller runs it
-// inside the Validated gate and returns BEFORE DeclareForGitTarget, so an unauthorized GitTarget
-// never starts a watch and never writes to Git. It returns authorized=false with a legible reason
-// in either case; a non-NotFound read error is returned as err so the reconcile requeues.
+// checkSourceAuthorization is the GitTarget reconciler's view of the shared source-cluster gate:
+// the referenced ClusterProvider must exist, and it must admit the GitTarget's namespace. The
+// decision itself lives in internal/authz because the ClusterWatchRule reconciler and the watch
+// manager's bootstrap must reach the SAME verdict — see authz.GitTargetAdmitted.
+//
+// This caller runs it inside the Validated gate and returns BEFORE DeclareForGitTarget, so an
+// unauthorized GitTarget never starts a watch and never writes to Git. It returns authorized=false
+// with a legible reason on denial; a non-NotFound read error is returned as err so the reconcile
+// requeues rather than tearing down a running data plane on a transient apiserver failure.
 func (r *GitTargetReconciler) checkSourceAuthorization(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
 ) (bool, string, string, error) {
-	providerName := target.SourceCluster()
-	var provider configbutleraiv1alpha3.ClusterProvider
-	if err := r.Get(ctx, k8stypes.NamespacedName{Name: providerName}, &provider); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, GitTargetReasonClusterProviderNotFound, fmt.Sprintf(
-				"referenced ClusterProvider %q was not found; a GitTarget may mirror a source cluster "+
-					"only through an existing ClusterProvider. The operator never creates one: declare it "+
-					"yourself, or let the chart render %q via clusterProvider.createDefault",
-				providerName, configbutleraiv1alpha3.DefaultClusterProviderName), nil
-		}
-		return false, "", "", fmt.Errorf("read ClusterProvider %q: %w", providerName, err)
+	decision, err := authz.GitTargetAdmitted(ctx, r.Client, target)
+	if err != nil {
+		return false, "", "", err
 	}
-
-	nsLabels := map[string]string{}
-	var ns corev1.Namespace
-	if err := r.Get(ctx, k8stypes.NamespacedName{Name: target.Namespace}, &ns); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return false, "", "", fmt.Errorf("read namespace %q: %w", target.Namespace, err)
-		}
-	} else {
-		nsLabels = ns.Labels
-	}
-
-	allowed, selErr := provider.AllowsNamespace(target.Namespace, nsLabels)
-	if selErr != nil {
-		return false, GitTargetReasonNamespaceNotAuthorized, fmt.Sprintf(
-			"ClusterProvider %q allowedNamespaces selector is invalid: %v", providerName, selErr), nil
-	}
-	if !allowed {
-		return false, GitTargetReasonNamespaceNotAuthorized, fmt.Sprintf(
-			"namespace %q is not permitted to reference ClusterProvider %q (spec.allowedNamespaces)",
-			target.Namespace, providerName), nil
+	if !decision.Allowed {
+		return false, decision.Reason, decision.Message, nil
 	}
 	return true, "", "", nil
 }

@@ -117,7 +117,7 @@ are pre-existing defect fixes that carry no API change; the last two are the fea
 |---|---|---|---|---|
 | 1 | [Namespace-scoped resync](pr1-namespace-scoped-resync.md) | A per-namespace replay must not sweep other namespaces' manifests of the same type. Bug fix, no API. | — | **landed** |
 | 2 | [Stream-scope collapse](pr2-stream-scope-collapse.md) | A cluster-wide selection stops silently widening a co-resident named-namespace stream for the same GVR. Bug fix, no API. | 1 | **landed** |
-| 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule may no longer attach to a GitTarget whose namespace its ClusterProvider does not admit. Bug fix, no API. | — | not started |
+| 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule may no longer attach to a GitTarget whose namespace its ClusterProvider does not admit. Bug fix, no API. | — | **landed** |
 | 4 | [The sourceNamespace field and gate](pr4-source-namespace-field.md) | `WatchRule.spec.sourceNamespace`, `GitTarget.spec.allowedSourceNamespaces`, the delegation flag, the gate, `SourceNamespaceAuthorized`, and the source-scope service. | 1, 2 | not started |
 | 5 | [The ClusterWatchRule ceiling](pr5-clusterwatchrule-source-ceiling.md) | A declared `allowedSourceNamespaces` narrows a ClusterWatchRule's namespaced streams. | 1, 2, 4 | not started |
 
