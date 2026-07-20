@@ -11,8 +11,16 @@
 name: CI
 
 on:
+  # Every pull request, whatever its base — deliberately NOT filtered to `branches: [main]`.
+  # A stacked PR (PR N based on PR N-1's branch) never matches a main-only filter, so it
+  # merged with no lint, no unit tests, and no e2e: PR #255 ran only the external review
+  # bots. Retargeting does not rescue it either — when the base branch merges, GitHub
+  # retargets the open PR onto main and fires `pull_request` with action `edited`, which
+  # is not in the default trigger set (opened/synchronize/reopened), so nothing re-runs.
+  # Validating every base costs a little runner time and is what makes a stack reviewable
+  # one PR at a time. See docs/design/watchrule-source-namespace/README.md for the stack
+  # this was found on.
   pull_request:
-    branches: [main]
   workflow_call:
     outputs:
       ci-image:
