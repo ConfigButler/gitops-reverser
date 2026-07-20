@@ -10,5 +10,20 @@
       "Bash(KUBEBUILDER_ASSETS=/workspaces/gitops-reverser/bin/k8s/1.35.0-linux-amd64 go test -count=1 -timeout 90s -ginkgo.focus=\"Should clear LastCommit to prevent information disclosure\" ./internal/controller/)",
       "Bash(gh pr *)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-unguarded-task-pipe.sh\"",
+            "timeout": 10,
+            "statusMessage": "Checking for unguarded task pipelines"
+          }
+        ]
+      }
+    ]
   }
 }

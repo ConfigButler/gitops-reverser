@@ -3,7 +3,7 @@
 # This is the ONLY Argo CD install in the repository. It is applied by the
 # `_argocd-installed` Taskfile node (helm upgrade --install), which only
 # `task test-e2e-bi-directional` and `task argocd-ui` depend on. The
-# chart version is pinned in ARGOCD_CHART_VERSION (test/e2e/Taskfile.yml); its
+# chart version is pinned in ARGOCD_CHART_VERSION (test/e2e/Taskfile-e2e.yml); its
 # appVersion is the Argo CD release the specs pin behaviour against.
 #
 # Design: docs/spec/e2e-bi-directional-corner.md. README.md lists what to

@@ -150,7 +150,7 @@ GitHub's OIDC identity and logged in the public Rekor transparency log.
 
 | Concern | Lives in |
 | --- | --- |
-| What gets checked (lint, unit, e2e, packaging) | [Taskfile-build.yml](../Taskfile-build.yml), [test/e2e/Taskfile.yml](../test/e2e/Taskfile.yml) — see [tasks-overview.md](tasks-overview.md) |
+| What gets checked (lint, unit, e2e, packaging) | [Taskfile-build.yml](../Taskfile-build.yml), [test/e2e/Taskfile-e2e.yml](../test/e2e/Taskfile-e2e.yml) — see [tasks-overview.md](tasks-overview.md) |
 | Tool versions | [.devcontainer/Dockerfile](../.devcontainer/Dockerfile) (single source for devcontainer *and* CI) |
 | Validation pipeline | [.github/workflows/ci.yml](../.github/workflows/ci.yml) |
 | Release pipeline | [.github/workflows/release.yml](../.github/workflows/release.yml) |

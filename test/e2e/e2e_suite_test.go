@@ -50,7 +50,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	// it is not inherited by the detached `kubectl port-forward` children that
 	// prepare spawns — so it releases cleanly when this process exits, instead of
 	// being pinned past the run. Destructive standalone tasks (clean-cluster)
-	// honor the same lock via a flock precondition; see test/e2e/Taskfile.yml.
+	// honor the same lock via a flock precondition; see test/e2e/Taskfile-e2e.yml.
 	acquireE2ERunLock()
 
 	if img := os.Getenv("PROJECT_IMAGE"); img == "" {

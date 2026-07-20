@@ -21,7 +21,7 @@ includes:
     dir: .
     flatten: true
   e2e:
-    taskfile: ./test/e2e/Taskfile.yml
+    taskfile: ./test/e2e/Taskfile-e2e.yml
     dir: .
     flatten: true
 
