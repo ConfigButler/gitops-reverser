@@ -152,8 +152,27 @@ func (m *Manager) replaceGitTargetWatches(
 		ops := table.operationsFor(watchKey)
 		go m.runTargetWatch(childCtx, log, table.GitDest, watchKey, ops)
 	}
-	log.Info("watch-first target watch set reconciled", "watchCount", len(keys))
+	// Name every declared stream, not just the count. A GVR appearing twice — once
+	// cluster-wide ("") and once under a named namespace — means the same object is
+	// delivered on two streams, which is legitimate scoping but doubles the events for
+	// objects in that namespace. That is invisible in a bare count.
+	log.Info("watch-first target watch set reconciled",
+		"watchCount", len(keys), "streams", describeWatchKeys(keys, specs))
 	return nil
+}
+
+// describeWatchKeys renders the declared streams as "<gvr>@<namespace|*cluster-wide*>=<ops>"
+// so a declare log names exactly what is being watched and under which operation filter.
+func describeWatchKeys(keys []targetWatchKey, specs map[targetWatchKey]string) string {
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		scope := key.Namespace
+		if scope == "" {
+			scope = "*cluster-wide*"
+		}
+		parts = append(parts, fmt.Sprintf("%s@%s=%s", key.GVR.String(), scope, specs[key]))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func (m *Manager) prepareTargetWatchSetReplacementLocked(
