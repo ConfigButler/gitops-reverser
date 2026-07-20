@@ -37,7 +37,7 @@ spec:
       # harness needs. This is the CHART version; v0.8.3 is the appVersion it ships, and the
       # two are not interchangeable — the repo publishes no kcp-operator chart above 0.7.x.
       chart: kcp-operator
-      version: "0.7.7"
+      version: "0.8.3"
       sourceRef:
         kind: HelmRepository
         name: kcp
