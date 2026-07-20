@@ -181,9 +181,13 @@ func (p *ClusterProvider) IsInCluster() bool {
 // AllowsNamespace reports whether a namespace (by name and labels) may reference this provider
 // from a GitTarget, per spec.allowedNamespaces. It is DENY-BY-DEFAULT: a provider with no
 // allowedNamespaces policy (neither names nor selector) admits no namespace. Names and selector
-// are ORed. This is the single authorization predicate shared by the admission webhook and the
-// reconcile-time refusal, so the two can never diverge. A malformed selector is a configuration
-// error surfaced to the caller (not a silent allow).
+// are ORed. Enforced on every reconcile and NOWHERE else: checkSourceAuthorization in
+// internal/controller/gittarget_source_cluster.go is the only non-test caller, and it returns
+// before DeclareForGitTarget, so an unauthorized target starts no watch and writes no Git.
+// Reconcile-time is deliberate rather than incidental — it re-evaluates continuously, so it also
+// covers a policy tightened after the GitTarget was created, which an admission webhook could not
+// see. There is no admission webhook for this (docs/spec/where-validation-lives.md). A malformed
+// selector is a configuration error surfaced to the caller (not a silent allow).
 func (p *ClusterProvider) AllowsNamespace(nsName string, nsLabels map[string]string) (bool, error) {
 	policy := p.Spec.AllowedNamespaces
 	if policy == nil {
