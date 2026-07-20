@@ -25,17 +25,41 @@ func NormalizeAuthorizedKey(k string) string {
 }
 
 // ListUserKeys returns every public key registered for the named user.
+// keyPageSize is the per-page item count requested when listing keys. Gitea caps it at
+// MAX_RESPONSE_ITEMS (50 by default) and silently truncates beyond that, so requesting the cap
+// keeps the number of round trips low without relying on the server's DEFAULT_PAGING_NUM.
+const keyPageSize = 50
+
+// ListUserKeys returns EVERY public key on the named user, following pagination.
+//
+// The pagination is load-bearing, not tidiness. Gitea's default page size is 30, and this
+// listing backs FindUserKeyByTitle, which EnsureUserKeyAsAdmin uses to decide whether a title
+// is already taken. An unpaginated listing therefore stops seeing keys once a user holds more
+// than one page of them, and "ensure" starts failing with `422 Key title has been used` for a
+// key that demonstrably exists — the caller cannot see it to replace it. The e2e suite hits
+// this reliably: it registers ~24 seeded transport keys per full run against a long-lived
+// Gitea, so the second run onward exceeds one page and the stable-titled `playground` key
+// becomes unreachable.
 func (c *Client) ListUserKeys(ctx context.Context, login string) ([]PublicKey, error) {
-	var keys []PublicKey
-	path := "/users/" + PathEscape(login) + "/keys"
-	code, raw, err := c.Do(ctx, http.MethodGet, path, nil, &keys)
-	if err != nil {
-		return nil, err
+	var all []PublicKey
+	base := "/users/" + PathEscape(login) + "/keys"
+	for page := 1; ; page++ {
+		var keys []PublicKey
+		path := fmt.Sprintf("%s?page=%d&limit=%d", base, page, keyPageSize)
+		code, raw, err := c.Do(ctx, http.MethodGet, path, nil, &keys)
+		if err != nil {
+			return nil, err
+		}
+		if code != http.StatusOK {
+			return nil, unexpectedStatus(http.MethodGet, path, code, raw)
+		}
+		all = append(all, keys...)
+		// A short page is the last page. An empty page also terminates, which guards against a
+		// server that ignores the limit and would otherwise loop forever.
+		if len(keys) < keyPageSize {
+			return all, nil
+		}
 	}
-	if code != http.StatusOK {
-		return nil, unexpectedStatus(http.MethodGet, path, code, raw)
-	}
-	return keys, nil
 }
 
 // FindUserKey looks up a public key on the named user by key material,
