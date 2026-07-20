@@ -81,7 +81,7 @@ Eleven other open items:
 | [`residual-e2e-flakes-2026-06-19.md`](design/residual-e2e-flakes-2026-06-19.md) | Flake B still open |
 | [`sensitive-resource-diagnostics-follow-up.md`](design/sensitive-resource-diagnostics-follow-up.md) | deferred diagnostics |
 | [`e2e-git-server-choice.md`](design/e2e-git-server-choice.md) | stay on Gitea or move to Forgejo — the `_csrf` pin is fixable in place on both, so the migration is now a preference call, not a fix; also why we adopt no SDK either way |
-| [`watchrule-source-namespace.md`](design/watchrule-source-namespace.md) | letting a WatchRule address a differently-named namespace on its source cluster — gated by a deny-by-default `allowedSourceNamespaces` on the provider rather than derived from locality |
+| [`watchrule-source-namespace.md`](design/watchrule-source-namespace.md) | letting a WatchRule address a differently-named namespace on its source cluster — a deny-by-default `allowedSourceNamespaces` on the **GitTarget** (so scope is per-tenant, not a provider-wide union), unlocked by a false-by-default delegation flag on the ClusterProvider; carries an implementation plan, a test plan, and two prerequisite ClusterWatchRule fixes |
 
 ## Deferred, but still wanted — [`future/`](future/)
 
