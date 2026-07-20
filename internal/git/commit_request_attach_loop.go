@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// This file holds the worker-loop side of CommitRequest eager attach (§6.4 of
-// docs/spec/commitrequest-design.md). All methods run on the single event
+// This file holds the worker-loop side of CommitRequest eager attach. All methods run on the single event
 // loop goroutine, so pendingCRs needs no locking; only the resolved-outcome table
 // (BranchWorker.crOutcomes) crosses goroutines and is mutex-guarded.
 //
@@ -77,12 +76,13 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 	if _, exists := l.pendingCRs[id]; exists {
 		return // idempotent re-send: keep the first finalize deadline.
 	}
-	// Anchor the grace at receipt (≈ the attribution moment, §6.4.4), not at object
+	// Anchor the grace at receipt (≈ the attribution moment), not at object
 	// creation: under a delayed ingestion pipeline this lets delaySeconds cover only
 	// the inter-stream spread instead of the absolute latency.
 	l.pendingCRs[id] = &pendingCommitRequest{
 		id:                 id,
 		author:             req.Author,
+		attribution:        req.Attribution,
 		gitTargetName:      req.GitTargetName,
 		gitTargetNamespace: req.GitTargetNamespace,
 		message:            req.Message,
@@ -110,7 +110,7 @@ func (l *branchWorkerEventLoop) serviceCommitRequests() {
 
 // attachWaitingCommitRequests binds the oldest waiting same-author request to the
 // open window when it is unclaimed. A window carries at most one request; a second
-// waits for the next window (§6.4.6).
+// waits for the next window.
 func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 	if l.openWindow == nil || l.openWindow.pendingCR != nil {
 		return

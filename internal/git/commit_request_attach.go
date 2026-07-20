@@ -43,8 +43,7 @@ type FinalizeResult struct {
 }
 
 // AttachCommitRequest is the "bind this CommitRequest's message to the author's
-// open window, then finalize that window after the grace" work item (§6.4 of
-// docs/spec/commitrequest-design.md). It rides the same per-worker FIFO
+// open window, then finalize that window after the grace" work item. It rides the same per-worker FIFO
 // event queue as resource events, so by audit-stream ordering it is processed
 // after every earlier write for that worker. Re-sends are idempotent: the worker
 // keys pending requests by identity and keeps the first finalize deadline.
@@ -56,11 +55,17 @@ type AttachCommitRequest struct {
 	Name      string
 	UID       string
 
-	// Author is the effective user that requested the finalize, attributed from
-	// the CommitRequest's own create audit event. Only a window whose author
+	// Author is the effective user that requested the finalize, captured from
+	// validating admission. Only a window whose author
 	// matches is attached; this binds "the open window" to "the requesting
 	// author's open window".
 	Author string
+	// Attribution is the outcome of attributing THIS CommitRequest, from the command-authorship
+	// path. It is matched alongside Author rather than inferred from it, because an empty Author
+	// alone cannot say whether an actor was sought: it is both "attribution is off" and
+	// "attribution ran and named nobody". Only the NamesActor half is compared against the
+	// window's outcome — see matchesWindow for why the enums themselves must not be.
+	Attribution AttributionOutcome
 	// GitTargetName / GitTargetNamespace scope the finalize to one GitTarget.
 	GitTargetName      string
 	GitTargetNamespace string
@@ -70,7 +75,7 @@ type AttachCommitRequest struct {
 	Message string
 	// CloseDelaySeconds is the close-delay collect window: the worker closes the
 	// attached window and finalizes it at receipt + CloseDelaySeconds (the delay is
-	// anchored at attribution, §6.4.4).
+	// anchored at attach receipt).
 	CloseDelaySeconds int32
 }
 
@@ -93,6 +98,7 @@ func (a AttachCommitRequest) id() commitRequestID {
 type pendingCommitRequest struct {
 	id                 commitRequestID
 	author             string
+	attribution        AttributionOutcome
 	gitTargetName      string
 	gitTargetNamespace string
 	message            string
@@ -103,13 +109,33 @@ type pendingCommitRequest struct {
 	attached bool
 }
 
-// matchesWindow reports whether the request identifies the given open window by
-// author and GitTarget.
+// matchesWindow reports whether the request identifies the given open window, by GitTarget and
+// by author.
+//
+// The two attribution outcomes compared here are produced by DIFFERENT, INDEPENDENTLY
+// CONFIGURED subsystems: the window's comes from mirrored-resource attribution
+// (--author-attribution, audit facts), the request's from command authorship
+// (--admission-webhook, its own Redis corner) — see cmd/main.go:311-316. So they are matched on
+// AttributionOutcome.NamesActor, not for enum equality. Requiring the enums to be equal silently
+// couples the two flags: with attribution off and the webhook on the window says "not attempted"
+// while the request says "unresolved", and with attribution on but missing and the webhook off
+// it is the other way round. Both are real deployments, both attach correctly today, and exact
+// equality would stop both — dropping the user's commit message into a separate default-message
+// commit with no error anywhere.
+//
+// The author comparison stays UNCONDITIONAL, and the outcome class is an additional guard on
+// top of it — never a replacement for it. Skipping the author check when neither side names an
+// actor looks equivalent (an unnamed actor leaves the author empty on both sides, so the two
+// empties compare equal anyway) but is not: it makes cross-author attachment depend on the
+// outcome fields being right, so any path that leaves an outcome unset while the author IS set
+// would let one author's request finalize another's window. Comparing both costs nothing and
+// keeps "bob never claims alice's window" true regardless of what the outcomes say.
 func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p == nil || w == nil {
 		return false
 	}
 	return p.author == w.Author &&
+		p.attribution.NamesActor() == w.Attribution.NamesActor() &&
 		p.gitTargetName == w.GitTarget &&
 		p.gitTargetNamespace == w.GitTargetNamespace
 }

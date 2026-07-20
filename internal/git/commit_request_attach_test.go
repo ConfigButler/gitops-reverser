@@ -487,3 +487,130 @@ func TestAttach_ConflictReplayResolvesToPostReplaySHA(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, message, commit.Message, "the replayed commit keeps the user's message")
 }
+
+// TestAttributionOutcome_ZeroValueIsNotAttempted pins the coupling the whole matching rule rests on:
+// the zero value of AttributionOutcome must BE AttributionNotAttempted.
+//
+// Most producers of an Event never assign Attribution — reconcile, resync, bootstrap, and
+// configured-author mode's early return in watch.Manager.attachAuthor all leave it zero, and all
+// of them mean "no actor was sought". When this constant was "not_attempted" the zero value was a
+// silent fourth state that compared equal to no named outcome, and no test caught it because
+// every case set both sides to the zero value and compared "" to "".
+func TestAttributionOutcome_ZeroValueIsNotAttempted(t *testing.T) {
+	var zero AttributionOutcome
+	assert.Equal(t, AttributionNotAttempted, zero,
+		"the zero value must be AttributionNotAttempted; three doc comments and every non-live "+
+			"event path depend on it")
+	assert.False(t, zero.NamesActor(), "an unset outcome names no actor")
+	assert.False(t, AttributionUnresolved.NamesActor(), "attribution ran and named nobody")
+	assert.True(t, AttributionResolved.NamesActor(), "only a resolved outcome names an actor")
+}
+
+// TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems is the permanent regression test for
+// the merge blocker: in the DEFAULT deployment no CommitRequest could attach to any window, so
+// the user's commit message was silently dropped and the change landed under the generated
+// message with no error anywhere.
+//
+// The window's outcome and the request's outcome come from two subsystems configured by two
+// different flags (--author-attribution vs --admission-webhook, cmd/main.go:311-316), so this
+// walks every pair either side can actually produce and names the deployment that produces it.
+// TestCommitRequest_OutcomesAgree in internal/controller pins that these are the real
+// values the two producers emit; here we pin what the matching rule does with them.
+func TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems(t *testing.T) {
+	const otherAuthor = "bob"
+
+	tests := []struct {
+		name       string
+		deployment string
+		window     AttributionOutcome
+		windowAuth string
+		request    AttributionOutcome
+		reqAuth    string
+		want       bool
+	}{
+		{
+			name:       "attribution off, webhook off",
+			deployment: "the DEFAULT deployment: --author-attribution=false, --admission-webhook=false",
+			window:     AttributionNotAttempted, request: AttributionNotAttempted, want: true,
+		},
+		{
+			name:       "attribution off, webhook on but missed",
+			deployment: "webhook enabled without Redis, or no admission record for the request",
+			window:     AttributionNotAttempted, request: AttributionUnresolved, want: true,
+		},
+		{
+			name:       "attribution on but unresolved, webhook off",
+			deployment: "attribution enabled, no audit fact within the grace; webhook off",
+			window:     AttributionUnresolved, request: AttributionNotAttempted, want: true,
+		},
+		{
+			name:       "attribution on but unresolved, webhook on but missed",
+			deployment: "both enabled, neither named an actor",
+			window:     AttributionUnresolved, request: AttributionUnresolved, want: true,
+		},
+		{
+			name:       "both resolved to the same actor",
+			deployment: "the fully configured deployment, request and window agree",
+			window:     AttributionResolved, windowAuth: "alice",
+			request: AttributionResolved, reqAuth: "alice", want: true,
+		},
+		{
+			name:       "both resolved to different actors",
+			deployment: "two humans editing the same GitTarget; must never cross-attach",
+			window:     AttributionResolved, windowAuth: "alice",
+			request: AttributionResolved, reqAuth: otherAuthor, want: false,
+		},
+		{
+			name:       "window named an actor, request did not",
+			deployment: "alice's window must not absorb an unattributable request",
+			window:     AttributionResolved, windowAuth: "alice",
+			request: AttributionNotAttempted, want: false,
+		},
+		{
+			name:       "request named an actor, window did not",
+			deployment: "alice's request must not claim an unattributable window",
+			window:     AttributionNotAttempted,
+			request:    AttributionResolved, reqAuth: "alice", want: false,
+		},
+		{
+			name: "different authors, neither outcome names an actor",
+			deployment: "not producible today (a set author implies a resolved outcome), but the " +
+				"author check must not become conditional on the outcome: if it did, any path that " +
+				"left an outcome unset while the author was set would let bob finalize alice's window",
+			window: AttributionNotAttempted, windowAuth: "alice",
+			request: AttributionNotAttempted, reqAuth: otherAuthor, want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &pendingCommitRequest{
+				author:             tc.reqAuth,
+				attribution:        tc.request,
+				gitTargetName:      crTarget,
+				gitTargetNamespace: "default",
+			}
+			w := &openWindow{
+				Author:             tc.windowAuth,
+				Attribution:        tc.window,
+				GitTarget:          crTarget,
+				GitTargetNamespace: "default",
+			}
+			assert.Equal(t, tc.want, p.matchesWindow(w), tc.deployment)
+		})
+	}
+}
+
+// TestMatchesWindow_GitTargetAlwaysScopes checks the GitTarget scope survives the outcome
+// rework: no attribution pairing may let a request finalize another target's window.
+func TestMatchesWindow_GitTargetAlwaysScopes(t *testing.T) {
+	for _, o := range []AttributionOutcome{AttributionNotAttempted, AttributionUnresolved, AttributionResolved} {
+		p := &pendingCommitRequest{attribution: o, gitTargetName: crTarget, gitTargetNamespace: "default"}
+		assert.False(t, p.matchesWindow(&openWindow{
+			Attribution: o, GitTarget: "team-b", GitTargetNamespace: "default",
+		}), "outcome %q must not match across GitTarget names", o)
+		assert.False(t, p.matchesWindow(&openWindow{
+			Attribution: o, GitTarget: crTarget, GitTargetNamespace: "other",
+		}), "outcome %q must not match across GitTarget namespaces", o)
+	}
+}

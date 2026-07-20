@@ -27,8 +27,8 @@ When someone runs `kubectl delete configmaps --all -n team-a`, the API server em
 with no special code. Two things are *not* free:
 
 - **Attribution.** Each per-object removal runs the resolver, finds no fact (the collection event is name-less, so
-  it stores nothing today — §4), and ships as **committer**. "Alice deleted these 12 configmaps" is recorded as
-  the operator. The **expander** (§5) closes this.
+  it stores nothing today — §4), and ships with the explicit **unresolved** author. "Alice deleted these 12
+  configmaps" is visibly unresolved rather than silently credited to the operator. The **expander** (§5) closes this.
 - **Finalizers — and this is where the design got interesting.** An object with a finalizer is *not* removed by
   the delete; it gets a `deletionTimestamp` and lingers in `Terminating` until a controller clears the finalizer.
   An earlier revision of this doc tried to defer attribution to that eventual removal and fight the resulting
@@ -149,9 +149,9 @@ variants are skipped when no RV is supplied, which is precisely right since the 
   has a name, so `RecordFact` already writes its uid-only fact; with §2's intent rule, the finalizer single-delete
   is now removed and attributed at intent time too — for free, no expander needed. The expander exists **only**
   for the name-less collection case.
-- **The conservative resolver fails closed** — multiple authors on one key → `AttributionConflict` → committer
-  ([storeFactKey](../../internal/queue/attribution_index.go#L403)). Governing rule: **a wrong author is worse than
-  no author.**
+- **The conservative resolver fails closed** — multiple authors on one key → no usable attribution fact → the
+  explicit unresolved author ([storeFactKey](../../internal/queue/attribution_index.go#L403)). Governing rule:
+  **a wrong author is worse than no author.**
 - **The grace window** absorbs a watch event that arrives before its audit fact
   ([author_resolver.go:40](../../internal/watch/author_resolver.go#L40)).
 
@@ -206,19 +206,19 @@ list**. We know the actor, type, maybe namespace, maybe a label selector, and ro
 objects**. The owner's trap: *in a few seconds you could see more than one `deletecollection` that "fits."*
 
 - **Option A — keep it around and guess by scope.** Reject. Two independent mis-attribution modes: (1) two
-  actors deleting in the same `(type, namespace)` window → honest answer is conflict→committer, so it degrades to
-  committer under exactly the load that makes the case interesting; (2) even a single collection delete would
+  actors deleting in the same `(type, namespace)` window → honest answer is conflict→unresolved, so it degrades to
+  the explicit unresolved author under exactly the load that makes the case interesting; (2) even a single collection delete would
   capture an *unrelated* plain `kubectl delete configmap x` in the same window. Selector re-matching narrows but
   doesn't remove it (selectors overlap; empty selector matches all). Violates "a wrong author is worse than no
   author."
-- **Option B — `Co-authored-by` floor.** Honest credit under ambiguity (multiple trailers), git author stays
-  committer. But in watch-first the deletes are driven by watch events, not the audit cause, so it needs real
+- **Option B — `Co-authored-by` floor.** Honest credit under ambiguity (multiple trailers), Git author stays
+  unresolved. But in watch-first the deletes are driven by watch events, not the audit cause, so it needs real
   plumbing to carry a scope-cause into the commit-window builder. A deliberate fast-follow.
-- **Option C — commit as committer, document the limit.** v1.
+- **Option C — commit as the explicit unresolved author, document the limit.** v1.
 
 **v1: Option C.** The hard case is a narrow intersection (aggregated/hollow body ∧ supports `deletecollection` ∧
-watched ∧ attributed-author mode), and the failure is *degraded attribution*, not wrong state or wrong author — which is
-the correct conservative outcome. **Ship §2 + §5 now; Option B is the named fast-follow; Option A is rejected.**
+watched ∧ attributed-author mode), and the failure is *degraded attribution*, not wrong state or a guessed author — which
+is the correct conservative outcome. **Ship §2 + §5 now; Option B is the named fast-follow; Option A is rejected.**
 
 ## 7. Recommendation at a glance
 
@@ -227,14 +227,14 @@ the correct conservative outcome. **Ship §2 + §5 now; Option B is the named fa
 | Any delete (single or collection member) | **Remove file at intent time; never commit `deletionTimestamp`** (§2) | Git is intent; reversible invariant; manifests stay re-appliable. |
 | Finalizer object | **Removed immediately, attributed to the delete-requester**; finalizer cleanup is runtime no-op in Git | Reframe dissolves the old delay/conflict; controllers still finalize in-cluster. |
 | Collection delete, body present | **Per-UID expander (§5)** credits the actor on each removal | API server states "these exact objects, by this user." |
-| Collection delete, hollow body | **Committer (Option C, §6)** | Narrow; degraded attribution beats a wrong author. |
+| Collection delete, hollow body | **Explicit unresolved author (Option C, §6)** | Narrow; degraded attribution beats a wrong author. |
 | Stuck `Terminating` | **Operational status/metric** (§2.5), file already absent | Don't pollute intent with runtime state. |
 
 ## 8. Observability & diagnostics
 
 - **`AttributionExactDeleteCollectionItem`** flows onto `AttributionResolutionsTotal{result=…}` via
   `recordAttributionResolution` ([author_resolver.go:169](../../internal/watch/author_resolver.go#L169)) — a
-  dashboard can show collection-member precise attributions vs. committer fallbacks.
+  dashboard can show collection-member precise attributions vs. unresolved outcomes.
 - **Expander write counter** (`op="deletecollection_expanded"`) on `AttributionFactEventsTotal` via the existing
   `recordFactEvent` hook ([attribution_index.go:433](../../internal/queue/attribution_index.go#L433)).
 - **Stuck-finalizer / terminating diagnostics** (§2.5): surface long-`Terminating` watched objects whose files we

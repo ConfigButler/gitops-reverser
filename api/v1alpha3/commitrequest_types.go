@@ -32,12 +32,12 @@ type CommitRequestSpec struct {
 	Message string `json:"message,omitempty"`
 
 	// CloseDelaySeconds optionally delays closing the open commit window for this
-	// many seconds after the CommitRequest is attributed, acting as an extra collect
-	// window: changes the author makes in the meantime still join the open commit
-	// window and are included in the resulting commit. Omitted or 0 closes the window
-	// as soon as the CommitRequest is attributed to its author. The window can still
-	// be closed earlier by another author's change or by the provider's commit window
-	// timer, exactly as without a CommitRequest.
+	// many seconds after the CommitRequest attaches to a matching open window, acting as
+	// an extra collect window: matching changes that arrive in the meantime still join
+	// that window and are included in the resulting commit. Omitted or 0 closes the
+	// window as soon as the CommitRequest attaches. The window can still be closed
+	// earlier by another author's change or by the provider's commit window timer,
+	// exactly as without a CommitRequest.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=300
@@ -55,9 +55,10 @@ type CommitRequestSpec struct {
 //     while finalizing; Stalled=True when the finalize failed and needs attention.
 //   - AuthorAttributed (domain): binary and settled immediately. True
 //     (AttributedFromAdmission) when the submitter captured at admission named the
-//     commit author; False (CommitterFallback) when no admission record exists — the
-//     validate-operator-types webhook is not configured — and the commit is authored by the
-//     configured committer. False is not a failure and does not affect Ready.
+//     commit author; False (CommitterFallback) when capture ran but no admission record
+//     exists, or False (AuthorCaptureDisabled) when capture is disabled. In either False
+//     case the request claims no actor. False is not a failure and does not affect Ready;
+//     the final Git author remains the matching watch window's author.
 //   - Pushed (domain): True once the commit is in the remote repository.
 type CommitRequestStatus struct {
 	// ObservedGeneration is the most recent generation observed by the controller.

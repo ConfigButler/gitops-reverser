@@ -9,6 +9,14 @@ package git
 type openWindow struct {
 	// Author is event.UserInfo.Username verbatim.
 	Author string
+	// Attribution is the window's attribution outcome, taken from its first event. It pairs
+	// with Author for coalescing: two events share a window only when BOTH the outcome and the
+	// author agree, so an unresolved event never coalesces with a resolved one that happens
+	// to carry an empty username. Exact enum equality is right HERE — canAppend compares two
+	// events from the same watch pipeline, so the outcomes are directly comparable. It is not
+	// right when comparing against a CommitRequest, which a different subsystem attributes;
+	// see pendingCommitRequest.matchesWindow.
+	Attribution AttributionOutcome
 	// GitTarget is the target this window is bound to. Each finalized commit
 	// covers exactly one target so per-target encryption and bootstrap
 	// configuration apply unambiguously.
@@ -43,6 +51,7 @@ const groupedCommitOperationKinds = 3
 func newOpenWindow(e Event, writer eventContentWriter) *openWindow {
 	return &openWindow{
 		Author:             e.UserInfo.Username,
+		Attribution:        e.Attribution,
 		GitTarget:          e.GitTargetName,
 		GitTargetNamespace: e.GitTargetNamespace,
 		pathToEvent:        make(map[string]Event),
@@ -54,7 +63,8 @@ func (w *openWindow) canAppend(e Event) bool {
 	if w == nil {
 		return false
 	}
-	return e.UserInfo.Username == w.Author &&
+	return e.Attribution == w.Attribution &&
+		e.UserInfo.Username == w.Author &&
 		e.GitTargetName == w.GitTarget &&
 		e.GitTargetNamespace == w.GitTargetNamespace
 }

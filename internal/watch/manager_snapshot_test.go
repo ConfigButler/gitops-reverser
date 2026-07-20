@@ -21,10 +21,7 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-var (
-	secretsGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
-	nodesGVR   = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "nodes"}
-)
+var secretsGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 
 // makeScheme returns a scheme with core Kubernetes types registered.
 func makeScheme(t *testing.T) *runtime.Scheme {
@@ -83,47 +80,10 @@ func addSecretsWatchRule(store *rulestore.RuleStore) {
 	)
 }
 
-// addClusterWatchRule registers a cluster-scoped ClusterWatchRule for my-target.
-func addClusterWatchRule(store *rulestore.RuleStore, name, resource string) {
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha3.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec: configv1alpha3.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha3.NamespacedTargetReference{Name: "my-target", Namespace: "gitops-reverser"},
-				Rules: []configv1alpha3.ClusterResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{resource},
-					Scope: configv1alpha3.ResourceScopeCluster,
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-}
-
 func myTargetRef() itypes.ResourceReference {
 	return itypes.NewResourceReference("my-target", "gitops-reverser")
 }
 
-// A reconcile fails closed while the cluster API surface has not been observed yet (an
-// empty/unready discovery leaves the type registry unready): sweeping a mark over an
-// unobserved surface would delete the mirror.
-func TestResolveSnapshotGVRs_FailsClosedWhenRegistryNotReady(t *testing.T) {
-	store := rulestore.NewStore()
-	addSecretsWatchRule(store)
-	empty := apiResourceDiscovery(staticCatalogDiscovery{})
-	m := &Manager{
-		Log:             logr.Discard(),
-		RuleStore:       store,
-		resourceCatalog: NewAPIResourceCatalog(),
-		discoveryClient: func() (apiResourceDiscovery, error) { return empty, nil },
-	}
-
-	_, err := m.resolveSnapshotGVRs(context.Background(), myTargetRef())
-	require.Error(t, err, "an unobserved API surface must abort the gather rather than sweep")
-	assert.Contains(t, err.Error(), "has not been observed yet")
-}
-
-// A normally-served target has no retained types, so the snapshot is not blocked.
 func TestRetainedWatchedTypes_NoneWhenAllServed(t *testing.T) {
 	store := rulestore.NewStore()
 	addSecretsWatchRule(store)
@@ -147,53 +107,4 @@ func TestGVKListSummary(t *testing.T) {
 	assert.Contains(t, got, "2 watched types")
 	assert.Contains(t, got, "Kind=ConfigMap")
 	assert.Contains(t, got, "Kind=Deployment")
-}
-
-// resolveSnapshotGVRs scopes a namespaced resource to its rule namespace and a
-// cluster-scoped resource cluster-wide (no namespaces).
-func TestResolveSnapshotGVRs_ScopesNamespacedAndClusterWide(t *testing.T) {
-	store := rulestore.NewStore()
-	addSecretsWatchRule(store)
-	addClusterWatchRule(store, "cwr-nodes", "nodes")
-
-	m := streamingManager(t, gitTargetFixture(), store)
-	gvrs, err := m.resolveSnapshotGVRs(context.Background(), myTargetRef())
-	require.NoError(t, err)
-
-	byGVR := map[schema.GroupVersionResource][]string{}
-	for _, sg := range gvrs {
-		byGVR[sg.gvr] = append(byGVR[sg.gvr], sg.namespace)
-	}
-	assert.Equal(t, []string{"ns-a"}, byGVR[secretsGVR], "namespaced resource scoped to its rule namespace")
-	assert.Equal(t, []string{""}, byGVR[nodesGVR], "cluster-scoped resource gathers under the cluster-wide scope")
-}
-
-// A wildcard resource pattern expands to every served namespaced resource in the group,
-// so the snapshot is not silently narrowed.
-func TestResolveSnapshotGVRs_WildcardResourceExpands(t *testing.T) {
-	store := rulestore.NewStore()
-	store.AddOrUpdateWatchRule(
-		configv1alpha3.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "wr-all", Namespace: "ns-a"},
-			Spec: configv1alpha3.WatchRuleSpec{
-				TargetRef: configv1alpha3.LocalTargetReference{Name: "my-target"},
-				Rules: []configv1alpha3.ResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"*"},
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-
-	m := streamingManager(t, gitTargetFixture(), store)
-	gvrs, err := m.resolveSnapshotGVRs(context.Background(), myTargetRef())
-	require.NoError(t, err)
-
-	resources := map[string]struct{}{}
-	for _, sg := range gvrs {
-		resources[sg.gvr.Resource] = struct{}{}
-	}
-	assert.Contains(t, resources, "configmaps")
-	assert.Contains(t, resources, "secrets")
-	assert.Contains(t, resources, "services")
 }

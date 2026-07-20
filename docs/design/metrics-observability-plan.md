@@ -51,8 +51,8 @@ serious, honest metrics to show, and the audit subsystem is glass-box.
    object's `name`/`namespace` in a label. Identity labels stay prefixed (`provider_*`, `gittarget_*`)
    to survive a `honor_labels=false` pod scrape — see the note in
    [exporter.go](../../internal/telemetry/exporter.go).
-6. **Degradation is loud.** Committer fallback, absent Redis, `410` rebuilds, LIST fallback — each has
-   a metric, so running in a degraded shape is a visible state, not a silent one.
+6. **Degradation is loud.** Unresolved attribution, absent Redis, `410` rebuilds, LIST fallback — each
+   has a metric, so running in a degraded shape is a visible state, not a silent one.
 
 ## 3. Current state (the map)
 

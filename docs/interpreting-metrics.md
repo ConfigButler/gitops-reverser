@@ -87,8 +87,16 @@ signals. Background: [architecture.md → Git Write Architecture](architecture.m
 `commits_total` carries the **`BranchWorker`'s**
 `{provider_namespace, provider_name, branch, author_kind}` identity, not a GitTarget: one worker can
 serve several GitTargets sharing a provider+branch, coalescing their writes into one commit batch, so
-the worker is the honest attribution unit. `author_kind` is `user`, `serviceaccount`, or `committer`;
-reconcile/resync commits and unattributed events use `committer`. The namespace/name keys are
+the worker is the honest attribution unit. `author_kind` is `user`, `serviceaccount`, `committer`, or `unresolved`;
+reconcile/resync commits and configured-author mode use `committer`.
+
+**`unresolved` is the one to watch.** It means attribution RAN and did not name an actor, so
+the commit carries the `unknown (attribution unresolved)` author instead of a person. It is
+deliberately not folded into `user` (which would make a lost actor look like a named one, so a
+degrading attribution path would read as an improving one) nor into `committer` (which would
+hide it among legitimately unattributed reconcile writes). For a live mutation that should be
+attributable, a non-zero and growing `unresolved` share means the audit-attribution configuration
+or delivery path needs investigation. The namespace/name keys are
 **prefixed on purpose** — a Prometheus pod scrape with
 `honor_labels=false` overwrites a bare `namespace` attribute with the scraping pod's namespace,
 so a per-provider `namespace` selector would silently match nothing. The same reasoning applies to
@@ -242,10 +250,10 @@ histogram_quantile(0.95,
 ```
 
 **Does audit actually attribute watch events?** Match coverage is the share of resolutions that named an
-actor (human or service account) rather than falling back to the committer:
+actor (human or service account) rather than producing an explicit unresolved author:
 
 ```promql
-sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m]))
+sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*|weak"}[5m]))
 /
 sum(rate(gitopsreverser_attribution_resolutions_total[5m]))
 ```
@@ -257,21 +265,20 @@ sum(rate(gitopsreverser_attribution_resolutions_total[5m]))
 | `exact_user` | Exact UID+resourceVersion match for a human user. |
 | `exact_serviceaccount` | Exact UID+resourceVersion match for a named service account. |
 | `weak` | Non-exact match, such as UID-only or RV-only. |
-| `conflict` | Multiple authors wrote facts for the selected join key. |
-| `expired` | A fact existed but aged out before the watch event joined it. |
-| `absent` | No fact or expiry evidence matched. |
+| `absent` | No usable fact matched before the grace window elapsed. The resulting live commit is authored as `unknown (attribution unresolved)`. |
 
 **Is the grace window paying for itself?** Misses waiting near the configured grace window mean the
 operator is delaying commits without finding facts:
 
 ```promql
 histogram_quantile(0.95,
-  sum by (le, result) (
-    rate(gitopsreverser_attribution_resolution_wait_seconds_bucket{result=~"absent|expired"}[5m])))
+  sum by (le) (
+    rate(gitopsreverser_attribution_resolution_wait_seconds_bucket{result="absent"}[5m])))
 ```
 
-**Is the Redis fact index healthy?** Facts should be written and later matched; a high `late` or
-`expired_unmatched` rate points at timing mismatch between audit and watch:
+**Is the Redis fact index healthy?** Facts should be written and later matched; a high rate of
+`op="written"` alongside `result="absent"` points at a timing, key, or source-identity mismatch
+between audit and watch:
 
 ```promql
 sum by (op) (rate(gitopsreverser_attribution_fact_events_total[5m]))

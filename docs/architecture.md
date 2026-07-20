@@ -90,8 +90,10 @@ The solution, in the vocabulary used throughout this document:
   Older APIs that reject `sendInitialEvents` fall back to LIST plus buffered WATCH. The sweep fires on
   snapshot establishment, **never on a timer**.
 * **Audit, when enabled, only names the author.** It is an optional attribution lookup; a missing or
-  late fact costs author fidelity, never correctness, and with attribution disabled the product commits
-  as the configured committer.
+  late fact costs author fidelity, never correctness. With attribution disabled the product commits as the
+  configured committer. With attribution enabled, an unresolved live change is visibly authored as
+  `unknown (attribution unresolved)`, so an installation that expects attribution can investigate its audit
+  policy, ingress, Redis connection, or source identity instead of mistaking the result for configured-author mode.
 * **One `BranchWorker` per Git branch serializes all writes.** Every write to a branch funnels through a
   single worker and a single commit window, which keeps concurrent GitTargets and authors from racing
   each other into a corrupt tree.
@@ -224,8 +226,9 @@ instead of waiting for the silence timer. The **entire spec is immutable**. Key 
 * `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
   terminal outcome that is not an error — a pushed commit, or a benign no-commit);
   **Reconciling**/**Stalled** are the kstatus progress/blocked pair; **AuthorAttributed** reports
-  whether the `/validate-operator-types` validating admission webhook named the submitter or the request
-  fell back to the configured committer; **Pushed** reports whether the commit reached the remote. The `Ready`
+  whether the `/validate-operator-types` validating admission webhook named the submitter; an absent record
+  means the request claims no actor and can attach only to an unnamed window. **Pushed** reports whether the
+  commit reached the remote. The `Ready`
   condition's `reason` carries `Committed`, `NoWindowInGrace`, `WindowMismatch`, `AlreadyPresent`, or
   `FinalizeFailed`. A benign no-commit (e.g. `NoWindowInGrace`) is `Ready=True`, `Stalled=False` — a correct,
   non-error outcome — whereas a `FinalizeFailed` is `Ready=False`, `Stalled=True`.
@@ -368,9 +371,10 @@ Following the ConfigMap edit:
    whose desired-state projection is unchanged) is dropped here.
 3. **Resolve the author.** When attribution is enabled, the resolver waits a bounded grace window
    (`--author-attribution-grace`, default `3s`) for a matching audit fact in the attribution index, joining by
-   resourceVersion/UID. On a strong match the real user or named service account becomes the author;
-   otherwise (attribution off, no match, or expiry) the commit is authored by the configured committer. This
-   wait is per-event and never reorders a watch — see [Watch Event Ordering](#watch-event-ordering).
+   resourceVersion/UID. On a strong match the real user or named service account becomes the author. With
+   attribution disabled, the configured committer is the author; with attribution enabled but no usable fact,
+   the explicit `unknown (attribution unresolved)` author marks the unresolved change. This wait is per-event
+   and never reorders a watch — see [Watch Event Ordering](#watch-event-ordering).
 4. **Route + window.** The event flows into the
    [GitTargetEventStream](../internal/reconcile/git_target_event_stream.go), and the
    [BranchWorker](../internal/git/branch_worker.go) appends it to the open commit window for
@@ -403,15 +407,17 @@ flowchart TD
     FILTER --> AUTHOR{Attribution enabled?}
     AUTHOR -->|yes| AUDIT[Wait bounded grace for audit fact]
     AUTHOR -->|no| COMMITTER[Use configured committer as author]
-    AUDIT --> RESOLVED[Resolved author or committer fallback]
-    COMMITTER --> RESOLVED
-    RESOLVED --> WINDOW[BranchWorker open window<br/>one author + one GitTarget]
+    AUDIT -->|fact matched| RESOLVED[Use resolved actor]
+    AUDIT -->|no usable fact| UNRESOLVED[Use explicit unresolved author]
+    COMMITTER --> WINDOW[BranchWorker open window<br/>one author + one GitTarget]
+    RESOLVED --> WINDOW
+    UNRESOLVED --> WINDOW
 
     WINDOW --> TIMER{Close trigger}
     TIMER -->|silence timer| FLUSH[Plan YAML edits + commit]
     TIMER -->|buffer limit or resync boundary| FLUSH
 
-    CR[CommitRequest persisted] --> ADMISSION[Admission author cache lookup<br/>present or committer fallback]
+    CR[CommitRequest persisted] --> ADMISSION[Admission submitter lookup<br/>named or unnamed]
     ADMISSION --> ATTACH[Attach to matching open window]
     ATTACH -->|same author + GitTarget| FLUSH
     ATTACH -->|no matching window| BENIGN[Ready=True, Pushed=False]
@@ -568,8 +574,10 @@ Attribution being optional does **not** make it casual or take-it-or-leave-it. W
 operator does everything it can to name the real actor — but it values **high certainty over a plausible
 guess**. Attaching a name to a change is a consequential, sometimes politically charged claim ("*this*
 person did *that*"), so it must not be made lightly. The design therefore fails toward honesty: a weak,
-conflicting, late, or absent fact resolves to the committer rather than to a guessed author. **It is better
-to clearly record that the operator made a change than to assert an actor we are not sure of.**
+conflicting, late, or absent fact produces an explicit unresolved author rather than a guessed person or a
+misleading committer identity. **It is better to say that attribution did not resolve than to assert an
+actor we are not sure of.** In an installation that expects live mutations to be attributable, this outcome
+is a concrete signal to check audit delivery and attribution configuration.
 
 Two engineering choices follow directly from that stance:
 
@@ -580,7 +588,7 @@ Two engineering choices follow directly from that stance:
 * **Tests pin the behavior.** Because a misattribution is a real harm, the attribution and resolver paths
   carry unit and e2e tests that prove the concrete cases — strong match, weak/last-key match, deletes whose
   audit RV differs from the watch RV, missing/late/expired facts, service-account vs human actor,
-  impersonation, and the committer fallback — so these certainty guarantees cannot silently regress.
+  impersonation, and the explicit unresolved outcome — so these certainty guarantees cannot silently regress.
 
 ### Attribution fact shape
 
@@ -608,8 +616,9 @@ A watch event waits a **bounded grace window** (`--author-attribution-grace`, de
 to arrive, then ships regardless. On a strong match the actor becomes the author — a human or a service
 account alike, always named by its own username (e.g.
 `system:serviceaccount:flux-system:kustomize-controller`). A weak, conflicting, missing, or expired fact
-resolves to the committer. A late fact that arrives after a commit has shipped **never rewrites it**.
-With attribution disabled the resolver is absent and every commit is committer-authored.
+produces `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` instead of a
+guessed actor. A late fact that arrives after a commit has shipped **never rewrites it**. With attribution
+disabled the resolver is absent and every commit is committer-authored.
 
 The CommitRequest controller does **not** read this audit index. A CommitRequest's submitter is named by
 the `/validate-operator-types` validating admission webhook instead — captured synchronously at admission,
@@ -625,12 +634,21 @@ and the *author* (who wrote the change) — and GitOps Reverser uses both on pur
   to `GitOps Reverser <noreply@configbutler.ai>`. Every commit, attributed or not, is committed by the
   operator, because the operator is what actually wrote it to Git.
 * The **author is the real actor — but only when we are sure.** On a strong attribution match the author is
-  set to that actor; with no confident match the author is set to the operator too. Git always carries an
-  author, so it is **never left blank** — when we are not sure it is simply the operator (identical to the
-  committer), never a guessed person. A commit whose author differs from the committer is therefore a
-  positive statement that the operator is confident who made the change.
+  set to that actor. Git always carries an author, so it is **never left blank**, and it is never a guessed
+  person. What fills it when we are not sure depends on WHY:
+  * **Attribution is switched off** (configured-author mode, and reconcile/resync writes that have no actor
+    at all): the author is the operator, identical to the committer. That is honest — the operator really is
+    the author.
+  * **Attribution ran and did not resolve an actor**: the author is the explicit sentinel
+    `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`. It is deliberately
+    NOT the operator, because authoring it as the operator made a lost actor byte-identical to a
+    configured-author commit — so the gap was invisible in Git history and only countable in a metric.
 
-The author identity is never invented — it is taken from the authenticated request. The name and email come
+  A commit whose author is a **person** is therefore a positive statement that the operator is confident who
+  made the change; one authored by the sentinel is a positive statement that it tried and could not tell.
+
+The author identity is never fabricated as a person — a real author is always taken from the authenticated
+request, and an unresolved one is labelled as unresolved rather than attributed to anybody. The name and email come
 from the **OIDC claims** when the apiserver maps them; otherwise they come from the actor's own
 **Kubernetes identity** — the username, which for a controller is its service account
 (`system:serviceaccount:<namespace>:<name>`), with a stable derived email under `noreply.cluster.local`.
@@ -800,8 +818,8 @@ namespaces.
 
 Desired state comes from one **raw watch per `(GitTarget, GVR, scope)`**. Each event is sanitized, diffed
 against current Git content, and applied — there is no separate per-type object store to reconstruct,
-because Git already holds current state. The authoritative design is
-[design/watch-first-ingestion-architecture.md](finished/watch-first-ingestion-architecture.md).
+because Git already holds current state. This section is the authoritative contract; the
+[watch-first design record](finished/watch-first-ingestion-architecture.md) is historical context.
 
 * **Manager**: [internal/watch/manager.go](../internal/watch/manager.go)
 * **Watch / replay / sweep**: [internal/watch/target_watch.go](../internal/watch/target_watch.go)
@@ -1009,14 +1027,14 @@ counted in the resync summary (`placementSkipped`) — rather than written unsaf
 A `CommitRequest` finalizes the open commit window for its GitTarget. The request author is resolved from
 the `/validate-operator-types` validating admission webhook, which captures the authenticated submitter at
 admission (keyed by the object's UID) before the object is visible. The lookup is **present-or-never**: if
-the record is missing, the request **finalizes as the configured committer** with `AuthorAttributed=False`,
-and that fallback does not fail the request:
+the record is missing, the request is marked `AuthorAttributed=False`, claims no actor, and still attaches
+immediately. That is not a failure:
 
 1. The controller stamps the in-progress conditions (`Reconciling=True`) and settles
    `AuthorAttributed` synchronously from the admission author cache. There is no audit wait on this path.
 2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), anchoring the
-   finalize at `receipt + closeDelaySeconds`. The worker binds it to an open window only when author and
-   GitTarget match. It **never finalizes another author's window**; a window carries at most one request.
+   finalize at `receipt + closeDelaySeconds`. The worker binds it to an open window only when the author
+   state and GitTarget match. It **never finalizes another author's window**; a window carries at most one request.
 3. The window finalizes on the deadline (or when it closes for any other reason). If a finalize closes an
    open window, the worker always schedules a push, so a window closed by an otherwise no-op resync is not
    stranded.
@@ -1025,8 +1043,10 @@ and that fallback does not fail the request:
    `Pushed=False`; a failure sets `Ready=False` / `Stalled=True` with a message.
 
 The CommitRequest submitter is not recoverable from object state alone, so without an admission record the
-finalize is committer-authored. There is no audit-fact join on this path: the submitter is captured at
-admission by the validating webhook, not derived from the audit attribution index.
+request cannot claim an actor. The final Git author remains the attached watch window's author: configured
+committer when attribution was disabled, or the explicit unresolved author when live attribution ran but
+could not resolve. There is no audit-fact join for the request itself: its submitter is captured at admission
+by the validating webhook, not derived from the audit attribution index.
 
 ***
 
@@ -1047,7 +1067,7 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
 * `CommitRequestReconciler` runs with `MaxConcurrentReconciles=1` and attributes/attaches as above; its
   optional `AuthorLookup` is the command-author cache populated by the `/validate-operator-types` webhook
   (wired whenever the admission webhook is enabled — independent of `--author-attribution` — and nil
-  otherwise, so the request finalizes as the committer).
+  otherwise, so the request claims no actor).
 
 Dependency watches use narrow predicates to avoid status-only heartbeat churn: a `ClusterProvider` also
 admits a `Ready` transition, and a `Namespace` admits only label changes. `GitProvider`, `GitTarget`, and
@@ -1109,8 +1129,8 @@ Metrics are exported over OTLP / the metrics server. The audit-attribution path 
   (read by the restart-reconcile guarantee);
 * resync/background-apply failure counters so a silently-recovered fault stays visible.
 
-Per-watch volume/restart/replay metrics and per-attribution result/wait histograms are designed
-([watch-first metrics](finished/watch-first-ingestion-architecture.md#metrics)) but **not yet emitted**; see
+Per-watch volume/restart/replay metrics and per-attribution result/wait histograms are designed in the
+[metrics observability plan](design/metrics-observability-plan.md) but **not yet emitted**; see
 [Operational Boundaries](#operational-boundaries).
 
 ***
@@ -1174,8 +1194,8 @@ Deeper dives live under [docs/design/](design/):
 
 **Ingestion, attribution, and reconcile:**
 
-* [Watch-first ingestion architecture](finished/watch-first-ingestion-architecture.md) — the authoritative
-  model: watch is the only object-state source, audit is optional attribution.
+* [Watch-first ingestion design record](finished/watch-first-ingestion-architecture.md) — historical context
+  for the current watch-only object-state model and optional audit attribution.
 * [Watch event ordering under the attribution grace window](facts/watch-event-ordering-and-attribution-grace.md)
 * [Reconcile via watchlist mark and sweep](spec/reconcile-via-watchlist-mark-and-sweep.md)
 * [CommitRequest design](spec/commitrequest-design.md)

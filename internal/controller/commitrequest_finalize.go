@@ -28,6 +28,7 @@ const (
 	crReasonUnexpectedOutcome       = "UnexpectedOutcome"
 	crReasonAttributedFromAdmission = "AttributedFromAdmission"
 	crReasonCommitterFallback       = "CommitterFallback"
+	crReasonAuthorCaptureDisabled   = "AuthorCaptureDisabled"
 	crReasonPushed                  = "Pushed"
 )
 
@@ -50,14 +51,38 @@ const notStalledMessage = "the CommitRequest is not stalled"
 type commitRequestAttribution int
 
 const (
+	// attributionUnset is the defensive zero value. It must never report a resolved
+	// actor when a caller neglected to initialize the attribution decision.
+	attributionUnset commitRequestAttribution = iota
 	// attributionFromAdmission means the submitter was captured at admission by the
 	// validate-operator-types webhook and named as the commit author.
-	attributionFromAdmission commitRequestAttribution = iota
-	// attributionCommitter means no admission author record exists — the
-	// validate-operator-types webhook is not configured (or did not record one) — so the
-	// commit is authored by the configured committer.
+	attributionFromAdmission
+	// attributionCommitter means command-author capture ran but no admission author record
+	// exists, so the request does not claim an actor.
 	attributionCommitter
+	// attributionNotAttempted means command-author capture is switched off entirely (the
+	// validate-operator-types webhook is not running), so no submitter was ever sought. It is
+	// distinct from attributionCommitter, where capture DID run and found nothing.
+	attributionNotAttempted
 )
+
+// gitOutcome projects the controller's attribution state onto the git layer's outcome, which
+// is what the worker matches windows on. Keeping the projection here — rather than passing the
+// controller's own enum down — means the git package never learns about admission records.
+func (a commitRequestAttribution) gitOutcome() git.AttributionOutcome {
+	switch a {
+	case attributionUnset:
+		return git.AttributionNotAttempted
+	case attributionFromAdmission:
+		return git.AttributionResolved
+	case attributionCommitter:
+		return git.AttributionUnresolved
+	case attributionNotAttempted:
+		return git.AttributionNotAttempted
+	default:
+		return git.AttributionNotAttempted
+	}
+}
 
 // setCommitRequestCondition upserts a condition keyed by type, stamping it with
 // the request's generation so kstatus can tell a current status from a stale one.
@@ -102,19 +127,32 @@ func markCommitRequestWaitingForCloseDelay(cr *configv1alpha3.CommitRequest, att
 }
 
 // setCommitRequestAttributed records the settled, binary author decision on the
-// AuthorAttributed condition. False (CommitterFallback) is not a failure and does not
-// affect Ready — it is the honest signal that no admission author record was found.
+// AuthorAttributed condition. A False reason distinguishes an absent record
+// (CommitterFallback) from capture disabled (AuthorCaptureDisabled). Neither is a failure or
+// affects Ready; the request claims no actor.
 func setCommitRequestAttributed(cr *configv1alpha3.CommitRequest, attribution commitRequestAttribution) {
 	switch attribution {
+	case attributionUnset:
+		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
+			crReasonAuthorCaptureDisabled,
+			"command-author capture state was unset; the request can attach only to a window with no named actor")
 	case attributionFromAdmission:
 		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionTrue,
 			crReasonAttributedFromAdmission,
 			"the submitter was captured at admission and named as the commit author")
 	case attributionCommitter:
+		// Capture RAN and found nothing. Distinct from attributionNotAttempted below, whose
+		// message this used to carry — reporting "the webhook is not configured" for a
+		// webhook that is configured and simply missed sends operators to the wrong place.
 		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
 			crReasonCommitterFallback,
-			"no admission author record (the validate-operator-types webhook is not configured); "+
-				"committed as the configured committer")
+			"no admission author record was found for this request; it can attach only to a "+
+				"window with no named actor")
+	case attributionNotAttempted:
+		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
+			crReasonAuthorCaptureDisabled,
+			"command-author capture is disabled (the validate-operator-types webhook is not "+
+				"configured); the request can attach only to a window with no named actor")
 	}
 }
 

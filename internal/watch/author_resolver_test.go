@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
@@ -51,8 +52,8 @@ func TestAuthorResolver_HumanHit(t *testing.T) {
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	ui, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
-	require.True(t, ok)
+	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	require.Equal(t, git.AttributionResolved, outcome)
 	assert.Equal(t, "alice", ui.Username)
 	assert.Equal(t, "a@x.io", ui.Email)
 	assert.Equal(t, 1, lookup.calls)
@@ -75,8 +76,9 @@ func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	ui, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
-	require.True(t, ok, "a matched service account is named, not collapsed to the committer")
+	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	require.Equal(t, git.AttributionResolved, outcome,
+		"a matched service account is named, not collapsed to the committer")
 	assert.Equal(t, sa, ui.Username)
 
 	count, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_resolutions_total",
@@ -90,14 +92,16 @@ func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 	assert.Equal(t, uint64(1), waitCount)
 }
 
-func TestAuthorResolver_MissExpiresToCommitter(t *testing.T) {
+func TestAuthorResolver_MissExpiresToUnresolved(t *testing.T) {
 	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}, hitAfter: 1000}
 	r := NewAuthorResolver(lookup, 0, logr.Discard())
 
-	// A zero grace does a single lookup and, on a miss, ships as committer (ok=false).
-	// There is no longer a miss-marker write-back.
-	_, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
-	assert.False(t, ok)
+	// A zero grace does a single lookup and, on a miss, reports UNRESOLVED — attribution ran
+	// and did not name anyone. It is deliberately not NotAttempted, which would claim
+	// attribution was never switched on. There is no miss-marker write-back.
+	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	assert.Equal(t, git.AttributionUnresolved, outcome)
+	assert.Empty(t, ui.Username, "an unresolved attribution names nobody")
 	assert.Equal(t, 1, lookup.calls)
 }
 
@@ -111,8 +115,8 @@ func TestAuthorResolver_DeleteEventIsNotExactCapable(t *testing.T) {
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	_, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "999", false)
-	require.True(t, ok)
+	_, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "999", false)
+	require.Equal(t, git.AttributionResolved, outcome)
 	assert.False(t, lookup.lastExactCapable, "a removal event may consult the /last pointer")
 }
 
@@ -126,14 +130,38 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 	}
 	r := NewAuthorResolver(lookup, 2*time.Second, logr.Discard())
 
-	ui, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
-	require.True(t, ok)
+	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	require.Equal(t, git.AttributionResolved, outcome)
 	assert.Equal(t, "bob", ui.Username)
 	assert.GreaterOrEqual(t, lookup.calls, 3)
 }
 
-func TestAuthorResolver_NilLookupIsCommitter(t *testing.T) {
+// A nil lookup is configured-author mode: attribution was never switched on, so the outcome
+// must be NotAttempted — not Unresolved. Conflating the two is what made a lost actor
+// indistinguishable from a deployment that simply does not do attribution.
+func TestAuthorResolver_NilLookupIsNotAttempted(t *testing.T) {
 	r := NewAuthorResolver(nil, DefaultAttributionGraceWindow, logr.Discard())
-	_, ok := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
-	assert.False(t, ok)
+
+	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+
+	assert.Equal(t, git.AttributionNotAttempted, outcome,
+		"attribution that was never enabled has not failed — the committer legitimately authors")
+	assert.Empty(t, ui.Username)
+}
+
+// A fact that exists but carries no author is also unresolved, not not-attempted: attribution
+// ran, found something, and still could not name anyone.
+func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
+	lookup := &fakeLookup{
+		resolution: queue.AuthorResolution{
+			Fact:   queue.AuthorFact{Author: ""},
+			Result: queue.AttributionExactUser,
+		},
+		hitAfter: 1,
+	}
+	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
+
+	_, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+
+	assert.Equal(t, git.AttributionUnresolved, outcome)
 }

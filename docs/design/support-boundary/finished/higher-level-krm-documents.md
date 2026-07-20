@@ -99,7 +99,7 @@ two reasons:
 
 Flux CRDs (`helmreleases.helm.toolkit.fluxcd.io`,
 `kustomizations.kustomize.toolkit.fluxcd.io`) are established during standard
-e2e setup ([../../../../test/e2e/Taskfile.yml](../../../../test/e2e/Taskfile.yml),
+e2e setup ([../../../../test/e2e/Taskfile-e2e.yml](../../../../test/e2e/Taskfile-e2e.yml),
 `_flux-installed`), so the live pin uses a `HelmRelease`. The Argo and KRO
 controllers are not in the base cluster; their kinds are pinned at the unit
 level, where the analyzer/editor need only the document bytes — no controller,

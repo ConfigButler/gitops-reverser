@@ -7,6 +7,12 @@
 - **Skip conversational phrases** - No "Great!", "Certainly!", "Okay!" - get straight to the point
 - **One clear message per concept** - Don't repeat the same information in different ways
 
+## PULL REQUESTS
+
+- Use a concise Conventional Commit-style PR title: `type(scope): imperative summary`, or omit the scope
+  when none adds useful context.
+- Describe the final branch state, not the sequence of commits used to reach it.
+
 ## MANDATORY PRE-COMPLETION VALIDATION
 
 **CRITICAL**: These commands MUST pass before any implementation is considered complete:

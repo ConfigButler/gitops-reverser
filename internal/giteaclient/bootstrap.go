@@ -122,18 +122,20 @@ func (c *Client) EnsureOrgRepo(
 	}
 }
 
-// ListRepoHooks returns every webhook configured on owner/repo.
+// hookPageSize / maxHookPages bound the webhook listing. /repos/{owner}/{repo}/hooks paginates
+// exactly like the keys endpoint — it is clamped to MAX_RESPONSE_ITEMS and has no "return
+// everything" mode — so an unpaginated read goes blind past the first page. Latent rather than
+// live today only because e2e creates a fresh repo per spec and never accumulates a page of
+// hooks on one repo; the callers that delete hooks would silently miss the rest.
+const (
+	hookPageSize = 50
+	maxHookPages = 200
+)
+
+// ListRepoHooks returns every webhook configured on owner/repo, following pagination.
 func (c *Client) ListRepoHooks(ctx context.Context, owner, repo string) ([]RepoHook, error) {
-	path := "/repos/" + PathEscape(owner) + "/" + PathEscape(repo) + "/hooks"
-	var hooks []RepoHook
-	code, raw, err := c.Do(ctx, http.MethodGet, path, nil, &hooks)
-	if err != nil {
-		return nil, err
-	}
-	if code != http.StatusOK {
-		return nil, unexpectedStatus(http.MethodGet, path, code, raw)
-	}
-	return hooks, nil
+	base := "/repos/" + PathEscape(owner) + "/" + PathEscape(repo) + "/hooks"
+	return listPaginated[RepoHook](ctx, c, base, hookPageSize, maxHookPages)
 }
 
 // DeleteRepoHook removes a single repository webhook. Missing hooks are treated as success.

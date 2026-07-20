@@ -46,9 +46,10 @@ const (
 	// was named from the submitter captured at admission. It is binary and immediately
 	// settled (no Unknown, no timeout): True (AttributedFromAdmission) when the
 	// validate-operator-types webhook recorded the submitter, False (CommitterFallback) when
-	// no admission record exists — the webhook is not configured — and the commit is
-	// authored by the configured committer. False is not a failure and does not affect
-	// Ready (docs/spec/commitrequest-admission-authorship.md §5).
+	// capture ran but found no record, or False (AuthorCaptureDisabled) when capture is off.
+	// False is not a failure and does not affect Ready: the
+	// request claims no actor and can attach only to an unnamed watch window
+	// (docs/architecture.md#commitrequest-finalize).
 	ConditionTypeAuthorAttributed = "AuthorAttributed"
 	// ConditionTypePushed indicates whether a CommitRequest's commit reached the
 	// remote repository.

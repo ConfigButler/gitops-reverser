@@ -239,7 +239,22 @@ const (
 	authorKindUser           = "user"
 	authorKindServiceAccount = "serviceaccount"
 	authorKindCommitter      = "committer"
+	// authorKindUnresolved is attribution that RAN and did not name an actor. It is its own
+	// kind on purpose: classifying it as "user" would make a lost actor indistinguishable
+	// from a named one in dashboards, so a degrading attribution path would read as an
+	// improving one. See docs/interpreting-metrics.md.
+	authorKindUnresolved = "unresolved"
 )
+
+// AttributionOutcome returns the attribution outcome for commit-shaped pending writes. It
+// mirrors AuthorUserInfo: the window is single-author, so the first event's outcome describes
+// the whole write. Atomic and empty writes never attempt attribution.
+func (p PendingWrite) AttributionOutcome() AttributionOutcome {
+	if p.Kind == PendingWriteAtomic || len(p.Events) == 0 {
+		return AttributionNotAttempted
+	}
+	return p.Events[0].Attribution
+}
 
 func (p PendingWrite) createdCommit() bool {
 	if p.Kind == PendingWriteResync {
@@ -248,7 +263,13 @@ func (p PendingWrite) createdCommit() bool {
 	return !p.CommitSHA.IsZero()
 }
 
+// authorKind classifies a commit's author for the commits_total metric. It reads the
+// attribution OUTCOME first: an unresolved attribution is its own kind, never "user", so a
+// lost actor can never be counted as a named one.
 func (p PendingWrite) authorKind() string {
+	if p.AttributionOutcome() == AttributionUnresolved {
+		return authorKindUnresolved
+	}
 	author := p.Author()
 	if author == "" {
 		return authorKindCommitter

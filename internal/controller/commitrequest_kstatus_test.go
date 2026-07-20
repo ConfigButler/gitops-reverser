@@ -22,7 +22,7 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 		wantMsg    string
 	}{
 		{
-			name: "committer fallback in the close-delay wait (AuthorAttributed=False is not a failure)",
+			name: "missing admission author in the close-delay wait (AuthorAttributed=False is not a failure)",
 			conds: []map[string]interface{}{
 				conditionMap(ConditionTypeReady, "False", crReasonWaitingForCloseDelay, closeDelayMessage),
 				conditionMap(ConditionTypeReconciling, "True", crReasonWaitingForCloseDelay, closeDelayMessage),

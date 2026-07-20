@@ -312,11 +312,11 @@ func main() {
 	// lives in its own Redis corner (author:v1:command), independent of
 	// --author-attribution (which governs mirrored-resource attribution). It is wired
 	// whenever the admission server is on; the controller reads the captured submitter
-	// back with no wait (docs/spec/commitrequest-admission-authorship.md §2, §6).
+	// back with no wait (docs/spec/commitrequest-admission-authorship.md).
 	//
 	// AuthorLookup must be a nil interface — not a non-nil interface wrapping a nil
 	// *CommandAuthorStore — when the webhook is off, so the controller's nil check
-	// selects finalize-as-committer immediately (AuthorAttributed=False) instead of
+	// selects the no-actor path immediately (AuthorAttributed=False) instead of
 	// dereferencing a nil store.
 	var commandAuthorStore *queue.CommandAuthorStore
 	var commandAuthorLookup controller.CommandAuthorLookup
@@ -325,10 +325,10 @@ func main() {
 			commandAuthorStore = redisStore.CommandAuthorStore()
 			commandAuthorLookup = commandAuthorStore
 			setupLog.Info("validate-operator-types webhook enabled: command submitters are captured at admission " +
-				"and named as the commit author")
+				"and recorded as the request's named actor")
 		} else {
 			setupLog.Info("validate-operator-types webhook enabled without Redis: command author capture is a " +
-				"no-op; CommitRequests commit as the configured committer (AuthorAttributed=False). " +
+				"no-op; CommitRequests claim no actor (AuthorAttributed=False). " +
 				"Set --redis-addr to capture command authors.")
 		}
 	}
@@ -478,7 +478,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"and, when author attribution is enabled, the attribution facts. Leave empty to run without "+
 			"Redis: watches cold-replay on restart instead of resuming. Required by "+
 			"--author-attribution=true. --admission-webhook still runs without it, but command-author "+
-			"capture is a no-op: CommitRequests commit as the configured committer.")
+			"capture is a no-op: CommitRequests claim no actor.")
 	fs.BoolVar(&cfg.authorAttribution, "author-attribution", true,
 		"Name the real actor (human or service account) who caused each change as the Git commit author, "+
 			"resolved from matching audit facts; this runs the audit webhook ingress (default true). When "+
@@ -661,7 +661,7 @@ func validateAdmissionWebhookConfig(cfg appConfig) error {
 		return nil
 	}
 	// No redis-addr requirement here: the admission webhook stays enabled without Redis and
-	// simply no-ops command-author capture (commits fall back to the committer). Redis is
+	// simply no-ops command-author capture (CommitRequests claim no actor). Redis is
 	// wired only when configured; see the commandAuthorStore setup.
 	if _, _, err := splitBindAddress(cfg.admissionWebhookBindAddress); err != nil {
 		return fmt.Errorf("invalid admission-webhook-bind-address %q: %w", cfg.admissionWebhookBindAddress, err)

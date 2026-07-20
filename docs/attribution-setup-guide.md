@@ -5,6 +5,12 @@ configured committer identity. **Attribution** turns on a second identity — th
 user or service account that made the change becomes the commit *author*, while the committer stays
 constant. Git carries both.
 
+Once attribution is on, a change whose actor cannot be resolved is authored
+`unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` rather than falling
+back to the committer. Seeing that identity in your history means attribution ran and did not find a
+matching audit fact — check the audit webhook path before assuming it is normal. Its rate is
+`commits_total{author_kind="unresolved"}`.
+
 Attribution is the only optional capability, and it is a real operational step up: it requires
 kube-apiserver audit delivery and a Redis/Valkey backing store. This guide covers what that costs
 and how the pieces fit. It assumes GitOps Reverser is already installed and mirroring state — see
@@ -27,6 +33,7 @@ With `attribution.enabled`, only the **author** column moves:
 | Human user (`simon@example.com`) | Simon | `ConfigButler Bot` |
 | Service account (`system:serviceaccount:team-a:deployer`) | the `team-a/deployer` service account | `ConfigButler Bot` |
 | CI / GitHub App identity | that CI / App identity | `ConfigButler Bot` |
+| No usable audit fact for a live change | `unknown (attribution unresolved)` | `ConfigButler Bot` |
 
 The committer column never moves. That is the point.
 
@@ -149,14 +156,16 @@ Audit facts and watch events arrive on independent paths, so the controller join
 wait rather than blocking:
 
 - **`attribution.grace`** (default `3s`) — how long a watch event waits for a matching audit fact
-  before it ships authored by the committer. Larger raises the attribution hit-rate at the cost of
-  commit latency.
+  before it ships with the explicit unresolved author. Larger raises the attribution hit-rate at the cost
+  of commit latency.
 - **`attribution.ttl`** (default `10m`) — how long an unmatched audit fact is retained waiting for
   its watch event.
 
 Attribution is opportunistic: on a strong match the named user or service account is the author; with
-no match in the grace window, the commit still lands, authored by the committer. No change is dropped
-for lack of a match.
+no match in the grace window, the commit still lands, authored as
+`unknown (attribution unresolved)`. No change is dropped for lack of a match. For a live mutation that
+should be attributable, treat this author as an audit-attribution configuration or delivery problem until
+the audit policy, webhook route, source identity, and Redis connectivity are verified.
 
 ## Verifying and reverting
 

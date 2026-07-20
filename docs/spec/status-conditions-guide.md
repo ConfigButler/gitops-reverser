@@ -78,28 +78,30 @@ trio; the bounded "did the work actually happen" signal lives on the `Pushed` do
 
 ```go
 const (
-    TypeReady       = "Ready"       // True at a non-error terminal outcome (committed, or a benign no-commit)
-    TypeReconciling = "Reconciling" // True through both progress waits (reason names which)
-    TypeStalled     = "Stalled"     // True when the finalize failed (kstatus Failed)
-    TypeAttributed  = "Attributed"  // True once the author is settled (immediately True when not required)
-    TypePushed      = "Pushed"      // True once the commit is in the remote repository
+    TypeReady            = "Ready"            // True at a non-error terminal outcome
+    TypeReconciling      = "Reconciling"      // True while the close delay/finalize is in progress
+    TypeStalled          = "Stalled"          // True when the finalize failed (kstatus Failed)
+    TypeAuthorAttributed = "AuthorAttributed" // Whether admission captured the command submitter
+    TypePushed           = "Pushed"           // True once the commit is in the remote repository
 )
 ```
 
-A request passes through two distinct, observable progress waits, both `Reconciling=True` but told apart
-by the `Reconciling`/`Ready` reason and the `Attributed` condition.
+A request has one progress wait: its optional `closeDelaySeconds` collect window, followed by finalization
+and push. `AuthorAttributed` settles at first sight because command authorship is captured synchronously
+at admission; it never has an `Unknown` or audit-wait state.
 
 Canonical reads:
 
-* waiting for the create audit event (attributed-author mode only): `Reconciling=True` reason
-  `WaitingForAuditEvent`, `Attributed=Unknown` → kstatus InProgress
-* waiting for the close delay (author settled, attached — the `closeDelaySeconds` collect window, then
-  commit and push): `Reconciling=True` reason `WaitingForCloseDelay`, `Attributed` settled, `Pushed=False`
-  → kstatus InProgress
+* waiting for the close delay: `Reconciling=True` reason `WaitingForCloseDelay`, `AuthorAttributed`
+  settled, `Pushed=Unknown` → kstatus InProgress
 * committed: `Ready=True`, `Pushed=True`, `Stalled=False`, reason `Committed` → kstatus Current
 * benign no-commit (nothing to save / already present / foreign open window): `Ready=True`, `Pushed=False`,
   `Stalled=False`, with the specific reason on `Ready` → kstatus Current (a correct, non-error outcome)
 * failed finalize: `Ready=False`, `Stalled=True`, reason `FinalizeFailed` → kstatus Failed
-* configured-author mode sets `Attributed=True` (`AttributionNotRequired`) immediately; attributed-author mode leaves
-  it `Unknown` until the create audit event names the author, or `False` (`AuditEventNotObserved`) if it
-  never arrives and the commit is authored by the configured committer
+
+`AuthorAttributed=True` (`AttributedFromAdmission`) means the command submitter was captured. `False`
+(`CommitterFallback`) means capture ran but no admission author record exists; `False`
+(`AuthorCaptureDisabled`) means capture is disabled. Both claim no actor and can attach only to an unnamed
+window. That condition does not itself determine the Git author: the attached watch window is
+configured-author (the committer) when watch attribution is disabled, or explicitly unresolved when watch
+attribution ran but could not name an actor.

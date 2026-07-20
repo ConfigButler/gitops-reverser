@@ -171,6 +171,12 @@ For mirrored-resource commits, the author comes from the configured committer id
 `attribution.enabled=true` and a matching kube-apiserver audit event names the Kubernetes user or
 service account. Snapshot/reconcile commits are operator-authored.
 
+When attribution IS enabled and no matching audit fact arrives, the commit is authored
+`unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` — **not** the
+committer. That distinction is the point: a committer-authored commit means attribution was never
+attempted, while the sentinel means it was attempted and did not resolve, which is worth investigating.
+Such commits also count under `author_kind="unresolved"` in `commits_total`.
+
 That distinction is useful in practice:
 
 - `git log --author=alice` answers "what did Alice change?"
@@ -229,6 +235,12 @@ spec:
 - `APIVersion`
 - `Username`
 - `GitTarget`
+
+`Username` is empty whenever no actor was named — both in configured-author mode and when
+attribution ran and did not resolve. The `attribution-unresolved` sentinel is scoped to the Git
+**author header** and deliberately does not reach templates or message bodies, so a template
+rendering `{{.Username}}` never has to special-case it. Use `git log` (or
+`author_kind="unresolved"`) to tell the two apart.
 
 `groupTemplate` can use:
 
@@ -794,9 +806,11 @@ Progress and outcome are reported through kstatus-compatible **conditions** (no 
   request is finalizing or waiting through `closeDelaySeconds`; `Stalled=True` when the finalize failed
   and needs attention (kstatus reports the object Failed).
 - **AuthorAttributed**: `True` with reason `AttributedFromAdmission` when the internal commands
-  admission webhook captured the request submitter. `False` with reason `CommitterFallback` when no
-  admission record exists; that is not a failure, and the command still commits as the configured
-  committer.
+  admission webhook captured the request submitter. `False` with reason `CommitterFallback` means capture
+  ran but no admission record exists; `False` with reason `AuthorCaptureDisabled` means capture is not
+  configured. Neither is a failure. The request then claims no actor and can attach only to an unnamed
+  watch window, whose Git author remains either the configured committer or the explicit unresolved author
+  according to the watch attribution outcome.
 - **Pushed**: `True` once the commit is in the remote repository.
 
 ## Audit ingestion settings
@@ -873,7 +887,9 @@ When attribution is enabled, these flags tune the join:
 - `--author-attribution-ttl` (default `10m`): how long an attribution fact is retained waiting for the
   matching watch event to join it.
 - `--author-attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
-  watch event ships authored by the committer.
+  watch event ships authored by the `attribution-unresolved` sentinel. Note the delivery floor: the
+  apiserver's own `--audit-webhook-batch-max-wait` delays every fact by up to that much, so a grace at or
+  below it will lose actors systematically.
 
 A matched actor is always named by its own username — humans and service accounts alike (e.g.
 `system:serviceaccount:flux-system:kustomize-controller`); there is no option to collapse service

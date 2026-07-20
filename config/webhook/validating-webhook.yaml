@@ -20,7 +20,7 @@ metadata:
 #      kinds (a CommitRequest today) at admission. This one IS product behavior and is
 #      packaged in the chart (charts/.../templates/validate-operator-types-webhook.yaml); the
 #      entry here is the e2e SUT's copy. See
-#      docs/spec/commitrequest-admission-authorship.md §4.
+#      docs/spec/commitrequest-admission-authorship.md.
 #
 # The cert-manager.io/inject-ca-from annotation injects the admission server CA bundle
 # for every webhook in this configuration.

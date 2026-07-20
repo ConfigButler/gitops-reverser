@@ -1,10 +1,8 @@
 # Index: what to read, and what is history
 
-> Rebuilt 2026-07-11, when the tree went from 180 documents to 117.
-
-There are 136 tracked markdown files here. **About 35 of them bind.** This page names
-those. If a document is not on this page, it is either a user guide (see
-[`README.md`](README.md)) or history you can safely not read.
+This page names the documents that bind the current implementation. If a document is not
+listed here, it is either a user guide (see [`README.md`](README.md)) or historical context
+you can safely skip.
 
 ## The four folders, and what each one means
 
@@ -53,7 +51,7 @@ misled. Full list in [`spec/README.md`](spec/README.md); the ones that carry a
 | [`gitpath-foreign-content-stringency.md`](spec/gitpath-foreign-content-stringency.md) | refusing a path that shadows foreign content |
 | [`unsupported-folder-refusal-plan.md`](spec/unsupported-folder-refusal-plan.md) | `GitPathAccepted`, and refusing what we cannot own |
 | [`commitrequest-design.md`](spec/commitrequest-design.md) | the CommitRequest window and its conditions |
-| [`commitrequest-admission-authorship.md`](spec/commitrequest-admission-authorship.md) | how a real Kubernetes user becomes a commit author |
+| [`commitrequest-admission-authorship.md`](spec/commitrequest-admission-authorship.md) | how command submitters are captured and matched to commit windows |
 | [`where-validation-lives.md`](spec/where-validation-lives.md) | schema → CEL → **the reconciler**; a webhook only for what exists solely at admission |
 | [`e2e-serial-registry.md`](spec/e2e-serial-registry.md) | which e2e specs must run Serial, and why |
 
@@ -78,7 +76,6 @@ Eleven other open items:
 | [`release-image-reuse-plan.md`](design/release-image-reuse-plan.md) | PRs 2–5 unstarted |
 | [`e2e-coverage-gaps-and-improvements-plan.md`](design/e2e-coverage-gaps-and-improvements-plan.md) | tests A/B/C still proposals |
 | [`e2e-finish-plan.md`](design/e2e-finish-plan.md) | remaining e2e harness work |
-| [`residual-e2e-flakes-2026-06-19.md`](design/residual-e2e-flakes-2026-06-19.md) | Flake B still open |
 | [`sensitive-resource-diagnostics-follow-up.md`](design/sensitive-resource-diagnostics-follow-up.md) | deferred diagnostics |
 | [`e2e-git-server-choice.md`](design/e2e-git-server-choice.md) | stay on Gitea or move to Forgejo — the `_csrf` pin is fixable in place on both, so the migration is now a preference call, not a fix; also why we adopt no SDK either way |
 | [`watchrule-source-namespace/`](design/watchrule-source-namespace/README.md) | letting a WatchRule address a differently-named namespace on its source cluster — a deny-by-default `allowedSourceNamespaces` on the **GitTarget** (so scope is per-tenant, not a provider-wide union), unlocked by a false-by-default delegation flag on the ClusterProvider. Split into five implementable PRs: three prerequisite scope fixes (the namespace-blind resync sweep that would delete other namespaces' manifests, the cluster-wide/named stream collapse, and ClusterWatchRule's unchecked GitTarget attachment), the field and its gate, and the ceiling that makes the allow-list bind ClusterWatchRule too — required because a multi-tenant deployment runs a ClusterWatchRule per tenant from day one to capture CRDs |

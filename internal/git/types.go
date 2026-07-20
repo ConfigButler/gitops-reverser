@@ -17,6 +17,90 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
+// AttributionOutcome records what happened when the operator tried to name the actor behind a
+// change. It is carried EXPLICITLY rather than inferred from the author identity, because the
+// author string is load-bearing in several places (window grouping, commit-message templates,
+// the author_kind metric) and overloading it to also mean "attribution failed" made a silent
+// failure indistinguishable from correct configured-author behaviour. See
+// docs/architecture.md#author-and-committer-identity-in-git.
+type AttributionOutcome string
+
+const (
+	// AttributionNotAttempted is configured-author mode: attribution is switched off, so the
+	// committer legitimately IS the author and no actor was ever sought.
+	//
+	// It is deliberately the EMPTY string, so that it is also the ZERO VALUE of the type. Most
+	// paths that build an Event never assign Attribution at all — reconcile, resync, bootstrap,
+	// and configured-author mode's early return in the watch pipeline — and every one of them
+	// means exactly "no actor was sought". Any other string would make the zero value a silent
+	// fourth state equal to none of the three named outcomes, which is precisely the bug that
+	// stopped every CommitRequest attaching in the default deployment. Nothing serializes this
+	// value (it reaches no CRD field and no metric label; authorKind branches on the typed
+	// value), so the empty string costs nothing. TestAttributionZeroValueIsNotAttempted pins it.
+	AttributionNotAttempted AttributionOutcome = ""
+	// AttributionResolved means an audit fact named the actor.
+	AttributionResolved AttributionOutcome = "resolved"
+	// AttributionUnresolved means attribution ran and did not arrive at an actor.
+	//
+	// Deliberately "unresolved", not "failed": the lookup collapses several genuinely
+	// different situations into one miss — no fact was ever produced (correct; not every
+	// change has an audited human actor), a cancelled wait, a Redis read error, and a
+	// malformed value all return the same not-found. Calling that a failure would assert a
+	// fault the operator cannot prove.
+	AttributionUnresolved AttributionOutcome = "unresolved"
+)
+
+// NamesActor reports whether the outcome carries an actor to compare against.
+//
+// This is the ONLY distinction that survives across subsystem boundaries. Whether an outcome
+// is "not attempted" or "unresolved" is a property of how the subsystem that produced it is
+// configured — and the mirrored-resource attribution path (--author-attribution) and the
+// command-authorship path (--admission-webhook) are configured independently of each other
+// (cmd/main.go:311-316). Two independently configured producers can therefore disagree about
+// the enum while agreeing perfectly about the thing that matters: whether there is an actor.
+// Compare the enums across that boundary and you couple the two flags; compare NamesActor and
+// you do not. Within a single subsystem the enum itself is meaningful and IS compared directly
+// (openWindow.canAppend), because both sides come from the same producer.
+func (o AttributionOutcome) NamesActor() bool {
+	return o == AttributionResolved
+}
+
+// UnresolvedAuthor is the identity written to the Git AUTHOR HEADER when attribution ran and
+// did not resolve an actor. It exists so an unresolved attribution is visible in `git log`
+// instead of being indistinguishable from a configured-author commit.
+//
+// Scope: the git author header, and nothing else. It is DERIVED at the write path
+// (commitOptionsFor) from the carried AttributionOutcome — it is never stamped onto an Event.
+// The outcome is the fact; this identity is one rendering of it. So the sentinel deliberately
+// does NOT reach window grouping, the grouped commit-message body, or user-authored
+// {{.Username}} templates: those keep the empty author they have always had for an unnamed
+// actor, on both this path and in configured-author mode. Pushing a magic token into message
+// bodies would change the commit text of every existing deployment that has attribution misses,
+// and force user templates to special-case a value they never had to handle.
+//
+// Three fields, three different strings, because the header needs all three:
+//   - Username is the stable machine token, so tooling that parses the header has something
+//     greppable that will not drift with the human-facing wording.
+//   - DisplayName is what a human reads in `git log`, so it leads with what they care about.
+//   - Email uses the RFC 2606 reserved .invalid TLD, so it can never collide with a real
+//     address and never routes mail.
+func UnresolvedAuthor() UserInfo {
+	return UserInfo{
+		Username:    UnresolvedAuthorUsername,
+		DisplayName: UnresolvedAuthorDisplayName,
+		Email:       UnresolvedAuthorEmail,
+	}
+}
+
+const (
+	// UnresolvedAuthorUsername is the stable machine token for an unresolved attribution.
+	UnresolvedAuthorUsername = "attribution-unresolved"
+	// UnresolvedAuthorDisplayName is the human-facing git author name.
+	UnresolvedAuthorDisplayName = "unknown (attribution unresolved)"
+	// UnresolvedAuthorEmail is a reserved-invalid address (RFC 2606).
+	UnresolvedAuthorEmail = "attribution-unresolved@gitops-reverser.invalid"
+)
+
 const (
 	// DefaultCommitterName matches the default operator identity in Git history.
 	DefaultCommitterName = "GitOps Reverser"
@@ -201,8 +285,7 @@ type PendingWrite struct {
 	Committed *bool
 
 	// CommitRequest, when set, is the CommitRequest claiming this write: it is
-	// resolved Committed (with CommitSHA) once this write is pushed (§6.5 of
-	// docs/spec/commitrequest-design.md). It rides the write through the
+	// resolved Committed (with CommitSHA) once this write is pushed. It rides the write through the
 	// push cooldown and the conflict rebase-replay, so the result follows the data.
 	CommitRequest *commitRequestID
 	// CommitSHA is the hash of the commit this write created, captured in
@@ -377,6 +460,16 @@ type Event struct {
 
 	// UserInfo contains user information for commit messages.
 	UserInfo UserInfo
+
+	// Attribution records whether naming the actor was attempted and whether it succeeded.
+	// It is the authority for author rendering, the author_kind metric, and CommitRequest
+	// window matching — none of which may infer the outcome from UserInfo, because an empty
+	// or sentinel username cannot distinguish "attribution is off" from "attribution ran and
+	// found nothing". The zero value is AttributionNotAttempted — the constant is defined as the
+	// empty string precisely so that it is — which is correct for every non-live path
+	// (reconcile, resync, bootstrap) where no actor is ever sought, and for configured-author
+	// mode. attachAuthor is the only assignment to this field outside tests.
+	Attribution AttributionOutcome
 
 	// Path is the POSIX-like relative path prefix for this event's files.
 	// This comes from the GitTarget that triggered this event.

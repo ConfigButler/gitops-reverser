@@ -24,18 +24,31 @@ func NormalizeAuthorizedKey(k string) string {
 	return fields[0] + " " + fields[1]
 }
 
-// ListUserKeys returns every public key registered for the named user.
+// keyPageSize is the per-page item count REQUESTED when listing keys. It is a throughput hint
+// only — never a termination signal. Gitea clamps every request down to MAX_RESPONSE_ITEMS
+// (ToCorrectPageSize), which is operator-configurable, so the server's actual page size may be
+// smaller than this and the loop must not assume otherwise.
+const keyPageSize = 50
+
+// maxKeyPages bounds the pagination loop. Termination depends on the server eventually
+// returning an empty page, which a server that ignores the `page` parameter never does — it
+// would serve a full first page forever, and the loop would spin until the caller's context
+// deadline and report an undiagnosable "context deadline exceeded" instead of naming the cause.
+// At keyPageSize this ceiling is 10 000 keys, far past any real user.
+const maxKeyPages = 200
+
+// ListUserKeys returns EVERY public key on the named user, following pagination.
+//
+// The pagination is load-bearing, not tidiness. Gitea's default page size is 30, and this
+// listing backs FindUserKeyByTitle, which EnsureUserKeyAsAdmin uses to decide whether a title
+// is already taken. An unpaginated listing therefore stops seeing keys once a user holds more
+// than one page of them, and "ensure" starts failing with `422 Key title has been used` for a
+// key that demonstrably exists — the caller cannot see it to replace it. The e2e suite hits
+// this reliably: it registers ~24 seeded transport keys per full run against a long-lived
+// Gitea, so the second run onward exceeds one page and the stable-titled `playground` key
+// becomes unreachable.
 func (c *Client) ListUserKeys(ctx context.Context, login string) ([]PublicKey, error) {
-	var keys []PublicKey
-	path := "/users/" + PathEscape(login) + "/keys"
-	code, raw, err := c.Do(ctx, http.MethodGet, path, nil, &keys)
-	if err != nil {
-		return nil, err
-	}
-	if code != http.StatusOK {
-		return nil, unexpectedStatus(http.MethodGet, path, code, raw)
-	}
-	return keys, nil
+	return listPaginated[PublicKey](ctx, c, "/users/"+PathEscape(login)+"/keys", keyPageSize, maxKeyPages)
 }
 
 // FindUserKey looks up a public key on the named user by key material,

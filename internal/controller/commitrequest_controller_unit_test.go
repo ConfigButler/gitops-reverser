@@ -258,11 +258,11 @@ func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionFalse, "")
 }
 
-// A lookup miss (the validate-operator-types webhook recorded no author for this object)
-// resolves to the configured committer immediately — present-or-never, no wait. Even a
-// freshly created CommitRequest attaches at once with a blank author and records
-// AuthorAttributed=False (CommitterFallback).
-func TestCommitRequestReconcile_LookupMissFallsBackToCommitter(t *testing.T) {
+// TestCommitRequestReconcile_LookupMissClaimsNoActor verifies that a lookup miss claims no actor
+// immediately — present-or-never, no wait. A freshly created CommitRequest attaches at once with a
+// blank author and records AuthorAttributed=False (CommitterFallback). The matching window determines
+// the Git author.
+func TestCommitRequestReconcile_LookupMissClaimsNoActor(t *testing.T) {
 	cr := newCommitRequest("save-fresh")
 	cr.CreationTimestamp = metav1.Now() // fresh: the old path would have requeued here
 	c := newCommitRequestClient(t, nil, cr)
@@ -278,7 +278,7 @@ func TestCommitRequestReconcile_LookupMissFallsBackToCommitter(t *testing.T) {
 	assert.Zero(t, res.RequeueAfter, "a miss is final; the request must not poll for an author")
 	assert.Equal(t, 1, lookup.calls, "the author is looked up exactly once, synchronously")
 	require.Len(t, f.calls, 1, "the attach is sent immediately on a miss")
-	assert.Empty(t, f.calls[0].Author, "a miss attaches with a blank author (the configured committer)")
+	assert.Empty(t, f.calls[0].Author, "a miss attaches with a blank, unnamed actor")
 
 	got := fetchCommitRequest(t, c, "save-fresh")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
@@ -380,8 +380,8 @@ func TestCommitRequestReconcile_StaleCacheEchoDoesNotRefinalize(t *testing.T) {
 }
 
 // Webhook-disabled mode (no AuthorLookup) never waits: a freshly created CommitRequest
-// attaches immediately with a blank author and commits as the configured committer,
-// recording AuthorAttributed=False (CommitterFallback).
+// attaches immediately with a blank author and records AuthorAttributed=False
+// (AuthorCaptureDisabled). The matching window determines the Git author.
 func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing.T) {
 	cr := newCommitRequest("save-configured-author")
 	cr.CreationTimestamp = metav1.Now() // fresh: a waiting path would requeue instead of commit
@@ -398,13 +398,13 @@ func TestCommitRequestReconcile_ConfiguredAuthorCommitsWithoutWaiting(t *testing
 	got := fetchCommitRequest(t, c, "save-configured-author")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionTrue, crReasonCommitted)
 	requireCondition(t, got, ConditionTypePushed, metav1.ConditionTrue, crReasonPushed)
-	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
+	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonAuthorCaptureDisabled)
 	assert.Equal(t, "c0ffee", got.Status.SHA)
 	require.Len(t, f.calls, 1, "the attach is sent immediately, with no attribution wait")
 	assert.Empty(t, f.calls[0].Author, "webhook-disabled mode attaches with a blank author")
 }
 
-// Webhook-disabled mode settles AuthorAttributed=False (CommitterFallback) immediately
+// Webhook-disabled mode settles AuthorAttributed=False (AuthorCaptureDisabled) immediately
 // and never parks the request in a "waiting for the author" state: even while the
 // attach is still being polled, the request is in the WaitingForCloseDelay wait.
 func TestCommitRequestReconcile_ConfiguredAuthorAttributedImmediately(t *testing.T) {
@@ -421,7 +421,7 @@ func TestCommitRequestReconcile_ConfiguredAuthorAttributedImmediately(t *testing
 	assert.Empty(t, f.calls[0].Author)
 
 	got := fetchCommitRequest(t, c, "save-committer-poll")
-	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonCommitterFallback)
+	requireCondition(t, got, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonAuthorCaptureDisabled)
 	requireCondition(t, got, ConditionTypeReconciling, metav1.ConditionTrue, crReasonWaitingForCloseDelay)
 	assert.False(t, commitRequestIsTerminal(&got), "in the close-delay wait, not terminal")
 }
@@ -514,7 +514,7 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		assert.Equal(t, "main", cr.Status.Branch)
 	})
 
-	t.Run("no window in grace is a benign ready (committer fallback)", func(t *testing.T) {
+	t.Run("no window in grace is a benign ready (no admission author)", func(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}, nil, attributionCommitter)

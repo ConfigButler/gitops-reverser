@@ -152,8 +152,27 @@ func (m *Manager) replaceGitTargetWatches(
 		ops := table.operationsFor(watchKey)
 		go m.runTargetWatch(childCtx, log, table.GitDest, watchKey, ops)
 	}
-	log.Info("watch-first target watch set reconciled", "watchCount", len(keys))
+	// Name every declared stream, not just the count. A GVR appearing twice — once
+	// cluster-wide ("") and once under a named namespace — means the same object is
+	// delivered on two streams, which is legitimate scoping but doubles the events for
+	// objects in that namespace. That is invisible in a bare count.
+	log.Info("watch-first target watch set reconciled",
+		"watchCount", len(keys), "streams", describeWatchKeys(keys, specs))
 	return nil
+}
+
+// describeWatchKeys renders the declared streams as "<gvr>@<namespace|*cluster-wide*>=<ops>"
+// so a declare log names exactly what is being watched and under which operation filter.
+func describeWatchKeys(keys []targetWatchKey, specs map[targetWatchKey]string) string {
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		scope := key.Namespace
+		if scope == "" {
+			scope = "*cluster-wide*"
+		}
+		parts = append(parts, fmt.Sprintf("%s@%s=%s", key.GVR.String(), scope, specs[key]))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func (m *Manager) prepareTargetWatchSetReplacementLocked(
@@ -724,13 +743,18 @@ func (m *Manager) routeLiveTargetWatchEvent(
 // attribution index. The live object still carries its UID and resourceVersion
 // here (sanitize strips them inside targetWatchGitEvent), so the resolver joins on
 // the strongest available key. Configured-author mode (nil resolver) leaves UserInfo
-// zero, so the writer authors the commit as the configured committer.
+// zero, so the writer authors that commit as the configured committer.
 func (m *Manager) attachAuthor(
 	ctx context.Context,
 	event *git.Event,
 	gvr schema.GroupVersionResource,
 	u *unstructured.Unstructured,
 ) {
+	// A nil resolver is configured-author mode: nothing is attempted, and the event's zero
+	// Attribution is already AttributionNotAttempted — the constant is the empty string so that
+	// this early return needs no stamp. Do not "fix" this by giving the constant a name-shaped
+	// value; every non-live path (reconcile, resync, bootstrap) relies on the same zero value,
+	// and a non-empty constant turns all of them into a fourth state that matches nothing.
 	if m.AuthorResolver == nil {
 		return
 	}
@@ -743,9 +767,15 @@ func (m *Manager) attachAuthor(
 	// ClusterProvider name — this event was watched on. It keys the author read against exactly
 	// the facts the audit handler recorded for that cluster, so a fact from cluster A can never
 	// name the author of an object watched on cluster B.
-	if userInfo, ok := m.AuthorResolver.ResolveAuthor(
+	userInfo, outcome := m.AuthorResolver.ResolveAuthor(
 		ctx, event.SourceCluster, gvr, u.GetUID(), u.GetResourceVersion(), exactCapable,
-	); ok {
+	)
+	// Stamp the outcome even when no actor was named: an unresolved attribution is a fact the
+	// writer, the author_kind metric, and CommitRequest matching all need. Leaving it at the
+	// zero value would say "attribution was never attempted", which is exactly the conflation
+	// that made this loss invisible.
+	event.Attribution = outcome
+	if outcome == git.AttributionResolved {
 		event.UserInfo = userInfo
 	}
 }

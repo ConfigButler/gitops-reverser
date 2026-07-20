@@ -1,7 +1,7 @@
 # Argo CD (bi-directional e2e corner)
 
 The only Argo CD installation in this repository. Installed by the
-`_argocd-installed` node in [`test/e2e/Taskfile.yml`](../../Taskfile.yml), which
+`_argocd-installed` node in [`test/e2e/Taskfile-e2e.yml`](../../Taskfile-e2e.yml), which
 only `task test-e2e-bi-directional` and `task argocd-ui` depend on — so the other
 CI legs never pay for it.
 
@@ -51,7 +51,7 @@ The specs in `test/e2e/argocd_bi_directional_e2e_test.go` assert Argo CD's
 value format, client-side apply. A floating version would let an upstream default
 change turn a real behavioural regression into a silent pass.
 
-`ARGOCD_CHART_VERSION` lives in [`test/e2e/Taskfile.yml`](../../Taskfile.yml) and
+`ARGOCD_CHART_VERSION` lives in [`test/e2e/Taskfile-e2e.yml`](../../Taskfile-e2e.yml) and
 pins the chart, which carries a specific Argo CD release (its appVersion; e.g.
 chart `10.1.3` ships `v3.4.5`). When bumping, re-verify against the upstream source
 **at the appVersion the chart ships** (a checkout lives at

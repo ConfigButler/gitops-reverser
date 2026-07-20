@@ -86,7 +86,7 @@ var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() 
 
 		// Authorship only flows through the per-event audit tail. A ConfigMap created
 		// while the configmaps type is still building its first checkpoint would land in
-		// the unattributed baseline splice instead (fallback author), so wait until the
+		// the configured-author baseline splice instead, so wait until the
 		// GitTarget reports StreamsRunning before producing the impersonated writes.
 		waitForStreamsRunning(gitTargetName, testNs)
 	})

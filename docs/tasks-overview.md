@@ -34,9 +34,21 @@ Task keeps the behavior easier to follow:
   `flatten: true` so everything shares one flat command surface, and sets `run: once` so the
   e2e DAG can fan out through `deps:` without a shared node starting twice.
 - [Taskfile-build.yml](../Taskfile-build.yml): build, codegen, lint, and unit-test tasks.
-- [test/e2e/Taskfile.yml](../test/e2e/Taskfile.yml): the e2e bring-up DAG.
+- [test/e2e/Taskfile-e2e.yml](../test/e2e/Taskfile-e2e.yml): the e2e bring-up DAG.
 
 Run `task` (or `task help`) to list everything.
+
+> **Why `Taskfile-e2e.yml` and not `Taskfile.yml`?** Deliberate — please don't rename it
+> back. Every path in that file is relative to the **repo root** (`.stamps/cluster/…`,
+> `test/e2e/cluster/audit`, `find cmd/mutation-capture-lab …`), because the root Taskfile
+> includes it with `dir: .`. If it were named `Taskfile.yml`, `task` run from inside
+> `test/e2e/` would stop its upward search there and execute with `test/e2e/` as the working
+> directory — every one of those paths would then silently resolve to a non-existent
+> location. `task clean-cluster` would delete no stamps while still deleting the cluster,
+> leaving a stale `ready` stamp that makes the next `prepare-e2e` skip cluster creation and
+> fail with `No nodes found for given cluster`. With the current name there is no
+> `Taskfile.yml` in `test/e2e/` to stop the search, so `task` walks up to the repo root and
+> runs with the correct working directory no matter where you invoke it from.
 
 ## Most important tasks
 

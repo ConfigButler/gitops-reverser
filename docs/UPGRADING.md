@@ -7,6 +7,29 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — unresolved attribution is visible in Git (next minor; author identity changes)
+
+When `attribution.enabled=true` and the operator cannot match a live watch event to an audit fact within
+`attribution.grace`, the Git author is now:
+
+```text
+unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>
+```
+
+Previously, this case used the configured committer identity, making an attribution miss
+indistinguishable from configured-author mode. The Git **committer** remains the configured operator
+identity in both cases.
+
+Configured-author mode is unchanged: when attribution is disabled, the configured committer is still both
+the Git author and committer. A real Kubernetes actor is unchanged too. Only a live event for which
+attribution ran but did not resolve now has the explicit author above.
+
+Update any automation that treats `GitOps Reverser` as meaning "attribution was not configured". Monitor
+`gitopsreverser_commits_total{author_kind="unresolved"}` after the upgrade. For a live mutation that should
+be attributable, this author normally means the audit policy, webhook route, source identity, Redis
+connectivity, or grace window is not configured correctly. It can also represent a change with no usable
+audit actor, so use the audit metrics before assigning a cause.
+
 ## Unreleased — a `patches:` block no longer refuses the folder (next minor; more folders accepted)
 
 A kustomization declaring `patches:` used to refuse the whole `GitTarget`. Not the edit — the
@@ -344,9 +367,10 @@ The Helm chart now defaults to the simple, Redis-free `configured-author` path, 
   to `""` (was `valkey-auth`). Without a Redis endpoint the operator runs `configured-author` and
   watches cold-replay on restart.
 - `servers.admission.enabled` stays `true` by default, but the validate-operator-types admission
-  webhook no longer requires Redis. Without `queue.redis.addr` it runs as a no-op (CommitRequests
-  commit as the configured committer, `AuthorAttributed=False`); it captures authors once Redis is
-  configured. Previously enabling admission without Redis failed startup.
+  webhook no longer requires Redis. Without `queue.redis.addr` it runs as a no-op: CommitRequests
+  claim no actor (`AuthorAttributed=False`), while the Redis-free installation's matching windows are
+  configured-author. It captures submitters once Redis is configured. Previously enabling admission
+  without Redis failed startup.
 - The chart still rejects one invalid combination at render time: `attribution.enabled=true` without
   `queue.redis.addr` fails `helm install`/`upgrade` with an actionable message (attributed-author mode
   cannot run without Redis) instead of crash-looping the pod.
@@ -459,8 +483,9 @@ kubectl get commitrequest/<name> -n <namespace> -o jsonpath='{.status.sha}'
 ```
 
 `AuthorAttributed=True` with reason `AttributedFromAdmission` means the internal commands admission
-webhook captured the submitter. `AuthorAttributed=False` with reason `CommitterFallback` is a valid
-fallback, not a failed request.
+webhook captured the submitter. `AuthorAttributed=False` with reason `CommitterFallback` means capture
+ran but found no record; `AuthorCaptureDisabled` means capture is not configured. Neither is a failed
+request.
 
 ### 4. `GitTarget.status.phase` and materialization rollups moved to stream conditions
 

@@ -5,10 +5,12 @@ package e2e
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -50,7 +52,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	// it is not inherited by the detached `kubectl port-forward` children that
 	// prepare spawns — so it releases cleanly when this process exits, instead of
 	// being pinned past the run. Destructive standalone tasks (clean-cluster)
-	// honor the same lock via a flock precondition; see test/e2e/Taskfile.yml.
+	// honor the same lock via a flock precondition; see test/e2e/Taskfile-e2e.yml.
 	acquireE2ERunLock()
 
 	if img := os.Getenv("PROJECT_IMAGE"); img == "" {
@@ -73,6 +75,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 // if the assertion fails — it also releases on process exit).
 var _ = SynchronizedAfterSuite(func() {}, func() {
 	defer releaseE2ERunLock()
+	// Diagnostic first, so its numbers reach the artifacts even when the gating
+	// audit invariant below fails the suite.
+	reportAttributionStats()
 	assertNoAnomalousAuditOutcomes()
 })
 
@@ -121,12 +126,162 @@ func assertNoAnomalousAuditOutcomes() {
 	_, _ = fmt.Fprintf(GinkgoWriter, "✅ no anomalous audit outcomes (0 error-category events across the run)\n")
 }
 
-func configuredAuthorModeEnabled() bool {
-	out, err := kubectlRunInNamespace(namespace, "logs", "deployment/gitops-reverser", "--since=30m")
-	if err != nil {
-		return false
+// attributionWaitBuckets mirrors telemetry's attributionWaitBuckets tail. Only the seconds-scale
+// boundaries are interesting here: the question this report answers is how close the run came to
+// the grace window, and how far past the 3s DEFAULT grace a fact can still arrive.
+var attributionWaitBuckets = []float64{0.5, 1, 2, 3, 5, 10}
+
+// reportAttributionStats prints the run's author-attribution outcome and timing distribution.
+//
+// It is DIAGNOSTIC, not gating. When no audit fact matches within the grace window, the commit is
+// authored as `unknown (attribution unresolved)`, making the missing actor visible in Git history
+// and in the metrics below.
+//
+// The two numbers to read:
+//
+//   - "absent" — resolutions that gave up without naming an actor. Each live commit is authored
+//     as `unknown (attribution unresolved)`, not as the configured committer. For an e2e mutation
+//     that should be attributable, this is an audit-attribution configuration or delivery problem.
+//   - resolutions resolved ABOVE 3s — facts that arrived later than the 3s default grace. Each is
+//     an attribution the default would have dropped, so this is the direct measure of how much
+//     headroom --author-attribution-grace is buying (e2e sets 10s; see config/deployment.yaml).
+//
+// Fact delivery is bounded below by the apiserver's --audit-webhook-batch-max-wait (1s in this
+// cluster), so a healthy run still shows most waits in the 0.5-2s range; the tail is what matters.
+func reportAttributionStats() {
+	// Mirrors assertNoAnomalousAuditOutcomes. Not optional: the AfterSuite runs on every leg,
+	// including ones whose selected specs never touched a metric helper, so promAPI may still be
+	// nil here. Without this the first queryPrometheus below nil-derefs and PANICS the
+	// SynchronizedAfterSuite — which fails the whole leg despite every spec passing, and takes
+	// the gating assertNoAnomalousAuditOutcomes call after it down with it. That is exactly what
+	// happened to the four small legs (1/3/6/11 specs) in run 29745528349, while the two large
+	// legs passed only because their specs had already initialized the client.
+	ensurePrometheusClient()
+
+	total, err := queryPrometheus(`sum(max_over_time(gitopsreverser_attribution_resolutions_total[2h])) or vector(0)`)
+	if err != nil || total == 0 {
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"ℹ️  attribution stats skipped: no resolutions recorded (configured-author mode or no live events)\n")
+		return
 	}
-	return strings.Contains(out, "configured-author mode:")
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n📊 author attribution — %.0f resolutions this run\n", total)
+
+	var absent float64
+	for _, result := range []string{
+		"exact_user", "exact_serviceaccount", "weak", "exact_deletecollection_item", "absent",
+	} {
+		n, qErr := queryPrometheus(fmt.Sprintf(
+			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{result=%q}[2h])) or vector(0)`, result))
+		if qErr != nil {
+			continue
+		}
+		if result == "absent" {
+			absent = n
+		}
+		_, _ = fmt.Fprintf(GinkgoWriter, "   result %-28s = %6.0f  (%5.1f%%)\n", result, n, 100*n/total)
+	}
+
+	// Cumulative histogram: le=X is "waited at most X seconds".
+	//
+	// Split by result, because the two populations answer different questions. For RESOLVED
+	// results the tail says how close fact delivery ran to the window — anything above 3s only
+	// succeeded because e2e widens the grace past the 3s default. For "absent" the wait is just
+	// the grace window being spent, so a cluster of absents at the ceiling means "waited the
+	// whole time and nothing ever came", NOT "arrived slightly too late".
+	_, _ = fmt.Fprintf(GinkgoWriter, "   wait distribution (cumulative):\n")
+	printWaitBuckets("resolved", `,result!="absent"`)
+	printWaitBuckets("absent  ", `,result="absent"`)
+
+	resolvedOverDefault, err := queryPrometheus(
+		`(sum(max_over_time(gitopsreverser_attribution_resolution_wait_seconds_count{result!="absent"}[2h])) ` +
+			`or vector(0)) - (sum(max_over_time(` +
+			`gitopsreverser_attribution_resolution_wait_seconds_bucket{result!="absent",le="3.0"}[2h])) or vector(0))`)
+	if err == nil {
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"   %.0f resolution(s) SUCCEEDED after waiting longer than the 3s default grace"+
+				" — these are the ones a 3s window would have lost.\n", resolvedOverDefault)
+	}
+	if absent > 0 {
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"   ⚠ %.0f resolution(s) produced unknown (attribution unresolved) (%.1f%%).\n"+
+				"     For an e2e mutation that should be attributable, check the audit policy, webhook\n"+
+				"     route, source identity, and Redis delivery with hack/attribution-diagnostics.sh.\n"+
+				"     An absent fact is not proof of a configuration defect for every live event: some\n"+
+				"     changes have no audit actor by construction.\n",
+			absent, 100*absent/total)
+	}
+}
+
+// printWaitBuckets renders one cumulative wait histogram. The `le` label is rendered by the
+// OTel→Prometheus exporter as "1.0"/"3.0"/"10.0" — NOT "1"/"3"/"10" — so an integral boundary
+// must be formatted with a decimal or every query above 0.5 silently matches nothing and
+// returns 0, which reads as a plausible (and wrong) distribution rather than as an error.
+func printWaitBuckets(label, resultSelector string) {
+	var prev float64
+	for _, le := range attributionWaitBuckets {
+		leLabel := strconv.FormatFloat(le, 'g', -1, 64)
+		if le == math.Trunc(le) {
+			leLabel = fmt.Sprintf("%.1f", le)
+		}
+		n, qErr := queryPrometheus(fmt.Sprintf(
+			`sum(max_over_time(gitopsreverser_attribution_resolution_wait_seconds_bucket{le=%q%s}[2h]))`+
+				` or vector(0)`, leLabel, resultSelector))
+		if qErr != nil {
+			continue
+		}
+		_, _ = fmt.Fprintf(GinkgoWriter, "     %s <=%5.1fs %6.0f  (+%.0f)\n", label, le, n, n-prev)
+		prev = n
+	}
+}
+
+// configuredAuthorModeEnabled reports whether the deployed controller authors every commit
+// as the configured committer (configured-author mode) rather than naming the real actor
+// from audit facts (attribution mode).
+//
+// It reads the DEPLOYMENT'S ARGS, which are the actual input to the decision. It previously
+// grepped `kubectl logs --since=30m` for a startup banner and returned false on any error —
+// which silently answers "attribution mode" whenever the controller has been up longer than
+// the log window, or when `kubectl logs` picks the wrong pod mid-rollout. That is a probe
+// that fails open on the exact question the author assertion turns on, and both author
+// values cannot be inferred safely from a single commit: the configured committer is expected in
+// configured-author mode, while an attribution miss is explicitly unresolved. A wrong mode answer
+// would still select the wrong assertion, so this reads the spec and fails loudly when it cannot.
+func configuredAuthorModeEnabled() bool {
+	out, err := kubectlRunInNamespace(namespace, "get", "deployment", "gitops-reverser",
+		"-o", "jsonpath={.spec.template.spec.containers[*].args}")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+		"failed to read the controller Deployment's args; the author-mode branch cannot be chosen safely")
+	return configuredAuthorModeFromArgs(out)
+}
+
+// configuredAuthorModeFromArgs is the pure decision, mirroring the mode switch in
+// cmd/main.go: attribution runs only when author attribution is on AND Redis is configured;
+// anything else is configured-author mode. Both flags default to ENABLED in cmd/main.go
+// (`--author-attribution` defaults true, `--redis-addr` defaults to "valkey:6379"), so an
+// absent flag means attribution, and only an explicit opt-out turns it off.
+func configuredAuthorModeFromArgs(args string) bool {
+	attribution := true
+	redisAddr := "valkey:6379"
+	for _, arg := range strings.Fields(strings.NewReplacer(`"`, " ", `[`, " ", `]`, " ", `,`, " ").Replace(args)) {
+		switch {
+		case arg == "--author-attribution":
+			// The bare form is the TRUE form for a boolean flag, not an opt-out.
+			attribution = true
+		case strings.HasPrefix(arg, "--author-attribution="):
+			// Parse with strconv.ParseBool, exactly as Go's flag package does. Matching only the
+			// literal "--author-attribution=false" would read `--set attribution.enabled=0` (or
+			// `f`, `F`, `False`, `FALSE`) as attribution ENABLED while the controller runs
+			// configured-author — silently swapping the commit-author assertion instead of
+			// failing it, which is the whole failure mode this probe exists to prevent.
+			if v, err := strconv.ParseBool(strings.TrimPrefix(arg, "--author-attribution=")); err == nil {
+				attribution = v
+			}
+		case strings.HasPrefix(arg, "--redis-addr="):
+			redisAddr = strings.TrimPrefix(arg, "--redis-addr=")
+		}
+	}
+	return !attribution || redisAddr == ""
 }
 
 var _ = AfterEach(func() {

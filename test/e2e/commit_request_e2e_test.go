@@ -144,7 +144,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				"status.sha should match the SHA of the commit on the branch\n%s",
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
-			// Exactly one new commit (UC1, §8.1): this is the first commit on a fresh
+			// Exactly one new commit: this is the first commit on a fresh
 			// repo, so main holds exactly one commit — the save did not also trigger a
 			// stray second commit.
 			g.Expect(mustCommitCount(repo.CheckoutDir)).To(Equal(1),
@@ -214,7 +214,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	// validating admission runs, so the validate-operator-types webhook records the
 	// submitter keyed by uid with no response-body name recovery (the old audit
 	// generateName headache is gone, see
-	// docs/spec/commitrequest-admission-authorship.md §8). This spec proves a
+	// docs/spec/commitrequest-admission-authorship.md). This spec proves a
 	// generateName CommitRequest still finalizes and becomes Ready. It is skipped in
 	// configured-author mode, where the edit's window is committer-authored and the
 	// named admission author would not match it end to end.
@@ -267,8 +267,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 
 // The UC2 suite exercises a `kubectl apply` bundle that includes a CommitRequest
 // as its FIRST document — the deliberately-hard ordering where the save intent
-// arrives before the work it is meant to save (docs/spec/commitrequest-design.md
-// §2 UC2, §6.2, §8.2). A non-zero spec.closeDelaySeconds is the close-delay collect
+// arrives before the work it is meant to save (docs/spec/commitrequest-design.md). A non-zero
+// spec.closeDelaySeconds is the close-delay collect
 // window that lets the bundle's resources arrive and join the same window after the
 // CommitRequest is attributed, so the whole bundle lands in ONE commit carrying
 // the CommitRequest's message.
@@ -352,7 +352,7 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 
 		By("applying a bundle whose FIRST document is a CommitRequest, then three Deployments")
 		// closeDelaySeconds is sized to comfortably exceed the bundle's per-type ingestion
-		// spread so the close-delay collect window (§6.2) is deterministic.
+		// spread so the close-delay collect window is deterministic.
 		var bundle strings.Builder
 		bundle.WriteString(commitRequestManifest(testNs, commitRequestName, gitTargetName, message, 8))
 		for _, name := range deployNames {
@@ -382,7 +382,7 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 
 			// Exactly one commit on the fresh repo's main: the entire bundle — applied
 			// across the CommitRequest's attribution and the per-type Deployment stream —
-			// collapsed into a single commit (§8.2 step 4).
+			// collapsed into a single commit.
 			g.Expect(mustCommitCount(repo.CheckoutDir)).To(Equal(1),
 				"the whole bundle must land in exactly one commit\n%s",
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))

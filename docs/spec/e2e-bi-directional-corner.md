@@ -211,7 +211,7 @@ parallel with both. `BI_DIRECTIONAL_GINKGO_PROCS` is therefore `3`.
 
 Filter changes so the default suite stops paying for it:
 
-- `test/e2e/Taskfile.yml`: `E2E_LABEL_FILTER` default `!image-refresh`
+- `test/e2e/Taskfile-e2e.yml`: `E2E_LABEL_FILTER` default `!image-refresh`
   → `!image-refresh && !bi-directional`
 - `.github/workflows/ci.yml`, `full-core` leg: `!manager && !image-refresh`
   → `!manager && !image-refresh && !bi-directional`
@@ -234,7 +234,7 @@ chart**. `_argocd-installed` `helm pull`s the pinned chart into
 `.stamps/cluster/<ctx>/argocd/` (retryable network step) and `helm upgrade
 --install`s it with `values.yaml` and `--wait`, then gates on CRD establishment.
 
-- `ARGOCD_CHART_VERSION` (e.g. `10.1.3`) lives in `test/e2e/Taskfile.yml` and pins
+- `ARGOCD_CHART_VERSION` (e.g. `10.1.3`) lives in `test/e2e/Taskfile-e2e.yml` and pins
   the chart, which carries the Argo CD release the specs pin behaviour against (its
   appVersion, e.g. `v3.4.5`). Unlike `FLUX_VERSION` it is not a devcontainer env
   var: nothing outside the cluster needs an `argocd` binary — the specs drive Argo
