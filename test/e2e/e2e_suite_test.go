@@ -121,12 +121,44 @@ func assertNoAnomalousAuditOutcomes() {
 	_, _ = fmt.Fprintf(GinkgoWriter, "✅ no anomalous audit outcomes (0 error-category events across the run)\n")
 }
 
+// configuredAuthorModeEnabled reports whether the deployed controller authors every commit
+// as the configured committer (configured-author mode) rather than naming the real actor
+// from audit facts (attribution mode).
+//
+// It reads the DEPLOYMENT'S ARGS, which are the actual input to the decision. It previously
+// grepped `kubectl logs --since=30m` for a startup banner and returned false on any error —
+// which silently answers "attribution mode" whenever the controller has been up longer than
+// the log window, or when `kubectl logs` picks the wrong pod mid-rollout. That is a probe
+// that fails open on the exact question the author assertion turns on, and both author
+// values are ambiguous on their own: "GitOps Reverser" is BOTH the configured-author
+// identity and the fallback used when attribution finds no matching fact
+// (git.DefaultCommitterName). A wrong answer here silently flips the assertion instead of
+// failing, so this reads the spec and fails loudly when it cannot.
 func configuredAuthorModeEnabled() bool {
-	out, err := kubectlRunInNamespace(namespace, "logs", "deployment/gitops-reverser", "--since=30m")
-	if err != nil {
-		return false
+	out, err := kubectlRunInNamespace(namespace, "get", "deployment", "gitops-reverser",
+		"-o", "jsonpath={.spec.template.spec.containers[*].args}")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+		"failed to read the controller Deployment's args; the author-mode branch cannot be chosen safely")
+	return configuredAuthorModeFromArgs(out)
+}
+
+// configuredAuthorModeFromArgs is the pure decision, mirroring the mode switch in
+// cmd/main.go: attribution runs only when author attribution is on AND Redis is configured;
+// anything else is configured-author mode. Both flags default to ENABLED in cmd/main.go
+// (`--author-attribution` defaults true, `--redis-addr` defaults to "valkey:6379"), so an
+// absent flag means attribution, and only an explicit opt-out turns it off.
+func configuredAuthorModeFromArgs(args string) bool {
+	attribution := true
+	redisAddr := "valkey:6379"
+	for _, arg := range strings.Fields(strings.NewReplacer(`"`, " ", `[`, " ", `]`, " ", `,`, " ").Replace(args)) {
+		switch {
+		case arg == "--author-attribution=false":
+			attribution = false
+		case strings.HasPrefix(arg, "--redis-addr="):
+			redisAddr = strings.TrimPrefix(arg, "--redis-addr=")
+		}
 	}
-	return strings.Contains(out, "configured-author mode:")
+	return !attribution || redisAddr == ""
 }
 
 var _ = AfterEach(func() {
