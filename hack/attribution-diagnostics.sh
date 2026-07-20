@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Post-run diagnostics for the author-attribution path.
 #
-# Attribution fails SILENTLY: when no audit fact matches within the grace window
-# (watch.DefaultAttributionGraceWindow, 3s), the commit is authored by the configured
-# committer instead of the real actor. Because git.DefaultCommitterName is ALSO the
-# configured-author identity, the resulting commit is indistinguishable from a correct
-# configured-author commit by inspection alone. This script makes the difference visible.
+# When no audit fact matches within the grace window (watch.DefaultAttributionGraceWindow,
+# 3s), the commit is visibly authored as `unknown (attribution unresolved)` rather than as
+# the configured committer. For a live change that should be attributable, that author is a
+# concrete signal to check audit-attribution configuration and delivery.
 #
 # It answers the one question that splits the diagnosis in two:
 #
@@ -30,7 +29,7 @@ FILTER="${1:-}"
 kc() { kubectl --context "${CTX}" "$@"; }
 
 echo "== attribution resolution outcomes (Prometheus) =="
-echo "   absent = fell back to the configured committer; the actor's name was LOST."
+echo "   absent = Git author was unknown (attribution unresolved); no actor was named."
 prom_pod_port=9097
 kc -n "${PROM_NS}" port-forward svc/prometheus-operated ${prom_pod_port}:9090 >/dev/null 2>&1 &
 pf=$!
@@ -48,8 +47,9 @@ for k,v in sorted(rows, key=lambda x:-x[1]):
 print(f"   {'TOTAL':32s} {total:8.0f}")
 absent=dict(rows).get("absent",0)
 if absent:
-    print(f"\n   >> {absent:.0f} resolution(s) lost the actor. Each is a commit authored by the")
-    print( "   >> committer instead of the human/SA that caused the change.")
+    print(f"\n   >> {absent:.0f} resolution(s) produced the explicit unresolved Git author.")
+    print( "   >> For a change that should be attributable, inspect the audit policy, route,")
+    print( "   >> source identity, and Redis delivery below.")
 ' || echo "   (query failed)"
 
 echo
@@ -73,7 +73,7 @@ vc() { kc -n "${VALKEY_NS}" exec "${pod}" -c valkey -- valkey-cli -a "${pw}" --n
 keys="$(vc --scan --pattern '*author:v1:audit:*' | { [ -n "${FILTER}" ] && grep -F "${FILTER}" || cat; } | head -40)"
 if [ -z "${keys}" ]; then
   echo "   no facts matching ${FILTER:-<all>}"
-  echo "   >> If a commit lost its author AND no fact exists, the apiserver never delivered it:"
+  echo "   >> If a commit has the unresolved author AND no fact exists, check audit delivery:"
   echo "   >> check audit-webhook-batch-max-wait/-size and the /audit-webhook/<provider> route."
   exit 0
 fi
@@ -100,6 +100,6 @@ PY
 done
 
 echo
-echo "   Reading this: a fact PRESENT here for an object whose commit lost its author means"
+echo "   Reading this: a fact PRESENT here for an object whose commit has the unresolved author means"
 echo "   the fact arrived, just not within the 3s grace — the grace window (or the audit"
-echo "   batching delay ahead of it) is the problem, not delivery."
+echo "   batching delay ahead of it) is the problem, not fact delivery."

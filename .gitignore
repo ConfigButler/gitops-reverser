@@ -59,9 +59,5 @@ loadtest
 .env
 
 .claude/*
-# Hook scripts are referenced by the tracked .claude/settings.json, so they must
-# be tracked too — otherwise everyone else pulls a hook pointing at a file they
-# do not have, and every Bash tool call fails with "No such file".
-!.claude/hooks/
 .agents/*
 /external-sources/

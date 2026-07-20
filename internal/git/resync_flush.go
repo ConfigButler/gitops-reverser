@@ -128,8 +128,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	// commit is now in pendingWrites and must reach the remote — or the resync itself
 	// committed. Any finalize that closes a window must schedule its push, or the
 	// window's commit is stranded: committed locally but never pushed (the
-	// stranded-write fix, docs/spec/commitrequest-design.md §6.4.2; the
-	// failure analyzed in github-e2e-per-type-tail-failure-investigation.md).
+	// stranded-write fix in the CommitRequest window contract).
 	// maybeSchedulePush no-ops when nothing is pending, so a pure no-op resync that
 	// closed no window stays a no-op and does not disturb the push cooldown.
 	if committed || closedWindow {

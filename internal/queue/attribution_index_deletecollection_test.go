@@ -123,7 +123,8 @@ func TestRecordDeleteCollectionFacts_HollowBodyWritesNothing(t *testing.T) {
 
 // TestRecordDeleteCollectionFacts_PartialListOnlyWritesPresent proves a partial body
 // (a large collection delete that returned only some items) attributes what it has and
-// leaves the rest to the committer fallback (the watch + sweep backstop state).
+// leaves the rest without a usable fact; live attributed writes use the explicit
+// unresolved author for those events.
 func TestRecordDeleteCollectionFacts_PartialListOnlyWritesPresent(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 	ctx := context.Background()

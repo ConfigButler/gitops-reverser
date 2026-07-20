@@ -4,8 +4,8 @@
 # at admission, into the command-author Redis corner the controller reads back with no
 # wait. Narrow by construction: one rule per command kind. failurePolicy is Ignore and
 # the handler always allows, so a user's CommitRequest never depends on this webhook —
-# a miss degrades to a committer-authored commit (AuthorAttributed=False).
-# See docs/spec/commitrequest-admission-authorship.md §4.
+# a miss leaves the request without a claimed actor (AuthorAttributed=False).
+# See docs/spec/commitrequest-admission-authorship.md.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -26,7 +26,7 @@ webhooks:
         namespace: {{ .Release.Namespace }}
         path: /validate-operator-types
         port: {{ .Values.servers.admission.port }}
-    # Ignore, not Fail: a missed author capture must degrade to the committer, never
+    # Ignore, not Fail: a missed author capture must leave the request unnamed, never
     # reject a user's CommitRequest.
     failurePolicy: Ignore
     matchPolicy: Equivalent

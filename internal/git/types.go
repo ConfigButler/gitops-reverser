@@ -22,7 +22,7 @@ import (
 // author string is load-bearing in several places (window grouping, commit-message templates,
 // the author_kind metric) and overloading it to also mean "attribution failed" made a silent
 // failure indistinguishable from correct configured-author behaviour. See
-// docs/design/attribution-outcome-and-author.md.
+// docs/architecture.md#author-and-committer-identity-in-git.
 type AttributionOutcome string
 
 const (
@@ -285,8 +285,7 @@ type PendingWrite struct {
 	Committed *bool
 
 	// CommitRequest, when set, is the CommitRequest claiming this write: it is
-	// resolved Committed (with CommitSHA) once this write is pushed (§6.5 of
-	// docs/spec/commitrequest-design.md). It rides the write through the
+	// resolved Committed (with CommitSHA) once this write is pushed. It rides the write through the
 	// push cooldown and the conflict rebase-replay, so the result follows the data.
 	CommitRequest *commitRequestID
 	// CommitSHA is the hash of the commit this write created, captured in

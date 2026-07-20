@@ -166,7 +166,7 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 	assert.Equal(t, "CREATE", event.Operation)
 	assert.Equal(t, "target", event.GitTargetName)
 	assert.Equal(t, "default", event.GitTargetNamespace)
-	assert.Empty(t, event.UserInfo.Username, "unattributed watch events commit as the configured committer")
+	assert.Empty(t, event.UserInfo.Username, "configured-author watch events leave the actor empty")
 	assert.NotNil(t, event.Object)
 	assert.Empty(t, event.Object.GetResourceVersion(), "live events are sanitized before entering Git")
 }

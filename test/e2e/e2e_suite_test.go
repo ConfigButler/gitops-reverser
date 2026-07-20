@@ -133,16 +133,15 @@ var attributionWaitBuckets = []float64{0.5, 1, 2, 3, 5, 10}
 
 // reportAttributionStats prints the run's author-attribution outcome and timing distribution.
 //
-// It is DIAGNOSTIC, not gating. It exists because attribution fails silently: when no audit fact
-// matches within the grace window the commit is authored by the configured committer, and
-// git.DefaultCommitterName ("GitOps Reverser") is ALSO the configured-author identity — so a lost
-// actor is indistinguishable from a correct configured-author commit by inspection. The only way
-// to see it is to count it.
+// It is DIAGNOSTIC, not gating. When no audit fact matches within the grace window, the commit is
+// authored as `unknown (attribution unresolved)`, making the missing actor visible in Git history
+// and in the metrics below.
 //
 // The two numbers to read:
 //
-//   - "absent" — resolutions that gave up and lost the actor's name. Every one of these is a
-//     commit attributed to the committer instead of the human or service account responsible.
+//   - "absent" — resolutions that gave up without naming an actor. Each live commit is authored
+//     as `unknown (attribution unresolved)`, not as the configured committer. For an e2e mutation
+//     that should be attributable, this is an audit-attribution configuration or delivery problem.
 //   - resolutions resolved ABOVE 3s — facts that arrived later than the 3s default grace. Each is
 //     an attribution the default would have dropped, so this is the direct measure of how much
 //     headroom --author-attribution-grace is buying (e2e sets 10s; see config/deployment.yaml).
@@ -169,7 +168,9 @@ func reportAttributionStats() {
 	_, _ = fmt.Fprintf(GinkgoWriter, "\n📊 author attribution — %.0f resolutions this run\n", total)
 
 	var absent float64
-	for _, result := range []string{"exact_user", "weak", "exact_deletecollection_item", "absent"} {
+	for _, result := range []string{
+		"exact_user", "exact_serviceaccount", "weak", "exact_deletecollection_item", "absent",
+	} {
 		n, qErr := queryPrometheus(fmt.Sprintf(
 			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{result=%q}[2h])) or vector(0)`, result))
 		if qErr != nil {
@@ -203,12 +204,11 @@ func reportAttributionStats() {
 	}
 	if absent > 0 {
 		_, _ = fmt.Fprintf(GinkgoWriter,
-			"   ⚠ %.0f resolution(s) lost the actor (%.1f%%): committed as the configured committer.\n"+
-				"     If their waits sit at the grace ceiling above, the fact never arrived at all and a\n"+
-				"     LONGER grace will not help — check delivery with hack/attribution-diagnostics.sh.\n"+
-				"     Note some absences are legitimate: a watch's initial replay re-delivers"+
-				" pre-existing\n     objects that no live actor touched, and those have no fact by"+
-				" construction.\n",
+			"   ⚠ %.0f resolution(s) produced unknown (attribution unresolved) (%.1f%%).\n"+
+				"     For an e2e mutation that should be attributable, check the audit policy, webhook\n"+
+				"     route, source identity, and Redis delivery with hack/attribution-diagnostics.sh.\n"+
+				"     An absent fact is not proof of a configuration defect for every live event: some\n"+
+				"     changes have no audit actor by construction.\n",
 			absent, 100*absent/total)
 	}
 }
@@ -244,10 +244,9 @@ func printWaitBuckets(label, resultSelector string) {
 // which silently answers "attribution mode" whenever the controller has been up longer than
 // the log window, or when `kubectl logs` picks the wrong pod mid-rollout. That is a probe
 // that fails open on the exact question the author assertion turns on, and both author
-// values are ambiguous on their own: "GitOps Reverser" is BOTH the configured-author
-// identity and the fallback used when attribution finds no matching fact
-// (git.DefaultCommitterName). A wrong answer here silently flips the assertion instead of
-// failing, so this reads the spec and fails loudly when it cannot.
+// values cannot be inferred safely from a single commit: the configured committer is expected in
+// configured-author mode, while an attribution miss is explicitly unresolved. A wrong mode answer
+// would still select the wrong assertion, so this reads the spec and fails loudly when it cannot.
 func configuredAuthorModeEnabled() bool {
 	out, err := kubectlRunInNamespace(namespace, "get", "deployment", "gitops-reverser",
 		"-o", "jsonpath={.spec.template.spec.containers[*].args}")

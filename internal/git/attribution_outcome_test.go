@@ -170,13 +170,13 @@ func TestPendingCommitRequest_UnresolvedRequestAttachesToUnresolvedWindow(t *tes
 		"an unresolved window carries no author; the sentinel is applied at the write path")
 
 	request := &pendingCommitRequest{
-		author:             "", // a fallback CommitRequest has no author
+		author:             "", // an unnamed CommitRequest claims no actor
 		attribution:        AttributionUnresolved,
 		gitTargetName:      "target",
 		gitTargetNamespace: "default",
 	}
 	assert.True(t, request.matchesWindow(window),
-		"a fallback CommitRequest must attach to the unresolved window it was meant for")
+		"an unnamed CommitRequest must attach to the unresolved window it was meant for")
 
 	// The default deployment: command-author capture is off, so the request says "not
 	// attempted" while the window says "unresolved". Neither names an actor, so they match.

@@ -55,7 +55,7 @@ const (
 	attributionFromAdmission commitRequestAttribution = iota
 	// attributionCommitter means no admission author record exists — the
 	// validate-operator-types webhook is not configured (or did not record one) — so the
-	// commit is authored by the configured committer.
+	// request does not claim an actor.
 	attributionCommitter
 	// attributionNotAttempted means command-author capture is switched off entirely (the
 	// validate-operator-types webhook is not running), so no submitter was ever sought. It is
@@ -136,13 +136,13 @@ func setCommitRequestAttributed(cr *configv1alpha3.CommitRequest, attribution co
 		// webhook that is configured and simply missed sends operators to the wrong place.
 		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
 			crReasonCommitterFallback,
-			"no admission author record was found for this request; committed as the "+
-				"configured committer")
+			"no admission author record was found for this request; it can attach only to a "+
+				"window with no named actor")
 	case attributionNotAttempted:
 		setCommitRequestCondition(cr, ConditionTypeAuthorAttributed, metav1.ConditionFalse,
 			crReasonCommitterFallback,
 			"command-author capture is disabled (the validate-operator-types webhook is not "+
-				"configured); committed as the configured committer")
+				"configured); the request can attach only to a window with no named actor")
 	}
 }
 

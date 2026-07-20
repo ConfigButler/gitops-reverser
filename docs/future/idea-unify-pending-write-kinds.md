@@ -23,12 +23,11 @@ The four use cases in [commit-window-refactor.md](../spec/commit-window-refactor
 
 1. **Burst collapse.** Per-event-only behavior (atomic is one commit by definition).
    Unification neither helps nor breaks this.
-2. **Honest authorship.** Reconcile snapshots are operator-authored; audit-driven
-   commits carry the audit user. Today this is enforced by *type*: the atomic path
-   never reads `event.UserInfo`. Under unification it becomes a *convention*: the
-   git layer falls back to committer-as-author when `event.UserInfo.Username == ""`,
-   so producers must not populate `UserInfo` for snapshot batches. Same observable
-   result, weaker compile-time guarantee.
+2. **Honest authorship.** Reconcile snapshots are configured-author; live commits carry
+   either a resolved audit actor or the explicit unresolved identity. Today this is enforced by
+   *type*: the atomic path is `AttributionNotAttempted` and never reads `event.UserInfo`. Under
+   unification it becomes a *convention*: producers must retain the correct
+   `AttributionOutcome` for snapshot batches. Same observable result, weaker compile-time guarantee.
 3. **Target isolation.** Single-target on both paths today. Unaffected.
 4. **Safe replay.** Both paths carry resolved metadata. Unaffected.
 
@@ -40,7 +39,7 @@ that one is comfortable being a convention rather than a type-system invariant.
 
 | Concern | Per-event / grouped | Atomic | Survives unification? |
 |---|---|---|---|
-| Authorship source | `event.UserInfo.Username` | Operator (request-level, ignores `UserInfo`) | Yes, via "empty `UserInfo` → committer-as-author" fall-through at the git layer |
+| Authorship source | resolved actor or explicit outcome | Configured author (`AttributionNotAttempted`) | Yes, by preserving `AttributionOutcome` rather than relying on an empty username |
 | Commit message | Template render | Caller-provided string | Yes, via `CommitMessage` non-empty as the dispatch signal |
 | Finalize timing | Author/target change, silence, byte cap, shutdown | Request boundary | Yes, by adding "request has `CommitMessage` set" as a finalize trigger |
 | Byte-cap behavior | Mid-stream finalize is fine | Must not split one snapshot across commits | Yes, via the rule "finalize the *next* organic window early; don't actively split a request" |

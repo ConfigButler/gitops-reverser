@@ -74,6 +74,11 @@ actor — user, service account, or CI identity — while the committer never mo
 kube-apiserver audit delivery (managed control planes like EKS/GKE/AKS generally do not expose it)
 plus Valkey/Redis: see the [attribution setup guide](docs/attribution-setup-guide.md).
 
+If attribution is enabled but a live change has no usable audit fact, its author is explicitly
+`unknown (attribution unresolved)`, not the configured committer. For a change that should have a named
+actor, treat that identity as a signal to verify the audit policy, webhook route, source identity, and
+Redis connectivity.
+
 **Valkey/Redis is optional but advised.** Without it the default mode works fine; adding it unlocks
 warm-restart cursors, `CommitRequest` author capture, and attribution.
 

@@ -37,6 +37,6 @@ If you change one of these behaviours, change the document in the same commit.
 | [`sops-single-file-no-multidoc.md`](sops-single-file-no-multidoc.md) | one encrypted file is one document |
 | [`scale-subresource-audit-rehydration.md`](scale-subresource-audit-rehydration.md) | `/scale` → bounded field patch; every other subresource ignored |
 | [`commit-window-refactor.md`](commit-window-refactor.md) | one grouped commit = one (author, GitTarget) |
-| [`commitrequest-multi-finalize-design.md`](commitrequest-multi-finalize-design.md) | why `MaxConcurrentReconciles=1` on the CommitRequest controller |
+| [`commitrequest-design.md`](commitrequest-design.md) | how a request binds to a same-actor commit window and reports its outcome |
 | [`gittarget-isolation-on-rule-change.md`](gittarget-isolation-on-rule-change.md) | a rule change on target A never touches target B |
 | [`audit-readiness-probe-plan.md`](audit-readiness-probe-plan.md) | why liveness must never depend on Redis |

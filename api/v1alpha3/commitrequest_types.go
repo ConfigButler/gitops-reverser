@@ -55,9 +55,9 @@ type CommitRequestSpec struct {
 //     while finalizing; Stalled=True when the finalize failed and needs attention.
 //   - AuthorAttributed (domain): binary and settled immediately. True
 //     (AttributedFromAdmission) when the submitter captured at admission named the
-//     commit author; False (CommitterFallback) when no admission record exists — the
-//     validate-operator-types webhook is not configured — and the commit is authored by the
-//     configured committer. False is not a failure and does not affect Ready.
+//     commit author; False (CommitterFallback) when no admission record exists and the
+//     request claims no actor. False is not a failure and does not affect Ready; the
+//     final Git author remains the matching watch window's author.
 //   - Pushed (domain): True once the commit is in the remote repository.
 type CommitRequestStatus struct {
 	// ObservedGeneration is the most recent generation observed by the controller.

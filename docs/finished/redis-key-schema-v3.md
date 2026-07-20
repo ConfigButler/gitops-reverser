@@ -216,7 +216,8 @@ unique across resource types, and aggregated/CRD API servers can mint their own.
 an `objectRef` without a UID. Under the `RequestResponse` audit level this project relies on,
 `IdentityFromAuditEvent` ([`identity.go`](../../internal/auditutil/identity.go)) backfills the UID from
 the body even for `generateName` creates, so a no-UID fact is uncommon — but when it happens, `rv:`
-is the difference between a precise author and a committer fallback. It is **cheap and shipped now**: one
+is the difference between a precise author and an explicit unresolved author. It is **cheap and shipped
+now**: one
 extra key, written *only* when the fact has no UID (a UID-bearing fact's `rv:` key would be dead — the
 watch side always carries a UID, so it would resolve via `object:<uid>:…` first and never reach it). This
 is a deliberate improvement over v2, which wrote a dead rv-only key for *every* event.

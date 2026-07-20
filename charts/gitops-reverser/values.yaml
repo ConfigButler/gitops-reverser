@@ -102,16 +102,16 @@ servers:
       secretNameOverride: ""
 
   # Validating admission server hosting the validate-operator-types webhook, which captures
-  # the submitter of each CommitRequest at admission and names them as the commit author
+  # the submitter of each CommitRequest at admission and records it as the request's named actor
   # (read back by the controller with no wait). Independent of `attribution` below:
   # attribution governs *mirrored-resource* authorship (from audit), this governs
-  # *command* authorship (from admission). Off → CommitRequests commit as the configured
-  # committer and report AuthorAttributed=False. See
+  # *command* authorship (from admission). Off → CommitRequests claim no actor and report
+  # AuthorAttributed=False. See
   # docs/spec/commitrequest-admission-authorship.md.
   #
   # Command-author capture is Redis-backed: the captured author is written to Redis at admission and
   # read back at reconcile. Enabled by default so the webhook is always installed, but it is a no-op
-  # without Redis: the pod runs healthy and CommitRequests commit as the configured committer
+  # without Redis: the pod runs healthy and CommitRequests claim no actor
   # (AuthorAttributed=False) until queue.redis.addr is set.
   admission:
     enabled: true

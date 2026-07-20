@@ -41,8 +41,8 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Fix recurring full e2e flakiness around WatchRule/snapshot convergence.
   This has shown up more than once as timeout-based failures in manager SOPS bootstrap and
-  signing snapshot-message specs, then passed on rerun. Capture and mitigation notes live in
-  [docs/design/e2e-watchrule-cross-spec-interference.md](spec/e2e-serial-registry.md).
+  signing snapshot-message specs, then passed on rerun. Capture and mitigation notes live in the
+  [e2e serial registry](spec/e2e-serial-registry.md).
   This should be addressed before the next feature that expands commit-message, snapshot, or
   write-window behavior, otherwise new failures will be hard to separate from existing timing debt.
 

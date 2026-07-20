@@ -59,8 +59,8 @@ type CommandAuthorRecorder interface {
 // does one thing: for a command kind (a CommitRequest) it captures the authenticated
 // submitter into the CommandAuthorStore and always allows — pure observation with a
 // single side effect (a Redis upsert), never a rejection, so a user's command never
-// depends on it succeeding (a missed capture degrades to a committer-authored commit;
-// see docs/spec/commitrequest-admission-authorship.md §2, §4). It dispatches on the
+// depends on it succeeding (a missed capture leaves the request without a claimed actor;
+// see docs/spec/commitrequest-admission-authorship.md). It dispatches on the
 // resource (isCommandKind today), so a future config-validation branch for non-command
 // kinds slots in alongside without disturbing this one.
 type ValidateOperatorTypesHandler struct {
@@ -70,7 +70,7 @@ type ValidateOperatorTypesHandler struct {
 // Handle records {uid → author} for an admitted command CREATE before the object
 // persists (the authorship invariant, §2), then allows. Every early return still
 // allows: a non-command kind, a dry-run, a missing uid, or an unauthenticated request
-// simply records nothing and falls back to the committer downstream.
+// simply records nothing and leaves the request without a claimed actor downstream.
 func (h *ValidateOperatorTypesHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := logf.FromContext(ctx).WithName("validate-operator-types")
 
@@ -87,7 +87,7 @@ func (h *ValidateOperatorTypesHandler) Handle(ctx context.Context, req admission
 
 	// No store means the webhook is running without a Redis backend (admission is on by
 	// default, but command-author capture is Redis-backed). Allow without recording; the
-	// controller then finalizes as the committer (AuthorAttributed=False).
+	// controller then uses the no-actor path (AuthorAttributed=False).
 	if h.Store == nil {
 		return admission.Allowed("no author store: not recorded")
 	}
@@ -112,16 +112,16 @@ func (h *ValidateOperatorTypesHandler) Handle(ctx context.Context, req admission
 	}
 
 	// Synchronous, best-effort: the write completes before we return, so it is present
-	// before the object is visible (the authorship invariant, §2). A failure degrades to
-	// the committer — never block the command.
+	// before the object is visible. A failure leaves the request without a claimed actor —
+	// never block the command.
 	if err := h.Store.RecordCommandAuthor(ctx, uid, author); err != nil {
-		log.Error(err, "record command author failed; will fall back to committer",
+		log.Error(err, "record command author failed; request will claim no actor",
 			"resource", gr.String(), "namespace", req.Namespace, "name", req.Name, "uid", uid)
 		return admission.Allowed("author record failed")
 	}
 	// Info (not V(1)) on purpose: command CREATEs are rare, and this line proves the
 	// webhook was actually invoked and the author captured — the first thing to check
-	// when a CommitRequest unexpectedly commits as the committer.
+	// when a CommitRequest unexpectedly reports AuthorAttributed=False.
 	log.Info("recorded command author at admission",
 		"resource", gr.String(), "namespace", req.Namespace, "name", req.Name,
 		"uid", uid, "author", author.Author)

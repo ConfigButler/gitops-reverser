@@ -43,8 +43,7 @@ type FinalizeResult struct {
 }
 
 // AttachCommitRequest is the "bind this CommitRequest's message to the author's
-// open window, then finalize that window after the grace" work item (§6.4 of
-// docs/spec/commitrequest-design.md). It rides the same per-worker FIFO
+// open window, then finalize that window after the grace" work item. It rides the same per-worker FIFO
 // event queue as resource events, so by audit-stream ordering it is processed
 // after every earlier write for that worker. Re-sends are idempotent: the worker
 // keys pending requests by identity and keeps the first finalize deadline.
@@ -56,8 +55,8 @@ type AttachCommitRequest struct {
 	Name      string
 	UID       string
 
-	// Author is the effective user that requested the finalize, attributed from
-	// the CommitRequest's own create audit event. Only a window whose author
+	// Author is the effective user that requested the finalize, captured from
+	// validating admission. Only a window whose author
 	// matches is attached; this binds "the open window" to "the requesting
 	// author's open window".
 	Author string
@@ -76,7 +75,7 @@ type AttachCommitRequest struct {
 	Message string
 	// CloseDelaySeconds is the close-delay collect window: the worker closes the
 	// attached window and finalizes it at receipt + CloseDelaySeconds (the delay is
-	// anchored at attribution, §6.4.4).
+	// anchored at attach receipt).
 	CloseDelaySeconds int32
 }
 
