@@ -750,8 +750,11 @@ func (m *Manager) attachAuthor(
 	gvr schema.GroupVersionResource,
 	u *unstructured.Unstructured,
 ) {
-	// A nil resolver is configured-author mode: nothing is attempted, and the zero
-	// AttributionNotAttempted on the event is already correct.
+	// A nil resolver is configured-author mode: nothing is attempted, and the event's zero
+	// Attribution is already AttributionNotAttempted — the constant is the empty string so that
+	// this early return needs no stamp. Do not "fix" this by giving the constant a name-shaped
+	// value; every non-live path (reconcile, resync, bootstrap) relies on the same zero value,
+	// and a non-empty constant turns all of them into a fourth state that matches nothing.
 	if m.AuthorResolver == nil {
 		return
 	}

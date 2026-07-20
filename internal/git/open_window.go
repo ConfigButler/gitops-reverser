@@ -10,9 +10,12 @@ type openWindow struct {
 	// Author is event.UserInfo.Username verbatim.
 	Author string
 	// Attribution is the window's attribution outcome, taken from its first event. It pairs
-	// with Author for matching: two events share a window only when BOTH the outcome and the
+	// with Author for coalescing: two events share a window only when BOTH the outcome and the
 	// author agree, so an unresolved event never coalesces with a resolved one that happens
-	// to carry an empty username.
+	// to carry an empty username. Exact enum equality is right HERE — canAppend compares two
+	// events from the same watch pipeline, so the outcomes are directly comparable. It is not
+	// right when comparing against a CommitRequest, which a different subsystem attributes;
+	// see pendingCommitRequest.matchesWindow.
 	Attribution AttributionOutcome
 	// GitTarget is the target this window is bound to. Each finalized commit
 	// covers exactly one target so per-target encryption and bootstrap

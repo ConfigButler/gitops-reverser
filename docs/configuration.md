@@ -236,6 +236,12 @@ spec:
 - `Username`
 - `GitTarget`
 
+`Username` is empty whenever no actor was named — both in configured-author mode and when
+attribution ran and did not resolve. The `attribution-unresolved` sentinel is scoped to the Git
+**author header** and deliberately does not reach templates or message bodies, so a template
+rendering `{{.Username}}` never has to special-case it. Use `git log` (or
+`author_kind="unresolved"`) to tell the two apart.
+
 `groupTemplate` can use:
 
 - `Author`

@@ -77,6 +77,11 @@ type AuthorResolver interface {
 	// author) versus AttributionUnresolved (attribution ran and found nothing — a gap worth
 	// surfacing). An empty UserInfo cannot distinguish them, which is exactly how the loss
 	// stayed invisible. A resolved outcome always carries a non-empty UserInfo.
+	//
+	// In production this method only ever returns the latter two: configured-author mode is
+	// expressed by leaving Manager.AuthorResolver nil (attachAuthor returns early, leaving the
+	// event's zero AttributionNotAttempted), never by constructing a resolver over a nil
+	// lookup. cmd/main.go:258 only builds one with a non-nil index.
 	ResolveAuthor(
 		ctx context.Context,
 		providerName string,
@@ -115,7 +120,9 @@ func (r *attributionResolver) ResolveAuthor(
 ) (git.UserInfo, git.AttributionOutcome) {
 	start := time.Now()
 	// A nil lookup is configured-author mode: attribution was never switched on, so nothing
-	// was attempted and the committer legitimately authors the commit.
+	// was attempted and the committer legitimately authors the commit. Defensive only —
+	// production expresses that mode with a nil Manager.AuthorResolver, so this branch is
+	// unreachable there (cmd/main.go:258 always passes a non-nil index).
 	if r.lookup == nil {
 		recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
 		return git.UserInfo{}, git.AttributionNotAttempted

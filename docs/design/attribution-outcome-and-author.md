@@ -34,11 +34,19 @@ the first draft got wrong by trying to infer outcome from `UserInfo.Username`.
 type AttributionOutcome string
 
 const (
-    AttributionNotAttempted AttributionOutcome = "not_attempted" // configured-author mode
-    AttributionResolved     AttributionOutcome = "resolved"      // a fact named the actor
-    AttributionUnresolved   AttributionOutcome = "unresolved"    // attempted, no usable fact
+    AttributionNotAttempted AttributionOutcome = ""           // configured-author mode
+    AttributionResolved     AttributionOutcome = "resolved"    // a fact named the actor
+    AttributionUnresolved   AttributionOutcome = "unresolved"  // attempted, no usable fact
 )
 ~~~
+
+`AttributionNotAttempted` is the **empty string on purpose**, so that it is also the type's zero
+value. Most producers of an `Event` never assign the field — reconcile, resync, bootstrap, and
+configured-author mode's early return in `attachAuthor` — and all of them mean "no actor was
+sought". A name-shaped constant makes the zero value a silent fourth state that equals none of
+the three outcomes; the first implementation did exactly that, and it stopped every
+CommitRequest attaching in the default deployment (see the matching section below). Nothing
+serializes the value — it reaches no CRD field and no metric label — so the empty string is free.
 
 Carried on `git.Event` beside `UserInfo`, and on `PendingWrite`. Three consumers then read the
 outcome instead of sniffing a string:
@@ -68,9 +76,13 @@ the right place for it.
 
 ## The sentinel identity
 
+The sentinel is **derived at the write path** (`commitOptionsFor`) from the carried outcome. It
+is never stamped onto an `Event`, so it is scoped to the git author header and reaches nothing
+else:
+
 | Field | Surfaces in | Value |
 |---|---|---|
-| `Username` | window grouping, **grouped commit message body** ([commit.go:96](../../internal/git/commit.go#L96)), **per-event custom templates** ([commit.go:21-33](../../internal/git/commit.go#L21-L33)), author-name fallback | `attribution-unresolved` |
+| `Username` | machine token inside the sentinel identity; greppable by tooling that parses the header | `attribution-unresolved` |
 | `DisplayName` | git author Name via `authorName` | `unknown (attribution unresolved)` |
 | `Email` | git author Email via `authorEmail` | `attribution-unresolved@gitops-reverser.invalid` |
 
@@ -84,10 +96,16 @@ answers "on whose behalf", and the honest answer is "we do not know". `.invalid`
 (RFC 2606), so the address can never collide with a real one. Parentheses and spaces pass
 `isSafeSignatureField`, so the display form is valid in a commit object and a signed payload.
 
-**`Username` reaches user-authored templates.** It is interpolated into `EventTemplate` as
-`{{.Username}}`, not only into grouped messages. Anyone whose template renders the author will
-see `attribution-unresolved` appear. That is the intent, but it is a visible change to
-user-configured output and belongs in the release note.
+**The sentinel deliberately does NOT reach message bodies or user templates.** An earlier draft
+proposed stamping it onto `event.UserInfo`, which would have pushed it into window grouping, the
+grouped commit-message body ([commit.go:96](../../internal/git/commit.go#L96)) and per-event
+`{{.Username}}` templates ([commit.go:21-33](../../internal/git/commit.go#L21-L33)). Rejected:
+the outcome is the fact and the sentinel is one *rendering* of it, so the rendering belongs at
+the surface that needs it. Doing otherwise would change the commit text of every existing
+deployment that has attribution misses, and force user-authored templates to special-case a
+magic token they never had to handle. An unresolved event therefore renders `{{.Username}}`
+exactly as configured-author mode always has — empty — while `git log` names the gap. No
+release-note change to user-configured output.
 
 ## HIGH — CommitRequest attachment must not silently stop matching
 
@@ -107,19 +125,39 @@ CommitRequest silently lands as a separate commit instead of naming the window i
 to. That is a real regression, and the first draft asserting "CommitRequest is unaffected" was
 simply wrong.
 
-**Decision: match on outcome, not on the string.** Both sides carry an `AttributionOutcome`;
-a request whose own attribution is `unresolved` matches a window whose attribution is
-`unresolved`, for the same GitTarget. Concretely, `matchesWindow` compares
-`(outcome, author, gitTarget, gitTargetNamespace)` where the author comparison is only
-meaningful when both sides are `resolved`.
+Because the sentinel is confined to the git author header (above), the window's `Author` stays
+`""` and this naive-sentinel regression never arises. The outcome still participates in matching,
+but **only via `NamesActor`, and never as enum equality**.
 
-This is strictly better than today's accidental match-on-empty-string: two *different*
-unattributed actors currently coalesce into one window because both are `""`, and they still
-will — but now that behaviour is stated rather than emergent, and it is visible in the
-outcome rather than hidden in an empty field.
+**Decision: match on `(author, NamesActor(outcome), gitTarget, gitTargetNamespace)`.** The two
+outcomes being compared are produced by *different, independently configured* subsystems — the
+window's by mirrored-resource attribution (`--author-attribution`), the request's by command
+authorship (`--admission-webhook`), which [cmd/main.go:311-316](../../cmd/main.go#L311-L316)
+documents as independent. Requiring the enums to be equal silently couples the two flags:
 
-**Requires an integration test**, not just a unit test: a fallback CommitRequest must attach
-to an unresolved live window and produce one commit, before and after this change.
+| watch attribution | admission webhook | window | CommitRequest | enum equality | `NamesActor` |
+|---|---|---|---|---|---|
+| off | off | `not_attempted` | `not_attempted` | match | match |
+| off | on, miss | `not_attempted` | `unresolved` | **no match** | match |
+| on, unresolved | off | `unresolved` | `not_attempted` | **no match** | match |
+| on, unresolved | on, miss | `unresolved` | `unresolved` | match | match |
+
+The two middle rows are real deployments that attach correctly today; under enum equality the
+user's commit message is dropped into a separate default-message commit with no error anywhere.
+
+The author comparison stays **unconditional** — an additional guard, never a replacement.
+Skipping it when neither side names an actor looks equivalent (both authors are `""`, so they
+compare equal anyway) but makes cross-author attachment depend on the outcome fields being
+right: any path that left an outcome unset while the author was set would let one author's
+request finalize another's window. Comparing both costs nothing.
+
+Note this is the opposite call from `openWindow.canAppend`, which *does* compare the enums
+directly and should: it compares two events from the same watch pipeline, so they are directly
+comparable. The distinction is intra-subsystem versus cross-subsystem.
+
+**Requires a test that sets each side from its real producer**, not two literals: the gap that
+let the enum-equality bug ship was that every existing case left both sides at the zero value,
+so `"" == ""` passed and the production combination was never exercised.
 
 ## HIGH — `author_kind` must not report a failure as a success
 
@@ -191,7 +229,9 @@ docs lie in the way this design exists to prevent:
 1. **Git history changes.** Tooling matching `GitOps Reverser` to mean "the operator wrote
    this" will no longer see unresolved commits. Arguably a fix — those commits were
    mislabelled — but a behaviour change on shipped data.
-2. **User templates change.** `{{.Username}}` in a custom `EventTemplate` renders the sentinel.
+2. **User templates and message bodies are unchanged.** The sentinel is confined to the git
+   author header, so `{{.Username}}` in a custom `EventTemplate` still renders empty for an
+   unresolved event, exactly as it does in configured-author mode.
 3. **The defect becomes visible with no opt-out.** Adopters will see these commits appear and
    reasonably file bugs. Intended — but it makes the release note **mandatory**, pointing at
    `gitopsreverser_attribution_resolutions_total` and at
@@ -213,8 +253,8 @@ everyone recognises it.
 2. `ResolveAuthor` returns the outcome; `attachAuthor` stamps both.
 3. `Event` / `PendingWrite` carry the outcome.
 4. `authorKind()` reads the outcome; metrics docs updated together.
-5. `matchesWindow` matches on outcome; **integration test** for fallback-CommitRequest
-   attachment.
+5. `matchesWindow` matches on `NamesActor`, never on enum equality; the regression test must
+   drive each side from its real producer, and cover the `not_attempted`/`unresolved` boundary.
 6. Commit author rendering reads the outcome.
 7. Documentation sweep (list above) + release note.
 
@@ -227,10 +267,17 @@ on its own.
   kinds; sentinel passes `isSafeSignatureField` and yields a valid commit object.
 - **Unit:** two unresolved events coalesce into one window; an unresolved and a resolved event
   do not.
-- **Integration:** a fallback CommitRequest attaches to an unresolved live window and yields
-  **one** commit — the regression this design exists to avoid.
-- **Compatibility:** a custom `EventTemplate` rendering `{{.Username}}` produces the sentinel
-  rather than an empty string.
+- **Unit:** the zero value of `AttributionOutcome` **is** `AttributionNotAttempted`. Everything
+  below rests on it, and the paths that rely on it never assign the field, so nothing else
+  would catch a regression.
+- **Regression:** the full cross-subsystem matrix for `matchesWindow`, with each side driven by
+  its real producer — the controller's `gitOutcome()` projection and the watch package's actual
+  resolver — including the default deployment (webhook off against attribution off) and the
+  `not_attempted`/`unresolved` boundary. Two literals set to the same value prove nothing here.
+- **Regression:** a request whose author differs from the window's never attaches, *whatever*
+  the two outcomes are — so the author check cannot be made conditional on them.
+- **Compatibility:** a custom `EventTemplate` rendering `{{.Username}}` still produces an empty
+  string for an unresolved event; the sentinel appears only in the git author header.
 - **e2e:** author assertions fail as `got unknown (attribution unresolved)`, naming the cause
   in the failure message.
 

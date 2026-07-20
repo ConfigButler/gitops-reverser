@@ -61,12 +61,11 @@ type AttachCommitRequest struct {
 	// matches is attached; this binds "the open window" to "the requesting
 	// author's open window".
 	Author string
-	// Attribution is the outcome of attributing THIS CommitRequest. It must be matched
-	// alongside Author, not inferred from it: a request that could not be attributed carries
-	// an empty Author, which used to coincide with an unattributed window's empty author and
-	// attach by accident. Once unresolved windows carry a sentinel author that coincidence
-	// disappears, and matching on the outcome is what keeps the fallback request attaching to
-	// the window it was meant for instead of silently landing as its own commit.
+	// Attribution is the outcome of attributing THIS CommitRequest, from the command-authorship
+	// path. It is matched alongside Author rather than inferred from it, because an empty Author
+	// alone cannot say whether an actor was sought: it is both "attribution is off" and
+	// "attribution ran and named nobody". Only the NamesActor half is compared against the
+	// window's outcome — see matchesWindow for why the enums themselves must not be.
 	Attribution AttributionOutcome
 	// GitTargetName / GitTargetNamespace scope the finalize to one GitTarget.
 	GitTargetName      string
@@ -111,28 +110,33 @@ type pendingCommitRequest struct {
 	attached bool
 }
 
-// matchesWindow reports whether the request identifies the given open window by
-// attribution outcome, author, and GitTarget.
+// matchesWindow reports whether the request identifies the given open window, by GitTarget and
+// by author.
 //
-// The outcome is matched FIRST and the author comparison only carries meaning when both sides
-// resolved to a real actor. A CommitRequest that could not be attributed carries an empty
-// author, and an unresolved window carries the sentinel author — different strings for the
-// same situation, so comparing strings alone would stop them matching and the request would
-// silently land as a separate commit. Two unresolved parties are treated as belonging together
-// exactly as they did when both were the empty string; the difference is that it is now stated
-// rather than an accident of two fields both happening to be empty.
+// The two attribution outcomes compared here are produced by DIFFERENT, INDEPENDENTLY
+// CONFIGURED subsystems: the window's comes from mirrored-resource attribution
+// (--author-attribution, audit facts), the request's from command authorship
+// (--admission-webhook, its own Redis corner) — see cmd/main.go:311-316. So they are matched on
+// AttributionOutcome.NamesActor, not for enum equality. Requiring the enums to be equal silently
+// couples the two flags: with attribution off and the webhook on the window says "not attempted"
+// while the request says "unresolved", and with attribution on but missing and the webhook off
+// it is the other way round. Both are real deployments, both attach correctly today, and exact
+// equality would stop both — dropping the user's commit message into a separate default-message
+// commit with no error anywhere.
+//
+// The author comparison stays UNCONDITIONAL, and the outcome class is an additional guard on
+// top of it — never a replacement for it. Skipping the author check when neither side names an
+// actor looks equivalent (an unnamed actor leaves the author empty on both sides, so the two
+// empties compare equal anyway) but is not: it makes cross-author attachment depend on the
+// outcome fields being right, so any path that leaves an outcome unset while the author IS set
+// would let one author's request finalize another's window. Comparing both costs nothing and
+// keeps "bob never claims alice's window" true regardless of what the outcomes say.
 func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p == nil || w == nil {
 		return false
 	}
-	if p.attribution != w.Attribution {
-		return false
-	}
-	if p.attribution == AttributionUnresolved {
-		// Neither side knows who acted; there is no author to agree on.
-		return p.gitTargetName == w.GitTarget && p.gitTargetNamespace == w.GitTargetNamespace
-	}
 	return p.author == w.Author &&
+		p.attribution.NamesActor() == w.Attribution.NamesActor() &&
 		p.gitTargetName == w.GitTarget &&
 		p.gitTargetNamespace == w.GitTargetNamespace
 }

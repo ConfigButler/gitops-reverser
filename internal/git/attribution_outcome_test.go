@@ -157,14 +157,17 @@ func TestOpenWindow_ResolvedWindowsStillSplitByAuthor(t *testing.T) {
 
 // THE REGRESSION THIS DESIGN EXISTS TO AVOID.
 //
-// A CommitRequest that could not be attributed carries an empty author. Before the sentinel,
-// that coincided with an unattributed window's empty author and attached by accident. Once the
-// window carries the sentinel author the strings differ, so matching on the author alone would
-// silently stop attaching and the request would land as its own commit. Matching on the
-// outcome keeps them together.
+// A CommitRequest that could not be attributed carries an empty author, and so does a window
+// whose attribution ran and named nobody — the sentinel is a git-signature rendering only and
+// never reaches the window's Author. The two therefore still match on the author, and the
+// outcomes must not be allowed to push them apart: the request's outcome comes from command
+// authorship and the window's from mirrored-resource attribution, which are configured
+// independently, so they routinely differ. See the full cross-subsystem matrix in
+// TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems.
 func TestPendingCommitRequest_UnresolvedRequestAttachesToUnresolvedWindow(t *testing.T) {
 	window := newOpenWindow(attributedEvent("", AttributionUnresolved), nil)
-	window.Author = UnresolvedAuthorUsername // as the writer will render it
+	require.Empty(t, window.Author,
+		"an unresolved window carries no author; the sentinel is applied at the write path")
 
 	request := &pendingCommitRequest{
 		author:             "", // a fallback CommitRequest has no author
@@ -172,10 +175,20 @@ func TestPendingCommitRequest_UnresolvedRequestAttachesToUnresolvedWindow(t *tes
 		gitTargetName:      "target",
 		gitTargetNamespace: "default",
 	}
-
 	assert.True(t, request.matchesWindow(window),
-		"a fallback CommitRequest must still attach to the unresolved window it was meant for, "+
-			"even though the two carry different author strings")
+		"a fallback CommitRequest must attach to the unresolved window it was meant for")
+
+	// The default deployment: command-author capture is off, so the request says "not
+	// attempted" while the window says "unresolved". Neither names an actor, so they match.
+	notAttempted := &pendingCommitRequest{
+		author:             "",
+		attribution:        AttributionNotAttempted,
+		gitTargetName:      "target",
+		gitTargetNamespace: "default",
+	}
+	assert.True(t, notAttempted.matchesWindow(window),
+		"a request from a deployment with command-author capture off must still attach; "+
+			"requiring the two subsystems' outcomes to be equal drops the user's commit message")
 }
 
 func TestPendingCommitRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
@@ -220,15 +233,27 @@ func TestPendingCommitRequest_StillScopedToOneGitTarget(t *testing.T) {
 		"the outcome match must not widen attachment across GitTargets")
 }
 
-// Username reaches user-authored per-event templates via {{.Username}}, not only grouped
-// commit messages. A custom template must render the sentinel rather than an empty string.
-func TestRenderEventCommitMessage_UnresolvedUsernameReachesCustomTemplates(t *testing.T) {
+// The sentinel is scoped to the git author header and deliberately does NOT reach message
+// bodies or user-authored {{.Username}} templates — it is derived at the write path from the
+// outcome, never stamped onto the event (see UnresolvedAuthor). An unresolved event therefore
+// renders {{.Username}} exactly as configured-author mode always has: empty. Pushing a magic
+// token in here would change the commit text of every deployment that has attribution misses
+// and force user templates to special-case a value they never had to handle.
+func TestRenderEventCommitMessage_UnresolvedUsernameStaysEmptyInTemplates(t *testing.T) {
 	config := ResolveCommitConfig(nil)
 	config.Message.EventTemplate = "{{.Operation}} by {{.Username}}"
 
-	event := attributedEvent(UnresolvedAuthorUsername, AttributionUnresolved)
+	// The production shape: attachAuthor sets UserInfo only when the outcome is resolved.
+	event := attributedEvent("", AttributionUnresolved)
 	message, err := renderEventCommitMessage(event, config)
 
 	require.NoError(t, err)
-	assert.Equal(t, "CREATE by "+UnresolvedAuthorUsername, message)
+	assert.Equal(t, "CREATE by ", message,
+		"the sentinel must not leak into user-authored templates")
+
+	// The identity a human actually sees for this commit lives in the git author header, which
+	// TestCommitOptionsFor_UnresolvedAttributionUsesSentinelAuthor pins.
+	options := commitOptionsFor(commitWrite(event), ResolveCommitConfig(nil), nil, time.Now())
+	require.NotNil(t, options.Author)
+	assert.Equal(t, UnresolvedAuthorDisplayName, options.Author.Name)
 }
