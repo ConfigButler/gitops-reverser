@@ -156,7 +156,7 @@ jobs:
           # is the only other job that signs release artifacts (publish-helm),
           # and it gets cosign from that image. Without this input the action
           # defaults to its own (older) pinned cosign release.
-          cosign-release: v3.1.1
+          cosign-release: v3.1.2
 
       - name: Sign the multi-arch image (cosign keyless)
         # One signature on the digest covers every tag pointing at it.

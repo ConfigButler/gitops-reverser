@@ -10,6 +10,26 @@ kube-apiserver audit delivery and a Redis/Valkey backing store. This guide cover
 and how the pieces fit. It assumes GitOps Reverser is already installed and mirroring state — see
 the [root README quick start](../README.md#quick-start) for that first run.
 
+## The two modes
+
+Every install shares one base — Kubernetes watch/RBAC access, Git credentials, and cert-manager. The
+only thing that varies is who shows up as the commit author:
+
+| Mode | Git author | Git committer | Also needs |
+|---|---|---|---|
+| **`configured-author`** *(default)* | the configured identity | the configured identity | nothing |
+| **`attributed-author`** | the authenticated Kubernetes actor | the configured identity | audit delivery + Valkey/Redis |
+
+With `attribution.enabled`, only the **author** column moves:
+
+| Who made the change (Kubernetes actor) | Git author | Git committer |
+|---|---|---|
+| Human user (`simon@example.com`) | Simon | `ConfigButler Bot` |
+| Service account (`system:serviceaccount:team-a:deployer`) | the `team-a/deployer` service account | `ConfigButler Bot` |
+| CI / GitHub App identity | that CI / App identity | `ConfigButler Bot` |
+
+The committer column never moves. That is the point.
+
 ## When it fits
 
 Attribution works by correlating kube-apiserver **audit events** with the objects the operator sees

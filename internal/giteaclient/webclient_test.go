@@ -5,7 +5,6 @@ package giteaclient
 import (
 	"context"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -16,38 +15,6 @@ import (
 
 	reverserGit "github.com/ConfigButler/gitops-reverser/internal/git"
 )
-
-func TestExtractCSRFToken_FromFixtures(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		fixture string
-		want    string
-	}{
-		{
-			name:    "login page name before value",
-			fixture: "testdata/login-page.html",
-			want:    "login-csrf-token",
-		},
-		{
-			name:    "keys page value before name",
-			fixture: "testdata/keys-page-pre-verify.html",
-			want:    "keys-csrf-token",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			html := readFixture(t, tt.fixture)
-			if got := extractCSRFToken(html); got != tt.want {
-				t.Fatalf("extractCSRFToken() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
 
 func TestVerifySSHFailure_FromFixtures(t *testing.T) {
 	t.Parallel()
@@ -85,34 +52,41 @@ func TestVerifySSHFailure_FromFixtures(t *testing.T) {
 	}
 }
 
-func TestWebSessionFetchCSRF_FallsBackToCookie(t *testing.T) {
+// TestNewWebSession_SendsNoCSRFToken pins the Gitea 1.26+ contract: form-token
+// CSRF is gone, replaced by stdlib http.CrossOriginProtection, which admits any
+// request carrying neither Sec-Fetch-Site nor Origin. A login that posts a
+// `_csrf` field would be sending a field the server no longer models, and — more
+// importantly — a client that still tried to *scrape* one would fail outright,
+// because the login page no longer renders it.
+func TestNewWebSession_SendsNoCSRFToken(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: csrfCookieName, Value: "cookie-csrf-token", Path: "/"})
-		_, _ = w.Write([]byte(`<html><body>no hidden csrf input here</body></html>`))
+	var loginForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user/login" && r.Method == http.MethodPost {
+			_ = r.ParseForm()
+			loginForm = r.Form
+			http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "session-ok", Path: "/"})
+			_, _ = w.Write([]byte(`<html><body>logged in</body></html>`))
+			return
+		}
+		// Serve a login page with no _csrf input, exactly as Gitea 1.26+ does.
+		_, _ = w.Write([]byte(`<html><body><form action="/user/login" method="post">` +
+			`<input name="user_name"><input name="password"></form></body></html>`))
 	}))
 	defer srv.Close()
-
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookiejar.New() error = %v", err)
-	}
-
-	session := &WebSession{
-		BaseURL:    srv.URL,
-		HTTPClient: &http.Client{Jar: jar, Timeout: defaultHTTPTimeout},
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	token, err := session.fetchCSRF(ctx, "/user/login")
-	if err != nil {
-		t.Fatalf("fetchCSRF() error = %v", err)
+	if _, err := NewWebSession(ctx, srv.URL, "alice", "secret", false); err != nil {
+		t.Fatalf("NewWebSession() error = %v", err)
 	}
-	if token != "cookie-csrf-token" {
-		t.Fatalf("fetchCSRF() = %q, want %q", token, "cookie-csrf-token")
+	if got := loginForm.Get("_csrf"); got != "" {
+		t.Fatalf("login form carried _csrf = %q, want it absent", got)
+	}
+	if got := loginForm.Get("user_name"); got != "alice" {
+		t.Fatalf("login form user_name = %q, want %q", got, "alice")
 	}
 }
 
@@ -125,7 +99,6 @@ func TestNewWebSession_UsesSessionCookieForLoginSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/user/login":
-			http.SetCookie(w, &http.Cookie{Name: csrfCookieName, Value: "login-csrf-token", Path: "/"})
 			_, _ = w.Write([]byte(loginHTML))
 		case r.Method == http.MethodPost && r.URL.Path == "/user/login":
 			loginPosts++
@@ -165,7 +138,6 @@ func TestNewWebSession_FailsWithoutSessionCookie(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/user/login":
-			http.SetCookie(w, &http.Cookie{Name: csrfCookieName, Value: "login-csrf-token", Path: "/"})
 			_, _ = w.Write([]byte(loginHTML))
 		case r.Method == http.MethodPost && r.URL.Path == "/user/login":
 			_, _ = w.Write([]byte(loginHTML))
@@ -322,22 +294,16 @@ func handleVerificationTokenRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleVerificationLoginPage(w http.ResponseWriter, loginHTML string) {
-	http.SetCookie(w, &http.Cookie{Name: csrfCookieName, Value: "login-csrf-token", Path: "/"})
 	_, _ = w.Write([]byte(loginHTML))
 }
 
 func handleVerificationLoginPost(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	if r.Form.Get("_csrf") != "login-csrf-token" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "session-ok", Path: "/"})
 	_, _ = w.Write([]byte(`<html><body>logged in</body></html>`))
 }
 
 func handleVerificationKeysPage(w http.ResponseWriter, keysHTML string) {
-	http.SetCookie(w, &http.Cookie{Name: csrfCookieName, Value: "keys-csrf-token", Path: "/"})
 	_, _ = w.Write([]byte(keysHTML))
 }
 
@@ -358,8 +324,8 @@ func handleVerificationKeysPost(
 func assertVerifyForm(t *testing.T, verifyForm *url.Values, publicKey string) {
 	t.Helper()
 
-	if got := verifyForm.Get("_csrf"); got != "keys-csrf-token" {
-		t.Fatalf("verify form _csrf = %q, want %q", got, "keys-csrf-token")
+	if got := verifyForm.Get("_csrf"); got != "" {
+		t.Fatalf("verify form carried _csrf = %q, want it absent", got)
 	}
 	if got := verifyForm.Get("type"); got != "verify_ssh" {
 		t.Fatalf("verify form type = %q, want %q", got, "verify_ssh")
