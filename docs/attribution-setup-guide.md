@@ -5,6 +5,12 @@ configured committer identity. **Attribution** turns on a second identity — th
 user or service account that made the change becomes the commit *author*, while the committer stays
 constant. Git carries both.
 
+Once attribution is on, a change whose actor cannot be resolved is authored
+`unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` rather than falling
+back to the committer. Seeing that identity in your history means attribution ran and did not find a
+matching audit fact — check the audit webhook path before assuming it is normal. Its rate is
+`commits_total{author_kind="unresolved"}`.
+
 Attribution is the only optional capability, and it is a real operational step up: it requires
 kube-apiserver audit delivery and a Redis/Valkey backing store. This guide covers what that costs
 and how the pieces fit. It assumes GitOps Reverser is already installed and mirroring state — see

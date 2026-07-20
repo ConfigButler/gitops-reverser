@@ -750,6 +750,8 @@ func (m *Manager) attachAuthor(
 	gvr schema.GroupVersionResource,
 	u *unstructured.Unstructured,
 ) {
+	// A nil resolver is configured-author mode: nothing is attempted, and the zero
+	// AttributionNotAttempted on the event is already correct.
 	if m.AuthorResolver == nil {
 		return
 	}
@@ -762,9 +764,15 @@ func (m *Manager) attachAuthor(
 	// ClusterProvider name — this event was watched on. It keys the author read against exactly
 	// the facts the audit handler recorded for that cluster, so a fact from cluster A can never
 	// name the author of an object watched on cluster B.
-	if userInfo, ok := m.AuthorResolver.ResolveAuthor(
+	userInfo, outcome := m.AuthorResolver.ResolveAuthor(
 		ctx, event.SourceCluster, gvr, u.GetUID(), u.GetResourceVersion(), exactCapable,
-	); ok {
+	)
+	// Stamp the outcome even when no actor was named: an unresolved attribution is a fact the
+	// writer, the author_kind metric, and CommitRequest matching all need. Leaving it at the
+	// zero value would say "attribution was never attempted", which is exactly the conflation
+	// that made this loss invisible.
+	event.Attribution = outcome
+	if outcome == git.AttributionResolved {
 		event.UserInfo = userInfo
 	}
 }

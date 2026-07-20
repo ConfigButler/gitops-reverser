@@ -61,6 +61,13 @@ type AttachCommitRequest struct {
 	// matches is attached; this binds "the open window" to "the requesting
 	// author's open window".
 	Author string
+	// Attribution is the outcome of attributing THIS CommitRequest. It must be matched
+	// alongside Author, not inferred from it: a request that could not be attributed carries
+	// an empty Author, which used to coincide with an unattributed window's empty author and
+	// attach by accident. Once unresolved windows carry a sentinel author that coincidence
+	// disappears, and matching on the outcome is what keeps the fallback request attaching to
+	// the window it was meant for instead of silently landing as its own commit.
+	Attribution AttributionOutcome
 	// GitTargetName / GitTargetNamespace scope the finalize to one GitTarget.
 	GitTargetName      string
 	GitTargetNamespace string
@@ -93,6 +100,7 @@ func (a AttachCommitRequest) id() commitRequestID {
 type pendingCommitRequest struct {
 	id                 commitRequestID
 	author             string
+	attribution        AttributionOutcome
 	gitTargetName      string
 	gitTargetNamespace string
 	message            string
@@ -104,10 +112,25 @@ type pendingCommitRequest struct {
 }
 
 // matchesWindow reports whether the request identifies the given open window by
-// author and GitTarget.
+// attribution outcome, author, and GitTarget.
+//
+// The outcome is matched FIRST and the author comparison only carries meaning when both sides
+// resolved to a real actor. A CommitRequest that could not be attributed carries an empty
+// author, and an unresolved window carries the sentinel author — different strings for the
+// same situation, so comparing strings alone would stop them matching and the request would
+// silently land as a separate commit. Two unresolved parties are treated as belonging together
+// exactly as they did when both were the empty string; the difference is that it is now stated
+// rather than an accident of two fields both happening to be empty.
 func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p == nil || w == nil {
 		return false
+	}
+	if p.attribution != w.Attribution {
+		return false
+	}
+	if p.attribution == AttributionUnresolved {
+		// Neither side knows who acted; there is no author to agree on.
+		return p.gitTargetName == w.GitTarget && p.gitTargetNamespace == w.GitTargetNamespace
 	}
 	return p.author == w.Author &&
 		p.gitTargetName == w.GitTarget &&

@@ -83,6 +83,7 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 	l.pendingCRs[id] = &pendingCommitRequest{
 		id:                 id,
 		author:             req.Author,
+		attribution:        req.Attribution,
 		gitTargetName:      req.GitTargetName,
 		gitTargetNamespace: req.GitTargetNamespace,
 		message:            req.Message,

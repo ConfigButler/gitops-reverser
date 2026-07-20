@@ -149,6 +149,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Name:               commitRequest.Name,
 		UID:                string(commitRequest.UID),
 		Author:             author.Author,
+		Attribution:        attribution.gitOutcome(),
 		GitTargetName:      commitRequest.Spec.TargetRef.Name,
 		GitTargetNamespace: commitRequest.Namespace,
 		Message:            capCommitRequestMessage(commitRequest.Spec.Message),
@@ -197,7 +198,9 @@ func (r *CommitRequestReconciler) attributeAuthor(
 	if r.AuthorLookup == nil {
 		log.Info("command-author lookup disabled (validate-operator-types webhook off); committing as committer",
 			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
-		return queue.CommandAuthor{}, attributionCommitter
+		// Capture is off, so nothing was attempted — distinct from a capture that ran and
+		// found no record, which is what attributionCommitter now means.
+		return queue.CommandAuthor{}, attributionNotAttempted
 	}
 	if author, ok := r.AuthorLookup.LookupCommandAuthor(ctx, commitRequest.UID); ok {
 		log.Info("command author resolved from admission record",

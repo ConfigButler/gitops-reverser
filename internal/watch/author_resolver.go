@@ -66,11 +66,17 @@ type CursorStore interface {
 
 // AuthorResolver names the commit author for a live watch event from audit facts.
 type AuthorResolver interface {
-	// ResolveAuthor returns the author UserInfo for a watch event, or ok=false to
-	// commit as the configured committer. It may wait up to the grace window for a
-	// matching fact; it never blocks indefinitely and never returns an error path —
-	// an absent fact is a committer commit, not a failure. exactCapable distinguishes
+	// ResolveAuthor returns the author UserInfo for a watch event together with the
+	// attribution OUTCOME. It may wait up to the grace window for a matching fact; it never
+	// blocks indefinitely and never returns an error path. exactCapable distinguishes
 	// ADDED/MODIFIED events (true) from known RV-mismatch removals (false).
+	//
+	// The outcome is returned explicitly rather than as an ok bool because the two possible
+	// "no author" cases are NOT the same and callers must be able to tell them apart:
+	// AttributionNotAttempted (configured-author mode — the committer legitimately is the
+	// author) versus AttributionUnresolved (attribution ran and found nothing — a gap worth
+	// surfacing). An empty UserInfo cannot distinguish them, which is exactly how the loss
+	// stayed invisible. A resolved outcome always carries a non-empty UserInfo.
 	ResolveAuthor(
 		ctx context.Context,
 		providerName string,
@@ -78,7 +84,7 @@ type AuthorResolver interface {
 		uid k8stypes.UID,
 		rv string,
 		exactCapable bool,
-	) (git.UserInfo, bool)
+	) (git.UserInfo, git.AttributionOutcome)
 }
 
 type attributionResolver struct {
@@ -106,47 +112,50 @@ func (r *attributionResolver) ResolveAuthor(
 	uid k8stypes.UID,
 	rv string,
 	exactCapable bool,
-) (git.UserInfo, bool) {
+) (git.UserInfo, git.AttributionOutcome) {
 	start := time.Now()
+	// A nil lookup is configured-author mode: attribution was never switched on, so nothing
+	// was attempted and the committer legitimately authors the commit.
 	if r.lookup == nil {
 		recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
-		return git.UserInfo{}, false
+		return git.UserInfo{}, git.AttributionNotAttempted
 	}
 	deadline := time.Now().Add(r.grace)
 	for {
 		resolution := r.lookup.LookupAuthorResolution(ctx, providerName, gvr, uid, rv, exactCapable)
 		if resolution.Result != queue.AttributionAbsent {
-			ui, ok, result := r.userInfoForResolution(resolution)
+			ui, outcome, result := r.userInfoForResolution(resolution)
 			recordAttributionResolution(ctx, gvr, result, time.Since(start))
-			return ui, ok
+			return ui, outcome
 		}
 		if !time.Now().Before(deadline) {
 			recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
-			return git.UserInfo{}, false
+			return git.UserInfo{}, git.AttributionUnresolved
 		}
 		if !sleepOrDone(ctx, attributionPollInterval) {
 			recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
-			return git.UserInfo{}, false
+			return git.UserInfo{}, git.AttributionUnresolved
 		}
 	}
 }
 
 // userInfoForResolution turns a matched fact into a commit author. The matched
 // actor — human or service account — is always named by its own username; a fact
-// with no author falls back to the committer (ok=false).
+// that carries no author is UNRESOLVED, not not-attempted: attribution ran, found a
+// fact, and still could not name anyone.
 func (r *attributionResolver) userInfoForResolution(
 	resolution queue.AuthorResolution,
-) (git.UserInfo, bool, queue.AttributionResult) {
+) (git.UserInfo, git.AttributionOutcome, queue.AttributionResult) {
 	fact := resolution.Fact
 	result := resolution.Result
 	if fact.Author == "" {
-		return git.UserInfo{}, false, result
+		return git.UserInfo{}, git.AttributionUnresolved, result
 	}
 	return git.UserInfo{
 		Username:    fact.Author,
 		DisplayName: fact.DisplayName,
 		Email:       fact.Email,
-	}, true, result
+	}, git.AttributionResolved, result
 }
 
 func recordAttributionResolution(

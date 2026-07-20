@@ -87,8 +87,17 @@ signals. Background: [architecture.md → Git Write Architecture](architecture.m
 `commits_total` carries the **`BranchWorker`'s**
 `{provider_namespace, provider_name, branch, author_kind}` identity, not a GitTarget: one worker can
 serve several GitTargets sharing a provider+branch, coalescing their writes into one commit batch, so
-the worker is the honest attribution unit. `author_kind` is `user`, `serviceaccount`, or `committer`;
-reconcile/resync commits and unattributed events use `committer`. The namespace/name keys are
+the worker is the honest attribution unit. `author_kind` is `user`, `serviceaccount`, `committer`, or `unresolved`;
+reconcile/resync commits and configured-author mode use `committer`.
+
+**`unresolved` is the one to watch.** It means attribution RAN and did not name an actor, so
+the commit carries the `unknown (attribution unresolved)` author instead of a person. It is
+deliberately not folded into `user` (which would make a lost actor look like a named one, so a
+degrading attribution path would read as an improving one) nor into `committer` (which would
+hide it among legitimately unattributed reconcile writes). A non-zero and growing `unresolved`
+share is a real defect, not noise — see
+[`gitopsreverser_attribution_resolutions_total`](#audit-attribution-optional) and
+[docs/debug/attribution-loss.md](debug/attribution-loss.md). The namespace/name keys are
 **prefixed on purpose** — a Prometheus pod scrape with
 `honor_labels=false` overwrites a bare `namespace` attribute with the scraping pod's namespace,
 so a per-provider `namespace` selector would silently match nothing. The same reasoning applies to

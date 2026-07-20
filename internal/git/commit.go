@@ -186,6 +186,15 @@ func commitOptionsFor(
 ) *git.CommitOptions {
 	committer := operatorSignature(config, when)
 	author := pendingWrite.AuthorUserInfo()
+	// An attribution that RAN and did not resolve is authored by the sentinel, not by the
+	// committer. Authoring it as the committer is what made a lost actor byte-identical to a
+	// configured-author commit, so the loss was invisible in Git history.
+	if pendingWrite.AttributionOutcome() == AttributionUnresolved {
+		author = UnresolvedAuthor()
+	}
+	// Reaching here with an empty username now means only "attribution was never attempted"
+	// (configured-author mode, reconcile/resync writes), where the committer genuinely IS the
+	// author.
 	if author.Username == "" {
 		return &git.CommitOptions{
 			Author:    committer,

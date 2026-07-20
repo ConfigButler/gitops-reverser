@@ -171,6 +171,12 @@ For mirrored-resource commits, the author comes from the configured committer id
 `attribution.enabled=true` and a matching kube-apiserver audit event names the Kubernetes user or
 service account. Snapshot/reconcile commits are operator-authored.
 
+When attribution IS enabled and no matching audit fact arrives, the commit is authored
+`unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` — **not** the
+committer. That distinction is the point: a committer-authored commit means attribution was never
+attempted, while the sentinel means it was attempted and did not resolve, which is worth investigating.
+Such commits also count under `author_kind="unresolved"` in `commits_total`.
+
 That distinction is useful in practice:
 
 - `git log --author=alice` answers "what did Alice change?"
@@ -873,7 +879,9 @@ When attribution is enabled, these flags tune the join:
 - `--author-attribution-ttl` (default `10m`): how long an attribution fact is retained waiting for the
   matching watch event to join it.
 - `--author-attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
-  watch event ships authored by the committer.
+  watch event ships authored by the `attribution-unresolved` sentinel. Note the delivery floor: the
+  apiserver's own `--audit-webhook-batch-max-wait` delays every fact by up to that much, so a grace at or
+  below it will lose actors systematically.
 
 A matched actor is always named by its own username — humans and service accounts alike (e.g.
 `system:serviceaccount:flux-system:kustomize-controller`); there is no option to collapse service

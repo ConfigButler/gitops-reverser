@@ -625,12 +625,22 @@ and the *author* (who wrote the change) — and GitOps Reverser uses both on pur
   to `GitOps Reverser <noreply@configbutler.ai>`. Every commit, attributed or not, is committed by the
   operator, because the operator is what actually wrote it to Git.
 * The **author is the real actor — but only when we are sure.** On a strong attribution match the author is
-  set to that actor; with no confident match the author is set to the operator too. Git always carries an
-  author, so it is **never left blank** — when we are not sure it is simply the operator (identical to the
-  committer), never a guessed person. A commit whose author differs from the committer is therefore a
-  positive statement that the operator is confident who made the change.
+  set to that actor. Git always carries an author, so it is **never left blank**, and it is never a guessed
+  person. What fills it when we are not sure depends on WHY:
+  * **Attribution is switched off** (configured-author mode, and reconcile/resync writes that have no actor
+    at all): the author is the operator, identical to the committer. That is honest — the operator really is
+    the author.
+  * **Attribution ran and did not resolve an actor**: the author is the explicit sentinel
+    `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`. It is deliberately
+    NOT the operator, because authoring it as the operator made a lost actor byte-identical to a
+    configured-author commit — so the gap was invisible in Git history and only countable in a metric. See
+    [docs/design/attribution-outcome-and-author.md](design/attribution-outcome-and-author.md).
 
-The author identity is never invented — it is taken from the authenticated request. The name and email come
+  A commit whose author is a **person** is therefore a positive statement that the operator is confident who
+  made the change; one authored by the sentinel is a positive statement that it tried and could not tell.
+
+The author identity is never fabricated as a person — a real author is always taken from the authenticated
+request, and an unresolved one is labelled as unresolved rather than attributed to anybody. The name and email come
 from the **OIDC claims** when the apiserver maps them; otherwise they come from the actor's own
 **Kubernetes identity** — the username, which for a controller is its service account
 (`system:serviceaccount:<namespace>:<name>`), with a stable derived email under `noreply.cluster.local`.

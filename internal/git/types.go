@@ -17,6 +17,57 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
+// AttributionOutcome records what happened when the operator tried to name the actor behind a
+// change. It is carried EXPLICITLY rather than inferred from the author identity, because the
+// author string is load-bearing in several places (window grouping, commit-message templates,
+// the author_kind metric) and overloading it to also mean "attribution failed" made a silent
+// failure indistinguishable from correct configured-author behaviour. See
+// docs/design/attribution-outcome-and-author.md.
+type AttributionOutcome string
+
+const (
+	// AttributionNotAttempted is configured-author mode: attribution is switched off, so the
+	// committer legitimately IS the author and no actor was ever sought.
+	AttributionNotAttempted AttributionOutcome = "not_attempted"
+	// AttributionResolved means an audit fact named the actor.
+	AttributionResolved AttributionOutcome = "resolved"
+	// AttributionUnresolved means attribution ran and did not arrive at an actor.
+	//
+	// Deliberately "unresolved", not "failed": the lookup collapses several genuinely
+	// different situations into one miss — no fact was ever produced (correct; not every
+	// change has an audited human actor), a cancelled wait, a Redis read error, and a
+	// malformed value all return the same not-found. Calling that a failure would assert a
+	// fault the operator cannot prove.
+	AttributionUnresolved AttributionOutcome = "unresolved"
+)
+
+// UnresolvedAuthor is the identity written to Git when attribution ran and did not resolve an
+// actor. It exists so an unresolved attribution is visible in `git log` instead of being
+// indistinguishable from a configured-author commit.
+//
+// Three fields, three different strings, because UserInfo feeds three surfaces:
+//   - Username reaches window grouping, the grouped commit message body, AND user-authored
+//     per-event templates via {{.Username}} — so it must stand alone as a machine token.
+//   - DisplayName is what a human reads in `git log`, so it leads with what they care about.
+//   - Email uses the RFC 2606 reserved .invalid TLD, so it can never collide with a real
+//     address and never routes mail.
+func UnresolvedAuthor() UserInfo {
+	return UserInfo{
+		Username:    UnresolvedAuthorUsername,
+		DisplayName: UnresolvedAuthorDisplayName,
+		Email:       UnresolvedAuthorEmail,
+	}
+}
+
+const (
+	// UnresolvedAuthorUsername is the stable machine token for an unresolved attribution.
+	UnresolvedAuthorUsername = "attribution-unresolved"
+	// UnresolvedAuthorDisplayName is the human-facing git author name.
+	UnresolvedAuthorDisplayName = "unknown (attribution unresolved)"
+	// UnresolvedAuthorEmail is a reserved-invalid address (RFC 2606).
+	UnresolvedAuthorEmail = "attribution-unresolved@gitops-reverser.invalid"
+)
+
 const (
 	// DefaultCommitterName matches the default operator identity in Git history.
 	DefaultCommitterName = "GitOps Reverser"
@@ -377,6 +428,14 @@ type Event struct {
 
 	// UserInfo contains user information for commit messages.
 	UserInfo UserInfo
+
+	// Attribution records whether naming the actor was attempted and whether it succeeded.
+	// It is the authority for author rendering, the author_kind metric, and CommitRequest
+	// window matching — none of which may infer the outcome from UserInfo, because an empty
+	// or sentinel username cannot distinguish "attribution is off" from "attribution ran and
+	// found nothing". The zero value is AttributionNotAttempted, which is correct for every
+	// non-live path (reconcile, resync, bootstrap) where no actor is ever sought.
+	Attribution AttributionOutcome
 
 	// Path is the POSIX-like relative path prefix for this event's files.
 	// This comes from the GitTarget that triggered this event.
