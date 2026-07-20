@@ -150,6 +150,15 @@ var attributionWaitBuckets = []float64{0.5, 1, 2, 3, 5, 10}
 // Fact delivery is bounded below by the apiserver's --audit-webhook-batch-max-wait (1s in this
 // cluster), so a healthy run still shows most waits in the 0.5-2s range; the tail is what matters.
 func reportAttributionStats() {
+	// Mirrors assertNoAnomalousAuditOutcomes. Not optional: the AfterSuite runs on every leg,
+	// including ones whose selected specs never touched a metric helper, so promAPI may still be
+	// nil here. Without this the first queryPrometheus below nil-derefs and PANICS the
+	// SynchronizedAfterSuite — which fails the whole leg despite every spec passing, and takes
+	// the gating assertNoAnomalousAuditOutcomes call after it down with it. That is exactly what
+	// happened to the four small legs (1/3/6/11 specs) in run 29745528349, while the two large
+	// legs passed only because their specs had already initialized the client.
+	ensurePrometheusClient()
+
 	total, err := queryPrometheus(`sum(max_over_time(gitopsreverser_attribution_resolutions_total[2h])) or vector(0)`)
 	if err != nil || total == 0 {
 		_, _ = fmt.Fprintf(GinkgoWriter,
@@ -257,8 +266,18 @@ func configuredAuthorModeFromArgs(args string) bool {
 	redisAddr := "valkey:6379"
 	for _, arg := range strings.Fields(strings.NewReplacer(`"`, " ", `[`, " ", `]`, " ", `,`, " ").Replace(args)) {
 		switch {
-		case arg == "--author-attribution=false":
-			attribution = false
+		case arg == "--author-attribution":
+			// The bare form is the TRUE form for a boolean flag, not an opt-out.
+			attribution = true
+		case strings.HasPrefix(arg, "--author-attribution="):
+			// Parse with strconv.ParseBool, exactly as Go's flag package does. Matching only the
+			// literal "--author-attribution=false" would read `--set attribution.enabled=0` (or
+			// `f`, `F`, `False`, `FALSE`) as attribution ENABLED while the controller runs
+			// configured-author — silently swapping the commit-author assertion instead of
+			// failing it, which is the whole failure mode this probe exists to prevent.
+			if v, err := strconv.ParseBool(strings.TrimPrefix(arg, "--author-attribution=")); err == nil {
+				attribution = v
+			}
 		case strings.HasPrefix(arg, "--redis-addr="):
 			redisAddr = strings.TrimPrefix(arg, "--redis-addr=")
 		}

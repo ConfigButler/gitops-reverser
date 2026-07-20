@@ -64,6 +64,15 @@ func verifyPrometheusAvailable() {
 // queryPrometheus executes a PromQL query and returns the first scalar value
 // Returns 0 if no results found
 func queryPrometheus(query string) (float64, error) {
+	// A nil client is a wiring mistake in the caller (it skipped ensurePrometheusClient), not a
+	// query failure. Say so instead of nil-dereferencing: a panic here aborts whatever node is
+	// running — and from an AfterSuite that fails the entire leg with every spec passing, which
+	// is unreadable from the console log.
+	if promAPI == nil {
+		return 0, fmt.Errorf(
+			"prometheus client not initialized: call ensurePrometheusClient() before querying %q", query)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:mnd // reasonable query timeout
 	defer cancel()
 
