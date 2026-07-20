@@ -165,6 +165,38 @@
       "matchStrings": ["COSIGN_VERSION=(?<currentValue>v[0-9.]+)"],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "sigstore/cosign"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: tilt (second ENV block; release asset download)",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["TILT_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "tilt-dev/tilt"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: delve (go install github.com/go-delve/delve/cmd/dlv)",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["DLV_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "go",
+      "depNameTemplate": "github.com/go-delve/delve"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: gopls (go install golang.org/x/tools/gopls; its own module, versioned apart from x/tools)",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["GOPLS_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "go",
+      "depNameTemplate": "golang.org/x/tools/gopls"
+    },
+    {
+      "customType": "regex",
+      "description": "devcontainer: staticcheck (go install honnef.co/go/tools/cmd/staticcheck)",
+      "managerFilePatterns": ["/^\\.devcontainer/Dockerfile$/"],
+      "matchStrings": ["STATICCHECK_VERSION=(?<currentValue>v[0-9.]+)"],
+      "datasourceTemplate": "go",
+      "depNameTemplate": "honnef.co/go/tools"
     }
   ]
 }
