@@ -5,10 +5,12 @@ package e2e
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -73,6 +75,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 // if the assertion fails — it also releases on process exit).
 var _ = SynchronizedAfterSuite(func() {}, func() {
 	defer releaseE2ERunLock()
+	// Diagnostic first, so its numbers reach the artifacts even when the gating
+	// audit invariant below fails the suite.
+	reportAttributionStats()
 	assertNoAnomalousAuditOutcomes()
 })
 
@@ -119,6 +124,106 @@ func assertNoAnomalousAuditOutcomes() {
 			"gitopsreverser_audit_events_total{category=\"error\",outcome=...} breakdown and controller logs.",
 		value, errorQuery)
 	_, _ = fmt.Fprintf(GinkgoWriter, "✅ no anomalous audit outcomes (0 error-category events across the run)\n")
+}
+
+// attributionWaitBuckets mirrors telemetry's attributionWaitBuckets tail. Only the seconds-scale
+// boundaries are interesting here: the question this report answers is how close the run came to
+// the grace window, and how far past the 3s DEFAULT grace a fact can still arrive.
+var attributionWaitBuckets = []float64{0.5, 1, 2, 3, 5, 10}
+
+// reportAttributionStats prints the run's author-attribution outcome and timing distribution.
+//
+// It is DIAGNOSTIC, not gating. It exists because attribution fails silently: when no audit fact
+// matches within the grace window the commit is authored by the configured committer, and
+// git.DefaultCommitterName ("GitOps Reverser") is ALSO the configured-author identity — so a lost
+// actor is indistinguishable from a correct configured-author commit by inspection. The only way
+// to see it is to count it.
+//
+// The two numbers to read:
+//
+//   - "absent" — resolutions that gave up and lost the actor's name. Every one of these is a
+//     commit attributed to the committer instead of the human or service account responsible.
+//   - resolutions resolved ABOVE 3s — facts that arrived later than the 3s default grace. Each is
+//     an attribution the default would have dropped, so this is the direct measure of how much
+//     headroom --author-attribution-grace is buying (e2e sets 10s; see config/deployment.yaml).
+//
+// Fact delivery is bounded below by the apiserver's --audit-webhook-batch-max-wait (1s in this
+// cluster), so a healthy run still shows most waits in the 0.5-2s range; the tail is what matters.
+func reportAttributionStats() {
+	total, err := queryPrometheus(`sum(max_over_time(gitopsreverser_attribution_resolutions_total[2h])) or vector(0)`)
+	if err != nil || total == 0 {
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"ℹ️  attribution stats skipped: no resolutions recorded (configured-author mode or no live events)\n")
+		return
+	}
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n📊 author attribution — %.0f resolutions this run\n", total)
+
+	var absent float64
+	for _, result := range []string{"exact_user", "weak", "exact_deletecollection_item", "absent"} {
+		n, qErr := queryPrometheus(fmt.Sprintf(
+			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{result=%q}[2h])) or vector(0)`, result))
+		if qErr != nil {
+			continue
+		}
+		if result == "absent" {
+			absent = n
+		}
+		_, _ = fmt.Fprintf(GinkgoWriter, "   result %-28s = %6.0f  (%5.1f%%)\n", result, n, 100*n/total)
+	}
+
+	// Cumulative histogram: le=X is "waited at most X seconds".
+	//
+	// Split by result, because the two populations answer different questions. For RESOLVED
+	// results the tail says how close fact delivery ran to the window — anything above 3s only
+	// succeeded because e2e widens the grace past the 3s default. For "absent" the wait is just
+	// the grace window being spent, so a cluster of absents at the ceiling means "waited the
+	// whole time and nothing ever came", NOT "arrived slightly too late".
+	_, _ = fmt.Fprintf(GinkgoWriter, "   wait distribution (cumulative):\n")
+	printWaitBuckets("resolved", `,result!="absent"`)
+	printWaitBuckets("absent  ", `,result="absent"`)
+
+	resolvedOverDefault, err := queryPrometheus(
+		`(sum(max_over_time(gitopsreverser_attribution_resolution_wait_seconds_count{result!="absent"}[2h])) ` +
+			`or vector(0)) - (sum(max_over_time(` +
+			`gitopsreverser_attribution_resolution_wait_seconds_bucket{result!="absent",le="3.0"}[2h])) or vector(0))`)
+	if err == nil {
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"   %.0f resolution(s) SUCCEEDED after waiting longer than the 3s default grace"+
+				" — these are the ones a 3s window would have lost.\n", resolvedOverDefault)
+	}
+	if absent > 0 {
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"   ⚠ %.0f resolution(s) lost the actor (%.1f%%): committed as the configured committer.\n"+
+				"     If their waits sit at the grace ceiling above, the fact never arrived at all and a\n"+
+				"     LONGER grace will not help — check delivery with hack/attribution-diagnostics.sh.\n"+
+				"     Note some absences are legitimate: a watch's initial replay re-delivers"+
+				" pre-existing\n     objects that no live actor touched, and those have no fact by"+
+				" construction.\n",
+			absent, 100*absent/total)
+	}
+}
+
+// printWaitBuckets renders one cumulative wait histogram. The `le` label is rendered by the
+// OTel→Prometheus exporter as "1.0"/"3.0"/"10.0" — NOT "1"/"3"/"10" — so an integral boundary
+// must be formatted with a decimal or every query above 0.5 silently matches nothing and
+// returns 0, which reads as a plausible (and wrong) distribution rather than as an error.
+func printWaitBuckets(label, resultSelector string) {
+	var prev float64
+	for _, le := range attributionWaitBuckets {
+		leLabel := strconv.FormatFloat(le, 'g', -1, 64)
+		if le == math.Trunc(le) {
+			leLabel = fmt.Sprintf("%.1f", le)
+		}
+		n, qErr := queryPrometheus(fmt.Sprintf(
+			`sum(max_over_time(gitopsreverser_attribution_resolution_wait_seconds_bucket{le=%q%s}[2h]))`+
+				` or vector(0)`, leLabel, resultSelector))
+		if qErr != nil {
+			continue
+		}
+		_, _ = fmt.Fprintf(GinkgoWriter, "     %s <=%5.1fs %6.0f  (+%.0f)\n", label, le, n, n-prev)
+		prev = n
+	}
 }
 
 // configuredAuthorModeEnabled reports whether the deployed controller authors every commit

@@ -34,6 +34,19 @@ spec:
         - --redis-addr=valkey.valkey-e2e.svc.cluster.local:6379
         # The e2e Valkey serves plain TCP, so opt out of the now-default Redis TLS.
         - --redis-insecure
+        # Attribution waits this long for a matching audit fact before committing as the
+        # configured committer, which silently loses the actor's name. Widened from the 3s
+        # default to buy headroom over the apiserver's --audit-webhook-batch-max-wait=1s
+        # (test/e2e/cluster/start-cluster.sh): measured fact delivery is ~0.8-1.1s even on an
+        # idle cluster, so 3s leaves only ~2s of slack for a 4-proc run.
+        #
+        # Honest scope: this is NOT a fix for the ~7% of resolutions that find no fact. Raising
+        # 3s -> 10s left that rate unchanged, which means those facts never arrive rather than
+        # arriving late; only ~1 resolution per run lands in the 3-10s band. Kept because the
+        # headroom is cheap and makes the tail observable, not because it repairs anything. The
+        # after-suite report separates resolved-wait from absent-wait so the difference stays
+        # visible.
+        - --author-attribution-grace=10s
         # Dev/e2e only: the in-cluster Gitea SSH host key is not pinned, so permit SSH
         # when no known_hosts source exists. Never set this in production.
         - --insecure-allow-missing-known-hosts

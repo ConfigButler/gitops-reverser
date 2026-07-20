@@ -1,7 +1,6 @@
 # How watches are built — an overview
 
-> Written 2026-07-20 while investigating the PR 2 attribution regression
-> ([session log](pr2-session-log-and-findings.md)). Describes the tree as it is **today**,
+> Written 2026-07-20 while investigating [attribution-loss.md](attribution-loss.md). Describes the tree as it is **today**,
 > verified against the code, not as designed. Every claim here was checked by reading the
 > named function.
 >
@@ -73,7 +72,7 @@ rules that point at it. A GitTarget with no rules gets an empty table and no str
 asymmetry matters: the rule controllers can change a resident table, but
 `refreshRunningTargetWatches` only refreshes GitTargets that are **already running**, so a
 rule alone cannot bootstrap a stream. (This is the incidental protection that
-[PR 3](pr3-clusterwatchrule-target-admission.md) exists to make deliberate.)
+[PR 3](../design/watchrule-source-namespace/pr3-clusterwatchrule-target-admission.md) exists to make deliberate.)
 
 ## 2. The namespace scope of a selection
 
@@ -193,7 +192,7 @@ sequenceDiagram
 The observed failure is the lower branch: the file and commit landed, only the author was
 wrong. Note that `"GitOps Reverser"` is **also** the configured-author identity, which is why
 the failure was initially misread — see
-[the investigation](pr2-e2e-attribution-investigation.md).
+[attribution-loss.md](attribution-loss.md).
 
 **Why the diagram above makes case C interesting.** If one object is delivered on two streams,
 the write path sees it twice, but there is only ever **one** audit fact. Whichever delivery

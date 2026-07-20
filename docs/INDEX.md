@@ -14,6 +14,7 @@ those. If a document is not on this page, it is either a user guide (see
 | [`design/`](design/) | **We are still deciding.** Open questions, proposals, unbuilt work. | yes — as intent, not as shipped behaviour |
 | [`facts/`](facts/) | Durable reference: how Kubernetes behaves, and what we discovered about it. | yes, as reference |
 | [`finished/`](finished/) | **This happened.** Shipped plans, closed investigations. Kept for context. | **no** |
+| [`debug/`](debug/) | **This is wrong now.** Open investigations into live defects, with what has been ruled out. Retired to `finished/` once fixed. | **yes** — as known-broken behaviour |
 
 The rule that was missing before: `design/` used to hold shipped work and
 `finished/` used to hold live contracts. If you are adding a document, pick the
