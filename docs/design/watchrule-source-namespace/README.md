@@ -1,6 +1,6 @@
 # Source-namespace addressing and per-target source scope
 
-> **Design, ready to implement in five PRs — nothing here is built.** Companion to upstream
+> **Design in five PRs. PR 1 has landed; PRs 2–5 are not built.** Companion to upstream
 > wishlist #14 and [config-plane-split.md](../../finished/config-plane-split.md).
 > Written 2026-07-19, split into phases 2026-07-20. Index: [INDEX.md](../../INDEX.md).
 >
@@ -115,17 +115,18 @@ are pre-existing defect fixes that carry no API change; the last two are the fea
 
 | # | PR | Scope | Depends on | Status |
 |---|---|---|---|---|
-| 1 | [Namespace-scoped resync](pr1-namespace-scoped-resync.md) | A per-namespace replay must not sweep other namespaces' manifests of the same type. Bug fix, no API. | — | not started |
-| 2 | [Stream-scope collapse](pr2-stream-scope-collapse.md) | A cluster-wide selection stops silently widening a co-resident named-namespace stream for the same GVR. Bug fix, no API. | 1 | not started |
+| 1 | [Namespace-scoped resync](pr1-namespace-scoped-resync.md) | A per-namespace replay must not sweep other namespaces' manifests of the same type. Bug fix, no API. | — | **landed** |
+| 2 | [Stream-scope collapse](pr2-stream-scope-collapse.md) | A cluster-wide selection stops silently widening a co-resident named-namespace stream for the same GVR. Bug fix, no API. | 1 | **landed** |
 | 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule may no longer attach to a GitTarget whose namespace its ClusterProvider does not admit. Bug fix, no API. | — | not started |
 | 4 | [The sourceNamespace field and gate](pr4-source-namespace-field.md) | `WatchRule.spec.sourceNamespace`, `GitTarget.spec.allowedSourceNamespaces`, the delegation flag, the gate, `SourceNamespaceAuthorized`, and the source-scope service. | 1, 2 | not started |
 | 5 | [The ClusterWatchRule ceiling](pr5-clusterwatchrule-source-ceiling.md) | A declared `allowedSourceNamespaces` narrows a ClusterWatchRule's namespaced streams. | 1, 2, 4 | not started |
 
-**PR 1 gates everything.** It is not a cleanup to slot in opportunistically: the resync sweep is
-scoped by type but not by namespace, so the first change that lets one GitTarget watch a GVR in more
-than one namespace starts deleting other namespaces' manifests from Git. PRs 2, 4, and 5 each
-introduce exactly that fan-out, independently. Landing any of them first is silent data loss in a
-tenant's repository.
+**PR 1 gated everything, and has landed.** It was not a cleanup to slot in opportunistically: the
+resync sweep was scoped by type but not by namespace, so the first change that let one GitTarget
+watch a GVR in more than one namespace would have started deleting other namespaces' manifests from
+Git. PRs 2, 4, and 5 each introduce exactly that fan-out, independently, so landing any of them
+first would have been silent data loss in a tenant's repository. With PR 1 in, that floor is in
+place and the remaining four are unblocked.
 
 **Release gate: do not cut a release between PR 4 and PR 5.** PR 4 ships the field; until PR 5 lands
 the field is enforced on the rule kind that cannot bypass it and unenforced on the one that can, and
@@ -201,13 +202,13 @@ migration is required — but release notes must call these out.
 
 | Change | Impact | PR |
 |---|---|---|
-| `sourceNamespace`, `allowedSourceNamespaces`, delegation flag | Additive. An omitted `sourceNamespace` still selects the rule's own namespace, but a manifest using an override requires the new controller. An older controller silently continues the legacy own-namespace watch and must not be used with such manifests. | 3 |
-| `SourceNamespaceAuthorized` condition, `SourceAuthorized` printer column | Additive status surface. Scripts consuming a fixed condition set or column layout must tolerate it. | 3, 4 |
-| Denied override is `Failed` | Intentional: an authorization refusal is `Ready=False`/`Reconciling=False`/`Stalled=True`, not a quietly inactive rule. | 3 |
-| Selector-based policies | The source credential now needs Namespace `get`, `list`, `watch`. Without them selector policies fail closed; exact-name policies keep working. | 3, 4 |
-| Stream-scope fix | Narrows a stream that previously became cluster-wide through the named/cluster-wide collapse. Any configuration relying on that accidental widening changes behavior. | 1 |
-| ClusterWatchRule target admission | Rejects a ClusterWatchRule whose GitTarget is not admitted by its ClusterProvider. | 2 |
-| ClusterWatchRule ceiling | A ClusterWatchRule's namespaced streams narrow to a declared `allowedSourceNamespaces`. No existing config changes, since the field is undeclared everywhere on upgrade. Cluster-scoped rules unaffected. | 4 |
+| `sourceNamespace`, `allowedSourceNamespaces`, delegation flag | Additive. An omitted `sourceNamespace` still selects the rule's own namespace, but a manifest using an override requires the new controller. An older controller silently continues the legacy own-namespace watch and must not be used with such manifests. | 4 |
+| `SourceNamespaceAuthorized` condition, `SourceAuthorized` printer column | Additive status surface. Scripts consuming a fixed condition set or column layout must tolerate it. PR 4 adds both to WatchRule; PR 5 adds them to ClusterWatchRule. | 4, 5 |
+| Denied override is `Failed` | Intentional: an authorization refusal is `Ready=False`/`Reconciling=False`/`Stalled=True`, not a quietly inactive rule. An *unevaluatable* policy is not a refusal — see [establishing versus maintaining](pr4-source-namespace-field.md#establishing-versus-maintaining-a-scope). | 4 |
+| Selector-based policies | The source credential now needs Namespace `get`, `list`, `watch`. Without them selector policies cannot be evaluated; exact-name policies keep working. | 4, 5 |
+| Stream-scope fix | Narrows a stream that previously became cluster-wide through the named/cluster-wide collapse. Any configuration relying on that accidental widening changes behavior. | 2 |
+| ClusterWatchRule target admission | Rejects a ClusterWatchRule whose GitTarget is not admitted by its ClusterProvider. | 3 |
+| ClusterWatchRule ceiling | A ClusterWatchRule's namespaced streams narrow to a declared `allowedSourceNamespaces`. No existing config changes, since the field is undeclared everywhere on upgrade. Cluster-scoped rules unaffected. | 5 |
 
 ## Alternatives considered
 

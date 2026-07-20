@@ -5,6 +5,13 @@
 > GVR in two namespaces at once, which is unsafe until the resync sweep is namespace-scoped.
 > **Blocks:** PR 4 (the gate is only as good as the stream scoping underneath it) and PR 5.
 > Bug fix — no API change, no CRD regeneration.
+>
+> **Status: landed.** `SnapshotNamespaces` is now `WatchedType.WatchScopes`, which returns every
+> namespace scope including the cluster-wide `""` instead of collapsing to it, and both read sites
+> project one stream per scope: `targetWatchSpecs` keys a watch per scope with that scope's own
+> operation set, and `snapshotGVRsFromTable` emits one `snapshotGVR` per scope (its `namespaces`
+> slice became a single `namespace`, matching `targetWatchKey`). The old assertion was deleted and
+> replaced; the three replacements fail against the pre-fix collapse.
 
 ## The defect
 
@@ -28,9 +35,12 @@ co-resident WatchRule must not silently inherit that cluster-wide stream. Otherw
 authorized only for `repo-config` receives events from every namespace the credential can read, and
 its `allowedSourceNamespaces` check passed only *before* the data plane widened it.
 
-[PR 5](pr5-clusterwatchrule-source-ceiling.md) removes the `""` key entirely for any target with a
-declared ceiling, so the collapse cannot trigger there. This PR is what governs the far more common
-undeclared case.
+[PR 5](pr5-clusterwatchrule-source-ceiling.md) removes the `""` key **for the namespaced selections**
+of any target with a declared ceiling — `scope: Cluster` rules keep emitting `""`, because a
+namespace allow-list cannot constrain cluster-scoped types. So the collapse cannot trigger for a
+namespaced GVR under a ceiling, but a target that mirrors a GVR both cluster-scoped and namespaced is
+not covered by that, and the far more common undeclared case is not covered at all. This PR is what
+governs both.
 
 ### This behavior is currently asserted as intended
 

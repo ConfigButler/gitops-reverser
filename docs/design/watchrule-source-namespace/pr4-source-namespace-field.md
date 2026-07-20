@@ -239,14 +239,43 @@ so its shape is worth settling here rather than retrofitting.
 The in-cluster manager role already grants `namespaces` `get`/`list`/`watch`
 ([config/rbac/role.yaml](../../../config/rbac/role.yaml)). A remote provider used with a source
 selector needs the same for the identity in its kubeconfig: GET supplies current labels during
-reconciliation, LIST and WATCH keep grants and revocations current. A permission denial or
-non-retryable watcher setup error makes a selector policy fail closed with
-`SourceNamespacePolicyUnavailable`; retryable errors remain InProgress and are retried.
+reconciliation, LIST and WATCH keep grants and revocations current.
 **Exact-name entries remain usable without source Namespace access** — a deliberate degradation path,
 not an oversight, and the half most likely to regress unnoticed.
 
-On any refusal or revocation, remove the compiled rule from RuleStore and replan the watch manager to
-stop its stream **before** publishing terminal status.
+### Establishing versus maintaining a scope
+
+*Cannot say* is the third value of the source-scope service, and what the controller does with it
+depends on **which direction the answer would move the scope**. This is one contract with two
+instances, not two contracts; write it down here because the two read as contradictory otherwise.
+
+The rule: **an unevaluatable policy never produces a resolved namespace set.** It is never
+substituted with the empty set, and never with the full set.
+
+| | **Establishing** a grant — no previously resolved scope for this rule | **Maintaining** a scope — a previously resolved scope exists |
+|---|---|---|
+| Where it applies | This PR's gate: a WatchRule asking for a namespace it has not been granted. | [PR 5](pr5-clusterwatchrule-source-ceiling.md)'s ceiling, and any rule already running under a resolved policy. |
+| Effect of *cannot say* | The grant is not established, so the rule is **not compiled**. Nothing runs; nothing is swept. | The **last known-good scope is retained** and keeps running. No narrowing, no widening, **no sweep**. |
+| Retryable error (cache syncing, source unreachable) | `Unknown` / `CheckingSourceNamespacePolicy`, `Stalled=False`. Retried. | Same. |
+| Terminal error (source Namespace `list` is `Forbidden` for a selector policy) | `False` / `SourceNamespacePolicyUnavailable`, **`Stalled=True`**. | `Unknown` / `SourceNamespacePolicyUnavailable`, **`Stalled=False`**. |
+
+The asymmetry in the last row is the whole point, and it is deliberate:
+
+- When **establishing**, "fail closed" means *do not start the stream*. A permanent `Forbidden` means
+  the rule will never run without an operator change — granting the RBAC or switching to exact names
+  — so `Stalled=True` is an accurate, actionable claim about a rule that is doing nothing.
+- When **maintaining**, "fail closed" would mean *narrow to nothing*, and a narrowed set is the input
+  to a sweep — so failing closed there **deletes a tenant's Git content** on a transient outage. The
+  rule is also still running its already-granted streams (and, for a ClusterWatchRule, its
+  cluster-scoped ones), so `Stalled=True` would be a false claim that nothing is progressing.
+  See [PR 5 § unknown is not empty](pr5-clusterwatchrule-source-ceiling.md#2b-unknown-is-not-empty).
+
+An actual **denial** — the policy evaluated and does not admit the namespace — is terminal in both
+directions: `False` / `SourceNamespaceNotAllowed` / `Stalled=True`. That is a refusal, not an
+unevaluatable policy, and the two must not share a code path.
+
+On a denial or a revocation, remove the compiled rule from RuleStore and replan the watch manager to
+stop its stream **before** publishing terminal status. On *cannot say*, do neither.
 
 ## Status contract (kstatus-compatible)
 
@@ -261,11 +290,14 @@ Add the positive, state-style **`SourceNamespaceAuthorized`** condition:
   `LegacySourceNamespace` when it is the rule's own namespace, `SourceNamespaceAllowed` when the
   override passed the three-part gate.
 - **`False`** — the override cannot run. Reason `SourceNamespaceNotAllowed` for a disabled flag or a
-  non-matching/missing GitTarget policy; `SourceNamespacePolicyUnavailable` when a selector policy
-  cannot be evaluated.
+  non-matching/missing GitTarget policy; `SourceNamespacePolicyUnavailable` when a selector policy is
+  permanently unevaluatable *and* no scope was ever established for this rule.
 - **`Unknown`** — authorization is still being established, or a retryable source-cluster read/watch
-  error is being retried. Reason `CheckingSourceNamespacePolicy`. Do not turn a temporary connection
-  problem into a terminal failure.
+  error is being retried (reason `CheckingSourceNamespacePolicy`); or a rule that already has a
+  resolved scope has lost the ability to re-evaluate its policy and is retaining that scope (reason
+  `SourceNamespacePolicyUnavailable`). Do not turn a temporary connection problem into a terminal
+  failure, and do not turn a retained scope into one either — see
+  [establishing versus maintaining](#establishing-versus-maintaining-a-scope).
 
 Even legacy rules set it to `True`, so the effective authorization is always visible and automation
 has one condition to inspect. `GitTargetReady` remains the health of the referenced GitTarget and
@@ -281,7 +313,9 @@ aggregation, so `Ready=True` means the source namespace is authorized *and* the 
 | Selector cache starting, or retryable source error pending | Unknown | False | True | False | InProgress |
 | Authorized, but target validation / resolution / replay in progress | True | False | True | False | InProgress |
 | Authorized and all existing prerequisites healthy | True | True | False | False | Current |
-| Delegation disabled, policy denies, or selector permanently unavailable | False | False | False | True | Failed |
+| Selector permanently unevaluatable, **scope already resolved** — retained and still running | Unknown | False | True | False | InProgress |
+| Delegation disabled, or the policy evaluated and denies | False | False | False | True | Failed |
+| Selector permanently unevaluatable, **no scope ever resolved** — nothing runs | False | False | False | True | Failed |
 
 A terminal refusal or revocation must **first** stop the compiled rule, **then** set
 `SourceNamespaceAuthorized=False` plus the Failed trio. A retryable failure instead leaves the

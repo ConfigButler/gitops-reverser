@@ -1,36 +1,34 @@
 # PR 1 — the resync sweep must be scoped by namespace, not only by GVR
 
 > Phase 1 of [source-namespace addressing](README.md). **Depends on:** nothing.
-> **Blocks: every other PR in this folder.** Bug fix — no API change, no CRD regeneration.
+> **Blocked every other PR in this folder.** Bug fix — no API change, no CRD regeneration.
 >
-> This is the prerequisite that makes namespace fan-out safe. Until it lands, any change that lets
-> one GitTarget watch a GVR in more than one namespace **deletes Git content**.
+> **Status: landed.** This was the prerequisite that makes namespace fan-out safe: until it landed,
+> any change that let one GitTarget watch a GVR in more than one namespace would **delete Git
+> content**. The rest of this page is the record of what was wrong and what shipped; sections below
+> are past-tense by design, so a regression is recognisable against them.
 
-## The defect
+## The defect, as it stood before this PR
 
-A per-namespace replay produces a `desired` set covering **one** namespace, but the resulting
-mark-and-sweep is scoped by **(group, resource) only**. Every managed document of that type in every
-*other* namespace is therefore absent from `desired`, and a sweep deletes what is absent.
+A per-namespace replay produced a `desired` set covering **one** namespace, but the resulting
+mark-and-sweep was scoped by **(group, resource) only**. Every managed document of that type in every
+*other* namespace was therefore absent from `desired`, and a sweep deletes what is absent.
 
-The scope is dropped in one place. `targetWatchSpecs` already builds per-namespace watch keys
-([target_watch.go:211-226](../../../internal/watch/target_watch.go#L211-L226)):
+The scope was dropped in one place. `targetWatchSpecs` already built per-namespace watch keys:
 
 ~~~go
 key := targetWatchKey{GVR: wt.GVR, Namespace: ns}   // namespace is known here
 ~~~
 
-but `enqueueReplayResync` passes only the GVR onward
-([target_watch.go:575-590](../../../internal/watch/target_watch.go#L575-L590)):
+but `enqueueReplayResync` passed only the GVR onward:
 
 ~~~go
 resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
     ctx, gitDest, key.GVR, desired, revision, false)   // key.Namespace dropped
 ~~~
 
-`enqueueScopedResync` then sets `scope := gvr`
-([event_router.go:182-196](../../../internal/watch/event_router.go#L182-L196)), and `resyncPlan`
-builds a predicate that never looks at the namespace
-([resync_flush.go:465-482](../../../internal/git/resync_flush.go#L465-L482)):
+`enqueueScopedResync` then set `scope := gvr`, and `resyncPlan` built a predicate that never looked
+at the namespace:
 
 ~~~go
 inScope := func(ri types.ResourceIdentifier) bool {
@@ -38,17 +36,34 @@ inScope := func(ri types.ResourceIdentifier) bool {
 }
 ~~~
 
-`ri` is a `types.ResourceIdentifier`, which **already carries `Namespace`**. The information is
+`ri` is a `types.ResourceIdentifier`, which **already carried `Namespace`**. The information was
 present at both ends and discarded in the middle.
 
-## Why it is latent today and live the moment anything else lands
+## What the tree looks like now
 
-It cannot fire today because a GitTarget can only ever watch one namespace per GVR:
+The scope travels end to end as one value:
+
+- `git.ResyncScope` carries GVR **and** Namespace, and owns the match predicate
+  ([types.go](../../../internal/git/types.go)) — `ResyncRequest` and `PendingWrite` both hold it, so
+  the two halves of a scope cannot be separated in transit.
+- `resyncScopeForWatchKey` is the single watch-key → scope conversion
+  ([event_router.go:207-213](../../../internal/watch/event_router.go#L207-L213)), and
+  `enqueueReplayResync` passes `resyncScopeForWatchKey(key)`
+  ([target_watch.go:585-586](../../../internal/watch/target_watch.go#L585-L586)), so `key.Namespace`
+  is preserved rather than dropped.
+- `resyncPlan` matches through `scope.Matches`
+  ([resync_flush.go:475](../../../internal/git/resync_flush.go#L475)); an empty `Namespace` keeps
+  the whole-GVR meaning a genuinely cluster-wide stream needs.
+- `resyncHealKey` separates namespaces, so a parked heal for one no longer replaces another's.
+
+## Why it was latent, and live the moment anything else lands
+
+It could not fire before this PR because a GitTarget could only ever watch one namespace per GVR:
 `WatchRule.targetRef` is a `LocalTargetReference` with no namespace field, so every WatchRule using a
 target lives in that target's namespace, and a ClusterWatchRule's `""` key collapses the whole type
 to all-namespaces (which is a correct whole-GVR sweep). One named namespace, or none.
 
-Each of the remaining PRs breaks that invariant, independently:
+Each of the remaining PRs breaks that invariant, independently — which is why this one went first:
 
 | PR | New source of multi-namespace fan-out on one GVR |
 |---|---|
@@ -56,27 +71,30 @@ Each of the remaining PRs breaks that invariant, independently:
 | [PR 4](pr4-source-namespace-field.md) | Two WatchRules in the target's namespace can carry different `sourceNamespace` values. |
 | [PR 5](pr5-clusterwatchrule-source-ceiling.md) | A declared ceiling expands one cluster-wide selection into N per-namespace selections. |
 
-So this is not a defect to fix opportunistically alongside the feature. It is the load-bearing floor
+So this was not a defect to fix opportunistically alongside the feature. It is the load-bearing floor
 under all three, and the failure mode is silent data loss in a tenant's repository — a replay for
 `team-a` removing `team-b`'s manifests of the same type.
 
-## The fix
+## The fix that shipped
 
 **Thread the namespace through the scope, and match on it.** Concretely:
 
-1. Give the scoped-resync request a namespace alongside its GVR — `enqueueScopedResync` takes
-   `key targetWatchKey` (or an explicit namespace) instead of a bare `gvr`, and carries it into
-   `git.ResyncRequest`.
-2. Extend `resyncPlan`'s predicate: when the scope names a namespace, `inScope` requires
+1. The scoped-resync request carries a namespace alongside its GVR — `enqueueScopedResync` takes a
+   `git.ResyncScope` instead of a bare `gvr`, and carries it into `git.ResyncRequest` and
+   `PendingWrite`.
+2. `resyncPlan`'s predicate became `scope.Matches`: when the scope names a namespace it requires
    `ri.Namespace == scope.Namespace` in addition to group and resource. An empty scope namespace
-   keeps today's whole-GVR meaning, which is what a genuinely cluster-wide stream needs.
-3. Audit every other `enqueueScopedResync` caller for the same drop. The `heal: true` path and any
-   other scoped-resync producer must pass a namespace consistent with the `desired` set they built,
-   or they inherit this bug.
+   keeps the whole-GVR meaning, which is what a genuinely cluster-wide stream needs.
+3. Every other `enqueueScopedResync` caller was audited for the same drop. The `heal: true` path and
+   any other scoped-resync producer passes a scope consistent with the `desired` set it built, and
+   `resyncHealKey` includes the namespace so two namespaces' parked heals no longer collide.
 
-The invariant to hold, and to state in the code comment: **the sweep scope must be exactly the scope
+The invariant now held, and stated in the code comment: **the sweep scope must be exactly the scope
 the `desired` set was gathered over.** A `desired` narrower than its sweep scope deletes; a `desired`
 wider than its sweep scope silently leaves content unmanaged. This is the rule that was violated.
+
+Having one conversion function (`resyncScopeForWatchKey`) rather than a namespace parameter threaded
+by hand is the part that makes it stay fixed: there is no second place for a caller to forget.
 
 ### Alternative considered: coalesce into one authoritative snapshot
 
@@ -107,25 +125,35 @@ from a namespace the policy no longer admits, and no automatic process removes t
 a deliberate operator action. Whichever way this is settled, it must be settled explicitly and
 covered by a test — the failure to avoid is discovering the behavior in production.
 
-## Tests
+## Tests that shipped
 
-- **Multi-namespace replay does not delete siblings.** A GitTarget managing one GVR in `team-a` and
-  `team-b`; replay only `team-a`. `team-b`'s manifests must survive untouched. This is the test that
-  fails today and is the whole point of the PR.
-- **Scoped sweep still works within its namespace.** An object removed from `team-a` while `team-a`
-  replays is still swept — the fix must not turn the sweep off, only narrow it.
-- **Cluster-wide scope keeps whole-GVR semantics.** A genuinely cluster-wide stream (empty scope
-  namespace) still sweeps every namespace for its type, so PR 2's cluster-wide half is unaffected.
-- **Scope/desired agreement:** a unit-level assertion that the namespace in the resync request equals
-  the namespace of the watch key that produced `desired`. This is the invariant above, asserted
-  directly, so a future caller that drops it again fails here rather than in a tenant's repo.
-- **Revocation:** whichever semantics are chosen above, assert them — that a namespace removed from
-  the watch set leaves its manifests present (recommended), and that no sweep is triggered by the
-  removal itself.
+- **`TestResync_NamespaceScopedSweepLeavesSiblingNamespacesAlone`** — a GitTarget managing one GVR in
+  `team-a` and `team-b`, replaying only `team-a`; `team-b`'s manifests survive untouched. This is the
+  test that failed before the fix and is the whole point of the PR.
+- **`TestResync_NamespaceScopedSweepStillDropsOrphansInItsOwnNamespace`** — an object removed from
+  `team-a` while `team-a` replays is still swept. The fix narrows the sweep; it must not turn it off.
+- **`TestResync_ClusterWideScopeStillSweepsEveryNamespace`** — a genuinely cluster-wide stream (empty
+  scope namespace) still sweeps every namespace for its type, so PR 2's cluster-wide half is
+  unaffected.
+- **`TestResyncScopeForWatchKey_CarriesBothHalvesOfTheScope`** — the scope/`desired` agreement
+  invariant asserted directly, so a future caller that drops the namespace again fails here rather
+  than in a tenant's repo.
+- **`TestResyncScope_MatchesRespectsTypeAndNamespace`**,
+  **`TestResyncHealKey_SeparatesNamespacesOfTheSameType`**,
+  **`TestResyncScope_StringIsNilSafeAndNamesTheNamespace`** — the predicate, the heal-key split, and
+  nil-safe formatting.
 
-## Done when
+Verified by reverting the namespace half of `ResyncScope.Matches`:
+`TestResync_NamespaceScopedSweepLeavesSiblingNamespacesAlone` and the sibling-namespace row of
+`TestResyncScope_MatchesRespectsTypeAndNamespace` both fail without the fix.
 
-- A scoped resync carries a namespace end to end, and `inScope` honours it.
-- Multi-namespace replay is proven non-destructive by test.
-- Retention-on-revocation is decided, documented, and tested.
-- `task lint`, `task test`, `task test-e2e` pass.
+## Done — with one item carried forward
+
+- ✅ A scoped resync carries a namespace end to end, and the plan predicate honours it.
+- ✅ Multi-namespace replay is proven non-destructive by test.
+- ✅ `task lint`, `task test`, `task test-e2e` pass.
+- ⏭ **Retention-on-revocation is documented above but not yet enforced by a test.** Nothing in this
+  PR can revoke a namespace — no code path removes one from a watch set yet — so the test has no
+  subject until [PR 5](pr5-clusterwatchrule-source-ceiling.md) introduces ceiling tightening. It is
+  carried as `TestCeiling_UnknownScopeRetainsPreviousAndDoesNotSweep` and the revocation envtest in
+  PR 5's plan. Recording it here rather than silently dropping it.

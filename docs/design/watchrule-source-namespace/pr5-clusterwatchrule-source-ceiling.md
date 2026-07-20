@@ -36,16 +36,20 @@ regardless of what that target declared.
 
 So the allow-list is stated over the **destination**, and holds for both rule kinds:
 
-> A source namespace may be mirrored into a GitTarget only if it is the requesting WatchRule's own
-> namespace, or the GitTarget's declared `allowedSourceNamespaces` admits it.
+> When a GitTarget declares `allowedSourceNamespaces`, the source namespaces mirrored into it are
+> **exactly** those the policy admits, for every rule of every kind. When it declares none, each rule
+> kind keeps its legacy scope.
 
-Because a ClusterWatchRule has no own namespace, the kinds differ only in the legacy carve-out when
-the field is **undeclared**:
+There is **no implicit own-namespace exception** — a declared policy is exhaustive, including for a
+WatchRule watching the namespace it lives in. The reasoning, and the authoring footgun it accepts,
+are in [no self-namespace exception](README.md#no-self-namespace-exception); do not reintroduce the
+carve-out here. Because a ClusterWatchRule has no own namespace, the kinds therefore differ only in
+the legacy behavior when the field is **undeclared**:
 
 | `GitTarget.allowedSourceNamespaces` | WatchRule | ClusterWatchRule (`scope: Namespaced` rules) |
 |---|---|---|
 | Undeclared | Own namespace only (legacy) | All source namespaces (legacy) |
-| Declared | Own namespace, plus what the policy admits | Exactly what the policy admits |
+| Declared | Exactly what the policy admits | Exactly what the policy admits |
 
 One meaning for the field across both kinds — declared means ceiling, absent means no new grant — so
 nobody has to remember which rule kind inverts it, and no existing ClusterWatchRule changes behavior
@@ -75,8 +79,9 @@ delegation flag would mean an admin must grant extra authority in order to reduc
 
 ### Status
 
-The narrowing is a scope change, not an authorization refusal, so it reuses the domain condition from
-PR 3 rather than adding a second one. On ClusterWatchRule, `SourceNamespaceAuthorized=True` with
+The narrowing is a scope change, not an authorization refusal, so it reuses the domain condition
+[PR 4](pr4-source-namespace-field.md#status-contract-kstatus-compatible) defines rather than adding a
+second one. On ClusterWatchRule, `SourceNamespaceAuthorized=True` with
 reason `AllSourceNamespaces` when no ceiling applies, and `SourceNamespacesNarrowed` when one does.
 The `SourceAuthorized` printer column is added to ClusterWatchRule as well, so the two rule kinds
 read the same way in `kubectl get -o wide`.
@@ -100,11 +105,13 @@ unfiltered LIST/WATCH over all namespaces, so the data crosses into the process 
 Two consequences worth knowing:
 
 - A name-based policy expands statically; a **selector**-based one makes the namespace set depend on
-  the source-cluster Namespace informer PR 3 introduces, and can produce many streams on a large
-  cluster. That is the cost of the safe direction.
-- A declared policy emits no `""` key at all, so the [PR 2](pr2-stream-scope-collapse.md) collapse
-  cannot trigger for that target. PR 1 still governs the undeclared case, which remains the common
-  one.
+  the source-cluster Namespace informer [PR 4](pr4-source-namespace-field.md) introduces, and can
+  produce many streams on a large cluster. That is the cost of the safe direction.
+- A declared policy emits no `""` key **for its namespaced selections**, so the
+  [PR 2](pr2-stream-scope-collapse.md) collapse cannot trigger between two namespaced streams on that
+  target. It does **not** follow that the target emits no `""` key at all: a co-resident
+  `scope: Cluster` rule still emits one, so a GVR selected both cluster-scoped and namespaced can
+  still collapse. PR 2 governs that case, and the undeclared case, which remains the common one.
 
 ### 2. Put the resolved scope into table invalidation
 
@@ -167,7 +174,7 @@ would be destructive.
 | Input changes | Required reaction | Status |
 |---|---|---|
 | GitTarget `allowedSourceNamespaces` | Re-resolve the ceiling and replan the ClusterWatchRule's streams. | Not wired — the ClusterWatchRule controller performs no GitTarget-driven re-resolution. Needs a GitTarget → ClusterWatchRules mapper. |
-| Source-cluster Namespace labels | Re-resolve selector-based ceilings. | Extends the per-source-cluster informer PR 3 adds, to map to ClusterWatchRules as well. |
+| Source-cluster Namespace labels | Re-resolve selector-based ceilings. | Extends the per-source-cluster informer [PR 4](pr4-source-namespace-field.md#reactivity-and-source-cluster-rbac) adds, to map to ClusterWatchRules as well. |
 | ClusterProvider `allowedNamespaces` | Already handled by [PR 3](pr3-clusterwatchrule-target-admission.md)'s mapper. | — |
 
 ## Test plan
