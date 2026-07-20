@@ -59,6 +59,31 @@ func TestTargetWatchSpecs_UsesOneWatchPerScope(t *testing.T) {
 	}])
 }
 
+// A cluster-wide selection and a named-namespace selection on the SAME GVR are two streams,
+// each keeping its own operation filters. Collapsing them to one all-namespaces watch gave the
+// named rule events from every namespace the credential could read, under the cluster-wide
+// rule's operation filter rather than its own.
+func TestTargetWatchSpecs_NamedAndClusterWideScopesStayDistinctStreams(t *testing.T) {
+	table := WatchedTypeTable{
+		GitDest: types.NewResourceReference("target", "default"),
+		Types: []WatchedType{{
+			GVR: configmapsGVR,
+			NamespaceOps: map[string]OperationSet{
+				"":       {"UPDATE": struct{}{}},
+				"team-a": {"CREATE": struct{}{}},
+			},
+		}},
+	}
+
+	specs := targetWatchSpecs(table)
+
+	require.Len(t, specs, 2, "a cluster-wide selection must not swallow the named-namespace stream")
+	assert.Equal(t, "[UPDATE]", specs[targetWatchKey{GVR: configmapsGVR}],
+		"the cluster-wide stream keeps its own operation set")
+	assert.Equal(t, "[CREATE]", specs[targetWatchKey{GVR: configmapsGVR, Namespace: "team-a"}],
+		"the named stream keeps its own operation set instead of inheriting the cluster-wide one")
+}
+
 func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	ctx, cancel := context.WithCancel(context.Background())

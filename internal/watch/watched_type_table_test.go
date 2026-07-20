@@ -56,15 +56,16 @@ func TestBuildWatchedTypeTable_NamespacedTypeCarriesRecordMetadata(t *testing.T)
 	assert.Equal(t, configv1alpha3.ResourceScopeNamespaced, wt.Scope)
 	assert.Equal(t, "v1", wt.ServedVersion)
 	assert.True(t, wt.Preferred)
-	assert.Equal(t, []string{"team-a"}, wt.SnapshotNamespaces())
+	assert.Equal(t, []string{"team-a"}, wt.WatchScopes())
 	assert.False(t, wt.ClusterWide())
 	assert.Equal(t, uint64(7), table.ResolvedAt)
 }
 
-func TestBuildWatchedTypeTable_ClusterWideOverridesNamedNamespaces(t *testing.T) {
-	// The same record followed both in a specific namespace (WatchRule) and cluster-wide
-	// (ClusterWatchRule) collapses to one cluster-wide stream for the snapshot, but both
-	// namespace keys survive for the plan hash.
+// The same record followed both in a specific namespace (WatchRule) and cluster-wide
+// (ClusterWatchRule) stays TWO scopes. Collapsing them to one cluster-wide stream — the
+// behaviour this test replaces — silently widened the named rule's stream to every
+// namespace the credential could read, leaving the named scope alive only in the plan hash.
+func TestBuildWatchedTypeTable_ClusterWideDoesNotCollapseNamedNamespaces(t *testing.T) {
 	cm := nsRecord("", "configmaps", "ConfigMap")
 	selections := []watchSelection{
 		{record: cm, namespace: "team-a"},
@@ -75,10 +76,28 @@ func TestBuildWatchedTypeTable_ClusterWideOverridesNamedNamespaces(t *testing.T)
 
 	require.Len(t, table.Types, 1)
 	wt := table.Types[0]
-	assert.True(t, wt.ClusterWide())
-	assert.Empty(t, wt.SnapshotNamespaces())
+	assert.True(t, wt.ClusterWide(), "the cluster-wide scope is still present")
+	assert.Equal(t, []string{"", "team-a"}, wt.WatchScopes(),
+		"a cluster-wide selection must not swallow a co-resident named namespace")
 	assert.Contains(t, wt.NamespaceOps, "")
 	assert.Contains(t, wt.NamespaceOps, "team-a")
+}
+
+// Each scope keeps its own operation filters. A CREATE-only WatchRule co-resident with an
+// UPDATE-only ClusterWatchRule must not have its filter replaced by the cluster-wide one.
+func TestBuildWatchedTypeTable_ClusterWideDoesNotCollapseNamedOperationSets(t *testing.T) {
+	cm := nsRecord("", "configmaps", "ConfigMap")
+	selections := []watchSelection{
+		{record: cm, namespace: "team-a", ops: []configv1alpha3.OperationType{configv1alpha3.OperationCreate}},
+		{record: cm, namespace: "", ops: []configv1alpha3.OperationType{configv1alpha3.OperationUpdate}},
+	}
+
+	table := buildWatchedTypeTable(testGitDest(), 1, selections)
+
+	require.Len(t, table.Types, 1)
+	wt := table.Types[0]
+	assert.Equal(t, []string{"CREATE"}, wt.NamespaceOps["team-a"].Sorted())
+	assert.Equal(t, []string{"UPDATE"}, wt.NamespaceOps[""].Sorted())
 }
 
 func TestBuildWatchedTypeTable_OperationsUnionPerNamespace(t *testing.T) {
@@ -121,7 +140,8 @@ func TestBuildWatchedTypeTable_ClusterScopedType(t *testing.T) {
 	assert.False(t, wt.Namespaced)
 	assert.Equal(t, configv1alpha3.ResourceScopeCluster, wt.Scope)
 	assert.True(t, wt.ClusterWide())
-	assert.Empty(t, wt.SnapshotNamespaces())
+	assert.Equal(t, []string{""}, wt.WatchScopes(),
+		"a cluster-scoped type is gathered under the one cluster-wide scope")
 }
 
 func TestBuildWatchedTypeTable_SortsTypesByGVK(t *testing.T) {

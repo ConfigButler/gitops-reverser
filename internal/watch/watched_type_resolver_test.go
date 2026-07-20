@@ -49,7 +49,7 @@ func TestRefreshWatchedTypeTables_ClusterWatchRuleResolvesClusterWideType(t *tes
 	wt := table.Types[0]
 	assert.Equal(t, "ConfigMap", wt.GVK.Kind)
 	assert.True(t, wt.ClusterWide(), "a ClusterWatchRule with Namespaced scope streams cluster-wide")
-	assert.Empty(t, wt.SnapshotNamespaces())
+	assert.Equal(t, []string{""}, wt.WatchScopes())
 	assert.Equal(t, `provider=test-ns/test-provider|branch="main"|path="test-path"`, table.Dest)
 }
 
@@ -69,7 +69,7 @@ func TestRefreshWatchedTypeTables_WatchRuleScopesTypeToItsNamespace(t *testing.T
 	table, ok := manager.watchedTypeTableForGitDest(gitDestRef("wt-ns-target"))
 	require.True(t, ok)
 	require.Len(t, table.Types, 1)
-	assert.Equal(t, []string{"ns-a", "ns-b"}, table.Types[0].SnapshotNamespaces())
+	assert.Equal(t, []string{"ns-a", "ns-b"}, table.Types[0].WatchScopes())
 	assert.False(t, table.Types[0].ClusterWide())
 }
 
