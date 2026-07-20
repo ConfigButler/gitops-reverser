@@ -210,14 +210,12 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 
 func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
 	out := map[targetWatchKey]string{}
+	// One stream per scope, each carrying that scope's own operation filters. A
+	// cluster-wide scope ("") is a peer of any named namespace on the same GVR, never a
+	// replacement for it: collapsing them widened the named rule's stream and dropped its
+	// operation set (pr2-stream-scope-collapse.md).
 	for _, wt := range table.Types {
-		namespaces := wt.SnapshotNamespaces()
-		if len(namespaces) == 0 {
-			key := targetWatchKey{GVR: wt.GVR}
-			out[key] = operationSpec(wt.NamespaceOps[""])
-			continue
-		}
-		for _, ns := range namespaces {
+		for _, ns := range wt.WatchScopes() {
 			key := targetWatchKey{GVR: wt.GVR, Namespace: ns}
 			out[key] = operationSpec(wt.NamespaceOps[ns])
 		}

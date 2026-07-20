@@ -162,10 +162,10 @@ func TestResolveSnapshotGVRs_ScopesNamespacedAndClusterWide(t *testing.T) {
 
 	byGVR := map[schema.GroupVersionResource][]string{}
 	for _, sg := range gvrs {
-		byGVR[sg.gvr] = sg.namespaces
+		byGVR[sg.gvr] = append(byGVR[sg.gvr], sg.namespace)
 	}
 	assert.Equal(t, []string{"ns-a"}, byGVR[secretsGVR], "namespaced resource scoped to its rule namespace")
-	assert.Empty(t, byGVR[nodesGVR], "cluster-scoped resource has no namespace scope (cluster-wide)")
+	assert.Equal(t, []string{""}, byGVR[nodesGVR], "cluster-scoped resource gathers under the cluster-wide scope")
 }
 
 // A wildcard resource pattern expands to every served namespaced resource in the group,

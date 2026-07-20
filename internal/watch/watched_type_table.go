@@ -67,22 +67,33 @@ type WatchedType struct {
 	NamespaceOps map[string]OperationSet
 }
 
-// ClusterWide reports whether this type is gathered with a single cluster-wide
-// stream, true for a cluster-scoped resource and for a namespaced resource a
-// ClusterWatchRule follows across all namespaces.
+// ClusterWide reports whether this type is gathered under a cluster-wide scope: true for a
+// cluster-scoped resource and for a namespaced resource a ClusterWatchRule follows across all
+// namespaces. It reports the presence of that scope, NOT that it is the only one — a
+// namespaced type may carry the cluster-wide scope alongside named ones, and each is streamed
+// in its own right. Use WatchScopes to enumerate them.
 func (t WatchedType) ClusterWide() bool {
 	_, ok := t.NamespaceOps[""]
 	return ok
 }
 
-// SnapshotNamespaces returns the namespaces this type is gathered under for the
-// streaming snapshot and informers: an empty slice means cluster-wide. A
-// cluster-wide selection overrides any named namespaces, matching the historic
-// gvrSnapshotEntry collapse.
-func (t WatchedType) SnapshotNamespaces() []string {
-	if t.ClusterWide() {
-		return nil
-	}
+// WatchScopes returns the distinct namespace scopes this type is gathered under — one
+// per stream — in a stable order. The empty string is the cluster-wide scope (a
+// cluster-scoped resource, or a namespaced resource a ClusterWatchRule follows across
+// every namespace) and sorts first.
+//
+// A cluster-wide selection does NOT suppress co-resident named namespaces. A WatchRule
+// scoped to one namespace and a ClusterWatchRule scoped cluster-wide, on the same GVR and
+// the same GitTarget, stay two scopes here, each keeping its own operation filters. This
+// previously collapsed to a single cluster-wide scope, which silently widened the named
+// rule's stream to every namespace the credential could read and discarded its operation
+// set — a gate bypass once a WatchRule declares the source namespaces it is authorized
+// for. See docs/design/watchrule-source-namespace/pr2-stream-scope-collapse.md.
+//
+// Every read site must project the same scope set, because a gather's scope becomes the
+// mark-and-sweep's scope: a gather wider than the stream that triggered it deletes
+// managed documents that were never in scope (see git.ResyncScope).
+func (t WatchedType) WatchScopes() []string {
 	out := make([]string, 0, len(t.NamespaceOps))
 	for ns := range t.NamespaceOps {
 		out = append(out, ns)

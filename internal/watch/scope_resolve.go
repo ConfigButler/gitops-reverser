@@ -40,15 +40,22 @@ type ClusterSnapshot struct {
 	CoverageHead string
 }
 
-// snapshotGVR is one resolved watched resource type with the namespace scope to gather it
-// under: an empty namespaces slice means cluster-wide.
+// snapshotGVR is one resolved watched resource type paired with the ONE namespace scope to
+// gather it under: an empty namespace means cluster-wide (every namespace), exactly as it
+// does for a dynamic client List and for targetWatchKey.
+//
+// A type followed both cluster-wide and in named namespaces yields one entry per scope —
+// the same distinct set targetWatchSpecs streams — so a gather's scope is always exactly
+// one stream's scope, and therefore exactly the scope its mark-and-sweep may delete over.
 type snapshotGVR struct {
-	gvr        schema.GroupVersionResource
-	namespaces []string
+	gvr       schema.GroupVersionResource
+	namespace string
 }
 
-// resolveSnapshotGVRForType resolves one watched type's (GVR, namespace-scope) for a GitTarget,
-// with the same fail-closed discipline as resolveSnapshotGVRs but scoped to the single type. The
+// resolveSnapshotGVRForType resolves one watched type's (GVR, namespace-scope) set for a
+// GitTarget, with the same fail-closed discipline as resolveSnapshotGVRs but scoped to the
+// single type. It returns one entry per scope the type is gathered under, so a type followed
+// both cluster-wide and in a named namespace reconciles as the two streams it actually is. The
 // bool is false when this GitTarget does not watch the type (so there is nothing to reconcile).
 // It refuses (error) when the surface is unobserved or the type is currently `retained` (a
 // wobble) — the per-type expression of the anti-sweep invariant (R9/R11).
@@ -56,15 +63,15 @@ func (m *Manager) resolveSnapshotGVRForType(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	gvr schema.GroupVersionResource,
-) (snapshotGVR, bool, error) {
+) ([]snapshotGVR, bool, error) {
 	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
-		return snapshotGVR{}, false, fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
+		return nil, false, fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
 	}
 	m.refreshWatchedTypeTables()
 
 	reg := m.registryForGitTarget(gitDest)
 	if !reg.Ready() {
-		return snapshotGVR{}, false, fmt.Errorf(
+		return nil, false, fmt.Errorf(
 			"aborting per-type reconcile for %s: the cluster API surface has not been observed yet",
 			gitDest.String())
 	}
@@ -78,17 +85,29 @@ func (m *Manager) resolveSnapshotGVRForType(
 		}
 	}
 	if watched == nil {
-		return snapshotGVR{}, false, nil
+		return nil, false, nil
 	}
 
 	if typeWobbling(reg, gvr) {
-		return snapshotGVR{}, false, fmt.Errorf(
+		return nil, false, fmt.Errorf(
 			"aborting per-type reconcile for %s: %s within the removal grace (currently unserved); "+
 				"refusing to reconcile a reduced view",
 			gitDest.String(), gvr.String())
 	}
 
-	return snapshotGVR{gvr: watched.GVR, namespaces: watched.SnapshotNamespaces()}, true, nil
+	return snapshotGVRScopes(*watched), true, nil
+}
+
+// snapshotGVRScopes projects one watched type into its per-scope gather entries: one entry
+// per namespace scope the type is streamed under, cluster-wide ("") included. It is the
+// single projection both read sites share, so the whole-target and per-type paths cannot
+// disagree about a type's scope.
+func snapshotGVRScopes(wt WatchedType) []snapshotGVR {
+	out := make([]snapshotGVR, 0, len(wt.NamespaceOps))
+	for _, ns := range wt.WatchScopes() {
+		out = append(out, snapshotGVR{gvr: wt.GVR, namespace: ns})
+	}
+	return out
 }
 
 // resolveSnapshotGVRs returns the GitTarget's watched (GVR, namespace-scope) set, read from the
@@ -171,15 +190,19 @@ func gvkListSummary(gvks []schema.GroupVersionKind) string {
 }
 
 // snapshotGVRsFromTable projects a watched-type table into the deterministic, sorted
-// (GVR, namespace-scope) set. A cluster-wide type yields no namespaces; the per-type
-// SnapshotNamespaces collapse preserves the historic behaviour (a cluster-wide selection
-// overrides any named namespaces).
+// (GVR, namespace) set: one entry per type per namespace scope, with an empty namespace
+// meaning cluster-wide. A type followed both cluster-wide and in a named namespace yields
+// both entries — it must agree with targetWatchSpecs scope for scope, or the plan hash and
+// the running streams describe different mirrors.
 func snapshotGVRsFromTable(table WatchedTypeTable) []snapshotGVR {
 	out := make([]snapshotGVR, 0, len(table.Types))
 	for _, wt := range table.Types {
-		out = append(out, snapshotGVR{gvr: wt.GVR, namespaces: wt.SnapshotNamespaces()})
+		out = append(out, snapshotGVRScopes(wt)...)
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].gvr.String() == out[j].gvr.String() {
+			return out[i].namespace < out[j].namespace
+		}
 		return out[i].gvr.String() < out[j].gvr.String()
 	})
 	return out
