@@ -8,9 +8,11 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
@@ -54,7 +56,7 @@ func windowOutcomeAttributionMissed(t *testing.T) git.AttributionOutcome {
 	return outcome
 }
 
-// TestCommitRequestAndWindowOutcomesAgree is the cross-subsystem half of the P0 regression test.
+// TestCommitRequest_OutcomesAgree is the cross-subsystem half of the P0 regression test.
 //
 // The gap that let the blocker through was that every existing test set both sides of the
 // comparison to the same literal, so nothing ever checked that the two INDEPENDENT producers
@@ -66,7 +68,7 @@ func windowOutcomeAttributionMissed(t *testing.T) git.AttributionOutcome {
 // controller emits attributionNotAttempted, while --author-attribution=false leaves the window's
 // outcome at the zero value. When those two were different strings, no CommitRequest could
 // attach to any window and the user's commit message was silently dropped.
-func TestCommitRequestAndWindowOutcomesAgree(t *testing.T) {
+func TestCommitRequest_OutcomesAgree(t *testing.T) {
 	tests := []struct {
 		name           string
 		requestSide    commitRequestAttribution
@@ -108,13 +110,43 @@ func TestCommitRequestAndWindowOutcomesAgree(t *testing.T) {
 	}
 }
 
-// TestAttributionOffLeavesZeroOutcome states the invariant the default deployment rests on,
+// TestAttributionOutcome_OffLeavesZeroOutcome states the invariant the default deployment rests on,
 // separately from the agreement table so a regression names itself precisely.
-func TestAttributionOffLeavesZeroOutcome(t *testing.T) {
+func TestAttributionOutcome_OffLeavesZeroOutcome(t *testing.T) {
 	assert.Equal(t, git.AttributionNotAttempted, windowOutcomeAttributionOff(),
 		"configured-author mode must leave the event's outcome at AttributionNotAttempted")
 	assert.Equal(t, git.AttributionNotAttempted, attributionNotAttempted.gitOutcome(),
 		"a CommitRequest with command-author capture off must carry AttributionNotAttempted")
 	assert.Equal(t, git.AttributionUnresolved, windowOutcomeAttributionMissed(t),
 		"attribution that ran and found nothing must be AttributionUnresolved, not the zero value")
+}
+
+// TestCommitRequestAttribution_GitOutcome keeps every controller outcome's projection explicit,
+// including the defensive zero value.
+func TestCommitRequestAttribution_GitOutcome(t *testing.T) {
+	tests := []struct {
+		name  string
+		input commitRequestAttribution
+		want  git.AttributionOutcome
+	}{
+		{name: "unset is not attempted", input: attributionUnset, want: git.AttributionNotAttempted},
+		{name: "admission capture is resolved", input: attributionFromAdmission, want: git.AttributionResolved},
+		{name: "admission miss is unresolved", input: attributionCommitter, want: git.AttributionUnresolved},
+		{name: "capture disabled is not attempted", input: attributionNotAttempted, want: git.AttributionNotAttempted},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.input.gitOutcome())
+		})
+	}
+}
+
+// TestCommitRequestAttribution_UnsetStatusIsCaptureDisabled keeps an unset decision visible and safe.
+func TestCommitRequestAttribution_UnsetStatusIsCaptureDisabled(t *testing.T) {
+	var request configv1alpha3.CommitRequest
+
+	setCommitRequestAttributed(&request, attributionUnset)
+
+	requireCondition(t, request, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonAuthorCaptureDisabled)
 }

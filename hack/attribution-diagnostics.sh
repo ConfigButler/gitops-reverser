@@ -44,7 +44,8 @@ rows=[(r["metric"].get("result","?"), float(r["value"][1])) for r in d.get("data
 total=sum(v for _,v in rows) or 1
 for k,v in sorted(rows, key=lambda x:-x[1]):
     print(f"   {k:32s} {v:8.0f}  ({100*v/total:5.1f}%)")
-print(f"   {'TOTAL':32s} {total:8.0f}")
+total_label="TOTAL"
+print(f"   {total_label:32s} {total:8.0f}")
 absent=dict(rows).get("absent",0)
 if absent:
     print(f"\n   >> {absent:.0f} resolution(s) produced the explicit unresolved Git author.")

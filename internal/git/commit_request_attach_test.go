@@ -488,7 +488,7 @@ func TestAttach_ConflictReplayResolvesToPostReplaySHA(t *testing.T) {
 	assert.Equal(t, message, commit.Message, "the replayed commit keeps the user's message")
 }
 
-// TestAttributionZeroValueIsNotAttempted pins the coupling the whole matching rule rests on:
+// TestAttributionOutcome_ZeroValueIsNotAttempted pins the coupling the whole matching rule rests on:
 // the zero value of AttributionOutcome must BE AttributionNotAttempted.
 //
 // Most producers of an Event never assign Attribution — reconcile, resync, bootstrap, and
@@ -496,7 +496,7 @@ func TestAttach_ConflictReplayResolvesToPostReplaySHA(t *testing.T) {
 // of them mean "no actor was sought". When this constant was "not_attempted" the zero value was a
 // silent fourth state that compared equal to no named outcome, and no test caught it because
 // every case set both sides to the zero value and compared "" to "".
-func TestAttributionZeroValueIsNotAttempted(t *testing.T) {
+func TestAttributionOutcome_ZeroValueIsNotAttempted(t *testing.T) {
 	var zero AttributionOutcome
 	assert.Equal(t, AttributionNotAttempted, zero,
 		"the zero value must be AttributionNotAttempted; three doc comments and every non-live "+
@@ -514,7 +514,7 @@ func TestAttributionZeroValueIsNotAttempted(t *testing.T) {
 // The window's outcome and the request's outcome come from two subsystems configured by two
 // different flags (--author-attribution vs --admission-webhook, cmd/main.go:311-316), so this
 // walks every pair either side can actually produce and names the deployment that produces it.
-// TestCommitRequestAndWindowOutcomesAgree in internal/controller pins that these are the real
+// TestCommitRequest_OutcomesAgree in internal/controller pins that these are the real
 // values the two producers emit; here we pin what the matching rule does with them.
 func TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems(t *testing.T) {
 	const otherAuthor = "bob"

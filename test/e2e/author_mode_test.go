@@ -4,7 +4,8 @@ package e2e
 
 import "testing"
 
-// The author-mode decision must be read from the Deployment's args, and both defaults are
+// TestConfiguredAuthorModeFromArgs_AllScenarios verifies that the author-mode decision is read from
+// the Deployment's args. Both defaults are
 // ENABLED in cmd/main.go — so an absent flag means attribution mode, and only an explicit
 // opt-out selects configured-author mode. Getting this backwards silently flips the commit
 // author assertion instead of failing it.
@@ -13,7 +14,7 @@ import "testing"
 // default of true is FATAL at startup ("redis-addr is required when author-attribution is
 // enabled", cmd/main.go), so it is not a mode this probe can ever be asked to classify. Every
 // configured-author row below therefore turns attribution off explicitly.
-func TestConfiguredAuthorModeFromArgs(t *testing.T) {
+func TestConfiguredAuthorModeFromArgs_AllScenarios(t *testing.T) {
 	// The real jsonpath output shape: a bracketed, quoted, comma-separated list.
 	const live = `["--metrics-bind-address=:8443","--admission-webhook",` +
 		`"--redis-addr=valkey.valkey-e2e.svc.cluster.local:6379","--redis-insecure"]`

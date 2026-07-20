@@ -100,7 +100,8 @@ Canonical reads:
 * failed finalize: `Ready=False`, `Stalled=True`, reason `FinalizeFailed` → kstatus Failed
 
 `AuthorAttributed=True` (`AttributedFromAdmission`) means the command submitter was captured. `False`
-(`CommitterFallback`) means no admission author record exists, so the request claims no actor and can attach
-only to an unnamed window. That condition does not itself determine the Git author: the attached watch
-window is configured-author (the committer) when watch attribution is disabled, or explicitly unresolved
-when watch attribution ran but could not name an actor.
+(`CommitterFallback`) means capture ran but no admission author record exists; `False`
+(`AuthorCaptureDisabled`) means capture is disabled. Both claim no actor and can attach only to an unnamed
+window. That condition does not itself determine the Git author: the attached watch window is
+configured-author (the committer) when watch attribution is disabled, or explicitly unresolved when watch
+attribution ran but could not name an actor.

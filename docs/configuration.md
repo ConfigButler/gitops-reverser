@@ -806,10 +806,11 @@ Progress and outcome are reported through kstatus-compatible **conditions** (no 
   request is finalizing or waiting through `closeDelaySeconds`; `Stalled=True` when the finalize failed
   and needs attention (kstatus reports the object Failed).
 - **AuthorAttributed**: `True` with reason `AttributedFromAdmission` when the internal commands
-  admission webhook captured the request submitter. `False` with reason `CommitterFallback` when no
-  admission record exists; that is not a failure. The request then claims no actor and can attach only to
-  an unnamed watch window, whose Git author remains either the configured committer or the explicit
-  unresolved author according to the watch attribution outcome.
+  admission webhook captured the request submitter. `False` with reason `CommitterFallback` means capture
+  ran but no admission record exists; `False` with reason `AuthorCaptureDisabled` means capture is not
+  configured. Neither is a failure. The request then claims no actor and can attach only to an unnamed
+  watch window, whose Git author remains either the configured committer or the explicit unresolved author
+  according to the watch attribution outcome.
 - **Pushed**: `True` once the commit is in the remote repository.
 
 ## Audit ingestion settings

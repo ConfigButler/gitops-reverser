@@ -27,9 +27,10 @@ reconciled. The result is **present-or-never**; waiting cannot create a record t
 `AuthorAttributed=True` means admission captured the command submitter. The request can attach only to an
 open window with that same named actor and GitTarget.
 
-`AuthorAttributed=False` (`CommitterFallback`) means no admission record was available. It is not a
-failure and does not mean the eventual Git author is necessarily the configured committer. The request
-claims no actor and can attach only to an unnamed window. That window determines the actual Git author:
+`AuthorAttributed=False` (`CommitterFallback`) means capture ran but no admission record was available;
+`AuthorCaptureDisabled` means capture was not configured. Neither is a failure and neither means the
+eventual Git author is necessarily the configured committer. The request claims no actor and can attach only
+to an unnamed window. That window determines the actual Git author:
 
 - configured-author mode or a replay/resync write: the configured committer;
 - live attribution that ran but found no usable audit fact:
@@ -45,7 +46,7 @@ expires, the request ends successfully with `Ready=True`, `Pushed=False`, and `N
 
 | Condition | True | False |
 |---|---|---|
-| `AuthorAttributed` | `AttributedFromAdmission`: the command submitter was captured | `CommitterFallback`: no command-author record; request claims no actor |
+| `AuthorAttributed` | `AttributedFromAdmission`: the command submitter was captured | `CommitterFallback`: capture ran but no command-author record; `AuthorCaptureDisabled`: capture is off; request claims no actor |
 | `Pushed` | the attached window was committed and pushed | a benign no-commit or finalize failure |
 | `Ready` | a pushed commit or benign no-commit | progress or a finalize failure |
 

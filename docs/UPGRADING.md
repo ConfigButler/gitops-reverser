@@ -483,8 +483,9 @@ kubectl get commitrequest/<name> -n <namespace> -o jsonpath='{.status.sha}'
 ```
 
 `AuthorAttributed=True` with reason `AttributedFromAdmission` means the internal commands admission
-webhook captured the submitter. `AuthorAttributed=False` with reason `CommitterFallback` is a valid
-fallback, not a failed request.
+webhook captured the submitter. `AuthorAttributed=False` with reason `CommitterFallback` means capture
+ran but found no record; `AuthorCaptureDisabled` means capture is not configured. Neither is a failed
+request.
 
 ### 4. `GitTarget.status.phase` and materialization rollups moved to stream conditions
 

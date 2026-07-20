@@ -36,7 +36,8 @@ controller performs one best-effort, present-or-never lookup:
 | Admission result | `AuthorAttributed` | Request claim |
 |---|---|---|
 | submitter record found | `True` / `AttributedFromAdmission` | that named actor |
-| no record, webhook disabled, or Redis unavailable | `False` / `CommitterFallback` | no actor |
+| capture ran but no record | `False` / `CommitterFallback` | no actor |
+| webhook disabled or Redis unavailable | `False` / `AuthorCaptureDisabled` | no actor |
 
 `AuthorAttributed=False` is not a statement about the eventual Git author. The matched live window decides
 that:
