@@ -1,6 +1,6 @@
 # Source-namespace addressing and per-target source scope
 
-> **Design in five PRs. PR 1 has landed; PRs 2–5 are not built.** Companion to upstream
+> **Design in five PRs. PRs 1 and 2 have landed; PRs 3–5 are not built.** Companion to upstream
 > wishlist #14 and [config-plane-split.md](../../finished/config-plane-split.md).
 > Written 2026-07-19, split into phases 2026-07-20. Index: [INDEX.md](../../INDEX.md).
 >

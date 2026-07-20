@@ -165,9 +165,18 @@ Namespace access denied for a selector policy:
   Namespace access is denied outright for a selector policy. Exact-name entries in the same policy
   remain resolvable and keep working.
 
-A permanently unavailable selector is a legitimate long-lived `Unknown`. Turning it into `Stalled`
-would be a false claim that the operator knows the rule is wrong, and turning it into an empty set
-would be destructive.
+A permanently unavailable selector is a legitimate long-lived `Unknown` **here**. Turning it into
+`Stalled` would be a false claim that the operator knows the rule is wrong — the rule is still
+running its cluster-scoped streams and its last-resolved namespaced ones — and turning it into an
+empty set would be destructive.
+
+> **This is not in conflict with [PR 4](pr4-source-namespace-field.md), which makes the same
+> permanent `Forbidden` terminal.** The ceiling is *maintaining* a scope, where failing closed would
+> mean narrowing to nothing and sweeping; PR 4's gate is *establishing* one, where failing closed
+> means never starting a stream and nothing is at risk. The single contract, with the table that
+> settles which value applies where, is
+> [establishing versus maintaining a scope](pr4-source-namespace-field.md#establishing-versus-maintaining-a-scope).
+> A ClusterWatchRule that has *never* resolved its ceiling is in the establishing column too.
 
 ### 3. Reactivity
 
@@ -210,10 +219,16 @@ These prove the invariant. Without them the allow-list is enforced only where it
   reporting *cannot say* (cache unsynced or source unreachable), the resolved namespace set is
   retained, no narrowing occurs, and **no resync/sweep is enqueued**. Assert the absence of the
   sweep, not only the condition — this is the path where a wrong answer deletes Git content.
-- **`TestCeiling_ForbiddenSelectorIsUnknownNotStalled`** — a selector policy whose source Namespace
-  access is denied reports `SourceNamespaceAuthorized=Unknown` with
-  `SourceNamespacePolicyUnavailable`, keeps running at its last known scope, and does **not** set
-  `Stalled=True`. Exact-name entries in the same policy keep resolving.
+- **`TestCeiling_ForbiddenSelectorIsUnknownNotStalled`** — a ClusterWatchRule that **has already
+  resolved** a ceiling, whose source Namespace access is then denied, reports
+  `SourceNamespaceAuthorized=Unknown` with `SourceNamespacePolicyUnavailable`, keeps running at its
+  last known scope, and does **not** set `Stalled=True`. Exact-name entries in the same policy keep
+  resolving.
+- **`TestCeiling_ForbiddenSelectorBeforeFirstResolutionIsStalled`** — the establishing twin, and the
+  test that keeps the two halves of the contract from drifting: a ClusterWatchRule whose selector
+  ceiling has **never** resolved, under the same denial, is `False` /
+  `SourceNamespacePolicyUnavailable` / `Stalled=True` with no namespaced streams. Without this pair
+  an implementation can satisfy either page alone while contradicting the other.
 - **Revocation, envtest** — a running ClusterWatchRule under `allowedSourceNamespaces:
   [repo-config, team-a]`, narrowed to `[repo-config]`, stops the `team-a` stream within a bounded
   time. Not merely re-renders status.

@@ -318,10 +318,12 @@ aggregation, so `Ready=True` means the source namespace is authorized *and* the 
 | Selector permanently unevaluatable, **no scope ever resolved** — nothing runs | False | False | False | True | Failed |
 
 A terminal refusal or revocation must **first** stop the compiled rule, **then** set
-`SourceNamespaceAuthorized=False` plus the Failed trio. A retryable failure instead leaves the
-compiled rule out of the store while status stays InProgress and the reconciler retries. This
-distinction avoids both continuing an unauthorized watch and declaring a transient remote outage
-permanently broken.
+`SourceNamespaceAuthorized=False` plus the Failed trio. A retryable failure while *establishing*
+instead leaves the compiled rule out of the store while status stays InProgress and the reconciler
+retries. A rule that is *maintaining* an already-resolved scope keeps its compiled rule and its
+streams; only the condition moves to `Unknown`. This three-way distinction avoids all of continuing
+an unauthorized watch, declaring a transient remote outage permanently broken, and sweeping a
+tenant's manifests because a policy could not be read.
 
 Every condition written here, including the generic trio, carries the current `observedGeneration`.
 `lastTransitionTime` changes only on a status change, per the existing upsert helper. Existing Ready

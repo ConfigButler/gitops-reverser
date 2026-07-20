@@ -34,7 +34,7 @@ one by immutable name; that name partitions the source client, discovery and wat
 attribution facts. `spec.allowedNamespaces` is deny-by-default and is checked on every reconcile,
 before any watch starts.
 
-```
+```text
 GitTarget ─ spec.clusterProviderRef ─▶ ClusterProvider   (source: READ + attribution, authorized per namespace)
           ─ spec.providerRef ────────▶ GitProvider       (destination: WRITE)
 ```
