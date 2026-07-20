@@ -24,11 +24,18 @@ func NormalizeAuthorizedKey(k string) string {
 	return fields[0] + " " + fields[1]
 }
 
-// ListUserKeys returns every public key registered for the named user.
-// keyPageSize is the per-page item count requested when listing keys. Gitea caps it at
-// MAX_RESPONSE_ITEMS (50 by default) and silently truncates beyond that, so requesting the cap
-// keeps the number of round trips low without relying on the server's DEFAULT_PAGING_NUM.
+// keyPageSize is the per-page item count REQUESTED when listing keys. It is a throughput hint
+// only — never a termination signal. Gitea clamps every request down to MAX_RESPONSE_ITEMS
+// (ToCorrectPageSize), which is operator-configurable, so the server's actual page size may be
+// smaller than this and the loop must not assume otherwise.
 const keyPageSize = 50
+
+// maxKeyPages bounds the pagination loop. Termination depends on the server eventually
+// returning an empty page, which a server that ignores the `page` parameter never does — it
+// would serve a full first page forever, and the loop would spin until the caller's context
+// deadline and report an undiagnosable "context deadline exceeded" instead of naming the cause.
+// At keyPageSize this ceiling is 10 000 keys, far past any real user.
+const maxKeyPages = 200
 
 // ListUserKeys returns EVERY public key on the named user, following pagination.
 //
@@ -41,25 +48,7 @@ const keyPageSize = 50
 // Gitea, so the second run onward exceeds one page and the stable-titled `playground` key
 // becomes unreachable.
 func (c *Client) ListUserKeys(ctx context.Context, login string) ([]PublicKey, error) {
-	var all []PublicKey
-	base := "/users/" + PathEscape(login) + "/keys"
-	for page := 1; ; page++ {
-		var keys []PublicKey
-		path := fmt.Sprintf("%s?page=%d&limit=%d", base, page, keyPageSize)
-		code, raw, err := c.Do(ctx, http.MethodGet, path, nil, &keys)
-		if err != nil {
-			return nil, err
-		}
-		if code != http.StatusOK {
-			return nil, unexpectedStatus(http.MethodGet, path, code, raw)
-		}
-		all = append(all, keys...)
-		// A short page is the last page. An empty page also terminates, which guards against a
-		// server that ignores the limit and would otherwise loop forever.
-		if len(keys) < keyPageSize {
-			return all, nil
-		}
-	}
+	return listPaginated[PublicKey](ctx, c, "/users/"+PathEscape(login)+"/keys", keyPageSize, maxKeyPages)
 }
 
 // FindUserKey looks up a public key on the named user by key material,

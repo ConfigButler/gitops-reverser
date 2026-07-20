@@ -150,12 +150,21 @@ func webhookTestHandler(t *testing.T) http.HandlerFunc {
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/testorg/demo/hooks":
 			w.Header().Set("Content-Type", "application/json")
+			// The hooks listing paginates; everything past page 1 is empty, and that empty page
+			// is what terminates ListRepoHooks.
+			if r.URL.Query().Get("page") != "1" {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
 			_, _ = w.Write([]byte(
 				`[{"id":42,"type":"gitea","active":true,` +
 					`"config":{"url":"http://receiver.example/hook/demo","content_type":"json"}}]`,
 			))
 		default:
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+			// t.Errorf, not t.Fatalf: Fatal from a handler goroutine Goexits it mid-response and
+			// the client reports a spurious EOF on top of the real failure.
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
 		}
 	}
 }
