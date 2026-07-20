@@ -11,7 +11,6 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
@@ -49,7 +48,7 @@ func (l *branchWorkerEventLoop) stashDeferredHeal(req *ResyncRequest) {
 	}
 	l.deferredHeals = append(l.deferredHeals, req)
 	l.w.Log.V(1).Info("heal resync deferred until the commit window is idle",
-		"scopeGVR", scopeGVRString(req.ScopeGVR),
+		"scope", req.Scope.String(),
 		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
 		"deferred", len(l.deferredHeals))
 }
@@ -75,7 +74,7 @@ func resyncHealKey(req *ResyncRequest) healKey {
 	return healKey{
 		name:      req.GitTargetName,
 		namespace: req.GitTargetNamespace,
-		scope:     scopeGVRString(req.ScopeGVR),
+		scope:     req.Scope.String(),
 	}
 }
 
@@ -90,7 +89,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	l.w.Log.Info("Handling resync request",
 		"resources", len(req.Desired),
 		"revision", req.Revision,
-		"scopeGVR", scopeGVRString(req.ScopeGVR),
+		"scope", req.Scope.String(),
 		"heal", req.Heal,
 		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
 		"openWindow", l.openWindow != nil,
@@ -148,13 +147,6 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	req.reply(ResyncResult{Stats: *stats})
 }
 
-func scopeGVRString(gvr *schema.GroupVersionResource) string {
-	if gvr == nil {
-		return ""
-	}
-	return gvr.String()
-}
-
 // buildResyncPendingWrite resolves the GitTarget's write metadata (path, encryption,
 // signer) and packages the desired snapshot into a retained resync pending write. The
 // stats pointer is threaded onto the pending write so the apply can populate the
@@ -189,7 +181,7 @@ func (w *BranchWorker) buildResyncPendingWrite(
 		Kind:               PendingWriteResync,
 		Desired:            req.Desired,
 		Revision:           req.Revision,
-		ScopeGVR:           req.ScopeGVR,
+		Scope:              req.Scope,
 		ResyncStats:        stats,
 		CommitConfig:       ResolveCommitConfig(provider.Spec.Commit),
 		Signer:             signer,
@@ -248,7 +240,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	}
 
 	stats, anyChanges, err := w.applyResyncToWorktree(
-		ctx, worktree, base, target.SourceCluster, pendingWrite.Desired, pendingWrite.ScopeGVR, target.Placement,
+		ctx, worktree, base, target.SourceCluster, pendingWrite.Desired, pendingWrite.Scope, target.Placement,
 	)
 	if err != nil {
 		return 0, err
@@ -267,7 +259,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	// commitMetadata through the verbatim path.
 	changed := stats.Created + stats.Updated + stats.Deleted
 	rendered, err := renderReconcileCommitMessage(
-		changed, target.Name, pendingWrite.ScopeGVR, pendingWrite.Revision, pendingWrite.CommitConfig)
+		changed, target.Name, pendingWrite.Scope, pendingWrite.Revision, pendingWrite.CommitConfig)
 	if err != nil {
 		return 0, err
 	}
@@ -329,7 +321,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 	worktree *gogit.Worktree,
 	base, clusterID string,
 	desired []manifestanalyzer.DesiredResource,
-	scopeGVR *schema.GroupVersionResource,
+	scope *ResyncScope,
 	policy *manifestanalyzer.PlacementPolicy,
 ) (ResyncStats, bool, error) {
 	root := worktree.Filesystem.Root()
@@ -351,7 +343,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
 	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
 	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
-	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scopeGVR)
+	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scope)
 
 	stats, err := batch.applyResyncPlan(ctx, desired, plan)
 	if err != nil {
@@ -461,25 +453,26 @@ func eventForDesired(dr manifestanalyzer.DesiredResource) Event {
 	}
 }
 
-// resyncPlan builds the mark-and-sweep plan for a resync. A nil scopeGVR is the
-// whole-GitTarget resync (BuildPlan sweeps every managed document absent from desired); a
-// non-nil scopeGVR is the M12 per-type reconcile/sweep, where BuildScopedPlan restricts the
-// sweep to that type's (group, resource) so a removed type's documents drop while every
-// sibling type is left exactly as Git holds it. The upsert side is scoped by desired itself.
+// resyncPlan builds the mark-and-sweep plan for a resync. A nil scope is the whole-GitTarget
+// resync (BuildPlan sweeps every managed document absent from desired); a non-nil scope is the
+// M12 per-type reconcile/sweep, where BuildScopedPlan restricts the sweep to that type's
+// (group, resource) — and, when the scope names a namespace, to that namespace — so a removed
+// type's documents drop while every sibling type, and every sibling namespace, is left exactly
+// as Git holds it. The upsert side is scoped by desired itself.
+//
+// The namespace half is load-bearing once one GitTarget watches a type in more than one
+// namespace: the replay that produced desired covered a single namespace, so sweeping the whole
+// type would delete every other namespace's documents of that type. See ResyncScope.
 func resyncPlan(
 	store *manifestanalyzer.ManifestStore,
 	files []manifestedit.FileContent,
 	desired []manifestanalyzer.DesiredResource,
-	scopeGVR *schema.GroupVersionResource,
+	scope *ResyncScope,
 ) manifestanalyzer.Plan {
-	if scopeGVR == nil {
+	if scope == nil {
 		return manifestanalyzer.BuildPlan(store, files, desired, resyncPlanPolicy())
 	}
-	gvr := *scopeGVR
-	inScope := func(ri types.ResourceIdentifier) bool {
-		return ri.Group == gvr.Group && ri.Resource == gvr.Resource
-	}
-	return manifestanalyzer.BuildScopedPlan(store, files, desired, resyncPlanPolicy(), inScope)
+	return manifestanalyzer.BuildScopedPlan(store, files, desired, resyncPlanPolicy(), scope.Matches)
 }
 
 // resyncPlanPolicy is the planning policy for a resync: the same sanitized projection

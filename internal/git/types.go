@@ -182,11 +182,12 @@ type PendingWrite struct {
 	// PendingWriteResync. The worker folds it over the worktree's content-derived
 	// store to produce the resync plan (upserts + mark-and-sweep drops).
 	Desired []manifestanalyzer.DesiredResource
-	// ScopeGVR, when set, restricts the resync's mark-and-sweep to one type's
-	// (group, resource): the M12 per-type reconcile/sweep. Desired then carries only
-	// that type's objects (empty for a pure sweep), and no sibling type's document is
-	// ever dropped. Nil is the whole-GitTarget resync.
-	ScopeGVR *schema.GroupVersionResource
+	// Scope, when set, restricts the resync's mark-and-sweep to one type's
+	// (group, resource) and optionally to one namespace: the M12 per-type
+	// reconcile/sweep. Desired then carries only that scope's objects (empty for a pure
+	// sweep), and no sibling type's — nor, for a namespace-scoped resync, any sibling
+	// namespace's — document is ever dropped. Nil is the whole-GitTarget resync.
+	Scope *ResyncScope
 	// Revision is the cluster snapshot resourceVersion the desired set is pinned to
 	// (the joined streaming-watch bookmark). Carried for diagnostics and logging.
 	Revision string
@@ -233,6 +234,50 @@ type WorkItem struct {
 	Resync *ResyncRequest
 }
 
+// ResyncScope restricts a resync's mark-and-sweep to the slice of the mirror the desired
+// snapshot was actually gathered over. GVR names the type; Namespace, when non-empty,
+// further restricts the sweep to that one namespace.
+//
+// The invariant this type exists to hold: THE SWEEP SCOPE MUST BE EXACTLY THE SCOPE THE
+// DESIRED SET WAS GATHERED OVER. A desired set narrower than its sweep scope deletes
+// managed documents that were never in scope; a desired set wider than its sweep scope
+// silently leaves documents unmanaged. Namespace lives here, next to GVR, precisely so a
+// per-namespace replay cannot reach the sweep carrying only its type — the defect fixed in
+// docs/design/watchrule-source-namespace/pr1-namespace-scoped-resync.md, where a replay of
+// one namespace swept every other namespace's documents of the same type.
+//
+// An empty Namespace is a genuinely cluster-wide (all-namespaces) scope for the type, which
+// is what a ClusterWatchRule's cluster-wide stream gathers.
+type ResyncScope struct {
+	GVR       schema.GroupVersionResource
+	Namespace string
+}
+
+// String renders the scope for logs and for the deferred-heal key. It is nil-safe: a nil
+// scope is the whole-GitTarget resync and renders empty.
+func (s *ResyncScope) String() string {
+	if s == nil {
+		return ""
+	}
+	if s.Namespace == "" {
+		return s.GVR.String()
+	}
+	return s.GVR.String() + " in " + s.Namespace
+}
+
+// Matches reports whether a resolved resource identity falls inside this scope. A nil scope
+// matches everything (whole-GitTarget resync). An empty Namespace matches every namespace
+// for the type.
+func (s *ResyncScope) Matches(ri types.ResourceIdentifier) bool {
+	if s == nil {
+		return true
+	}
+	if ri.Group != s.GVR.Group || ri.Resource != s.GVR.Resource {
+		return false
+	}
+	return s.Namespace == "" || ri.Namespace == s.Namespace
+}
+
 // ResyncRequest is a synchronous resync of one GitTarget against a complete,
 // revision-pinned desired snapshot (M8). It rides the worker queue so the single
 // git-mutating goroutine applies it in order with live events, and replies on
@@ -244,10 +289,12 @@ type ResyncRequest struct {
 	Revision           string
 	GitTargetName      string
 	GitTargetNamespace string
-	// ScopeGVR, when set, makes this a per-type (M12) reconcile/sweep: the mark-and-sweep
-	// is restricted to the named type's (group, resource) and Desired carries only that
-	// type's objects (empty = pure sweep of a removed type). Nil is a whole-GitTarget resync.
-	ScopeGVR *schema.GroupVersionResource
+	// Scope, when set, makes this a per-type (M12) reconcile/sweep: the mark-and-sweep is
+	// restricted to the named type — and, when the scope names a namespace, to that
+	// namespace — while Desired carries only that scope's objects (empty = pure sweep of a
+	// removed type). Nil is a whole-GitTarget resync. See ResyncScope for the invariant
+	// binding this to Desired.
+	Scope *ResyncScope
 	// Heal marks a non-urgent drift-correcting resync (a periodic checkpoint re-anchor or a
 	// removed-type sweep) that the worker DEFERS while a commit window is open, instead of
 	// force-finalizing it. Because one worker serves N GitTargets and the commit window is a
@@ -431,6 +478,9 @@ type ReconcileCommitMessageData struct {
 	Resource   string
 	APIVersion string
 	Revision   string
+	// Namespace is the single source namespace a namespace-scoped reconcile covered, and
+	// is empty for a whole-target or all-namespaces reconcile.
+	Namespace string
 }
 
 // ResourceRef is the lightweight resource identifier emitted to grouped commit

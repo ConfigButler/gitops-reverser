@@ -12,7 +12,6 @@ import (
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -173,16 +172,17 @@ func (r *EventRouter) resolveWorkerForGitDest(
 	return worker, nil
 }
 
-// enqueueScopedResync resolves the GitTarget's worker and enqueues a type-scoped resync,
-// returning the buffered reply channel and whether the resync actually entered the FIFO. The
-// ScopeGVR restricts the worker's mark-and-sweep to the one type, so desired must carry only that
-// type's objects (empty for a sweep). heal marks a drift-correcting resync the worker defers while
-// a commit window is open (see EmitType*ForGitDest). enqueued is false when the worker's queue was
-// full and dropped the request (its failure is still delivered on resultCh for the drain to record).
+// enqueueScopedResync resolves the GitTarget's worker and enqueues a scoped resync, returning
+// the buffered reply channel and whether the resync actually entered the FIFO. The scope
+// restricts the worker's mark-and-sweep to one type, and to one namespace when it names one, so
+// desired MUST carry exactly that scope's objects (empty for a sweep) — passing a scope wider
+// than the gather deletes managed documents outside it. heal marks a drift-correcting resync the
+// worker defers while a commit window is open. enqueued is false when the worker's queue was full
+// and dropped the request (its failure is still delivered on resultCh for the drain to record).
 func (r *EventRouter) enqueueScopedResync(
 	ctx context.Context,
 	gitDest types.ResourceReference,
-	gvr schema.GroupVersionResource,
+	scope git.ResyncScope,
 	desired []manifestanalyzer.DesiredResource,
 	revision string,
 	heal bool,
@@ -191,18 +191,25 @@ func (r *EventRouter) enqueueScopedResync(
 	if err != nil {
 		return nil, false, err
 	}
-	scope := gvr
 	resultCh := make(chan git.ResyncResult, 1)
 	enqueued := worker.EnqueueResync(&git.ResyncRequest{
 		Desired:            desired,
 		Revision:           revision,
 		GitTargetName:      gitDest.Name,
 		GitTargetNamespace: gitDest.Namespace,
-		ScopeGVR:           &scope,
+		Scope:              &scope,
 		Heal:               heal,
 		Result:             resultCh,
 	})
 	return resultCh, enqueued, nil
+}
+
+// resyncScopeForWatchKey is the single conversion from a watch key to the resync scope its
+// replay must be swept under. It exists so the two halves of the invariant — the namespace a
+// stream gathered, and the namespace its sweep may touch — are derived from ONE value and
+// cannot drift apart at a call site.
+func resyncScopeForWatchKey(key targetWatchKey) git.ResyncScope {
+	return git.ResyncScope{GVR: key.GVR, Namespace: key.Namespace}
 }
 
 // drainScopedResync logs a per-type reconcile/sweep's outcome and, on failure or timeout,

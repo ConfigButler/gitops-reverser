@@ -36,12 +36,12 @@ func TestHandleResyncRequest_HealDefersWhileWindowOpenThenApplies(t *testing.T) 
 	require.NotNil(t, loop.openWindow, "the edit must open a window")
 
 	// A HEAL resync for the same GitTarget arrives while the window is open.
-	scope := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	scope := ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}}
 	healCh := make(chan ResyncResult, 1)
 	loop.handleResyncRequest(&ResyncRequest{
 		GitTargetName:      "team-a",
 		GitTargetNamespace: "default",
-		ScopeGVR:           &scope,
+		Scope:              &scope,
 		Heal:               true,
 		Desired:            nil,
 		Result:             healCh,
@@ -86,11 +86,11 @@ func TestHandleResyncRequest_AtomicDrainsDeferredHealFirst(t *testing.T) {
 		CommitMode: CommitModePerEvent,
 	}})
 	require.NotNil(t, loop.openWindow)
-	scope := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	scope := ResyncScope{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}}
 	healCh := make(chan ResyncResult, 1)
 	loop.handleResyncRequest(&ResyncRequest{
 		GitTargetName: "team-a", GitTargetNamespace: "default",
-		ScopeGVR: &scope, Heal: true, Result: healCh,
+		Scope: &scope, Heal: true, Result: healCh,
 	})
 	require.Len(t, loop.deferredHeals, 1, "the heal parks behind the open window")
 
@@ -133,12 +133,12 @@ func TestHandleResyncRequest_HealDoesNotStealSiblingCommitRequestWindow(t *testi
 	require.NotNil(t, loop.openWindow.pendingCR, "the window must carry the attached CommitRequest")
 
 	// A heal scoped to a DIFFERENT GitTarget arrives on the shared worker.
-	otherScope := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	otherScope := ResyncScope{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}}
 	healCh := make(chan ResyncResult, 1)
 	loop.handleResyncRequest(&ResyncRequest{
 		GitTargetName:      "team-other",
 		GitTargetNamespace: "default",
-		ScopeGVR:           &otherScope,
+		Scope:              &otherScope,
 		Heal:               true,
 		Result:             healCh,
 	})

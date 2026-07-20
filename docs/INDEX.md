@@ -54,6 +54,7 @@ misled. Full list in [`spec/README.md`](spec/README.md); the ones that carry a
 | [`unsupported-folder-refusal-plan.md`](spec/unsupported-folder-refusal-plan.md) | `GitPathAccepted`, and refusing what we cannot own |
 | [`commitrequest-design.md`](spec/commitrequest-design.md) | the CommitRequest window and its conditions |
 | [`commitrequest-admission-authorship.md`](spec/commitrequest-admission-authorship.md) | how a real Kubernetes user becomes a commit author |
+| [`where-validation-lives.md`](spec/where-validation-lives.md) | schema → CEL → **the reconciler**; a webhook only for what exists solely at admission |
 | [`e2e-serial-registry.md`](spec/e2e-serial-registry.md) | which e2e specs must run Serial, and why |
 
 ## What is being decided now — [`design/`](design/)
@@ -66,7 +67,7 @@ says what we support and refuse** — and then its
 kustomize field taxonomy, the write boundary, the orchestrator/expansion line, and
 how secrets are handled.
 
-Nine other open items:
+Eleven other open items:
 
 | Doc | Open question |
 |---|---|
@@ -79,6 +80,8 @@ Nine other open items:
 | [`e2e-finish-plan.md`](design/e2e-finish-plan.md) | remaining e2e harness work |
 | [`residual-e2e-flakes-2026-06-19.md`](design/residual-e2e-flakes-2026-06-19.md) | Flake B still open |
 | [`sensitive-resource-diagnostics-follow-up.md`](design/sensitive-resource-diagnostics-follow-up.md) | deferred diagnostics |
+| [`e2e-git-server-choice.md`](design/e2e-git-server-choice.md) | stay on Gitea or move to Forgejo — the `_csrf` pin is fixable in place on both, so the migration is now a preference call, not a fix; also why we adopt no SDK either way |
+| [`watchrule-source-namespace/`](design/watchrule-source-namespace/README.md) | letting a WatchRule address a differently-named namespace on its source cluster — a deny-by-default `allowedSourceNamespaces` on the **GitTarget** (so scope is per-tenant, not a provider-wide union), unlocked by a false-by-default delegation flag on the ClusterProvider. Split into five implementable PRs: three prerequisite scope fixes (the namespace-blind resync sweep that would delete other namespaces' manifests, the cluster-wide/named stream collapse, and ClusterWatchRule's unchecked GitTarget attachment), the field and its gate, and the ceiling that makes the allow-list bind ClusterWatchRule too — required because a multi-tenant deployment runs a ClusterWatchRule per tenant from day one to capture CRDs |
 
 ## Deferred, but still wanted — [`future/`](future/)
 

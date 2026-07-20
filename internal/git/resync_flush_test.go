@@ -211,7 +211,7 @@ func secretManifest(name string) string {
 		"data:\n  k: dg==\n"
 }
 
-// The M12 per-type sweep: a ScopeGVR'd resync with an empty desired set drops only the
+// The M12 per-type sweep: a scoped resync with an empty desired set drops only the
 // removed type's documents and leaves every sibling type exactly as Git holds it — even
 // though under a whole-folder resync the sibling would also be an orphan.
 func TestResync_ScopedSweepDropsOnlyTargetType(t *testing.T) {
@@ -221,7 +221,7 @@ func TestResync_ScopedSweepDropsOnlyTargetType(t *testing.T) {
 	secretFull := seedPlacedManifest(t, worktree, "apps/secret.yaml", secretManifest("sec"))
 
 	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
-	scope := &schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
+	scope := &ResyncScope{GVR: schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}}
 	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", nil, scope, nil)
 	require.NoError(t, err)
 	require.True(t, changed, "the removed type's document is swept")

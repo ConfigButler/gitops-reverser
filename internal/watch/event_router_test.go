@@ -98,7 +98,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	resultCh, enqueued, err := router.enqueueScopedResync(
 		context.Background(),
 		types.NewResourceReference("team-a-config", "team-a"),
-		configmapsGVR,
+		git.ResyncScope{GVR: configmapsGVR},
 		nil,
 		"12",
 		false,

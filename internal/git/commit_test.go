@@ -141,8 +141,9 @@ func TestRenderReconcileCommitMessage_DefaultTemplateNamesScopedTypeAndRevision(
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gvr := tc.gvr
-			message, err := renderReconcileCommitMessage(tc.count, "demo", &gvr, tc.revision, ResolveCommitConfig(nil))
+			scope := ResyncScope{GVR: tc.gvr}
+			message, err := renderReconcileCommitMessage(
+				tc.count, "demo", &scope, tc.revision, ResolveCommitConfig(nil))
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, message)
 		})
@@ -150,7 +151,7 @@ func TestRenderReconcileCommitMessage_DefaultTemplateNamesScopedTypeAndRevision(
 }
 
 func TestRenderReconcileCommitMessage_NilScopeRendersCleanly(t *testing.T) {
-	// A whole-target reconcile carries no ScopeGVR, so the default template must fall back to
+	// A whole-target reconcile carries no Scope, so the default template must fall back to
 	// the type-less subject rather than emit an empty "/" token.
 	message, err := renderReconcileCommitMessage(6, "demo", nil, "", ResolveCommitConfig(nil))
 	require.NoError(t, err)
@@ -158,11 +159,11 @@ func TestRenderReconcileCommitMessage_NilScopeRendersCleanly(t *testing.T) {
 }
 
 func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t *testing.T) {
-	gvr := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
+	scope := ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}}
 	message, err := renderReconcileCommitMessage(
 		6,
 		"signing-snapshot-dest",
-		&gvr,
+		&scope,
 		"1331",
 		ResolveCommitConfig(&v1alpha3.CommitSpec{
 			Message: &v1alpha3.CommitMessageSpec{
