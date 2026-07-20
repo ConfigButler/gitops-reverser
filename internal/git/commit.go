@@ -70,7 +70,7 @@ func renderReconcileCommitMessageFromEvents(
 func renderReconcileCommitMessage(
 	count int,
 	gitTarget string,
-	scopeGVR *schema.GroupVersionResource,
+	scope *ResyncScope,
 	revision string,
 	config CommitConfig,
 ) (string, error) {
@@ -79,11 +79,12 @@ func renderReconcileCommitMessage(
 		GitTarget: gitTarget,
 		Revision:  revision,
 	}
-	if scopeGVR != nil {
-		data.Group = scopeGVR.Group
-		data.Version = scopeGVR.Version
-		data.Resource = scopeGVR.Resource
-		data.APIVersion = buildAPIVersion(scopeGVR.Group, scopeGVR.Version)
+	if scope != nil {
+		data.Group = scope.GVR.Group
+		data.Version = scope.GVR.Version
+		data.Resource = scope.GVR.Resource
+		data.APIVersion = buildAPIVersion(scope.GVR.Group, scope.GVR.Version)
+		data.Namespace = scope.Namespace
 	}
 	return renderCommitTemplate("reconcile", config.Message.ReconcileTemplate, data)
 }
@@ -148,7 +149,12 @@ func ValidateCommitConfig(config CommitConfig) error {
 	// Validate the per-type splice reconcile path with the type and revision fields populated,
 	// so a custom reconcile template that names its synced type ({{.Resource}} / {{.APIVersion}})
 	// or pins the {{.Revision}} is exercised at admission exactly as a per-type reconcile renders it.
-	sampleScope := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	// The sample scope names a namespace so a template referencing {{.Namespace}} — populated
+	// only by a namespace-scoped reconcile — is validated here too.
+	sampleScope := ResyncScope{
+		GVR:       schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
+		Namespace: "example-namespace",
+	}
 	if _, err := renderReconcileCommitMessage(1, "example-target", &sampleScope, "12345", config); err != nil {
 		return err
 	}

@@ -411,12 +411,12 @@ func TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush(t *testing.T) {
 
 	// Before the deadline, a resync for a different type cuts the window
 	// (resync-before-apply). The cut commit must carry the attached message.
-	scope := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	scope := ResyncScope{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}}
 	resultCh := make(chan ResyncResult, 1)
 	loop.handleResyncRequest(&ResyncRequest{
 		GitTargetName:      "team-a",
 		GitTargetNamespace: "default",
-		ScopeGVR:           &scope,
+		Scope:              &scope,
 		Result:             resultCh,
 	})
 	require.NoError(t, (<-resultCh).Err)

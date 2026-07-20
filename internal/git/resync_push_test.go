@@ -64,12 +64,12 @@ func TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync(t *testing.T
 	// A type-scoped resync for a DIFFERENT type with an empty desired set: it closes
 	// the open window (resync-before-apply) but its own mark-and-sweep — scoped to a
 	// type with no documents — changes nothing, so the resync itself does not commit.
-	scope := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	scope := ResyncScope{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}}
 	resultCh := make(chan ResyncResult, 1)
 	loop.handleResyncRequest(&ResyncRequest{
 		GitTargetName:      "team-a",
 		GitTargetNamespace: "default",
-		ScopeGVR:           &scope,
+		Scope:              &scope,
 		Desired:            nil,
 		Result:             resultCh,
 	})

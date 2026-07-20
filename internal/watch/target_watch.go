@@ -585,7 +585,7 @@ func (m *Manager) enqueueReplayResync(
 	}
 	epoch := m.RenderFidelityEpochForGitTarget(gitDest)
 	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
-		ctx, gitDest, key.GVR, desired, revision, false)
+		ctx, gitDest, resyncScopeForWatchKey(key), desired, revision, false)
 	if err != nil {
 		return err
 	}
