@@ -1,8 +1,12 @@
-# PR 3 — the sourceNamespace field and its authorization gate
+# PR 4 — the sourceNamespace field and its authorization gate
 
-> Phase 3 of [source-namespace addressing](README.md). **Depends on:** PR 1. **Blocked from release
-> without:** PR 4 — see the [release gate](README.md#implementation-phases). API change: three new
-> fields, one new condition, one printer column.
+> Phase 4 of [source-namespace addressing](README.md). **Depends on:**
+> [PR 1](pr1-namespace-scoped-resync.md) (two WatchRules on one target can now carry different
+> `sourceNamespace` values, which is the fan-out PR 1 makes safe) and
+> [PR 2](pr2-stream-scope-collapse.md). **Blocked from release without:**
+> [PR 5](pr5-clusterwatchrule-source-ceiling.md) — see the
+> [release gate](README.md#implementation-phases). API change: three new fields, one new condition,
+> one printer column.
 
 Adds `WatchRule.spec.sourceNamespace`, `GitTarget.spec.allowedSourceNamespaces`,
 `ClusterProvider.spec.allowWatchRuleSourceNamespaceOverride`, and the reconciler gate that binds
@@ -75,7 +79,8 @@ so the source credential's RBAC remains the hard maximum. Set it only when the o
 GitTarget is trusted to choose a subset of what that credential may read.
 
 The flag gates **granting only**. `allowedSourceNamespaces` plays two roles — widening a WatchRule
-beyond its own namespace, and (in PR 4) narrowing a ClusterWatchRule below cluster-wide — and only
+beyond its own namespace, and (in [PR 5](pr5-clusterwatchrule-source-ceiling.md)) narrowing a
+ClusterWatchRule below cluster-wide — and only
 the widening one is an authority grant. Gating a *restriction* behind a delegation flag would mean an
 admin has to grant extra authority in order to reduce scope.
 
@@ -136,9 +141,15 @@ if effectiveSourceNamespace == "" {
 }
 ~~~
 
-**The legacy case needs no new authorization.** If the effective source namespace equals the
-WatchRule's namespace, the rule works with no delegation flag and no GitTarget policy. An explicit
-*different* namespace requires all three:
+**The legacy case needs no new authorization — but only while the target declares no policy.** If
+the effective source namespace equals the WatchRule's namespace *and* the GitTarget declares no
+`allowedSourceNamespaces`, the rule works with no delegation flag and no policy. Once a policy is
+declared it is exhaustive, including for own-namespace rules: see
+[no self-namespace exception](README.md#no-self-namespace-exception). The denial in that case uses
+reason `SourceNamespaceNotAllowed` with a message naming the fix — *"namespace tenant-acme is not in
+the GitTarget's allowedSourceNamespaces; add it to keep watching this rule's own namespace."*
+
+An explicit *different* namespace requires all three:
 
 1. the GitTarget's namespace is admitted by the ClusterProvider;
 2. the ClusterProvider delegation flag is true; and
@@ -157,6 +168,26 @@ Settled repo-wide; no further argument needed. The check runs before
 `sourceNamespace` is optional with `MinLength=1` when present. `allowedSourceNamespaces` is an
 optional deny-by-default `NamespaceMatcher`.
 
+### The gate must not be bypassable on restart
+
+Gating `reconcileWatchRuleViaTarget` alone is **not sufficient**. `bootstrapRuleStore` lists every
+WatchRule and calls `AddOrUpdateWatchRule` directly after resolving only the GitTarget and GitProvider
+([bootstrap.go:49-68](../../../internal/watch/bootstrap.go#L49-L68)) — no authorization of any kind —
+and it runs *before* the first reconcile, then calls `RuleStore.MarkReady()`. So on every restart a
+denied override is compiled and can be watched until the reconciler catches up and removes it. The
+window is unbounded on a busy queue, and it reopens on every operator restart, which is exactly when
+nobody is watching.
+
+**Route admission and compilation through one shared path.** A WatchRule must become a compiled rule
+only via a single function that runs the gate first, called by both the reconciler and bootstrap. Two
+call sites that each remember to check is the arrangement this codebase has already got wrong once —
+it is the same defect [PR 3](pr3-clusterwatchrule-target-admission.md) fixes for ClusterWatchRule, and
+the two should share the shape of the fix.
+
+Bootstrap runs before controllers are started, so it cannot publish status; a rule denied at bootstrap
+is simply not compiled, and the first reconcile writes the terminal condition. That is the correct
+ordering — fail closed first, explain second.
+
 ## Reactivity and source-cluster RBAC
 
 Policy changes must grant and revoke promptly, not merely when a WatchRule happens to be edited.
@@ -171,8 +202,39 @@ Half of this is already wired:
 
 The watch manager already owns source-cluster watch lifecycles. This adds one label-filtered
 Namespace informer **per active source cluster**, not one per WatchRule, emitting only meaningful
-label changes and mapping them to WatchRules whose GitTarget resolves through that cluster. PR 4
-extends the same informer to ClusterWatchRules.
+label changes and mapping them to WatchRules whose GitTarget resolves through that cluster.
+[PR 5](pr5-clusterwatchrule-source-ceiling.md) extends the same informer to ClusterWatchRules.
+
+### The source-scope service — define this interface before writing the gate
+
+There is a structural gap to close first. The informer lives in `internal/watch`, but the **gate runs
+in `internal/controller`**, and `WatchManagerInterface`
+([constants.go:15-24](../../../internal/controller/constants.go#L15-L24)) exposes nothing that would
+let a reconciler evaluate a source-cluster selector: its six methods cover rule resolution and stream
+summaries only. There is no way to ask for a source Namespace's labels, and no way to learn whether
+the answer is trustworthy yet. Writing the gate without settling this ends in the reconciler dialling
+the source cluster itself on every pass, duplicating the connection and cache the watch manager
+already owns.
+
+Define one **source-scope service** owned by the watch manager and exposed on the interface. It needs
+three things, and the third is the one most likely to be skipped:
+
+1. **Resolution** — given a GitTarget and a candidate namespace, does the target's policy admit it?
+   Backed by the per-source-cluster Namespace cache, never by an inline API call from the reconciler.
+2. **Readiness and error state, as a first-class result.** The answer is three-valued, not boolean:
+   *admitted*, *denied*, or *cannot say yet* (cache still syncing, or the source cluster is
+   unreachable). A two-valued interface forces "cannot say" to be encoded as "denied", which is how a
+   transient outage becomes a terminal `Stalled=True` and a stopped stream. The three-valued result is
+   what makes the `Unknown` row of the status table implementable at all.
+3. **Enqueue** — a label change, a cache sync, or a source-cluster reconnection must requeue the
+   affected rules. Without this the cache goes stale silently and revocations never land.
+
+Exact-name policies must be answerable **without** the cache, so a source cluster whose Namespace
+access is denied still supports name-based policies. That is the degradation path below, and it falls
+out naturally if resolution checks names before consulting the cache.
+
+The same service is what [PR 5](pr5-clusterwatchrule-source-ceiling.md) resolves its ceiling through,
+so its shape is worth settling here rather than retrofitting.
 
 The in-cluster manager role already grants `namespaces` `get`/`list`/`watch`
 ([config/rbac/role.yaml](../../../config/rbac/role.yaml)). A remote provider used with a source
@@ -271,7 +333,13 @@ alone — so it is traced in [Appendix A](#appendix-a-the-source-objects-namespa
    hashes `rule.Source.Namespace` as its `src=` component; it **must** hash the effective source
    namespace instead, or a change to the field will not re-project the table. This produces a stale
    watch rather than a visible failure — one of the two steps that never announces itself.
-7. **The gate and status.** Add the three-part check in `reconcileWatchRuleViaTarget`, after the
+7. **One compiled-rule path.** Route WatchRule compilation through a single gated function used by
+   both the reconciler and `bootstrapRuleStore`
+   ([bootstrap.go:49-68](../../../internal/watch/bootstrap.go#L49-L68)), so the gate cannot be
+   bypassed on restart. Do this *before* step 8, so there is only one place to add the check.
+8. **The source-scope service.** Implement resolution, the three-valued readiness/error result, and
+   the enqueue edge described above, and extend `WatchManagerInterface` with it.
+9. **The gate and status.** Add the three-part check in the shared compile path, after the
    GitTarget fetch
    ([watchrule_controller.go:186](../../../internal/controller/watchrule_controller.go#L186)) and
    before `AddOrUpdateWatchRule`
@@ -280,10 +348,10 @@ alone — so it is traced in [Appendix A](#appendix-a-the-source-objects-namespa
    refusal remove any compiled rule and replan **before** the Failed trio. Extend `applyRuleKstatus`
    so the domain condition is a prerequisite and Unknown yields InProgress rather than a separate
    status path. This produces a security hole rather than a visible failure — the other silent step.
-8. **Reactivity.** Add the ClusterProvider → WatchRules mapper (the GitTarget → WatchRules edge
+10. **Reactivity.** Add the ClusterProvider → WatchRules mapper (the GitTarget → WatchRules edge
    exists but is generation-filtered, so it will not carry a provider-driven change) and the
    per-source-cluster label-filtered Namespace informer.
-9. **Docs.** Every statement listed under
+11. **Docs.** Every statement listed under
    [Docs that become false](#docs-that-become-false-when-this-ships), the
    WatchRule section of [status-conditions-guide.md](../../spec/status-conditions-guide.md), and the
    INDEX entry.
@@ -302,12 +370,18 @@ Must change in the same PR:
 
 Grouped by what they prove, because several exist to catch a *silent* failure.
 
-### The one test that must exist
+### The two tests that must exist
 
 **A WatchRule that omits `sourceNamespace` passes with no GitTarget policy and no delegation flag.**
 If this fails, deny-by-default has broken every existing rule on upgrade. The gate must engage only
-when the effective source namespace actually differs from the rule's own namespace. Place it first
-and make its name say so.
+when the target declares no policy and the effective source namespace does not differ from the rule's
+own. Place it first and make its name say so.
+
+**`TestBootstrap_DeniedSourceNamespaceIsNotCompiledOnRestart`.** Seed a WatchRule whose override the
+policy denies, then run `bootstrapRuleStore` and assert no compiled rule exists when
+`RuleStore.MarkReady()` returns — *before* any reconcile. Without this, the gate is a reconciler-only
+check and every operator restart reopens the window it was written to close. It is the second
+must-have because it is the one failure that a passing reconciler test suite actively hides.
 
 ### Gate correctness — `internal/controller`, table-driven
 
@@ -318,6 +392,8 @@ Modelled on `TestCheckSourceAuthorization`
 |---|---|
 | `sourceNamespace` omitted, no policy, flag false | allowed (legacy) |
 | equals the rule's own namespace, no policy, flag false | allowed |
+| omitted, **policy declared** but does not list the rule's own namespace | denied, `SourceNamespaceNotAllowed` — the [no-self-namespace-exception](README.md#no-self-namespace-exception) rule, and the case most likely to be implemented as an accidental carve-out |
+| omitted, policy declared and lists the rule's own namespace | allowed |
 | differs, flag false | denied, `SourceNamespaceNotAllowed` |
 | differs, flag true, target policy absent | denied (deny-by-default) |
 | differs, flag true, target policy empty `{}` | denied (empty ≠ unrestricted) |
@@ -358,7 +434,7 @@ need a case — the first is the one that will regress unnoticed.
 ### Silent-failure guards — `internal/watch`
 
 - **Fingerprint:** two rules differing only in `sourceNamespace` produce different
-  `watchRuleFingerprint` values. Without this, step 6's omission is invisible until a stale watch is
+  `watchRuleFingerprint` values. Without this, the fingerprint step's omission is invisible until a stale watch is
   noticed in production.
 - **Selection:** `collectWatchRuleSelections` emits the effective source namespace — assert directly
   on the resulting `watchSelection.namespace`.

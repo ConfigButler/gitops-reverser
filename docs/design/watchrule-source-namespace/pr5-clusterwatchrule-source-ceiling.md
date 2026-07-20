@@ -1,7 +1,9 @@
-# PR 4 — a declared allowedSourceNamespaces bounds ClusterWatchRule too
+# PR 5 — a declared allowedSourceNamespaces bounds ClusterWatchRule too
 
-> Phase 4 of [source-namespace addressing](README.md). **Depends on:** PR 3 (the field) and PR 1
-> (stream scoping). **Must ship with PR 3** — see the
+> Phase 5 of [source-namespace addressing](README.md). **Depends on:**
+> [PR 4](pr4-source-namespace-field.md) (the field and the source-scope service),
+> [PR 1](pr1-namespace-scoped-resync.md) (per-namespace expansion is unsafe until the sweep is
+> namespace-scoped), and [PR 2](pr2-stream-scope-collapse.md). **Must ship with PR 4** — see the
 > [release gate](README.md#implementation-phases). No new API fields; this changes what an existing
 > field governs.
 
@@ -100,22 +102,65 @@ Two consequences worth knowing:
 - A name-based policy expands statically; a **selector**-based one makes the namespace set depend on
   the source-cluster Namespace informer PR 3 introduces, and can produce many streams on a large
   cluster. That is the cost of the safe direction.
-- A declared policy emits no `""` key at all, so the [PR 1](pr1-stream-scope-collapse.md) collapse
+- A declared policy emits no `""` key at all, so the [PR 2](pr2-stream-scope-collapse.md) collapse
   cannot trigger for that target. PR 1 still governs the undeclared case, which remains the common
   one.
 
-### 2. Fingerprint the resolved scope
+### 2. Put the resolved scope into table invalidation
 
-`clusterWatchRuleFingerprint`
-([watched_type_resolver.go:491-500](../../../internal/watch/watched_type_resolver.go#L491-L500))
-has **no** `src=` component, on the assumption that a ClusterWatchRule is always all-source-namespaces.
-Step 1 falsifies that.
+`rulesFingerprint` is computed **only from compiled rules** — it iterates
+`SnapshotWatchRules()` and `SnapshotClusterWatchRules()` and hashes their spec fields
+([watched_type_resolver.go:463-500](../../../internal/watch/watched_type_resolver.go#L463-L500)) —
+and it is what gates the table rebuild
+([watched_type_resolver.go:88-96](../../../internal/watch/watched_type_resolver.go#L88-L96)).
+`clusterWatchRuleFingerprint` has no `src=` component at all, on the assumption that a
+ClusterWatchRule is always all-source-namespaces. Step 1 falsifies that assumption.
 
-Its input is not on the rule object at all: the effective namespace set comes from the GitTarget's
-policy and, for a selector, from live source-cluster Namespace labels. **Hash the resolved set.**
-Without this, declaring or tightening `allowedSourceNamespaces` leaves the ClusterWatchRule's streams
-running at their old width with no visible symptom — the easiest failure in the workstream to ship,
-because the rule object itself did not change and every diff looks correct.
+The consequence is bigger than a missing hash component, and it is the failure mode to design
+against: the new ceiling's inputs — GitTarget policy and source-cluster Namespace labels — are **not
+rule state**, so nothing about them reaches the fingerprint. A mapper that requeues the
+ClusterWatchRule is therefore not sufficient on its own: reconciliation runs, the fingerprint is
+unchanged, the rebuild is skipped, and the resident table keeps the old namespace set. The streams
+carry on at their previous width and every diff looks correct, because the rule object genuinely did
+not change.
+
+**So carry a resolved-scope version into invalidation.** Either hash the resolved namespace set into
+each rule's fingerprint, or add a separate source-scope generation to the rebuild trigger alongside
+the rules fingerprint and the catalog generation. Hashing the resolved set is the smaller change and
+composes with the existing gate; whichever is chosen, the test in the plan below asserts that an
+unchanged rule object with a changed policy re-projects the table.
+
+This is why [PR 4](pr4-source-namespace-field.md)'s source-scope service must expose resolution to
+the resolver, not only to the reconciler: the fingerprint is computed in `internal/watch` and needs
+the same answer the gate got.
+
+### 2b. Unknown is not empty
+
+An unresolvable selector must **never** be treated as a valid empty allow-list. The distinction is
+load-bearing because narrowing has a data-plane consequence: an empty resolved set means "watch
+nothing in any namespace", and combined with a resync it means Git content for those namespaces is
+no longer in `desired`. A transient source-cluster outage read as "the policy admits nothing" is
+therefore not merely a stopped stream — it is the input to a sweep. This is the sharpest reason
+[PR 1](pr1-namespace-scoped-resync.md) lands first and why its recommended retain-on-revocation
+semantics matter.
+
+Required behavior when the resolved set is unknown — cache not synced, source cluster unreachable,
+Namespace access denied for a selector policy:
+
+- **Retain the current resolved scope.** Do not narrow, do not widen, and do not sweep. The last
+  known-good scope keeps running.
+- **Never synthesize an empty set.** "I could not evaluate" and "it admits nothing" must be different
+  values all the way through the resolver, which is what the three-valued result in PR 4's
+  source-scope service exists to provide.
+- **Report it as non-terminal:** `SourceNamespaceAuthorized=Unknown` with reason
+  `CheckingSourceNamespacePolicy` while a retryable error is being retried, and
+  `SourceNamespacePolicyUnavailable` (still `Unknown`, still retained, **not** `Stalled`) when source
+  Namespace access is denied outright for a selector policy. Exact-name entries in the same policy
+  remain resolvable and keep working.
+
+A permanently unavailable selector is a legitimate long-lived `Unknown`. Turning it into `Stalled`
+would be a false claim that the operator knows the rule is wrong, and turning it into an empty set
+would be destructive.
 
 ### 3. Reactivity
 
@@ -123,7 +168,7 @@ because the rule object itself did not change and every diff looks correct.
 |---|---|---|
 | GitTarget `allowedSourceNamespaces` | Re-resolve the ceiling and replan the ClusterWatchRule's streams. | Not wired — the ClusterWatchRule controller performs no GitTarget-driven re-resolution. Needs a GitTarget → ClusterWatchRules mapper. |
 | Source-cluster Namespace labels | Re-resolve selector-based ceilings. | Extends the per-source-cluster informer PR 3 adds, to map to ClusterWatchRules as well. |
-| ClusterProvider `allowedNamespaces` | Already handled by [PR 2](pr2-clusterwatchrule-target-admission.md)'s mapper. | — |
+| ClusterProvider `allowedNamespaces` | Already handled by [PR 3](pr3-clusterwatchrule-target-admission.md)'s mapper. | — |
 
 ## Test plan
 
@@ -150,6 +195,18 @@ These prove the invariant. Without them the allow-list is enforced only where it
   differently, and tightening a policy changes the fingerprint of an unchanged rule object. The rule
   spec is byte-identical across both cases, so nothing else in the suite can catch a missing `src=`
   component.
+- **`TestWatchedTypeTable_RebuildsWhenOnlyThePolicyChanged`** — the invalidation twin of the above,
+  one level up: with the rule object untouched, editing `GitTarget.allowedSourceNamespaces` must
+  actually re-project the resident table, not merely re-run reconciliation. This is the test that
+  catches "the mapper fired but the fingerprint was unchanged, so the rebuild was skipped".
+- **`TestCeiling_UnknownScopeRetainsPreviousAndDoesNotSweep`** — with the source-scope service
+  reporting *cannot say* (cache unsynced or source unreachable), the resolved namespace set is
+  retained, no narrowing occurs, and **no resync/sweep is enqueued**. Assert the absence of the
+  sweep, not only the condition — this is the path where a wrong answer deletes Git content.
+- **`TestCeiling_ForbiddenSelectorIsUnknownNotStalled`** — a selector policy whose source Namespace
+  access is denied reports `SourceNamespaceAuthorized=Unknown` with
+  `SourceNamespacePolicyUnavailable`, keeps running at its last known scope, and does **not** set
+  `Stalled=True`. Exact-name entries in the same policy keep resolving.
 - **Revocation, envtest** — a running ClusterWatchRule under `allowedSourceNamespaces:
   [repo-config, team-a]`, narrowed to `[repo-config]`, stops the `team-a` stream within a bounded
   time. Not merely re-renders status.

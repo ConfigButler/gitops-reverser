@@ -1,7 +1,23 @@
-# PR 2 — a ClusterWatchRule's targetRef is unconsented
+# PR 3 — a ClusterWatchRule may attach to a GitTarget its provider never admitted
 
-> Phase 2 of [source-namespace addressing](README.md). **Depends on:** nothing — independent of
-> PR 1 and of the feature PRs. Bug fix — no API change, no CRD regeneration.
+> Phase 3 of [source-namespace addressing](README.md). **Depends on:** nothing — independent of the
+> other PRs and orderable at any point. Bug fix — no API change, no CRD regeneration.
+
+## What this PR is, precisely
+
+It is a **RuleStore and data-plane consistency guard**: it makes the rule-compilation path apply the
+same ClusterProvider admission check the GitTarget controller already applies, so a ClusterWatchRule
+cannot compile against a GitTarget that admission rejected.
+
+It is **not** a new consent mechanism, and the plan should not be read as adding one. There is no
+target-side authorization policy here — nothing lets a GitTarget owner say which ClusterWatchRules
+may reference their target. The check re-applies the *same* provider→GitTarget-namespace admission
+from a second call site. A genuine target-side consent policy (say,
+`GitTarget.spec.allowedClusterWatchRules`) would be a separate API decision and is not proposed.
+
+What this PR does buy is that the admission decision is enforced wherever rules are compiled, rather
+than only where GitTargets are reconciled — which matters because those two paths can disagree, as
+below.
 
 ## The defect
 
@@ -17,10 +33,11 @@ has exactly one non-test call site anywhere in the tree
 Since `ClusterWatchRule.targetRef` is a `NamespacedTargetReference` with a **required** namespace
 ([clusterwatchrule_types.go:22-44](../../../api/v1alpha3/clusterwatchrule_types.go#L22-L44)), any
 ClusterWatchRule may attach itself to any GitTarget in any namespace and widen that target's mirror
-scope to cluster-wide, without the GitTarget's namespace or its ClusterProvider ever consenting.
+scope to cluster-wide, without the compilation path ever consulting the ClusterProvider's admission
+policy for that target's namespace.
 
 `allowedNamespaces` is the ClusterProvider's explicit admission of the **GitTarget namespace** to use
-that provider. It admitted the target; it never consented to this rule.
+that provider. The compilation path never consults it.
 
 ## Not an escalation today — and why to fix it anyway
 
@@ -46,7 +63,7 @@ of an unadmitted target.
 
 Note one thing that is *already* confined: `providerNS := target.Namespace`
 ([clusterwatchrule_controller.go:173](../../../internal/controller/clusterwatchrule_controller.go#L173)),
-so the GitProvider is resolved in the GitTarget's own namespace. The unconsented edge is
+so the GitProvider is resolved in the GitTarget's own namespace. The unchecked edge is
 rule → GitTarget only.
 
 ## The fix
@@ -69,7 +86,7 @@ already exists
 ClusterProvider → ClusterWatchRules does not.
 
 This check is separate from, and does not replace,
-[`GitTarget.allowedSourceNamespaces`](pr4-clusterwatchrule-source-ceiling.md). They answer different
+[`GitTarget.allowedSourceNamespaces`](pr5-clusterwatchrule-source-ceiling.md). They answer different
 questions: provider admission asks *may this target use this credential at all*, the ceiling asks
 *which source namespaces may reach this target's destination*.
 

@@ -1,6 +1,6 @@
 # Source-namespace addressing and per-target source scope
 
-> **Design, ready to implement in four PRs — nothing here is built.** Companion to upstream
+> **Design, ready to implement in five PRs — nothing here is built.** Companion to upstream
 > wishlist #14 and [config-plane-split.md](../../finished/config-plane-split.md).
 > Written 2026-07-19, split into phases 2026-07-20. Index: [INDEX.md](../../INDEX.md).
 >
@@ -11,7 +11,8 @@ A WatchRule can only watch the namespace it lives in. On a shared config plane t
 tenant's configuration namespace and their source namespace to share a name, which collides as soon
 as two tenants want the same one. This folder adds a source-namespace field, and — the part that
 makes it safe — a per-GitTarget ceiling on which source namespaces may be mirrored into that target
-at all, binding **both** rule kinds.
+at all, binding **both** rule kinds. Three pre-existing scope defects are fixed first, because each
+of them would otherwise turn the new fan-out into silent Git data loss or an unenforced boundary.
 
 ## The model
 
@@ -28,28 +29,50 @@ WatchRule  ──uses──>  GitTarget  ──uses──>  ClusterProvider
 - **`WatchRule.spec.sourceNamespace`** — the requested source namespace. Omitted means the
   WatchRule's own namespace.
 - **`GitTarget.spec.allowedSourceNamespaces`** — the target owner's allow-list. It is a property of
-  the **destination**, not of the requesting rule: when declared it is a ceiling on every rule that
+  the **destination**, not of the requesting rule: when declared it is exhaustive for every rule that
   writes to this GitTarget, ClusterWatchRule included.
 - **`ClusterProvider.spec.allowedNamespaces`** — unchanged platform-admin policy: which
   control-cluster namespaces may create GitTargets using the provider.
 - **`ClusterProvider.spec.allowWatchRuleSourceNamespaceOverride`** — new, false-by-default
   delegation. While false a WatchRule may use only its own namespace.
 
-The one invariant everything else serves:
+The one invariant everything else serves — **a declared policy is exhaustive**:
 
-> A source namespace may be mirrored into a GitTarget only if it is the requesting WatchRule's own
-> namespace, or the GitTarget's declared `allowedSourceNamespaces` admits it.
-
-Because a ClusterWatchRule has no own namespace, the kinds differ only in the legacy carve-out that
-applies when the field is **undeclared**:
+> When a GitTarget declares `allowedSourceNamespaces`, the source namespaces mirrored into it are
+> **exactly** those the policy admits, for every rule of every kind. When it declares none, each rule
+> kind keeps its legacy scope.
 
 | `GitTarget.allowedSourceNamespaces` | WatchRule | ClusterWatchRule (`scope: Namespaced` rules) |
 |---|---|---|
 | Undeclared | Own namespace only (legacy) | All source namespaces (legacy) |
-| Declared | Own namespace, plus what the policy admits | Exactly what the policy admits |
+| Declared | Exactly what the policy admits | Exactly what the policy admits |
 
 Nothing changes on upgrade: the field is new, so it is undeclared everywhere until a target owner
 opts in.
+
+### No self-namespace exception
+
+An earlier revision let a declared policy still implicitly permit a WatchRule's own namespace, on the
+theory that it would be rude to break a legacy rule when a policy is added for an unrelated override.
+That is rejected. It would mean the field does not actually bound what reaches the target — a reader
+auditing `allowedSourceNamespaces: [repo-config]` would be wrong about the target's contents, which
+defeats the reason the field exists — and "ceiling" would be a false description of it.
+
+So a policy lists everything, including the target's own namespace when a legacy WatchRule needs it:
+
+~~~yaml
+allowedSourceNamespaces:
+  names: [tenant-acme, repo-config]   # own namespace listed explicitly
+~~~
+
+The trade-off is a genuine authoring footgun: adding a policy for one override silently denies the
+co-resident legacy rules unless their namespace is listed. It is mitigated three ways, and none of
+them is "hope". The field is new, so no existing configuration is affected. The denial is loud, not
+silent — `SourceNamespaceAuthorized=False` with reason `SourceNamespaceNotAllowed`, `Stalled=True`,
+and the stream stopped. And the reason message must name the specific fix: *"namespace tenant-acme is
+not in the GitTarget's allowedSourceNamespaces; add it to keep watching this rule's own namespace."*
+A footgun you are told about, in the terms of the fix, is an acceptable price for a field that means
+what it says.
 
 ## The driving use case: multi-tenancy with CRDs on day one
 
@@ -66,7 +89,7 @@ opts in.
    reference. Without the ceiling, the operator's answer to "will this stream objects from
    namespaces outside my allow-list?" is *hand-audit every ClusterWatchRule and hope*. With it, the
    answer is a field you can read off the GitTarget. This is why
-   [PR 4](pr4-clusterwatchrule-source-ceiling.md) is part of the launch set, not a follow-up.
+   [PR 5](pr5-clusterwatchrule-source-ceiling.md) is part of the launch set, not a follow-up.
 5. **A deliberately cross-namespace in-cluster source.** An explicit platform-admin delegation
    through the operator's cluster RBAC — the same mechanism as remote, but a much sharper sign-off.
 
@@ -87,23 +110,39 @@ here (which namespaces).
 
 ## Implementation phases
 
-Four PRs, ordered so each is independently reviewable and independently revertible. The first two
+Five PRs, ordered so each is independently reviewable and independently revertible. The first three
 are pre-existing defect fixes that carry no API change; the last two are the feature.
 
 | # | PR | Scope | Depends on | Status |
 |---|---|---|---|---|
-| 1 | [Stream-scope collapse](pr1-stream-scope-collapse.md) | A cluster-wide selection stops silently widening a co-resident named-namespace stream for the same GVR. Bug fix, no API. | — | not started |
-| 2 | [ClusterWatchRule target admission](pr2-clusterwatchrule-target-admission.md) | A ClusterWatchRule may no longer attach to a GitTarget whose namespace its ClusterProvider does not admit. Bug fix, no API. | — | not started |
-| 3 | [The sourceNamespace field and gate](pr3-source-namespace-field.md) | `WatchRule.spec.sourceNamespace`, `GitTarget.spec.allowedSourceNamespaces`, the delegation flag, the three-part gate, `SourceNamespaceAuthorized`. | 1 | not started |
-| 4 | [The ClusterWatchRule ceiling](pr4-clusterwatchrule-source-ceiling.md) | A declared `allowedSourceNamespaces` narrows a ClusterWatchRule's namespaced streams. | 1, 3 | not started |
+| 1 | [Namespace-scoped resync](pr1-namespace-scoped-resync.md) | A per-namespace replay must not sweep other namespaces' manifests of the same type. Bug fix, no API. | — | not started |
+| 2 | [Stream-scope collapse](pr2-stream-scope-collapse.md) | A cluster-wide selection stops silently widening a co-resident named-namespace stream for the same GVR. Bug fix, no API. | 1 | not started |
+| 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule may no longer attach to a GitTarget whose namespace its ClusterProvider does not admit. Bug fix, no API. | — | not started |
+| 4 | [The sourceNamespace field and gate](pr4-source-namespace-field.md) | `WatchRule.spec.sourceNamespace`, `GitTarget.spec.allowedSourceNamespaces`, the delegation flag, the gate, `SourceNamespaceAuthorized`, and the source-scope service. | 1, 2 | not started |
+| 5 | [The ClusterWatchRule ceiling](pr5-clusterwatchrule-source-ceiling.md) | A declared `allowedSourceNamespaces` narrows a ClusterWatchRule's namespaced streams. | 1, 2, 4 | not started |
 
-**Release gate: do not cut a release between PR 3 and PR 4.** PR 3 ships the field; until PR 4 lands
+**PR 1 gates everything.** It is not a cleanup to slot in opportunistically: the resync sweep is
+scoped by type but not by namespace, so the first change that lets one GitTarget watch a GVR in more
+than one namespace starts deleting other namespaces' manifests from Git. PRs 2, 4, and 5 each
+introduce exactly that fan-out, independently. Landing any of them first is silent data loss in a
+tenant's repository.
+
+**Release gate: do not cut a release between PR 4 and PR 5.** PR 4 ships the field; until PR 5 lands
 the field is enforced on the rule kind that cannot bypass it and unenforced on the one that can, and
 [use case 4](#the-driving-use-case-multi-tenancy-with-crds-on-day-one) is exactly the configuration
-that hits the gap. PRs 3 and 4 may merge separately; they must ship together.
+that hits the gap. They may merge separately; they must ship together.
 
-PRs 1 and 2 are independent of each other and of the feature, so they can go in parallel or first.
-PR 1 before PR 3 matters because PR 3's gate is only as good as the stream scoping underneath it.
+PR 3 is independent of the rest and can go at any point.
+
+### The shape all five are serving
+
+The end state is that a GitTarget's watch set is **exactly the streams that were declared for it** —
+no accidental widening from a co-resident rule (PR 2), no attachment the provider never admitted
+(PR 3), no scope
+that outruns its declaration (PR 4, PR 5), and no sweep that acts outside the scope it was gathered
+over (PR 1). Every defect in this folder is the same mistake in a different place: a scope that is
+computed in one part of the system and then silently widened or dropped in another. That is why the
+fixes precede the feature rather than accompanying it.
 
 ## Why the scope lives on GitTarget
 
@@ -183,7 +222,7 @@ migration is required — but release notes must call these out.
 - **Gate the override on `kubeConfig` presence (remote-only)** — rejected. `kubeConfig` is
   connectivity, not permission. It also welds the in-cluster case shut forever, conflating "unsafe by
   default" with "impossible". See the `IsLocalSource()` trap in
-  [PR 3](pr3-source-namespace-field.md#locality-is-not-the-switch).
+  [PR 4](pr4-source-namespace-field.md#locality-is-not-the-switch).
 - **Use ClusterWatchRule instead of a WatchRule field** — mechanically viable, since a
   ClusterWatchRule already resolves through the same source cluster, but it costs per-tenant
   namespace ownership and tenant self-service authoring, and needs PRs 1 and 2 regardless.

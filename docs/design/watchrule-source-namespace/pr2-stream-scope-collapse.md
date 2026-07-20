@@ -1,7 +1,9 @@
-# PR 1 — a cluster-wide selection must not collapse named-namespace scoping
+# PR 2 — a cluster-wide selection must not collapse named-namespace scoping
 
-> Phase 1 of [source-namespace addressing](README.md). **Depends on:** nothing. **Blocks:** PR 3
-> (the gate is only as good as the stream scoping underneath it) and PR 4.
+> Phase 2 of [source-namespace addressing](README.md). **Depends on:**
+> [PR 1](pr1-namespace-scoped-resync.md) — this PR is the first thing that makes a GitTarget watch one
+> GVR in two namespaces at once, which is unsafe until the resync sweep is namespace-scoped.
+> **Blocks:** PR 4 (the gate is only as good as the stream scoping underneath it) and PR 5.
 > Bug fix — no API change, no CRD regeneration.
 
 ## The defect
@@ -20,13 +22,13 @@ named rule co-resident with an `UPDATE` cluster-wide rule loses its filter too.
 
 ### Why it matters to this workstream
 
-Under [PR 3](pr3-source-namespace-field.md) this is a gate bypass. A ClusterWatchRule may
+Under [PR 4](pr4-source-namespace-field.md) this is a gate bypass. A ClusterWatchRule may
 legitimately select every source namespace once its GitTarget passes provider admission — but a
 co-resident WatchRule must not silently inherit that cluster-wide stream. Otherwise a WatchRule
 authorized only for `repo-config` receives events from every namespace the credential can read, and
 its `allowedSourceNamespaces` check passed only *before* the data plane widened it.
 
-[PR 4](pr4-clusterwatchrule-source-ceiling.md) removes the `""` key entirely for any target with a
+[PR 5](pr5-clusterwatchrule-source-ceiling.md) removes the `""` key entirely for any target with a
 declared ceiling, so the collapse cannot trigger there. This PR is what governs the far more common
 undeclared case.
 
@@ -59,6 +61,12 @@ Keep cluster-wide and named selections as distinct streams for the same GVR, or 
 scope from the cluster-wide one — and preserve the per-namespace operation sets either way. Both
 read sites above must agree; a fix applied to one of them is worse than no fix, because the plan hash
 and the running streams then disagree.
+
+> **Do not land this before [PR 1](pr1-namespace-scoped-resync.md).** Distinct concurrent streams for
+> one GVR is precisely the fan-out the resync sweep mishandles: the named stream's replay carries a
+> `desired` set for one namespace, while the sweep it triggers is scoped to the whole type. Fixing
+> the collapse first therefore converts a silent over-watch into silent deletion of the cluster-wide
+> stream's manifests.
 
 ## Tests
 
