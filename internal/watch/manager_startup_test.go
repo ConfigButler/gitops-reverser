@@ -120,6 +120,19 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 		},
 	}
 
+	// existingGitTarget omits clusterProviderRef, which resolves to the reserved "default"
+	// ClusterProvider. Bootstrap now applies that provider's namespace admission before seeding a
+	// ClusterWatchRule, so the fixture must ship the provider the way a real install does (an
+	// empty selector admits every namespace — the chart default). Without it the seed is correctly
+	// REFUSED, which is the behavior TestBootstrapClusterWatchRule_RefusesMissingClusterProvider
+	// covers; this test is about the admitted path.
+	defaultClusterProvider := &configv1alpha3.ClusterProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: configv1alpha3.DefaultClusterProviderName},
+		Spec: configv1alpha3.ClusterProviderSpec{
+			AllowedNamespaces: &configv1alpha3.AllowedNamespaces{Selector: &metav1.LabelSelector{}},
+		},
+	}
+
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(
@@ -127,6 +140,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 			existingClusterWatchRule,
 			existingGitTarget,
 			existingGitProvider,
+			defaultClusterProvider,
 		).
 		Build()
 

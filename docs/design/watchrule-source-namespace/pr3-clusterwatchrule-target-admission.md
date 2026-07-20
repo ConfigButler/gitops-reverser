@@ -2,6 +2,15 @@
 
 > Phase 3 of [source-namespace addressing](README.md). **Depends on:** nothing — independent of the
 > other PRs and orderable at any point. Bug fix — no API change, no CRD regeneration.
+>
+> **Status: landed.** The admission decision moved to `internal/authz.GitTargetAdmitted` and is now
+> applied by all three call sites that compile a rule or start a data plane for a GitTarget — the
+> GitTarget reconciler, the ClusterWatchRule reconciler, and the watch manager's startup bootstrap.
+> A refusal stops the data plane *before* it publishes `GitTargetNamespaceNotAuthorized`, and two new
+> mappers (ClusterProvider → ClusterWatchRules, Namespace → ClusterWatchRules) make a revocation
+> converge on the event rather than on the ~10 minute periodic reconcile. The rest of this page is
+> the record of what was wrong and what shipped; sections below are past-tense by design, so a
+> regression is recognisable against them.
 
 ## What this PR is, precisely
 
