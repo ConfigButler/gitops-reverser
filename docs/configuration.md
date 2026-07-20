@@ -386,9 +386,27 @@ spec:
 
 `allowedNamespaces` is evaluated against namespaces in the **control cluster**, where
 `GitTarget`s live. In this example, a `GitTarget` in `team-a`, or in a control-cluster namespace
-with the shown label, may reference `prod-eu-1`. It has no effect on which namespaces are read from
-the source cluster; that remains entirely the source connection's Kubernetes RBAC. `names` and
-`selector` are ORed, and an omitted policy admits no control-cluster namespace.
+with the shown label, may reference `prod-eu-1`. `names` and `selector` are ORed, and an omitted
+policy admits no control-cluster namespace.
+
+Which namespaces are read *from the source cluster* is bounded by
+[`GitTarget.spec.allowedSourceNamespaces`](#bounding-which-source-namespaces-reach-a-target) when
+that target declares one, and by the source connection's Kubernetes RBAC in every case — the
+credential's own RBAC is always the hard maximum. A `WatchRule` may name a source namespace other
+than its own only when this provider also sets:
+
+```yaml
+  # Deny-by-default. While false, a WatchRule mirroring through this provider may
+  # watch only its OWN namespace, whatever any GitTarget policy says.
+  allowWatchRuleSourceNamespaceOverride: true
+```
+
+That flag delegates the *choice* of source namespace to the `GitTarget`s this provider admits; it
+grants nothing on its own, since the target must still list the namespace. Setting it on an
+**in-cluster** provider is a much sharper decision than on a remote one: there the config plane *is*
+the watched cluster, so it deliberately bypasses live namespace RBAC and lets the owner of an
+admitted `GitTarget` mirror another namespace's objects into a Git destination they control. That is
+legitimate to grant on purpose, which is why it is explicit and defaults to false.
 
 `spec.kubeConfig` and `GitTarget.spec.clusterProviderRef` are immutable: changing either would silently
 make an existing materialization mean a different source cluster. Rotate credential *contents* in the
@@ -688,17 +706,85 @@ For design details and the exact boundary, see
 
 ## `WatchRule`
 
-`WatchRule` is the normal namespaced watcher. It only watches resources in its own namespace and
-writes them to the referenced `GitTarget`.
+`WatchRule` is the normal namespaced watcher. It watches resources in **one namespace of its
+`GitTarget`'s source cluster** — its own namespace by default — and writes them to that `GitTarget`.
 
-Status uses `ResourcesResolved` for selector resolution, `StreamsRunning` for source-watch readiness, and
-`GitTargetReady` for the referenced target's write readiness. A rule can have `StreamsRunning=True` and
-still remain `Ready=False` when its GitTarget reports `GitPathAccepted=False`.
+Status uses `ResourcesResolved` for selector resolution, `StreamsRunning` for source-watch readiness,
+`GitTargetReady` for the referenced target's write readiness, and `SourceNamespaceAuthorized` for the
+source-namespace gate below. A rule can have `StreamsRunning=True` and still remain `Ready=False`
+when its GitTarget reports `GitPathAccepted=False`.
 
 The important fields are:
 
 - `spec.targetRef.name`: target to write to
+- `spec.sourceNamespace`: the source-cluster namespace to watch; omitted means the rule's own
+  namespace
 - `spec.rules`: one or more resource-match rules
+
+### Watching a different source namespace
+
+Set `spec.sourceNamespace` to mirror a namespace other than the one the `WatchRule` lives in — the
+case a shared config plane needs, where a tenant's configuration namespace and their source
+namespace cannot share a name. It is authorized by three things, all of which must hold:
+
+1. the `GitTarget`'s namespace is admitted by its `ClusterProvider`'s `allowedNamespaces`;
+2. that `ClusterProvider` sets `allowWatchRuleSourceNamespaceOverride: true`; and
+3. the `GitTarget`'s `allowedSourceNamespaces` admits the namespace.
+
+```yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: repo-config
+  namespace: tenant-acme
+spec:
+  targetRef:
+    name: acme
+  sourceNamespace: repo-config   # watched in the SOURCE cluster
+  rules:
+    - resources: [configmaps]
+```
+
+The outcome is published as `SourceNamespaceAuthorized`, also shown by
+`kubectl get watchrules -o wide`. A refusal is terminal — `Ready=False`, `Stalled=True`, and the
+stream stopped — and its message names the fix. Authorization is re-evaluated on every reconcile, so
+tightening a policy revokes a running rule rather than only affecting new ones.
+
+This changes only which namespace is **watched**. Git placement always follows each mirrored
+object's own namespace, so the rule above writes under `repo-config/…`, not `tenant-acme/…`.
+
+### Bounding which source namespaces reach a target
+
+`GitTarget.spec.allowedSourceNamespaces` bounds which source-cluster namespaces may be mirrored into
+that target, by any rule kind:
+
+```yaml
+spec:
+  allowedSourceNamespaces:
+    names: [repo-config]
+    selector:
+      matchLabels:
+        gitops.configbutler.ai/mirrorable: "true"
+```
+
+`names` and `selector` are ORed, and the selector matches labels on `Namespace`s in the **source**
+cluster — so evaluating it needs `namespaces` `get`/`list`/`watch` for that cluster's credential.
+Exact `names` keep working without that access, which is a deliberate degradation path.
+
+Two things about this field are easy to get wrong:
+
+- **Omitted and empty differ.** Omitted declares no policy and each rule kind keeps its legacy scope.
+  A declared-but-empty policy (`{}`) admits **nothing**.
+- **A declared policy is exhaustive, with no self-namespace exception.** It must list every namespace
+  that may reach the target, *including* a co-resident legacy `WatchRule`'s own namespace. Adding a
+  policy for one override therefore denies those rules until their namespace is listed — loudly, with
+  a message naming the fix, but it will happen.
+
+A namespace allow-list cannot partition **cluster-scoped** objects, which have no namespace. A
+`ClusterWatchRule` selecting cluster-scoped types receives every such object its source credential
+can read, and this field is not consulted for them. If a tenant must not see another tenant's
+cluster-scoped objects, give each tenant its own `ClusterProvider` and credential, so that
+credential's RBAC is the boundary.
 
 Each entry in `spec.rules` is a logical OR. A resource matching any rule is watched. The rule fields
 are:

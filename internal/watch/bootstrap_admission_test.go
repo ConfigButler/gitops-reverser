@@ -48,7 +48,7 @@ func bootGitProvider() *configv1alpha3.GitProvider {
 	}
 }
 
-func bootClusterProvider(policy *configv1alpha3.AllowedNamespaces) *configv1alpha3.ClusterProvider {
+func bootClusterProvider(policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.ClusterProvider {
 	return &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: bootProviderName},
 		Spec:       configv1alpha3.ClusterProviderSpec{AllowedNamespaces: policy},
@@ -92,7 +92,7 @@ func bootCompiledNames(m *Manager) []string {
 func TestBootstrapClusterWatchRule_RefusesUnauthorizedGitTargetNamespace(t *testing.T) {
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootClusterProvider(&configv1alpha3.AllowedNamespaces{Names: []string{"some-other-namespace"}}),
+		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"some-other-namespace"}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -122,7 +122,7 @@ func TestBootstrapClusterWatchRule_RefusesMissingClusterProvider(t *testing.T) {
 func TestBootstrapClusterWatchRule_SeedsAdmittedRule(t *testing.T) {
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootClusterProvider(&configv1alpha3.AllowedNamespaces{Names: []string{bootTargetNS}}),
+		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -161,7 +161,7 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 		&configv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Name: "git", Namespace: "team-ok"}},
 		admittedRule,
 		// Admits team-ok only, so the team-a rule is refused.
-		bootClusterProvider(&configv1alpha3.AllowedNamespaces{Names: []string{"team-ok"}}),
+		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"team-ok"}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-ok"}},
 	)

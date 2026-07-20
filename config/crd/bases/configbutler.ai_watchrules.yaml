@@ -35,6 +35,10 @@ spec:
       name: StreamsRunning
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="SourceNamespaceAuthorized")].status
+      name: SourceAuthorized
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -42,14 +46,20 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          WatchRule watches namespaced resources within its own namespace.
-          It provides fine-grained control over which resources trigger Git commits,
+          WatchRule watches namespaced resources in ONE namespace of the source cluster its GitTarget
+          mirrors from. It provides fine-grained control over which resources trigger Git commits,
           with filtering by operation type, API group, version, and labels.
 
           Security model:
-            - WatchRule is namespace-scoped and can only watch resources in its own namespace
+            - WatchRule is namespace-scoped and watches its OWN namespace unless spec.sourceNamespace
+              names another one AND that override passes the three-part gate described on that field —
+              provider admission, an explicit provider-side delegation flag, and the GitTarget's
+              allowedSourceNamespaces. The gate is deny-by-default and re-evaluated on every reconcile,
+              so a policy tightened later revokes a running rule.
             - Use ClusterWatchRule for watching cluster-scoped resources (Nodes, ClusterRoles, etc.)
-            - RBAC controls who can create/modify WatchRules per namespace
+            - RBAC controls who can create/modify WatchRules per namespace. Note that where the source is
+              the operator's OWN cluster, an authorized override deliberately bypasses live namespace
+              RBAC — which is why it takes an explicit platform-admin delegation to enable.
         properties:
           apiVersion:
             description: |-
@@ -157,6 +167,27 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+              sourceNamespace:
+                description: |-
+                  SourceNamespace is the namespace to watch IN THE SOURCE CLUSTER the referenced GitTarget
+                  mirrors from. Omitted, it is this WatchRule's own namespace — the legacy behavior, which
+                  needs no authorization as long as the GitTarget declares no allowedSourceNamespaces policy.
+
+                  Naming a DIFFERENT namespace requires all three of:
+
+                   1. the GitTarget's namespace is admitted by its ClusterProvider (spec.allowedNamespaces);
+                   2. that ClusterProvider sets spec.allowWatchRuleSourceNamespaceOverride; and
+                   3. the GitTarget's spec.allowedSourceNamespaces admits this namespace.
+
+                  The outcome is published as the SourceNamespaceAuthorized condition. Once the GitTarget
+                  declares a policy that policy is exhaustive, so even an OMITTED sourceNamespace is then
+                  checked against it — the rule's own namespace gets no implicit carve-out.
+
+                  This changes only which namespace is WATCHED. It never changes where objects are written:
+                  Git placement follows each mirrored object's OWN namespace, so a rule in "tenant-acme"
+                  watching "repo-config" writes under repo-config/…, not tenant-acme/….
+                minLength: 1
+                type: string
               targetRef:
                 description: |-
                   TargetRef references the GitTarget to use.

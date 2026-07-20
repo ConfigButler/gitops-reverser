@@ -449,7 +449,6 @@ func (r *ClusterWatchRuleReconciler) setRuleKstatus(
 	applyRuleKstatus(
 		clusterRule.Status.Conditions,
 		readyMessage,
-		ClusterWatchRuleReasonReady,
 		"ClusterWatchRule is not stalled",
 		func(conditionType string, status metav1.ConditionStatus, reason, message string) {
 			r.setTypedCondition(clusterRule, conditionType, status, reason, message)

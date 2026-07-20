@@ -115,7 +115,7 @@ func scScheme(t *testing.T) *runtime.Scheme {
 }
 
 func TestCheckSourceAuthorization(t *testing.T) {
-	provider := func(policy *configbutleraiv1alpha3.AllowedNamespaces) *configbutleraiv1alpha3.ClusterProvider {
+	provider := func(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.ClusterProvider {
 		return &configbutleraiv1alpha3.ClusterProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "prod-eu-1"},
 			Spec:       configbutleraiv1alpha3.ClusterProviderSpec{AllowedNamespaces: policy},
@@ -148,21 +148,21 @@ func TestCheckSourceAuthorization(t *testing.T) {
 		{
 			name: "provider allows the namespace by name",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.AllowedNamespaces{Names: []string{"team-a"}}), ns,
+				provider(&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}), ns,
 			},
 			providerRef: "prod-eu-1", wantAuthorized: true,
 		},
 		{
 			name: "provider does not allow the namespace -> refused",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.AllowedNamespaces{Names: []string{"team-b"}}), ns,
+				provider(&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-b"}}), ns,
 			},
 			providerRef: "prod-eu-1", wantAuthorized: false, wantReason: GitTargetReasonNamespaceNotAuthorized,
 		},
 		{
 			name: "provider allows the namespace by label selector",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.AllowedNamespaces{
+				provider(&configbutleraiv1alpha3.NamespaceMatcher{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
 				}), ns,
 			},
@@ -173,7 +173,7 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			// unevaluatable policy as "allow" would hand a namespace access it was never granted.
 			name: "invalid allowedNamespaces selector -> refused, not allowed",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.AllowedNamespaces{
+				provider(&configbutleraiv1alpha3.NamespaceMatcher{
 					Selector: &metav1.LabelSelector{
 						MatchExpressions: []metav1.LabelSelectorRequirement{
 							{Key: "tier", Operator: "BogusOperator", Values: []string{"trusted"}},
@@ -188,14 +188,14 @@ func TestCheckSourceAuthorization(t *testing.T) {
 			// no labels. A name-based allow still works; a selector-only policy then denies.
 			name: "namespace object absent -> evaluated with no labels, name allow still holds",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.AllowedNamespaces{Names: []string{"team-a"}}),
+				provider(&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}),
 			},
 			providerRef: "prod-eu-1", wantAuthorized: true,
 		},
 		{
 			name: "namespace object absent -> selector-only policy denies (no labels to match)",
 			objects: []client.Object{
-				provider(&configbutleraiv1alpha3.AllowedNamespaces{
+				provider(&configbutleraiv1alpha3.NamespaceMatcher{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "trusted"}},
 				}),
 			},
@@ -231,7 +231,7 @@ func TestCheckSourceAuthorization_ReadErrorsRequeue(t *testing.T) {
 	provider := &configbutleraiv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "prod-eu-1"},
 		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-			AllowedNamespaces: &configbutleraiv1alpha3.AllowedNamespaces{Names: []string{"team-a"}},
+			AllowedNamespaces: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-a"}},
 		},
 	}
 
@@ -324,7 +324,7 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	provider := &configbutleraiv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: providerName},
 		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-			AllowedNamespaces: &configbutleraiv1alpha3.AllowedNamespaces{Names: []string{"team-b"}},
+			AllowedNamespaces: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"team-b"}},
 		},
 	}
 	gitProvider := &configbutleraiv1alpha3.GitProvider{

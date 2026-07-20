@@ -93,6 +93,95 @@ spec:
           spec:
             description: spec defines the desired state of GitTarget
             properties:
+              allowedSourceNamespaces:
+                description: "AllowedSourceNamespaces bounds which SOURCE-cluster
+                  namespaces may be mirrored INTO this\ntarget. It is a property of
+                  the DESTINATION, not of any requesting rule: when declared it is\nexhaustive
+                  for every rule that writes here, of every kind.\n\nThe invariant
+                  everything else serves — a declared policy is exhaustive:\n\n\t|
+                  declared? | WatchRule                       | ClusterWatchRule (Namespaced
+                  rules) |\n\t| no        | its own namespace only (legacy) | all
+                  source namespaces (legacy)      |\n\t| yes       | exactly what
+                  the policy admits  | exactly what the policy admits      |\n\nThere
+                  is deliberately NO self-namespace exception. Once a policy is declared
+                  it must list\nevery namespace that may reach this target, INCLUDING
+                  a co-resident legacy WatchRule's own\nnamespace. An implicit carve-out
+                  would mean the field does not actually bound what arrives\nhere,
+                  so a reader auditing it would be wrong about the target's contents
+                  — which is the\nwhole reason the field exists. The resulting authoring
+                  footgun (adding a policy for one\noverride silently denies co-resident
+                  legacy rules) is mitigated by being LOUD:\nSourceNamespaceAuthorized=False,
+                  Stalled=True, and a message naming the exact fix.\n\nIts selector
+                  matches labels on Namespaces in the SOURCE cluster this target mirrors
+                  from —\nnot the control cluster ClusterProvider.allowedNamespaces
+                  describes. Evaluating it therefore\nneeds Namespace get/list/watch
+                  for the identity in that cluster's credential; an\nexact-NAMES entry
+                  stays usable without it, which is a deliberate degradation path.\n\nEmpty
+                  or omitted are NOT the same: omitted declares no policy (each rule
+                  kind keeps its\nlegacy scope), while a declared-but-empty policy
+                  admits nothing. Widening a WatchRule beyond\nits own namespace additionally
+                  requires the ClusterProvider to set\nspec.allowWatchRuleSourceNamespaceOverride;
+                  NARROWING never does.\n\nNote that a namespace allow-list cannot
+                  partition CLUSTER-SCOPED objects, which have no\nnamespace: a ClusterWatchRule
+                  selecting cluster-scoped types receives every such object the\nsource
+                  credential can read, and this field is neither consulted nor a bound
+                  for them."
+                properties:
+                  names:
+                    description: Names is an explicit allow-list of namespace names.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  selector:
+                    description: |-
+                      Selector is a label selector matched against Namespace labels; a namespace whose labels
+                      match is admitted. ORed with Names.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
               branch:
                 description: |-
                   Branch to use for this target.

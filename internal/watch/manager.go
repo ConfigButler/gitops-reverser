@@ -204,6 +204,20 @@ type Manager struct {
 	// data plane reads it to drive the per-(GitTarget, type) watch set; re-declaring is idempotent.
 	declaredGVRsMu sync.Mutex
 	declaredGVRs   map[string]map[schema.GroupVersionResource]struct{}
+
+	// sourceNamespaceScope is the source-scope service: the per-source-cluster Namespace label
+	// snapshot that GitTarget.allowedSourceNamespaces selectors are evaluated against, plus the
+	// per-rule resolved scopes the establishing/maintaining contract turns on. See
+	// source_namespace_scope.go. Lazily built so a zero-value Manager works in tests.
+	sourceScopeInit      sync.Once
+	sourceNamespaceScope *sourceNamespaceScope
+
+	// sourceNamespaceEventsCh carries a GenericEvent for every GitTarget on a source cluster whose
+	// Namespace labels changed, so a selector-driven grant or revocation reaches the WatchRule
+	// controller on the change instead of waiting up to RequeueSteadyInterval (5m). Lazily created
+	// by SourceNamespaceEvents() and guarded by sourceNamespaceEventsMu.
+	sourceNamespaceEventsMu sync.Mutex
+	sourceNamespaceEventsCh chan event.GenericEvent
 }
 
 // GitPathAcceptanceStatus is the whole-target write-safety status for a GitTarget path.
@@ -297,6 +311,11 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
 		return err
 	}
+
+	// Re-list the source-cluster Namespace labels any selector policy has asked about, BEFORE the
+	// tables are re-resolved: this is where a source-namespace grant or revocation is observed,
+	// and a change enqueues the affected GitTargets so their WatchRules re-run the gate.
+	m.refreshSourceNamespaceScopes(ctx)
 
 	// Re-resolve the resident watched-type tables now that the catalog is fresh. This is
 	// gated on a rule-set change or catalog generation bump, so a periodic reconcile with

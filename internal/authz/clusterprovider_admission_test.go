@@ -41,7 +41,7 @@ func targetIn(providerName string) *configv1alpha3.GitTarget {
 	return t
 }
 
-func providerNamed(name string, policy *configv1alpha3.AllowedNamespaces) *configv1alpha3.ClusterProvider {
+func providerNamed(name string, policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.ClusterProvider {
 	return &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec:       configv1alpha3.ClusterProviderSpec{AllowedNamespaces: policy},
@@ -83,7 +83,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			name: "omitted clusterProviderRef is admitted by an admitting default provider",
 			objects: []client.Object{
 				providerNamed(configv1alpha3.DefaultClusterProviderName,
-					&configv1alpha3.AllowedNamespaces{Names: []string{"team-a"}}),
+					&configv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}),
 				namespaceLabeled(nil),
 			},
 			target:      targetIn(""),
@@ -103,7 +103,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		{
 			name: "empty policy struct denies by default",
 			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.AllowedNamespaces{}),
+				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{}),
 				namespaceLabeled(nil),
 			},
 			target:      targetIn("prod-eu-1"),
@@ -114,7 +114,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			name: "names entry admits",
 			objects: []client.Object{
 				providerNamed("prod-eu-1",
-					&configv1alpha3.AllowedNamespaces{Names: []string{"team-b", "team-a"}}),
+					&configv1alpha3.NamespaceMatcher{Names: []string{"team-b", "team-a"}}),
 				namespaceLabeled(nil),
 			},
 			target:      targetIn("prod-eu-1"),
@@ -123,7 +123,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		{
 			name: "names list not containing the namespace denies",
 			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.AllowedNamespaces{Names: []string{"team-b"}}),
+				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{Names: []string{"team-b"}}),
 				namespaceLabeled(nil),
 			},
 			target:      targetIn("prod-eu-1"),
@@ -136,7 +136,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			name: "empty selector admits every namespace",
 			objects: []client.Object{
 				providerNamed("prod-eu-1",
-					&configv1alpha3.AllowedNamespaces{Selector: &metav1.LabelSelector{}}),
+					&configv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}}),
 				namespaceLabeled(nil),
 			},
 			target:      targetIn("prod-eu-1"),
@@ -145,7 +145,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		{
 			name: "selector matching namespace labels admits",
 			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.AllowedNamespaces{
+				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
 				}),
 				namespaceLabeled(map[string]string{"tier": "prod"}),
@@ -156,7 +156,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		{
 			name: "selector not matching namespace labels denies",
 			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.AllowedNamespaces{
+				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
 				}),
 				namespaceLabeled(map[string]string{"tier": "dev"}),
@@ -170,7 +170,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			// rejects it. Guards against a future refactor turning the OR into an AND.
 			name: "names admits even when the selector does not match",
 			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.AllowedNamespaces{
+				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
 					Names:    []string{"team-a"},
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
 				}),
@@ -182,7 +182,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 		{
 			name: "invalid selector denies with a legible message rather than admitting",
 			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.AllowedNamespaces{
+				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
 					Selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
 						Key: "tier", Operator: "NotARealOperator",
 					}}},
@@ -199,7 +199,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			// which exists in the reference even before the namespace object does.
 			name: "absent namespace object still admitted by a names entry",
 			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.AllowedNamespaces{Names: []string{"team-a"}}),
+				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}),
 			},
 			target:      targetIn("prod-eu-1"),
 			wantAllowed: true,
@@ -208,7 +208,7 @@ func TestGitTargetAdmitted_Policy(t *testing.T) {
 			// ...but a selector has no labels to match against, so it correctly does not admit.
 			name: "absent namespace object is not admitted by a label selector",
 			objects: []client.Object{
-				providerNamed("prod-eu-1", &configv1alpha3.AllowedNamespaces{
+				providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
 				}),
 			},
@@ -273,7 +273,7 @@ func TestGitTargetAdmitted_ReadErrorsSurfaceAsError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cl := fake.NewClientBuilder().WithScheme(admissionScheme(t)).
 				WithObjects(
-					providerNamed("prod-eu-1", &configv1alpha3.AllowedNamespaces{Names: []string{"team-a"}}),
+					providerNamed("prod-eu-1", &configv1alpha3.NamespaceMatcher{Names: []string{"team-a"}}),
 					namespaceLabeled(nil),
 				).
 				WithInterceptorFuncs(interceptor.Funcs{

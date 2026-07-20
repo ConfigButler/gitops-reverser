@@ -98,6 +98,40 @@ type GitTargetSpec struct {
 	// +kubebuilder:default={name: "default"}
 	// +optional
 	ClusterProviderRef *ClusterProviderReference `json:"clusterProviderRef,omitempty"`
+
+	// AllowedSourceNamespaces bounds which SOURCE-cluster namespaces may be mirrored INTO this
+	// target. It is a property of the DESTINATION, not of any requesting rule: when declared it is
+	// exhaustive for every rule that writes here, of every kind.
+	//
+	// The invariant everything else serves — a declared policy is exhaustive:
+	//
+	//	| declared? | WatchRule                       | ClusterWatchRule (Namespaced rules) |
+	//	| no        | its own namespace only (legacy) | all source namespaces (legacy)      |
+	//	| yes       | exactly what the policy admits  | exactly what the policy admits      |
+	//
+	// There is deliberately NO self-namespace exception. Once a policy is declared it must list
+	// every namespace that may reach this target, INCLUDING a co-resident legacy WatchRule's own
+	// namespace. An implicit carve-out would mean the field does not actually bound what arrives
+	// here, so a reader auditing it would be wrong about the target's contents — which is the
+	// whole reason the field exists. The resulting authoring footgun (adding a policy for one
+	// override silently denies co-resident legacy rules) is mitigated by being LOUD:
+	// SourceNamespaceAuthorized=False, Stalled=True, and a message naming the exact fix.
+	//
+	// Its selector matches labels on Namespaces in the SOURCE cluster this target mirrors from —
+	// not the control cluster ClusterProvider.allowedNamespaces describes. Evaluating it therefore
+	// needs Namespace get/list/watch for the identity in that cluster's credential; an
+	// exact-NAMES entry stays usable without it, which is a deliberate degradation path.
+	//
+	// Empty or omitted are NOT the same: omitted declares no policy (each rule kind keeps its
+	// legacy scope), while a declared-but-empty policy admits nothing. Widening a WatchRule beyond
+	// its own namespace additionally requires the ClusterProvider to set
+	// spec.allowWatchRuleSourceNamespaceOverride; NARROWING never does.
+	//
+	// Note that a namespace allow-list cannot partition CLUSTER-SCOPED objects, which have no
+	// namespace: a ClusterWatchRule selecting cluster-scoped types receives every such object the
+	// source credential can read, and this field is neither consulted nor a bound for them.
+	// +optional
+	AllowedSourceNamespaces *NamespaceMatcher `json:"allowedSourceNamespaces,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document
@@ -241,6 +275,26 @@ func (g *GitTarget) SourceCluster() string {
 // default for SourceClusterReachable, which the watch manager overwrites as soon as it is wired.
 func (g *GitTarget) IsLocalSource() bool {
 	return g.SourceCluster() == DefaultClusterProviderName
+}
+
+// DeclaresSourceNamespacePolicy reports whether this target declares spec.allowedSourceNamespaces
+// at all. A declared policy is EXHAUSTIVE — it bounds every rule kind writing here, with no
+// self-namespace exception — while an absent one leaves each rule kind its legacy scope. Callers
+// must branch on this rather than on emptiness: a declared-but-empty policy admits nothing.
+func (g *GitTarget) DeclaresSourceNamespacePolicy() bool {
+	return g.Spec.AllowedSourceNamespaces.Declared()
+}
+
+// AllowsSourceNamespace reports whether a SOURCE-cluster namespace (by name and by the labels it
+// carries IN THE SOURCE CLUSTER) may be mirrored into this target, per spec.allowedSourceNamespaces.
+//
+// It is the source-side twin of ClusterProvider.AllowsNamespace, and both are thin wrappers over
+// NamespaceMatcher.Matches so the two policies cannot drift. It answers only the POLICY question:
+// the delegation flag, the provider's own admission of this target's namespace, and the
+// three-valued "can the labels be read at all" question are the caller's (see internal/authz).
+// An undeclared policy admits nothing here — callers apply the legacy rule themselves.
+func (g *GitTarget) AllowsSourceNamespace(nsName string, nsLabels map[string]string) (bool, error) {
+	return g.Spec.AllowedSourceNamespaces.Matches(nsName, nsLabels)
 }
 
 // +kubebuilder:object:root=true

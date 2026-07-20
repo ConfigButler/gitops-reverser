@@ -21,6 +21,17 @@ type CompiledRule struct {
 	// Source is the NamespacedName of the WatchRule CR.
 	Source types.NamespacedName
 
+	// SourceNamespace is the namespace this rule watches IN ITS SOURCE CLUSTER — the value of
+	// WatchRule.EffectiveSourceNamespace() at compile time.
+	//
+	// It is a field of its own rather than an overload of Source.Namespace because the two are
+	// genuinely different namespaces in (potentially) different clusters: Source names the
+	// WatchRule OBJECT in the control plane, while this names the namespace whose objects are
+	// mirrored. They coincide only for a legacy rule. Every watch-planning consumer — the
+	// watched-type selection and the fingerprint that decides whether that table is re-projected —
+	// must read THIS field; reading Source.Namespace instead yields a stale watch, not an error.
+	SourceNamespace string
+
 	// GitTarget reference (for event routing)
 	GitTargetRef       string
 	GitTargetNamespace string
@@ -129,6 +140,7 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 
 	compiled := CompiledRule{
 		Source:               key,
+		SourceNamespace:      rule.EffectiveSourceNamespace(),
 		GitTargetRef:         gitTargetName,
 		GitTargetNamespace:   gitTargetNamespace,
 		GitProviderRef:       gitProviderName,

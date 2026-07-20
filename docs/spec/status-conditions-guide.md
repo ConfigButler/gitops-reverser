@@ -58,6 +58,9 @@ const (
     TypeStreamsRunning       = "StreamsRunning"
     TypeGitPathAccepted       = "GitPathAccepted"
     TypeGitTargetReady       = "GitTargetReady"
+
+    // WatchRule only: whether the rule's EFFECTIVE source namespace is authorized.
+    TypeSourceNamespaceAuthorized = "SourceNamespaceAuthorized"
 )
 ```
 
@@ -69,6 +72,25 @@ Canonical reads:
   `Stalled=True`
 * Git path refusal details live on `GitPathAccepted=False` and `Stalled=True`, reason `UnsupportedContent`
 * WatchRule and ClusterWatchRule carry target dependency health in `GitTargetReady`
+* WatchRule carries source-namespace authorization in `SourceNamespaceAuthorized`, a positive
+  state-style condition set even for legacy own-namespace rules (reason `LegacySourceNamespace`), so
+  the effective authorization is always visible and automation has one condition to inspect. It is an
+  additional prerequisite of `Ready`, and is deliberately kept out of `GitTargetReady`, which stays
+  the referenced target's own health.
+
+  Its three values are not interchangeable. `False` is a **refusal** — terminal, `Stalled=True`,
+  stream stopped — with reason `SourceNamespaceNotAllowed`, or `SourceNamespacePolicyUnavailable`
+  when a selector policy is permanently unevaluatable *and* no scope was ever resolved for the rule.
+  `Unknown` is "cannot say yet": either the answer is still being established
+  (`CheckingSourceNamespacePolicy`), or a rule that already holds a resolved scope has lost the
+  ability to re-evaluate its policy and is **retaining** that scope
+  (`SourceNamespacePolicyUnavailable`, `Stalled=False`, still mirroring).
+
+  That asymmetry is deliberate. While *establishing* a grant, failing closed means "do not start the
+  stream", which is accurate and actionable. While *maintaining* one, failing closed would mean
+  "narrow to nothing" — and a narrowed scope is the input to a resync sweep, so it would delete a
+  tenant's Git content over a transient outage. An unevaluatable policy therefore never produces a
+  resolved namespace set: not the empty one, and not the full one.
 
 ### CommitRequest (one-shot)
 

@@ -293,8 +293,14 @@ func (m *Manager) collectWatchRuleSelections(
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
 			for _, rec := range matched {
+				// The rule's SOURCE namespace, NOT rule.Source.Namespace (which names the
+				// WatchRule object in the control plane). These differ whenever the rule sets
+				// spec.sourceNamespace, and this is the one place a config-plane namespace ever
+				// became a data-plane "namespace" — a watch selector only, discarded once the
+				// stream is open because every event's identity is rebuilt from the object's own
+				// metadata.namespace. So changing it never moves anything in Git.
 				ts.selections = append(ts.selections, watchSelection{
-					record: rec, namespace: rule.Source.Namespace, ops: rr.Operations,
+					record: rec, namespace: rule.SourceNamespace, ops: rr.Operations,
 				})
 			}
 		}
@@ -475,10 +481,16 @@ func (m *Manager) rulesFingerprint() uint64 {
 	return xxhash.Sum64String(strings.Join(parts, "\x00"))
 }
 
+// watchRuleFingerprint hashes everything about a compiled WatchRule that can change what it
+// watches. The src= component MUST be the rule's SOURCE namespace, not the WatchRule object's own
+// namespace: those diverge as soon as spec.sourceNamespace is set, and hashing the wrong one means
+// an edit to that field does not re-project the watched-type table. That failure is silent — the
+// old watch simply keeps running — which is why it is called out here rather than left to the
+// field name.
 func watchRuleFingerprint(rule rulestore.CompiledRule) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "wr|gt=%s/%s|src=%s|dest=%s",
-		rule.GitTargetNamespace, rule.GitTargetRef, rule.Source.Namespace,
+		rule.GitTargetNamespace, rule.GitTargetRef, rule.SourceNamespace,
 		watchPlanDest(rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path))
 	for _, rr := range rule.ResourceRules {
 		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;op=%s]",

@@ -54,7 +54,7 @@ var _ = Describe("ClusterProvider Controller", func() {
 		provider := &configbutleraiv1alpha3.ClusterProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "local-extra"},
 			Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-				AllowedNamespaces: &configbutleraiv1alpha3.AllowedNamespaces{Names: []string{"default"}},
+				AllowedNamespaces: &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"default"}},
 			},
 		}
 		Expect(k8sClient.Create(context.Background(), provider)).To(Succeed())

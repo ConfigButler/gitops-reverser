@@ -58,13 +58,21 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 		return err
 	}
 
-	m.RuleStore.AddOrUpdateWatchRule(
-		rule,
-		target.Name, target.Namespace,
-		provider.Name, provider.Namespace,
-		target.Spec.Branch,
-		target.Spec.Path,
-	)
+	// Route through the SHARED gated compile path, never straight at the store. Bootstrap runs
+	// BEFORE the first reconcile on every restart, so a source-namespace gate the reconciler alone
+	// enforced would be bypassed for the whole startup window — long enough to compile a denied
+	// override and watch a namespace the policy refuses. A denial is not fatal to startup: the
+	// rule is simply left out of the store (bootstrap has no controllers yet and cannot publish
+	// status), and the first reconcile re-decides and writes the terminal condition.
+	decision, err := CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, target, provider)
+	if err != nil {
+		return fmt.Errorf("evaluating source-namespace authorization for WatchRule %s/%s: %w",
+			rule.Namespace, rule.Name, err)
+	}
+	if !decision.Admitted() {
+		return fmt.Errorf("WatchRule %s/%s may not watch source namespace %q: %s",
+			rule.Namespace, rule.Name, decision.Namespace, decision.Message)
+	}
 
 	return nil
 }

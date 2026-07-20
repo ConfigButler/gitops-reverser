@@ -42,12 +42,34 @@ type LocalTargetReference struct {
 }
 
 // WatchRuleSpec defines the desired state of WatchRule.
-// WatchRule watches resources ONLY within its own namespace.
+// WatchRule watches resources in ONE namespace of its GitTarget's source cluster: its own
+// namespace by default, or the namespace spec.sourceNamespace names when authorized.
 type WatchRuleSpec struct {
 	// TargetRef references the GitTarget to use.
 	// Must be in the same namespace.
 	// +required
 	TargetRef LocalTargetReference `json:"targetRef"`
+
+	// SourceNamespace is the namespace to watch IN THE SOURCE CLUSTER the referenced GitTarget
+	// mirrors from. Omitted, it is this WatchRule's own namespace — the legacy behavior, which
+	// needs no authorization as long as the GitTarget declares no allowedSourceNamespaces policy.
+	//
+	// Naming a DIFFERENT namespace requires all three of:
+	//
+	//  1. the GitTarget's namespace is admitted by its ClusterProvider (spec.allowedNamespaces);
+	//  2. that ClusterProvider sets spec.allowWatchRuleSourceNamespaceOverride; and
+	//  3. the GitTarget's spec.allowedSourceNamespaces admits this namespace.
+	//
+	// The outcome is published as the SourceNamespaceAuthorized condition. Once the GitTarget
+	// declares a policy that policy is exhaustive, so even an OMITTED sourceNamespace is then
+	// checked against it — the rule's own namespace gets no implicit carve-out.
+	//
+	// This changes only which namespace is WATCHED. It never changes where objects are written:
+	// Git placement follows each mirrored object's OWN namespace, so a rule in "tenant-acme"
+	// watching "repo-config" writes under repo-config/…, not tenant-acme/….
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	SourceNamespace string `json:"sourceNamespace,omitempty"`
 
 	// Rules define which resources to watch within this namespace.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
@@ -174,16 +196,23 @@ type WatchRuleStreamsStatus struct {
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
 // +kubebuilder:printcolumn:name="GitTargetReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitTargetReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
+// +kubebuilder:printcolumn:name="SourceAuthorized",type=string,JSONPath=`.status.conditions[?(@.type=="SourceNamespaceAuthorized")].status`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// WatchRule watches namespaced resources within its own namespace.
-// It provides fine-grained control over which resources trigger Git commits,
+// WatchRule watches namespaced resources in ONE namespace of the source cluster its GitTarget
+// mirrors from. It provides fine-grained control over which resources trigger Git commits,
 // with filtering by operation type, API group, version, and labels.
 //
 // Security model:
-//   - WatchRule is namespace-scoped and can only watch resources in its own namespace
+//   - WatchRule is namespace-scoped and watches its OWN namespace unless spec.sourceNamespace
+//     names another one AND that override passes the three-part gate described on that field —
+//     provider admission, an explicit provider-side delegation flag, and the GitTarget's
+//     allowedSourceNamespaces. The gate is deny-by-default and re-evaluated on every reconcile,
+//     so a policy tightened later revokes a running rule.
 //   - Use ClusterWatchRule for watching cluster-scoped resources (Nodes, ClusterRoles, etc.)
-//   - RBAC controls who can create/modify WatchRules per namespace
+//   - RBAC controls who can create/modify WatchRules per namespace. Note that where the source is
+//     the operator's OWN cluster, an authorized override deliberately bypasses live namespace
+//     RBAC — which is why it takes an explicit platform-admin delegation to enable.
 type WatchRule struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -198,6 +227,28 @@ type WatchRule struct {
 	// status defines the observed state of WatchRule
 	// +optional
 	Status WatchRuleStatus `json:"status,omitempty"`
+}
+
+// EffectiveSourceNamespace is the source-cluster namespace this rule actually watches:
+// spec.sourceNamespace when set, and the rule's OWN namespace otherwise.
+//
+// It is controller logic rather than an API-server default because an apiserver default cannot
+// refer to metadata.namespace. Every consumer must call it instead of reading either field
+// directly — the compiled rule, the watch selection, and the fingerprint that decides whether the
+// watched-type table is re-projected all key on this value, and a site that reads
+// metadata.namespace instead produces a STALE WATCH rather than a visible failure.
+func (w *WatchRule) EffectiveSourceNamespace() string {
+	if w.Spec.SourceNamespace != "" {
+		return w.Spec.SourceNamespace
+	}
+	return w.Namespace
+}
+
+// OverridesSourceNamespace reports whether this rule asks for a source namespace OTHER than its
+// own — the case that needs the ClusterProvider's delegation flag. A spec.sourceNamespace that
+// merely restates the rule's own namespace is not an override and is treated as the legacy case.
+func (w *WatchRule) OverridesSourceNamespace() bool {
+	return w.EffectiveSourceNamespace() != w.Namespace
 }
 
 // +kubebuilder:object:root=true

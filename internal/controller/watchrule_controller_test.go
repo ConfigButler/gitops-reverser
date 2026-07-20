@@ -262,8 +262,19 @@ var _ = Describe("WatchRule Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying WatchRule is reconciling until the GitTarget and streams are ready")
-			Expect(updatedRule.Status.Conditions).To(HaveLen(5))
+			Expect(updatedRule.Status.Conditions).To(HaveLen(6))
 			var condition, streamsRunning, gitTargetReady, reconciling, stalled metav1.Condition
+			var sourceAuthorized metav1.Condition
+			for _, c := range updatedRule.Status.Conditions {
+				if c.Type == ConditionTypeSourceNamespaceAuthorized {
+					sourceAuthorized = c
+				}
+			}
+
+			By("Verifying the legacy own-namespace rule is authorized without any policy or flag")
+			Expect(sourceAuthorized.Status).To(Equal(metav1.ConditionTrue))
+			Expect(sourceAuthorized.Reason).To(Equal(WatchRuleReasonLegacySourceNamespace))
+
 			for _, c := range updatedRule.Status.Conditions {
 				if c.Type == ConditionTypeReady {
 					condition = c

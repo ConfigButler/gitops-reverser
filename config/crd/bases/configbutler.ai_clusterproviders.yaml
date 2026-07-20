@@ -70,14 +70,47 @@ spec:
           spec:
             description: spec defines the desired state of ClusterProvider.
             properties:
+              allowWatchRuleSourceNamespaceOverride:
+                default: false
+                description: |-
+                  AllowWatchRuleSourceNamespaceOverride delegates SOURCE-namespace selection to the GitTargets
+                  this provider admits. While false (the default) a WatchRule mirroring through this provider
+                  may watch only its OWN namespace, whatever any GitTarget policy says.
+
+                  The flag does not grant access by itself — an admitted GitTarget must still list the
+                  namespace in spec.allowedSourceNamespaces. What it delegates is the AUTHORITY to choose: a
+                  target owner may then configure a broad allow-list, including one matching every source
+                  namespace, so the source credential's own RBAC remains the hard maximum. Set it only when
+                  the owners of admitted GitTargets are trusted to pick a subset of what that credential
+                  may read.
+
+                  It gates GRANTING only. spec.allowedSourceNamespaces plays two roles — widening a WatchRule
+                  beyond its own namespace, and narrowing a ClusterWatchRule below cluster-wide — and only the
+                  widening one is an authority grant. Gating a RESTRICTION behind a delegation flag would mean
+                  an admin has to grant extra authority in order to reduce scope.
+
+                  Remote and in-cluster providers use the same mechanism but deserve very different sign-off.
+                  For a REMOTE provider the config-plane namespace and the source namespace are on different
+                  clusters, so their sharing a name never was a boundary and naming one widens nothing. For an
+                  IN-CLUSTER provider (kubeConfig omitted) the same-name coupling WAS the boundary: setting
+                  this deliberately bypasses live namespace RBAC, letting the owner of an admitted GitTarget
+                  in one namespace mirror another namespace's objects — read through the operator's own
+                  cluster-wide credential — into a Git destination they control. That is legitimate for a
+                  cluster-admin to grant on purpose, and must never happen by default or as a side effect of
+                  another field, which is why this exists and defaults to false.
+
+                  Note that LOCALITY is not the switch: whether a provider is in-cluster follows from
+                  spec.kubeConfig, and neither that nor the provider's name decides this. Only this flag does.
+                type: boolean
               allowedNamespaces:
                 description: |-
-                  AllowedNamespaces is the deny-by-default policy for which namespaces may reference this
-                  provider from a GitTarget. Empty (or omitted) means no namespace may reference it.
+                  AllowedNamespaces is the deny-by-default policy for which CONTROL-CLUSTER namespaces may
+                  reference this provider from a GitTarget. Empty (or omitted) means no namespace may
+                  reference it. Its selector matches labels on Namespaces in the control cluster — the
+                  cluster the operator's own CRs live in — never on the source cluster this provider names.
                 properties:
                   names:
-                    description: Names is an explicit allow-list of namespace names
-                      that may reference this provider.
+                    description: Names is an explicit allow-list of namespace names.
                     items:
                       type: string
                     type: array
@@ -85,7 +118,7 @@ spec:
                   selector:
                     description: |-
                       Selector is a label selector matched against Namespace labels; a namespace whose labels
-                      match may reference this provider. ORed with Names.
+                      match is admitted. ORed with Names.
                     properties:
                       matchExpressions:
                         description: matchExpressions is a list of label selector

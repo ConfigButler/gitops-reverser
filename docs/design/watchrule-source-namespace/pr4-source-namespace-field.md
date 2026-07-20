@@ -200,10 +200,28 @@ Half of this is already wired:
 | Control-cluster Namespace labels | Reconcile affected GitTargets. | **Already wired** — `namespaceToGitTargets` with `LabelChangedPredicate` ([gittarget_controller.go:1147-1150](../../../internal/controller/gittarget_controller.go#L1147-L1150)). |
 | Source-cluster Namespace labels | Reconcile WatchRules whose GitTarget uses a source selector. | **Not wired** — there is no Namespace informer in `internal/watch` at all today. Entirely new. |
 
-The watch manager already owns source-cluster watch lifecycles. This adds one label-filtered
-Namespace informer **per active source cluster**, not one per WatchRule, emitting only meaningful
-label changes and mapping them to WatchRules whose GitTarget resolves through that cluster.
-[PR 5](pr5-clusterwatchrule-source-ceiling.md) extends the same informer to ClusterWatchRules.
+The watch manager already owns source-cluster watch lifecycles. This adds one Namespace label
+snapshot **per active source cluster**, not one per WatchRule, emitting only meaningful label
+changes and mapping them to WatchRules whose GitTarget resolves through that cluster.
+[PR 5](pr5-clusterwatchrule-source-ceiling.md) extends the same snapshot to ClusterWatchRules.
+
+> **As built: a refresh-cadence snapshot, not an informer.** The shipped implementation
+> ([source_namespace_scope.go](../../../internal/watch/source_namespace_scope.go)) re-lists
+> Namespaces on the manager's existing reconcile cadence (every 30s and on every rule change)
+> instead of running a dedicated informer per cluster. Two reasons, and one accepted cost.
+>
+> It matches how this package already treats every other source-cluster input — the credential
+> refresh explicitly "does not watch Secrets, it RE-CHECKS them"
+> ([cluster_context.go:507-515](../../../internal/watch/cluster_context.go#L507-L515)) — so
+> source-cluster state stays on one lifecycle rather than two, with one teardown path. And listing
+> is armed LAZILY, by a selector policy actually asking, so an install with no selector policies
+> never lists a namespace at all; an informer would have to decide its cluster set up front.
+>
+> The cost is that a revocation converges within a refresh interval rather than instantly. The gate
+> tolerates that by construction: the compiled rule is what mirrors, and it is dropped the moment
+> the reconcile the change enqueues observes it. Exact-name policies are unaffected — they never
+> consult the cache. If a tighter bound is ever needed, the service's interface is the seam:
+> swapping the snapshot for an informer changes nothing above `ResolveSourceNamespace`.
 
 ### The source-scope service — define this interface before writing the gate
 

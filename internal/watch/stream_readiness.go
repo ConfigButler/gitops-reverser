@@ -131,7 +131,12 @@ func (m *Manager) StreamSummaryForGitTarget(gitDest types.ResourceReference) Str
 // StreamSummaryForWatchRule reports stream readiness for one namespaced WatchRule, resolved
 // against the source cluster its GitTarget mirrors from.
 func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) StreamSummary {
+	// The GitTarget is in the rule's OWN namespace (targetRef is a LocalTargetReference), but the
+	// stream is keyed on the namespace being WATCHED — the effective source namespace. Those
+	// differ whenever spec.sourceNamespace is set, so looking the stream up by rule.Namespace would
+	// miss it and report the rule perpetually not-ready even while its stream runs.
 	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+	sourceNamespace := rule.EffectiveSourceNamespace()
 	reg := m.registryForGitTarget(gitDest)
 	m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
 	records := reg.Followable()
@@ -141,7 +146,7 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 		matched := matchFollowableRecords(
 			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
 		for _, rec := range matched {
-			key := targetWatchKey{GVR: rec.Identity.GVR, Namespace: rule.Namespace}
+			key := targetWatchKey{GVR: rec.Identity.GVR, Namespace: sourceNamespace}
 			keys = append(keys, key)
 			names[rec.Identity.GVR] = streamDisplayName(rec.Identity.GVR)
 		}

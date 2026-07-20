@@ -33,7 +33,6 @@ func TestApplyRuleKstatus_GitTargetReadyStalledBlocksRule(t *testing.T) {
 	applyRuleKstatus(
 		conditions,
 		"rule ready",
-		"Ready",
 		"rule is not stalled",
 		func(conditionType string, status metav1.ConditionStatus, reason, _ string) {
 			got[conditionType] = status
