@@ -34,9 +34,10 @@ spec:
     spec:
       # Pinned for reproducibility (the gitops-api reference leaves it floating). kcp-operator
       # 0.7.7 deploys kcp v0.8.x, which serves tenancy.kcp.io/v1alpha1 Workspaces — all this
-      # harness needs.
+      # harness needs. This is the CHART version; v0.8.3 is the appVersion it ships, and the
+      # two are not interchangeable — the repo publishes no kcp-operator chart above 0.7.x.
       chart: kcp-operator
-      version: "0.8.3"
+      version: "0.7.7"
       sourceRef:
         kind: HelmRepository
         name: kcp
