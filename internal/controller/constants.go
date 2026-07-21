@@ -7,6 +7,8 @@ import (
 	"context"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/event"
+
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
@@ -21,6 +23,21 @@ type WatchManagerInterface interface {
 	StreamSummaryForGitTarget(gitDest types.ResourceReference) watch.StreamSummary
 	StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) watch.StreamSummary
 	StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) watch.StreamSummary
+
+	// SourceScope exposes the source-scope service — the manager-owned evaluation of a GitTarget's
+	// allowedSourceNamespaces against its SOURCE cluster, plus the per-rule resolved scopes.
+	//
+	// The gate runs in this package but the labels a selector needs live in a source cluster whose
+	// connection and cache the watch manager already owns, so the reconciler asks the manager
+	// instead of dialling that cluster itself on every pass. It may return nil (the data plane is
+	// not wired), which degrades to exact-name policy evaluation — never to a denial.
+	SourceScope() watch.SourceScopeService
+
+	// SourceNamespaceEvents is the channel the WatchRule controller wires via source.Channel so a
+	// SOURCE-cluster Namespace label change re-reconciles the rules it grants or revokes. Those
+	// labels live in a cluster the controller has no client for, so the watch manager observes
+	// them and pushes the affected GitTargets here.
+	SourceNamespaceEvents() <-chan event.GenericEvent
 }
 
 const (
@@ -40,6 +57,18 @@ const (
 	ConditionTypeRenderMatchesLive = "RenderMatchesLive"
 	// ConditionTypeGitTargetReady indicates whether the referenced GitTarget is ready for writes.
 	ConditionTypeGitTargetReady = "GitTargetReady"
+	// ConditionTypeSourceNamespaceAuthorized reports whether a rule's EFFECTIVE source namespace
+	// is authorized for the observed generation. It is positive and state-style, and it is set
+	// even for legacy own-namespace rules (reason LegacySourceNamespace) so the effective
+	// authorization is always visible and automation has ONE condition to inspect.
+	//
+	// It is deliberately distinct from GitTargetReady, which stays the health of the referenced
+	// GitTarget and must never be reused for source authorization. Its three values are not
+	// interchangeable: False is a refusal (terminal, Stalled=True), while Unknown covers both "the
+	// answer is still being established" and "a rule with an already-resolved scope has lost the
+	// ability to re-evaluate its policy and is retaining that scope" — neither of which may be
+	// rendered as a permanent failure.
+	ConditionTypeSourceNamespaceAuthorized = "SourceNamespaceAuthorized"
 	// ConditionTypeStreamsReady is a source-compatibility alias for StreamsRunning.
 	ConditionTypeStreamsReady = ConditionTypeStreamsRunning
 	// ConditionTypeAuthorAttributed indicates whether a CommitRequest's commit author

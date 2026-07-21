@@ -48,7 +48,7 @@ func bootGitProvider() *configv1alpha3.GitProvider {
 	}
 }
 
-func bootClusterProvider(policy *configv1alpha3.AllowedNamespaces) *configv1alpha3.ClusterProvider {
+func bootClusterProvider(policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.ClusterProvider {
 	return &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: bootProviderName},
 		Spec:       configv1alpha3.ClusterProviderSpec{AllowedNamespaces: policy},
@@ -63,11 +63,22 @@ func bootClusterWatchRule() *configv1alpha3.ClusterWatchRule {
 				Kind: "GitTarget", Name: bootTargetName, Namespace: bootTargetNS,
 			},
 			Rules: []configv1alpha3.ClusterResourceRule{{
-				Scope:     configv1alpha3.ResourceScopeNamespaced,
-				Resources: []string{"configmaps"},
+				Resources: []string{"customresourcedefinitions"},
+				APIGroups: []string{"apiextensions.k8s.io"},
 			}},
 		},
 	}
+}
+
+// bootNamespacedClusterWatchRule is a STORED pre-release object: `scope: Namespaced` is rejected at
+// admission from this release on, but etcd still holds objects written before it.
+func bootNamespacedClusterWatchRule() *configv1alpha3.ClusterWatchRule {
+	rule := bootClusterWatchRule()
+	rule.Spec.Rules = []configv1alpha3.ClusterResourceRule{
+		{Resources: []string{"customresourcedefinitions"}, APIGroups: []string{"apiextensions.k8s.io"}},
+		{Resources: []string{"configmaps"}, Scope: configv1alpha3.ResourceScopeNamespaced},
+	}
+	return rule
 }
 
 func bootManager(t *testing.T, objects ...client.Object) *Manager {
@@ -92,7 +103,7 @@ func bootCompiledNames(m *Manager) []string {
 func TestBootstrapClusterWatchRule_RefusesUnauthorizedGitTargetNamespace(t *testing.T) {
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootClusterProvider(&configv1alpha3.AllowedNamespaces{Names: []string{"some-other-namespace"}}),
+		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"some-other-namespace"}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -122,7 +133,7 @@ func TestBootstrapClusterWatchRule_RefusesMissingClusterProvider(t *testing.T) {
 func TestBootstrapClusterWatchRule_SeedsAdmittedRule(t *testing.T) {
 	m := bootManager(t,
 		bootGitTarget(), bootGitProvider(),
-		bootClusterProvider(&configv1alpha3.AllowedNamespaces{Names: []string{bootTargetNS}}),
+		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 	)
 
@@ -161,7 +172,7 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 		&configv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Name: "git", Namespace: "team-ok"}},
 		admittedRule,
 		// Admits team-ok only, so the team-a rule is refused.
-		bootClusterProvider(&configv1alpha3.AllowedNamespaces{Names: []string{"team-ok"}}),
+		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{"team-ok"}}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-ok"}},
 	)
@@ -173,4 +184,79 @@ func TestBootstrapRuleStore_SkipsUnauthorizedRuleButStillReady(t *testing.T) {
 		"only the admitted rule may be seeded")
 	assert.True(t, m.RuleStore.IsReady(),
 		"the store must still be marked ready: a refused rule is a refusal, not a startup failure")
+}
+
+// TestBootstrap_PreExistingNamespacedClusterRuleIsRefused is THE cluster-scope-only test.
+//
+// A ClusterWatchRule stored with `scope: Namespaced` before this release keeps that value in etcd,
+// and bootstrap seeds the store BEFORE the first reconcile can publish any status. So the refusal
+// has to live in the shared compile path: a reconciler-only check would let every restart open a
+// cluster-wide namespaced watch for the whole startup window. This asserts the state at the moment
+// MarkReady() returns — the only moment that proves it.
+func TestBootstrap_PreExistingNamespacedClusterRuleIsRefused(t *testing.T) {
+	m := bootManager(t,
+		bootGitTarget(), bootGitProvider(),
+		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
+		bootNamespacedClusterWatchRule(),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
+	)
+
+	require.NoError(t, m.bootstrapRuleStore(context.Background(), logr.Discard()),
+		"a refused rule is a refusal, not a startup failure")
+
+	assert.Empty(t, bootCompiledNames(m),
+		"a stored namespaced ClusterWatchRule must compile NO stream before status can be published")
+	assert.True(t, m.RuleStore.IsReady())
+}
+
+// TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes: the refusal keys on the
+// STORED scope, not on what the selector happens to resolve. `resources: ["*"]` legitimately
+// resolves cluster-scoped records — inferring the refusal from the resolution would break exactly
+// the rule that the restart fixture exists to protect.
+func TestBootstrapClusterWatchRule_WildcardStillResolvesItsClusterScopedTypes(t *testing.T) {
+	rule := bootClusterWatchRule()
+	rule.Spec.Rules = []configv1alpha3.ClusterResourceRule{{
+		Resources: []string{"*"}, APIVersions: []string{"*"},
+	}}
+
+	m := bootManager(t,
+		bootGitTarget(), bootGitProvider(),
+		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
+	)
+
+	require.NoError(t, m.bootstrapClusterWatchRule(context.Background(), *rule))
+
+	assert.Equal(t, []string{bootRuleName}, bootCompiledNames(m),
+		"a wildcard selector is not itself a namespaced scope declaration")
+}
+
+// TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule is the REVOCATION contract for the
+// cluster kind: a rule accepted earlier and then refused must have its compiled rule REMOVED, not
+// merely reported unready.
+func TestCompileClusterWatchRule_RefusalRemovesAnAlreadyCompiledRule(t *testing.T) {
+	ctx := context.Background()
+	m := bootManager(t,
+		bootGitTarget(), bootGitProvider(),
+		bootClusterProvider(&configv1alpha3.NamespaceMatcher{Names: []string{bootTargetNS}}),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: bootTargetNS}},
+	)
+
+	decision, err := CompileClusterWatchRule(
+		ctx, m.Client, m.RuleStore, *bootClusterWatchRule(), *bootGitTarget(), *bootGitProvider())
+	require.NoError(t, err)
+	require.True(t, decision.Admitted)
+	require.Len(t, bootCompiledNames(m), 1, "precondition: the rule is compiled")
+
+	// Somebody re-applies the pre-release manifest (or an old object is re-observed).
+	decision, err = CompileClusterWatchRule(
+		ctx, m.Client, m.RuleStore, *bootNamespacedClusterWatchRule(), *bootGitTarget(), *bootGitProvider())
+
+	require.NoError(t, err)
+	assert.False(t, decision.Admitted)
+	assert.Equal(t, ClusterWatchRuleReasonScopeNotSupported, decision.Reason)
+	assert.Contains(t, decision.Message, "rules[].sourceNamespace",
+		"the refusal must name the replacement, because the migration is cross-kind")
+	assert.Empty(t, bootCompiledNames(m),
+		"a refused rule must be removed from the store, not left running with a bad condition")
 }

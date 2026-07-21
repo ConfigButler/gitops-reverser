@@ -87,17 +87,49 @@ type GitTargetSpec struct {
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
 
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// It defaults to a concrete {name: "default"} rather than an implicit nil so a target that omits
+	// it persists with a ref a reader can jump to. The operator never creates that provider: a
+	// GitTarget naming one that does not exist is held unready rather than silently defaulting to
+	// in-cluster access.
+
 	// ClusterProviderRef names the SOURCE cluster this GitTarget mirrors FROM, by referencing a
-	// cluster-scoped ClusterProvider by name. The ClusterProvider is the home for that cluster's
-	// connectivity credential, namespace-access authorization, and author-attribution mode. This
-	// DEFAULTS to {name: "default"} — a user-created provider by that conventional name, which may
-	// be in-cluster or remote — so a target that omits it persists with a concrete, jumpable ref
-	// rather than an implicit nil. The operator never creates that provider; a GitTarget naming one
-	// that does not exist is held unready. Immutable: a folder's source cluster is part of what the
-	// folder means; delete and recreate to change it.
+	// cluster-scoped ClusterProvider by name. That ClusterProvider owns the cluster's connectivity
+	// credential, namespace-access authorization, and author-attribution mode. The default provider
+	// name is "default" and must exist; it may be in-cluster or remote.
+	// Immutable: a folder's source cluster is part of what the folder means; delete and recreate.
 	// +kubebuilder:default={name: "default"}
 	// +optional
 	ClusterProviderRef *ClusterProviderReference `json:"clusterProviderRef,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// There is deliberately NO self-namespace exception. An implicit carve-out would mean the field
+	// does not actually bound what arrives here, so a reader auditing it would be wrong about the
+	// target's contents — which is the whole reason the field exists. The resulting authoring
+	// footgun (adding a policy for one override silently denies co-resident legacy rules) is
+	// mitigated by being LOUD: SourceNamespaceAuthorized=False, Stalled=True, and a message naming
+	// the exact fix. `selector: {}` is the replacement for the removed cluster-wide namespaced
+	// ClusterWatchRule — declared by the destination owner rather than the rule author, and
+	// self-updating as namespaces come and go. The exact-names half stays answerable without any
+	// source-cluster Namespace access; that degradation path is deliberate, and it is the half most
+	// likely to regress unnoticed.
+
+	// AllowedSourceNamespaces bounds which SOURCE-cluster namespaces may be mirrored INTO this
+	// target. It belongs to the DESTINATION, not to any requesting rule: once declared it is
+	// exhaustive for every WatchRule that writes here, with no exception for a rule's own namespace.
+	//
+	// Omitted and empty differ. Omitted declares no policy, and a WatchRule keeps its own namespace;
+	// a declared-but-empty policy admits nothing; `selector: {}` admits every source namespace.
+	// Selector labels are read in the SOURCE cluster, so evaluating one needs Namespace
+	// get/list/watch for that cluster's credential, while exact names need no such access. This is
+	// also what a rules[].sourceNamespace of "*" resolves through. Naming any namespace other than
+	// the WatchRule's own — including "*" — additionally requires the ClusterProvider to set
+	// spec.allowSourceNamespaceOverride. It does NOT bound ClusterWatchRule, whose cluster-scoped
+	// objects have no namespace. Full resolution table: docs/configuration.md.
+	// +optional
+	AllowedSourceNamespaces *NamespaceMatcher `json:"allowedSourceNamespaces,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document
@@ -241,6 +273,26 @@ func (g *GitTarget) SourceCluster() string {
 // default for SourceClusterReachable, which the watch manager overwrites as soon as it is wired.
 func (g *GitTarget) IsLocalSource() bool {
 	return g.SourceCluster() == DefaultClusterProviderName
+}
+
+// DeclaresSourceNamespacePolicy reports whether this target declares spec.allowedSourceNamespaces
+// at all. A declared policy is EXHAUSTIVE — it bounds every WatchRule item writing here, with no
+// self-namespace exception — while an absent one leaves a WatchRule its own namespace. Callers
+// must branch on this rather than on emptiness: a declared-but-empty policy admits nothing.
+func (g *GitTarget) DeclaresSourceNamespacePolicy() bool {
+	return g.Spec.AllowedSourceNamespaces.Declared()
+}
+
+// AllowsSourceNamespace reports whether a SOURCE-cluster namespace (by name and by the labels it
+// carries IN THE SOURCE CLUSTER) may be mirrored into this target, per spec.allowedSourceNamespaces.
+//
+// It is the source-side twin of ClusterProvider.AllowsNamespace, and both are thin wrappers over
+// NamespaceMatcher.Matches so the two policies cannot drift. It answers only the POLICY question:
+// the delegation flag, the provider's own admission of this target's namespace, and the
+// three-valued "can the labels be read at all" question are the caller's (see internal/authz).
+// An undeclared policy admits nothing here — callers apply the legacy rule themselves.
+func (g *GitTarget) AllowsSourceNamespace(nsName string, nsLabels map[string]string) (bool, error) {
+	return g.Spec.AllowedSourceNamespaces.Matches(nsName, nsLabels)
 }
 
 // +kubebuilder:object:root=true

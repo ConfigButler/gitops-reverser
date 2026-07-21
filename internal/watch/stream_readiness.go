@@ -10,6 +10,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -130,19 +131,41 @@ func (m *Manager) StreamSummaryForGitTarget(gitDest types.ResourceReference) Str
 
 // StreamSummaryForWatchRule reports stream readiness for one namespaced WatchRule, resolved
 // against the source cluster its GitTarget mirrors from.
+//
+// It reads the COMPILED rule, not the spec. A rule's watched namespaces can no longer be derived
+// from its spec at all: a `sourceNamespace: "*"` item's set exists only after resolution against
+// the GitTarget's policy and the source-cluster snapshot. Rebuilding the keys from the spec would
+// look for streams under keys that were never opened, so a perfectly healthy wildcard rule would
+// report permanently not-ready while its streams run — the same class of bug the singular field
+// already hit once, one level up.
+//
+// A rule that is not compiled expects no streams, which is correct: the gate refused it, or the
+// store has not been seeded yet.
 func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) StreamSummary {
+	// The GitTarget is in the rule's OWN namespace (targetRef is a LocalTargetReference), but the
+	// streams are keyed on the namespaces being WATCHED.
 	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
+	if m.RuleStore == nil {
+		return streamSummaryForTypes(nil, nil, nil)
+	}
+	compiled, ok := m.RuleStore.GetWatchRule(
+		k8stypes.NamespacedName{Name: rule.Name, Namespace: rule.Namespace})
+	if !ok {
+		return streamSummaryForTypes(nil, nil, nil)
+	}
+
 	reg := m.registryForGitTarget(gitDest)
 	m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
 	records := reg.Followable()
 	var keys []targetWatchKey
 	names := map[schema.GroupVersionResource]string{}
-	for _, rr := range rule.Spec.Rules {
+	for _, rr := range compiled.ResourceRules {
 		matched := matchFollowableRecords(
 			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
 		for _, rec := range matched {
-			key := targetWatchKey{GVR: rec.Identity.GVR, Namespace: rule.Namespace}
-			keys = append(keys, key)
+			for _, namespace := range rr.SourceNamespaces {
+				keys = append(keys, targetWatchKey{GVR: rec.Identity.GVR, Namespace: namespace})
+			}
 			names[rec.Identity.GVR] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
@@ -150,7 +173,8 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 }
 
 // StreamSummaryForClusterWatchRule reports stream readiness for one ClusterWatchRule, resolved
-// against the source cluster its GitTarget mirrors from.
+// against the source cluster its GitTarget mirrors from. It always matches cluster-scoped records,
+// because a ClusterWatchRule is cluster-scope-only.
 func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWatchRule) StreamSummary {
 	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)
 	reg := m.registryForGitTarget(gitDest)
@@ -159,7 +183,9 @@ func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWa
 	var keys []targetWatchKey
 	names := map[schema.GroupVersionResource]string{}
 	for _, rr := range rule.Spec.Rules {
-		for _, rec := range matchFollowableRecords(records, rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope) {
+		matched := matchFollowableRecords(
+			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
+		for _, rec := range matched {
 			key := targetWatchKey{GVR: rec.Identity.GVR}
 			keys = append(keys, key)
 			names[rec.Identity.GVR] = streamDisplayName(rec.Identity.GVR)

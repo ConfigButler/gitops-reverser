@@ -39,10 +39,14 @@ func watchRuleStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha3
 	}
 }
 
+// ruleReadyReason is the reason every rule kind stamps on its Ready/Reconciling/Stalled trio once
+// it is healthy. WatchRule and ClusterWatchRule both spell it "Ready", so it is a constant here
+// rather than a parameter each caller passes identically.
+const ruleReadyReason = "Ready"
+
 func applyRuleKstatus(
 	conditions []metav1.Condition,
 	readyMessage string,
-	readyReason string,
 	notStalledMessage string,
 	setCondition func(string, metav1.ConditionStatus, string, string),
 	setStalled func(string, string),
@@ -50,9 +54,22 @@ func applyRuleKstatus(
 	resources := conditionByType(conditions, ConditionTypeResourcesResolved)
 	gitTarget := conditionByType(conditions, ConditionTypeGitTargetReady)
 	streams := conditionByType(conditions, ConditionTypeStreamsRunning)
+	// Absent on ClusterWatchRule, which does not carry this condition; nil simply never gates.
+	sourceNS := conditionByType(conditions, ConditionTypeSourceNamespaceAuthorized)
 
-	if stalled := stalledRuleCondition(resources, gitTarget, streams); stalled != nil {
+	if stalled := stalledRuleCondition(resources, gitTarget, streams, sourceNS); stalled != nil {
 		setStalled(stalled.Reason, stalled.Message)
+		return
+	}
+	// Source authorization is an ADDITIONAL prerequisite of Ready, so Ready=True means the source
+	// namespace is authorized AND the GitTarget is ready AND resources resolved AND streams are
+	// running — never merely that the gate passed. Unknown yields InProgress here rather than a
+	// separate status path, which is what makes the retained-scope and cache-syncing cases
+	// representable without inventing a second readiness model.
+	if sourceNS != nil && sourceNS.Status != metav1.ConditionTrue {
+		reason, message := conditionReasonMessage(
+			sourceNS, ReasonProgressing, "Establishing source-namespace authorization")
+		setRuleProgressing(reason, message, notStalledMessage, setCondition)
 		return
 	}
 	if gitTarget != nil && gitTarget.Status != metav1.ConditionTrue {
@@ -63,9 +80,9 @@ func applyRuleKstatus(
 
 	switch {
 	case streams != nil && streams.Status == metav1.ConditionTrue:
-		setCondition(ConditionTypeReady, metav1.ConditionTrue, readyReason, readyMessage)
-		setCondition(ConditionTypeReconciling, metav1.ConditionFalse, readyReason, "Reconciliation complete")
-		setCondition(ConditionTypeStalled, metav1.ConditionFalse, readyReason, notStalledMessage)
+		setCondition(ConditionTypeReady, metav1.ConditionTrue, ruleReadyReason, readyMessage)
+		setCondition(ConditionTypeReconciling, metav1.ConditionFalse, ruleReadyReason, "Reconciliation complete")
+		setCondition(ConditionTypeStalled, metav1.ConditionFalse, ruleReadyReason, notStalledMessage)
 	default:
 		reason, message := ReasonProgressing, "Waiting for streams to run"
 		if streams != nil {
@@ -75,8 +92,14 @@ func applyRuleKstatus(
 	}
 }
 
-func stalledRuleCondition(resources, gitTarget, streams *metav1.Condition) *metav1.Condition {
+func stalledRuleCondition(resources, gitTarget, streams, sourceNS *metav1.Condition) *metav1.Condition {
 	switch {
+	// A source-authorization REFUSAL outranks every other cause: the rule is not running and no
+	// amount of waiting changes that, so it must not be reported as merely progressing behind an
+	// unresolved type or an unready target. Only False is terminal here — Unknown is the
+	// deliberately non-terminal "cannot say yet", handled by the caller as progressing.
+	case sourceNS != nil && sourceNS.Status == metav1.ConditionFalse:
+		return sourceNS
 	case resources != nil && resources.Status == metav1.ConditionFalse:
 		return resources
 	case gitTarget != nil && gitTarget.Status == metav1.ConditionFalse && gitTargetReadyReasonIsStalled(gitTarget.Reason):

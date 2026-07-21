@@ -6,8 +6,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ResourceScope defines the scope of resources.
-// +kubebuilder:validation:Enum=Cluster;Namespaced
+// ResourceScope names a Kubernetes resource's scope. It is an INTERNAL matching vocabulary: the
+// resolver uses both constants to align a rule's selector with the discovered scope of each type
+// (a WatchRule always resolves Namespaced records, a ClusterWatchRule always Cluster ones). The
+// only field that still exposes it — ClusterResourceRule.scope — is narrowed to Cluster alone, so
+// "Namespaced" is no longer a public choice anywhere in the API.
 type ResourceScope string
 
 const (
@@ -50,17 +53,17 @@ type ClusterWatchRuleSpec struct {
 	// +required
 	TargetRef NamespacedTargetReference `json:"targetRef"`
 
-	// Rules define which resources to watch.
+	// Rules define which CLUSTER-SCOPED resources to watch.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
-	// Each rule can specify cluster-scoped or namespaced resources.
+	// A rule that resolves to no cluster-scoped type simply watches nothing; use a WatchRule with
+	// spec.rules[].sourceNamespace for namespaced resources.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	Rules []ClusterResourceRule `json:"rules"`
 }
 
-// ClusterResourceRule defines which resources to watch with scope control.
-// Each rule independently specifies whether it watches cluster-scoped or
-// namespaced resources.
+// ClusterResourceRule defines which CLUSTER-SCOPED resources to watch. It deliberately has no
+// sourceNamespace: cluster-scoped objects have no namespace, so there is nothing to select.
 type ClusterResourceRule struct {
 	// Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
 	// Supports: CREATE, UPDATE, DELETE, or * (wildcard for all operations).
@@ -108,13 +111,43 @@ type ClusterResourceRule struct {
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 
-	// Scope defines whether this rule watches Cluster-scoped or Namespaced resources.
-	// - "Cluster": For cluster-scoped resources (Nodes, ClusterRoles, CRDs, etc.).
-	// - "Namespaced": For namespaced resources (Pods, Deployments, Secrets, etc.),
-	//                 across all namespaces.
-	// +required
-	// +kubebuilder:validation:Enum=Cluster;Namespaced
-	Scope ResourceScope `json:"scope"`
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// The field is retained in the schema purely so that re-applying a manifest that still says
+	// "Namespaced" FAILS. Deleting it outright would be worse and silent twice over: CRD pruning
+	// happens on write, so the value would be dropped without an error and the rule would quietly
+	// stop mirroring namespaced objects; and a stored pre-release object would keep its value in
+	// etcd with no Go field left to read, leaving the controller nothing to refuse. The narrowed
+	// enum rejects it at admission, and the compile path refuses a stored value.
+
+	// Scope is REMOVED as a choice: a ClusterWatchRule is cluster-scoped only, so "Cluster" is the
+	// only accepted value and also the default, making the field omittable. To watch NAMESPACED
+	// resources, use a WatchRule in the tenant namespace and set spec.rules[].sourceNamespace.
+	//
+	// Deprecated: ClusterWatchRule is cluster-scope-only; use WatchRule with
+	// spec.rules[].sourceNamespace for namespaced resources. Removed one release from now, or at
+	// v1beta1.
+	// +optional
+	// +kubebuilder:default=Cluster
+	// +kubebuilder:validation:Enum=Cluster
+	Scope ResourceScope `json:"scope,omitempty"`
+}
+
+// DeclaresNamespacedScope reports whether a STORED ClusterWatchRule still selects namespaced
+// resources through the removed scope choice. Admission rejects the value, but an object written
+// before this release keeps it in etcd, so the compile path must refuse it rather than let the
+// rule resolve as if it had asked for cluster scope.
+//
+// It keys on the STORED value, not on what the selector happens to resolve: `resources: ["*"]`
+// legitimately resolves cluster-scoped records, so inferring the refusal from the resolution would
+// be ambiguous exactly where it matters.
+func (s *ClusterWatchRuleSpec) DeclaresNamespacedScope() bool {
+	for i := range s.Rules {
+		if s.Rules[i].Scope != "" && s.Rules[i].Scope != ResourceScopeCluster {
+			return true
+		}
+	}
+	return false
 }
 
 // ClusterWatchRuleStatus defines the observed state of ClusterWatchRule.
@@ -136,6 +169,13 @@ type ClusterWatchRuleStatus struct {
 	Streams *WatchRuleStreamsStatus `json:"streams,omitempty"`
 }
 
+// Design rationale, kept out of the generated CRD description by the blank line below.
+//
+// Cluster-scoped objects have no namespace, so GitTarget.spec.allowedSourceNamespaces is neither
+// consulted nor a bound for them: a ClusterWatchRule is intentionally cluster-global and is limited
+// only by its source credential's Kubernetes RBAC. Isolating cluster-scoped objects between tenants
+// therefore takes separate credentials/ClusterProviders, not a namespace allow-list.
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
@@ -147,20 +187,14 @@ type ClusterWatchRuleStatus struct {
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ClusterWatchRule watches resources across the entire cluster.
-// It provides the ability to audit both cluster-scoped resources (Nodes, ClusterRoles, CRDs)
-// and namespaced resources across multiple namespaces with per-rule filtering.
+// ClusterWatchRule selects CLUSTER-SCOPED resources on the source cluster its GitTarget mirrors
+// from — Nodes, PersistentVolumes, StorageClasses, ClusterRoles, CRDs, and the like. Scope is
+// carried by the rule KIND, so it has no per-rule scope choice and no source-namespace selection.
 //
-// Security model:
-//   - ClusterWatchRule is cluster-scoped and requires cluster-admin permissions
-//   - It references a GitTarget via targetRef (namespace required)
-//   - Each rule can independently specify Cluster or Namespaced scope
-//
-// Use cases:
-//   - Audit cluster infrastructure (Nodes, PersistentVolumes, StorageClasses)
-//   - Audit RBAC changes (ClusterRoles, ClusterRoleBindings)
-//   - Audit CRD installations and updates
-//   - Audit resources across multiple namespaces (e.g., all production namespaces)
+// It is cluster-scoped and requires cluster-admin permissions. Its targetRef names a GitTarget
+// (namespace required), whose namespace must be admitted by that target's ClusterProvider. To
+// mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
+// spec.rules[].sourceNamespace, whose "*" reaches every namespace the GitTarget admits.
 type ClusterWatchRule struct {
 	metav1.TypeMeta `json:",inline"`
 

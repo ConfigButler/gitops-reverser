@@ -42,20 +42,14 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ClusterWatchRule watches resources across the entire cluster.
-          It provides the ability to audit both cluster-scoped resources (Nodes, ClusterRoles, CRDs)
-          and namespaced resources across multiple namespaces with per-rule filtering.
+          ClusterWatchRule selects CLUSTER-SCOPED resources on the source cluster its GitTarget mirrors
+          from — Nodes, PersistentVolumes, StorageClasses, ClusterRoles, CRDs, and the like. Scope is
+          carried by the rule KIND, so it has no per-rule scope choice and no source-namespace selection.
 
-          Security model:
-            - ClusterWatchRule is cluster-scoped and requires cluster-admin permissions
-            - It references a GitTarget via targetRef (namespace required)
-            - Each rule can independently specify Cluster or Namespaced scope
-
-          Use cases:
-            - Audit cluster infrastructure (Nodes, PersistentVolumes, StorageClasses)
-            - Audit RBAC changes (ClusterRoles, ClusterRoleBindings)
-            - Audit CRD installations and updates
-            - Audit resources across multiple namespaces (e.g., all production namespaces)
+          It is cluster-scoped and requires cluster-admin permissions. Its targetRef names a GitTarget
+          (namespace required), whose namespace must be admitted by that target's ClusterProvider. To
+          mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
+          spec.rules[].sourceNamespace, whose "*" reaches every namespace the GitTarget admits.
         properties:
           apiVersion:
             description: |-
@@ -79,14 +73,14 @@ spec:
             properties:
               rules:
                 description: |-
-                  Rules define which resources to watch.
+                  Rules define which CLUSTER-SCOPED resources to watch.
                   Multiple rules create a logical OR - a resource matching ANY rule is watched.
-                  Each rule can specify cluster-scoped or namespaced resources.
+                  A rule that resolves to no cluster-scoped type simply watches nothing; use a WatchRule with
+                  spec.rules[].sourceNamespace for namespaced resources.
                 items:
                   description: |-
-                    ClusterResourceRule defines which resources to watch with scope control.
-                    Each rule independently specifies whether it watches cluster-scoped or
-                    namespaced resources.
+                    ClusterResourceRule defines which CLUSTER-SCOPED resources to watch. It deliberately has no
+                    sourceNamespace: cluster-scoped objects have no namespace, so there is nothing to select.
                   properties:
                     apiGroups:
                       description: |-
@@ -150,22 +144,20 @@ spec:
                       minItems: 1
                       type: array
                     scope:
-                      allOf:
-                      - enum:
-                        - Cluster
-                        - Namespaced
-                      - enum:
-                        - Cluster
-                        - Namespaced
+                      default: Cluster
                       description: |-
-                        Scope defines whether this rule watches Cluster-scoped or Namespaced resources.
-                        - "Cluster": For cluster-scoped resources (Nodes, ClusterRoles, CRDs, etc.).
-                        - "Namespaced": For namespaced resources (Pods, Deployments, Secrets, etc.),
-                                        across all namespaces.
+                        Scope is REMOVED as a choice: a ClusterWatchRule is cluster-scoped only, so "Cluster" is the
+                        only accepted value and also the default, making the field omittable. To watch NAMESPACED
+                        resources, use a WatchRule in the tenant namespace and set spec.rules[].sourceNamespace.
+
+                        Deprecated: ClusterWatchRule is cluster-scope-only; use WatchRule with
+                        spec.rules[].sourceNamespace for namespaced resources. Removed one release from now, or at
+                        v1beta1.
+                      enum:
+                      - Cluster
                       type: string
                   required:
                   - resources
-                  - scope
                   type: object
                 minItems: 1
                 type: array

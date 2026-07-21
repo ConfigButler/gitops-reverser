@@ -7,8 +7,7 @@ spec:
     name: {{ .DestinationName }}
     namespace: {{ .Namespace }}
   rules:
-  - scope: Cluster
-    operations: [CREATE, UPDATE, DELETE]
+  - operations: [CREATE, UPDATE, DELETE]
     apiGroups: [apiextensions.k8s.io]
     apiVersions: [v1]
     resources: [customresourcedefinitions]

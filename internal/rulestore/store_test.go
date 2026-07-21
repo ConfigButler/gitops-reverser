@@ -13,6 +13,17 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
+// ownNamespaceScope is the resolved scope a WatchRule whose items set no sourceNamespace compiles
+// to: every item watches the rule's OWN namespace. Tests that are not about the source-namespace
+// gate use it so the compiled rule looks exactly as watch.CompileWatchRule would leave it.
+func ownNamespaceScope(rule configv1alpha3.WatchRule) [][]string {
+	out := make([][]string, len(rule.Spec.Rules))
+	for i := range rule.Spec.Rules {
+		out[i] = []string{rule.Spec.Rules[i].EffectiveSourceNamespace(rule.Namespace)}
+	}
+	return out
+}
+
 // TestNewStore verifies that NewStore creates an initialized store.
 func TestNewStore(t *testing.T) {
 	store := NewStore()
@@ -49,6 +60,7 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	// Add rule
 	store.AddOrUpdateWatchRule(
 		rule,
+		ownNamespaceScope(rule),
 		"test-target",
 		"default",
 		"test-provider",
@@ -90,6 +102,7 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	// Update rule with different values
 	store.AddOrUpdateWatchRule(
 		rule,
+		ownNamespaceScope(rule),
 		"test-target",
 		"default",
 		"updated-provider",
@@ -166,8 +179,8 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 	if len(compiled.Rules) != 1 {
 		t.Errorf("Expected 1 rule, got %d", len(compiled.Rules))
 	}
-	if compiled.Rules[0].Scope != configv1alpha3.ResourceScopeCluster {
-		t.Errorf("Scope mismatch: got %v, want %v", compiled.Rules[0].Scope, configv1alpha3.ResourceScopeCluster)
+	if compiled.Rules[0].Resources[0] != "nodes" {
+		t.Errorf("Resources mismatch: got %v, want [nodes]", compiled.Rules[0].Resources)
 	}
 }
 
@@ -188,7 +201,8 @@ func TestDelete(t *testing.T) {
 	key := types.NamespacedName{Name: "delete-test", Namespace: "default"}
 
 	// Add rule
-	store.AddOrUpdateWatchRule(rule, "test-dest", "default", "test-repo", "gitops-system", "main", "test")
+	store.AddOrUpdateWatchRule(
+		rule, ownNamespaceScope(rule), "test-dest", "default", "test-repo", "gitops-system", "main", "test")
 
 	// Verify it exists
 	if _, exists := store.rules[key]; !exists {
@@ -274,8 +288,10 @@ func TestGetMatchingRules(t *testing.T) {
 	rule2.Name = "deployment-rule"
 	rule2.Namespace = "default"
 
-	store.AddOrUpdateWatchRule(rule1, "dest1", "default", "repo1", "gitops-system", "main", "test1")
-	store.AddOrUpdateWatchRule(rule2, "dest2", "default", "repo2", "gitops-system", "main", "test2")
+	store.AddOrUpdateWatchRule(
+		rule1, ownNamespaceScope(rule1), "dest1", "default", "repo1", "gitops-system", "main", "test1")
+	store.AddOrUpdateWatchRule(
+		rule2, ownNamespaceScope(rule2), "dest2", "default", "repo2", "gitops-system", "main", "test2")
 
 	tests := []struct {
 		name            string
@@ -411,12 +427,15 @@ func TestGetMatchingRules_OverlappingRulesUnionOperations(t *testing.T) {
 	// second CREATE rule to prove matches are additive rather than first-wins.
 	store.AddOrUpdateWatchRule(
 		podsRule("pod-create", configv1alpha3.OperationCreate),
+		ownNamespaceScope(podsRule("pod-create", configv1alpha3.OperationCreate)),
 		"dest-a", "default", "repo", "gitops-system", "main", "a")
 	store.AddOrUpdateWatchRule(
 		podsRule("pod-update", configv1alpha3.OperationUpdate),
+		ownNamespaceScope(podsRule("pod-update", configv1alpha3.OperationUpdate)),
 		"dest-a", "default", "repo", "gitops-system", "main", "a")
 	store.AddOrUpdateWatchRule(
 		podsRule("pod-create-2", configv1alpha3.OperationCreate),
+		ownNamespaceScope(podsRule("pod-create-2", configv1alpha3.OperationCreate)),
 		"dest-b", "default", "repo", "gitops-system", "main", "b")
 
 	tests := []struct {
@@ -486,11 +505,14 @@ func TestRuleStore_Readiness(t *testing.T) {
 	}
 }
 
-// TestGetMatchingClusterRules verifies cluster rule matching.
+// TestGetMatchingClusterRules verifies cluster rule matching — and, since PR 4, that a
+// ClusterWatchRule never matches a NAMESPACED object. That is the third enforcement point of the
+// cluster-scope-only narrowing: admission rejects `scope: Namespaced` and the shared compile path
+// refuses a stored one, so keying resolution on the OBJECT's discovered scope means even a rule
+// that somehow got into the store cannot widen a stream.
 func TestGetMatchingClusterRules(t *testing.T) {
 	store := NewStore()
 
-	// Cluster-scoped rule
 	clusterRule := configv1alpha3.ClusterWatchRule{
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
 			Rules: []configv1alpha3.ClusterResourceRule{
@@ -506,8 +528,9 @@ func TestGetMatchingClusterRules(t *testing.T) {
 	}
 	clusterRule.Name = "node-rule"
 
-	// Namespaced rule in cluster watch rule
-	namespacedRule := configv1alpha3.ClusterWatchRule{
+	// A rule selecting a NAMESPACED resource plural. Its selector is legal (a `resources: ["*"]`
+	// rule selects namespaced plurals too), but no namespaced object may ever match it.
+	podRule := configv1alpha3.ClusterWatchRule{
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
 			Rules: []configv1alpha3.ClusterResourceRule{
 				{
@@ -515,12 +538,11 @@ func TestGetMatchingClusterRules(t *testing.T) {
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"pods"},
-					Scope:       configv1alpha3.ResourceScopeNamespaced,
 				},
 			},
 		},
 	}
-	namespacedRule.Name = "pod-cluster-rule"
+	podRule.Name = "pod-cluster-rule"
 
 	store.AddOrUpdateClusterWatchRule(
 		clusterRule,
@@ -532,7 +554,7 @@ func TestGetMatchingClusterRules(t *testing.T) {
 		"cluster",
 	)
 	store.AddOrUpdateClusterWatchRule(
-		namespacedRule,
+		podRule,
 		"dest2",
 		"gitops-system",
 		"repo2",
@@ -562,14 +584,14 @@ func TestGetMatchingClusterRules(t *testing.T) {
 			expectedNames:   []string{"node-rule"},
 		},
 		{
-			name:            "Match namespaced pods via cluster rule",
+			name:            "No match: a namespaced object never matches a ClusterWatchRule",
 			resourcePlural:  "pods",
 			operation:       configv1alpha3.OperationUpdate,
 			apiGroup:        "",
 			apiVersion:      "v1",
 			isClusterScoped: false,
-			expectedCount:   1,
-			expectedNames:   []string{"pod-cluster-rule"},
+			expectedCount:   0,
+			expectedNames:   []string{},
 		},
 		{
 			name:            "No match: cluster rule doesn't match namespaced scope",
@@ -789,8 +811,10 @@ func TestSnapshotWatchRules(t *testing.T) {
 	rule2.Name = "rule2"
 	rule2.Namespace = "default"
 
-	store.AddOrUpdateWatchRule(rule1, "dest1", "default", "repo1", "gitops-system", "main", "test1")
-	store.AddOrUpdateWatchRule(rule2, "dest2", "default", "repo2", "gitops-system", "main", "test2")
+	store.AddOrUpdateWatchRule(
+		rule1, ownNamespaceScope(rule1), "dest1", "default", "repo1", "gitops-system", "main", "test1")
+	store.AddOrUpdateWatchRule(
+		rule2, ownNamespaceScope(rule2), "dest2", "default", "repo2", "gitops-system", "main", "test2")
 
 	// Get snapshot
 	snapshot := store.SnapshotWatchRules()
@@ -867,7 +891,8 @@ func TestConcurrentAccess(t *testing.T) {
 				rule.Name = "concurrent-rule"
 				rule.Namespace = "default"
 
-				store.AddOrUpdateWatchRule(rule, "dest", "default", "repo", "gitops-system", "main", "test")
+				store.AddOrUpdateWatchRule(
+					rule, ownNamespaceScope(rule), "dest", "default", "repo", "gitops-system", "main", "test")
 			}
 		}(i)
 	}
@@ -914,7 +939,8 @@ func TestMultipleResourceRules(t *testing.T) {
 	rule.Name = "multi-rule"
 	rule.Namespace = "default"
 
-	store.AddOrUpdateWatchRule(rule, "dest", "default", "repo", "gitops-system", "main", "test")
+	store.AddOrUpdateWatchRule(
+		rule, ownNamespaceScope(rule), "dest", "default", "repo", "gitops-system", "main", "test")
 
 	// Should match pod CREATE
 	matches := store.GetMatchingRules(nil, "pods", configv1alpha3.OperationCreate, "", "v1", false)
@@ -955,7 +981,9 @@ func TestGetMatchingRules_MustFilterByNamespaceForNamespacedWatchRule(t *testing
 	}
 	rule.Name = "playground-wr"
 	rule.Namespace = "tilt-playground"
-	store.AddOrUpdateWatchRule(rule, "target", "tilt-playground", "provider", "tilt-playground", "main", "live")
+	store.AddOrUpdateWatchRule(
+		rule, ownNamespaceScope(rule),
+		"target", "tilt-playground", "provider", "tilt-playground", "main", "live")
 
 	sameNSObject := &unstructured.Unstructured{}
 	sameNSObject.SetNamespace("tilt-playground")
@@ -992,7 +1020,8 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 	}
 	rule.Name = "ns-wr"
 	rule.Namespace = "tilt-playground"
-	store.AddOrUpdateWatchRule(rule, "tgt", "tilt-playground", "prov", "tilt-playground", "main", "live")
+	store.AddOrUpdateWatchRule(
+		rule, ownNamespaceScope(rule), "tgt", "tilt-playground", "prov", "tilt-playground", "main", "live")
 
 	store.AddOrUpdateClusterWatchRule(
 		configv1alpha3.ClusterWatchRule{
@@ -1004,7 +1033,6 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 					APIGroups:   []string{""},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"services"},
-					Scope:       configv1alpha3.ResourceScopeNamespaced,
 				}},
 			},
 		},
@@ -1031,7 +1059,7 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 		}
 	})
 
-	t.Run("cluster-scoped rule still matches any namespace", func(t *testing.T) {
+	t.Run("a ClusterWatchRule never matches a namespaced object", func(t *testing.T) {
 		matches := store.GetMatchingClusterRules(
 			"services",
 			configv1alpha3.OperationCreate,
@@ -1040,8 +1068,101 @@ func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
 			false,
 			nil,
 		)
-		if len(matches) != 1 {
-			t.Fatalf("expected ClusterWatchRule match to return 1 rule, got %d", len(matches))
+		if len(matches) != 0 {
+			t.Fatalf("expected ClusterWatchRule match to return 0 rules for a namespaced object, got %d",
+				len(matches))
 		}
 	})
+}
+
+// TestGetMatchingRules_PerItemSourceNamespaces is the per-item half of the matcher contract: one
+// WatchRule can follow one type in its own namespace and another in a different, admitted one, so
+// the namespace filter belongs on the ITEM's resolved set rather than on the rule object.
+func TestGetMatchingRules_PerItemSourceNamespaces(t *testing.T) {
+	store := NewStore()
+
+	rule := configv1alpha3.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "mixed", Namespace: "tenant-acme"},
+		Spec: configv1alpha3.WatchRuleSpec{
+			Rules: []configv1alpha3.ResourceRule{
+				{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"}},
+				{
+					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
+					SourceNamespace: "repo-config",
+				},
+			},
+		},
+	}
+	store.AddOrUpdateWatchRule(
+		rule,
+		[][]string{{"tenant-acme"}, {"repo-config"}},
+		"tgt", "tenant-acme", "prov", "tenant-acme", "main", "live",
+	)
+
+	object := func(namespace string) *unstructured.Unstructured {
+		obj := &unstructured.Unstructured{}
+		obj.SetNamespace(namespace)
+		return obj
+	}
+
+	cases := []struct {
+		name      string
+		namespace string
+		resource  string
+		want      int
+	}{
+		{"omitted item matches its own namespace", "tenant-acme", "configmaps", 1},
+		{"omitted item does NOT reach the overridden namespace", "repo-config", "configmaps", 0},
+		{"overriding item matches its named namespace", "repo-config", "secrets", 1},
+		{"overriding item does NOT fall back to the rule's own namespace", "tenant-acme", "secrets", 0},
+		{"neither item reaches an unrelated namespace", "tenant-zen", "configmaps", 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matches := store.GetMatchingRules(
+				object(tc.namespace), tc.resource, configv1alpha3.OperationCreate, "", "v1", false)
+			if len(matches) != tc.want {
+				t.Fatalf("expected %d matches, got %d", tc.want, len(matches))
+			}
+		})
+	}
+}
+
+// TestGetMatchingRules_WildcardItemMatchesEveryResolvedNamespace covers the expanded shape: a "*"
+// item compiles to a concrete list, and every namespace in it matches while nothing outside does.
+func TestGetMatchingRules_WildcardItemMatchesEveryResolvedNamespace(t *testing.T) {
+	store := NewStore()
+
+	rule := configv1alpha3.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "wild", Namespace: "tenant-acme"},
+		Spec: configv1alpha3.WatchRuleSpec{
+			Rules: []configv1alpha3.ResourceRule{{
+				APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"},
+				SourceNamespace: configv1alpha3.SourceNamespaceWildcard,
+			}},
+		},
+	}
+	store.AddOrUpdateWatchRule(
+		rule,
+		[][]string{{"repo-config", "team-payments"}},
+		"tgt", "tenant-acme", "prov", "tenant-acme", "main", "live",
+	)
+
+	for _, ns := range []string{"repo-config", "team-payments"} {
+		obj := &unstructured.Unstructured{}
+		obj.SetNamespace(ns)
+		if got := store.GetMatchingRules(
+			obj, "configmaps", configv1alpha3.OperationCreate, "", "v1", false); len(got) != 1 {
+			t.Fatalf("expected the wildcard item to match %s, got %d matches", ns, len(got))
+		}
+	}
+
+	obj := &unstructured.Unstructured{}
+	obj.SetNamespace("tenant-acme")
+	if got := store.GetMatchingRules(
+		obj, "configmaps", configv1alpha3.OperationCreate, "", "v1", false); len(got) != 0 {
+		t.Fatalf("a wildcard resolves to the ADMITTED set only; the rule's own namespace is not "+
+			"implicitly included, got %d matches", len(got))
+	}
 }

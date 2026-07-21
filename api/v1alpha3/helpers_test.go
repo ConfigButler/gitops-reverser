@@ -77,7 +77,7 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		policy  *AllowedNamespaces
+		policy  *NamespaceMatcher
 		nsName  string
 		labels  map[string]string
 		want    bool
@@ -96,13 +96,13 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 			// A policy object that exists but says nothing is the same statement as no policy:
 			// it enumerates zero namespaces, so it admits zero namespaces.
 			name:   "empty policy denies",
-			policy: &AllowedNamespaces{},
+			policy: &NamespaceMatcher{},
 			nsName: "team-a",
 			want:   false,
 		},
 		{
 			name:   "listed name is allowed",
-			policy: &AllowedNamespaces{Names: []string{"team-a", "team-b"}},
+			policy: &NamespaceMatcher{Names: []string{"team-a", "team-b"}},
 			nsName: "team-b",
 			want:   true,
 		},
@@ -110,19 +110,19 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 			// Names is an exact allow-list, never a prefix or substring match; otherwise an
 			// attacker could create "team-a-evil" and inherit "team-a"'s grant.
 			name:   "unlisted name is denied",
-			policy: &AllowedNamespaces{Names: []string{"team-a"}},
+			policy: &NamespaceMatcher{Names: []string{"team-a"}},
 			nsName: "team-a-evil",
 			want:   false,
 		},
 		{
 			name:   "name match is case-sensitive and exact",
-			policy: &AllowedNamespaces{Names: []string{"team-a"}},
+			policy: &NamespaceMatcher{Names: []string{"team-a"}},
 			nsName: "Team-A",
 			want:   false,
 		},
 		{
 			name: "selector match is allowed",
-			policy: &AllowedNamespaces{
+			policy: &NamespaceMatcher{
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
 			},
 			nsName: "anything",
@@ -131,7 +131,7 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 		},
 		{
 			name: "selector miss is denied",
-			policy: &AllowedNamespaces{
+			policy: &NamespaceMatcher{
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
 			},
 			nsName: "anything",
@@ -143,7 +143,7 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 			// labels do not match. Requiring both would be a silent tightening that breaks
 			// existing grants.
 			name: "name allows even when the selector misses",
-			policy: &AllowedNamespaces{
+			policy: &NamespaceMatcher{
 				Names:    []string{"team-a"},
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
 			},
@@ -153,7 +153,7 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 		},
 		{
 			name: "selector allows even when the name is unlisted",
-			policy: &AllowedNamespaces{
+			policy: &NamespaceMatcher{
 				Names:    []string{"team-a"},
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
 			},
@@ -168,14 +168,14 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 			// but it looks identical to an accidentally blank field, so the behavior must be
 			// asserted rather than rediscovered in production.
 			name:   "empty selector matches every namespace",
-			policy: &AllowedNamespaces{Selector: &metav1.LabelSelector{}},
+			policy: &NamespaceMatcher{Selector: &metav1.LabelSelector{}},
 			nsName: "any-namespace-at-all",
 			want:   true,
 		},
 		{
 			// ...including a namespace that carries no labels at all.
 			name:   "empty selector matches a namespace with no labels",
-			policy: &AllowedNamespaces{Selector: &metav1.LabelSelector{}},
+			policy: &NamespaceMatcher{Selector: &metav1.LabelSelector{}},
 			nsName: "bare",
 			labels: nil,
 			want:   true,
@@ -185,7 +185,7 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 			// allow answer is false. Returning true on a parse failure would turn a typo in a
 			// provider's policy into a cluster-wide grant.
 			name: "invalid selector fails closed",
-			policy: &AllowedNamespaces{
+			policy: &NamespaceMatcher{
 				Selector: &metav1.LabelSelector{
 					MatchExpressions: []metav1.LabelSelectorRequirement{
 						{Key: "tier", Operator: "NotAnOperator", Values: []string{"prod"}},
@@ -202,7 +202,7 @@ func TestAllowsNamespace_Authorization(t *testing.T) {
 			// namespace is admitted even when the selector alongside it is malformed. Pinned
 			// because it is the one path where a broken policy does not surface an error.
 			name: "listed name short-circuits an invalid selector",
-			policy: &AllowedNamespaces{
+			policy: &NamespaceMatcher{
 				Names: []string{"team-a"},
 				Selector: &metav1.LabelSelector{
 					MatchExpressions: []metav1.LabelSelectorRequirement{

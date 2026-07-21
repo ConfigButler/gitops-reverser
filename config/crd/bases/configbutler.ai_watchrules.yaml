@@ -35,6 +35,10 @@ spec:
       name: StreamsRunning
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="SourceNamespaceAuthorized")].status
+      name: SourceAuthorized
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -42,14 +46,14 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          WatchRule watches namespaced resources within its own namespace.
-          It provides fine-grained control over which resources trigger Git commits,
-          with filtering by operation type, API group, version, and labels.
+          WatchRule selects NAMESPACED resources on the source cluster its GitTarget mirrors from, with
+          filtering by operation, API group, version, and source namespace. Scope is carried by the rule
+          KIND: a WatchRule never selects cluster-scoped types — use a ClusterWatchRule for those.
 
-          Security model:
-            - WatchRule is namespace-scoped and can only watch resources in its own namespace
-            - Use ClusterWatchRule for watching cluster-scoped resources (Nodes, ClusterRoles, etc.)
-            - RBAC controls who can create/modify WatchRules per namespace
+          Each spec.rules[] item watches its own source namespace: this WatchRule's OWN namespace when
+          omitted, an explicit name, or "*" for every namespace the GitTarget admits. Anything other than
+          its own namespace passes the gate described on rules[].sourceNamespace. RBAC controls who may
+          create or modify WatchRules per namespace.
         properties:
           apiVersion:
             description: |-
@@ -73,9 +77,9 @@ spec:
             properties:
               rules:
                 description: |-
-                  Rules define which resources to watch within this namespace.
+                  Rules define which resources to watch, and in which source namespaces.
                   Multiple rules create a logical OR - a resource matching ANY rule is watched.
-                  Each rule can specify operations, API groups, versions, and resource types.
+                  Each rule can specify operations, API groups, versions, resource types, and a source namespace.
                 items:
                   description: |-
                     ResourceRule defines a set of namespaced resources to watch.
@@ -152,6 +156,23 @@ spec:
                         type: string
                       minItems: 1
                       type: array
+                    sourceNamespace:
+                      description: |-
+                        SourceNamespace is the namespace this item watches IN THE SOURCE CLUSTER its GitTarget
+                        mirrors from: omitted for this WatchRule's own namespace, an exact name for one other, or
+                        "*" for every namespace the GitTarget's spec.allowedSourceNamespaces currently admits.
+
+                        "*" never means "every namespace that exists" — it expands to exactly what that policy
+                        admits, so a target declaring no policy denies it. Naming any namespace other than this
+                        rule's own, "*" included, additionally requires the GitTarget's ClusterProvider to admit the
+                        target's namespace AND to set spec.allowSourceNamespaceOverride. Once the GitTarget declares
+                        a policy it is exhaustive, so even an omitted sourceNamespace is checked against it.
+
+                        This changes only which namespace is WATCHED, never where objects are written: Git placement
+                        follows each mirrored object's own namespace.
+                      maxLength: 63
+                      pattern: ^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?)$
+                      type: string
                   required:
                   - resources
                   type: object

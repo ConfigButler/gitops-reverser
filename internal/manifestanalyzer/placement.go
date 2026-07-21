@@ -784,9 +784,10 @@ func cohortDestination(
 // weighted by member count); every file holding exactly one document contributes to
 // the singleton-style candidate. A tainted file (fileIsAppendSafe false) is
 // excluded from both. namespaceAgnostic applies the P4 safety rule (see
-// resolveInferred): a bundle must already span more than one namespace, and
-// singleton style must resolve to a single shared directory, or the candidate is
-// dropped. It returns the eligible singleton directories, the winning bundle
+// resolveInferred): a candidate must PROVE it is namespace-agnostic by already
+// spanning more than one namespace — a bundle through its own documents, singleton
+// style through the documents of its one shared directory — or it is dropped.
+// It returns the eligible singleton directories, the winning bundle
 // (path/count), and one representative document per singleton directory / bundle
 // path — used to decide whether the destination's namespace is inherited from
 // build context (see PlacementResult.NamespaceInherited) — determined
@@ -797,6 +798,7 @@ func classifyCohortLocations(
 	namespaceAgnostic bool,
 ) ([]string, string, int, map[string]*DocumentModel, map[string]*DocumentModel) {
 	var singletonDirs []string
+	var singletonDocs []*DocumentModel
 	dirReps := map[string]*DocumentModel{}
 	bundleReps := map[string]*DocumentModel{}
 	bundleCounts := map[string]int{}
@@ -815,11 +817,19 @@ func classifyCohortLocations(
 		}
 		dir := slashDir(p)
 		singletonDirs = append(singletonDirs, dir)
+		singletonDocs = append(singletonDocs, ms...)
 		if _, seen := dirReps[dir]; !seen {
 			dirReps[dir] = ms[0]
 		}
 	}
-	if namespaceAgnostic && !allSameDir(singletonDirs) {
+	// P4 for singleton style, symmetric with the bundle branch above: reuse needs POSITIVE
+	// proof of namespace-agnosticism, not merely the absence of contrary evidence. One
+	// directory holding one namespace's documents is exactly as consistent with a
+	// per-namespace-segmented layout whose second namespace has simply never been written as
+	// it is with a shared directory — and guessing wrong files another namespace's object
+	// under the first namespace's folder. Declining costs nothing: the canonical path builds
+	// the correct namespace segment directly.
+	if namespaceAgnostic && (!allSameDir(singletonDirs) || !spansMultipleNamespaces(singletonDocs)) {
 		singletonDirs = nil // unproven: directories look namespace-segmented (P4)
 	}
 

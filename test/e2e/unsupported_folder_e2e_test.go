@@ -165,6 +165,9 @@ func waitForRuleBlockedByGitPath(resourceType, name, namespace, expectedReason s
 func applyUnsupportedPathClusterWatchRule(name, targetNamespace, targetName string) {
 	GinkgoHelper()
 
+	// A ClusterWatchRule is cluster-scope-only, so this selects a cluster-scoped type. The point of
+	// the fixture is that a rule of THIS KIND is also blocked by the target's Git-path refusal; what
+	// it selects is incidental, so it names a low-cardinality cluster type.
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: ClusterWatchRule
 metadata:
@@ -174,12 +177,11 @@ spec:
     name: %s
     namespace: %s
   rules:
-  - scope: Namespaced
-    apiGroups: [""]
+  - apiGroups: ["storage.k8s.io"]
     apiVersions: ["v1"]
-    resources: ["configmaps"]
+    resources: ["storageclasses"]
 `, name, targetName, targetNamespace)
 
 	_, err := kubectlRunWithStdin("", manifest, "apply", "-f", "-")
-	Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap ClusterWatchRule")
+	Expect(err).NotTo(HaveOccurred(), "failed to apply StorageClass ClusterWatchRule")
 }

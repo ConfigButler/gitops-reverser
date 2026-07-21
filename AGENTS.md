@@ -69,6 +69,18 @@ workflow or Dockerfile change is covered by the normal lint gate; you can also r
 - Include JSON tags and field descriptions
 - Run `task manifests` to update CRDs
 - Test CRD installation and usage
+- **Keep CRD descriptions to the contract.** A doc comment on a type or field becomes the
+  `kubectl explain` text, so it should say what the field does, what its values mean, and the
+  gotchas — not why it was designed that way. Put design rationale in a comment block separated
+  from the doc comment **by a blank line**: Go does not treat it as the doc comment, so
+  controller-gen leaves it out of the schema while it stays in the source.
+- **Where that block goes matters, and getting it wrong fails silently.** On a FIELD, put it above
+  the doc comment. On a TYPE, put it above the `+kubebuilder:` marker block, never between the
+  markers and the doc — that displaces the markers and they are dropped without any error
+  (a `+kubebuilder:resource:scope=Cluster` was silently lost this way, flipping a CRD to
+  Namespaced). After editing API comments, confirm only descriptions moved:
+  regenerate into a scratch dir with `controller-gen crd paths=./api/... output:crd:artifacts:config=<dir>`,
+  then compare against `config/crd/bases` with every `description` key stripped from both.
 
 ### Git Operations (`internal/git/`)
 - Handle Git errors gracefully

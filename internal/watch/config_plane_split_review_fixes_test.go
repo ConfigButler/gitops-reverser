@@ -60,6 +60,12 @@ func seedClusterCatalog(t *testing.T, m *Manager, id string, disco staticCatalog
 // remote clusters can be made to legitimately disagree on what they serve. An empty group is the
 // core group.
 func oneResourceDiscovery(group, name, kind string) staticCatalogDiscovery {
+	return oneScopedResourceDiscovery(group, name, kind, true)
+}
+
+// oneScopedResourceDiscovery is oneResourceDiscovery with an explicit scope, for the tests that
+// need a genuinely CLUSTER-scoped type — the only kind a ClusterWatchRule can resolve.
+func oneScopedResourceDiscovery(group, name, kind string, namespaced bool) staticCatalogDiscovery {
 	listWatch := metav1.Verbs{"get", "list", "watch"}
 	groupVersion := "v1"
 	if group != "" {
@@ -69,7 +75,7 @@ func oneResourceDiscovery(group, name, kind string) staticCatalogDiscovery {
 		groups: []*metav1.APIGroup{testAPIGroup(group, "v1")},
 		resources: []*metav1.APIResourceList{{
 			GroupVersion: groupVersion,
-			APIResources: []metav1.APIResource{{Name: name, Kind: kind, Namespaced: true, Verbs: listWatch}},
+			APIResources: []metav1.APIResource{{Name: name, Kind: kind, Namespaced: namespaced, Verbs: listWatch}},
 		}},
 	}
 }
@@ -259,21 +265,21 @@ func TestRefreshWatchedTypeTables_RetargetReResolvesAtEqualRevisions(t *testing.
 	m := &Manager{Log: logr.Discard(), RuleStore: store, resourceCatalog: newCommonTestCatalog(t)}
 
 	const clusterA, clusterB = "team-a/kc/value", "team-b/kc/value"
-	ccA := seedClusterCatalog(t, m, clusterA, oneResourceDiscovery("", "configmaps", "ConfigMap"))
-	ccB := seedClusterCatalog(t, m, clusterB, oneResourceDiscovery("", "secrets", "Secret"))
+	ccA := seedClusterCatalog(t, m, clusterA, oneScopedResourceDiscovery("", "namespaces", "Namespace", false))
+	ccB := seedClusterCatalog(t, m, clusterB, oneScopedResourceDiscovery("", "nodes", "Node", false))
 	require.Equal(t, ccA.registry.Revision(), ccB.registry.Revision(),
 		"both remotes are one scan in, so their registry revisions are equal on purpose")
 
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
+		clusterRuleForResource("rule-1", "namespaces"),
 		"t", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	m.rememberGitTargetCluster(gitDestRef("t"), clusterA)
 	m.refreshWatchedTypeTables()
 	first, ok := m.watchedTypeTableForGitDest(gitDestRef("t"))
 	require.True(t, ok)
-	require.Len(t, first.Types, 1, "cluster A serves configmaps")
-	assert.Equal(t, "ConfigMap", first.Types[0].GVK.Kind)
+	require.Len(t, first.Types, 1, "cluster A serves namespaces")
+	assert.Equal(t, "Namespace", first.Types[0].GVK.Kind)
 
 	// Retarget to B (equal revision, unchanged rule): only the cluster mapping fingerprint moved.
 	m.forgetGitTargetCluster(gitDestRef("t")) // last referencer of A -> A is torn down
@@ -283,7 +289,7 @@ func TestRefreshWatchedTypeTables_RetargetReResolvesAtEqualRevisions(t *testing.
 	second, ok := m.watchedTypeTableForGitDest(gitDestRef("t"))
 	require.True(t, ok)
 	assert.Empty(t, second.Types,
-		"after retargeting to a cluster that does not serve configmaps the table must be "+
+		"after retargeting to a cluster that does not serve namespaces the table must be "+
 			"re-resolved to empty, not keep cluster A's GVRs")
 }
 
@@ -325,7 +331,8 @@ func TestResolveWatchRuleResources_ResolvesAgainstSourceCluster(t *testing.T) {
 func TestResolveClusterWatchRuleResources_ResolvesAgainstSourceCluster(t *testing.T) {
 	m := &Manager{Log: logr.Discard(), resourceCatalog: newCommonTestCatalog(t)}
 	const remote = "team-a/kc/value"
-	seedClusterCatalog(t, m, remote, oneResourceDiscovery("example.com", "widgets", "Widget"))
+	seedClusterCatalog(t, m, remote,
+		oneScopedResourceDiscovery("example.com", "widgetclasses", "WidgetClass", false))
 	m.rememberGitTargetCluster(types.NewResourceReference("t", "test-ns"), remote)
 
 	rule := configv1alpha3.ClusterWatchRule{
@@ -333,8 +340,7 @@ func TestResolveClusterWatchRuleResources_ResolvesAgainstSourceCluster(t *testin
 			TargetRef: configv1alpha3.NamespacedTargetReference{Name: "t", Namespace: "test-ns"},
 			Rules: []configv1alpha3.ClusterResourceRule{{
 				APIGroups: []string{"example.com"},
-				Resources: []string{"widgets"},
-				Scope:     configv1alpha3.ResourceScopeNamespaced,
+				Resources: []string{"widgetclasses"},
 			}},
 		},
 	}

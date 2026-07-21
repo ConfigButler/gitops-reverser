@@ -18,6 +18,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -50,6 +51,7 @@ type WatchRuleReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=watchrules/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -68,6 +70,18 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// Resource was deleted. Remove it from the store.
 			r.RuleStore.Delete(req.NamespacedName)
 			log.Info("WatchRule deleted, removed from store", "name", req.Name, "namespace", req.Namespace)
+
+			// Drop the retained source-scope grant with it. The grant is what tells the gate a rule
+			// is MAINTAINING an already-resolved scope rather than ESTABLISHING one, and a rule that
+			// no longer exists is neither. Left behind, it is inherited by the next rule created
+			// under the same name and spec — a name a different tenant may now own — and an
+			// unevaluatable policy then reads as "retaining a known-good scope" instead of "no
+			// scope was ever established". The rule sits Unknown and Reconciling indefinitely
+			// rather than publishing the terminal, actionable refusal that tells its owner the
+			// policy cannot be evaluated. A recreated rule must establish from scratch.
+			if scope := r.sourceScope(); scope != nil {
+				scope.ForgetSourceScopeGrant(req.NamespacedName)
+			}
 
 			// Trigger WatchManager reconciliation for deletion
 			if r.WatchManager != nil {
@@ -108,6 +122,13 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		metav1.ConditionUnknown,
 		ReasonProgressing,
 		"Blocked by validation; GitTarget not evaluated",
+	)
+	r.setTypedCondition(
+		&watchRule,
+		ConditionTypeSourceNamespaceAuthorized,
+		metav1.ConditionUnknown,
+		WatchRuleReasonCheckingSourceNamespacePolicy,
+		"Blocked by validation; source namespace not evaluated",
 	)
 	r.setTypedCondition(
 		&watchRule,
@@ -221,14 +242,13 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	// I added GitProviderStatus with Conditions.
 	// TODO: Check GitProvider readiness. For now assume ready if found.
 
-	// Add rule to store with GitTarget reference and resolved values
-	r.RuleStore.AddOrUpdateWatchRule(
-		*watchRule,
-		target.Name, targetNS, // GitTarget reference (replaces GitDestination)
-		provider.Name, providerNS, // GitProvider reference (replaces GitRepoConfig)
-		target.Spec.Branch,
-		target.Spec.Path,
-	)
+	// Source-namespace gate AND compilation, in that order and in one call — see
+	// gateSourceNamespace. There is deliberately no AddOrUpdateWatchRule here: routing every
+	// compilation through watch.CompileWatchRule is what stops the startup bootstrap from being a
+	// second, ungated path into the store.
+	if handled, result, err := r.gateSourceNamespace(ctx, watchRule, target, provider, log); handled {
+		return result, err
+	}
 
 	// Trigger WatchManager reconciliation for new/updated rule
 	if r.WatchManager != nil {
@@ -332,7 +352,6 @@ func (r *WatchRuleReconciler) setRuleKstatus(
 	applyRuleKstatus(
 		watchRule.Status.Conditions,
 		readyMessage,
-		WatchRuleReasonReady,
 		"WatchRule is not stalled",
 		func(conditionType string, status metav1.ConditionStatus, reason, message string) {
 			r.setTypedCondition(watchRule, conditionType, status, reason, message)
@@ -441,7 +460,7 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha3.WatchRule{}).
 		// GenerationChangedPredicate keeps these watches reacting to a freshly
 		// applied or spec-changed dependency while ignoring the status-only
@@ -457,8 +476,80 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToWatchRules),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		Named("watchrule").
-		Complete(r)
+		// React to a ClusterProvider's allowWatchRuleSourceNamespaceOverride (or allowedNamespaces)
+		// changing. The GitTarget->WatchRules edge above CANNOT carry this: a ClusterProvider change
+		// reaches the GitTarget as a STATUS update, which GenerationChangedPredicate deliberately
+		// drops. Without this mapper, flipping the delegation flag would leave every affected
+		// WatchRule un-reconciled until its periodic requeue — so a REVOCATION would take minutes.
+		Watches(
+			&configbutleraiv1alpha3.ClusterProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.clusterProviderToWatchRules),
+			builder.WithPredicates(clusterProviderReadyOrSpecChanged()),
+		).
+		Named("watchrule")
+
+	// React to a SOURCE-cluster Namespace label change, which grants or revokes any rule whose
+	// GitTarget admits by selector. Those labels live in a cluster this controller has no client
+	// for, so the watch manager observes them and pushes the affected GitTargets here; the
+	// gitTargetToWatchRules mapper fans them out to the rules. See
+	// internal/watch/source_namespace_scope.go.
+	if r.WatchManager != nil {
+		if events := r.WatchManager.SourceNamespaceEvents(); events != nil {
+			b = b.WatchesRawSource(source.Channel(
+				events,
+				handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
+			))
+		}
+	}
+
+	return b.Complete(r)
+}
+
+// clusterProviderToWatchRules maps a ClusterProvider change to every WatchRule whose GitTarget
+// mirrors through that provider, so a delegation grant or revocation converges on the event rather
+// than on the periodic reconcile.
+func (r *WatchRuleReconciler) clusterProviderToWatchRules(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var targets configbutleraiv1alpha3.GitTargetList
+	if err := r.List(ctx, &targets); err != nil {
+		logDependencyListError(ctx, err, "GitTargets", obj)
+		return nil
+	}
+
+	// A WatchRule's targetRef is a LocalTargetReference, so candidates always live in their
+	// GitTarget's own namespace — collect the affected (namespace, target name) pairs.
+	affected := make(map[types.NamespacedName]struct{}, len(targets.Items))
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		if t.SourceCluster() != obj.GetName() {
+			continue
+		}
+		affected[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}
+	}
+	if len(affected) == 0 {
+		return nil
+	}
+
+	var rules configbutleraiv1alpha3.WatchRuleList
+	if err := r.List(ctx, &rules); err != nil {
+		logDependencyListError(ctx, err, "WatchRules", obj)
+		return nil
+	}
+
+	var requests []ctrlreconcile.Request
+	for i := range rules.Items {
+		rule := &rules.Items[i]
+		key := types.NamespacedName{Name: rule.Spec.TargetRef.Name, Namespace: rule.Namespace}
+		if _, ok := affected[key]; !ok {
+			continue
+		}
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: types.NamespacedName{Name: rule.Name, Namespace: rule.Namespace},
+		})
+	}
+	return requests
 }
 
 // gitTargetToWatchRules maps a GitTarget event to every WatchRule in the

@@ -42,6 +42,28 @@ To mirror live state into Git the controller must:
 The controller never writes to a watched type. Its only write target is Git, plus the Secrets it
 generates itself (the signing key, and the age key under `generateWhenMissing`).
 
+### Which namespaces a rule may read from
+
+RBAC above is the hard maximum; *within* it, scope is carried by the rule **kind**:
+
+- A **`WatchRule`** selects namespaced resources. Each `spec.rules[]` item watches the rule's own
+  namespace by default. Naming any other source namespace — including `sourceNamespace: "*"` —
+  requires both `ClusterProvider.spec.allowSourceNamespaceOverride` (a platform-admin delegation,
+  false by default) and an explicit `GitTarget.spec.allowedSourceNamespaces` entry admitting it. A
+  `"*"` expands to exactly that policy's set, never to every namespace that exists.
+
+  On an **in-cluster** provider that delegation deliberately bypasses live namespace RBAC: the owner
+  of an admitted `GitTarget` can then mirror another namespace's objects — read through the
+  operator's own cluster-wide credential — into a Git destination they control. That is legitimate to
+  grant on purpose, and it is why the flag exists and defaults to false.
+- A **`ClusterWatchRule`** selects cluster-scoped resources only. Cluster-scoped objects have no
+  namespace, so `allowedSourceNamespaces` is neither consulted nor a bound for it: it is
+  intentionally cluster-global. Isolating cluster-scoped objects between tenants therefore takes a
+  separate `ClusterProvider` and credential per tenant, so that credential's RBAC is the boundary.
+
+The audit question is one per kind: read a `WatchRule`'s items and its target's policy, or recognise
+a `ClusterWatchRule` as cluster-global.
+
 ## The controller does not hold Secret values
 
 There is **no Secret informer**. The manager is built with `Client.Cache.DisableFor:

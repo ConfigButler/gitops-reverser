@@ -93,14 +93,13 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 
 	existingClusterWatchRule := &configv1alpha3.ClusterWatchRule{
-		ObjectMeta: metav1.ObjectMeta{Name: "cluster-services"},
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-namespaces"},
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
 			TargetRef: configv1alpha3.NamespacedTargetReference{Name: "ops-target", Namespace: "ops"},
 			Rules: []configv1alpha3.ClusterResourceRule{{
-				Scope:       configv1alpha3.ResourceScopeNamespaced,
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
-				Resources:   []string{"services"},
+				Resources:   []string{"namespaces"},
 			}},
 		},
 	}
@@ -129,7 +128,7 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 	defaultClusterProvider := &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: configv1alpha3.DefaultClusterProviderName},
 		Spec: configv1alpha3.ClusterProviderSpec{
-			AllowedNamespaces: &configv1alpha3.AllowedNamespaces{Selector: &metav1.LabelSelector{}},
+			AllowedNamespaces: &configv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}},
 		},
 	}
 

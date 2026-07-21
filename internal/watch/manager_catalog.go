@@ -403,8 +403,11 @@ func (m *Manager) ResolveClusterWatchRuleResources(
 ) (bool, string) {
 	selectors := make([]ruleResourceSelector, 0, len(rule.Spec.Rules))
 	for _, rr := range rule.Spec.Rules {
+		// Always Cluster: a ClusterWatchRule is cluster-scope-only, so reporting resolution against
+		// any other scope would claim types the rule can never watch.
 		selectors = append(selectors, ruleResourceSelector{
-			groups: rr.APIGroups, versions: rr.APIVersions, resources: rr.Resources, scope: rr.Scope,
+			groups: rr.APIGroups, versions: rr.APIVersions, resources: rr.Resources,
+			scope: configv1alpha3.ResourceScopeCluster,
 		})
 	}
 	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Spec.TargetRef.Namespace)

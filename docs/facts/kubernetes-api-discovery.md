@@ -162,7 +162,8 @@ silently partial one.**
 - RBAC still applies: the operator must be allowed to `get/list/watch` the target resources.
 - Scope still applies:
   - `WatchRule` is namespace-scoped
-  - `ClusterWatchRule` can watch cluster-scoped and namespaced resources (by rule scope)
+  - `ClusterWatchRule` watches cluster-scoped resources only; a namespaced resource is
+    a `WatchRule`'s to select, addressed through `rules[].sourceNamespace`
 
 ## Quick Verification Commands
 

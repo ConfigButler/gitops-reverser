@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
@@ -32,6 +33,10 @@ type cwaWatchManager struct {
 	replans     int
 	replanErr   error
 	onReconcile func()
+
+	// scope is the source-scope service this double hands back. It stays nil unless a test needs
+	// grants to be observable, so every existing test keeps the "no data plane is wired" path.
+	scope watch.SourceScopeService
 }
 
 func (m *cwaWatchManager) ReconcileForRuleChange(context.Context) error {
@@ -70,6 +75,14 @@ func (m *cwaWatchManager) StreamSummaryForClusterWatchRule(
 	return cwaRunningSummary()
 }
 
+// SourceScope returns the injected service, or nil when a test wired none — in which case
+// selector-based allowedSourceNamespaces degrades to "cannot say yet" while exact names stay fully
+// answerable.
+func (m *cwaWatchManager) SourceScope() watch.SourceScopeService { return m.scope }
+
+// SourceNamespaceEvents returns nil, so no source-cluster Namespace channel is wired.
+func (m *cwaWatchManager) SourceNamespaceEvents() <-chan event.GenericEvent { return nil }
+
 func cwaRunningSummary() watch.StreamSummary {
 	return watch.StreamSummary{
 		Total: 1, Ready: 1, Reason: "Streaming", Message: "1/1 streams running",
@@ -103,7 +116,7 @@ func cwaGitProvider() *configbutleraiv1alpha3.GitProvider {
 	}
 }
 
-func cwaClusterProvider(policy *configbutleraiv1alpha3.AllowedNamespaces) *configbutleraiv1alpha3.ClusterProvider {
+func cwaClusterProvider(policy *configbutleraiv1alpha3.NamespaceMatcher) *configbutleraiv1alpha3.ClusterProvider {
 	return &configbutleraiv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: cwaProviderName},
 		Spec:       configbutleraiv1alpha3.ClusterProviderSpec{AllowedNamespaces: policy},
@@ -118,20 +131,20 @@ func cwaClusterWatchRule() *configbutleraiv1alpha3.ClusterWatchRule {
 				Kind: "GitTarget", Name: cwaTargetName, Namespace: cwaTargetNS,
 			},
 			Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
-				Scope:     configbutleraiv1alpha3.ResourceScopeNamespaced,
-				Resources: []string{"configmaps"},
+				Resources: []string{"customresourcedefinitions"},
+				APIGroups: []string{"apiextensions.k8s.io"},
 			}},
 		},
 	}
 }
 
 // cwaAdmitting is the policy that admits cwaTargetNS; cwaDenying admits some other namespace.
-func cwaAdmitting() *configbutleraiv1alpha3.AllowedNamespaces {
-	return &configbutleraiv1alpha3.AllowedNamespaces{Names: []string{cwaTargetNS}}
+func cwaAdmitting() *configbutleraiv1alpha3.NamespaceMatcher {
+	return &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{cwaTargetNS}}
 }
 
-func cwaDenying() *configbutleraiv1alpha3.AllowedNamespaces {
-	return &configbutleraiv1alpha3.AllowedNamespaces{Names: []string{"some-other-namespace"}}
+func cwaDenying() *configbutleraiv1alpha3.NamespaceMatcher {
+	return &configbutleraiv1alpha3.NamespaceMatcher{Names: []string{"some-other-namespace"}}
 }
 
 type cwaFixture struct {
@@ -337,7 +350,7 @@ func TestReconcile_AdmittedBySelectorOnNamespaceLabels(t *testing.T) {
 	ctx := context.Background()
 	f := newCWAFixture(t, []client.Object{
 		cwaClusterWatchRule(), cwaGitTarget(), cwaGitProvider(),
-		cwaClusterProvider(&configbutleraiv1alpha3.AllowedNamespaces{
+		cwaClusterProvider(&configbutleraiv1alpha3.NamespaceMatcher{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirror": "yes"}},
 		}),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{

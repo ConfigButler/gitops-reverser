@@ -3,7 +3,7 @@
 > Phase 2 of [source-namespace addressing](README.md). **Depends on:**
 > [PR 1](pr1-namespace-scoped-resync.md) — this PR is the first thing that makes a GitTarget watch one
 > GVR in two namespaces at once, which is unsafe until the resync sweep is namespace-scoped.
-> **Blocks:** PR 4 (the gate is only as good as the stream scoping underneath it) and PR 5.
+> **Blocks:** PR 4's authorization and rule-item namespace expansion.
 > Bug fix — no API change, no CRD regeneration.
 >
 > **Status: landed.** `SnapshotNamespaces` is now `WatchedType.WatchScopes`, which returns every
@@ -29,18 +29,16 @@ named rule co-resident with an `UPDATE` cluster-wide rule loses its filter too.
 
 ### Why it matters to this workstream
 
-Under [PR 4](pr4-source-namespace-field.md) this is a gate bypass. A ClusterWatchRule may
+Under the [historical top-level-field implementation](historical-top-level-source-namespace-baseline.md)
+this is a gate bypass. A ClusterWatchRule may
 legitimately select every source namespace once its GitTarget passes provider admission — but a
 co-resident WatchRule must not silently inherit that cluster-wide stream. Otherwise a WatchRule
 authorized only for `repo-config` receives events from every namespace the credential can read, and
 its `allowedSourceNamespaces` check passed only *before* the data plane widened it.
 
-[PR 5](pr5-clusterwatchrule-source-ceiling.md) removes the `""` key **for the namespaced selections**
-of any target with a declared ceiling — `scope: Cluster` rules keep emitting `""`, because a
-namespace allow-list cannot constrain cluster-scoped types. So the collapse cannot trigger for a
-namespaced GVR under a ceiling, but a target that mirrors a GVR both cluster-scoped and namespaced is
-not covered by that, and the far more common undeclared case is not covered at all. This PR is what
-governs both.
+[PR 4](pr4-cluster-scope-only.md) removes namespaced selections from ClusterWatchRule entirely and
+emits concrete namespaces for WatchRule items. Cluster-scoped rules still emit `""`. This PR remains
+the protection when a GitTarget legitimately follows both kinds of stream for the same GVR.
 
 ### This behavior is currently asserted as intended
 

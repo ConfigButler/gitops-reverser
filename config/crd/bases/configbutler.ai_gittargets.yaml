@@ -93,6 +93,81 @@ spec:
           spec:
             description: spec defines the desired state of GitTarget
             properties:
+              allowedSourceNamespaces:
+                description: |-
+                  AllowedSourceNamespaces bounds which SOURCE-cluster namespaces may be mirrored INTO this
+                  target. It belongs to the DESTINATION, not to any requesting rule: once declared it is
+                  exhaustive for every WatchRule that writes here, with no exception for a rule's own namespace.
+
+                  Omitted and empty differ. Omitted declares no policy, and a WatchRule keeps its own namespace;
+                  a declared-but-empty policy admits nothing; `selector: {}` admits every source namespace.
+                  Selector labels are read in the SOURCE cluster, so evaluating one needs Namespace
+                  get/list/watch for that cluster's credential, while exact names need no such access. This is
+                  also what a rules[].sourceNamespace of "*" resolves through. Naming any namespace other than
+                  the WatchRule's own — including "*" — additionally requires the ClusterProvider to set
+                  spec.allowSourceNamespaceOverride. It does NOT bound ClusterWatchRule, whose cluster-scoped
+                  objects have no namespace. Full resolution table: docs/configuration.md.
+                properties:
+                  names:
+                    description: |-
+                      Names is an explicit allow-list of namespace names. Entries are namespace names (DNS-1123
+                      labels), never patterns — `*` is rejected. To admit every namespace, declare `selector: {}`.
+                    items:
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  selector:
+                    description: |-
+                      Selector is a label selector matched against Namespace labels; a namespace whose labels
+                      match is admitted. ORed with Names.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
               branch:
                 description: |-
                   Branch to use for this target.
@@ -105,13 +180,10 @@ spec:
                   name: default
                 description: |-
                   ClusterProviderRef names the SOURCE cluster this GitTarget mirrors FROM, by referencing a
-                  cluster-scoped ClusterProvider by name. The ClusterProvider is the home for that cluster's
-                  connectivity credential, namespace-access authorization, and author-attribution mode. This
-                  DEFAULTS to {name: "default"} — a user-created provider by that conventional name, which may
-                  be in-cluster or remote — so a target that omits it persists with a concrete, jumpable ref
-                  rather than an implicit nil. The operator never creates that provider; a GitTarget naming one
-                  that does not exist is held unready. Immutable: a folder's source cluster is part of what the
-                  folder means; delete and recreate to change it.
+                  cluster-scoped ClusterProvider by name. That ClusterProvider owns the cluster's connectivity
+                  credential, namespace-access authorization, and author-attribution mode. The default provider
+                  name is "default" and must exist; it may be in-cluster or remote.
+                  Immutable: a folder's source cluster is part of what the folder means; delete and recreate.
                 properties:
                   group:
                     default: configbutler.ai

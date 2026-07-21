@@ -37,7 +37,7 @@ func gitDestRef(name string) types.ResourceReference {
 func TestRefreshWatchedTypeTables_ClusterWatchRuleResolvesClusterWideType(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
+		clusterRuleForResource("rule-1", "namespaces"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 
@@ -47,8 +47,8 @@ func TestRefreshWatchedTypeTables_ClusterWatchRuleResolvesClusterWideType(t *tes
 	require.True(t, ok)
 	require.Len(t, table.Types, 1)
 	wt := table.Types[0]
-	assert.Equal(t, "ConfigMap", wt.GVK.Kind)
-	assert.True(t, wt.ClusterWide(), "a ClusterWatchRule with Namespaced scope streams cluster-wide")
+	assert.Equal(t, "Namespace", wt.GVK.Kind)
+	assert.True(t, wt.ClusterWide(), "a ClusterWatchRule streams its cluster-scoped types cluster-wide")
 	assert.Equal(t, []string{""}, wt.WatchScopes())
 	assert.Equal(t, `provider=test-ns/test-provider|branch="main"|path="test-path"`, table.Dest)
 }
@@ -57,10 +57,12 @@ func TestRefreshWatchedTypeTables_WatchRuleScopesTypeToItsNamespace(t *testing.T
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateWatchRule(
 		watchRuleForTarget("rule-a", "wt-ns-target", "ns-a"),
+		ownNamespaceScope(watchRuleForTarget("rule-a", "wt-ns-target", "ns-a")),
 		"wt-ns-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	store.AddOrUpdateWatchRule(
 		watchRuleForTarget("rule-b", "wt-ns-target", "ns-b"),
+		ownNamespaceScope(watchRuleForTarget("rule-b", "wt-ns-target", "ns-b")),
 		"wt-ns-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 
@@ -76,7 +78,7 @@ func TestRefreshWatchedTypeTables_WatchRuleScopesTypeToItsNamespace(t *testing.T
 func TestRefreshWatchedTypeTables_RuleChangeReResolves(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
+		clusterRuleForResource("rule-1", "namespaces"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
@@ -85,14 +87,14 @@ func TestRefreshWatchedTypeTables_RuleChangeReResolves(t *testing.T) {
 
 	// A second rule selecting a different resource is reflected on the next refresh.
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "secrets"),
+		clusterRuleForResource("rule-2", "nodes"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
 
 	second, _ := manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
 	kinds := []string{second.Types[0].GVK.Kind, second.Types[1].GVK.Kind}
-	assert.ElementsMatch(t, []string{"ConfigMap", "Secret"}, kinds)
+	assert.ElementsMatch(t, []string{"Namespace", "Node"}, kinds)
 }
 
 func TestResolveWatchedTypeTables_NilRuleStoreIsEmpty(t *testing.T) {
@@ -103,7 +105,7 @@ func TestResolveWatchedTypeTables_NilRuleStoreIsEmpty(t *testing.T) {
 func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
+		clusterRuleForResource("rule-1", "namespaces"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	manager.refreshWatchedTypeTables()
@@ -123,14 +125,14 @@ func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {
 func TestRulesFingerprint_StableUntilRuleChanges(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
+		clusterRuleForResource("rule-1", "namespaces"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	fp1 := manager.rulesFingerprint()
 	assert.Equal(t, fp1, manager.rulesFingerprint(), "fingerprint must be stable for unchanged rules")
 
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "secrets"),
+		clusterRuleForResource("rule-2", "nodes"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	assert.NotEqual(t, fp1, manager.rulesFingerprint(), "a new rule must move the fingerprint")
@@ -166,7 +168,6 @@ func TestRefreshWatchedTypeTables_ExcludesAmbiguousGVK(t *testing.T) {
 					APIGroups:   []string{"example.com"},
 					APIVersions: []string{"v1"},
 					Resources:   []string{"*"},
-					Scope:       configv1alpha3.ResourceScopeNamespaced,
 				}},
 			},
 		},

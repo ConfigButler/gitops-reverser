@@ -3,6 +3,8 @@
 package v1alpha3
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -42,16 +44,18 @@ type LocalTargetReference struct {
 }
 
 // WatchRuleSpec defines the desired state of WatchRule.
-// WatchRule watches resources ONLY within its own namespace.
+// WatchRule selects NAMESPACED resources on its GitTarget's source cluster. Each rules[] item
+// carries its own source namespace: omitted for this WatchRule's own namespace, an explicit name,
+// or "*" for every namespace the GitTarget admits.
 type WatchRuleSpec struct {
 	// TargetRef references the GitTarget to use.
 	// Must be in the same namespace.
 	// +required
 	TargetRef LocalTargetReference `json:"targetRef"`
 
-	// Rules define which resources to watch within this namespace.
+	// Rules define which resources to watch, and in which source namespaces.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
-	// Each rule can specify operations, API groups, versions, and resource types.
+	// Each rule can specify operations, API groups, versions, resource types, and a source namespace.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	Rules []ResourceRule `json:"rules"`
@@ -115,6 +119,78 @@ type ResourceRule struct {
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// Every item's outcome is aggregated into the ONE SourceNamespaceAuthorized condition, so
+	// automation has a single condition to inspect. A denied explicit name refuses the whole
+	// WatchRule rather than silently trimming that item: mirroring two of the three namespaces a
+	// rule asked for is worse than a loud failure. A "*" that currently admits nothing is not a
+	// refusal — it is valid, starts no stream, and says so as NoAdmittedSourceNamespaces, because a
+	// rule that mirrors nothing while reporting Ready with no explanation is a silent no-op.
+	//
+	// Cost: a "*" item opens one watch stream per (matched type × admitted namespace) and one
+	// resync scope each, rather than one cluster-wide stream. That is deliberate — it keeps every
+	// replay scoped to a single namespace — but it is a real fan-out on a broad policy.
+
+	// SourceNamespace is the namespace this item watches IN THE SOURCE CLUSTER its GitTarget
+	// mirrors from: omitted for this WatchRule's own namespace, an exact name for one other, or
+	// "*" for every namespace the GitTarget's spec.allowedSourceNamespaces currently admits.
+	//
+	// "*" never means "every namespace that exists" — it expands to exactly what that policy
+	// admits, so a target declaring no policy denies it. Naming any namespace other than this
+	// rule's own, "*" included, additionally requires the GitTarget's ClusterProvider to admit the
+	// target's namespace AND to set spec.allowSourceNamespaceOverride. Once the GitTarget declares
+	// a policy it is exhaustive, so even an omitted sourceNamespace is checked against it.
+	//
+	// This changes only which namespace is WATCHED, never where objects are written: Git placement
+	// follows each mirrored object's own namespace.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?)$`
+	SourceNamespace string `json:"sourceNamespace,omitempty"`
+}
+
+// SourceNamespaceWildcard is the literal rules[].sourceNamespace token meaning "every source
+// namespace this rule's GitTarget admits" — resolved live through
+// GitTarget.spec.allowedSourceNamespaces, never "every namespace that exists".
+const SourceNamespaceWildcard = "*"
+
+// EffectiveSourceNamespace is the source-cluster namespace this ITEM names, given the namespace of
+// the WatchRule that carries it: spec.rules[].sourceNamespace when set, and the rule's OWN
+// namespace otherwise. For a wildcard item it returns "*" — the caller must expand that through
+// the GitTarget's policy rather than treat it as a namespace name.
+//
+// It is controller logic rather than an API-server default because an apiserver default cannot
+// refer to metadata.namespace.
+func (r *ResourceRule) EffectiveSourceNamespace(ruleNamespace string) string {
+	if r.SourceNamespace != "" {
+		return r.SourceNamespace
+	}
+	return ruleNamespace
+}
+
+// IsSourceNamespaceWildcard reports whether this item asks to follow its GitTarget's admitted set.
+func (r *ResourceRule) IsSourceNamespaceWildcard() bool {
+	return r.SourceNamespace == SourceNamespaceWildcard
+}
+
+// OverridesSourceNamespace reports whether this item asks for a source namespace OTHER than the
+// WatchRule's own — the case that needs the ClusterProvider's delegation flag. A sourceNamespace
+// that merely restates the rule's own namespace is not an override and stays the legacy case; "*"
+// always is one, even against a policy that happens to list only that namespace, because a later
+// policy edit would otherwise widen the watch with no platform-admin opt-in.
+func (r *ResourceRule) OverridesSourceNamespace(ruleNamespace string) bool {
+	return r.IsSourceNamespaceWildcard() || r.EffectiveSourceNamespace(ruleNamespace) != ruleNamespace
+}
+
+// DescribeSourceNamespace renders this item's requested source namespace for an operator-facing
+// message. An omitted value is spelled out rather than shown as an empty string.
+func (r *ResourceRule) DescribeSourceNamespace(ruleNamespace string) string {
+	if r.SourceNamespace == "" {
+		return fmt.Sprintf("%q (omitted; the WatchRule's own namespace)", ruleNamespace)
+	}
+	return fmt.Sprintf("%q", r.SourceNamespace)
 }
 
 // WatchRuleStatus defines the observed state of WatchRule.
@@ -165,6 +241,14 @@ type WatchRuleStreamsStatus struct {
 	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
 }
 
+// Design rationale, kept out of the generated CRD description by the blank line below.
+//
+// The source-namespace gate is deny-by-default and re-evaluated on EVERY reconcile, which is what
+// makes a policy tightened after a rule was accepted revoke that rule rather than grandfather it.
+// Where the source is the operator's OWN cluster, an authorized override deliberately bypasses live
+// namespace RBAC — the operator reads through its own cluster-wide credential — which is why it
+// takes an explicit platform-admin delegation on the ClusterProvider to enable at all.
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
@@ -174,16 +258,17 @@ type WatchRuleStreamsStatus struct {
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
 // +kubebuilder:printcolumn:name="GitTargetReady",type=string,JSONPath=`.status.conditions[?(@.type=="GitTargetReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="StreamsRunning",type=string,JSONPath=`.status.conditions[?(@.type=="StreamsRunning")].status`,priority=1
+// +kubebuilder:printcolumn:name="SourceAuthorized",type=string,JSONPath=`.status.conditions[?(@.type=="SourceNamespaceAuthorized")].status`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// WatchRule watches namespaced resources within its own namespace.
-// It provides fine-grained control over which resources trigger Git commits,
-// with filtering by operation type, API group, version, and labels.
+// WatchRule selects NAMESPACED resources on the source cluster its GitTarget mirrors from, with
+// filtering by operation, API group, version, and source namespace. Scope is carried by the rule
+// KIND: a WatchRule never selects cluster-scoped types — use a ClusterWatchRule for those.
 //
-// Security model:
-//   - WatchRule is namespace-scoped and can only watch resources in its own namespace
-//   - Use ClusterWatchRule for watching cluster-scoped resources (Nodes, ClusterRoles, etc.)
-//   - RBAC controls who can create/modify WatchRules per namespace
+// Each spec.rules[] item watches its own source namespace: this WatchRule's OWN namespace when
+// omitted, an explicit name, or "*" for every namespace the GitTarget admits. Anything other than
+// its own namespace passes the gate described on rules[].sourceNamespace. RBAC controls who may
+// create or modify WatchRules per namespace.
 type WatchRule struct {
 	metav1.TypeMeta `json:",inline"`
 

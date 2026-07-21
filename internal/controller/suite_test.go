@@ -141,7 +141,7 @@ var _ = BeforeSuite(func() {
 	Expect(k8sClient.Create(ctx, &configbutleraiv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: configbutleraiv1alpha3.DefaultClusterProviderName},
 		Spec: configbutleraiv1alpha3.ClusterProviderSpec{
-			AllowedNamespaces: &configbutleraiv1alpha3.AllowedNamespaces{Selector: &metav1.LabelSelector{}},
+			AllowedNamespaces: &configbutleraiv1alpha3.NamespaceMatcher{Selector: &metav1.LabelSelector{}},
 		},
 	})).To(Succeed())
 

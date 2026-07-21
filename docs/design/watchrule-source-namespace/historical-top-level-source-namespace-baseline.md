@@ -1,16 +1,21 @@
-# PR 4 — the sourceNamespace field and its authorization gate
+# Historical implementation baseline — the top-level sourceNamespace gate
 
-> Phase 4 of [source-namespace addressing](README.md). **Depends on:**
-> [PR 1](pr1-namespace-scoped-resync.md) (two WatchRules on one target can now carry different
-> `sourceNamespace` values, which is the fan-out PR 1 makes safe) and
-> [PR 2](pr2-stream-scope-collapse.md). **Blocked from release without:**
-> [PR 5](pr5-clusterwatchrule-source-ceiling.md) — see the
-> [release gate](README.md#implementation-phases). API change: three new fields, one new condition,
-> one printer column.
+> This is an **unreleased, superseded implementation record**, not a deliverable phase of
+> [source-namespace addressing](README.md). Its authorization model, conditions, bootstrap gate,
+> source-scope snapshot, and reactivity work are the implementation baseline for
+> [PR 4 scope by kind](pr4-cluster-scope-only.md). Its public top-level `sourceNamespace` field is
+> replaced by `rules[].sourceNamespace` before reaching a release, and its ClusterProvider delegation
+> boolean is renamed to `allowSourceNamespaceOverride`. Field names below are as built, not as
+> shipped.
+>
+> Keep this document as evidence for reusable work. Development is reworked in PR 4; its release is
+> blocked on [PR 5 deletion safety](pr5-gittarget-deletion-safety.md). Do not cut a release with the
+> API described below.
 
-Adds `WatchRule.spec.sourceNamespace`, `GitTarget.spec.allowedSourceNamespaces`,
-`ClusterProvider.spec.allowWatchRuleSourceNamespaceOverride`, and the reconciler gate that binds
-them. The model and naming rationale are in the [overview](README.md#the-model).
+This original plan adds `WatchRule.spec.sourceNamespace`, `GitTarget.spec.allowedSourceNamespaces`,
+`ClusterProvider.spec.allowWatchRuleSourceNamespaceOverride`, and the reconciler gate that binds them.
+Only the first field's *location and cardinality* are superseded. The rest of the authorization model
+is retained by PR 4.
 
 ## Example
 
@@ -46,7 +51,7 @@ spec:
   clusterProviderRef:
     name: workspaces
 
-  # Source-cluster namespaces that may be mirrored into this target, by any rule kind.
+  # Source-cluster namespaces that WatchRules may mirror into this target.
   allowedSourceNamespaces:
     names: [repo-config]
     selector:
@@ -78,11 +83,10 @@ grant: a target owner can configure a broad selector, including one matching eve
 so the source credential's RBAC remains the hard maximum. Set it only when the owner of an admitted
 GitTarget is trusted to choose a subset of what that credential may read.
 
-The flag gates **granting only**. `allowedSourceNamespaces` plays two roles — widening a WatchRule
-beyond its own namespace, and (in [PR 5](pr5-clusterwatchrule-source-ceiling.md)) narrowing a
-ClusterWatchRule below cluster-wide — and only
-the widening one is an authority grant. Gating a *restriction* behind a delegation flag would mean an
-admin has to grant extra authority in order to reduce scope.
+The flag gates **granting only**. In the selected design, `allowedSourceNamespaces` authorizes
+WatchRule namespace selection; after PR 4 ClusterWatchRule is cluster-only and has no namespace to
+narrow. The delegation flag therefore remains solely an explicit authority grant, never an accidental
+side effect of connectivity configuration.
 
 ### Remote and in-cluster: same mechanism, very different sign-off
 
@@ -200,10 +204,29 @@ Half of this is already wired:
 | Control-cluster Namespace labels | Reconcile affected GitTargets. | **Already wired** — `namespaceToGitTargets` with `LabelChangedPredicate` ([gittarget_controller.go:1147-1150](../../../internal/controller/gittarget_controller.go#L1147-L1150)). |
 | Source-cluster Namespace labels | Reconcile WatchRules whose GitTarget uses a source selector. | **Not wired** — there is no Namespace informer in `internal/watch` at all today. Entirely new. |
 
-The watch manager already owns source-cluster watch lifecycles. This adds one label-filtered
-Namespace informer **per active source cluster**, not one per WatchRule, emitting only meaningful
-label changes and mapping them to WatchRules whose GitTarget resolves through that cluster.
-[PR 5](pr5-clusterwatchrule-source-ceiling.md) extends the same informer to ClusterWatchRules.
+The watch manager already owns source-cluster watch lifecycles. This adds one Namespace label
+snapshot **per active source cluster**, not one per WatchRule, emitting only meaningful label
+changes and mapping them to WatchRules whose GitTarget resolves through that cluster.
+[PR 4](pr4-cluster-scope-only.md) reworks this snapshot for WatchRule rule-item scopes. It does not
+extend it to ClusterWatchRule, which becomes cluster-only.
+
+> **As built: a refresh-cadence snapshot, not an informer.** The shipped implementation
+> ([source_namespace_scope.go](../../../internal/watch/source_namespace_scope.go)) re-lists
+> Namespaces on the manager's existing reconcile cadence (every 30s and on every rule change)
+> instead of running a dedicated informer per cluster. Two reasons, and one accepted cost.
+>
+> It matches how this package already treats every other source-cluster input — the credential
+> refresh explicitly "does not watch Secrets, it RE-CHECKS them"
+> ([cluster_context.go:507-515](../../../internal/watch/cluster_context.go#L507-L515)) — so
+> source-cluster state stays on one lifecycle rather than two, with one teardown path. And listing
+> is armed LAZILY, by a selector policy actually asking, so an install with no selector policies
+> never lists a namespace at all; an informer would have to decide its cluster set up front.
+>
+> The cost is that a revocation converges within a refresh interval rather than instantly. The gate
+> tolerates that by construction: the compiled rule is what mirrors, and it is dropped the moment
+> the reconcile the change enqueues observes it. Exact-name policies are unaffected — they never
+> consult the cache. If a tighter bound is ever needed, the service's interface is the seam:
+> swapping the snapshot for an informer changes nothing above `ResolveSourceNamespace`.
 
 ### The source-scope service — define this interface before writing the gate
 
@@ -233,8 +256,9 @@ Exact-name policies must be answerable **without** the cache, so a source cluste
 access is denied still supports name-based policies. That is the degradation path below, and it falls
 out naturally if resolution checks names before consulting the cache.
 
-The same service is what [PR 5](pr5-clusterwatchrule-source-ceiling.md) resolves its ceiling through,
-so its shape is worth settling here rather than retrofitting.
+PR 4 replaces the current one-namespace retained grant with an atomically replaced, whole-WatchRule
+resolved scope. The service shape is still worth settling here, but its current representation cannot
+be reused verbatim for rule-item namespaces.
 
 The in-cluster manager role already grants `namespaces` `get`/`list`/`watch`
 ([config/rbac/role.yaml](../../../config/rbac/role.yaml)). A remote provider used with a source
@@ -254,7 +278,7 @@ substituted with the empty set, and never with the full set.
 
 | | **Establishing** a grant — no previously resolved scope for this rule | **Maintaining** a scope — a previously resolved scope exists |
 |---|---|---|
-| Where it applies | This PR's gate: a WatchRule asking for a namespace it has not been granted. | [PR 5](pr5-clusterwatchrule-source-ceiling.md)'s ceiling, and any rule already running under a resolved policy. |
+| Where it applies | This PR's gate: a WatchRule asking for a namespace it has not been granted. | A WatchRule already running under a selector-resolved scope. PR 4 ships selector-backed wildcards and resolves them from this same source-namespace snapshot, so this contract governs them too. |
 | Effect of *cannot say* | The grant is not established, so the rule is **not compiled**. Nothing runs; nothing is swept. | The **last known-good scope is retained** and keeps running. No narrowing, no widening, **no sweep**. |
 | Retryable error (cache syncing, source unreachable) | `Unknown` / `CheckingSourceNamespacePolicy`, `Stalled=False`. Retried. | Same. |
 | Terminal error (source Namespace `list` is `Forbidden` for a selector policy) | `False` / `SourceNamespacePolicyUnavailable`, **`Stalled=True`**. | `Unknown` / `SourceNamespacePolicyUnavailable`, **`Stalled=False`**. |
@@ -264,11 +288,10 @@ The asymmetry in the last row is the whole point, and it is deliberate:
 - When **establishing**, "fail closed" means *do not start the stream*. A permanent `Forbidden` means
   the rule will never run without an operator change — granting the RBAC or switching to exact names
   — so `Stalled=True` is an accurate, actionable claim about a rule that is doing nothing.
-- When **maintaining**, "fail closed" would mean *narrow to nothing*, and a narrowed set is the input
-  to a sweep — so failing closed there **deletes a tenant's Git content** on a transient outage. The
-  rule is also still running its already-granted streams (and, for a ClusterWatchRule, its
-  cluster-scoped ones), so `Stalled=True` would be a false claim that nothing is progressing.
-  See [PR 5 § unknown is not empty](pr5-clusterwatchrule-source-ceiling.md#2b-unknown-is-not-empty).
+- When **maintaining**, "fail closed" would mean *narrow to nothing*. Before PR 5 this could become a
+  destructive sweep; after PR 5 it still stops useful streams, so retaining the last known-good scope
+  remains the correct behavior. The rule is still running its already-granted streams, so
+  `Stalled=True` would be a false claim that nothing is progressing.
 
 An actual **denial** — the policy evaluated and does not admit the namespace — is terminal in both
 directions: `False` / `SourceNamespaceNotAllowed` / `Stalled=True`. That is a refusal, not an
@@ -501,7 +524,8 @@ need a case — the first is the one that will regress unnoticed.
 - The legacy test above passes and no existing WatchRule changes behavior.
 - A denied override leaves no stream running.
 - `task lint`, `task test`, `task test-e2e` pass.
-- PR 4 is queued — the field must not reach a release without its ClusterWatchRule half.
+- This document's top-level field is not released. Its code is carried forward only through the PR-4
+  rework, which is released together with PR 5.
 
 ---
 

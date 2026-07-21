@@ -7,13 +7,11 @@ spec:
     name: {{ .DestinationName }}
     namespace: {{ .Namespace }}
   rules:
-  - scope: Cluster
-    operations: [CREATE, UPDATE, DELETE]
+  - operations: [CREATE, UPDATE, DELETE]
     apiGroups: [""]
     apiVersions: ["v1"]
     resources: ["namespaces"]
-  - scope: Cluster
-    operations: [CREATE, UPDATE, DELETE]
+  - operations: [CREATE, UPDATE, DELETE]
     apiGroups: ["configbutler.ai"]
     apiVersions: ["v1alpha1"]
     resources: ["clusterwatchrules"]
