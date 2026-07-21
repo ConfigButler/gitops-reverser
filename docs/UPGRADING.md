@@ -21,8 +21,11 @@ desired snapshot was deleted. That is now opt-in.
 
 **Deleting a resource in the cluster still deletes its file.** Only the *inferred* deletion changes:
 the operator no longer concludes "Git has a document, the snapshot does not list it, therefore delete
-it". That inference is only as good as the snapshot, and a bad watch scope, a source-cluster outage,
-or a narrowed RBAC grant all produce a snapshot smaller than reality.
+it". That inference is only as good as the snapshot's scope — a watch rule narrower than you
+intended, or version skew against a controller that does not understand a newer scope field, both
+produce a complete-looking snapshot that is smaller than reality. (A snapshot the operator could not
+*finish* is already handled: a failed list or watch enqueues no resync, so an outage stops a sweep
+rather than shrinking one.)
 
 ### What you have to do
 
@@ -39,14 +42,22 @@ spec:
 ```
 
 The field is mutable, so you can switch a target to `always` after confirming its watch scope
-without recreating it.
+without recreating it. The switch re-lists that target's watched scopes, so the documents a resync
+had been keeping are swept on the edit rather than at some later replay.
 
 ### How to tell whether it affects you
 
-A target under `onEvent` that would have swept documents logs a throttled line naming the target,
-and increments `gitopsreverser_prune_retained_documents_total`. A non-zero counter means the mirror
-holds documents a converged one would not — the configured outcome, not a fault, so no condition
-goes `False` for it.
+```console
+$ kubectl get gittarget acme -o jsonpath='{.status.retention}'
+{"mode":"onEvent","retainedDocuments":3,"observedTime":"2026-07-21T13:20:00Z"}
+```
+
+A non-zero `retainedDocuments` means the mirror holds documents a converged one would not — the
+configured outcome, not a fault, so no condition goes `False` for it. `0` means a resync ran and
+found nothing to retain; an absent `retention` block means none has reported yet. The same event
+logs a throttled line naming the target and increments
+`gitopsreverser_prune_retained_documents_total`, labelled by GitTarget and mode. See
+[configuration.md](configuration.md#seeing-what-was-kept).
 
 This ships in the **same release** as the rule-kind scope change below, and is what makes that
 migration non-destructive: a converted `WatchRule` that resolves to a narrower set of namespaces than

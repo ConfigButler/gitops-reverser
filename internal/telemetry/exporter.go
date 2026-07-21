@@ -36,10 +36,11 @@ var (
 	// resyncs, labelled by the swept resource {group, version, resource}.
 	ResyncSweepDeletesTotal metric.Int64Counter
 	// PruneRetainedDocumentsTotal counts managed documents a GitTarget's spec.prune.mode
-	// KEPT that a mark-and-sweep would otherwise have deleted, labelled by {prune_mode}.
-	// It is the retention twin of ResyncSweepDeletesTotal and the only numeric trace a
-	// suppressed drop leaves: such a drop produces no plan action, no commit, and no
-	// ResyncStats entry. A non-zero value is the configured behaviour, never a fault.
+	// KEPT that a mark-and-sweep would otherwise have deleted, labelled by
+	// {prune_mode, gittarget_namespace, gittarget_name}. It is the retention twin of
+	// ResyncSweepDeletesTotal and the only numeric trace a suppressed drop leaves: such a
+	// drop produces no plan action, no commit, and no ResyncStats entry. A non-zero value
+	// is the configured behaviour, never a fault.
 	PruneRetainedDocumentsTotal metric.Int64Counter
 
 	// TargetReconcileCompletedTotal counts completed watch recovery passes per

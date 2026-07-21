@@ -716,11 +716,9 @@ func TestPlacement_ColdBundleCollision_ViaResync(t *testing.T) {
 		context.Background(),
 		worktree,
 		"",
-		"",
+		ResolvedTargetMetadata{Placement: policy, PruneMode: v1alpha3.PruneAlways},
 		desired,
 		nil,
-		policy,
-		v1alpha3.PruneAlways,
 	)
 
 	require.NoError(t, err)

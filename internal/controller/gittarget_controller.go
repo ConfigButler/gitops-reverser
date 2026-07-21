@@ -219,6 +219,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			ctx,
 			gitDest,
 			target.SourceCluster(),
+			target.EffectivePruneMode(),
 			gitPathWasRefused,
 		); declareErr != nil {
 			log.V(1).Info("stream declaration skipped; surface not observable",
@@ -229,6 +230,10 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		gitPath = r.EventRouter.WatchManager.GitPathAcceptanceForGitTarget(gitDest)
 		renderFidelity = r.EventRouter.WatchManager.RenderFidelityForGitTarget(gitDest)
 		target.Status.Streams = gitTargetStreamsStatus(streams)
+		// Retention is read beside the others and projected the same way, but it feeds NO
+		// condition: a document kept by policy is the configured outcome, not a degraded target.
+		target.Status.Retention = gitTargetRetentionStatus(
+			r.EventRouter.WatchManager.RetentionForGitTarget(gitDest))
 		streamsSettling = streamsSettling || !streams.StreamsRunning() || !gitPath.Accepted ||
 			renderFidelity.State == "Unknown"
 	} else {
@@ -1074,6 +1079,28 @@ func gitTargetStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha3
 		Replaying:    clampIntToInt32(streams.Replaying),
 		Blocked:      clampIntToInt32(streams.Blocked),
 		ObservedTime: &observed,
+	}
+}
+
+// gitTargetRetentionStatus projects the data-plane retention roll-up.
+//
+// A summary that has never been reported projects to NIL rather than to a zero count, and the
+// distinction is load-bearing: absent means "no resync has reported yet" (the target has not
+// replayed, or predates the field), while zero means "a resync ran and found nothing to retain" —
+// the converged signal. Collapsing them would make status unable to say a mirror is converged,
+// which is half the reason the field exists.
+func gitTargetRetentionStatus(summary watch.RetentionSummary) *configbutleraiv1alpha3.GitTargetRetentionStatus {
+	if !summary.Reported {
+		return nil
+	}
+	observed := metav1.NewTime(summary.ObservedTime)
+	if summary.ObservedTime.IsZero() {
+		observed = metav1.Now()
+	}
+	return &configbutleraiv1alpha3.GitTargetRetentionStatus{
+		Mode:              summary.Mode,
+		RetainedDocuments: clampIntToInt32(summary.RetainedDocuments),
+		ObservedTime:      &observed,
 	}
 }
 

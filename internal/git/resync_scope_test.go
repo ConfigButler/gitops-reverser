@@ -141,11 +141,9 @@ func TestResync_NamespaceScopedSweepLeavesSiblingNamespacesAlone(t *testing.T) {
 		context.Background(),
 		worktree,
 		"",
-		"",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
 		nil,
 		scope,
-		nil,
-		v1alpha3.PruneAlways,
 	)
 	require.NoError(t, err)
 	require.True(t, changed, "team-a's orphaned document is swept")
@@ -170,9 +168,11 @@ func TestResync_NamespaceScopedSweepStillDropsOrphansInItsOwnNamespace(t *testin
 	w := &BranchWorker{contentWriter: writer, mapper: configMapMapper()}
 	scope := &ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}
 	stats, changed, err := w.applyResyncToWorktree(
-		context.Background(), worktree, "", "", []manifestanalyzer.DesiredResource{
+		context.Background(), worktree, "",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
+		[]manifestanalyzer.DesiredResource{
 			desiredCMIn("kept", "team-a", "blue"),
-		}, scope, nil, v1alpha3.PruneAlways)
+		}, scope)
 	require.NoError(t, err)
 	require.True(t, changed)
 	assert.Equal(t, 1, stats.Deleted, "the orphan inside the scoped namespace is still swept")
@@ -198,11 +198,9 @@ func TestResync_ClusterWideScopeStillSweepsEveryNamespace(t *testing.T) {
 		context.Background(),
 		worktree,
 		"",
-		"",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
 		nil,
 		scope,
-		nil,
-		v1alpha3.PruneAlways,
 	)
 	require.NoError(t, err)
 	require.True(t, changed)

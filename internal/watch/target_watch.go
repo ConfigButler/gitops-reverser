@@ -225,6 +225,7 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 	m.dropTargetStreamStateLocked(gitDest)
 	m.dropTargetGitPathAcceptanceLocked(gitDest)
 	m.dropTargetRenderFidelityLocked(gitDest)
+	m.forgetTargetRetention(gitDest)
 }
 
 func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {

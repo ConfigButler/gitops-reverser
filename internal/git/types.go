@@ -247,9 +247,14 @@ type ResolvedTargetMetadata struct {
 	// It gates both deletion paths: the resync mark-and-sweep (through the planner's
 	// SweepMode) and the steady-state DELETE-event writer.
 	//
-	// Retained on the pending write with the rest of the target's metadata, so a write that
-	// is replayed after a rebase applies the policy that was in force when it was planned
-	// rather than re-reading a spec that may have changed underneath it.
+	// Retained on the pending write with the rest of the target's metadata, so a write replayed
+	// after a rebase is not re-planned under a LOOSER policy than the one it was planned against:
+	// its retention decisions were taken over a desired snapshot that is now stale, and a later
+	// `always` applies to the next resync, which gathers a fresh one.
+	//
+	// It is not frozen, though. tightenPendingPruneModes lowers it before a replay when the
+	// GitTarget's current policy is stricter, because the whole point of tightening a deletion
+	// policy is to stop deletions that have not landed yet.
 	PruneMode v1alpha3.PruneMode
 	// SourceCluster is the NAME of the source cluster the GitTarget mirrors from —
 	// (api/v1alpha3).GitTarget.SourceCluster(), the referenced ClusterProvider's name
@@ -423,6 +428,17 @@ type ResyncStats struct {
 	Deleted          int
 	Skipped          int
 	PlacementSkipped int
+	// Retained is how many managed documents this resync's prune policy kept that a converged
+	// mirror would have dropped. It is the ONE count here that does not describe something the
+	// resync did: a suppressed drop produces no action, no commit, and no other stat, so without
+	// it nothing downstream can tell a converged mirror from a deliberately retaining one. It
+	// rides the reply channel to the drain, which rolls it up onto GitTarget status.
+	Retained int
+	// PruneMode stamps Retained with the effective policy that produced it, so the count and the
+	// reason for it travel together. Reading the mode from the spec at projection time instead
+	// would let a target that has just been switched publish a new mode beside a count the old
+	// one produced.
+	PruneMode v1alpha3.PruneMode
 }
 
 // reply delivers a result on the request's buffered channel without blocking, so a

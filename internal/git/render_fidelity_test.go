@@ -68,11 +68,12 @@ func TestRenderFidelityRefusal_BlocksLiveAndResyncWrites(t *testing.T) {
 			name: "scoped resync",
 			run: func(worker *BranchWorker, worktree *gogit.Worktree) error {
 				_, _, err := worker.applyResyncToWorktree(
-					context.Background(), worktree, "", "",
+					context.Background(), worktree, "",
+					ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
 					[]manifestanalyzer.DesiredResource{{
 						Resource: postBuildTokenEvent().Identifier,
 						Object:   postBuildTokenEvent().Object,
-					}}, nil, nil, v1alpha3.PruneAlways)
+					}}, nil)
 				return err
 			},
 		},

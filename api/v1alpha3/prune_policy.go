@@ -99,3 +99,44 @@ func (m PruneMode) SweepsOrphans() bool {
 func (g *GitTarget) EffectivePruneMode() PruneMode {
 	return g.Spec.Prune.EffectiveMode()
 }
+
+// The modes ordered by how much deletion they authorize. An unrecognized value ranks with never,
+// matching what both predicates already do with it — an unknown policy retains on both paths.
+const (
+	pruneRankNever = iota
+	pruneRankOnEvent
+	pruneRankAlways
+)
+
+func (m PruneMode) restrictiveness() int {
+	switch m.OrDefault() {
+	case PruneAlways:
+		return pruneRankAlways
+	case PruneOnEvent:
+		return pruneRankOnEvent
+	case PruneNever:
+		return pruneRankNever
+	default:
+		return pruneRankNever
+	}
+}
+
+// MoreRestrictiveOf returns whichever of the two modes authorizes less deletion.
+//
+// It exists for one situation: a write that was planned under one policy and is applied — or
+// replayed after a rebase — under another. Taking the minimum makes the two directions behave the
+// way an operator means them, and they are NOT symmetric:
+//
+//   - LOOSENING must not escalate an already-planned write. A resync planned under `onEvent` chose
+//     to keep its orphans against a desired snapshot that is now stale; someone declaring `always`
+//     afterwards must not turn that stale plan into deletions. The new policy applies to the next
+//     resync, which gathers a fresh snapshot.
+//   - TIGHTENING must apply immediately. `always` -> `onEvent` is what an operator reaches for to
+//     stop deletions that have not landed yet; a policy change that queued work could outrun would
+//     not be a stop button at all.
+func (m PruneMode) MoreRestrictiveOf(other PruneMode) PruneMode {
+	if other.restrictiveness() < m.restrictiveness() {
+		return other.OrDefault()
+	}
+	return m.OrDefault()
+}

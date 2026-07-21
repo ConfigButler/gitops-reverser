@@ -33,7 +33,8 @@ func resyncUnder(
 ) ResyncStats {
 	t.Helper()
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
-	stats, _, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", desired, nil, nil, mode)
+	stats, _, err := w.applyResyncToWorktree(
+		context.Background(), worktree, "", ResolvedTargetMetadata{PruneMode: mode}, desired, nil)
 	require.NoError(t, err)
 	return stats
 }
@@ -185,7 +186,8 @@ func TestPrune_RetentionIsIdenticalUnderEveryResyncShape(t *testing.T) {
 			}
 
 			stats, _, err := w.applyResyncToWorktree(
-				context.Background(), worktree, "", "", nil, tc.scope, nil, v1alpha3.PruneOnEvent)
+				context.Background(), worktree, "",
+				ResolvedTargetMetadata{PruneMode: v1alpha3.PruneOnEvent}, nil, tc.scope)
 			require.NoError(t, err)
 
 			assert.Zero(t, stats.Deleted)

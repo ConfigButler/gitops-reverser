@@ -207,6 +207,22 @@ type GitTargetStatus struct {
 	// Counts, never a per-type list, so it stays bounded however many types are watched.
 	// +optional
 	Streams *GitTargetStreamsStatus `json:"streams,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// An observation, not a condition. A sweep suppressed by spec.prune.mode is the configured
+	// outcome and a healthy reconciliation, so no condition may go False for it — doing so would
+	// train operators to ignore the conditions that mean the mirror is genuinely broken. The
+	// distinction this field rests on: a condition asserts health, an observation reports a fact.
+	// status.streams is the precedent for the second kind.
+
+	// Retention reports documents a resync kept because this target's spec.prune.mode suppressed
+	// the mark-and-sweep. It covers the INFERRED deletion path only: under `never`, a suppressed
+	// source DELETE is not counted here, so a `never` target can report zero while still declining
+	// to mirror deletes. It is informational either way — retention is the configured behavior,
+	// never a fault, and no condition changes state because of it.
+	// +optional
+	Retention *GitTargetRetentionStatus `json:"retention,omitempty"`
 }
 
 // GitTargetStreamsStatus is a bounded roll-up of the stream readiness state for the
@@ -229,6 +245,37 @@ type GitTargetStreamsStatus struct {
 	Blocked int32 `json:"blocked"`
 
 	// ObservedTime is when this roll-up was last computed.
+	// +optional
+	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
+}
+
+// Design rationale, kept out of the generated CRD description by the blank line below.
+//
+// Counts, never a per-document list, for the same reason GitTargetStreamsStatus is counts: the
+// field must stay bounded however many documents are retained. An operator who needs to know WHICH
+// documents reads the retention log line or the folder; status answers "how many, under what
+// policy, as of when".
+//
+// The projection is pull-based — the GitTarget controller reads it from the watch manager on each
+// reconcile — so it is only as fresh as the last reconcile, exactly like GitPathAccepted. That is
+// acceptable for an observation and would not be for a gate, which is a further reason this must
+// not become a condition.
+
+// GitTargetRetentionStatus is a bounded roll-up of what this GitTarget's prune policy kept.
+type GitTargetRetentionStatus struct {
+	// Mode is the EFFECTIVE spec.prune.mode this roll-up was produced under. It is reported here
+	// rather than left to be read from the spec because a GitTarget that predates spec.prune has
+	// no stored value at all, so the spec alone cannot explain why documents are being kept.
+	// +optional
+	Mode PruneMode `json:"mode,omitempty"`
+
+	// RetainedDocuments is how many managed documents the policy kept that a converged mirror
+	// would not hold. Zero means a resync ran and found nothing to retain — the mirror is
+	// converged. An ABSENT retention block means something different: no resync has reported yet.
+	RetainedDocuments int32 `json:"retainedDocuments"`
+
+	// ObservedTime is when this roll-up was last computed. A retention that begins just after a
+	// reconcile is not visible until the next one, so read this before treating a zero as live.
 	// +optional
 	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
 }

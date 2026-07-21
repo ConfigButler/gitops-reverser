@@ -4,7 +4,8 @@
 > scope-by-kind design. **PR 5** is the deletion-safety change, implemented in the PR immediately
 > after it. **No release may be cut between the two merges** — the first release containing PR 4 also
 > contains PR 5. Review findings still open against PR 4 are tracked in
-> [PR 4 review follow-ups](pr4-review-followups.md). Index: [INDEX.md](../../INDEX.md).
+> [PR 4 review follow-ups](pr4-review-followups.md), and against PR 5 in
+> [PR 5 review follow-ups](pr5-review-followups.md). Index: [INDEX.md](../../INDEX.md).
 
 ## Decision
 
@@ -73,7 +74,8 @@ namespace and target policy, or recognize a ClusterWatchRule as intentionally cl
 | 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule cannot attach to a GitTarget its ClusterProvider does not admit. | landed |
 | 4 | [Scope by kind](pr4-cluster-scope-only.md) | Rework the unshipped source-namespace work for `rules[].sourceNamespace`, narrow ClusterWatchRule to cluster scope, refuse stored namespaced rules, and document the cross-kind migration. | current branch; breaking |
 | 5 | [GitTarget deletion safety](pr5-gittarget-deletion-safety.md) | Add `prune.mode` and make resync sweep opt-in (`always`). | implemented; ships in the same release as PR 4 |
-| 5b | [Retention visibility](pr5-retention-visibility.md) | Report what PR 5 decided to keep, so a retention is observable rather than silent. | plan, for review; same PR as 5 |
+| 5b | [Retention visibility](pr5-retention-visibility.md) | Report what PR 5 decided to keep, so a retention is observable rather than silent. | implemented; same PR as 5 |
+| 5c | [PR 5 review follow-ups](pr5-review-followups.md) | Make a `prune.mode` change take effect: converge on a loosening, apply a tightening immediately. Plus two doc corrections. | implemented; same PR as 5 |
 
 The discarded top-level `sourceNamespace` plan is retained as a
 [historical implementation baseline](historical-top-level-source-namespace-baseline.md). Its gate,

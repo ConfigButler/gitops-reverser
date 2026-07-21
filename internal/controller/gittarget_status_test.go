@@ -4,6 +4,7 @@ package controller
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,4 +170,37 @@ func TestDeriveGitTargetDataPlaneStatusWithRenderFidelity(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, diverged.ReadyStatus)
 	assert.Equal(t, metav1.ConditionTrue, diverged.StalledStatus)
 	assert.Equal(t, GitTargetReasonRenderDoesNotMatchLive, diverged.StalledReason)
+}
+
+// TestGitTargetRetentionStatus_AbsentAndZeroMeanDifferentThings is the whole point of the field
+// being a pointer. Absent is "no resync has reported yet — the target has not replayed, or predates
+// this field"; zero is "a resync ran and found nothing to retain", which is the converged signal.
+// Collapsing them would leave status unable to say a mirror is converged.
+func TestGitTargetRetentionStatus_AbsentAndZeroMeanDifferentThings(t *testing.T) {
+	assert.Nil(t, gitTargetRetentionStatus(watch.RetentionSummary{}),
+		"a target that has never reported must not publish a count of zero")
+
+	converged := gitTargetRetentionStatus(watch.RetentionSummary{
+		Reported: true, Mode: configbutleraiv1alpha3.PruneAlways,
+	})
+	require.NotNil(t, converged, "a reported zero is a report")
+	assert.Zero(t, converged.RetainedDocuments)
+	assert.Equal(t, configbutleraiv1alpha3.PruneAlways, converged.Mode)
+	require.NotNil(t, converged.ObservedTime, "a reading with no timestamp cannot be judged stale")
+	assert.False(t, converged.ObservedTime.IsZero())
+}
+
+// TestGitTargetRetentionStatus_ReportsTheEffectiveMode covers the legacy GitTarget: it stores no
+// spec.prune at all, so status is the only place the mode keeping its documents is visible.
+func TestGitTargetRetentionStatus_ReportsTheEffectiveMode(t *testing.T) {
+	observed := time.Date(2026, 7, 21, 13, 20, 0, 0, time.UTC)
+
+	projected := gitTargetRetentionStatus(watch.RetentionSummary{
+		Reported: true, Mode: configbutleraiv1alpha3.PruneOnEvent, RetainedDocuments: 3, ObservedTime: observed,
+	})
+
+	require.NotNil(t, projected)
+	assert.Equal(t, int32(3), projected.RetainedDocuments)
+	assert.Equal(t, configbutleraiv1alpha3.PruneOnEvent, projected.Mode)
+	assert.Equal(t, observed, projected.ObservedTime.Time)
 }

@@ -4,9 +4,14 @@
 > ([#260](https://github.com/ConfigButler/gitops-reverser/pull/260)). Part 1 decides what to keep;
 > this decides how an operator finds out. No change to the write path.
 >
-> **Status: plan, for review.** Nothing here is implemented yet. The
-> [open questions](#open-questions-for-review) need answers before it is, and
-> [what this costs the PR](#what-this-costs-the-open-pr) is the trade-off to weigh first.
+> **Status: implemented.** The [open questions](#open-questions-for-review) are answered at the end
+> of that section, and [what this costs the PR](#what-this-costs-the-open-pr) was accepted rather
+> than deferred: the field ships in the same release as `spec.prune.mode`.
+>
+> A review of #260 found the *log* half of the same defect — it did not name the GitTarget either,
+> though two user-facing docs said it did. It is folded into
+> [Step 0](#step-0-make-both-retention-signals-name-the-gittarget) rather than tracked separately;
+> the rest of that review is in [PR 5 review follow-ups](pr5-review-followups.md).
 
 ## The problem
 
@@ -26,18 +31,26 @@ practically, one they cannot audit before flipping a target to `always`.
 
 ### What part 1 shipped, and why it is not enough
 
+The state this plan started from. Every "what it cannot" below is now closed — the log line and the
+metric name the target, and the count reaches status — but the table is kept as written because it
+is the argument for the shape, not a description of the code.
+
 | Signal | Where | What it answers | What it cannot |
 |---|---|---|---|
-| Throttled log line | [`resync_flush.go`](../../../internal/git/resync_flush.go), `reportRetainedOrphans` | which folder and scope, how many | needs log access; throttled to one per folder per 10 min; nothing to query |
+| Throttled log line | [`resync_flush.go`](../../../internal/git/resync_flush.go), `reportRetainedOrphans` | which folder and scope, how many | **which GitTarget** — it logs `path`, and two targets in different namespaces can share one; needs log access; throttled to one per folder per 10 min; nothing to query |
 | `gitopsreverser_prune_retained_documents_total` | [`telemetry/exporter.go`](../../../internal/telemetry/exporter.go) | is *anything* retaining, under which mode | **which GitTarget** — it is labelled by `prune_mode` only |
 | `Plan.RetainedOrphans` | [`manifestanalyzer/plan.go`](../../../internal/manifestanalyzer/plan.go) | the count, per resync | never leaves the writer; not carried on `ResyncStats` |
 
 So today the only way to answer *"is target X retaining anything?"* is to grep controller logs and
-match the `path` field. For a change that altered the default deletion behaviour of every existing
-GitTarget, that is too weak.
+match the `path` field — which is not even an identifier, since two GitTargets in different
+namespaces can write the same `spec.path` on different branches of one repository. For a change that
+altered the default deletion behaviour of every existing GitTarget, that is too weak.
 
-The metric's label set is the cheapest defect here and is worth fixing whatever else is decided —
-see [Step 0](#step-0-fix-the-metrics-cardinality).
+Neither signal naming the target is the cheapest defect here, and it is worth fixing whatever else is
+decided — see [Step 0](#step-0-make-both-retention-signals-name-the-gittarget). It is also a
+correctness issue in the docs, not only a gap: both
+[configuration.md](../../configuration.md) and [UPGRADING.md](../../UPGRADING.md) already promise a
+log line "naming the target".
 
 ## What this is deliberately NOT
 
@@ -137,9 +150,14 @@ Optionally, a `0 → n` transition could enqueue the target so the first appeara
 later updates ride the requeue. That is a refinement, not a requirement, and should be decided
 against the flake history rather than added reflexively.
 
-## Step 0: fix the metric's cardinality
+## Step 0: make both retention signals name the GitTarget
 
-Small, independent of the status work, and worth doing first:
+Small, independent of the status work, and worth doing first. Both halves live in
+`reportRetainedOrphans`, which already receives everything except the target reference —
+`executeResyncPendingWrite` holds the resolved target and passes its `PruneMode` down the same call,
+so this is one extra parameter, not new plumbing.
+
+**The metric:**
 
 ~~~go
 telemetry.PruneRetainedDocumentsTotal.Add(ctx, int64(retained), metric.WithAttributes(
@@ -155,7 +173,17 @@ rather than the reserved `namespace` / `name`, because a pod scrape with `honor_
 overwrites a metric's `namespace` attribute with the scraping pod's own, silently breaking any
 per-target selector.
 
-This alone makes "which target is retaining" answerable from metrics, even before status lands.
+**The log line** gains the same identity as a `gitTarget` field. It logs `retained`, `pruneMode`,
+`path`, and `scope` today, and `path` is the one thing an operator cannot map back to an object. The
+[#260 review](pr5-review-followups.md#r3--the-retention-log-does-not-name-the-gittarget) asked for
+the log field while asking to leave the metric unlabelled for cardinality; that half is declined
+here, for the reason above — per-target labels are already this codebase's convention and are what
+makes the counter actionable. What stays off the metric is per-path, per-scope, or per-document
+labels, which are unbounded and are exactly what the log line is for.
+
+Together these make "which target is retaining" answerable from metrics *and* from logs, even before
+status lands — and they make the existing sentence in
+[configuration.md](../../configuration.md) and [UPGRADING.md](../../UPGRADING.md) true.
 
 ## What this costs the open PR
 
@@ -176,6 +204,9 @@ Against that: the field is API surface, and adding `status.retention` in the sam
 should land before the release, not after — a released `prune.mode` whose retention cannot be
 observed is the version operators will form their first impression on.
 
+**Decided: it landed here.** The suite was re-run in full and is green (75 e2e specs passed, 22
+skipped, 0 failures; unit coverage 77.8%, unchanged against the baseline).
+
 ## Tests
 
 - A resync that retains N documents surfaces `retainedDocuments: N` and the effective `mode`, for a
@@ -191,6 +222,18 @@ observed is the version operators will form their first impression on.
 - e2e: the `always` target reports `0` while the co-resident default target reports non-zero for the
   same seeded orphan — reusing part 1's barrier structure, since the `always` sweep is what proves a
   resync ran at all.
+
+All of the above landed in [`retention_rollup_test.go`](../../../internal/watch/retention_rollup_test.go),
+[`gittarget_status_test.go`](../../../internal/controller/gittarget_status_test.go) (the
+absent-versus-zero projection), and the e2e spec *"reports retained documents, and convergence, on
+GitTarget status"*. Two were added while building:
+
+- **The enqueue is on a change only** — first report and every transition enqueue, an unchanged
+  report does not. Both halves are asserted, because the second is what stops a deliberately
+  retaining target from re-reconciling on every resync of every scope forever.
+- **The e2e reads an absent block as a failure, not as zero.** `retainedDocumentsOf` fails when the
+  jsonpath is empty rather than defaulting to `0`; without that, the convergence assertion would
+  pass before any resync had reported.
 
 ## Open questions for review
 
@@ -209,12 +252,63 @@ observed is the version operators will form their first impression on.
    operational question; the status field is the audit question. Shipping only Step 0 in #260 and the
    status field immediately after is a legitimate split if closing the release window is the priority.
 
+### How they were answered
+
+1. **Sweep-only, and the godoc says so.** `retainedDocuments` counts the inferred path alone, so a
+   `never` target can report zero while still declining to mirror deletes. Counting the two together
+   would need the event writer to count as well, and — more importantly — would merge a number
+   derived from a *snapshot* with one derived from *events*, which respond to different failures. The
+   field's `kubectl explain` text carries the caveat rather than leaving it to be discovered.
+2. **Yes — a pointer field, with zero recorded as actively as any other count.** Absent and zero are
+   the two things an operator most needs told apart, and a plain count cannot say "converged".
+   `TestRetentionRollup_ZeroIsRecordedAsActivelyAsAnyOtherCount` exists because that is the half most
+   easily lost in a later refactor.
+3. **Enqueue on change — the opposite of the conservative default this plan proposed.** Waiting out
+   the steady requeue (5 minutes) for the *first appearance* of a retention is too long for a signal
+   an operator consults before flipping a target to `always`, and it would leave the e2e assertion
+   with nothing better than a long sleep. The flake history argues against a projection that does
+   *not* enqueue, which is the opposite failure. It enqueues on a change of the count or the mode,
+   never on an unchanged report, so a steadily retaining target does not re-reconcile forever.
+4. **Not split — everything shipped in #260.** See the status note at the top.
+
 ## Done when
 
 - `status.retention` reports the effective mode and a bounded retained count for both new and legacy
   GitTargets, and returns to `0` when a resync finds nothing to retain.
 - The roll-up is epoch-based and shares the scope lifecycle `RenderFidelityGate` already owns, rather
   than maintaining a second one.
-- The retention metric identifies the GitTarget.
+- Both retention signals — the metric and the throttled log line — identify the GitTarget.
 - No condition changes state because of retention.
 - `task lint`, `task test`, and `task test-e2e` pass.
+
+## Implementation notes
+
+Decisions taken while building this that the plan above did not settle.
+
+### The mode travels with the count, not with the spec
+
+The plan said `mode` is duplicated onto status so a legacy GitTarget's behaviour is explainable
+without a second lookup. Building it surfaced a second reason, and it changed where the value comes
+from: the controller could have read `EffectivePruneMode()` off the object it is already reconciling,
+but then a target patched to `always` would publish the new mode beside a count the *old* one
+produced, until the next resync reported. So `ResyncStats` carries `PruneMode` alongside `Retained`,
+and the pair is written and read together. The mode on status is the mode that produced the number.
+
+### Retention is not the render-fidelity gate, only its epoch
+
+The plan's most important reuse decision was to take the epoch from `RenderFidelityGate` rather than
+write a second scope-lifecycle tracker, and that held: `MarkTargetRetention` takes the epoch
+`enqueueReplayResync` already computes, a newer epoch replaces the whole per-scope map, and an older
+one is dropped. What it does **not** do is live inside the gate. The gate decides whether a target
+may be written to; retention decides nothing at all. Sharing the epoch is reuse; sharing the
+structure would have put an observation inside a gate, which is exactly the confusion this plan
+exists to avoid.
+
+### `Retained` is a plan view, and has to be
+
+Every other `ResyncStats` field is counted from what the apply *did* — deliberately, because a
+sensitive resource is `PlanSkip` in the plan while `applyUpsert` really does rewrite it, so
+plan-derived stats would report a real commit as skipped. `Retained` is the exception and cannot be
+anything else: it counts drops the planner did not emit, so there is no action to observe. The
+comment at the assignment says so, because "count from the apply, not the plan" is otherwise the
+rule in that function.

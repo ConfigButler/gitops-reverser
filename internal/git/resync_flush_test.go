@@ -70,11 +70,9 @@ func applyResyncViaWorktree(
 		context.Background(),
 		worktree,
 		"",
-		"",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
 		desired,
 		nil,
-		nil,
-		v1alpha3.PruneAlways,
 	)
 	require.NoError(t, err)
 	return stats, changed
@@ -236,11 +234,9 @@ func TestResync_ScopedSweepDropsOnlyTargetType(t *testing.T) {
 		context.Background(),
 		worktree,
 		"",
-		"",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
 		nil,
 		scope,
-		nil,
-		v1alpha3.PruneAlways,
 	)
 	require.NoError(t, err)
 	require.True(t, changed, "the removed type's document is swept")
@@ -337,11 +333,9 @@ func TestResync_UnsafePlacementCountsAsPlacementSkipped(t *testing.T) {
 		context.Background(),
 		worktree,
 		"",
-		"",
+		ResolvedTargetMetadata{Placement: policy, PruneMode: v1alpha3.PruneAlways},
 		desired,
 		nil,
-		policy,
-		v1alpha3.PruneAlways,
 	)
 	require.NoError(t, err)
 
@@ -391,11 +385,9 @@ func TestResync_SensitiveUpdateCountsAsUpdatedNotSkipped(t *testing.T) {
 		context.Background(),
 		worktree,
 		"",
-		"",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
 		[]manifestanalyzer.DesiredResource{desired},
 		nil,
-		nil,
-		v1alpha3.PruneAlways,
 	)
 	require.NoError(t, err)
 	require.True(t, changed, "the secret is re-encrypted")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,11 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		defaultRule = "prune-default-rule"
 		neverRule   = "prune-never-rule"
 		alwaysRule  = "prune-always-rule"
+
+		// Seeded by the sweep spec and RETAINED by the default target, which is what the two specs
+		// after it observe: first on status, then being swept once the policy is widened. Shared
+		// here rather than repeated, so the coupling between those specs is visible.
+		orphanName = "prune-orphan"
 	)
 
 	var (
@@ -157,8 +163,6 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 	// manufacture "Git has a managed document the cluster does not" without also making the
 	// cluster emit an event about it.
 	It("sweeps an orphaned document only when prune.mode is always", func() {
-		const orphanName = "prune-orphan"
-
 		By("seeding an orphaned ConfigMap manifest into both the always and default folders")
 		alwaysOrphan := pruneConfigMapPath(alwaysPath, testNs, orphanName)
 		defaultOrphan := pruneConfigMapPath(defaultPath, testNs, orphanName)
@@ -199,7 +203,96 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		applyIsolationConfigMap(proofName, testNs)
 		waitForPruneFile(pruneRepo, pruneConfigMapPath(defaultPath, testNs, proofName), true)
 	})
+
+	// A suppressed sweep leaves no action, no commit, and no stat — deliberately, so a retention is
+	// indistinguishable from the event never arriving. status.retention is the one place it becomes
+	// visible, and this asserts BOTH of its states from the same seeded orphan: the default target
+	// reports what it kept, while the co-resident always target reports zero. Zero is the converged
+	// signal, and it only means anything if it is published as actively as a non-zero count.
+	It("reports retained documents, and convergence, on GitTarget status", func() {
+		By("the default target reports the documents its policy kept")
+		Eventually(func(g Gomega) {
+			g.Expect(retainedDocumentsOf(g, defaultTarget, testNs)).To(BeNumerically(">", 0),
+				"the orphan the previous spec retained must be visible on status")
+			g.Expect(retentionModeOf(g, defaultTarget, testNs)).To(Equal("onEvent"),
+				"status must report the EFFECTIVE mode; this target stores no prune block at all")
+		}).Should(Succeed())
+
+		By("the always target reports zero — it converged rather than never having reported")
+		Eventually(func(g Gomega) {
+			g.Expect(retainedDocumentsOf(g, alwaysTarget, testNs)).To(Equal(0))
+			g.Expect(retentionModeOf(g, alwaysTarget, testNs)).To(Equal("always"))
+		}).Should(Succeed())
+
+		By("no condition went False for a retention — it is the configured outcome, not a fault")
+		verifyResourceCondition("gittarget", defaultTarget, testNs, "Ready", "True", "", "")
+	})
+
+	// The migration instruction this release ships with is "declare always to keep the old
+	// behaviour". That is only true if the edit itself converges the mirror: the watch specs
+	// describe what is watched, not what may be deleted, so a prune edit changes none of them, and
+	// a reconnect resumes from its cursor rather than replaying. Without the widening being its own
+	// trigger, a quiet target could sit under always indefinitely and never sweep.
+	//
+	// Deliberately NO WatchRule change here — that is the whole point. The previous sweep spec had
+	// to toggle the rule to force a resync; if this spec ever needs the same crutch, the fix has
+	// regressed.
+	It("converges an existing orphan when prune.mode is widened, without touching the WatchRule", func() {
+		const lateOrphanName = "prune-late-orphan"
+
+		By("seeding a second orphan that no cluster event will ever mention")
+		lateOrphan := pruneConfigMapPath(defaultPath, testNs, lateOrphanName)
+		seedOrphanManifests(pruneRepo, testNs, map[string]string{
+			lateOrphan: orphanConfigMapYAML(lateOrphanName, testNs),
+		})
+		waitForPruneFile(pruneRepo, lateOrphan, true)
+
+		By("widening the default target's policy to always — the only action this spec takes")
+		_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", defaultTarget,
+			"--type=merge", "-p", `{"spec":{"prune":{"mode":"always"}}}`)
+		Expect(err).NotTo(HaveOccurred(), "spec.prune is mutable and the patch must be accepted")
+
+		By("the newly authorized sweep removes both retained orphans")
+		waitForPruneFile(pruneRepo, lateOrphan, false)
+		waitForPruneFile(pruneRepo, pruneConfigMapPath(defaultPath, testNs, orphanName), false)
+
+		By("and status follows the sweep back to a converged zero under the new mode")
+		waitForStreamsRunning(defaultTarget, testNs)
+		Eventually(func(g Gomega) {
+			g.Expect(retainedDocumentsOf(g, defaultTarget, testNs)).To(Equal(0),
+				"a resync that retains nothing must drive the count back to zero, not leave it stale")
+			g.Expect(retentionModeOf(g, defaultTarget, testNs)).To(Equal("always"))
+		}).Should(Succeed())
+
+		By("the target still mirrors live events after the forced replay")
+		const proofName = "prune-post-widen"
+		applyIsolationConfigMap(proofName, testNs)
+		waitForPruneFile(pruneRepo, pruneConfigMapPath(defaultPath, testNs, proofName), true)
+	})
 })
+
+// retainedDocumentsOf reads status.retention.retainedDocuments. An ABSENT retention block fails the
+// read rather than reporting zero: the two mean different things (nothing reported yet vs. a resync
+// found nothing), and collapsing them here would let a spec pass before any resync had run.
+func retainedDocumentsOf(g Gomega, name, namespace string) int {
+	out, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
+		"-o", "jsonpath={.status.retention.retainedDocuments}")
+	g.Expect(err).NotTo(HaveOccurred(), "failed to read status.retention of %q", name)
+	value := strings.TrimSpace(out)
+	g.Expect(value).NotTo(BeEmpty(), "%q has not reported a retention roll-up yet", name)
+	count, convErr := strconv.Atoi(value)
+	g.Expect(convErr).NotTo(HaveOccurred(), "retainedDocuments %q is not a number", value)
+	return count
+}
+
+// retentionModeOf reads status.retention.mode — the effective prune mode the count was produced
+// under, which for a legacy GitTarget is the only place that mode is visible at all.
+func retentionModeOf(g Gomega, name, namespace string) string {
+	out, err := kubectlRunInNamespace(namespace, "get", "gittarget", name,
+		"-o", "jsonpath={.status.retention.mode}")
+	g.Expect(err).NotTo(HaveOccurred(), "failed to read status.retention.mode of %q", name)
+	return strings.TrimSpace(out)
+}
 
 // applyPruneGitTarget creates a GitTarget with the given prune mode. An empty mode omits the
 // prune block entirely — the legacy shape, which must resolve to onEvent without being edited.

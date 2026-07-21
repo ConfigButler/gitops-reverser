@@ -18,9 +18,13 @@ GitOps Reverser has two distinct deletion paths:
 - A resync compares a desired snapshot with Git and drops documents that are absent from that
   snapshot (mark-and-sweep).
 
-The first is source-cluster evidence. The second is an inference, and is unsafe when the snapshot
-is narrowed by a bad scope, a temporary outage, or a controller that does not understand a newer
-scope field. This PR lets each GitTarget decide which paths may remove Git documents.
+The first is source-cluster evidence. The second is an inference, and is unsafe when the snapshot is
+narrowed by a bad scope or by a controller that does not understand a newer scope field — a snapshot
+that is complete but gathered against the wrong boundary. An *incomplete* gather is not the exposure:
+a failed list or watch enqueues no resync, and a replay cut short before its initial-events bookmark
+enqueues nothing, so an outage stops a sweep rather than shrinking one. That is a property of today's
+gather rather than a guarantee, which is why `onEvent` covers it in depth. This PR lets each GitTarget
+decide which paths may remove Git documents.
 
 ## API
 
@@ -119,11 +123,16 @@ just no longer a separately released prerequisite.
 
 ## Reporting what was kept
 
-This page covers the decision — which deletions happen. Making a retention *observable* is planned
-separately in [retention visibility](pr5-retention-visibility.md), landing in the same pull request:
-a suppressed drop produces no action, no commit, and no stat, so today it is discoverable only from a
-throttled log line. That plan proposes a `status.retention` roll-up, and is deliberately still bound
-by the rule below — an observation, never a condition.
+This page covers the decision — which deletions happen. Making a retention *observable* is covered
+separately in [retention visibility](pr5-retention-visibility.md), which landed in the same pull
+request: a suppressed drop produces no action, no commit, and no stat, so on its own it is
+discoverable only from a throttled log line. That page adds the `status.retention` roll-up, and is
+bound by the rule above — an observation, never a condition.
+
+Two defects in the *transitions* between modes were found by review after this page was written and
+fixed in the same PR: widening to `always` did not converge a quiet target, and tightening away from
+it could be outrun by a write already committed locally. Both are recorded in
+[PR 5 review follow-ups](pr5-review-followups.md); neither changes the decision above.
 
 ## Implementation notes
 
