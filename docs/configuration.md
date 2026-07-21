@@ -575,6 +575,12 @@ The boundaries that keep it predictable:
 
 - A **sensitive** resource never infers from (or is appended into) a plaintext file; it only follows
   encrypted siblings, otherwise it uses the secure canonical path.
+- A resource in a **namespace the target has never written before** only joins an existing cohort when
+  that cohort has *proven* it is namespace-agnostic by already holding more than one namespace. One
+  directory holding one namespace looks identical to a per-namespace layout whose second namespace has
+  simply not arrived yet, so it is not treated as shared — the resource takes the canonical path, which
+  carries its own namespace segment. Guessing here would file one namespace's objects under another's
+  folder.
 - When a type genuinely lives in two layouts at once, the tie-break is deterministic (the cohort with the
   most members wins, then the lexically smallest path) — never a coin-flip.
 - Inference can only **continue** a layout that already exists. It cannot invent a greenfield one — "I

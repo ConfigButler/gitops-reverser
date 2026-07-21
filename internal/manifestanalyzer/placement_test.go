@@ -393,6 +393,75 @@ func TestLocateNew_Step2_NewNamespaceUnderPerNamespaceDirectories_FallsToCanonic
 	}
 }
 
+func TestLocateNew_Step2_NewNamespaceUnderTheOnlyExistingDirectory_FallsToCanonical(t *testing.T) {
+	// ONE directory holding ONE namespace is the case that used to slip through: "all the
+	// singleton directories agree" is trivially true of a single directory, so a
+	// per-namespace-segmented layout whose second namespace had simply never been written
+	// was indistinguishable from a shared one — and the new namespace's object was filed
+	// under the first namespace's folder. Absence of contrary evidence is not proof.
+	fsys := fstest.MapFS{
+		"ns1/configmap-a.yaml": {Data: []byte(configMapYAML("a", "ns1"))},
+	}
+	store := placementStore(t, fsys)
+	req := newConfigMapRequest("cache", "ns2")
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
+		t.Fatalf("got %+v, want canonical fallback, never ns1/ for a resource in ns2", res)
+	}
+}
+
+func TestLocateNew_Step2_SameNameInANewNamespace_IsNeverAppendedOntoTheFirstNamespacesFile(t *testing.T) {
+	// The production shape of the bug. Objects that exist under the SAME NAME in every
+	// namespace (kube-root-ca.crt is in all of them) made the inferred path collide exactly
+	// with the first namespace's file, so the second namespace's object was appended as an
+	// extra document. That file then genuinely spanned two namespaces, so every later object
+	// of the type legitimately preferred the bundle and the whole type collapsed into one
+	// file — one wrong inference cascading into total collapse.
+	fsys := fstest.MapFS{
+		"ns1/configmaps/kube-root-ca.crt.yaml": {Data: []byte(configMapYAML("kube-root-ca.crt", "ns1"))},
+	}
+	store := placementStore(t, fsys)
+	req := newConfigMapRequest("kube-root-ca.crt", "ns2")
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Append {
+		t.Fatalf("got %+v, want a distinct file; appending merges two namespaces' objects", res)
+	}
+	if res.Path == "ns1/configmaps/kube-root-ca.crt.yaml" {
+		t.Fatalf("ns2's object was filed onto ns1's own file: %+v", res)
+	}
+	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
+		t.Fatalf("got %+v, want canonical fallback carrying ns2's own namespace segment", res)
+	}
+}
+
+func TestLocateNew_Step2_ProvenNamespaceAgnosticDirectory_IsStillReused(t *testing.T) {
+	// The other side of the rule: one shared directory that ALREADY holds more than one
+	// namespace has proven itself namespace-agnostic, so a third namespace still joins it.
+	// Requiring proof must not degrade into refusing every singleton-style layout.
+	fsys := fstest.MapFS{
+		"shared/configmap-a.yaml": {Data: []byte(configMapYAML("a", "ns1"))},
+		"shared/configmap-b.yaml": {Data: []byte(configMapYAML("b", "ns2"))},
+	}
+	store := placementStore(t, fsys)
+	req := newConfigMapRequest("cache", "ns3")
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Path != "shared/cache.yaml" || res.Source != PlacementSourceInferred {
+		t.Fatalf("got %+v, want the proven shared directory reused for the new namespace", res)
+	}
+}
+
 func TestLocateNew_SensitiveCollision_Errors(t *testing.T) {
 	// The existing file already occupies exactly the path the declared template
 	// will render for the new resource (a misconfigured template lacking {name}
