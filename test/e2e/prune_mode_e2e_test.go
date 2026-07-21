@@ -73,8 +73,8 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		// holds after upgrading into this release. Its behaviour must come from
 		// EffectivePruneMode, not from a CRD default it never received.
 		applyPruneGitTarget(defaultTarget, testNs, providerName, defaultPath, "")
-		applyPruneGitTarget(neverTarget, testNs, providerName, neverPath, "never")
-		applyPruneGitTarget(alwaysTarget, testNs, providerName, alwaysPath, "always")
+		applyPruneGitTarget(neverTarget, testNs, providerName, neverPath, "Never")
+		applyPruneGitTarget(alwaysTarget, testNs, providerName, alwaysPath, "Always")
 		for _, name := range []string{defaultTarget, neverTarget, alwaysTarget} {
 			verifyResourceCondition("gittarget", name, testNs, "Validated", "True", "OK", "")
 		}
@@ -112,7 +112,7 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		declaredEmpty := "prune-defaulted-target"
 		Expect(applyRawGitTarget(declaredEmpty, testNs, providerName, "e2e/prune-defaulted", "  prune: {}")).
 			To(Succeed(), "a GitTarget declaring an empty prune block must be accepted")
-		Expect(pruneModeOf(declaredEmpty, testNs)).To(Equal("onEvent"),
+		Expect(pruneModeOf(declaredEmpty, testNs)).To(Equal("OnEvent"),
 			"the CRD default must write onEvent into a newly created object")
 
 		By("a mode outside the enum is rejected")
@@ -151,7 +151,7 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 			pullLatestRepoState(g, pruneRepo.CheckoutDir)
 			_, statErr := os.Stat(filepath.Join(pruneRepo.CheckoutDir, neverFile))
 			g.Expect(statErr).NotTo(HaveOccurred(),
-				"prune.mode: never must not mirror a source DELETE")
+				"prune.mode: Never must not mirror a source DELETE")
 		}, 15*time.Second, 3*time.Second).Should(Succeed())
 	})
 
@@ -214,14 +214,14 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		Eventually(func(g Gomega) {
 			g.Expect(retainedDocumentsOf(g, defaultTarget, testNs)).To(BeNumerically(">", 0),
 				"the orphan the previous spec retained must be visible on status")
-			g.Expect(retentionModeOf(g, defaultTarget, testNs)).To(Equal("onEvent"),
+			g.Expect(retentionModeOf(g, defaultTarget, testNs)).To(Equal("OnEvent"),
 				"status must report the EFFECTIVE mode; this target stores no prune block at all")
 		}).Should(Succeed())
 
 		By("the always target reports zero — it converged rather than never having reported")
 		Eventually(func(g Gomega) {
 			g.Expect(retainedDocumentsOf(g, alwaysTarget, testNs)).To(Equal(0))
-			g.Expect(retentionModeOf(g, alwaysTarget, testNs)).To(Equal("always"))
+			g.Expect(retentionModeOf(g, alwaysTarget, testNs)).To(Equal("Always"))
 		}).Should(Succeed())
 
 		By("no condition went False for a retention — it is the configured outcome, not a fault")
@@ -249,7 +249,7 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 
 		By("widening the default target's policy to always — the only action this spec takes")
 		_, err := kubectlRunInNamespace(testNs, "patch", "gittarget", defaultTarget,
-			"--type=merge", "-p", `{"spec":{"prune":{"mode":"always"}}}`)
+			"--type=merge", "-p", `{"spec":{"prune":{"mode":"Always"}}}`)
 		Expect(err).NotTo(HaveOccurred(), "spec.prune is mutable and the patch must be accepted")
 
 		By("the newly authorized sweep removes both retained orphans")
@@ -261,7 +261,7 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		Eventually(func(g Gomega) {
 			g.Expect(retainedDocumentsOf(g, defaultTarget, testNs)).To(Equal(0),
 				"a resync that retains nothing must drive the count back to zero, not leave it stale")
-			g.Expect(retentionModeOf(g, defaultTarget, testNs)).To(Equal("always"))
+			g.Expect(retentionModeOf(g, defaultTarget, testNs)).To(Equal("Always"))
 		}).Should(Succeed())
 
 		By("the target still mirrors live events after the forced replay")

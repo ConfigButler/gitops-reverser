@@ -15,9 +15,9 @@ desired snapshot was deleted. That is now opt-in.
 
 | Mode | Explicit source DELETE | Resync mark-and-sweep |
 |---|---|---|
-| `never` | kept | kept |
-| `onEvent` — the effective default | mirrored | kept |
-| `always` — the previous behavior | mirrored | swept |
+| `Never` | kept | kept |
+| `OnEvent` — the effective default | mirrored | kept |
+| `Always` — the previous behavior | mirrored | swept |
 
 **Deleting a resource in the cluster still deletes its file.** Only the *inferred* deletion changes:
 the operator no longer concludes "Git has a document, the snapshot does not list it, therefore delete
@@ -29,7 +29,7 @@ rather than shrinking one.)
 
 ### What you have to do
 
-**Nothing, to be safe.** An existing `GitTarget` has no `spec.prune` and resolves to `onEvent`
+**Nothing, to be safe.** An existing `GitTarget` has no `spec.prune` and resolves to `OnEvent`
 without being edited — Kubernetes does not retro-fill defaults into stored objects, so the operator
 applies the default itself.
 
@@ -38,10 +38,10 @@ applies the default itself.
 ```yaml
 spec:
   prune:
-    mode: always
+    mode: Always
 ```
 
-The field is mutable, so you can switch a target to `always` after confirming its watch scope
+The field is mutable, so you can switch a target to `Always` after confirming its watch scope
 without recreating it. The switch re-lists that target's watched scopes, so the documents a resync
 had been keeping are swept on the edit rather than at some later replay.
 
@@ -49,7 +49,7 @@ had been keeping are swept on the edit rather than at some later replay.
 
 ```console
 $ kubectl get gittarget acme -o jsonpath='{.status.retention}'
-{"mode":"onEvent","retainedDocuments":3,"observedTime":"2026-07-21T13:20:00Z"}
+{"mode":"OnEvent","retainedDocuments":3,"observedTime":"2026-07-21T13:20:00Z"}
 ```
 
 A non-zero `retainedDocuments` means the mirror holds documents a converged one would not — the
@@ -144,7 +144,7 @@ For each one:
 A narrowing that slips through is visible rather than silent — `SourceNamespaceAuthorized=False`,
 `Stalled=True`, streams stopped, and a message naming the failing item — but the documents already in
 Git are governed by `GitTarget.spec.prune.mode`, which ships in the same release and defaults to
-`onEvent`: prior documents are **left in place** rather than swept. (The two changes are never
+`OnEvent`: prior documents are **left in place** rather than swept. (The two changes are never
 released apart.) Verify with `kubectl get watchrules -o wide`, whose `SourceAuthorized` column carries
 the verdict.
 

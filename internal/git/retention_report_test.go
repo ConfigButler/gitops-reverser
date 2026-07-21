@@ -56,7 +56,7 @@ func TestReportRetainedOrphans_NamesTheGitTarget(t *testing.T) {
 	assert.Contains(t, (*lines)[0], `"gitTarget"="tenant-acme/acme"`,
 		"the retention line must name the GitTarget, not only its path")
 	assert.Contains(t, (*lines)[0], `"retained"=3`)
-	assert.Contains(t, (*lines)[0], `"pruneMode"="onEvent"`)
+	assert.Contains(t, (*lines)[0], `"pruneMode"="OnEvent"`)
 }
 
 // TestReportRetainedOrphans_ThrottlesPerTargetNotPerPath is why the throttle key is the GitTarget
@@ -109,6 +109,6 @@ func TestReportRetainedOrphans_ReportsTheEffectiveModeForALegacyTarget(t *testin
 	require.NoError(t, err)
 
 	require.Len(t, *lines, 1, "the orphan is retained under the effective default, and reported")
-	assert.Contains(t, (*lines)[0], `"pruneMode"="onEvent"`)
+	assert.Contains(t, (*lines)[0], `"pruneMode"="OnEvent"`)
 	assert.Contains(t, (*lines)[0], `"gitTarget"="tenant-acme/acme"`)
 }

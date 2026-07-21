@@ -333,7 +333,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 ) (ResyncStats, bool, error) {
 	// Normalize the prune mode ONCE, here, on this function's own copy of the metadata: everything
 	// below asks the mode a question (may I sweep? what do I report?), and the empty string answers
-	// "never" to all of them while meaning "onEvent". Doing it at the single entry point is why no
+	// "Never" to all of them while meaning "OnEvent". Doing it at the single entry point is why no
 	// individual reader has to remember.
 	target.PruneMode = target.PruneMode.OrDefault()
 	root := worktree.Filesystem.Root()
@@ -471,7 +471,7 @@ func (w *BranchWorker) reportRetainedOrphans(
 		return
 	}
 	logger.Info("resync retained managed documents absent from the cluster; " +
-		"set spec.prune.mode: always on the GitTarget to remove them")
+		"set spec.prune.mode: Always on the GitTarget to remove them")
 }
 
 // shouldLogRetention reports whether one target subtree's retention may be logged at default

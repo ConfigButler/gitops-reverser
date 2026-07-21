@@ -27,7 +27,7 @@ operator comparing their cluster to the mirror has nothing to read that distingu
 Those two states look identical from `kubectl get gittarget`, from `git log`, and from the folder
 itself. That is a bad property for a safety feature whose entire premise is *"we kept something on
 purpose."* A safety mechanism the operator cannot observe is one they cannot trust — and, more
-practically, one they cannot audit before flipping a target to `always`.
+practically, one they cannot audit before flipping a target to `Always`.
 
 ### What part 1 shipped, and why it is not enough
 
@@ -74,7 +74,7 @@ policy".
 ```yaml
 status:
   retention:
-    mode: onEvent          # the EFFECTIVE mode, resolved — answers "why" without a second lookup
+    mode: OnEvent          # the EFFECTIVE mode, resolved — answers "why" without a second lookup
     retainedDocuments: 3   # documents a converged mirror would not hold
     observedTime: "2026-07-21T13:20:00Z"
 ```
@@ -219,8 +219,8 @@ skipped, 0 failures; unit coverage 77.8%, unchanged against the baseline).
 - Counts from a stale epoch are ignored — the property inherited from `RenderFidelityGate`.
 - Unscoped and namespace-scoped resyncs both contribute, mirroring part 1's
   `TestPrune_RetentionIsIdenticalUnderEveryResyncShape`.
-- e2e: the `always` target reports `0` while the co-resident default target reports non-zero for the
-  same seeded orphan — reusing part 1's barrier structure, since the `always` sweep is what proves a
+- e2e: the `Always` target reports `0` while the co-resident default target reports non-zero for the
+  same seeded orphan — reusing part 1's barrier structure, since the `Always` sweep is what proves a
   resync ran at all.
 
 All of the above landed in [`retention_rollup_test.go`](../../../internal/watch/retention_rollup_test.go),
@@ -237,9 +237,9 @@ GitTarget status"*. Two were added while building:
 
 ## Open questions for review
 
-1. **Should `never` also report its suppressed explicit deletes?** Under `never` the DELETE gate
+1. **Should `Never` also report its suppressed explicit deletes?** Under `Never` the DELETE gate
    simply returns and counts nothing, so `retainedDocuments` would cover only the sweep half. A
-   `never` target could therefore report `0` while actively declining to mirror deletes — arguably
+   `Never` target could therefore report `0` while actively declining to mirror deletes — arguably
    the more surprising retention of the two. Options: leave it sweep-only and say so in the godoc;
    add a second counter; or make the field mean "documents kept by policy" across both paths, which
    is more honest but needs counting in the event writer too.
@@ -255,7 +255,7 @@ GitTarget status"*. Two were added while building:
 ### How they were answered
 
 1. **Sweep-only, and the godoc says so.** `retainedDocuments` counts the inferred path alone, so a
-   `never` target can report zero while still declining to mirror deletes. Counting the two together
+   `Never` target can report zero while still declining to mirror deletes. Counting the two together
    would need the event writer to count as well, and — more importantly — would merge a number
    derived from a *snapshot* with one derived from *events*, which respond to different failures. The
    field's `kubectl explain` text carries the caveat rather than leaving it to be discovered.
@@ -265,7 +265,7 @@ GitTarget status"*. Two were added while building:
    easily lost in a later refactor.
 3. **Enqueue on change — the opposite of the conservative default this plan proposed.** Waiting out
    the steady requeue (5 minutes) for the *first appearance* of a retention is too long for a signal
-   an operator consults before flipping a target to `always`, and it would leave the e2e assertion
+   an operator consults before flipping a target to `Always`, and it would leave the e2e assertion
    with nothing better than a long sleep. The flake history argues against a projection that does
    *not* enqueue, which is the opposite failure. It enqueues on a change of the count or the mode,
    never on an unchanged report, so a steadily retaining target does not re-reconcile forever.
@@ -290,7 +290,7 @@ Decisions taken while building this that the plan above did not settle.
 The plan said `mode` is duplicated onto status so a legacy GitTarget's behaviour is explainable
 without a second lookup. Building it surfaced a second reason, and it changed where the value comes
 from: the controller could have read `EffectivePruneMode()` off the object it is already reconciling,
-but then a target patched to `always` would publish the new mode beside a count the *old* one
+but then a target patched to `Always` would publish the new mode beside a count the *old* one
 produced, until the next resync reported. So `ResyncStats` carries `PruneMode` alongside `Retained`,
 and the pair is written and read together. The mode on status is the mode that produced the number.
 

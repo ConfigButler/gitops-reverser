@@ -542,27 +542,27 @@ a revoked RBAC grant currently stops a sweep rather than shrinking one.
 The risk is a snapshot that is *complete* but gathered against the wrong scope: a watch rule narrower
 than you intended, version skew, or an older controller that does not understand a newer scope field.
 That snapshot is smaller than reality and indistinguishable from a converged one, and a sweep turns
-it into deleted manifests. `onEvent` is the defence, and it also covers the outage case in depth —
+it into deleted manifests. `OnEvent` is the defence, and it also covers the outage case in depth —
 failing closed there is a property of how the gather works today, not a guarantee the API makes.
 
 | Mode | Explicit source DELETE | Resync mark-and-sweep | Use it for |
 |---|---|---|---|
-| `never` | kept | kept | an archive or tombstone mirror that only ever gains documents |
-| `onEvent` (default) | mirrored | kept | mirroring observed deletes without ever inferring one |
-| `always` | mirrored | swept | full desired-state convergence, including cleaning up stale documents |
+| `Never` | kept | kept | an archive or tombstone mirror that only ever gains documents |
+| `OnEvent` (default) | mirrored | kept | mirroring observed deletes without ever inferring one |
+| `Always` | mirrored | swept | full desired-state convergence, including cleaning up stale documents |
 
 ```yaml
 spec:
   prune:
-    mode: always
+    mode: Always
 ```
 
-Omitting `spec.prune` means `onEvent`. That applies to a `GitTarget` created before this field
+Omitting `spec.prune` means `OnEvent`. That applies to a `GitTarget` created before this field
 existed as well: an upgrade never changes an existing target to a more destructive policy, and you
 do not have to edit anything to be safe.
 
-Choose `always` when the folder is meant to be a faithful, converged mirror and you accept that a
-bad watch scope can delete manifests. Choose `never` when the folder is an audit trail.
+Choose `Always` when the folder is meant to be a faithful, converged mirror and you accept that a
+bad watch scope can delete manifests. Choose `Never` when the folder is an audit trail.
 
 #### Seeing what was kept
 
@@ -572,7 +572,7 @@ none of them is a failure: retention is the configured outcome, so no condition 
 
 ```console
 $ kubectl get gittarget acme -o jsonpath='{.status.retention}'
-{"mode":"onEvent","retainedDocuments":3,"observedTime":"2026-07-21T13:20:00Z"}
+{"mode":"OnEvent","retainedDocuments":3,"observedTime":"2026-07-21T13:20:00Z"}
 ```
 
 - `status.retention.retainedDocuments` is how many managed documents a converged mirror would not
@@ -584,14 +584,14 @@ $ kubectl get gittarget acme -o jsonpath='{.status.retention}'
 - `gitopsreverser_prune_retained_documents_total`, labelled by `gittarget_namespace`,
   `gittarget_name`, and `prune_mode`.
 
-`status.retention` covers the resync sweep only. Under `never` a suppressed source DELETE is not
-counted, so a `never` target can report `0` while still declining to mirror deletes.
+`status.retention` covers the resync sweep only. Under `Never` a suppressed source DELETE is not
+counted, so a `Never` target can report `0` while still declining to mirror deletes.
 
 The count is refreshed when a resync runs, so it lags a change in the cluster until the next one —
 read `observedTime` before treating a `0` as live.
 
 `spec.prune` is mutable — unlike `providerRef`, `branch`, and `path` — so a target can be moved to
-`always` once its watch scope is confirmed, without recreating it. Widening it to `always` re-lists
+`Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists
 the target's watched scopes, so the cleanup runs on the edit instead of waiting for the next replay.
 Tightening it applies to the next write and leaves the streams alone, which is what makes it usable
 as a stop button.

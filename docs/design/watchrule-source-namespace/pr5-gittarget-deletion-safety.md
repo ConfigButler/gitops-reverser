@@ -23,7 +23,7 @@ narrowed by a bad scope or by a controller that does not understand a newer scop
 that is complete but gathered against the wrong boundary. An *incomplete* gather is not the exposure:
 a failed list or watch enqueues no resync, and a replay cut short before its initial-events bookmark
 enqueues nothing, so an outage stops a sweep rather than shrinking one. That is a property of today's
-gather rather than a guarantee, which is why `onEvent` covers it in depth. This PR lets each GitTarget
+gather rather than a guarantee, which is why `OnEvent` covers it in depth. This PR lets each GitTarget
 decide which paths may remove Git documents.
 
 ## API
@@ -42,31 +42,31 @@ spec:
   branch: main
   path: tenants/acme
   prune:
-    mode: onEvent
+    mode: OnEvent
 ~~~
 
-`GitTarget.spec.prune.mode` is an enum with an effective default of `onEvent`:
+`GitTarget.spec.prune.mode` is an enum with an effective default of `OnEvent`:
 
 | Mode | Explicit source DELETE event | Resync mark-and-sweep | Intended use |
 |---|---:|---:|---|
-| `never` | suppressed | suppressed | archive/tombstone mirror |
-| `onEvent` | applied | suppressed | safe default; mirror observed deletes but never infer them |
-| `always` | applied | applied | full convergence, including cleanup of stale Git documents |
+| `Never` | suppressed | suppressed | archive/tombstone mirror |
+| `OnEvent` | applied | suppressed | safe default; mirror observed deletes but never infer them |
+| `Always` | applied | applied | full convergence, including cleanup of stale Git documents |
 
-`onEvent` means a DELETE event, not every watch event. `always` enables both deletion paths.
+`OnEvent` means a DELETE event, not every watch event. `Always` enables both deletion paths.
 
 The CRD default is useful for newly written objects, but it is not the compatibility mechanism.
-The controller must use `EffectivePruneMode()` and treat an omitted stored value as `onEvent`; old
+The controller must use `EffectivePruneMode()` and treat an omitted stored value as `OnEvent`; old
 GitTargets must become safe without first being edited.
 
-## Why `onEvent` is the default
+## Why `OnEvent` is the default
 
 A scope collapse must stop updates outside the resulting scope, but it must not erase their existing
-Git documents. With `onEvent`, a resync emits no managed-drop actions, so the documents remain until
-an explicit source DELETE is observed or the target owner deliberately selects `always`.
+Git documents. With `OnEvent`, a resync emits no managed-drop actions, so the documents remain until
+an explicit source DELETE is observed or the target owner deliberately selects `Always`.
 
 This is intentionally a behavior change from today's implicit sweep behavior. A target that needs
-full desired-state convergence opts in with `prune.mode: always`.
+full desired-state convergence opts in with `prune.mode: Always`.
 
 This PR does **not** attempt to limit a large cascade of genuine DELETE events. A future PR may add
 for example `maxDeletesPerCommit` to this object if experience shows that control is needed. An
@@ -75,31 +75,31 @@ than presented as one in this first safety release.
 
 ## Implementation
 
-1. **API and effective default.** Add `PrunePolicy` and `PruneMode` (`never`, `onEvent`, `always`) to
+1. **API and effective default.** Add `PrunePolicy` and `PruneMode` (`Never`, `OnEvent`, `Always`) to
    `GitTargetSpec`, with schema enum/default and an `EffectivePruneMode()` helper. Regenerate
    deepcopy code and CRDs.
 2. **Suppress sweep actions at the planner.** Thread the effective mode into the resync planning
-   policy. `BuildScopedPlan` must not emit `PlanDropOrphan` when the mode is `never` or `onEvent`.
+   policy. `BuildScopedPlan` must not emit `PlanDropOrphan` when the mode is `Never` or `OnEvent`.
    Do not filter the action at apply time: a suppressed drop must not enter the plan, plan hash, or
    commit path.
 3. **Gate explicit deletes.** The steady-state delete writer applies delete-document actions only
-   for `onEvent` and `always`; `never` leaves the managed document unchanged.
+   for `OnEvent` and `Always`; `Never` leaves the managed document unchanged.
 4. **Surface configured retention.** A sweep suppressed by policy is healthy, not a failed
    reconciliation. Emit a rate-limited informational log and make the mode visible in API
    documentation; do not add a failure condition merely because a stale document remains.
 
 The zero value of the internal planner policy must be explicit in every caller. Production resync
 code passes the target's effective mode; dry-run and unit-test callers choose deliberately whether
-they want to model `always` or `onEvent`.
+they want to model `Always` or `OnEvent`.
 
 ## Tests
 
-- A legacy GitTarget that omits `prune` has effective mode `onEvent`.
-- `onEvent` retains a document when a resync desired set narrows to empty; the generated plan has no
+- A legacy GitTarget that omits `prune` has effective mode `OnEvent`.
+- `OnEvent` retains a document when a resync desired set narrows to empty; the generated plan has no
   managed-drop action.
-- `onEvent` still mirrors one explicit DELETE event.
-- `never` suppresses both paths.
-- `always` reproduces today's mark-and-sweep behavior byte-for-byte.
+- `OnEvent` still mirrors one explicit DELETE event.
+- `Never` suppresses both paths.
+- `Always` reproduces today's mark-and-sweep behavior byte-for-byte.
 - Full and namespace-scoped resyncs both honor the mode; no alternate sweep path bypasses it.
 
 ## Release and rollback
@@ -112,12 +112,12 @@ Do not claim safety for a rollback past that release once PR-4 manifests have be
 controller neither understands `prune` nor the rule-item source-namespace field, so it resolves a
 narrower desired set *and* sweeps it. Remove or narrow the affected WatchRules first.
 
-Inside the shipping release, `onEvent` is still what makes a scope mistake non-destructive — it is
+Inside the shipping release, `OnEvent` is still what makes a scope mistake non-destructive — it is
 just no longer a separately released prerequisite.
 
 ## Done when
 
-- `prune.mode` defaults effectively to `onEvent` for both new and existing GitTargets.
+- `prune.mode` defaults effectively to `OnEvent` for both new and existing GitTargets.
 - Explicit deletes and inferred sweep drops are independently controlled exactly as in the table.
 - `task lint`, `task test`, and `task test-e2e` pass, closing the do-not-release window PR 4 opened.
 
@@ -130,7 +130,7 @@ discoverable only from a throttled log line. That page adds the `status.retentio
 bound by the rule above — an observation, never a condition.
 
 Two defects in the *transitions* between modes were found by review after this page was written and
-fixed in the same PR: widening to `always` did not converge a quiet target, and tightening away from
+fixed in the same PR: widening to `Always` did not converge a quiet target, and tightening away from
 it could be outrun by a write already committed locally. Both are recorded in
 [PR 5 review follow-ups](pr5-review-followups.md); neither changes the decision above.
 
@@ -139,10 +139,10 @@ it could be outrun by a write already committed locally. Both are recorded in
 Decisions taken while building this that the design above did not settle. They are recorded because
 each one has a failure mode that is invisible if the reasoning is lost.
 
-### The empty string is unset, not `never`
+### The empty string is unset, not `Never`
 
 Read literally, `PruneMode("")` answers false to both `AppliesEventDeletes` and `SweepsOrphans` —
-which is `never`, the mode that stops mirroring deletes. But an omitted field means `onEvent`. Every
+which is `Never`, the mode that stops mirroring deletes. But an omitted field means `OnEvent`. Every
 internal carrier of the value (the writer's `ResolvedTargetMetadata`, the per-base lookup, the
 write batch) therefore normalizes through `PruneMode.OrDefault` before asking either predicate. An
 *unrecognized* value is treated differently and deliberately: it is left alone and retains on both
@@ -151,7 +151,7 @@ paths, because a policy this build cannot understand must not authorize deletion
 ### The planner models only the inferred path
 
 `manifestanalyzer.Policy` gains a `SweepMode`, not a `PruneMode`: the planner never sees an explicit
-DELETE event, so `never` and `onEvent` are the same instruction to it. Keeping the API enum out of
+DELETE event, so `Never` and `OnEvent` are the same instruction to it. Keeping the API enum out of
 `manifestanalyzer` also preserves that package's freedom from Kubernetes API types, the same rule
 `PlacementPolicy` already follows. The translation happens once, in `resyncPlanPolicy`.
 
@@ -178,8 +178,8 @@ one it owned, considered, and kept — which is exactly the fact the operator ne
 
 ### Drift heal is gated too, by construction
 
-The heal resync (`ResyncRequest.Heal`) runs through the same planner, so under `onEvent` the
+The heal resync (`ResyncRequest.Heal`) runs through the same planner, so under `OnEvent` the
 operator no longer removes a stray managed document a human added to the folder by hand. This
 follows from the design rather than extending it, but it is the consequence most likely to surprise:
 "the reverser stopped cleaning up junk I put in the folder" is the same mechanism as "the reverser
-did not delete my tenant's manifests when the scope collapsed". `always` restores both.
+did not delete my tenant's manifests when the scope collapsed". `Always` restores both.

@@ -140,7 +140,7 @@ type GitTargetSpec struct {
 
 	// Prune controls which deletion paths may remove documents from this target's folder: an
 	// explicit source DELETE event, and the resync mark-and-sweep that infers a deletion from a
-	// desired snapshot. Omitted, it is `mode: onEvent` — observed deletes are mirrored, inferred
+	// desired snapshot. Omitted, it is `mode: OnEvent` — observed deletes are mirrored, inferred
 	// ones are not — for a stored GitTarget as well as a new one.
 	// +optional
 	Prune *PrunePolicy `json:"prune,omitempty"`

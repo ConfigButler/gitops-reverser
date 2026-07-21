@@ -3,6 +3,10 @@
 > Status: external review — findings open, nothing here binds until scheduled.
 > Date: 2026-07-21
 > Reviewed at: branch `feat/gittarget-prune-mode-pr5`, commit `f37a7ba`.
+>
+> **Scheduled and done so far:** F12's *enum casing* only — `PruneMode` is now
+> `Never`/`OnEvent`/`Always`, taken before the release because it was the last moment it was free.
+> Every other finding, including the rest of F12, is still open.
 > Stance: reviewed as if this API were proposed for the GitOps Toolkit, with Flux's own
 > source (`external-sources/flux/`) and kstatus (`sigs.k8s.io/cli-utils/pkg/kstatus`) as ground
 > truth rather than recollection.
@@ -480,13 +484,17 @@ optimistic concurrency and setting `observedGeneration` from the object being pa
 
 ### F12 — Small API-conventions nits (Low)
 
-- **Enum casing.** `PruneMode` values are `never` / `onEvent` / `always`
+- **Enum casing — DONE.** `PruneMode` values were `never` / `onEvent` / `always`
   (`prune_policy.go:17-23`). Kubernetes API conventions call for UpperCamelCase enum values —
   compare `imagePullPolicy: Always|Never|IfNotPresent`, `persistentVolumeReclaimPolicy:
   Retain|Delete`. Flux is itself inconsistent here (`driftDetection.mode: enabled|warn|disabled`),
-  so this is in company, but `Never`/`OnEvent`/`Always` is the conventional spelling. **This is the
-  moment to decide** — the field is brand new and unreleased on this branch; after a release it is
-  a breaking change for a cosmetic gain.
+  so this was in company, but `Never`/`OnEvent`/`Always` is the conventional spelling. This was the
+  moment to decide — the field was brand new and unreleased on this branch, and the branch already
+  carried two `feat(api)!` commits, so the rename rode along in a release that was breaking anyway;
+  after that release it would have been a second breaking change for a cosmetic gain.
+  **Resolved on `feat/gittarget-prune-mode-pr5`: the values are now `Never` / `OnEvent` /
+  `Always`.** The typed constants (`PruneNever`, `PruneOnEvent`, `PruneAlways`) are unchanged, so
+  no Go call site moved; the wire values, the CRD enum and default, and the docs did.
   (Conversely, `OperationType`'s `CREATE`/`UPDATE`/`DELETE` **is** right, because it matches
   `admissionregistration.k8s.io` `rules[].operations` verbatim.)
 - **Duplicated representation.** `status.streams.summary` is `fmt.Sprintf("%d/%d", Ready, Total)`
@@ -614,7 +622,8 @@ criticism.
 8. **F6** — `spec.suspend` on GitTarget/WatchRule/ClusterWatchRule/GitProvider; `spec.interval` on
    GitProvider at minimum; jitter the requeue; `reconcile.configbutler.ai/requestedAt` +
    `status.lastHandledReconcileAt`.
-9. **F12** — decide `PruneMode` casing **now**; trim printer columns; unify ObjectMeta tags.
+9. **F12** — ~~decide `PruneMode` casing **now**~~ (done, pre-release); trim printer columns; unify
+   ObjectMeta tags.
 10. **F10** — CommitRequest lifecycle (TTL or ownerRef) and the `delete` verb.
 11. **F9** — verify the `scope: Namespaced` status-write path on the minimum supported Kubernetes
     version.

@@ -38,7 +38,7 @@ WatchRule  ──uses──>  GitTarget  ──uses──>  ClusterProvider
   WatchRule source namespaces. A declared policy has no self-namespace exception.
 - `ClusterProvider.spec.allowSourceNamespaceOverride` is the platform-admin delegation that
   permits an admitted GitTarget to authorize a WatchRule outside its own namespace.
-- `GitTarget.spec.prune.mode` controls deletion: `never`, `onEvent` (default), or `always`.
+- `GitTarget.spec.prune.mode` controls deletion: `Never`, `OnEvent` (default), or `Always`.
 
 Cluster-scoped objects have no namespace. A ClusterWatchRule therefore receives every selected
 cluster-scoped object its source credential can read; tenant isolation for such objects requires
@@ -73,7 +73,7 @@ namespace and target policy, or recognize a ClusterWatchRule as intentionally cl
 | 2 | [Stream-scope collapse](pr2-stream-scope-collapse.md) | A cluster-wide stream cannot silently widen a co-resident named stream. | landed |
 | 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule cannot attach to a GitTarget its ClusterProvider does not admit. | landed |
 | 4 | [Scope by kind](pr4-cluster-scope-only.md) | Rework the unshipped source-namespace work for `rules[].sourceNamespace`, narrow ClusterWatchRule to cluster scope, refuse stored namespaced rules, and document the cross-kind migration. | current branch; breaking |
-| 5 | [GitTarget deletion safety](pr5-gittarget-deletion-safety.md) | Add `prune.mode` and make resync sweep opt-in (`always`). | implemented; ships in the same release as PR 4 |
+| 5 | [GitTarget deletion safety](pr5-gittarget-deletion-safety.md) | Add `prune.mode` and make resync sweep opt-in (`Always`). | implemented; ships in the same release as PR 4 |
 | 5b | [Retention visibility](pr5-retention-visibility.md) | Report what PR 5 decided to keep, so a retention is observable rather than silent. | implemented; same PR as 5 |
 | 5c | [PR 5 review follow-ups](pr5-review-followups.md) | Make a `prune.mode` change take effect: converge on a loosening, apply a tightening immediately. Plus two doc corrections. | implemented; same PR as 5 |
 
@@ -104,9 +104,9 @@ the affected WatchRules first.
 ## Deletion safety
 
 The product has two deletion paths: explicit source DELETE events and inferred mark-and-sweep drops
-during resync. Scope mistakes threaten only the latter. PR 5 defaults targets to `prune.mode: onEvent`:
+during resync. Scope mistakes threaten only the latter. PR 5 defaults targets to `prune.mode: OnEvent`:
 explicit source DELETE events remain mirrored, while a narrowed or incorrect desired set leaves prior
-Git documents untouched. `always` restores full desired-state convergence; `never` creates an archive
+Git documents untouched. `Always` restores full desired-state convergence; `Never` creates an archive
 that does not remove documents.
 
 PR 5 is intentionally narrow. It does not add a deletion-count or percentage guard. If experience

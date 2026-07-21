@@ -3,7 +3,7 @@
 > Work list from a review of PR 5 ([#260](https://github.com/ConfigButler/gitops-reverser/pull/260)):
 > two behavioral gaps and two documentation corrections. **Every claim below was re-verified against
 > the code before being accepted**, and all four hold. Nothing here reopens the
-> [deletion-safety decision](pr5-gittarget-deletion-safety.md) — `onEvent` stays the default, and the
+> [deletion-safety decision](pr5-gittarget-deletion-safety.md) — `OnEvent` stays the default, and the
 > review reached that conclusion independently.
 >
 > **Status: all four landed on this branch.** All gates were green when the review ran (`task lint`,
@@ -19,8 +19,8 @@ happens when the value **changes**: it is captured at a moment and never re-read
 
 | Operator does | Intent | What should happen | What happens |
 |---|---|---|---|
-| `onEvent` → `always` | "converge this mirror" | the orphans get swept | nothing, until a replay happens for an unrelated reason (**R1**) |
-| `always` → `onEvent`/`never` | "stop deleting, now" | queued deletions stop | a locally committed, unpushed write can still replay under `always` (**R2**) |
+| `OnEvent` → `Always` | "converge this mirror" | the orphans get swept | nothing, until a replay happens for an unrelated reason (**R1**) |
+| `Always` → `OnEvent`/`Never` | "stop deleting, now" | queued deletions stop | a locally committed, unpushed write can still replay under `Always` (**R2**) |
 
 So R1 and R2 are opposite halves of one missing rule: **the effective mode must be re-read at the
 moment it is acted on, and a change in it must be an event.** The two fixes are deliberately
@@ -31,15 +31,15 @@ tightening must take effect immediately and must trigger nothing.
 
 | # | Item | Verdict | Status |
 |---|---|---|---|
-| R1 | Declaring `always` does not converge a quiet target | Confirmed | **Fixed** |
+| R1 | Declaring `Always` does not converge a quiet target | Confirmed | **Fixed** |
 | R2 | A tightening is outrun by an already-retained write on rebase replay | Confirmed, **exposure narrowed** | **Fixed** |
 | R3 | The retention log does not name the GitTarget the docs promise it names | Confirmed | **Fixed** — with [retention visibility](pr5-retention-visibility.md) Step 0 |
 | R4 | The docs claim a failure mode the code does not have | Confirmed | **Fixed** |
 | — | Keep the retention metric target-unlabelled for cardinality | **Declined** | Not taken |
 
-## R1 — declaring `always` does not converge a quiet target
+## R1 — declaring `Always` does not converge a quiet target
 
-[UPGRADING.md](../../UPGRADING.md) tells an operator that declaring `always` keeps the old behavior,
+[UPGRADING.md](../../UPGRADING.md) tells an operator that declaring `Always` keeps the old behavior,
 and [configuration.md](../../configuration.md) that it gives a "faithful, converged mirror". A
 `prune.mode` edit does neither on its own:
 
@@ -55,8 +55,8 @@ The part that makes this worse than "converges eventually" is the reconnect path
 session `runTargetWatch` sets `resumeFromCursor = true`, and a cursor resume streams live events
 **without** enqueuing anything. So the practical trigger set for a sweep is: a controller restart, a
 WatchRule edit that changes this target's watch set, or a cursor expiry. A healthy target with stable
-rules whose cursors keep resuming can sit under `always` indefinitely without ever sweeping the
-orphans the operator declared `always` to remove.
+rules whose cursors keep resuming can sit under `Always` indefinitely without ever sweeping the
+orphans the operator declared `Always` to remove.
 
 The e2e suite already contains the workaround, which is the strongest evidence the gap is real —
 the sweep spec has to churn the rule to make a resync happen at all:
@@ -80,7 +80,7 @@ the replacement replays rather than resuming, which is exactly what enqueues the
 
 Two things this must get right, both silent if wrong:
 
-- **Edge, not level.** Forcing whenever the mode *is* `always` forces on every steady requeue, which
+- **Edge, not level.** Forcing whenever the mode *is* `Always` forces on every steady requeue, which
   is a permanent replay loop. Only a *change* may force.
 - **Only the loosening direction.** `always → never` needs no replay, and forcing one would tear down
   every stream at the exact moment an operator is trying to stop something from happening. The
@@ -99,10 +99,10 @@ every call site passes `heal: false`. A heal-shaped "re-list this target's scope
 converging resync" would avoid stream churn altogether. That is a larger change than this PR should
 carry; the force flag is the right size now, and the heal path is the better long-term home.
 
-**Test.** e2e: seed an orphan under the default mode, patch `spec.prune.mode: always`, and observe
+**Test.** e2e: seed an orphan under the default mode, patch `spec.prune.mode: Always`, and observe
 the sweep **without touching the WatchRule**. That is the test that would have caught this, and it
 also lets the existing sweep spec drop its toggle workaround. Unit: a declare whose mode changed to
-`always` replaces the watch set; an unchanged mode does not; and `always → onEvent` does not.
+`Always` replaces the watch set; an unchanged mode does not; and `always → onEvent` does not.
 
 **Landed.** [`prune_declaration.go`](../../../internal/watch/prune_declaration.go) holds the whole
 seam — `pruneModeRequiresReplay` / `rememberGitTargetPruneMode` / `forgetGitTargetPruneMode` — and
@@ -143,12 +143,12 @@ rebased worktree, so it can compute drops the first apply never made — against
 in the meantime — under the superseded policy.
 
 The existing doc comment is half right, and the half it gets right is worth keeping. Its reasoning
-holds for the **loosening** direction: a write planned under `onEvent` must not start sweeping merely
-because someone set `always` afterwards, since that snapshot's retention decision was already taken
+holds for the **loosening** direction: a write planned under `OnEvent` must not start sweeping merely
+because someone set `Always` afterwards, since that snapshot's retention decision was already taken
 against a desired set that is now stale. It does not hold for the **tightening** direction, where
 stopping deletions that have not yet landed is the entire purpose of the edit.
 
-**Fix.** Order the modes (`never` < `onEvent` < `always`) and apply the **minimum** of the stored and
+**Fix.** Order the modes (`Never` < `OnEvent` < `Always`) and apply the **minimum** of the stored and
 the current value at execution time. Minimum delivers both halves at once: a loosening cannot
 escalate an already-planned write (what the doc comment wanted), and a tightening applies immediately
 (what it missed).
@@ -163,11 +163,11 @@ a policy this build cannot resolve does not authorize deletion.
 **The event path has the same shape.** Retained live-event windows carry the same metadata and
 `pruneModeForBase` reads the stored value
 ([`pending_writes.go`](../../../internal/git/pending_writes.go)). Severity is lower — those deletes
-are observed evidence, not inference — but `never` means "do not mirror deletes", and a window that
+are observed evidence, not inference — but `Never` means "do not mirror deletes", and a window that
 has not pushed has not mirrored anything yet. Fix both; the resync path is the blocker.
 
-**Test.** A replay-seam regression: retain a resync write planned under `always`, tighten the
-GitTarget to `onEvent`, force a push conflict so the write replays, and assert the replay retains.
+**Test.** A replay-seam regression: retain a resync write planned under `Always`, tighten the
+GitTarget to `OnEvent`, force a push conflict so the write replays, and assert the replay retains.
 Plus a unit test on the min-of-two helper covering the unreadable-target case, which is the branch
 most likely to be written the wrong way round.
 
@@ -183,10 +183,10 @@ above did not settle:
   which is right — a policy decrease is not undone by a later increase.
 - **A failed read returns an error rather than guessing**, which the design's "use the more
   restrictive" rule did not cover. Guessing the captured mode could apply a revoked deletion;
-  guessing the strictest could silently drop a legitimate one, and under `onEvent` no later resync
+  guessing the strictest could silently drop a legitimate one, and under `OnEvent` no later resync
   re-derives an event delete. Returning the error leaves the pending writes retained and the push
   cycle retries them, so neither happens. A **deleted** GitTarget is different — that is a definite
-  answer, no policy exists, and it replays under `never`.
+  answer, no policy exists, and it replays under `Never`.
 - **One read per GitTarget, not per retained write.** A conflicting push can be replaying many
   windows for one busy target.
 
@@ -250,7 +250,7 @@ returning a subset, so there is no smaller-but-accepted snapshot to sweep from.
 The honest rationale is the one part 1 already leads with — a snapshot that is **complete but
 computed against the wrong scope**: a bad rule scope, version skew, a controller that does not
 understand a newer scope field. Outages and authorization failures should be described as the case
-the controller currently declines to sweep on, with `onEvent` as defence in depth for the day that
+the controller currently declines to sweep on, with `OnEvent` as defence in depth for the day that
 changes: fail-closed is a property of today's gather, not a guarantee the API makes.
 
 The same overstatement is in part 1's own Purpose section ("narrowed by a bad scope, a temporary
@@ -261,7 +261,7 @@ Docs-only, no code dependency — this can land ahead of R1 and R2.
 
 **Landed.** All three corrected, in the shape the review recommended: the scope rationale keeps the
 lead, and the outage/RBAC cases are described as what the controller currently declines to sweep on,
-with `onEvent` as defence in depth because failing closed there is a property of today's gather
+with `OnEvent` as defence in depth because failing closed there is a property of today's gather
 rather than a guarantee. Two adjacent inaccuracies went with them — the resync is not "periodic"
 (it happens when a stream starts or restarts), and the mutability paragraphs now say what a
 `prune.mode` edit actually does in each direction, which is only true because of R1.
@@ -269,11 +269,11 @@ rather than a guarantee. Two adjacent inaccuracies went with them — the resync
 ## What the review confirmed
 
 Recorded because these are the properties most likely to be broken by a later change, and each is now
-a claim a reviewer has checked independently: legacy and empty policy values resolve to `onEvent`; an
+a claim a reviewer has checked independently: legacy and empty policy values resolve to `OnEvent`; an
 unrecognized value fails closed toward retention; suppression happens during planning, so a retained
 deletion never enters actions, ordering, stats, or commits; explicit DELETEs stay functional under the
-default and `never` is genuinely archival; the offline analyzer deliberately keeps its full-convergence
-reporting; and the e2e retention assertion is guarded by a positive barrier — the `always` target's
+default and `Never` is genuinely archival; the offline analyzer deliberately keeps its full-convergence
+reporting; and the e2e retention assertion is guarded by a positive barrier — the `Always` target's
 sweep proves a resync ran — rather than by a bare wait.
 
 ## Sequencing
