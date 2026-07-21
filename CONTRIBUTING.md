@@ -41,6 +41,9 @@ task test      # must pass
 task test-e2e  # must pass (requires Docker running)
 ```
 
+Editing markdown? Follow [`docs/style-guide.md`](docs/style-guide.md). A docs-only change runs
+`task lint-docs` instead of the full suite; `git add` new files first so their links resolve.
+
 ## Unit tests
 
 ```bash

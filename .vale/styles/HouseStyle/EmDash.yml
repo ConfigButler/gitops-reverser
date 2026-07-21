@@ -1,0 +1,16 @@
+# docs/style-guide.md -> "Punctuation: no em dashes", the one hard rule.
+#
+# Vale skips code fences and inline code, so a dash inside a quoted specimen is
+# left alone -- which is exactly what the style guide asks for. docs/style-guide.md
+# itself is full of em dashes and is correctly never flagged.
+#
+# Known limitation: the reported count is a lower bound. A sentence with two
+# dashes sometimes yields one alert. File-level detection is complete, so a gate
+# is sound, but re-run after each pass instead of trusting one list.
+extends: existence
+message: "Do not use an em dash in prose. Match the mark to the job: parentheses for an aside, a colon for a definition or expansion, a period or semicolon for two clauses."
+link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#punctuation-no-em-dashes
+level: error
+nonword: true
+tokens:
+  - '—'

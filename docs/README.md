@@ -25,6 +25,8 @@ If you only want the supported product docs, start with the files below.
 - [`alternatives.md`](alternatives.md): nearby tools and when another approach fits better
 - [`UPGRADING.md`](UPGRADING.md): breaking changes and migration steps, newest first
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md): contributor workflow and validation commands
+- [`style-guide.md`](style-guide.md): how docs here are written, including the no-em-dash rule and
+  the American-English decision
 - [`../test/e2e/E2E_DEBUGGING.md`](../test/e2e/E2E_DEBUGGING.md): e2e troubleshooting, reuse,
   and `.stamps`
 
@@ -38,7 +40,7 @@ The maintainer folders are organised by **lifecycle**, not by topic. Pick a fold
 
 | Folder | Means | Binds? |
 |---|---|---|
-| [`spec/`](spec/) | **This is true now, and the code depends on it.** Most are cited by path from Go source. Change the behaviour, change the doc. | **yes** |
+| [`spec/`](spec/) | **This is true now, and the code depends on it.** Most are cited by path from Go source. Change the behavior, change the doc. | **yes** |
 | [`design/`](design/) | **We are still deciding.** Open questions and unbuilt work. | yes — it is the roadmap |
 | [`facts/`](facts/) | Durable reference: how Kubernetes behaves, and what we learned about it. | yes, as reference |
 | [`finished/`](finished/) | **This happened.** Shipped plans and closed investigations. | **no** |

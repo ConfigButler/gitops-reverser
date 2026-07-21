@@ -59,6 +59,9 @@ RUN apt-get update \
 # HADOLINT_VERSION -> https://github.com/hadolint/hadolint/releases
 # VALKEY_VERSION -> https://github.com/valkey-io/valkey/releases
 # COSIGN_VERSION -> https://github.com/sigstore/cosign/releases
+# NODE_MAJOR -> https://github.com/nodejs/node/releases (track a current LTS line)
+# MARKDOWNLINT_CLI2_VERSION -> https://www.npmjs.com/package/markdownlint-cli2?activeTab=versions
+# VALE_VERSION -> https://github.com/vale-cli/vale/releases
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUBECTL_VERSION=v1.36.2 \
@@ -73,7 +76,10 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     ACTIONLINT_VERSION=1.7.12 \
     HADOLINT_VERSION=2.14.0 \
     VALKEY_VERSION=9.1.0 \
-    COSIGN_VERSION=v3.1.2
+    COSIGN_VERSION=v3.1.2 \
+    NODE_MAJOR=22 \
+    MARKDOWNLINT_CLI2_VERSION=0.23.1 \
+    VALE_VERSION=3.15.1
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -176,6 +182,44 @@ RUN asset="cosign-linux-amd64" \
     && install -m 0755 "${asset}" /usr/local/bin/cosign \
     && rm -rf "${tmpdir}"
 
+# Install Node.js (provides npm + npx).
+#
+# This lives in the ci stage, not dev-only, because markdownlint-cli2 below is a
+# Node package and CI runs `task lint` *inside this stage* (see the `lint` job in
+# .github/workflows/ci.yml). A docs linter installed only in the dev stage would
+# pass locally and be missing in CI. The dev stage inherits it, so `npx` is still
+# available for local use (e.g. installing Claude Code skills).
+RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && chmod a+r /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get -y install --no-install-recommends nodejs \
+    && apt-get autoremove -y \
+    && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install markdownlint-cli2 (structural markdown linter: fences, headings, lists,
+# tables). Ships as an npm package only -- there is no standalone binary release --
+# so it is installed globally with the version pinned in the ENV block above.
+RUN npm install -g "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}" \
+    && npm cache clean --force
+
+# Install Vale (prose linter). Enforces the house style in docs/style-guide.md via
+# a repo-local style; no `vale sync` is needed and the image build stays hermetic.
+# The Linux asset is named "64-bit" rather than "amd64", unlike every other tool here.
+RUN asset="vale_${VALE_VERSION}_Linux_64-bit.tar.gz" \
+    && base="https://github.com/vale-cli/vale/releases/download/v${VALE_VERSION}" \
+    && tmpdir="$(mktemp -d)" \
+    && curl -fsSL "${base}/${asset}" -o "${tmpdir}/${asset}" \
+    && curl -fsSL "${base}/vale_${VALE_VERSION}_checksums.txt" -o "${tmpdir}/checksums.txt" \
+    && cd "${tmpdir}" \
+    && grep "  ${asset}$" checksums.txt | sha256sum -c - \
+    && tar -xzf "${asset}" vale \
+    && install -m 0755 vale /usr/local/bin/vale \
+    && rm -rf "${tmpdir}"
+
 # Set working directory
 WORKDIR /workspaces
 
@@ -253,15 +297,13 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # tooling, debugging), never in CI, so they live in the dev stage.
 #
 # Finding the latest versions:
-# NODE_MAJOR -> https://github.com/nodejs/node/releases (track a current LTS line)
 # TILT_VERSION -> https://github.com/tilt-dev/tilt/releases
 # DLV_VERSION -> https://github.com/go-delve/delve/releases
 # GOPLS_VERSION -> https://github.com/golang/tools/releases
 # STATICCHECK_VERSION -> https://github.com/dominikh/go-tools/releases
-ENV NODE_MAJOR=22 \
-    TILT_VERSION=v0.37.4 \
+ENV TILT_VERSION=v0.37.4 \
     DLV_VERSION=v1.27.0 \
-    GOPLS_VERSION=v0.22.0 \
+    GOPLS_VERSION=v0.23.0 \
     STATICCHECK_VERSION=v0.7.0
 
 # Kind is already installed in the ci stage above.
@@ -289,17 +331,8 @@ RUN printf '%s\n' \
     'fi' \
     >> /etc/bash.bashrc
 
-# Install Node.js (provides npm + npx, e.g. for installing Claude Code skills).
-RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
-    && chmod a+r /etc/apt/keyrings/nodesource.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
-       > /etc/apt/sources.list.d/nodesource.list \
-    && apt-get update \
-    && apt-get -y install --no-install-recommends nodejs \
-    && apt-get autoremove -y \
-    && apt-get clean -y \
-    && rm -rf /var/lib/apt/lists/*
+# Node.js is installed in the ci stage (markdownlint-cli2 needs it there) and
+# inherited here, so there is no dev-stage Node install.
 
 # Install Tilt CLI (local dev loop orchestration; dev stage only)
 RUN arch="$(dpkg --print-architecture)" && \

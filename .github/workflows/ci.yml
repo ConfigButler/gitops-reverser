@@ -112,6 +112,8 @@ jobs:
             golangci-lint version
             actionlint --version
             hadolint --version
+            markdownlint-cli2 --version
+            vale --version
             controller-gen --version
             k3d version
             docker --version
@@ -387,6 +389,8 @@ jobs:
             flux-operator version --client
             golangci-lint version
             actionlint --version
+            markdownlint-cli2 --version
+            vale --version
             k3d version
             task --version
             bash -ic 'complete -p task >/dev/null'

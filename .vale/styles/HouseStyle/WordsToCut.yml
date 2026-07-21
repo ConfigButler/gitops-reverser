@@ -1,0 +1,27 @@
+# docs/style-guide.md -> "Words to cut".
+#
+# Warning, not error: the test is "does deleting it change the meaning?", and a
+# linter cannot run that test. `actually` survives in "where the value actually
+# lives" because it marks a contrast with the rendered output you might have
+# expected; it does not survive in "the operator actually retries".
+#
+# `powerful`, `robust`, and `seamless` are always wrong here. They are kept at
+# warning with the rest so the rule has one level and one meaning.
+extends: existence
+message: "'%s' -- delete it if deleting it does not change the meaning."
+link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#words-to-cut
+level: warning
+ignorecase: true
+tokens:
+  - just
+  - actually
+  - genuinely
+  - simply
+  - really
+  - powerful
+  - robust
+  - seamless
+  - seamlessly
+  - effortlessly
+  - leverages?
+  - leveraging
