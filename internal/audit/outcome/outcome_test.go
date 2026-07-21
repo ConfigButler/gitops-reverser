@@ -33,7 +33,6 @@ func TestOutcomeCategory(t *testing.T) {
 		OlderThanHighWater:       Dropped,
 		NonNumericRV:             Dropped,
 		MissingClusterAnnotation: Dropped,
-		UnknownClusterProvider:   Dropped,
 		WriteError:               Error,
 	}
 	for o, want := range cases {

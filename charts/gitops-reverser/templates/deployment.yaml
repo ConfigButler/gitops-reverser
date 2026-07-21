@@ -83,8 +83,8 @@ spec:
             - --author-attribution={{ .Values.attribution.enabled }}
             - --author-attribution-ttl={{ .Values.attribution.ttl }}
             - --author-attribution-grace={{ .Values.attribution.grace }}
-            {{- if .Values.attribution.clusterAnnotationKey }}
-            - --author-attribution-cluster-annotation-key={{ .Values.attribution.clusterAnnotationKey }}
+            {{- if .Values.attribution.auditRouteAnnotationKey }}
+            - --author-attribution-audit-route-annotation-key={{ .Values.attribution.auditRouteAnnotationKey }}
             {{- end }}
             {{- if .Values.servers.admission.enabled }}
             - --admission-webhook

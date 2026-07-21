@@ -81,6 +81,26 @@ const (
 	GitTargetReasonClusterProviderReady = "ClusterProviderReady"
 )
 
+// auditRouteFor resolves the audit route this GitTarget's attribution facts are keyed under, from
+// the referenced ClusterProvider's spec.attribution.auditRoute. It is read here, on the control
+// plane, so the watch data plane can capture it on Declare and never needs a Kubernetes client of
+// its own to attribute an event.
+//
+// An unreadable provider falls back to the provider NAME, which is exactly what AuditRoute()
+// defaults to. So a transient read failure resolves the same route a provider that sets nothing
+// would, and never a route that silently matches no facts.
+func (r *GitTargetReconciler) auditRouteFor(
+	ctx context.Context,
+	target *configbutleraiv1alpha3.GitTarget,
+) string {
+	name := target.SourceCluster()
+	var cp configbutleraiv1alpha3.ClusterProvider
+	if err := r.Get(ctx, k8stypes.NamespacedName{Name: name}, &cp); err != nil {
+		return name
+	}
+	return cp.AuditRoute()
+}
+
 // clusterProviderReadiness reads the referenced ClusterProvider's Ready condition and projects it,
 // mirroring gitProviderReadiness. It returns Unknown — which does NOT downgrade Ready — when the
 // provider cannot be observed (not found, or no Ready condition yet), so a not-yet-installed

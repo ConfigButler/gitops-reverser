@@ -31,14 +31,21 @@ import (
 // no longer added; it is only ever REMOVED, so an object created by an older operator can still be
 // deleted after an upgrade instead of stranding in Terminating.
 //
-// It was dropped because purge-on-delete is a promise only a living operator can keep, and the two
-// cases that matter break it: `helm uninstall` removes the manager and the ClusterProvider
-// together, so nothing detaches the finalizer and the object strands forever (which then blocks
-// reinstalling); and an operator that is simply down blocks the delete, then loses the purge anyway
-// if the object is force-removed. Nor is the purge needed: facts are keyed by
-// (cluster, group/resource, uid, resourceVersion) and expire on their own, so a re-provisioned
-// cluster reusing a provider name produces different object UIDs and cannot join a stale fact on
-// the exact key. See docs/finished/clusterprovider-fact-purge.md.
+// DO NOT REINTRODUCE A FINALIZER HERE. It was dropped because purge-on-delete is a promise only a
+// living operator can keep, and the two cases that matter break it. `helm uninstall` removes the
+// manager and the ClusterProvider together, so nothing detaches the finalizer, the object strands in
+// Terminating forever, and the next `helm install --wait` then fails on it — recovering needs a
+// manual kubectl patch. That was hit on a live cluster and is why this shipped. An operator that is
+// simply down blocks the delete instead, and then loses the purge anyway if the object is
+// force-removed, so the finalizer does not even reliably deliver the guarantee it exists for.
+//
+// The purge it protected is not needed either, and is now unsafe. Facts are keyed by
+// (audit route, group/resource, uid, resourceVersion) and expire on their own, so a re-provisioned
+// cluster produces different object UIDs and cannot join a stale fact on the exact key. And since
+// spec.attribution.auditRoute is what partitions them, SEVERAL ClusterProviders may share one route
+// (an API server posts audit under exactly one), so purging on a single provider's deletion would
+// drop the facts of every other provider on that route, and of the operator's own cluster, which was
+// never torn down. A purge would have to be re-derived against the route, not the object.
 const LegacyClusterProviderFinalizer = "configbutler.ai/clusterprovider-fact-purge"
 
 // ClusterProviderReconciler reconciles a ClusterProvider object. It is the read-side peer of the

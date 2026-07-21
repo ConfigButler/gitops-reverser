@@ -23,14 +23,17 @@ func (m *Manager) DeclareForGitTarget(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	clusterID string,
+	auditRoute string,
 	pruneMode v1alpha3.PruneMode,
 	forceRecheck ...bool,
 ) error {
-	// Capture the UID and the source cluster before starting watches: the data plane keys its
-	// resume cursors by GitTarget UID, and resolves rules/opens watches against the captured
-	// cluster's context — neither of which the rule-derived watch tables carry.
+	// Capture the UID, the source cluster, and that cluster's audit route before starting watches:
+	// the data plane keys its resume cursors by GitTarget UID, resolves rules/opens watches against
+	// the captured cluster's context, and reads author facts under the captured route — none of
+	// which the rule-derived watch tables carry.
 	m.rememberGitTargetUID(gitDest)
 	m.rememberGitTargetCluster(gitDest, clusterID)
+	m.rememberClusterAuditRoute(clusterID, auditRoute)
 	force := (len(forceRecheck) > 0 && forceRecheck[0]) || m.pruneModeRequiresReplay(gitDest, pruneMode)
 	if err := m.EnsureGitTargetWatches(ctx, gitDest, force); err != nil {
 		m.Log.Info("watch-first declare skipped; surface not observable",

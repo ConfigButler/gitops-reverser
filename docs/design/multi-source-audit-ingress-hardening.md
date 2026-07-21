@@ -21,7 +21,7 @@ administered-source boundary. The current user-facing limit is documented in
 [`../../SECURITY.md`](../../SECURITY.md#shared-audit-ingress-trust-model).
 
 The bare `/audit-webhook` route is different: it is enabled only when
-`--author-attribution-cluster-annotation-key` is set, then resolves every event to a provider from that
+`--author-attribution-audit-route-annotation-key` is set, then resolves every event to an audit route from that
 annotation. It is suitable only if the upstream control plane stamps the annotation and an untrusted
 writer cannot forge it.
 
