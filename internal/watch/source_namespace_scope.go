@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"sort"
+	"strings"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -64,9 +66,20 @@ type sourceNamespaceScope struct {
 	wanted map[string]struct{}
 	// snapshots holds the last observed Namespace labels per source cluster.
 	snapshots map[string]namespaceSnapshot
-	// grants records the source namespace last successfully GRANTED to each WatchRule — the
+	// grants records the whole resolved scope last successfully GRANTED to each WatchRule — the
 	// "previously resolved scope" the establishing/maintaining contract turns on.
-	grants map[k8stypes.NamespacedName]string
+	grants map[k8stypes.NamespacedName]sourceScopeGrant
+}
+
+// sourceScopeGrant is one WatchRule's last known-good resolved scope, stamped with the spec that
+// produced it.
+//
+// The spec hash is what makes retention safe with per-item namespaces: retention applies only while
+// the spec is unchanged, so an edit discards the grant and re-establishes from scratch. Keying by
+// item index instead would let a reorder inherit another item's grant, which is a silent widening.
+type sourceScopeGrant struct {
+	specHash   string
+	namespaces [][]string
 }
 
 // namespaceSnapshot is one source cluster's Namespace label state, plus why it might be unusable.
@@ -90,7 +103,7 @@ func (m *Manager) sourceScope() *sourceNamespaceScope {
 		m.sourceNamespaceScope = &sourceNamespaceScope{
 			wanted:    map[string]struct{}{},
 			snapshots: map[string]namespaceSnapshot{},
-			grants:    map[k8stypes.NamespacedName]string{},
+			grants:    map[k8stypes.NamespacedName]sourceScopeGrant{},
 		}
 	})
 	return m.sourceNamespaceScope
@@ -120,24 +133,8 @@ func (m *Manager) ResolveSourceNamespace(
 	scope.want(clusterID)
 
 	snapshot, ok := scope.snapshot(clusterID)
-	switch {
-	case ok && snapshot.forbidden:
-		return authz.SourceScopeResult{
-			Verdict: authz.SourceScopeUnavailable,
-			Message: fmt.Sprintf(
-				"listing Namespaces in source cluster %q is forbidden for its credential, so a "+
-					"selector policy cannot be evaluated; grant that identity namespaces "+
-					"get/list/watch, or use exact names in allowedSourceNamespaces",
-				describeCluster(clusterID)),
-		}
-	case !ok || !snapshot.synced:
-		reason := "the source-cluster Namespace cache has not synced yet"
-		if ok && snapshot.err != nil {
-			reason = fmt.Sprintf("the source-cluster Namespace cache is not usable yet: %v", snapshot.err)
-		}
-		// Nudge the loop so the first answer does not wait for the periodic tick.
-		m.signalCatalogRefresh()
-		return authz.SourceScopeResult{Verdict: authz.SourceScopeUnknown, Message: reason}
+	if result, unusable := m.unusableSnapshot(clusterID, snapshot, ok); unusable {
+		return result
 	}
 
 	labels, known := snapshot.labels[namespace]
@@ -169,36 +166,138 @@ func (m *Manager) ResolveSourceNamespace(
 	}
 }
 
-// RetainedSourceNamespace reports the source namespace last GRANTED to a rule, and whether any
-// grant was ever established. It is what separates ESTABLISHING a scope from MAINTAINING one: an
-// unevaluatable policy must never produce a resolved namespace set, so while establishing the rule
-// simply does not compile, and while maintaining the last known-good scope is retained instead of
-// being narrowed to nothing — because a narrowed set is the input to a sweep, and failing closed
-// there would delete a tenant's Git content on a transient outage.
-func (m *Manager) RetainedSourceNamespace(rule k8stypes.NamespacedName) (string, bool) {
+// EnumerateSourceNamespaces expands a GitTarget's allowedSourceNamespaces SELECTOR into the
+// concrete set of source-cluster namespaces it currently admits. It implements the wildcard half of
+// authz.SourceNamespaceResolver.
+//
+// It answers only the SELECTOR half; authz unions the policy's exact names itself, without a cache
+// and without any source-cluster access, which is what keeps a `sourceNamespace: "*"` item against
+// a names-only policy resolving on a cluster whose Namespace list is Forbidden.
+//
+// An empty slice with an Admitted verdict is a real answer — the selector currently matches nothing
+// — while Unknown and Unavailable mean the set could not be computed. The caller must never read
+// the latter as the empty set: an empty resolved scope is the input to a resync sweep.
+func (m *Manager) EnumerateSourceNamespaces(
+	_ context.Context,
+	target *configv1alpha3.GitTarget,
+) ([]string, authz.SourceScopeResult) {
+	clusterID := m.clusterIDForGitTarget(types.NewResourceReference(target.Name, target.Namespace))
+	scope := m.sourceScope()
+
+	// Arm the refresh loop for this cluster, exactly as the single-candidate path does.
+	scope.want(clusterID)
+
+	snapshot, ok := scope.snapshot(clusterID)
+	if result, unusable := m.unusableSnapshot(clusterID, snapshot, ok); unusable {
+		return nil, result
+	}
+
+	names := make([]string, 0, len(snapshot.labels))
+	for name, nsLabels := range snapshot.labels {
+		admitted, err := target.Spec.AllowedSourceNamespaces.SelectorAdmits(nsLabels)
+		if err != nil {
+			// A malformed selector will never evaluate as written — terminal, not retryable.
+			return nil, authz.SourceScopeResult{
+				Verdict: authz.SourceScopeUnavailable,
+				Message: fmt.Sprintf("spec.allowedSourceNamespaces selector is invalid: %v", err),
+			}
+		}
+		if admitted {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, authz.SourceScopeResult{
+		Verdict: authz.SourceScopeAdmitted,
+		Message: fmt.Sprintf("the policy's selector matches %d source namespace(s)", len(names)),
+	}
+}
+
+// unusableSnapshot maps a missing, unsynced, or Forbidden snapshot onto the three-valued result
+// both resolver entry points must return. It is shared so the single-candidate and enumeration
+// paths cannot drift on the one distinction that matters: TERMINAL (the credential may never list
+// Namespaces) versus RETRYABLE (not synced yet).
+func (m *Manager) unusableSnapshot(
+	clusterID string,
+	snapshot namespaceSnapshot,
+	ok bool,
+) (authz.SourceScopeResult, bool) {
+	switch {
+	case ok && snapshot.forbidden:
+		return authz.SourceScopeResult{
+			Verdict: authz.SourceScopeUnavailable,
+			Message: fmt.Sprintf(
+				"listing Namespaces in source cluster %q is forbidden for its credential, so a "+
+					"selector policy cannot be evaluated; grant that identity namespaces "+
+					"get/list/watch, or use exact names in allowedSourceNamespaces",
+				describeCluster(clusterID)),
+		}, true
+	case !ok || !snapshot.synced:
+		reason := "the source-cluster Namespace cache has not synced yet"
+		if ok && snapshot.err != nil {
+			reason = fmt.Sprintf("the source-cluster Namespace cache is not usable yet: %v", snapshot.err)
+		}
+		// Nudge the loop so the first answer does not wait for the periodic tick.
+		m.signalCatalogRefresh()
+		return authz.SourceScopeResult{Verdict: authz.SourceScopeUnknown, Message: reason}, true
+	default:
+		return authz.SourceScopeResult{}, false
+	}
+}
+
+// RetainedSourceScope reports the resolved scope last GRANTED to a rule FOR A GIVEN SPEC, and
+// whether any grant was ever established for that spec. It is what separates ESTABLISHING a scope
+// from MAINTAINING one: an unevaluatable policy must never produce a resolved namespace set, so
+// while establishing the rule simply does not compile, and while maintaining the last known-good
+// scope is retained instead of being narrowed to nothing — because a narrowed set is the input to a
+// sweep, and failing closed there would delete a tenant's Git content on a transient outage.
+//
+// A grant recorded under a DIFFERENT spec hash is not reported: a rule whose items changed is
+// establishing a new scope, so it must not inherit the old one.
+func (m *Manager) RetainedSourceScope(rule k8stypes.NamespacedName, specHash string) ([][]string, bool) {
 	scope := m.sourceScope()
 	scope.mu.RLock()
 	defer scope.mu.RUnlock()
-	ns, ok := scope.grants[rule]
-	return ns, ok
+	grant, ok := scope.grants[rule]
+	if !ok || grant.specHash != specHash {
+		return nil, false
+	}
+	return grant.namespaces, true
 }
 
-// RecordSourceNamespaceGrant remembers that a rule was granted a source namespace, establishing
-// the scope that RetainedSourceNamespace will later report.
-func (m *Manager) RecordSourceNamespaceGrant(rule k8stypes.NamespacedName, namespace string) {
+// RecordSourceScopeGrant remembers that a rule resolved a whole scope under this spec, establishing
+// what RetainedSourceScope will later report. The grant replaces any previous one atomically.
+func (m *Manager) RecordSourceScopeGrant(
+	rule k8stypes.NamespacedName,
+	specHash string,
+	namespaces [][]string,
+) {
 	scope := m.sourceScope()
 	scope.mu.Lock()
 	defer scope.mu.Unlock()
-	scope.grants[rule] = namespace
+	scope.grants[rule] = sourceScopeGrant{specHash: specHash, namespaces: namespaces}
 }
 
-// ForgetSourceNamespaceGrant drops a rule's resolved scope. It is called on a REFUSAL or a
+// ForgetSourceScopeGrant drops a rule's resolved scope. It is called on a REFUSAL or a
 // deletion — never on an unevaluatable policy, which must retain the scope.
-func (m *Manager) ForgetSourceNamespaceGrant(rule k8stypes.NamespacedName) {
+func (m *Manager) ForgetSourceScopeGrant(rule k8stypes.NamespacedName) {
 	scope := m.sourceScope()
 	scope.mu.Lock()
 	defer scope.mu.Unlock()
 	delete(scope.grants, rule)
+}
+
+// SourceScopeSpecHash fingerprints the part of a WatchRule that decides its resolved scope: every
+// item's requested source namespace, in order, plus the rule's own namespace (the value an omitted
+// item resolves to). A change to any of them means the rule is ESTABLISHING a new scope rather than
+// maintaining its old one, so the retained grant must not be reused.
+func SourceScopeSpecHash(rule *configv1alpha3.WatchRule) string {
+	parts := make([]string, 0, len(rule.Spec.Rules)+1)
+	parts = append(parts, "own="+rule.Namespace)
+	for i := range rule.Spec.Rules {
+		parts = append(parts, fmt.Sprintf("%d=%s", i, rule.Spec.Rules[i].SourceNamespace))
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func (s *sourceNamespaceScope) want(clusterID string) {

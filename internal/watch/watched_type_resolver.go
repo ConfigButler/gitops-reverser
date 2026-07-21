@@ -279,8 +279,14 @@ func (m *Manager) resolveWatchedTypeTables() map[string]WatchedTypeTable {
 }
 
 // collectWatchRuleSelections folds every namespaced WatchRule into its GitTarget's selected
-// records, scoping each record to the rule's own namespace and resolving against the
-// GitTarget's own source cluster's followable set.
+// records, EXPANDING each item to one selection per (matched record × resolved source namespace)
+// and resolving against the GitTarget's own source cluster's followable set.
+//
+// Expansion happens here rather than as a filter at the read site. An expanded selection carries
+// the scope through the plan hash, the informers, AND the resync path for free; a read-site filter
+// would have to be repeated at each of them and is silently wrong if one is missed — and it would
+// also mean an unfiltered LIST/WATCH over every namespace, so the data would cross into the process
+// before being dropped.
 func (m *Manager) collectWatchRuleSelections(
 	recordsFor func(clusterID string) []typeset.TypeRecord,
 	get func(types.ResourceReference, string, string, string, string) *targetSelections,
@@ -293,15 +299,21 @@ func (m *Manager) collectWatchRuleSelections(
 			matched := matchFollowableRecords(
 				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
 			for _, rec := range matched {
-				// The rule's SOURCE namespace, NOT rule.Source.Namespace (which names the
-				// WatchRule object in the control plane). These differ whenever the rule sets
-				// spec.sourceNamespace, and this is the one place a config-plane namespace ever
-				// became a data-plane "namespace" — a watch selector only, discarded once the
-				// stream is open because every event's identity is rebuilt from the object's own
+				// The ITEM's RESOLVED source namespaces, NOT rule.Source.Namespace (which names the
+				// WatchRule object in the control plane). These differ whenever the item sets
+				// sourceNamespace, and this is the one place a config-plane namespace ever became a
+				// data-plane "namespace" — a watch selector only, discarded once the stream is open
+				// because every event's identity is rebuilt from the object's own
 				// metadata.namespace. So changing it never moves anything in Git.
-				ts.selections = append(ts.selections, watchSelection{
-					record: rec, namespace: rule.SourceNamespace, ops: rr.Operations,
-				})
+				//
+				// Neither an omitted item nor a wildcard ever emits a raw "" key: both resolved to
+				// concrete names at compile time, so only ClusterWatchRule emits "" and PR 2's
+				// stream-scope collapse rules are unaffected.
+				for _, namespace := range rr.SourceNamespaces {
+					ts.selections = append(ts.selections, watchSelection{
+						record: rec, namespace: namespace, ops: rr.Operations,
+					})
+				}
 			}
 		}
 	}
@@ -309,6 +321,11 @@ func (m *Manager) collectWatchRuleSelections(
 
 // collectClusterWatchRuleSelections folds every ClusterWatchRule into its GitTarget's selected
 // records as cluster-wide streams, resolving against the GitTarget's own source cluster.
+//
+// It always matches with ResourceScopeCluster — the third enforcement point of the cluster-only
+// narrowing. Admission rejects a namespaced scope and the shared compile path refuses a stored one;
+// keying resolution on discovery-confirmed cluster scope means that even a pruned or absent value
+// cannot widen a stream. Selections keep namespace "", now only for genuinely cluster-scoped types.
 func (m *Manager) collectClusterWatchRuleSelections(
 	recordsFor func(clusterID string) []typeset.TypeRecord,
 	get func(types.ResourceReference, string, string, string, string) *targetSelections,
@@ -318,7 +335,8 @@ func (m *Manager) collectClusterWatchRuleSelections(
 		records := recordsFor(m.clusterIDForGitTarget(targetRef))
 		ts := get(targetRef, rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path)
 		for _, rr := range rule.Rules {
-			matched := matchFollowableRecords(records, rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
+			matched := matchFollowableRecords(
+				records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
 			for _, rec := range matched {
 				ts.selections = append(ts.selections, watchSelection{
 					record: rec, namespace: "", ops: rr.Operations,
@@ -482,33 +500,42 @@ func (m *Manager) rulesFingerprint() uint64 {
 }
 
 // watchRuleFingerprint hashes everything about a compiled WatchRule that can change what it
-// watches. The src= component MUST be the rule's SOURCE namespace, not the WatchRule object's own
-// namespace: those diverge as soon as spec.sourceNamespace is set, and hashing the wrong one means
-// an edit to that field does not re-project the watched-type table. That failure is silent — the
-// old watch simply keeps running — which is why it is called out here rather than left to the
-// field name.
+// watches. Each item's src= component MUST be that item's RESOLVED source-namespace SET, not the
+// WatchRule object's own namespace and not the requested value.
+//
+// This is the silent one. A wildcard item's inputs — the GitTarget's allowedSourceNamespaces and
+// the source cluster's Namespace labels — are NOT rule state, so a mapper that merely requeues the
+// WatchRule is not sufficient: reconciliation runs, a spec-derived fingerprint is unchanged, the
+// table rebuild is skipped, and the resident table keeps the old namespace set. Streams carry on at
+// their old width and every diff looks correct, because the rule object genuinely did not change.
+// Hashing the resolved set closes that, and costs nothing: compilation is what resolves the set, so
+// the fingerprint sees it for free — provided compilation always precedes the rebuild.
 func watchRuleFingerprint(rule rulestore.CompiledRule) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "wr|gt=%s/%s|src=%s|dest=%s",
-		rule.GitTargetNamespace, rule.GitTargetRef, rule.SourceNamespace,
+	fmt.Fprintf(&b, "wr|gt=%s/%s|dest=%s",
+		rule.GitTargetNamespace, rule.GitTargetRef,
 		watchPlanDest(rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path))
 	for _, rr := range rule.ResourceRules {
-		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;op=%s]",
+		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;op=%s;src=%s]",
 			strings.Join(rr.APIGroups, ","), strings.Join(rr.APIVersions, ","),
-			strings.Join(rr.Resources, ","), operationsString(rr.Operations))
+			strings.Join(rr.Resources, ","), operationsString(rr.Operations),
+			strings.Join(rr.SourceNamespaces, ","))
 	}
 	return b.String()
 }
 
+// clusterWatchRuleFingerprint hashes a compiled ClusterWatchRule. It carries no scope component:
+// a ClusterWatchRule is cluster-scope-only, so there is no per-rule scope left that could change
+// what it watches.
 func clusterWatchRuleFingerprint(rule rulestore.CompiledClusterRule) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "cwr|gt=%s/%s|dest=%s",
 		rule.GitTargetNamespace, rule.GitTargetRef,
 		watchPlanDest(rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path))
 	for _, rr := range rule.Rules {
-		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;op=%s;scope=%s]",
+		fmt.Fprintf(&b, "|rr[g=%s;v=%s;r=%s;op=%s]",
 			strings.Join(rr.APIGroups, ","), strings.Join(rr.APIVersions, ","),
-			strings.Join(rr.Resources, ","), operationsString(rr.Operations), rr.Scope)
+			strings.Join(rr.Resources, ","), operationsString(rr.Operations))
 	}
 	return b.String()
 }

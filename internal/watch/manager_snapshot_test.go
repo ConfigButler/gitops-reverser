@@ -66,16 +66,18 @@ func gitTargetFixture() *configv1alpha3.GitTarget {
 // addSecretsWatchRule registers a namespaced WatchRule in ns-a for my-target watching secrets —
 // the standard single-namespaced-type fixture the splice/scope/audit-tail tests resolve against.
 func addSecretsWatchRule(store *rulestore.RuleStore) {
-	store.AddOrUpdateWatchRule(
-		configv1alpha3.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "wr-secrets", Namespace: "ns-a"},
-			Spec: configv1alpha3.WatchRuleSpec{
-				TargetRef: configv1alpha3.LocalTargetReference{Name: "my-target"},
-				Rules: []configv1alpha3.ResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
-				}},
-			},
+	rule := configv1alpha3.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: "wr-secrets", Namespace: "ns-a"},
+		Spec: configv1alpha3.WatchRuleSpec{
+			TargetRef: configv1alpha3.LocalTargetReference{Name: "my-target"},
+			Rules: []configv1alpha3.ResourceRule{{
+				APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
+			}},
 		},
+	}
+	store.AddOrUpdateWatchRule(
+		rule,
+		ownNamespaceScope(rule),
 		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
 	)
 }

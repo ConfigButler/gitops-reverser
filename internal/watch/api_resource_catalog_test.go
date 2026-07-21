@@ -132,7 +132,7 @@ func TestAPIResourceCatalog_PartialRefreshPreservesFailedGroupVersion(t *testing
 // request a concrete informer for a resource trusted discovery does not serve.
 func TestNotServedResourceProducesNoGVR(t *testing.T) {
 	store := rulestore.NewStore()
-	store.AddOrUpdateWatchRule(configv1alpha3.WatchRule{
+	rule := configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "missing-gvr-rule", Namespace: "default"},
 		Spec: configv1alpha3.WatchRuleSpec{
 			Rules: []configv1alpha3.ResourceRule{{
@@ -141,7 +141,9 @@ func TestNotServedResourceProducesNoGVR(t *testing.T) {
 				Resources:   []string{"customresources"},
 			}},
 		},
-	}, "target", "default", "provider", "default", "main", "live")
+	}
+	store.AddOrUpdateWatchRule(
+		rule, ownNamespaceScope(rule), "target", "default", "provider", "default", "main", "live")
 	manager := &Manager{RuleStore: store, resourceCatalog: newCommonTestCatalog(t)}
 
 	assert.Empty(t, manager.ComputeRequestedGVRs())

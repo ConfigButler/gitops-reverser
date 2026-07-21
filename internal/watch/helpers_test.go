@@ -8,6 +8,23 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
+// ownNamespaceScope is the resolved scope a WatchRule whose items set no sourceNamespace compiles
+// to: every item watches the rule's OWN namespace. Tests that are not about the source-namespace
+// gate use it so the compiled rule looks exactly as CompileWatchRule would leave it.
+func ownNamespaceScope(rule configv1alpha3.WatchRule) [][]string {
+	out := make([][]string, len(rule.Spec.Rules))
+	for i := range rule.Spec.Rules {
+		out[i] = []string{rule.Spec.Rules[i].EffectiveSourceNamespace(rule.Namespace)}
+	}
+	return out
+}
+
+// itemScope is the resolved scope for a rule whose single item watches the given namespaces —
+// the shape a `sourceNamespace: "*"` item compiles to once expanded.
+func itemScope(namespaces ...string) [][]string {
+	return [][]string{namespaces}
+}
+
 func TestNormalizeResource(t *testing.T) {
 	got := normalizeResource("  Deployments  ")
 	if got != "deployments" {

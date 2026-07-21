@@ -51,19 +51,25 @@ func snbClusterProvider(delegate bool) *configv1alpha3.ClusterProvider {
 	return &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: snbProvider},
 		Spec: configv1alpha3.ClusterProviderSpec{
-			AllowedNamespaces:                     &configv1alpha3.NamespaceMatcher{Names: []string{snbTenantNS}},
-			AllowWatchRuleSourceNamespaceOverride: delegate,
+			AllowedNamespaces:            &configv1alpha3.NamespaceMatcher{Names: []string{snbTenantNS}},
+			AllowSourceNamespaceOverride: delegate,
 		},
 	}
 }
 
-func snbWatchRule(sourceNamespace string) *configv1alpha3.WatchRule {
+// snbWatchRule builds a rule with one item per given rules[].sourceNamespace ("" = omitted).
+func snbWatchRule(sourceNamespaces ...string) *configv1alpha3.WatchRule {
+	items := make([]configv1alpha3.ResourceRule, 0, len(sourceNamespaces))
+	for _, ns := range sourceNamespaces {
+		items = append(items, configv1alpha3.ResourceRule{
+			Resources: []string{"configmaps"}, SourceNamespace: ns,
+		})
+	}
 	return &configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: snbRule, Namespace: snbTenantNS},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef:       configv1alpha3.LocalTargetReference{Name: snbTarget},
-			SourceNamespace: sourceNamespace,
-			Rules:           []configv1alpha3.ResourceRule{{Resources: []string{"configmaps"}}},
+			TargetRef: configv1alpha3.LocalTargetReference{Name: snbTarget},
+			Rules:     items,
 		},
 	}
 }
@@ -126,8 +132,8 @@ func TestBootstrap_LegacyWatchRuleStillCompiles(t *testing.T) {
 	compiled := m.RuleStore.SnapshotWatchRules()
 	require.Len(t, compiled, 1)
 	assert.Equal(t, snbRule, compiled[0].Source.Name)
-	assert.Equal(t, snbTenantNS, compiled[0].SourceNamespace,
-		"a legacy rule's source namespace is its own namespace")
+	assert.Equal(t, []string{snbTenantNS}, compiled[0].ResourceRules[0].SourceNamespaces,
+		"a legacy item's source namespace is the rule's own namespace")
 	assert.Equal(t, "main", compiled[0].Branch)
 }
 
@@ -145,7 +151,7 @@ func TestBootstrap_AuthorizedOverrideCompilesWithItsSourceNamespace(t *testing.T
 
 	compiled := m.RuleStore.SnapshotWatchRules()
 	require.Len(t, compiled, 1)
-	assert.Equal(t, snbSourceNS, compiled[0].SourceNamespace)
+	assert.Equal(t, []string{snbSourceNS}, compiled[0].ResourceRules[0].SourceNamespaces)
 	assert.Equal(t, snbTenantNS, compiled[0].Source.Namespace,
 		"Source still names the WatchRule object in the control plane")
 }
@@ -166,18 +172,18 @@ func TestCompileWatchRule_TerminalRefusalRemovesAnAlreadyCompiledRule(t *testing
 	target := *snbGitTarget(&configv1alpha3.NamespaceMatcher{Names: []string{snbSourceNS}})
 	provider := *snbGitProvider()
 
-	decision, err := CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, target, provider)
+	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, target, provider)
 	require.NoError(t, err)
-	require.True(t, decision.Admitted())
+	require.True(t, resolved.Admitted())
 	require.Len(t, m.RuleStore.SnapshotWatchRules(), 1, "precondition: the rule is compiled")
 
 	// The target owner tightens the policy so it no longer admits the namespace.
 	tightened := *snbGitTarget(&configv1alpha3.NamespaceMatcher{Names: []string{"something-else"}})
 
-	decision, err = CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, tightened, provider)
+	resolved, err = CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, tightened, provider)
 
 	require.NoError(t, err)
-	assert.Equal(t, authz.SourceScopeDenied, decision.Verdict)
+	assert.Equal(t, authz.SourceScopeDenied, resolved.Verdict)
 	assert.Empty(t, m.RuleStore.SnapshotWatchRules(),
 		"a revoked rule must be removed from the store, not left running with a bad condition")
 }
@@ -200,9 +206,9 @@ func TestCompileWatchRule_RetainsScopeWhenPolicyBecomesUnevaluatable(t *testing.
 	named := *snbGitTarget(&configv1alpha3.NamespaceMatcher{Names: []string{snbSourceNS}})
 
 	// Establish the grant through an exact name (no source-cluster access needed).
-	decision, err := CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, named, provider)
+	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, named, provider)
 	require.NoError(t, err)
-	require.True(t, decision.Admitted())
+	require.True(t, resolved.Admitted())
 	require.Len(t, m.RuleStore.SnapshotWatchRules(), 1)
 
 	// The owner swaps it for a selector, and the source cluster's Namespace list is forbidden.
@@ -211,13 +217,29 @@ func TestCompileWatchRule_RetainsScopeWhenPolicyBecomesUnevaluatable(t *testing.
 	})
 	m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{forbidden: true})
 
-	decision, err = CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, selector, provider)
+	resolved, err = CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, selector, provider)
 
 	require.NoError(t, err)
-	assert.Equal(t, authz.SourceScopeUnknown, decision.Verdict,
+	assert.Equal(t, authz.SourceScopeUnknown, resolved.Verdict,
 		"a retained scope is Unknown, never a terminal failure")
-	assert.Len(t, m.RuleStore.SnapshotWatchRules(), 1,
+
+	// The ABSENCE of the sweep is the assertion that matters, and it is a property of the RESOLVED
+	// SCOPE, not of the condition: the watched-type table (and therefore every resync scope) is
+	// projected from the compiled rule's SourceNamespaces. A narrowing to the empty set would leave
+	// the rule present and the condition Unknown while quietly emptying the desired set — which is
+	// what a mark-and-sweep resync turns into a deletion of the tenant's manifests.
+	compiled := m.RuleStore.SnapshotWatchRules()
+	require.Len(t, compiled, 1,
 		"the last known-good scope keeps running: no narrowing, no sweep")
+	assert.Equal(t, []string{snbSourceNS}, compiled[0].ResourceRules[0].SourceNamespaces,
+		"the retained scope must be the LAST KNOWN-GOOD set, not narrowed and not widened")
+
+	// And the resolved scope stays recorded under the same spec, so a further unevaluatable
+	// reconcile keeps retaining rather than flipping terminal on the second pass.
+	retained, ok := m.RetainedSourceScope(
+		k8stypes.NamespacedName{Name: snbRule, Namespace: snbTenantNS}, SourceScopeSpecHash(&rule))
+	require.True(t, ok, "'cannot say' must never forget the grant")
+	assert.Equal(t, [][]string{{snbSourceNS}}, retained)
 }
 
 // TestCompileWatchRule_UnevaluatablePolicyEstablishesNothing is the ESTABLISHING half. With no
@@ -235,39 +257,73 @@ func TestCompileWatchRule_UnevaluatablePolicyEstablishesNothing(t *testing.T) {
 		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
 	})
 
-	decision, err := CompileWatchRule(
+	resolved, err := CompileWatchRule(
 		ctx, m.Client, m.RuleStore, m, *snbWatchRule(snbSourceNS), selector, *snbGitProvider())
 
 	require.NoError(t, err)
-	assert.Equal(t, authz.SourceScopeUnavailable, decision.Verdict,
+	assert.Equal(t, authz.SourceScopeUnavailable, resolved.Verdict,
 		"with no scope ever resolved this is terminal, not a retained scope")
 	assert.Empty(t, m.RuleStore.SnapshotWatchRules())
 }
 
-// TestCompileWatchRule_RetentionIsNamespaceSpecific: a rule that EDITS spec.sourceNamespace is
-// establishing a NEW grant, so a stale grant for the previous namespace must not let an
-// unevaluatable policy through.
-func TestCompileWatchRule_RetentionIsNamespaceSpecific(t *testing.T) {
+// TestCompileWatchRule_RetentionIsSpecSpecific: a rule that EDITS its items is establishing a NEW
+// scope, so a stale grant recorded under the previous spec must not let an unevaluatable policy
+// through. Keying the memory by spec hash rather than by item index is also what stops a REORDER
+// from making one item inherit another item's grant.
+func TestCompileWatchRule_RetentionIsSpecSpecific(t *testing.T) {
 	ctx := context.Background()
 	m := snbManager(t,
 		snbGitTarget(nil), snbGitProvider(), snbClusterProvider(true),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
 	)
-	m.RecordSourceNamespaceGrant(
-		k8stypes.NamespacedName{Name: snbRule, Namespace: snbTenantNS}, snbSourceNS)
+	granted := snbWatchRule(snbSourceNS)
+	grantKey := k8stypes.NamespacedName{Name: snbRule, Namespace: snbTenantNS}
+	m.RecordSourceScopeGrant(grantKey, SourceScopeSpecHash(granted), [][]string{{snbSourceNS}})
 	m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{forbidden: true})
 
 	selector := *snbGitTarget(&configv1alpha3.NamespaceMatcher{
 		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
 	})
 
-	// The rule now asks for a DIFFERENT namespace than the one it holds a grant for.
-	decision, err := CompileWatchRule(
+	// The SAME spec retains its grant — that is the maintaining case.
+	resolved, err := CompileWatchRule(
+		ctx, m.Client, m.RuleStore, m, *granted, selector, *snbGitProvider())
+	require.NoError(t, err)
+	assert.Equal(t, authz.SourceScopeUnknown, resolved.Verdict,
+		"the spec that established the grant keeps it, and reports Unknown rather than Failed")
+
+	// An EDITED spec is establishing a new scope, so the stale grant must not let it through.
+	resolved, err = CompileWatchRule(
 		ctx, m.Client, m.RuleStore, m, *snbWatchRule("some-other-namespace"), selector, *snbGitProvider())
 
 	require.NoError(t, err)
-	assert.Equal(t, authz.SourceScopeUnavailable, decision.Verdict,
-		"a grant for a different namespace must not be retained across an edit")
+	assert.Equal(t, authz.SourceScopeUnavailable, resolved.Verdict,
+		"a grant recorded under a different spec must not be retained across an edit")
+
+	_, retained := m.RetainedSourceScope(grantKey, SourceScopeSpecHash(granted))
+	assert.False(t, retained, "the terminal refusal drops the grant so nothing stale survives it")
+}
+
+// TestSourceScopeSpecHash_MovesWithEveryScopeInput pins what "the same spec" means for retention: any
+// change that could move the resolved scope must discard the grant, and a reorder must not look
+// like no change at all.
+func TestSourceScopeSpecHash_MovesWithEveryScopeInput(t *testing.T) {
+	base := snbWatchRule("", snbSourceNS)
+
+	assert.Equal(t, SourceScopeSpecHash(base), SourceScopeSpecHash(snbWatchRule("", snbSourceNS)),
+		"an unchanged spec must hash identically, or nothing is ever retained")
+	assert.NotEqual(t, SourceScopeSpecHash(base), SourceScopeSpecHash(snbWatchRule(snbSourceNS, "")),
+		"a REORDER changes which item holds which grant, so it must discard the memory")
+	assert.NotEqual(t, SourceScopeSpecHash(base), SourceScopeSpecHash(snbWatchRule("")),
+		"dropping an item changes the spec")
+	assert.NotEqual(t, SourceScopeSpecHash(base),
+		SourceScopeSpecHash(snbWatchRule("", configv1alpha3.SourceNamespaceWildcard)),
+		"changing an item's requested namespace changes the spec")
+
+	moved := snbWatchRule("", snbSourceNS)
+	moved.Namespace = "tenant-zen"
+	assert.NotEqual(t, SourceScopeSpecHash(base), SourceScopeSpecHash(moved),
+		"the rule's own namespace is what an omitted item resolves to, so it is part of the spec")
 }
 
 // TestResolveSourceNamespace_ThreeValuedResults pins the source-scope service's own contract: an
@@ -332,7 +388,7 @@ func TestSourceNamespaceSnapshot_StoreDetectsObservableChange(t *testing.T) {
 	scope := &sourceNamespaceScope{
 		wanted:    map[string]struct{}{},
 		snapshots: map[string]namespaceSnapshot{},
-		grants:    map[k8stypes.NamespacedName]string{},
+		grants:    map[k8stypes.NamespacedName]sourceScopeGrant{},
 	}
 	synced := func(labels map[string]string) namespaceSnapshot {
 		return namespaceSnapshot{synced: true, labels: map[string]map[string]string{snbSourceNS: labels}}

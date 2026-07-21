@@ -21,17 +21,6 @@ type CompiledRule struct {
 	// Source is the NamespacedName of the WatchRule CR.
 	Source types.NamespacedName
 
-	// SourceNamespace is the namespace this rule watches IN ITS SOURCE CLUSTER — the value of
-	// WatchRule.EffectiveSourceNamespace() at compile time.
-	//
-	// It is a field of its own rather than an overload of Source.Namespace because the two are
-	// genuinely different namespaces in (potentially) different clusters: Source names the
-	// WatchRule OBJECT in the control plane, while this names the namespace whose objects are
-	// mirrored. They coincide only for a legacy rule. Every watch-planning consumer — the
-	// watched-type selection and the fingerprint that decides whether that table is re-projected —
-	// must read THIS field; reading Source.Namespace instead yields a stale watch, not an error.
-	SourceNamespace string
-
 	// GitTarget reference (for event routing)
 	GitTargetRef       string
 	GitTargetNamespace string
@@ -59,6 +48,23 @@ type CompiledResourceRule struct {
 	APIVersions []string
 	// Resources specifies which resource types this rule matches.
 	Resources []string
+
+	// SourceNamespaces is this item's RESOLVED source-namespace set IN THE SOURCE CLUSTER —
+	// spec.rules[i].sourceNamespace fully expanded to concrete names at compile time. Neither a
+	// wildcard nor a policy reference ever survives into the data plane.
+	//
+	// It is per item, and separate from Source.Namespace, because the two are genuinely different
+	// namespaces in (potentially) different clusters: Source names the WatchRule OBJECT in the
+	// control plane, while these name the namespaces whose objects are mirrored. They coincide
+	// only for a legacy item. Every watch-planning consumer — the watched-type selection, the
+	// stream roll-up, and the fingerprint that decides whether that table is re-projected — must
+	// read THIS field; reading Source.Namespace instead yields a stale watch, not an error.
+	//
+	// An EMPTY set is a legitimate resolved answer for a wildcard whose policy currently admits
+	// nothing: the item watches nothing. It is never a stand-in for "could not resolve" — an
+	// unevaluatable policy stops the rule from compiling at all, because an empty set that reached
+	// here would be the input to a resync sweep.
+	SourceNamespaces []string
 }
 
 // CompiledClusterRule represents a fully processed ClusterWatchRule, ready for quick lookups.
@@ -80,7 +86,12 @@ type CompiledClusterRule struct {
 	Rules []CompiledClusterResourceRule
 }
 
-// CompiledClusterResourceRule represents a single cluster resource rule with scope.
+// CompiledClusterResourceRule represents a single cluster resource rule.
+//
+// It carries no scope: a ClusterWatchRule is cluster-scope-only, so resolution always matches
+// cluster-scoped records and a stored scope other than Cluster is refused at compile time. Keeping
+// a scope field here would let a pruned or absent value widen a stream, which is the failure the
+// narrowing exists to prevent.
 type CompiledClusterResourceRule struct {
 	// Operations specifies which operations trigger this rule.
 	Operations []configv1alpha3.OperationType
@@ -90,8 +101,6 @@ type CompiledClusterResourceRule struct {
 	APIVersions []string
 	// Resources specifies which resource types this rule matches.
 	Resources []string
-	// Scope indicates whether this rule watches Cluster or Namespaced resources.
-	Scope configv1alpha3.ResourceScope
 }
 
 // RuleStore holds the in-memory representation of all active watch rules.
@@ -113,8 +122,18 @@ func NewStore() *RuleStore {
 
 // AddOrUpdateWatchRule adds or updates a WatchRule with a resolved target from GitTarget.
 // The chain is: WatchRule -> GitTarget -> GitProvider
+//
+// The whole compiled rule — including every item's resolved source-namespace set — is replaced
+// ATOMICALLY. Nothing per-item survives a spec change, which is what lets rule items have no stable
+// API identity: no state outlives the spec that produced it, so a reorder cannot make one item
+// inherit another's grant.
+//
 // Parameters:
 //   - rule: the WatchRule to add or update
+//   - sourceNamespaces: the resolved source-namespace set PER rule item, index-aligned with
+//     rule.Spec.Rules. A shorter slice leaves the remaining items with no namespaces, which is a
+//     compile bug rather than a scope: callers must resolve every item (see
+//     authz.ResolveWatchRuleSourceScope).
 //   - gitTargetName: the name of the GitTarget
 //   - gitTargetNamespace: the namespace containing the GitTarget
 //   - gitProviderName: the name of the resolved GitProvider (from GitTarget.Spec.Provider)
@@ -123,6 +142,7 @@ func NewStore() *RuleStore {
 //   - path: POSIX-like relative path prefix for writes (from GitTarget.Spec.Path, sanitized upstream)
 func (s *RuleStore) AddOrUpdateWatchRule(
 	rule configv1alpha3.WatchRule,
+	sourceNamespaces [][]string,
 	gitTargetName string,
 	gitTargetNamespace string,
 	gitProviderName string,
@@ -140,7 +160,6 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 
 	compiled := CompiledRule{
 		Source:               key,
-		SourceNamespace:      rule.EffectiveSourceNamespace(),
 		GitTargetRef:         gitTargetName,
 		GitTargetNamespace:   gitTargetNamespace,
 		GitProviderRef:       gitProviderName,
@@ -151,16 +170,37 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 		ResourceRules:        make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
 	}
 
-	for _, r := range rule.Spec.Rules {
+	for i, r := range rule.Spec.Rules {
+		var namespaces []string
+		if i < len(sourceNamespaces) {
+			namespaces = append([]string(nil), sourceNamespaces[i]...)
+		}
 		compiled.ResourceRules = append(compiled.ResourceRules, CompiledResourceRule{
-			Operations:  r.Operations,
-			APIGroups:   r.APIGroups,
-			APIVersions: r.APIVersions,
-			Resources:   r.Resources,
+			Operations:       r.Operations,
+			APIGroups:        r.APIGroups,
+			APIVersions:      r.APIVersions,
+			Resources:        r.Resources,
+			SourceNamespaces: namespaces,
 		})
 	}
 
 	s.rules[key] = compiled
+}
+
+// GetWatchRule returns a compiled WatchRule by key, and whether it is compiled at all.
+//
+// The status roll-up reads it because a WatchRule's watched namespaces can no longer be derived
+// from its spec: a "*" item's set exists only after resolution, so a roll-up computed from the spec
+// would look for streams under keys that were never opened and report a healthy wildcard rule as
+// permanently not-ready.
+func (s *RuleStore) GetWatchRule(key types.NamespacedName) (CompiledRule, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rule, ok := s.rules[key]
+	if !ok {
+		return CompiledRule{}, false
+	}
+	return deepCopyCompiledRule(rule), true
 }
 
 // AddOrUpdateClusterWatchRule adds or updates a ClusterWatchRule with a resolved target from GitTarget.
@@ -207,7 +247,6 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 			APIGroups:   r.APIGroups,
 			APIVersions: r.APIVersions,
 			Resources:   r.Resources,
-			Scope:       r.Scope,
 		})
 	}
 
@@ -263,6 +302,11 @@ func (s *RuleStore) GetMatchingRules(
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	eventNamespace := ""
+	if obj != nil {
+		eventNamespace = obj.GetNamespace()
+	}
+
 	var matchingRules []CompiledRule
 	for _, rule := range s.rules {
 		// First check: Does rule scope match resource scope?
@@ -270,11 +314,7 @@ func (s *RuleStore) GetMatchingRules(
 			continue // WatchRule can't match cluster resources
 		}
 
-		if !isClusterScoped && obj != nil && obj.GetNamespace() != "" && rule.Source.Namespace != obj.GetNamespace() {
-			continue
-		}
-
-		if rule.matches(resourcePlural, operation, apiGroup, apiVersion) {
+		if rule.matches(eventNamespace, resourcePlural, operation, apiGroup, apiVersion) {
 			matchingRules = append(matchingRules, rule)
 		}
 	}
@@ -318,6 +358,11 @@ func (s *RuleStore) GetMatchingClusterRules(
 }
 
 // clusterRuleMatches checks if a cluster rule matches the given criteria.
+//
+// A ClusterWatchRule is cluster-scope-only, so a NAMESPACED object never matches one — whatever a
+// stored (or pruned) scope value might say. Keying on the object's discovered scope rather than on
+// the rule's stored one is the third enforcement point: even if admission and compile were both
+// bypassed, resolution cannot widen a stream.
 func (s *RuleStore) clusterRuleMatches(
 	clusterRule CompiledClusterRule,
 	resourcePlural string,
@@ -326,32 +371,24 @@ func (s *RuleStore) clusterRuleMatches(
 	apiVersion string,
 	isClusterScoped bool,
 ) bool {
+	if !isClusterScoped {
+		return false
+	}
 	for _, rule := range clusterRule.Rules {
-		if s.ruleMatchesScope(rule, isClusterScoped) &&
-			rule.matchesCluster(resourcePlural, operation, apiGroup, apiVersion) {
+		if rule.matchesCluster(resourcePlural, operation, apiGroup, apiVersion) {
 			return true
 		}
 	}
 	return false
 }
 
-// ruleMatchesScope checks if a rule's scope matches the resource scope.
-// Simplified MVP: Namespaced scope matches all namespaces (no NamespaceSelector).
-func (s *RuleStore) ruleMatchesScope(
-	rule CompiledClusterResourceRule,
-	isClusterScoped bool,
-) bool {
-	// For cluster-scoped resources, only match Cluster scope rules
-	if isClusterScoped {
-		return rule.Scope == configv1alpha3.ResourceScopeCluster
-	}
-
-	// For namespaced resources, match Namespaced scope (all namespaces)
-	return rule.Scope == configv1alpha3.ResourceScopeNamespaced
-}
-
 // matches checks if a single rule matches the given filters.
+//
+// The namespace is matched PER ITEM, not once per rule: each item resolved its own source-namespace
+// set, so a rule can legitimately follow configmaps in its own namespace and secrets in another.
+// Matching the rule object's namespace instead would drop every event an override asked for.
 func (r *CompiledRule) matches(
+	eventNamespace string,
 	resourcePlural string,
 	operation configv1alpha3.OperationType,
 	apiGroup string,
@@ -359,7 +396,7 @@ func (r *CompiledRule) matches(
 ) bool {
 	// Check if any resource rule matches (logical OR)
 	for _, rule := range r.ResourceRules {
-		if rule.matches(resourcePlural, operation, apiGroup, apiVersion) {
+		if rule.matches(eventNamespace, resourcePlural, operation, apiGroup, apiVersion) {
 			return true
 		}
 	}
@@ -369,11 +406,18 @@ func (r *CompiledRule) matches(
 
 // matches checks if a resource rule matches the given filters.
 func (r *CompiledResourceRule) matches(
+	eventNamespace string,
 	resourcePlural string,
 	operation configv1alpha3.OperationType,
 	apiGroup string,
 	apiVersion string,
 ) bool {
+	// Match the resolved source-namespace set (a cluster-scoped or namespace-less event is left to
+	// the caller's scope check).
+	if !r.matchesSourceNamespace(eventNamespace) {
+		return false
+	}
+
 	// Match operations (empty = match all)
 	if !r.matchesOperations(operation) {
 		return false
@@ -391,6 +435,20 @@ func (r *CompiledResourceRule) matches(
 
 	// Match resource plural (required)
 	return r.resourceMatches(resourcePlural)
+}
+
+// matchesSourceNamespace checks the event's namespace against this item's RESOLVED set. An event
+// with no namespace is left to the caller's cluster-scope check rather than being filtered here.
+func (r *CompiledResourceRule) matchesSourceNamespace(eventNamespace string) bool {
+	if eventNamespace == "" {
+		return true
+	}
+	for _, ns := range r.SourceNamespaces {
+		if ns == eventNamespace {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesOperations checks if the operation matches any in the rule.
@@ -614,6 +672,10 @@ func deepCopyCompiledRule(in CompiledRule) CompiledRule {
 	if len(in.ResourceRules) > 0 {
 		cp.ResourceRules = make([]CompiledResourceRule, len(in.ResourceRules))
 		copy(cp.ResourceRules, in.ResourceRules)
+		for i := range cp.ResourceRules {
+			cp.ResourceRules[i].SourceNamespaces =
+				append([]string(nil), in.ResourceRules[i].SourceNamespaces...)
+		}
 	}
 	return cp
 }
