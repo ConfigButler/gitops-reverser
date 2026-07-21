@@ -1,10 +1,14 @@
 # Alternative — the two-object model: scope is carried by the kind, and the enum is removed
 
-> **Status: proposal, for review. Not agreed, not scheduled.** The crisp, breaking form of the
+> **Status: selected design rationale; implementation is split into
+> [PR 5 deletion safety](pr5-gittarget-deletion-safety.md) and
+> [PR 6 scope by kind](pr6-cluster-scope-only.md).** This is the crisp, breaking form of the
 > WatchRule-side redesign, sibling to the non-breaking
 > [alt-per-item-source-namespace.md](alt-per-item-source-namespace.md). Both share the same WatchRule
 > interface (a per-rule-item `namespace`); they differ only on ClusterWatchRule, and that difference
 > is the whole breaking/non-breaking axis this page exists to compare.
+> References below to a “PR 5 runtime ceiling” are historical: that proposal was abandoned and must
+> not be confused with the current PR 5 deletion-safety release.
 >
 > Supersedes this file's earlier "narrow the enum to `Cluster`" framing: narrowing left a vestigial
 > single-value `scope: Cluster` field on every rule. The crisper move is to **remove the field
@@ -81,9 +85,9 @@ ClusterWatchRule keeps `ScopeCluster` records) and discovery supplies the fact. 
 deleting the field; a class of user error — declaring a scope that contradicts discovery — is deleted
 with it.
 
-## This deletes PR 5 outright
+## Why PR 6 needs no runtime ceiling
 
-[PR 5](pr5-clusterwatchrule-source-ceiling.md) exists solely to make `allowedSourceNamespaces` bind
+The abandoned runtime-ceiling proposal existed solely to make `allowedSourceNamespaces` bind
 ClusterWatchRule's `scope: Namespaced` streams. If a ClusterWatchRule can only watch cluster-scoped
 resources, a **namespace** allow-list is simply not applicable to it — exactly as the
 [overview already concedes](README.md#what-the-ceiling-does-not-do) that the ceiling cannot partition

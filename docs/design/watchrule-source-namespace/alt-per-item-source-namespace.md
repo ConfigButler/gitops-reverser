@@ -1,16 +1,11 @@
 # Alternative — a per-rule-item namespace, with `*` meaning "all *allowed* namespaces"
 
-> **Status: proposal, for review. Not agreed, not scheduled.** A shape for the WatchRule side of
-> [source-namespace addressing](README.md), sibling to the
-> [two-object model](alt-clusterwatchrule-cluster-scope-only.md). The two pages share **this exact
-> WatchRule interface** (a per-rule-item `namespace` with `"*"` bounded by the allow-list) and differ
-> only on ClusterWatchRule: the two-object page *removes* `scope: Namespaced` from it (breaking, deletes
-> [PR 5](pr5-clusterwatchrule-source-ceiling.md)), whereas this page *keeps* ClusterWatchRule and PR 5
-> exactly as designed (additive, non-breaking) and reshapes only the
-> [PR 4](pr4-source-namespace-field.md) field. Pick this page's ClusterWatchRule treatment to avoid a
-> breaking change; pick the two-object page's to delete PR 5's permanent machinery. The
-> [breaking-change comparison](alt-clusterwatchrule-cluster-scope-only.md#comparing-the-approaches--breaking-change-consequences)
-> lives on that page.
+> **Status: rejected alternative, retained for design history.** The selected plan is
+> [PR 5 deletion safety](pr5-gittarget-deletion-safety.md) followed by
+> [PR 6 scope by kind](pr6-cluster-scope-only.md). This alternative would keep
+> `ClusterWatchRule.scope: Namespaced` and the former runtime-ceiling machinery; that machinery is
+> abandoned. References below to the former “PR 5” describe that historical alternative, not the
+> current deletion-safety PR number.
 >
 > **PR 4 is being implemented as this is written, top-level singular.** The compiled rule already
 > carries `SourceNamespace` and [watched_type_resolver.go:301](../../../internal/watch/watched_type_resolver.go#L301)
@@ -94,8 +89,8 @@ That has three consequences worth stating separately:
 
 The [cluster-scope-only alternative](alt-clusterwatchrule-cluster-scope-only.md) removed PR 5's
 runtime ceiling, its fingerprint hazard, and its informer fan-out. **This proposal removes none of
-that.** ClusterWatchRule keeps `scope: Namespaced`; [PR 5](pr5-clusterwatchrule-source-ceiling.md)
-ships as written; and WatchRule *gains* a namespace-expansion path that looks a lot like PR 5's.
+that.** ClusterWatchRule keeps `scope: Namespaced`; the former runtime-ceiling proposal would ship;
+and WatchRule *gains* a namespace-expansion path that looks a lot like that proposal's.
 
 So the end state has two ways to watch namespaced resources across namespaces:
 
@@ -135,8 +130,7 @@ denied". Two semantics, and they must not be blended:
   worse than loud failure here.
 - **`"*"` is *maintaining* / narrowing.** It never denies. It expands to the admitted set, which may be
   empty, which is a correct outcome and **not** `Stalled` — the same rule
-  [PR 5 §2b](pr5-clusterwatchrule-source-ceiling.md#2b-unknown-is-not-empty) already states for the
-  ceiling.
+  the former runtime-ceiling design stated for the ceiling.
 
 So a single WatchRule can carry both a *refusal* semantic (a denied name) and a *narrowing* semantic
 (`"*"`). When both are present the refusal dominates the object-level condition. This is the existing
@@ -161,8 +155,8 @@ policy is the recommended first cut; the selector-backed `"*"` can follow with t
 
 ### 3. The fingerprint must include the resolved set for `"*"` items
 
-Same shape as [PR 5 §2](pr5-clusterwatchrule-source-ceiling.md#2-put-the-resolved-scope-into-table-invalidation),
-now on WatchRule: for a `"*"` item the resolved namespace set is **not rule state**, so a policy or
+Same shape as the former runtime-ceiling design's invalidation rule, now on WatchRule: for a `"*"`
+item the resolved namespace set is **not rule state**, so a policy or
 Namespace-label change that alters the set must still re-project the watched-type table. Hash the
 resolved set into the rule's fingerprint (or carry a source-scope generation into the rebuild
 trigger). A name-only item needs nothing new. The silent-failure test from PR 5 applies verbatim: an
@@ -174,9 +168,8 @@ unchanged rule object under a changed policy must re-project.
 appends one selection per matched record at `namespace: rule.SourceNamespace`. Per-item, it appends
 one selection **per (matched record × resolved namespace)** — the same expansion PR 5 adds to
 `collectClusterWatchRuleSelections`, so the two collectors converge on one shape. Prefer expansion at
-this site over filtering at the read site, for exactly the reason
-[PR 5 §1](pr5-clusterwatchrule-source-ceiling.md#1-apply-the-ceiling-in-selection) gives: an expanded
-selection carries the scope through the plan hash, the informers, and the resync path for free, while
+this site over filtering at the read site: an expanded selection carries the scope through the plan
+hash, the informers, and the resync path for free, while
 a read-site filter must be repeated at each and is silently wrong if one is missed.
 
 ## Relationship to the in-flight PR 4
@@ -204,7 +197,7 @@ only the per-type granularity and the visual symmetry with the other rule-item f
 ## What does NOT change
 
 - ClusterWatchRule keeps `scope: Namespaced`; [PR 3](pr3-clusterwatchrule-target-admission.md) and
-  [PR 5](pr5-clusterwatchrule-source-ceiling.md) are unaffected. This proposal is orthogonal to them.
+  the former runtime-ceiling proposal are unaffected. This proposal is orthogonal to them.
 - `GitTarget.allowedSourceNamespaces`, the delegation flag, and the in-cluster sign-off argument stand
   verbatim.
 - Git placement still follows each mirrored object's **own** namespace, so the write path needs no

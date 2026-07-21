@@ -68,8 +68,8 @@ Each of the remaining PRs breaks that invariant, independently — which is why 
 | PR | New source of multi-namespace fan-out on one GVR |
 |---|---|
 | [PR 2](pr2-stream-scope-collapse.md) | Named and cluster-wide selections become distinct concurrent streams for the same GVR. |
-| [PR 4](pr4-source-namespace-field.md) | Two WatchRules in the target's namespace can carry different `sourceNamespace` values. |
-| [PR 5](pr5-clusterwatchrule-source-ceiling.md) | A declared ceiling expands one cluster-wide selection into N per-namespace selections. |
+| [PR 4](pr4-source-namespace-field.md) | The original implementation baseline proves source-namespace authorization and its gate. |
+| [PR 6](pr6-cluster-scope-only.md) | Rule-item namespaces can expand one namespaced-resource selection into N concrete source namespaces. |
 
 So this was not a defect to fix opportunistically alongside the feature. It is the load-bearing floor
 under all three, and the failure mode is silent data loss in a tenant's repository — a replay for
@@ -110,15 +110,14 @@ testable change. Revisit coalescing if per-namespace replay volume becomes the p
 ## Revocation leaves prior content — a decision, not an oversight
 
 Stopping a stream does not remove what it already wrote. When a namespace leaves a watch set — a
-[PR 5](pr5-clusterwatchrule-source-ceiling.md) ceiling tightening, a WatchRule deletion, a revoked
-label — its manifests remain in Git.
+WatchRule policy change, a WatchRule deletion, or a revoked label — its manifests remain in Git unless
+the target explicitly selects sweep pruning.
 
 **Recommended: retain, and make it visible.** Deleting a tenant's manifests as a side effect of a
 policy edit is destructive, hard to undo in the moment, and easy to trigger by accident (a typo in a
 selector). Retention is also the safe direction under the failure mode in
-[PR 5](pr5-clusterwatchrule-source-ceiling.md#2b-unknown-is-not-empty): if an unavailable selector were
-ever read as an empty allow-list, a sweep-on-revocation would erase the target's entire namespaced
-content.
+[PR 5](pr5-gittarget-deletion-safety.md): if an unavailable selector were ever read as an empty
+allow-list, the default deletion policy must still suppress a resulting sweep.
 
 The cost is real and must be documented rather than glossed: after a revocation, Git holds manifests
 from a namespace the policy no longer admits, and no automatic process removes them. Removing them is
@@ -154,6 +153,5 @@ Verified by reverting the namespace half of `ResyncScope.Matches`:
 - ✅ `task lint`, `task test`, `task test-e2e` pass.
 - ⏭ **Retention-on-revocation is documented above but not yet enforced by a test.** Nothing in this
   PR can revoke a namespace — no code path removes one from a watch set yet — so the test has no
-  subject until [PR 5](pr5-clusterwatchrule-source-ceiling.md) introduces ceiling tightening. It is
-  carried as `TestCeiling_UnknownScopeRetainsPreviousAndDoesNotSweep` and the revocation envtest in
-  PR 5's plan. Recording it here rather than silently dropping it.
+  subject until PR 6 introduces rule-item namespace expansion. It is carried as the retained-scope
+  and policy-revocation tests in that plan. Recording it here rather than silently dropping it.

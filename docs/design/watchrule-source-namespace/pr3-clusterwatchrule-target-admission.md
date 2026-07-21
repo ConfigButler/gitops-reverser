@@ -95,7 +95,7 @@ already exists
 ClusterProvider → ClusterWatchRules does not.
 
 This check is separate from, and does not replace,
-[`GitTarget.allowedSourceNamespaces`](pr5-clusterwatchrule-source-ceiling.md). They answer different
+[`GitTarget.allowedSourceNamespaces`](README.md#the-model). They answer different
 questions: provider admission asks *may this target use this credential at all*, the ceiling asks
 *which source namespaces may reach this target's destination*.
 
