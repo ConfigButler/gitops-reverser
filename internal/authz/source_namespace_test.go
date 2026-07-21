@@ -27,6 +27,7 @@ const (
 	snTargetName = "acme"
 	snRuleName   = "repo-config-rule"
 	snProvider   = "workspaces"
+	snWildcard   = configv1alpha3.SourceNamespaceWildcard
 )
 
 func snScheme(t *testing.T) *runtime.Scheme {
@@ -50,13 +51,19 @@ func snTarget(policy *configv1alpha3.NamespaceMatcher) *configv1alpha3.GitTarget
 	}
 }
 
-func snRule(sourceNamespace string) *configv1alpha3.WatchRule {
+// snRule builds a WatchRule with one item per given sourceNamespace ("" = omitted).
+func snRule(sourceNamespaces ...string) *configv1alpha3.WatchRule {
+	items := make([]configv1alpha3.ResourceRule, 0, len(sourceNamespaces))
+	for _, ns := range sourceNamespaces {
+		items = append(items, configv1alpha3.ResourceRule{
+			Resources: []string{"configmaps"}, SourceNamespace: ns,
+		})
+	}
 	return &configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: snRuleName, Namespace: snTenantNS},
 		Spec: configv1alpha3.WatchRuleSpec{
-			TargetRef:       configv1alpha3.LocalTargetReference{Name: snTargetName},
-			SourceNamespace: sourceNamespace,
-			Rules:           []configv1alpha3.ResourceRule{{Resources: []string{"configmaps"}}},
+			TargetRef: configv1alpha3.LocalTargetReference{Name: snTargetName},
+			Rules:     items,
 		},
 	}
 }
@@ -67,8 +74,8 @@ func snClusterProvider(delegate bool) *configv1alpha3.ClusterProvider {
 	return &configv1alpha3.ClusterProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: snProvider},
 		Spec: configv1alpha3.ClusterProviderSpec{
-			AllowedNamespaces:                     &configv1alpha3.NamespaceMatcher{Names: []string{snTenantNS}},
-			AllowWatchRuleSourceNamespaceOverride: delegate,
+			AllowedNamespaces:            &configv1alpha3.NamespaceMatcher{Names: []string{snTenantNS}},
+			AllowSourceNamespaceOverride: delegate,
 		},
 	}
 }
@@ -77,8 +84,11 @@ func snClusterProvider(delegate bool) *configv1alpha3.ClusterProvider {
 // authz answers the exact-name half itself — so a test that expects it to be consulted is also
 // asserting that the name fast-path did not swallow the question.
 type stubResolver struct {
-	result authz.SourceScopeResult
-	calls  int
+	result      authz.SourceScopeResult
+	enumerated  []string
+	enumeration authz.SourceScopeResult
+	calls       int
+	enumCalls   int
 }
 
 func (s *stubResolver) ResolveSourceNamespace(
@@ -86,6 +96,13 @@ func (s *stubResolver) ResolveSourceNamespace(
 ) authz.SourceScopeResult {
 	s.calls++
 	return s.result
+}
+
+func (s *stubResolver) EnumerateSourceNamespaces(
+	context.Context, *configv1alpha3.GitTarget,
+) ([]string, authz.SourceScopeResult) {
+	s.enumCalls++
+	return s.enumerated, s.enumeration
 }
 
 func admitting() *stubResolver {
@@ -96,10 +113,42 @@ func denying() *stubResolver {
 	return &stubResolver{result: authz.SourceScopeResult{Verdict: authz.SourceScopeDenied}}
 }
 
-// TestWatchRuleSourceNamespaceAdmitted is the gate's truth table, modelled on
+func enumerating(names ...string) *stubResolver {
+	return &stubResolver{
+		enumerated:  names,
+		enumeration: authz.SourceScopeResult{Verdict: authz.SourceScopeAdmitted},
+	}
+}
+
+// resolve is the one-item shorthand every truth-table row uses.
+func resolveOne(
+	t *testing.T,
+	sourceNamespace string,
+	policy *configv1alpha3.NamespaceMatcher,
+	delegate bool,
+	resolver authz.SourceNamespaceResolver,
+) authz.ResolvedSourceScope {
+	t.Helper()
+	target := snTarget(policy)
+	cl := fake.NewClientBuilder().
+		WithScheme(snScheme(t)).
+		WithObjects(
+			target,
+			snClusterProvider(delegate),
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}},
+		).
+		Build()
+
+	resolved, err := authz.ResolveWatchRuleSourceScope(
+		context.Background(), cl, snRule(sourceNamespace), target, resolver)
+	require.NoError(t, err)
+	return resolved
+}
+
+// TestResolveWatchRuleSourceScope is the gate's truth table, per rule ITEM, modelled on
 // TestCheckSourceAuthorization. The first two rows are the LEGACY guarantee: if they ever fail,
 // deny-by-default has broken every existing WatchRule on upgrade.
-func TestWatchRuleSourceNamespaceAdmitted(t *testing.T) {
+func TestResolveWatchRuleSourceScope(t *testing.T) {
 	labelled := map[string]string{"gitops.configbutler.ai/mirrorable": "true"}
 	selectorPolicy := &configv1alpha3.NamespaceMatcher{
 		Selector: &metav1.LabelSelector{MatchLabels: labelled},
@@ -107,21 +156,23 @@ func TestWatchRuleSourceNamespaceAdmitted(t *testing.T) {
 
 	tests := []struct {
 		name string
-		// sourceNamespace is WatchRule.spec.sourceNamespace ("" = omitted).
+		// sourceNamespace is spec.rules[0].sourceNamespace ("" = omitted).
 		sourceNamespace string
 		policy          *configv1alpha3.NamespaceMatcher
 		delegate        bool
 		resolver        *stubResolver
 		wantVerdict     authz.SourceScopeVerdict
 		wantReason      string
+		wantNamespaces  []string
 	}{{
-		// THE test. A rule that omits sourceNamespace must pass with no policy and no flag.
+		// THE test. An item that omits sourceNamespace must pass with no policy and no flag.
 		name:            "omitted, no policy, flag false: allowed (legacy, and must stay free)",
 		sourceNamespace: "",
 		policy:          nil,
 		delegate:        false,
 		wantVerdict:     authz.SourceScopeAdmitted,
 		wantReason:      authz.ReasonLegacySourceNamespace,
+		wantNamespaces:  []string{snTenantNS},
 	}, {
 		name:            "explicitly equals its own namespace, no policy, flag false: allowed",
 		sourceNamespace: snTenantNS,
@@ -129,6 +180,7 @@ func TestWatchRuleSourceNamespaceAdmitted(t *testing.T) {
 		delegate:        false,
 		wantVerdict:     authz.SourceScopeAdmitted,
 		wantReason:      authz.ReasonLegacySourceNamespace,
+		wantNamespaces:  []string{snTenantNS},
 	}, {
 		// The no-self-namespace-exception rule: the case most likely to be implemented as an
 		// accidental carve-out. A DECLARED policy is exhaustive, own namespace included.
@@ -145,6 +197,7 @@ func TestWatchRuleSourceNamespaceAdmitted(t *testing.T) {
 		delegate:        false,
 		wantVerdict:     authz.SourceScopeAdmitted,
 		wantReason:      authz.ReasonSourceNamespaceAllowed,
+		wantNamespaces:  []string{snTenantNS},
 	}, {
 		name:            "differs, flag false: denied even though the target names it",
 		sourceNamespace: snSourceNS,
@@ -173,6 +226,7 @@ func TestWatchRuleSourceNamespaceAdmitted(t *testing.T) {
 		delegate:        true,
 		wantVerdict:     authz.SourceScopeAdmitted,
 		wantReason:      authz.ReasonSourceNamespaceAllowed,
+		wantNamespaces:  []string{snSourceNS},
 	}, {
 		name:            "differs, flag true, target selector matches: allowed",
 		sourceNamespace: snSourceNS,
@@ -181,6 +235,7 @@ func TestWatchRuleSourceNamespaceAdmitted(t *testing.T) {
 		resolver:        admitting(),
 		wantVerdict:     authz.SourceScopeAdmitted,
 		wantReason:      authz.ReasonSourceNamespaceAllowed,
+		wantNamespaces:  []string{snSourceNS},
 	}, {
 		name:            "differs, flag true, target names a DIFFERENT namespace: denied",
 		sourceNamespace: snSourceNS,
@@ -217,46 +272,197 @@ func TestWatchRuleSourceNamespaceAdmitted(t *testing.T) {
 		}},
 		wantVerdict: authz.SourceScopeUnknown,
 		wantReason:  authz.ReasonCheckingSourceNamespacePolicy,
+	}, {
+		// "*" is deny-by-default too: it follows the policy's set, so with no policy there is no set.
+		name:            "wildcard, flag true, no policy: denied — a wildcard is not a backdoor",
+		sourceNamespace: snWildcard,
+		policy:          nil,
+		delegate:        true,
+		wantVerdict:     authz.SourceScopeDenied,
+		wantReason:      authz.ReasonSourceNamespaceNotAllowed,
+	}, {
+		name:            "wildcard, flag false: denied even with a policy that would admit",
+		sourceNamespace: snWildcard,
+		policy:          &configv1alpha3.NamespaceMatcher{Names: []string{snSourceNS}},
+		delegate:        false,
+		wantVerdict:     authz.SourceScopeDenied,
+		wantReason:      authz.ReasonSourceNamespaceNotAllowed,
+	}, {
+		name:            "wildcard against a names policy: expands to exactly those names",
+		sourceNamespace: snWildcard,
+		policy:          &configv1alpha3.NamespaceMatcher{Names: []string{"team-payments", snSourceNS}},
+		delegate:        true,
+		wantVerdict:     authz.SourceScopeAdmitted,
+		wantReason:      authz.ReasonSourceNamespaceAllowed,
+		wantNamespaces:  []string{snSourceNS, "team-payments"},
+	}, {
+		name:            "wildcard against a declared-but-empty policy: admits nothing, but is not a refusal",
+		sourceNamespace: snWildcard,
+		policy:          &configv1alpha3.NamespaceMatcher{},
+		delegate:        true,
+		wantVerdict:     authz.SourceScopeAdmitted,
+		wantReason:      authz.ReasonNoAdmittedSourceNamespaces,
+		wantNamespaces:  []string{},
+	}, {
+		name:            "wildcard against a selector policy: expands to the enumerated set",
+		sourceNamespace: snWildcard,
+		policy:          selectorPolicy,
+		delegate:        true,
+		resolver:        enumerating("beta", "alpha"),
+		wantVerdict:     authz.SourceScopeAdmitted,
+		wantReason:      authz.ReasonSourceNamespaceAllowed,
+		wantNamespaces:  []string{"alpha", "beta"},
+	}, {
+		name:            "wildcard, selector enumeration unavailable: never read as the empty set",
+		sourceNamespace: snWildcard,
+		policy:          selectorPolicy,
+		delegate:        true,
+		resolver: &stubResolver{enumeration: authz.SourceScopeResult{
+			Verdict: authz.SourceScopeUnavailable, Message: "namespaces list is forbidden",
+		}},
+		wantVerdict: authz.SourceScopeUnavailable,
+		wantReason:  authz.ReasonSourceNamespacePolicyUnavailable,
+	}, {
+		name:            "wildcard, selector enumeration not ready: retryable, not denied",
+		sourceNamespace: snWildcard,
+		policy:          selectorPolicy,
+		delegate:        true,
+		resolver: &stubResolver{enumeration: authz.SourceScopeResult{
+			Verdict: authz.SourceScopeUnknown, Message: "cache still syncing",
+		}},
+		wantVerdict: authz.SourceScopeUnknown,
+		wantReason:  authz.ReasonCheckingSourceNamespacePolicy,
 	}}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			target := snTarget(tc.policy)
-			cl := fake.NewClientBuilder().
-				WithScheme(snScheme(t)).
-				WithObjects(
-					target,
-					snClusterProvider(tc.delegate),
-					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}},
-				).
-				Build()
-
 			var resolver authz.SourceNamespaceResolver
 			if tc.resolver != nil {
 				resolver = tc.resolver
 			}
 
-			decision, err := authz.WatchRuleSourceNamespaceAdmitted(
-				context.Background(), cl, snRule(tc.sourceNamespace), target, resolver)
+			resolved := resolveOne(t, tc.sourceNamespace, tc.policy, tc.delegate, resolver)
 
-			require.NoError(t, err)
-			assert.Equal(t, tc.wantVerdict, decision.Verdict, "verdict (message: %s)", decision.Message)
-			assert.Equal(t, tc.wantReason, decision.Reason)
-			assert.NotEmpty(t, decision.Message, "every verdict must carry an operator-legible message")
-
-			wantNS := tc.sourceNamespace
-			if wantNS == "" {
-				wantNS = snTenantNS
+			assert.Equal(t, tc.wantVerdict, resolved.Verdict, "verdict (message: %s)", resolved.Message)
+			assert.Equal(t, tc.wantReason, resolved.Reason)
+			assert.NotEmpty(t, resolved.Message, "every verdict must carry an operator-legible message")
+			require.Len(t, resolved.Items, 1)
+			if tc.wantNamespaces != nil {
+				assert.Equal(t, tc.wantNamespaces, resolved.NamespacesFor(0))
 			}
-			assert.Equal(t, wantNS, decision.Namespace)
 		})
 	}
 }
 
-// TestWatchRuleSourceNamespaceAdmitted_TargetIsolation is the multi-tenant invariant: a GitTarget's
+// TestResolveWatchRuleSourceScope_MixedItemsResolveIndependently is the point of moving the field
+// onto the items: one rule can follow configmaps in its own namespace, secrets in a named one, and
+// deployments everywhere the target admits.
+func TestResolveWatchRuleSourceScope_MixedItemsResolveIndependently(t *testing.T) {
+	target := snTarget(&configv1alpha3.NamespaceMatcher{
+		Names: []string{snTenantNS, snSourceNS, "team-payments"},
+	})
+	cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
+		WithObjects(target, snClusterProvider(true),
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).Build()
+
+	resolved, err := authz.ResolveWatchRuleSourceScope(
+		context.Background(), cl, snRule("", snSourceNS, snWildcard), target, nil)
+
+	require.NoError(t, err)
+	require.True(t, resolved.Admitted(), "message: %s", resolved.Message)
+	assert.Equal(t, authz.ReasonSourceNamespaceAllowed, resolved.Reason)
+	assert.Equal(t, []string{snTenantNS}, resolved.NamespacesFor(0))
+	assert.Equal(t, []string{snSourceNS}, resolved.NamespacesFor(1))
+	assert.Equal(t, []string{snSourceNS, "team-payments", snTenantNS}, resolved.NamespacesFor(2))
+}
+
+// TestResolveWatchRuleSourceScope_DeniedItemRefusesTheWholeRule is decision 5: a denied explicit
+// name is never trimmed away and run as a partial rule. Mirroring two of the three namespaces a rule
+// asked for is worse than a loud failure — and the message must name the offending item.
+func TestResolveWatchRuleSourceScope_DeniedItemRefusesTheWholeRule(t *testing.T) {
+	target := snTarget(&configv1alpha3.NamespaceMatcher{Names: []string{snTenantNS, snSourceNS}})
+	cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
+		WithObjects(target, snClusterProvider(true),
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).Build()
+
+	resolved, err := authz.ResolveWatchRuleSourceScope(
+		context.Background(), cl, snRule("", snSourceNS, "tenant-zen"), target, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, authz.SourceScopeDenied, resolved.Verdict)
+	assert.Equal(t, authz.ReasonSourceNamespaceNotAllowed, resolved.Reason)
+	assert.Contains(t, resolved.Message, "spec.rules[2]",
+		"the aggregate message must name the failing item by index...")
+	assert.Contains(t, resolved.Message, "tenant-zen",
+		"...and by what it asked for, because an index alone goes stale on a reorder")
+}
+
+// TestResolveWatchRuleSourceScope_EmptyWildcardIsVisibleNotStalled is the other half of decision 5:
+// a "*" that currently admits nothing is valid and does not stall the rule, but it must not read as
+// healthy either — a rule that mirrors nothing while reporting Ready=True is a silent no-op.
+func TestResolveWatchRuleSourceScope_EmptyWildcardIsVisibleNotStalled(t *testing.T) {
+	target := snTarget(&configv1alpha3.NamespaceMatcher{
+		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
+	})
+	cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
+		WithObjects(target, snClusterProvider(true),
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).Build()
+
+	resolved, err := authz.ResolveWatchRuleSourceScope(
+		context.Background(), cl, snRule(snWildcard), target, enumerating())
+
+	require.NoError(t, err)
+	assert.True(t, resolved.Admitted(), "an empty admitted set is not a refusal")
+	assert.False(t, resolved.Terminal())
+	assert.Equal(t, authz.ReasonNoAdmittedSourceNamespaces, resolved.Reason)
+	assert.Empty(t, resolved.NamespacesFor(0))
+}
+
+// TestResolveWatchRuleSourceScope_WildcardOverNamesNeedsNoResolver is the degradation path applied
+// to the wildcard: a names-only policy is enumerable with no source-cluster access at all, so "*"
+// keeps resolving on a cluster whose Namespace list is Forbidden.
+func TestResolveWatchRuleSourceScope_WildcardOverNamesNeedsNoResolver(t *testing.T) {
+	target := snTarget(&configv1alpha3.NamespaceMatcher{Names: []string{snSourceNS, "team-payments"}})
+	cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
+		WithObjects(target, snClusterProvider(true),
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).Build()
+
+	resolver := denying()
+	resolved, err := authz.ResolveWatchRuleSourceScope(
+		context.Background(), cl, snRule(snWildcard), target, resolver)
+
+	require.NoError(t, err)
+	assert.True(t, resolved.Admitted())
+	assert.Equal(t, []string{snSourceNS, "team-payments"}, resolved.NamespacesFor(0))
+	assert.Zero(t, resolver.enumCalls,
+		"a names-only policy must never reach the source-scope service")
+}
+
+// TestResolveWatchRuleSourceScope_StoredTopLevelFieldIsRefused covers decision 10's stored-object
+// half: admission rejects spec.sourceNamespace, but a pre-release object keeps its value in etcd and
+// resolving the items as if it had not asked would silently watch the wrong namespace.
+func TestResolveWatchRuleSourceScope_StoredTopLevelFieldIsRefused(t *testing.T) {
+	target := snTarget(nil)
+	cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
+		WithObjects(target, snClusterProvider(true)).Build()
+
+	rule := snRule("")
+	rule.Spec.SourceNamespace = snSourceNS //nolint:staticcheck // the point of the test
+
+	resolved, err := authz.ResolveWatchRuleSourceScope(context.Background(), cl, rule, target, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, authz.SourceScopeDenied, resolved.Verdict)
+	assert.Equal(t, authz.ReasonSourceNamespaceFieldRemoved, resolved.Reason)
+	assert.Contains(t, resolved.Message, "spec.rules[].sourceNamespace",
+		"the refusal must name the replacement, because the move is not automatic")
+	assert.Empty(t, resolved.Items, "a refused rule resolves no items")
+}
+
+// TestResolveWatchRuleSourceScope_TargetIsolation is the multi-tenant invariant: a GitTarget's
 // policy bounds ONLY that target. zen's policy admitting acme's namespace must not let a rule
 // writing to ACME's target reach it.
-func TestWatchRuleSourceNamespaceAdmitted_TargetIsolation(t *testing.T) {
+func TestResolveWatchRuleSourceScope_TargetIsolation(t *testing.T) {
 	// acme's target admits only its own workspace; a sibling tenant's target admits "shared".
 	acme := snTarget(&configv1alpha3.NamespaceMatcher{Names: []string{"acme-workspace"}})
 
@@ -266,19 +472,19 @@ func TestWatchRuleSourceNamespaceAdmitted_TargetIsolation(t *testing.T) {
 			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).
 		Build()
 
-	decision, err := authz.WatchRuleSourceNamespaceAdmitted(
+	resolved, err := authz.ResolveWatchRuleSourceScope(
 		context.Background(), cl, snRule("shared"), acme, nil)
 
 	require.NoError(t, err)
-	assert.Equal(t, authz.SourceScopeDenied, decision.Verdict,
+	assert.Equal(t, authz.SourceScopeDenied, resolved.Verdict,
 		"another target's policy must never widen this one")
-	assert.Equal(t, authz.ReasonSourceNamespaceNotAllowed, decision.Reason)
+	assert.Equal(t, authz.ReasonSourceNamespaceNotAllowed, resolved.Reason)
 }
 
-// TestWatchRuleSourceNamespaceAdmitted_UnadmittedGitTargetCannotDelegate closes the first leg of
-// the three-part gate: a provider that does not admit the GitTarget's own namespace delegates
-// nothing to it, even with the flag on.
-func TestWatchRuleSourceNamespaceAdmitted_UnadmittedGitTargetCannotDelegate(t *testing.T) {
+// TestResolveWatchRuleSourceScope_UnadmittedGitTargetCannotDelegate closes the first leg of the
+// three-part gate: a provider that does not admit the GitTarget's own namespace delegates nothing to
+// it, even with the flag on.
+func TestResolveWatchRuleSourceScope_UnadmittedGitTargetCannotDelegate(t *testing.T) {
 	target := snTarget(&configv1alpha3.NamespaceMatcher{Names: []string{snSourceNS}})
 	provider := snClusterProvider(true)
 	provider.Spec.AllowedNamespaces = &configv1alpha3.NamespaceMatcher{Names: []string{"some-other-tenant"}}
@@ -289,33 +495,33 @@ func TestWatchRuleSourceNamespaceAdmitted_UnadmittedGitTargetCannotDelegate(t *t
 			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).
 		Build()
 
-	decision, err := authz.WatchRuleSourceNamespaceAdmitted(
+	resolved, err := authz.ResolveWatchRuleSourceScope(
 		context.Background(), cl, snRule(snSourceNS), target, nil)
 
 	require.NoError(t, err)
-	assert.Equal(t, authz.SourceScopeDenied, decision.Verdict)
-	assert.Contains(t, decision.Message, "may not mirror through ClusterProvider")
+	assert.Equal(t, authz.SourceScopeDenied, resolved.Verdict)
+	assert.Contains(t, resolved.Message, "may not mirror through ClusterProvider")
 }
 
-// TestWatchRuleSourceNamespaceAdmitted_MissingClusterProviderDeniesOverride: an absent provider
-// delegates nothing. It must not be an implicit allow.
-func TestWatchRuleSourceNamespaceAdmitted_MissingClusterProviderDeniesOverride(t *testing.T) {
+// TestResolveWatchRuleSourceScope_MissingClusterProviderDeniesOverride: an absent provider delegates
+// nothing. It must not be an implicit allow.
+func TestResolveWatchRuleSourceScope_MissingClusterProviderDeniesOverride(t *testing.T) {
 	target := snTarget(&configv1alpha3.NamespaceMatcher{Names: []string{snSourceNS}})
 
 	cl := fake.NewClientBuilder().WithScheme(snScheme(t)).WithObjects(target).Build()
 
-	decision, err := authz.WatchRuleSourceNamespaceAdmitted(
+	resolved, err := authz.ResolveWatchRuleSourceScope(
 		context.Background(), cl, snRule(snSourceNS), target, nil)
 
 	require.NoError(t, err)
-	assert.Equal(t, authz.SourceScopeDenied, decision.Verdict)
-	assert.Equal(t, authz.ReasonSourceNamespaceNotAllowed, decision.Reason)
+	assert.Equal(t, authz.SourceScopeDenied, resolved.Verdict)
+	assert.Equal(t, authz.ReasonSourceNamespaceNotAllowed, resolved.Reason)
 }
 
-// TestWatchRuleSourceNamespaceAdmitted_ProviderReadErrorIsRequeued: a transient apiserver failure
-// must surface as an ERROR the caller requeues on, never as a silent denial that would tear down a
+// TestResolveWatchRuleSourceScope_ProviderReadErrorIsRequeued: a transient apiserver failure must
+// surface as an ERROR the caller requeues on, never as a silent denial that would tear down a
 // running stream.
-func TestWatchRuleSourceNamespaceAdmitted_ProviderReadErrorIsRequeued(t *testing.T) {
+func TestResolveWatchRuleSourceScope_ProviderReadErrorIsRequeued(t *testing.T) {
 	target := snTarget(&configv1alpha3.NamespaceMatcher{Names: []string{snSourceNS}})
 	boom := errors.New("etcdserver: request timed out")
 
@@ -335,75 +541,83 @@ func TestWatchRuleSourceNamespaceAdmitted_ProviderReadErrorIsRequeued(t *testing
 		}).
 		Build()
 
-	_, err := authz.WatchRuleSourceNamespaceAdmitted(
+	_, err := authz.ResolveWatchRuleSourceScope(
 		context.Background(), cl, snRule(snSourceNS), target, nil)
 
 	require.Error(t, err, "a non-NotFound read error must requeue, not deny")
 	assert.ErrorIs(t, err, boom)
 }
 
-// TestWatchRuleSourceNamespaceAdmitted_ExactNamesNeedNoResolver is the DEGRADATION PATH, and the
-// half most likely to regress unnoticed: with no source-scope service wired at all (standing in
-// for a source cluster whose Namespace access is denied), an exact-NAME entry still admits while a
+// TestResolveWatchRuleSourceScope_ExactNamesNeedNoResolver is the DEGRADATION PATH, and the half
+// most likely to regress unnoticed: with no source-scope service wired at all (standing in for a
+// source cluster whose Namespace access is denied), an exact-NAME entry still admits while a
 // SELECTOR entry fails safe as "cannot say yet" rather than as a denial.
-func TestWatchRuleSourceNamespaceAdmitted_ExactNamesNeedNoResolver(t *testing.T) {
-	ctx := context.Background()
-
+func TestResolveWatchRuleSourceScope_ExactNamesNeedNoResolver(t *testing.T) {
 	t.Run("exact name still admits", func(t *testing.T) {
-		target := snTarget(&configv1alpha3.NamespaceMatcher{Names: []string{snSourceNS}})
-		cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
-			WithObjects(target, snClusterProvider(true),
-				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).Build()
+		resolved := resolveOne(t, snSourceNS,
+			&configv1alpha3.NamespaceMatcher{Names: []string{snSourceNS}}, true, nil)
 
-		decision, err := authz.WatchRuleSourceNamespaceAdmitted(ctx, cl, snRule(snSourceNS), target, nil)
-
-		require.NoError(t, err)
-		assert.Equal(t, authz.SourceScopeAdmitted, decision.Verdict,
+		assert.Equal(t, authz.SourceScopeAdmitted, resolved.Verdict,
 			"a name-based policy must not depend on source-cluster Namespace access")
 	})
 
 	t.Run("selector without a resolver is retryable, never denied", func(t *testing.T) {
-		target := snTarget(&configv1alpha3.NamespaceMatcher{
+		resolved := resolveOne(t, snSourceNS, &configv1alpha3.NamespaceMatcher{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"x": "y"}},
-		})
-		cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
-			WithObjects(target, snClusterProvider(true),
-				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).Build()
+		}, true, nil)
 
-		decision, err := authz.WatchRuleSourceNamespaceAdmitted(ctx, cl, snRule(snSourceNS), target, nil)
+		assert.Equal(t, authz.SourceScopeUnknown, resolved.Verdict)
+		assert.Equal(t, authz.ReasonCheckingSourceNamespacePolicy, resolved.Reason)
+	})
 
-		require.NoError(t, err)
-		assert.Equal(t, authz.SourceScopeUnknown, decision.Verdict)
-		assert.Equal(t, authz.ReasonCheckingSourceNamespacePolicy, decision.Reason)
+	t.Run("wildcard over a selector without a resolver is retryable, never empty", func(t *testing.T) {
+		resolved := resolveOne(t, snWildcard, &configv1alpha3.NamespaceMatcher{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"x": "y"}},
+		}, true, nil)
+
+		assert.Equal(t, authz.SourceScopeUnknown, resolved.Verdict)
+		assert.Empty(t, resolved.NamespacesFor(0),
+			"and it resolves NO namespaces, so nothing can be compiled from it")
 	})
 }
 
-// TestWatchRuleSourceNamespaceAdmitted_NameFastPathSkipsTheResolver pins the degradation path's
+// TestResolveWatchRuleSourceScope_NameFastPathSkipsTheResolver pins the degradation path's
 // mechanism, not just its outcome: a name match must be answered WITHOUT consulting the
 // source-scope service at all, or "exact names keep working without Namespace access" is only
 // accidentally true.
-func TestWatchRuleSourceNamespaceAdmitted_NameFastPathSkipsTheResolver(t *testing.T) {
-	target := snTarget(&configv1alpha3.NamespaceMatcher{
+func TestResolveWatchRuleSourceScope_NameFastPathSkipsTheResolver(t *testing.T) {
+	resolver := denying()
+	resolved := resolveOne(t, snSourceNS, &configv1alpha3.NamespaceMatcher{
 		Names:    []string{snSourceNS},
 		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"never": "consulted"}},
-	})
-	cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
-		WithObjects(target, snClusterProvider(true),
-			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).Build()
+	}, true, resolver)
 
-	resolver := denying()
-	decision, err := authz.WatchRuleSourceNamespaceAdmitted(
-		context.Background(), cl, snRule(snSourceNS), target, resolver)
-
-	require.NoError(t, err)
-	assert.Equal(t, authz.SourceScopeAdmitted, decision.Verdict)
+	assert.Equal(t, authz.SourceScopeAdmitted, resolved.Verdict)
 	assert.Zero(t, resolver.calls, "an exact-name match must never reach the source-scope service")
 }
 
-// TestWatchRuleSourceNamespaceDecision_TerminalClassification pins which verdicts stop a rule while
+// TestResolvedSourceScope_Fingerprint pins the §4.3 hazard at its source: the fingerprint must move
+// when the RESOLVED set changes, even though the rule spec that produced it is byte-identical.
+func TestResolvedSourceScope_Fingerprint(t *testing.T) {
+	narrow := authz.ResolvedSourceScope{Items: []authz.SourceNamespaceDecision{
+		{Index: 0, Namespaces: []string{"a"}},
+	}}
+	wide := authz.ResolvedSourceScope{Items: []authz.SourceNamespaceDecision{
+		{Index: 0, Namespaces: []string{"a", "b"}},
+	}}
+
+	assert.NotEqual(t, narrow.Fingerprint(), wide.Fingerprint(),
+		"a policy edit that widens a wildcard MUST change the fingerprint, or the watched-type "+
+			"table is never re-projected and the streams silently keep their old width")
+	assert.Equal(t, narrow.Fingerprint(), authz.ResolvedSourceScope{
+		Items: []authz.SourceNamespaceDecision{{Index: 0, Namespaces: []string{"a"}}},
+	}.Fingerprint(), "and an unchanged set must be stable, or every reconcile rebuilds the table")
+}
+
+// TestSourceNamespaceDecision_TerminalClassification pins which verdicts stop a rule while
 // ESTABLISHING a grant. Denied and Unavailable are terminal; Unknown must never be, or a transient
 // outage becomes a permanent Stalled=True.
-func TestWatchRuleSourceNamespaceDecision_TerminalClassification(t *testing.T) {
+func TestSourceNamespaceDecision_TerminalClassification(t *testing.T) {
 	for verdict, wantTerminal := range map[authz.SourceScopeVerdict]bool{
 		authz.SourceScopeAdmitted:    false,
 		authz.SourceScopeUnknown:     false,
@@ -412,5 +626,34 @@ func TestWatchRuleSourceNamespaceDecision_TerminalClassification(t *testing.T) {
 	} {
 		decision := authz.SourceNamespaceDecision{Verdict: verdict}
 		assert.Equal(t, wantTerminal, decision.Terminal(), "verdict %d", verdict)
+		assert.Equal(t, wantTerminal, authz.ResolvedSourceScope{Verdict: verdict}.Terminal())
 	}
+}
+
+// TestAggregateSourceScope_ReasonPrecedence pins the §5 order. Without a stated precedence two
+// implementations disagree about mixed rules, and "worst wins" is ambiguous between a denial and an
+// unevaluatable policy.
+func TestAggregateSourceScope_ReasonPrecedence(t *testing.T) {
+	selectorPolicy := &configv1alpha3.NamespaceMatcher{
+		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
+	}
+	target := snTarget(selectorPolicy)
+	cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
+		WithObjects(target, snClusterProvider(true),
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snTenantNS}}).Build()
+
+	// One item the selector denies, one it cannot evaluate: DENIAL wins, because it is a decision
+	// while "cannot say" is the absence of one.
+	mixed := &stubResolver{result: authz.SourceScopeResult{Verdict: authz.SourceScopeDenied}}
+	resolved, err := authz.ResolveWatchRuleSourceScope(
+		context.Background(), cl, snRule("a-namespace", "b-namespace"), target, mixed)
+	require.NoError(t, err)
+	assert.Equal(t, authz.ReasonSourceNamespaceNotAllowed, resolved.Reason)
+
+	// Unavailable outranks Unknown for the same reason, one level down.
+	unavailable := &stubResolver{result: authz.SourceScopeResult{Verdict: authz.SourceScopeUnavailable}}
+	resolved, err = authz.ResolveWatchRuleSourceScope(
+		context.Background(), cl, snRule("a-namespace"), target, unavailable)
+	require.NoError(t, err)
+	assert.Equal(t, authz.ReasonSourceNamespacePolicyUnavailable, resolved.Reason)
 }
