@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -52,7 +53,7 @@ func newWorktreeForTest(t *testing.T) *gogit.Worktree {
 func applyEventsViaPlanFlush(t *testing.T, writer *contentWriter, worktree *gogit.Worktree, events ...Event) bool {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, nil)
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, nil, v1alpha3.PruneOnEvent)
 	require.NoError(t, err)
 	return changed
 }
@@ -66,7 +67,7 @@ func applyEventsViaPlanFlushWithMapper(
 ) bool {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, nil)
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, nil, v1alpha3.PruneOnEvent)
 	require.NoError(t, err)
 	return changed
 }

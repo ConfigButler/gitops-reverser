@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
@@ -54,7 +55,7 @@ func deploymentsMapper() typeset.Lookup {
 func applyScalePatch(t *testing.T, writer *contentWriter, worktree *gogit.Worktree, events ...Event) bool {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: deploymentsMapper()}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, nil)
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, nil, v1alpha3.PruneOnEvent)
 	require.NoError(t, err)
 	return changed
 }

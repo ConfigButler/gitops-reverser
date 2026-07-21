@@ -472,6 +472,8 @@ The important fields are:
 - `spec.placement`: optional policy for where **new** resources are written (see
   [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it to follow
   the repository's existing layout
+- `spec.prune`: which deletion paths may remove documents from this target's folder (see
+  [Deletion policy](#deletion-policy-specprunemode)); omit it for the safe default
 
 Example:
 
@@ -521,6 +523,44 @@ The most useful status fields are:
 - `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
 
 Use conditions for automation.
+
+### Deletion policy (`spec.prune.mode`)
+
+A target removes a document from Git for one of two very different reasons, and `spec.prune.mode`
+controls them separately:
+
+- an **explicit source DELETE event** — the source cluster told the operator the resource is gone;
+- a **resync mark-and-sweep** — a periodic snapshot of the cluster did not contain a resource that
+  Git still has a document for, so its absence is *inferred*.
+
+The second is only as trustworthy as the snapshot. A scope mistake, a source-cluster outage, or a
+narrowed RBAC grant all produce a snapshot that is smaller than reality, and a sweep would turn that
+into deleted manifests.
+
+| Mode | Explicit source DELETE | Resync mark-and-sweep | Use it for |
+|---|---|---|---|
+| `never` | kept | kept | an archive or tombstone mirror that only ever gains documents |
+| `onEvent` (default) | mirrored | kept | mirroring observed deletes without ever inferring one |
+| `always` | mirrored | swept | full desired-state convergence, including cleaning up stale documents |
+
+```yaml
+spec:
+  prune:
+    mode: always
+```
+
+Omitting `spec.prune` means `onEvent`. That applies to a `GitTarget` created before this field
+existed as well: an upgrade never changes an existing target to a more destructive policy, and you
+do not have to edit anything to be safe.
+
+Choose `always` when the folder is meant to be a faithful, converged mirror and you accept that a
+bad watch scope can delete manifests. Choose `never` when the folder is an audit trail. When a
+resync would have removed documents and the policy kept them, the operator logs a line naming the
+target and counts them in `gitopsreverser_prune_retained_documents_total`; retention is the
+configured outcome, so it is never reported as a failed reconciliation.
+
+`spec.prune` is mutable — unlike `providerRef`, `branch`, and `path` — so a target can be moved to
+`always` once its watch scope is confirmed, without recreating it.
 
 ### Where new resources are written (`spec.placement`)
 

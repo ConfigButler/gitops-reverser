@@ -65,8 +65,25 @@ type ScanPolicy struct {
 	// Acceptance configures the adoption gate (allowlist + scope). Its allowlist also
 	// drives store construction, so allowlisted documents are retained, not planned.
 	Acceptance AcceptancePolicy
-	// Plan configures the planner (projection + edit options).
+	// Plan configures the planner (projection + edit options). A dry-run has no GitTarget
+	// and therefore no prune policy to read, so a caller that wants the folder's orphans
+	// listed must set Plan.Sweep to SweepDropOrphans deliberately — see FolderScanPlanPolicy.
 	Plan Policy
+}
+
+// FolderScanPlanPolicy is the planning policy for an offline folder scan: it DROPS orphans.
+//
+// A scan is a report, not a write, and it is run against a folder rather than against a
+// GitTarget — there is no spec.prune to consult. Reporting the full convergence view is the
+// analysis the tool exists to produce; suppressing it would make a folder full of stale
+// documents render identically to a converged one, with nothing on screen to distinguish them.
+// Nothing here can delete anything: Scan writes nothing, and the live writer builds its own
+// policy from the target.
+//
+// In practice a CLI scan also passes a nil mapper, so no document resolves to MappingFollowable
+// and no drop is emitted regardless. This is the deliberate choice for the day that changes.
+func FolderScanPlanPolicy() Policy {
+	return Policy{Sweep: SweepDropOrphans}
 }
 
 // ScanResult is the dry-run outcome: the built store, the acceptance decision, and

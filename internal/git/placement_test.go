@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -41,7 +42,7 @@ func applyEventsWithPolicy(
 ) bool {
 	t.Helper()
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, policy)
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events, policy, v1alpha3.PruneOnEvent)
 	require.NoError(t, err)
 	return changed
 }
@@ -143,7 +144,14 @@ func TestPlacement_SensitiveCollision_SkipsWithoutCrashing(t *testing.T) {
 		Operation:  "CREATE",
 	}
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{})}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{event}, policy)
+	changed, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		[]Event{event},
+		policy,
+		v1alpha3.PruneOnEvent,
+	)
 
 	require.NoError(t, err, "a placement conflict must be skipped, not returned as a batch error")
 	assert.False(t, changed, "no file should be written when placement cannot be resolved safely")
@@ -236,7 +244,7 @@ func TestPlacement_UndecodableKustomization_RefusesTheFlush(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
 	_, err := w.flushEventsToWorktree(
-		context.Background(), worktree, "", []Event{newConfigMapEvent("cache", "app")}, nil,
+		context.Background(), worktree, "", []Event{newConfigMapEvent("cache", "app")}, nil, v1alpha3.PruneOnEvent,
 	)
 	require.Error(t, err, "a kustomization kustomize cannot build must refuse the folder, not be written into")
 }
@@ -265,7 +273,7 @@ func TestPlacement_ExternalBaseOverlay_NewObject(t *testing.T) {
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
 	changed, err := w.flushEventsToWorktree(
 		context.Background(), worktree, "overlays/test",
-		[]Event{newConfigMapEvent("cache", "podinfo-test")}, nil,
+		[]Event{newConfigMapEvent("cache", "podinfo-test")}, nil, v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err, "the overlay new-object flush must pass the render oracle")
 	require.True(t, changed)
@@ -329,7 +337,14 @@ func liveDeployment(image string, replicas int64) Event {
 func flushOverlayDeployment(t *testing.T, worktree *gogit.Worktree, event Event) error {
 	t.Helper()
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: deploymentMapper()}
-	_, err := w.flushEventsToWorktree(context.Background(), worktree, "overlays/test", []Event{event}, nil)
+	_, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"overlays/test",
+		[]Event{event},
+		nil,
+		v1alpha3.PruneOnEvent,
+	)
 	return err
 }
 
@@ -411,7 +426,14 @@ func TestOverlayAuthors_DeletePatch_ForInheritedObject(t *testing.T) {
 		Operation:  "DELETE",
 	}
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
-	_, err := w.flushEventsToWorktree(context.Background(), worktree, "overlays/test", []Event{del}, nil)
+	_, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"overlays/test",
+		[]Event{del},
+		nil,
+		v1alpha3.PruneOnEvent,
+	)
 	require.NoError(t, err, "deleting an inherited object must author a $patch: delete, not refuse")
 
 	patch, err := os.ReadFile(filepath.Join(root, "overlays/test/configmap-shared-delete.yaml"))
@@ -452,7 +474,14 @@ func TestOverlayAuthors_DeletePatch_SkipsOnPathCollision(t *testing.T) {
 		Operation:  "DELETE",
 	}
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
-	_, err := w.flushEventsToWorktree(context.Background(), worktree, "overlays/test", []Event{del}, nil)
+	_, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"overlays/test",
+		[]Event{del},
+		nil,
+		v1alpha3.PruneOnEvent,
+	)
 	require.NoError(t, err, "a patch-path collision must be skipped, not error")
 
 	got, err := os.ReadFile(filepath.Join(root, "overlays/test/configmap-shared-delete.yaml"))
@@ -592,6 +621,7 @@ func TestPlacement_ColdBundleCollision_SensitiveNeverMerged(t *testing.T) {
 
 	changed, err := w.flushEventsToWorktree(
 		context.Background(), worktree, "", []Event{newSecretEvent("first"), newSecretEvent("second")}, policy,
+		v1alpha3.PruneOnEvent,
 	)
 
 	require.NoError(t, err)
@@ -635,7 +665,7 @@ func TestPlacement_ColdBundleCollision_SensitiveAndPlaintextNeverMix(t *testing.
 	secretFirst := newWorktreeForTest(t)
 	wsf := &BranchWorker{contentWriter: newWriter()}
 	_, err := wsf.flushEventsToWorktree(
-		context.Background(), secretFirst, "", []Event{secretEvent, configMapEvent}, policy,
+		context.Background(), secretFirst, "", []Event{secretEvent, configMapEvent}, policy, v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err)
 	secretFirstBody, readErr := os.ReadFile(filepath.Join(secretFirst.Filesystem.Root(), "all.yaml"))
@@ -648,7 +678,7 @@ func TestPlacement_ColdBundleCollision_SensitiveAndPlaintextNeverMix(t *testing.
 	configMapFirst := newWorktreeForTest(t)
 	wcf := &BranchWorker{contentWriter: newWriter()}
 	_, err = wcf.flushEventsToWorktree(
-		context.Background(), configMapFirst, "", []Event{configMapEvent, secretEvent}, policy,
+		context.Background(), configMapFirst, "", []Event{configMapEvent, secretEvent}, policy, v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err)
 	configMapFirstBody, readErr := os.ReadFile(filepath.Join(configMapFirst.Filesystem.Root(), "all.yaml"))
@@ -682,7 +712,16 @@ func TestPlacement_ColdBundleCollision_ViaResync(t *testing.T) {
 	}
 
 	w := &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{}), mapper: configMapMapper()}
-	_, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", desired, nil, policy)
+	_, changed, err := w.applyResyncToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		"",
+		desired,
+		nil,
+		policy,
+		v1alpha3.PruneAlways,
+	)
 
 	require.NoError(t, err)
 	assert.True(t, changed)

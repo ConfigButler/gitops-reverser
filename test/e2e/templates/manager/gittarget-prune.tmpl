@@ -1,0 +1,15 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: GitTarget
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  providerRef:
+    kind: GitProvider
+    name: {{ .ProviderName }}
+  branch: {{ .Branch }}
+  path: {{ .Path }}
+{{- if .PruneMode }}
+  prune:
+    mode: {{ .PruneMode }}
+{{- end }}

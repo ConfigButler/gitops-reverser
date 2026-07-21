@@ -147,7 +147,7 @@ func TestFanInPrecondition_RefusesAmbiguousOverrideWriteThrough(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: writer, mapper: deploymentMapper()}
 	_, err := w.flushEventsToWorktree(context.Background(), worktree, "",
-		[]Event{overridesDeploymentEvent("ghcr.io/example/podinfo:9.9.9", 3)}, nil)
+		[]Event{overridesDeploymentEvent("ghcr.io/example/podinfo:9.9.9", 3)}, nil, configv1alpha3.PruneOnEvent)
 	assert.Contains(t, refusalIssueKinds(t, err), manifestanalyzer.IssueWriteFanIn,
 		"an ambiguous-override write-through must be refused, not written through")
 

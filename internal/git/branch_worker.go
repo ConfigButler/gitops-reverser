@@ -140,6 +140,12 @@ type BranchWorker struct {
 	// firsts surfaces the first successful commit and push at default verbosity.
 	firsts branchWorkerLogFirsts
 
+	// retentionLoggedAt throttles the default-verbosity "prune policy retained documents"
+	// line to one per GitTarget subtree per retentionLogInterval. Retaining is a steady
+	// state, so the log must not scale with the reconcile rate. Owned by the event loop
+	// goroutine, like firsts, so it carries no lock.
+	retentionLoggedAt map[string]time.Time
+
 	// hasUnpushedWork mirrors whether the event loop is currently holding a live
 	// open window or any committed-but-not-yet-pushed pending writes. The event
 	// loop is the only writer and, via syncQueueDepthMetric, the only reader; the

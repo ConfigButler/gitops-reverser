@@ -338,6 +338,25 @@ spec:
                 required:
                 - name
                 type: object
+              prune:
+                description: |-
+                  Prune controls which deletion paths may remove documents from this target's folder: an
+                  explicit source DELETE event, and the resync mark-and-sweep that infers a deletion from a
+                  desired snapshot. Omitted, it is `mode: onEvent` — observed deletes are mirrored, inferred
+                  ones are not — for a stored GitTarget as well as a new one.
+                properties:
+                  mode:
+                    default: onEvent
+                    description: |-
+                      Mode selects which deletion paths are enabled. `never` removes nothing; `onEvent` mirrors an
+                      observed source DELETE but never infers a deletion from a resync snapshot; `always` enables
+                      both, restoring full desired-state convergence. Omitted, it is `onEvent`.
+                    enum:
+                    - never
+                    - onEvent
+                    - always
+                    type: string
+                type: object
             required:
             - branch
             - path

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
@@ -32,7 +33,7 @@ func flushEventsForTest(
 ) (bool, error) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	return w.flushEventsToWorktree(context.Background(), worktree, "", events, nil)
+	return w.flushEventsToWorktree(context.Background(), worktree, "", events, nil, v1alpha3.PruneOnEvent)
 }
 
 // Before a kustomize-governed write is committed, the repository is re-rendered WITH it

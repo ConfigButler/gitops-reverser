@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
@@ -70,6 +71,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	base string,
 	events []Event,
 	policy *manifestanalyzer.PlacementPolicy,
+	pruneMode v1alpha3.PruneMode,
 ) (bool, error) {
 	root := worktree.Filesystem.Root()
 	scoped, err := scanRenderScope(root, base)
@@ -81,6 +83,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	// one source cluster; resolve this subtree's GVK->GVR against that cluster's registry.
 	mapper := w.mapperForCluster(clusterIDForEvents(events))
 	batch := newWriteBatch(ctx, w.contentWriter, mapper, scoped.scan, policy, scoped.writeSubdir)
+	batch.pruneMode = pruneMode
 	if err := batch.refusal(); err != nil {
 		return false, err
 	}
@@ -121,6 +124,16 @@ type writeBatch struct {
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to sibling inference and then the canonical path.
 	policy *manifestanalyzer.PlacementPolicy
+	// pruneMode is the GitTarget's effective spec.prune.mode, gating the EXPLICIT delete
+	// path only (applyDelete). The inferred mark-and-sweep is gated a layer up, in the
+	// planner, so a suppressed drop never becomes an action in the first place.
+	//
+	// Set only on the live-event batch, because that is the only batch that folds DELETE
+	// events; the resync batch drops documents through the plan instead and leaves this
+	// zero. It is therefore always read through OrDefault: the zero value is unset, not
+	// `never`, and reading it literally would make a batch that simply never set it stop
+	// mirroring deletes.
+	pruneMode v1alpha3.PruneMode
 	// writeSubdir is spec.path expressed relative to the render anchor (renderBase) — the
 	// write jail. It is "" for a self-contained subtree (renderBase == spec.path), where
 	// every scanned path is writable; it is non-empty only when the scan reached past
@@ -1137,7 +1150,17 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 // the same batch that shifted a multi-document file does not misdirect this one.
 // Removing the last document in a file marks it for deletion; otherwise the surviving
 // documents are kept byte-for-byte.
+//
+// The target's spec.prune.mode gates this whole path: under `never` the managed document is
+// left exactly as Git holds it. The check is FIRST, before the document is even located, so a
+// suppressed delete touches no buffer, records no write intent, and cannot turn the kustomize
+// oracle on — a retention must be indistinguishable from the event never having arrived.
 func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
+	if !wb.pruneMode.OrDefault().AppliesEventDeletes() {
+		log.FromContext(ctx).V(1).Info("source DELETE not mirrored (spec.prune.mode)",
+			"pruneMode", string(wb.pruneMode.OrDefault()), "resource", event.Identifier.Key())
+		return
+	}
 	target, found := wb.resolveDelete(event)
 	if !found {
 		return

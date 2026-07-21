@@ -72,7 +72,7 @@ namespace and target policy, or recognize a ClusterWatchRule as intentionally cl
 | 2 | [Stream-scope collapse](pr2-stream-scope-collapse.md) | A cluster-wide stream cannot silently widen a co-resident named stream. | landed |
 | 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule cannot attach to a GitTarget its ClusterProvider does not admit. | landed |
 | 4 | [Scope by kind](pr4-cluster-scope-only.md) | Rework the unshipped source-namespace work for `rules[].sourceNamespace`, narrow ClusterWatchRule to cluster scope, refuse stored namespaced rules, and document the cross-kind migration. | current branch; breaking |
-| 5 | [GitTarget deletion safety](pr5-gittarget-deletion-safety.md) | Add `prune.mode` and make resync sweep opt-in (`always`). | next PR; ships in the same release as PR 4 |
+| 5 | [GitTarget deletion safety](pr5-gittarget-deletion-safety.md) | Add `prune.mode` and make resync sweep opt-in (`always`). | implemented; ships in the same release as PR 4 |
 
 The discarded top-level `sourceNamespace` plan is retained as a
 [historical implementation baseline](historical-top-level-source-namespace-baseline.md). Its gate,

@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -65,7 +66,16 @@ func applyResyncViaWorktree(
 ) (ResyncStats, bool) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", desired, nil, nil)
+	stats, changed, err := w.applyResyncToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		"",
+		desired,
+		nil,
+		nil,
+		v1alpha3.PruneAlways,
+	)
 	require.NoError(t, err)
 	return stats, changed
 }
@@ -222,7 +232,16 @@ func TestResync_ScopedSweepDropsOnlyTargetType(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
 	scope := &ResyncScope{GVR: schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", nil, scope, nil)
+	stats, changed, err := w.applyResyncToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		"",
+		nil,
+		scope,
+		nil,
+		v1alpha3.PruneAlways,
+	)
 	require.NoError(t, err)
 	require.True(t, changed, "the removed type's document is swept")
 	assert.Equal(t, 1, stats.Deleted, "exactly the configmap is swept, not the secret")
@@ -314,7 +333,16 @@ func TestResync_UnsafePlacementCountsAsPlacementSkipped(t *testing.T) {
 	}
 
 	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
-	stats, _, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", desired, nil, policy)
+	stats, _, err := w.applyResyncToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		"",
+		desired,
+		nil,
+		policy,
+		v1alpha3.PruneAlways,
+	)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, stats.PlacementSkipped,
@@ -367,6 +395,7 @@ func TestResync_SensitiveUpdateCountsAsUpdatedNotSkipped(t *testing.T) {
 		[]manifestanalyzer.DesiredResource{desired},
 		nil,
 		nil,
+		v1alpha3.PruneAlways,
 	)
 	require.NoError(t, err)
 	require.True(t, changed, "the secret is re-encrypted")

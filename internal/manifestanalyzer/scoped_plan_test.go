@@ -21,7 +21,7 @@ func inScopeGroupResource(group, resource string) func(types.ResourceIdentifier)
 // left untouched even though they too have no desired counterpart.
 func TestBuildScopedPlan_SweepsOnlyTargetType(t *testing.T) {
 	store := planStore(t)
-	plan := BuildScopedPlan(store, planFiles(), nil, Policy{}, inScopeGroupResource("apps", "deployments"))
+	plan := BuildScopedPlan(store, planFiles(), nil, convergingPolicy(), inScopeGroupResource("apps", "deployments"))
 
 	counts := plan.Counts()
 	if counts[PlanDropOrphan] != 1 || len(plan.Actions) != 1 {
@@ -46,7 +46,7 @@ func TestBuildScopedPlan_SweepsOnlyTargetType(t *testing.T) {
 func TestBuildScopedPlan_ReconcileDropsInScopeOrphanKeepsSiblings(t *testing.T) {
 	store := planStore(t)
 	desired := []DesiredResource{desiredConfigMap("a")}
-	plan := BuildScopedPlan(store, planFiles(), desired, Policy{}, inScopeGroupResource("", "configmaps"))
+	plan := BuildScopedPlan(store, planFiles(), desired, convergingPolicy(), inScopeGroupResource("", "configmaps"))
 
 	if got := plan.Counts()[PlanDropOrphan]; got != 1 {
 		t.Fatalf("want exactly one drop (ConfigMap b), got %d (actions=%+v)", got, plan.Actions)
@@ -66,8 +66,8 @@ func TestBuildScopedPlan_ReconcileDropsInScopeOrphanKeepsSiblings(t *testing.T) 
 // whole-folder mark-and-sweep), so both share one set of safety guarantees.
 func TestBuildScopedPlan_AllInScopeEqualsBuildPlan(t *testing.T) {
 	store := planStore(t)
-	full := BuildPlan(store, planFiles(), nil, Policy{})
-	scoped := BuildScopedPlan(planStore(t), planFiles(), nil, Policy{}, allInScope)
+	full := BuildPlan(store, planFiles(), nil, convergingPolicy())
+	scoped := BuildScopedPlan(planStore(t), planFiles(), nil, convergingPolicy(), allInScope)
 
 	if len(full.Actions) != len(scoped.Actions) {
 		t.Fatalf("action count differs: BuildPlan=%d allInScope=%d", len(full.Actions), len(scoped.Actions))

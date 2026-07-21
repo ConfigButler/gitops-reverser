@@ -260,6 +260,7 @@ func runScanFolder(dir, format, policy string, stdout, stderr io.Writer) int {
 
 	scanPolicy := manifestanalyzer.ScanPolicy{
 		Acceptance: manifestanalyzer.AcceptancePolicy{Allowlist: manifestanalyzer.DefaultAllowlist()},
+		Plan:       manifestanalyzer.FolderScanPlanPolicy(),
 	}
 	result, err := manifestanalyzer.ScanDir(context.Background(), dir, nil, nil, scanPolicy)
 	if err != nil {

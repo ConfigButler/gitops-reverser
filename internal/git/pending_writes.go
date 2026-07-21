@@ -168,8 +168,27 @@ func (w *BranchWorker) resolveTargetMetadata(
 		BootstrapOptions: buildBootstrapOptions(encryptionConfig),
 		EncryptionConfig: encryptionConfig,
 		Placement:        resolvePlacementPolicy(target.Spec.Placement),
+		PruneMode:        target.EffectivePruneMode(),
 		SourceCluster:    target.SourceCluster(),
 	}, nil
+}
+
+// pruneModeForBase finds the effective prune mode for the GitTarget that owns base among
+// targets, matching exactly as placementPolicyForBase does (see its comment for why both
+// sides must be sanitized, and why at most one target can match).
+//
+// A base with no matching target — an event whose target metadata could not be resolved —
+// falls back to the omitted-field default rather than to the zero value of the type. The
+// zero value is the empty string, which is not a mode at all: it would report false for
+// both deletion paths and silently upgrade an unresolvable target to `never`. onEvent is
+// what an unset policy means everywhere else, so it is what it means here too.
+func pruneModeForBase(targets map[pendingTargetKey]ResolvedTargetMetadata, base string) v1alpha3.PruneMode {
+	for _, md := range targets {
+		if sanitizePath(md.Path) == base {
+			return md.PruneMode.OrDefault()
+		}
+	}
+	return v1alpha3.PruneOnEvent
 }
 
 // resolvePlacementPolicy converts the CRD's declared placement spec into the

@@ -242,6 +242,15 @@ type ResolvedTargetMetadata struct {
 	// from spec.placement. Nil when the GitTarget declares none, in which case new
 	// resources are placed by sibling inference and then the canonical path.
 	Placement *manifestanalyzer.PlacementPolicy
+	// PruneMode is the GitTarget's EFFECTIVE spec.prune.mode — always a concrete value,
+	// because it is resolved through EffectivePruneMode and an omitted policy is onEvent.
+	// It gates both deletion paths: the resync mark-and-sweep (through the planner's
+	// SweepMode) and the steady-state DELETE-event writer.
+	//
+	// Retained on the pending write with the rest of the target's metadata, so a write that
+	// is replayed after a rebase applies the policy that was in force when it was planned
+	// rather than re-reading a spec that may have changed underneath it.
+	PruneMode v1alpha3.PruneMode
 	// SourceCluster is the NAME of the source cluster the GitTarget mirrors from —
 	// (api/v1alpha3).GitTarget.SourceCluster(), the referenced ClusterProvider's name
 	// ("default" for the in-cluster provider). The resync mark-and-sweep resolves this subtree's

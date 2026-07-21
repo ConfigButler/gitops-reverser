@@ -130,6 +130,20 @@ type GitTargetSpec struct {
 	// objects have no namespace. Full resolution table: docs/configuration.md.
 	// +optional
 	AllowedSourceNamespaces *NamespaceMatcher `json:"allowedSourceNamespaces,omitempty"`
+
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// Deliberately MUTABLE, unlike the destination fields above. The whole point of the safe
+	// default is that a target keeps its documents while a scope mistake is diagnosed; turning
+	// convergence back on afterwards must not require deleting and recreating the GitTarget, which
+	// would be the one operation guaranteed to lose the folder's history.
+
+	// Prune controls which deletion paths may remove documents from this target's folder: an
+	// explicit source DELETE event, and the resync mark-and-sweep that infers a deletion from a
+	// desired snapshot. Omitted, it is `mode: onEvent` — observed deletes are mirrored, inferred
+	// ones are not — for a stored GitTarget as well as a new one.
+	// +optional
+	Prune *PrunePolicy `json:"prune,omitempty"`
 }
 
 // GitTargetPlacementSpec declares where NEW resources are written when no document

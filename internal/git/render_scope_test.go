@@ -15,6 +15,7 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
@@ -130,7 +131,7 @@ func flushAtBase(
 ) (bool, error) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	return w.flushEventsToWorktree(context.Background(), worktree, base, events, nil)
+	return w.flushEventsToWorktree(context.Background(), worktree, base, events, nil, v1alpha3.PruneOnEvent)
 }
 
 // The read scope of a pure overlay re-roots at the base's parent, keeps every scanned path

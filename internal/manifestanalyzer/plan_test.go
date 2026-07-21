@@ -116,7 +116,7 @@ func TestBuildPlan_Patch(t *testing.T) {
 	store := planStore(t)
 	// ConfigMaps in sync, Deployment differs.
 	desired := []DesiredResource{desiredConfigMap("a"), desiredConfigMap("b"), desiredDeployWeb(3)}
-	plan := BuildPlan(store, planFiles(), desired, Policy{})
+	plan := BuildPlan(store, planFiles(), desired, convergingPolicy())
 
 	if len(plan.Actions) != 1 {
 		t.Fatalf("want exactly one patch, got %+v", plan.Actions)
@@ -141,7 +141,7 @@ func TestBuildPlan_Patch(t *testing.T) {
 func TestBuildPlan_Create(t *testing.T) {
 	store := planStore(t)
 	desired := append(inSync(), desiredConfigMap("c")) // c is brand new
-	plan := BuildPlan(store, planFiles(), desired, Policy{})
+	plan := BuildPlan(store, planFiles(), desired, convergingPolicy())
 
 	if len(plan.Actions) != 1 {
 		t.Fatalf("actions = %+v, want exactly one create", plan.Actions)
@@ -168,7 +168,7 @@ func TestBuildPlan_Create(t *testing.T) {
 // TestBuildPlan_NoOp: every desired resource matching Git yields no actions at all.
 func TestBuildPlan_NoOp(t *testing.T) {
 	store := planStore(t)
-	plan := BuildPlan(store, planFiles(), inSync(), Policy{})
+	plan := BuildPlan(store, planFiles(), inSync(), convergingPolicy())
 	if len(plan.Actions) != 0 {
 		t.Fatalf("in-sync plan should have no actions, got %+v", plan.Actions)
 	}
@@ -178,7 +178,7 @@ func TestBuildPlan_NoOp(t *testing.T) {
 // document is a managed drop, while the disallowed Secret is left untouched.
 func TestBuildPlan_DropOrphans(t *testing.T) {
 	store := planStore(t)
-	plan := BuildPlan(store, planFiles(), nil, Policy{})
+	plan := BuildPlan(store, planFiles(), nil, convergingPolicy())
 
 	counts := plan.Counts()
 	if counts[PlanDropOrphan] != 3 || len(plan.Actions) != 3 {
@@ -201,7 +201,7 @@ func TestBuildPlan_DropOrphans(t *testing.T) {
 func TestBuildPlan_SkipEncrypted(t *testing.T) {
 	store := planStore(t)
 	desired := append(inSync(), desiredSecret())
-	plan := BuildPlan(store, planFiles(), desired, Policy{})
+	plan := BuildPlan(store, planFiles(), desired, convergingPolicy())
 
 	skip := findAction(t, plan, "secret.sops.yaml")
 	if skip.Kind != PlanSkip {
@@ -231,12 +231,19 @@ func TestBuildPlan_DuplicateSuppressed(t *testing.T) {
 
 	// A desired update to the collided identity is suppressed: the winner is not
 	// patched.
-	if plan := BuildPlan(store, files, []DesiredResource{desiredDeployWeb(3)}, Policy{}); len(plan.Actions) != 0 {
+	if plan := BuildPlan(
+		store,
+		files,
+		[]DesiredResource{desiredDeployWeb(3)},
+		convergingPolicy(),
+	); len(
+		plan.Actions,
+	) != 0 {
 		t.Errorf("collided identity should produce no action on update, got %+v", plan.Actions)
 	}
 
 	// An empty desired set does not drop the collided identity either.
-	if plan := BuildPlan(store, files, nil, Policy{}); len(plan.Actions) != 0 {
+	if plan := BuildPlan(store, files, nil, convergingPolicy()); len(plan.Actions) != 0 {
 		t.Errorf("collided identity should produce no drop, got %+v", plan.Actions)
 	}
 }
@@ -248,11 +255,11 @@ func TestBuildPlan_DuplicateSuppressed(t *testing.T) {
 func TestBuildPlan_StructureOnlyNeverDrops(t *testing.T) {
 	store := BuildStore(context.Background(), planFS(), nil)
 
-	if plan := BuildPlan(store, planFiles(), nil, Policy{}); len(plan.Actions) != 0 {
+	if plan := BuildPlan(store, planFiles(), nil, convergingPolicy()); len(plan.Actions) != 0 {
 		t.Fatalf("structure-only plan should never drop, got %+v", plan.Actions)
 	}
 
-	plan := BuildPlan(store, planFiles(), []DesiredResource{desiredDeployWeb(5)}, Policy{})
+	plan := BuildPlan(store, planFiles(), []DesiredResource{desiredDeployWeb(5)}, convergingPolicy())
 	if len(plan.Actions) != 1 || plan.Actions[0].Kind != PlanPatch {
 		t.Fatalf("structure-only differing object should patch, got %+v", plan.Actions)
 	}
@@ -273,7 +280,7 @@ func TestBuildPlan_NonEditableConstructSkips(t *testing.T) {
 		t.Fatalf("anchor/alias document should not claim its identity")
 	}
 
-	plan := BuildPlan(store, files, []DesiredResource{desiredConfigMap("anchored")}, Policy{})
+	plan := BuildPlan(store, files, []DesiredResource{desiredConfigMap("anchored")}, convergingPolicy())
 	if len(plan.Actions) != 1 || plan.Actions[0].Kind != PlanSkip {
 		t.Fatalf("non-editable construct should yield one skip, got %+v", plan.Actions)
 	}
@@ -284,7 +291,7 @@ func TestBuildPlan_NonEditableConstructSkips(t *testing.T) {
 // a no-op.
 func TestBuildPlan_ProjectPolicy(t *testing.T) {
 	store := planStore(t)
-	policy := Policy{Project: func(_ *unstructured.Unstructured) *unstructured.Unstructured {
+	policy := Policy{Sweep: SweepDropOrphans, Project: func(_ *unstructured.Unstructured) *unstructured.Unstructured {
 		return deployWeb(1) // normalize back to the Git value
 	}}
 	// Live says 9, the projection normalizes back to 1.
@@ -310,7 +317,7 @@ func TestBuildPlan_MissingHydration(t *testing.T) {
 		}
 	}
 	desired := []DesiredResource{desiredConfigMap("a"), desiredConfigMap("b"), desiredDeployWeb(3)}
-	plan := BuildPlan(store, files, desired, Policy{})
+	plan := BuildPlan(store, files, desired, convergingPolicy())
 
 	skip := findAction(t, plan, "deploy.yaml")
 	if skip.Kind != PlanSkip {
@@ -326,7 +333,7 @@ func TestBuildPlan_MissingHydration(t *testing.T) {
 func TestBuildPlan_TwoCreatesSortByIdentity(t *testing.T) {
 	store := planStore(t)
 	desired := append(inSync(), desiredConfigMap("z"), desiredConfigMap("m"))
-	plan := BuildPlan(store, planFiles(), desired, Policy{})
+	plan := BuildPlan(store, planFiles(), desired, convergingPolicy())
 
 	if len(plan.Actions) != 2 {
 		t.Fatalf("want two creates, got %+v", plan.Actions)
@@ -344,7 +351,7 @@ func TestBuildPlan_NilObjectGhostInert(t *testing.T) {
 	store := planStore(t)
 	desired := append(inSync(),
 		DesiredResource{Resource: types.NewResourceIdentifier("", "v1", "configmaps", "default", "ghost")})
-	plan := BuildPlan(store, planFiles(), desired, Policy{})
+	plan := BuildPlan(store, planFiles(), desired, convergingPolicy())
 
 	if len(plan.Actions) != 0 {
 		t.Fatalf("a nil-Object entry must produce no action, got %+v", plan.Actions)
@@ -364,7 +371,7 @@ func TestBuildPlan_NilObjectProtectsExistingResource(t *testing.T) {
 		desiredConfigMap("a"), desiredConfigMap("b"),
 		{Resource: types.NewResourceIdentifier("apps", "v1", "deployments", "default", "web")},
 	}
-	plan := BuildPlan(store, planFiles(), desired, Policy{})
+	plan := BuildPlan(store, planFiles(), desired, convergingPolicy())
 
 	for _, a := range plan.Actions {
 		if a.Kind == PlanDropOrphan {
@@ -390,7 +397,7 @@ func TestBuildPlan_ImpureFileTrueIndices(t *testing.T) {
 	files := []manifestedit.FileContent{{Path: "app.yaml", Content: []byte(impure)}}
 	store := BuildStore(context.Background(), fsys, typeset.NewSnapshotRegistry(sampleClusterSnapshot()))
 
-	plan := BuildPlan(store, files, nil, Policy{})
+	plan := BuildPlan(store, files, nil, convergingPolicy())
 
 	idxByKind := map[string]int{}
 	for _, a := range plan.Actions {

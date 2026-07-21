@@ -7,6 +7,51 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — a resync no longer deletes Git documents by default (next minor; behavior change)
+
+**`GitTarget` gained `spec.prune.mode`, and its effective default changes what a resync does.**
+Previously every resync mark-and-swept: a managed document whose resource was absent from the
+desired snapshot was deleted. That is now opt-in.
+
+| Mode | Explicit source DELETE | Resync mark-and-sweep |
+|---|---|---|
+| `never` | kept | kept |
+| `onEvent` — the effective default | mirrored | kept |
+| `always` — the previous behavior | mirrored | swept |
+
+**Deleting a resource in the cluster still deletes its file.** Only the *inferred* deletion changes:
+the operator no longer concludes "Git has a document, the snapshot does not list it, therefore delete
+it". That inference is only as good as the snapshot, and a bad watch scope, a source-cluster outage,
+or a narrowed RBAC grant all produce a snapshot smaller than reality.
+
+### What you have to do
+
+**Nothing, to be safe.** An existing `GitTarget` has no `spec.prune` and resolves to `onEvent`
+without being edited — Kubernetes does not retro-fill defaults into stored objects, so the operator
+applies the default itself.
+
+**To keep the old behavior**, declare it on each target that needs full convergence:
+
+```yaml
+spec:
+  prune:
+    mode: always
+```
+
+The field is mutable, so you can switch a target to `always` after confirming its watch scope
+without recreating it.
+
+### How to tell whether it affects you
+
+A target under `onEvent` that would have swept documents logs a throttled line naming the target,
+and increments `gitopsreverser_prune_retained_documents_total`. A non-zero counter means the mirror
+holds documents a converged one would not — the configured outcome, not a fault, so no condition
+goes `False` for it.
+
+This ships in the **same release** as the rule-kind scope change below, and is what makes that
+migration non-destructive: a converted `WatchRule` that resolves to a narrower set of namespaces than
+you intended leaves the affected documents in Git instead of deleting them.
+
 ## Unreleased — scope is now carried by the rule kind (next minor; breaking)
 
 **Scope moved from a per-rule field onto the rule KIND.** `WatchRule` is the namespaced surface and
