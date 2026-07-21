@@ -278,7 +278,7 @@ substituted with the empty set, and never with the full set.
 
 | | **Establishing** a grant — no previously resolved scope for this rule | **Maintaining** a scope — a previously resolved scope exists |
 |---|---|---|
-| Where it applies | This PR's gate: a WatchRule asking for a namespace it has not been granted. | A WatchRule already running under a selector-resolved scope. PR 4 defers selector-backed wildcards, but preserves this exact-name selector contract. |
+| Where it applies | This PR's gate: a WatchRule asking for a namespace it has not been granted. | A WatchRule already running under a selector-resolved scope. PR 4 ships selector-backed wildcards and resolves them from this same source-namespace snapshot, so this contract governs them too. |
 | Effect of *cannot say* | The grant is not established, so the rule is **not compiled**. Nothing runs; nothing is swept. | The **last known-good scope is retained** and keeps running. No narrowing, no widening, **no sweep**. |
 | Retryable error (cache syncing, source unreachable) | `Unknown` / `CheckingSourceNamespacePolicy`, `Stalled=False`. Retried. | Same. |
 | Terminal error (source Namespace `list` is `Forbidden` for a selector policy) | `False` / `SourceNamespacePolicyUnavailable`, **`Stalled=True`**. | `Unknown` / `SourceNamespacePolicyUnavailable`, **`Stalled=False`**. |

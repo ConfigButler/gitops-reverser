@@ -549,9 +549,11 @@ Instead:
   2. the conversion — a namespaced `ClusterWatchRule` becomes a `WatchRule` **in the tenant namespace**;
      its namespaced items become `sourceNamespace: "*"` (or explicit names); any cluster-scoped items
      stay behind in a revised ClusterWatchRule;
-  3. the warning that a target with no policy admits **nothing**, so converting without also declaring
-     `allowedSourceNamespaces` narrows production data — and that under PR 5's `onEvent` default the
-     narrowing leaves stale documents in Git rather than deleting them;
+  3. the warning that a target with no policy admits **only** a WatchRule whose every item watches its
+     own namespace — every wildcard or cross-namespace item a conversion produces is denied — so
+     converting without also declaring `allowedSourceNamespaces` narrows production data; and that
+     under PR 5's `onEvent` default the narrowing leaves stale documents in Git rather than deleting
+     them;
   4. a `kubectl get clusterwatchrules -o json | jq …` one-liner that lists every affected object and its
      target.
 

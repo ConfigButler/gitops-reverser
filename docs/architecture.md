@@ -15,10 +15,12 @@ with the source, the source wins; deeper design records live under [docs/design/
 
 Source and destination connections deliberately have different scopes. A namespaced `GitProvider` is a
 team's Git write boundary: its credential, branch policy, and targets usually belong together.
-`ClusterProvider` is cluster-scoped because it represents one shared source identity whose client,
-discovery surface, watch state, and attribution partition must remain consistent across namespaces.
-`allowedNamespaces` then explicitly controls which control-cluster namespaces may reference that shared
-source; it does not grant source-cluster RBAC or select source namespaces.
+`ClusterProvider` is cluster-scoped because it represents one shared **logical source identity** whose
+client, discovery surface, watch state, and attribution partition must remain consistent across
+namespaces. `allowedNamespaces` then explicitly controls which control-cluster namespaces may reference
+that shared source; it does not grant source-cluster RBAC or select source namespaces. The source identity
+is the `ClusterProvider` name, not an API-server identity probe: two providers configured for the same
+server deliberately remain separate source partitions.
 
 ***
 
@@ -32,9 +34,10 @@ with a newer remote commit, the operator fetches the new remote state, resets it
 replays its retained writes from the API.
 
 **Watch is the only object-state source.** Each `GitTarget` names one `ClusterProvider` and opens one
-Kubernetes watch per claimed `(GVR, scope)` against that source, with `sendInitialEvents=true`. Every
-Git write derives from persisted state the watch observed. Audit never defines *what* changed — it only,
-optionally, explains *who* caused it.
+Kubernetes watch per claimed `(GVR, scope)` against that source, with `sendInitialEvents=true`. For a
+namespaced type, a scope is one concrete source namespace; cluster-scoped types use the cluster-wide
+scope. Every Git write derives from persisted state the watch observed. Audit never defines *what*
+changed — it only, optionally, explains *who* caused it.
 
 **Sensitive resources are never written in plaintext.** Core Secrets and configured sensitive resource
 types must be encrypted before they touch the Git worktree. If encryption cannot be configured, the write
@@ -166,11 +169,23 @@ Git destination. `ClusterProvider` supplies the source connection and authorizat
 
 ```mermaid
 graph LR
-    WR[WatchRule] -->|targetRef| GT[GitTarget]
-    CWR[ClusterWatchRule] -->|targetRef| GT
-    CR[CommitRequest] -->|targetRef| GT
-    GT -->|clusterProviderRef| CP[ClusterProvider]
-    GT -->|providerRef| GP[GitProvider]
+    subgraph CONTROL["Control plane: operator cluster"]
+        WR[WatchRule] -->|targetRef| GT[GitTarget]
+        CWR[ClusterWatchRule] -->|targetRef| GT
+        CR[CommitRequest] -->|targetRef| GT
+        GT -->|clusterProviderRef| CP[ClusterProvider]
+        GT -->|providerRef| GP[GitProvider]
+        KCFG[("Remote kubeconfig Secret\noperator namespace")]
+        WM["Watch manager\nper-provider source context"]
+    end
+
+    subgraph SOURCE["Source cluster selected by ClusterProvider"]
+        API["Kubernetes API\ndiscovery · Namespace policy · watches"]
+    end
+
+    CP -. "optional kubeconfig reference" .-> KCFG
+    CP -->|"source identity + config"| WM
+    WM -->|"source client"| API
 
     style GP fill:#e8f4fd,stroke:#2196f3
     style CP fill:#e8f4fd,stroke:#2196f3
@@ -179,6 +194,13 @@ graph LR
     style CWR fill:#fff3e0,stroke:#ff9800
     style CR fill:#f3e5f5,stroke:#8e24aa
 ```
+
+The diagram follows one `GitTarget`. A provider with no `spec.kubeConfig` selects the operator's own
+cluster as its source; any provider name, including `default`, can instead select a remote cluster through
+a kubeconfig Secret in the operator namespace. Each referenced `ClusterProvider` gets an independent
+source context — client, discovery catalog, followability registry, source-namespace snapshot, and
+reachability state. Its `GitTarget`s open their source watches through that context. The contexts are keyed
+by provider name and are released when no `GitTarget` references them.
 
 | CRD | Scope | One line role |
 |---|---|---|
@@ -210,12 +232,23 @@ namespace selection of its own. Both share the rule model:
 * `WatchRule` adds `rules[].sourceNamespace`: omitted for the rule's own namespace, an exact name, or
   `*` for every namespace `GitTarget.spec.allowedSourceNamespaces` admits. Anything but the rule's own
   namespace passes the source-namespace gate (`SourceNamespaceAuthorized`); the resolved set is
-  expanded to concrete names at compile time, so no wildcard reaches the data plane.
+  expanded to concrete names at compile time, so no wildcard reaches the data plane. A wildcard opens one
+  stream for each admitted namespace.
 * `ClusterWatchRule` has no scope or namespace choice. `rules[].scope` is deprecated, accepts only
   `Cluster`, and a stored `Namespaced` value is refused at compile time.
 
 Subresources are rejected in rule resources. Mirroring operates on top level resources; the selected
 `/scale` subresource effect is translated separately into a parent `spec.replicas` field patch.
+
+The two namespace policies intentionally live in different planes:
+
+* `ClusterProvider.spec.allowedNamespaces` authorizes **control-cluster** namespaces to reference the
+  provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
+* `GitTarget.spec.allowedSourceNamespaces` bounds what a target may mirror **from its source cluster**.
+  Exact names need no Namespace read; selector and `sourceNamespace: "*"` policies are evaluated from a
+  per-source-cluster Namespace-label snapshot. The source credential needs permission to list Namespaces
+  for that selector path; otherwise exact-name policies still work but selector policies are held
+  unevaluatable rather than widened or treated as empty.
 
 ### CommitRequest
 
@@ -311,39 +344,48 @@ Kubernetes native, Flux, and Argo CD Secret key dialects (see
 defaulting convention: a provider without `spec.kubeConfig` uses the operator's in-cluster client, while
 any name (including `default`) may instead carry a remote kubeconfig resolved from the operator namespace.
 
-Its cluster scope is intentional. Several namespaces may mirror one source cluster, but the source
-identity must not vary by target because it keys source clients, discovery, watches, and attribution.
+Its cluster scope is intentional. Several namespaces may mirror through one provider, but that provider's
+source identity must not vary by target because it keys source clients, discovery, watches, and
+attribution. The identity is the provider name rather than a deduplicated physical-cluster identity, so
+two providers pointing at the same API server still have separate contexts and authorization boundaries.
 `spec.allowedNamespaces` is therefore a deny-by-default control-cluster policy, enforced on every
 reconcile before watches start — so tightening it also stops an already-existing `GitTarget`, which an
-admission-time check could not do. It guards which tenant may cause the operator to export a shared source; it
-does not expand that source credential's Kubernetes permissions. The `ClusterProvider` validates its
+admission-time check could not do. It guards which tenant may cause the operator to export a shared source;
+it does not expand that source credential's Kubernetes permissions. The `ClusterProvider` validates its
 connection inputs, while a `GitTarget` projects provider readiness and live source reachability.
+
+Remote credentials are re-read on the catalog-refresh cadence, not on every watch reconnect. A rotated
+Secret or a `qps`/`burst` change rebuilds that provider's clients and restarts only the watches using that
+provider; a definitively invalid or missing credential fails closed and stops those watches. An unreachable
+remote similarly makes only its dependent targets unready — it does not block discovery or watches for
+other source contexts.
 
 ***
 
 ## Common Flows
 
-Say a `GitTarget` in namespace `team-a` watches ConfigMaps, and a user runs `kubectl apply` to edit the
-ConfigMap `team-a/app-config`. Here is the path that change takes.
+Say a `GitTarget` in control-cluster namespace `team-a` watches ConfigMaps, and a user runs `kubectl apply`
+to edit the ConfigMap `team-a/app-config` in that target's selected source cluster. Here is the path that
+change takes.
 
 ```mermaid
-flowchart TD
-    subgraph K8S["Kubernetes API server"]
+flowchart LR
+    subgraph CONTROL["Control plane: operator cluster"]
+        CP[ClusterProvider]
+        KCFG[("Remote kubeconfig Secret\noperator namespace")]
+        OWN["GitTarget watch set\nclaimed ∩ followable (GVR, scope)"]
+        RELEVANCE["Relevance filter\nsanitize · followability · no-op diff"]
+        RESOLVE["Resolver\nbounded grace window"]
+        GTES[GitTargetEventStream]
+        AFACTS["Audit fact extractor"]
+        AINDEX[("Redis attribution index\nTTL, keyed for join")]
+    end
+
+    subgraph SOURCE["Source cluster selected by ClusterProvider\n(the control cluster when kubeConfig is omitted)"]
         WATCH["WATCH + sendInitialEvents replay<br/>(per claimed GVR + scope)"]
         DISC["Discovery: CRDs / APIServices"]
+        NS["Namespace labels\nfor allowedSourceNamespaces selectors"]
         AUDIT["/audit-webhook/&lt;provider&gt; (optional)"]
-    end
-
-    subgraph PERGT["Per GitTarget: internal/watch + internal/reconcile"]
-        OWN["GitTarget watch set<br/>(claimed ∩ followable (GVR, scope))"]
-        RELEVANCE["Relevance filter<br/>(sanitize · followability · no-op diff)"]
-        RESOLVE["Resolver<br/>(bounded grace window)"]
-        GTES[GitTargetEventStream]
-    end
-
-    subgraph ATTR["Attribution (only when attribution enabled): internal/webhook"]
-        AFACTS["Audit fact extractor"]
-        AINDEX[("Redis attribution index<br/>(TTL, keyed for join)")]
     end
 
     subgraph GIT["Git writes: internal/git"]
@@ -352,7 +394,11 @@ flowchart TD
         PUSH["Atomic push"]
     end
 
+    CP -. "optional Secret reference" .-> KCFG
+    CP -->|"source client"| DISC
+    CP -->|"source client"| WATCH
     DISC --> OWN
+    NS -. "selector snapshot" .-> OWN
     WATCH --> OWN
     OWN --> RELEVANCE
     RELEVANCE --> RESOLVE
@@ -520,9 +566,11 @@ that replay:
 3. then the watch streams live events.
 
 **This mark-and-sweep is load-bearing and fires only on watch re-establishment, never on a timer** —
-there is no periodic LIST or hourly drift sweep. It is the only thing that reconciles a delete that
-happened while no watch was running, so it is what makes the watch safe to lose and restart. The sweep
-is applied through the same per-type reconcile/writer machinery as live writes (see
+there is no periodic **object** LIST or hourly object-drift sweep. (A target using a
+selector-based `allowedSourceNamespaces` policy periodically lists only Namespace labels to maintain that
+authorization scope; it never uses that list to infer object state or sweep Git.) The sweep is the only
+thing that reconciles a delete that happened while no watch was running, so it is what makes the watch safe
+to lose and restart. It is applied through the same per-type reconcile/writer machinery as live writes (see
 [Mark and Sweep Resync](#mark-and-sweep-resync)).
 
 If the apiserver forbids `sendInitialEvents` for a type, the operator logs an explicit warning, starts a
@@ -683,9 +731,10 @@ Commit:     GitOps Reverser <noreply@configbutler.ai>
 CommitDate: Mon Jun 30 12:00:05 2026 +0000
 ```
 
-When attribution is off, or no fact matched, the author is set to the operator as well, so both lines are
-identical. A Git UI will show this as a single "author". Effectively we say "we
-don't know who, so we don't claim":
+When attribution is off, or when a reconcile/resync write has no actor because attribution was never
+attempted, the author is set to the operator as well, so both lines are identical. A Git UI will show this
+as a single "author". This is configured-author mode: the operator created the Git commit and makes no
+claim about a Kubernetes actor.
 
 ```console
 $ git show --no-patch --format=fuller HEAD
@@ -796,8 +845,12 @@ keeps only mechanical bookkeeping. **All judgement across scans lives in the typ
 (`Registry.UpdateFromScan`): a failed group/version keeps serving last known facts instead of looking
 like an empty API surface, and a group/version that vanishes from a complete scan rides a removal grace
 rather than being pruned. Both protect against accidental Git deletions on a discovery blink (see
-[typeset-owns-discovery-grace.md](spec/typeset-owns-discovery-grace.md)). The catalog refreshes on
-startup, periodically, and when CRD/APIService trigger informers fire.
+[typeset-owns-discovery-grace.md](spec/typeset-owns-discovery-grace.md)). Every active source context has
+its own catalog and registry, so a CRD served only by `prod-eu-1` is never resolved for a target mirroring
+`prod-us-1`. Catalogs refresh at startup and on the 30-second reconciliation cadence. CRD/APIService
+trigger informers run only in the **control plane**, where the operator's own CRDs live; a remote source's
+API-surface change is discovered on that periodic refresh or when a rule/target reconciliation explicitly
+refreshes that source.
 
 ### TypeRegistry and Followability
 
@@ -818,7 +871,8 @@ A projection for each `GitTarget` from the type registry, filtered by that targe
 resolved GVK/GVR/scope plus namespace and operation coverage. **This is where rule matching effectively
 happens:** it resolves the set of `(GVR, scope)` a `GitTarget` claims, so the watch manager opens one
 watch per claimed ∩ followable `(GVR, scope)` and scopes each watch's events back to that GitTarget's
-namespaces.
+source namespaces. A `sourceNamespace: "*"` rule is already expanded here, so each admitted namespace has
+its own stream and mark-and-sweep boundary.
 
 ***
 
@@ -839,8 +893,10 @@ because Git already holds current state. This section is the authoritative contr
 
 The watch manager is a controller runtime `Runnable` (`NeedLeaderElection`). It owns **type level**
 discovery, the per-GitTarget watch sets, and the watched type tables for GitTargets. Its object-state
-intake is the watches themselves; its discovery watches/informers track the API surface (CRDs /
-APIServices) rather than driving object state.
+intake is the watches themselves. Every active `ClusterProvider` has an independent source context; its
+catalog, registry, dynamic client, and reachability can fail or recover without borrowing facts from another
+source. Discovery trigger informers (CRDs / APIServices) run only in the control plane and accelerate its
+catalog refresh; remote source catalogs use the periodic refresh.
 
 On `Start` it bootstraps the RuleStore from existing rules, refreshes the API catalog, updates the
 TypeRegistry, builds watched type tables, and opens one watch per claimed ∩ followable `(GVR, scope)`.
@@ -855,17 +911,20 @@ mark-and-sweep at `initial-events-end`, then streams live events through the rel
 author resolver into the GitTargetEventStream. On disconnect or `410 Gone` the goroutine reconnects and
 repeats the replay + sweep. See [Recovery: replay plus mark-and-sweep](#recovery-replay-plus-mark-and-sweep).
 
-There is **no periodic LIST, no checkpoint, and no timer-driven drift sweep** — the sweep fires only on
-watch re-establishment.
+There is **no periodic object LIST, object checkpoint, or timer-driven object-drift sweep** — the sweep
+fires only on watch re-establishment. Selector-based source-namespace authorization is separate: it may
+periodically list Namespace labels in the relevant source cluster, but that list never materializes objects
+or triggers a Git sweep.
 
 ### Rule Change Reconcile
 
-A WatchRule / ClusterWatchRule / GitTarget / CRD / APIService change reaches a GitTarget through the
-**GitTarget controller**, which `Watches` those objects (generation change predicates) and queues the
-affected GitTarget again. On reconcile the GitTarget resolves its claimed `(GVR, scope)` set again; a type
-a new rule starts watching gets a new watch opened (with a `sendInitialEvents` replay) and a type no
-longer claimed has its watch closed. The watch manager refreshes the API catalog and the watched type
-tables.
+A WatchRule / ClusterWatchRule / GitTarget change, or a **control-plane** CRD / APIService change, reaches
+a GitTarget through the **GitTarget controller**, which `Watches` those objects (generation change
+predicates) and queues the affected GitTarget again. On reconcile the GitTarget refreshes its own source
+catalog and resolves its claimed `(GVR, scope)` set again; a type a new rule starts watching gets a new
+watch opened (with a `sendInitialEvents` replay) and a type no longer claimed has its watch closed. A remote
+CRD / APIService change has no trigger informer; the next periodic source-catalog refresh performs the same
+re-resolution. The watch manager then refreshes the watched type tables.
 
 ### Mark and Sweep Resync
 

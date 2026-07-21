@@ -3,7 +3,8 @@
 > **Design in five PRs.** PRs 1–3 are landed. The current branch becomes **PR 4**, the selected
 > scope-by-kind design. **PR 5** is the deletion-safety change, implemented in the PR immediately
 > after it. **No release may be cut between the two merges** — the first release containing PR 4 also
-> contains PR 5. Index: [INDEX.md](../../INDEX.md).
+> contains PR 5. Review findings still open against PR 4 are tracked in
+> [PR 4 review follow-ups](pr4-review-followups.md). Index: [INDEX.md](../../INDEX.md).
 
 ## Decision
 
@@ -124,8 +125,13 @@ direction. PR 4 is deliberately breaking:
   did not.
 
 There is no migration tool. The breaking change is carried by the release notes and
-[UPGRADING.md](../../UPGRADING.md), which must state that a target with no declared policy admits
-nothing — so converting without declaring `allowedSourceNamespaces` narrows what is mirrored.
+[UPGRADING.md](../../UPGRADING.md), which must state precisely what a target with no declared policy
+admits, because the two halves pull in opposite directions: a WatchRule whose every item watches its
+OWN namespace keeps working untouched (reason `LegacySourceNamespace`, no policy and no delegation
+flag required), while every wildcard or cross-namespace item is denied. A conversion produces exactly
+the second kind, so converting without also declaring `allowedSourceNamespaces` narrows what is
+mirrored. Stating the denial unqualified would tell every existing operator their rules break on
+upgrade, which is not true and is the more expensive error of the two.
 
 ## Deferred work
 
