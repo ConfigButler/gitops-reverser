@@ -63,6 +63,20 @@ Do **not** restate `namespaces`, `customresourcedefinitions` or `apiservices`: t
 role already carries them. A `WatchRule` naming a type you did not grant will fail to watch
 it, so the list must cover every type your rules name.
 
+### `namespaces` on a REMOTE source cluster
+
+The manager role's `namespaces` `get`/`list`/`watch` covers the operator's **own** cluster. A remote
+`ClusterProvider` whose `GitTarget`s declare a **selector-based** `allowedSourceNamespaces` — or whose
+`WatchRule`s use `sourceNamespace: "*"` against one — needs the same for the identity in that
+provider's kubeconfig, because the selector matches labels on `Namespace`s in the *source* cluster.
+
+Exact `names` entries stay usable without it: a name-based policy, including a `"*"` item resolved
+against a names-only policy, is answered from the API objects and never reads a `Namespace`. That is
+a deliberate degradation path, not an oversight. When the source credential is forbidden from listing
+Namespaces, a selector policy reports `SourceNamespaceAuthorized=False` with reason
+`SourceNamespacePolicyUnavailable` (or `Unknown` while retaining an already-resolved scope) rather
+than silently narrowing to nothing.
+
 ## The operator does not read Secrets wholesale
 
 It holds **no Secret informer**: Secrets are excluded from the manager's cache

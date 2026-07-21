@@ -182,8 +182,8 @@ graph LR
 
 | CRD | Scope | One line role |
 |---|---|---|
-| `WatchRule` | namespaced | which resources in *this* namespace route to a GitTarget |
-| `ClusterWatchRule` | cluster | which cluster scoped or cluster wide resources route to a GitTarget |
+| `WatchRule` | namespaced | which NAMESPACED resources, in which source namespaces, route to a GitTarget |
+| `ClusterWatchRule` | cluster | which CLUSTER SCOPED resources route to a GitTarget |
 | `CommitRequest` | namespaced | a one shot "save the open window now" signal |
 | `GitTarget` | namespaced | one materialization from a source provider to `(provider, branch, path)` |
 | `ClusterProvider` | cluster | one source-cluster connection plus namespace access policy |
@@ -196,9 +196,10 @@ graph LR
 * **Controllers**: [watchrule_controller.go](../internal/controller/watchrule_controller.go),
   [clusterwatchrule_controller.go](../internal/controller/clusterwatchrule_controller.go)
 
-A `WatchRule` selects resources in its own namespace and routes matching events to a same namespace
-`GitTarget`. A `ClusterWatchRule` does the same for cluster scoped resources or namespaced resources
-across the whole cluster, with an explicit namespace `targetRef`. Both share the rule model:
+Scope is carried by the rule KIND. A `WatchRule` selects NAMESPACED resources and routes matching
+events to a same namespace `GitTarget`; each of its rule items names the source namespace it watches.
+A `ClusterWatchRule` selects CLUSTER SCOPED resources, with an explicit namespace `targetRef` and no
+namespace selection of its own. Both share the rule model:
 
 * `spec.rules[]`: OR resource rules (`MinItems=1`).
 * `rules[].operations`: `CREATE` / `UPDATE` / `DELETE` / `*`; omitted means all.
@@ -206,7 +207,12 @@ across the whole cluster, with an explicit namespace `targetRef`. Both share the
   group; `*` is all.
 * `rules[].apiVersions`: omitted means the preferred served version.
 * `rules[].resources`: plural resource names or `*`.
-* `ClusterWatchRule` adds `rules[].scope`: `Cluster` or `Namespaced` (each rule independently scoped).
+* `WatchRule` adds `rules[].sourceNamespace`: omitted for the rule's own namespace, an exact name, or
+  `*` for every namespace `GitTarget.spec.allowedSourceNamespaces` admits. Anything but the rule's own
+  namespace passes the source-namespace gate (`SourceNamespaceAuthorized`); the resolved set is
+  expanded to concrete names at compile time, so no wildcard reaches the data plane.
+* `ClusterWatchRule` has no scope or namespace choice. `rules[].scope` is deprecated, accepts only
+  `Cluster`, and a stored `Namespaced` value is refused at compile time.
 
 Subresources are rejected in rule resources. Mirroring operates on top level resources; the selected
 `/scale` subresource effect is translated separately into a parent `spec.replicas` field patch.
@@ -775,8 +781,10 @@ How a user's `WatchRule` becomes "this GitTarget follows these concrete types in
 
 * **Source**: [internal/rulestore/store.go](../internal/rulestore/store.go)
 
-An in memory cache populated by the WatchRule and ClusterWatchRule controllers. Compiled rules carry the
-full chain from rule to `GitTarget`, `GitProvider`, branch, and path. It is read by the watch manager (to
+An in memory cache populated through the shared compile paths (`watch.CompileWatchRule` /
+`watch.CompileClusterWatchRule`) that both the controllers and the startup bootstrap call, so a
+restart cannot seed an ungated rule. Compiled rules carry the full chain from rule to `GitTarget`,
+`GitProvider`, branch, and path, plus each WatchRule item's RESOLVED source-namespace set. It is read by the watch manager (to
 build watched type tables for GitTargets) and the rule change reconcile path.
 
 ### APIResourceCatalog

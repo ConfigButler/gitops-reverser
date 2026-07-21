@@ -1,0 +1,22 @@
+apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  targetRef:
+    name: {{ .DestinationName }}
+  rules:
+  # apiVersions: ["*"] is the documented "match all versions" form
+  # (see api/v1alpha3/watchrule_types.go). The live audit path honours
+  # it; the startup snapshot path must honour it too, otherwise a controller
+  # restart snapshots an empty cluster and deletes the whole tracked tree.
+  #
+  # This was a ClusterWatchRule with `scope: Namespaced` until PR 4 made that kind
+  # cluster-scope-only. The conversion is the one UPGRADING.md prescribes: a WatchRule
+  # in the namespace whose objects are mirrored. sourceNamespace is omitted, so the rule
+  # watches its own namespace — which is where the fixture's orders live.
+  - operations: [CREATE, UPDATE, DELETE]
+    apiGroups: ["{{ .Group }}"]
+    apiVersions: ["*"]
+    resources: ["icecreamorders"]

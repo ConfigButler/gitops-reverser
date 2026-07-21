@@ -7,6 +7,102 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — scope is now carried by the rule kind (next minor; breaking)
+
+**Scope moved from a per-rule field onto the rule KIND.** `WatchRule` is the namespaced surface and
+gained `spec.rules[].sourceNamespace`; `ClusterWatchRule` is cluster-scoped only and lost its scope
+choice. There is deliberately **no migration tool**: the conversion is cross-kind, so a conversion
+webhook cannot perform it.
+
+```yaml
+# WatchRule — each rule item names the source namespace it watches.
+spec:
+  rules:
+    - resources: [configmaps]              # omitted → this WatchRule's own namespace
+    - resources: [secrets]
+      sourceNamespace: repo-config         # one admitted source namespace
+    - resources: [deployments]
+      sourceNamespace: "*"                 # every namespace the GitTarget admits, live
+```
+
+### Two capabilities are removed on purpose
+
+- **Platform-authored namespaced mirroring from outside the tenant namespace.** A `ClusterWatchRule`'s
+  cross-namespace `targetRef` let a platform team mirror a tenant's namespaced resources with no
+  object in that tenant's namespace. A platform administrator may still own the manifest, but it must
+  now live in the tenant namespace.
+- **Rule-author-declared all-namespace watching.** `scope: Namespaced` let the rule author reach every
+  namespace. The replacement is destination-declared:
+  `GitTarget.spec.allowedSourceNamespaces: {selector: {}}` plus `sourceNamespace: "*"` — same reach,
+  declared by the `GitTarget` owner rather than by the rule author, and legible on the target.
+
+### Both superseded fields are retained for one release as loud rejections
+
+Neither field was deleted, because a deleted field is the **silent** option: CRD pruning happens on
+write, so a re-applied legacy manifest would be accepted with the value dropped — no error anywhere —
+and the rule would quietly change what it mirrors.
+
+| Field | Now |
+|---|---|
+| `ClusterWatchRule.spec.rules[].scope` | optional, defaults to `Cluster`, and the enum accepts only `Cluster`. `scope: Namespaced` is **rejected at apply time**; a stored one is refused at compile with `ClusterScopeOnly`. |
+| `WatchRule.spec.sourceNamespace` | **rejected at apply time** (`spec.sourceNamespace moved to spec.rules[].sourceNamespace`); a stored one is refused at compile with `SourceNamespaceFieldRemoved`. |
+
+Both are removed entirely one release from now, or at `v1beta1`.
+
+### `ClusterProvider.spec.allowWatchRuleSourceNamespaceOverride` → `allowSourceNamespaceOverride`
+
+A plain rename with no deprecation shim: the field never reached a release, so no stored object can
+carry the old key. Semantics, and the `false` default, are unchanged. It is required for **every**
+cross-source-namespace request, including `sourceNamespace: "*"`.
+
+### Migration
+
+List every affected object and its target:
+
+```bash
+kubectl get clusterwatchrules -o json | jq -r '
+  .items[]
+  | select(any(.spec.rules[]; .scope == "Namespaced"))
+  | "\(.metadata.name)\ttarget=\(.spec.targetRef.namespace)/\(.spec.targetRef.name)\tnamespaced-rules=\(
+      [.spec.rules[] | select(.scope == "Namespaced") | (.resources | join(","))] | join(" | ")
+    )"'
+```
+
+For each one:
+
+1. **Split it.** Any cluster-scoped items stay behind in a revised `ClusterWatchRule` (drop their
+   `scope:` line — it defaults to `Cluster`). If none remain, delete the object.
+2. **Create a `WatchRule` in the TENANT namespace** — the namespace of the `GitTarget` the rule
+   targets — carrying the namespaced items. Each becomes `sourceNamespace: "*"` to keep cluster-wide
+   reach, or an explicit name where you know the one namespace you meant.
+3. **Declare the target's policy.** This is the step to get right:
+   **a `GitTarget` that declares no `allowedSourceNamespaces` admits NOTHING to a `"*"` item, and a
+   declared policy is exhaustive with no self-namespace exception.** Converting without also
+   declaring the policy therefore *narrows production data*. Use `selector: {}` for "every source
+   namespace", `names: [...]` for an explicit set, and remember to include any co-resident legacy
+   `WatchRule`'s own namespace.
+4. **Delegate on the provider.** Set `allowSourceNamespaceOverride: true` on the `ClusterProvider`
+   the target mirrors through; without it every non-own-namespace item, `"*"` included, is refused.
+
+A narrowing that slips through is visible rather than silent — `SourceNamespaceAuthorized=False`,
+`Stalled=True`, streams stopped, and a message naming the failing item — but the documents already in
+Git are governed by `GitTarget.spec.prune.mode`, which ships in the same release and defaults to
+`onEvent`: prior documents are **left in place** rather than swept. (The two changes are never
+released apart.) Verify with `kubectl get watchrules -o wide`, whose `SourceAuthorized` column carries
+the verdict.
+
+### Rolling back
+
+**Rolling the controller back past this release is unsupported while migrated manifests exist.** The
+previous controller neither understands `rules[].sourceNamespace` (so a rule resolves to its own
+namespace — a *narrower* desired set) nor has `prune.mode` (so a resync sweeps). Together that
+deletes the mirrored namespaces' documents. If a rollback is unavoidable, remove or narrow the
+affected `WatchRule`s **first**.
+
+The same skew exists inside a rolling upgrade: CRDs are cluster-wide, so an old leader can observe a
+new `WatchRule`, ignore `rules[].sourceNamespace`, and mirror the wrong namespace's content into Git.
+**Complete the controller rollout before applying migrated manifests.**
+
 ## Unreleased — unresolved attribution is visible in Git (next minor; author identity changes)
 
 When `attribution.enabled=true` and the operator cannot match a live watch event to an audit fact within

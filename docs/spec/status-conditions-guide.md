@@ -59,7 +59,7 @@ const (
     TypeGitPathAccepted       = "GitPathAccepted"
     TypeGitTargetReady       = "GitTargetReady"
 
-    // WatchRule only: whether the rule's EFFECTIVE source namespace is authorized.
+    // WatchRule only: whether every rule item's RESOLVED source-namespace scope is authorized.
     TypeSourceNamespaceAuthorized = "SourceNamespaceAuthorized"
 )
 ```
@@ -91,6 +91,31 @@ Canonical reads:
   "narrow to nothing" — and a narrowed scope is the input to a resync sweep, so it would delete a
   tenant's Git content over a transient outage. An unevaluatable policy therefore never produces a
   resolved namespace set: not the empty one, and not the full one.
+
+  **It is one condition per object, aggregated over every `spec.rules[]` item.** The precedence is
+  stated rather than derived, because two implementations of "worst wins" would otherwise disagree
+  about a mixed rule. First match wins:
+
+  1. any item **denied** → `False` / `SourceNamespaceNotAllowed` / `Stalled=True`
+  2. any item **permanently unevaluatable** while establishing → `False` /
+     `SourceNamespacePolicyUnavailable` / `Stalled=True`
+  3. any item retaining a scope it can no longer re-evaluate → `Unknown` /
+     `SourceNamespacePolicyUnavailable` / `Stalled=False`
+  4. any item **still resolving** → `Unknown` / `CheckingSourceNamespacePolicy`
+  5. every item admitted, at least one naming a namespace other than the rule's own → `True` /
+     `SourceNamespaceAllowed`
+  6. every item omitted → `True` / `LegacySourceNamespace`
+
+  A **denied explicit name refuses the whole rule**; the item is never trimmed away so the rest can
+  run, because mirroring two of the three namespaces a rule asked for is worse than a loud failure.
+  Messages therefore name the deciding item by index *and* by its resources and requested namespace —
+  an index alone goes stale the moment somebody reorders the list while reading the message.
+
+  One more `True` reason exists so a no-op cannot look healthy: `NoAdmittedSourceNamespaces`, when
+  every item is authorized but the resolved scope is **empty** (a `sourceNamespace: "*"` against a
+  policy that currently admits nothing). The rule is not stalled — nothing is wrong with it — but it
+  mirrors nothing, and `Ready=True` with no explanation would hide that. The existing
+  `StreamsRunning` and `ResourcesResolved` surfaces show the zero.
 
 ### CommitRequest (one-shot)
 

@@ -7,15 +7,15 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-// This spec covers WatchRule.spec.sourceNamespace end to end (see
-// docs/design/watchrule-source-namespace/historical-top-level-source-namespace-baseline.md; the
-// field moves onto spec.rules[] in pr4-cluster-scope-only.md).
+// This spec covers WatchRule.spec.rules[].sourceNamespace end to end (see
+// docs/design/watchrule-source-namespace/pr4-cluster-scope-only.md).
 //
 // The load-bearing assertion is the GIT PATH one. The whole design rests on a claim that is
 // invisible from the API types: sourceNamespace changes which namespace is WATCHED and nothing
@@ -25,7 +25,8 @@ import (
 // tenant's repository. Nothing else in the suite would catch it.
 //
 // The refusal spec is its safety twin: an unauthorized override must publish a terminal condition
-// AND write nothing at all.
+// AND write nothing at all. The wildcard spec is the third: "*" must resolve to exactly the
+// GitTarget's admitted set — never to every namespace that exists.
 var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func() {
 	const (
 		providerName = "gitprovider-srcns"
@@ -36,24 +37,30 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		refusedTarget   = "srcns-refused"
 		grantedRule     = "srcns-granted-rule"
 		refusedRule     = "srcns-refused-rule"
+		wildcardRule    = "srcns-wildcard-rule"
 		grantedPath     = "e2e/srcns-granted"
 		refusedPath     = "e2e/srcns-refused"
 	)
 
 	var (
 		// configNS holds the WatchRules and GitTargets; sourceNS is the namespace they WATCH. The
-		// two differ on purpose — that separation is the entire feature.
-		configNS  string
-		sourceNS  string
-		srcnsRepo *RepoArtifacts
+		// two differ on purpose — that separation is the entire feature. outsideNS exists to prove
+		// the policy is a bound rather than a hint: it is never admitted by any target here.
+		configNS   string
+		sourceNS   string
+		outsideNS  string
+		srcnsRepo  *RepoArtifacts
+		grantedDir string
 	)
 
 	BeforeAll(func() {
-		By("creating separate config-plane and source namespaces")
+		By("creating separate config-plane, source, and unadmitted namespaces")
 		configNS = testNamespaceFor("srcns-config")
 		sourceNS = testNamespaceFor("srcns-source")
+		outsideNS = testNamespaceFor("srcns-outside")
 		_, _ = kubectlRun("create", "namespace", configNS)
 		_, _ = kubectlRun("create", "namespace", sourceNS)
+		_, _ = kubectlRun("create", "namespace", outsideNS)
 
 		By("setting up Gitea repo and credentials")
 		srcnsRepo = SetupRepo(
@@ -61,6 +68,7 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 			configNS,
 			fmt.Sprintf("e2e-srcns-%d", GinkgoRandomSeed()),
 		)
+		grantedDir = filepath.Join(srcnsRepo.CheckoutDir, grantedPath)
 		_, err := kubectlRunInNamespace(configNS, "apply", "-f", srcnsRepo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets")
 		applySOPSAgeKeyToNamespace(configNS)
@@ -96,13 +104,14 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		deleteClusterProvider(nonDelegatingCP)
 		cleanupNamespace(configNS)
 		cleanupNamespace(sourceNS)
+		cleanupNamespace(outsideNS)
 	})
 
 	SetDefaultEventuallyTimeout(60 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	It("mirrors an authorized source namespace under THAT namespace's Git folder", func() {
-		By("creating a WatchRule in the config namespace that watches the source namespace")
+		By("creating a WatchRule whose rule item watches the source namespace")
 		Expect(applyWatchRuleWithSourceNamespace(
 			grantedRule, configNS, grantedTarget, sourceNS)).Error().
 			NotTo(HaveOccurred(), "failed to apply granted WatchRule")
@@ -138,6 +147,55 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		}).Should(Succeed())
 	})
 
+	It("resolves a wildcard item to exactly the target's admitted set, and no further", func() {
+		By("creating a WatchRule whose item asks for every namespace the target admits")
+		Expect(applyWatchRuleWithSourceNamespace(
+			wildcardRule, configNS, grantedTarget, "*")).Error().
+			NotTo(HaveOccurred(), "failed to apply wildcard WatchRule")
+
+		By("asserting the wildcard is authorized")
+		verifyResourceCondition("watchrule", wildcardRule, configNS,
+			"SourceNamespaceAuthorized", "True", "SourceNamespaceAllowed", "")
+		verifyResourceStatus("watchrule", wildcardRule, configNS, "True", "Ready", "")
+
+		By("creating one Secret in the ADMITTED namespace and one in an unadmitted namespace")
+		const admittedSecret = "srcns-wildcard-admitted"
+		const outsideSecret = "srcns-wildcard-outside"
+		_, err := kubectlRunInNamespace(sourceNS, "create", "secret", "generic", admittedSecret,
+			"--from-literal=k=v")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = kubectlRunInNamespace(outsideNS, "create", "secret", "generic", outsideSecret,
+			"--from-literal=k=v")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("asserting the admitted namespace arrives")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, srcnsRepo.CheckoutDir)
+			g.Expect(findFileByBasename(grantedDir, admittedSecret+".yaml")).NotTo(BeEmpty(),
+				`"*" must expand to the admitted set. Recent commits:\n%s`,
+				recentCommitDiagnostics(srcnsRepo.CheckoutDir, grantedPath))
+		}).Should(Succeed())
+
+		By("asserting the UNADMITTED namespace never does, against a real commit")
+		// "*" is bounded by allowedSourceNamespaces, never by what exists. If this regresses, a
+		// wildcard silently mirrors every namespace on the cluster into a tenant's repository.
+		Consistently(func(g Gomega) {
+			pullLatestRepoState(g, srcnsRepo.CheckoutDir)
+			g.Expect(findFileByBasename(grantedDir, outsideSecret+".yaml")).To(BeEmpty(),
+				"a target whose policy admits only %q must never receive an object from %q",
+				sourceNS, outsideNS)
+			entries, statErr := os.ReadDir(grantedDir)
+			g.Expect(statErr).NotTo(HaveOccurred())
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			g.Expect(names).NotTo(ContainElement(outsideNS),
+				"and the unadmitted namespace must not even name a folder (saw %s)",
+				strings.Join(names, ", "))
+		}, 20*time.Second, 4*time.Second).Should(Succeed())
+	})
+
 	It("refuses an override the ClusterProvider does not delegate, and writes nothing", func() {
 		By("recording the repository head before the refused rule exists")
 		var headBefore string
@@ -153,7 +211,7 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		By("asserting the terminal refusal is published with a fix-naming message")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
 			"SourceNamespaceAuthorized", "False", "SourceNamespaceNotAllowed",
-			"allowWatchRuleSourceNamespaceOverride")
+			"allowSourceNamespaceOverride")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
 			"Stalled", "True", "SourceNamespaceNotAllowed", "")
 		verifyResourceCondition("watchrule", refusedRule, configNS,
@@ -189,7 +247,7 @@ metadata:
 spec:
   allowedNamespaces:
     names: [%s]
-  allowWatchRuleSourceNamespaceOverride: %t
+  allowSourceNamespaceOverride: %t
 `, name, allowedNS, delegate)
 	return kubectlRunWithStdin("", manifest, "apply", "-f", "-")
 }
@@ -218,8 +276,9 @@ spec:
 	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 }
 
-// applyWatchRuleWithSourceNamespace applies a WatchRule that watches a namespace OTHER than its own.
-func applyWatchRuleWithSourceNamespace(name, ns, target, sourceNS string) (string, error) {
+// applyWatchRuleWithSourceNamespace applies a WatchRule whose rule items watch a namespace OTHER
+// than the rule's own. sourceNamespace may be an exact name or "*".
+func applyWatchRuleWithSourceNamespace(name, ns, target, sourceNamespace string) (string, error) {
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: WatchRule
 metadata:
@@ -229,9 +288,11 @@ spec:
   targetRef:
     kind: GitTarget
     name: %s
-  sourceNamespace: %s
   rules:
     - resources: ["configmaps"]
-`, name, ns, target, sourceNS)
+      sourceNamespace: %q
+    - resources: ["secrets"]
+      sourceNamespace: %q
+`, name, ns, target, sourceNamespace, sourceNamespace)
 	return kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 }

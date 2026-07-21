@@ -39,9 +39,9 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 	)
 
 	const (
-		providerName         = "restart-reconcile-provider"
-		gitTargetName        = "restart-reconcile-target"
-		clusterWatchRuleName = "restart-reconcile-wildcard"
+		providerName  = "restart-reconcile-provider"
+		gitTargetName = "restart-reconcile-target"
+		watchRuleName = "restart-reconcile-wildcard"
 	)
 
 	// orderNames are "quiet" resources: created once and never touched again.
@@ -73,7 +73,7 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 
 	AfterAll(func() {
 		dumpFailureDiagnostics()
-		cleanupClusterWatchRule(clusterWatchRuleName)
+		cleanupWatchRule(watchRuleName, testNs)
 		cleanupNamespace(testNs)
 	})
 
@@ -93,27 +93,27 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 			g.Expect(strings.TrimSpace(output)).To(Equal("True"))
 		}).Should(Succeed())
 
-		By("creating the GitProvider, GitTarget and wildcard ClusterWatchRule")
+		By("creating the GitProvider, GitTarget and wildcard WatchRule")
 		createGitProviderWithURLInNamespace(providerName, testNs, restartRepo.GitSecretHTTP, restartRepo.RepoURLHTTP)
 		createGitTarget(gitTargetName, testNs, providerName, gitTargetPath, "main")
 
-		cwrData := struct {
+		wrData := struct {
 			Name            string
 			DestinationName string
 			Namespace       string
 			Group           string
 		}{
-			Name:            clusterWatchRuleName,
+			Name:            watchRuleName,
 			DestinationName: gitTargetName,
 			Namespace:       testNs,
 			Group:           crdGroupRestartReconcile,
 		}
 		Expect(applyFromTemplate(
-			"test/e2e/templates/restart/clusterwatchrule-wildcard.tmpl", cwrData, "",
-		)).To(Succeed(), "failed to apply wildcard ClusterWatchRule")
+			"test/e2e/templates/restart/watchrule-wildcard.tmpl", wrData, testNs,
+		)).To(Succeed(), "failed to apply wildcard WatchRule")
 
 		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
-		verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 
 		By("creating quiet IceCreamOrder resources to build up the git mirror")
 		for _, name := range orderNames {

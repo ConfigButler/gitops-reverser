@@ -206,7 +206,7 @@ replacement. Deleting the field instead would be worse in two ways, and both are
 - A stored pre-release object keeps its value in etcd, but Go code that no longer has the field cannot
   read it, so the controller has nothing to refuse. Inferring the refusal from "this selector resolved
   to a namespaced type" instead is ambiguous for `resources: ["*"]`, which legitimately resolves
-  cluster-scoped records — see [the restart fixture](../../../test/e2e/templates/restart/clusterwatchrule-wildcard.tmpl).
+  cluster-scoped records — see [the restart fixture](../../../test/e2e/templates/restart/watchrule-wildcard.tmpl).
 
 Retaining a narrowed enum gives an apply-time API-server rejection for the first case and a readable
 Go value for the second. Remove the field entirely one release later, or at `v1beta1`.
@@ -621,7 +621,7 @@ Must change in the same PR:
 
 Fixture conversions worth calling out, because they change what the test proves:
 
-- [test/e2e/templates/restart/clusterwatchrule-wildcard.tmpl](../../../test/e2e/templates/restart/clusterwatchrule-wildcard.tmpl)
+- [test/e2e/templates/restart/watchrule-wildcard.tmpl](../../../test/e2e/templates/restart/watchrule-wildcard.tmpl)
   exists to prove the **startup snapshot** honours `apiVersions: ["*"]`, "otherwise a controller restart
   snapshots an empty cluster and deletes the whole tracked tree". Its replacement must still cover that
   regression, not merely compile.
