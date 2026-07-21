@@ -1,5 +1,15 @@
 # PR 5 — a declared allowedSourceNamespaces bounds ClusterWatchRule too
 
+> **⛔ SUPERSEDED — do not implement.** Replaced by
+> [pr5-cluster-scope-and-deletion-safety.md](pr5-cluster-scope-and-deletion-safety.md), which removes
+> the need for this runtime ceiling by making ClusterWatchRule cluster-scoped only (the
+> [two-object model](alt-clusterwatchrule-cluster-scope-only.md)) and adds a GitTarget-wide deletion
+> control (`prune: never|onEvent|always`) that makes scope mistakes non-destructive. This page is kept
+> for the design history and for the mechanisms the replacement deliberately deletes — the per-namespace
+> expansion, the resolved-scope fingerprint, and the "unknown is not empty" retain logic — which the
+> replacement's §B0 references as the machinery it avoids. Everything below describes the abandoned
+> ceiling approach.
+
 > Phase 5 of [source-namespace addressing](README.md). **Depends on:**
 > [PR 4](pr4-source-namespace-field.md) (the field and the source-scope service),
 > [PR 1](pr1-namespace-scoped-resync.md) (per-namespace expansion is unsafe until the sweep is

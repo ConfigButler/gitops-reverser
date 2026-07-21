@@ -119,7 +119,7 @@ are pre-existing defect fixes that carry no API change; the last two are the fea
 | 2 | [Stream-scope collapse](pr2-stream-scope-collapse.md) | A cluster-wide selection stops silently widening a co-resident named-namespace stream for the same GVR. Bug fix, no API. | 1 | **landed** |
 | 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule may no longer attach to a GitTarget whose namespace its ClusterProvider does not admit. Bug fix, no API. | — | **landed** |
 | 4 | [The sourceNamespace field and gate](pr4-source-namespace-field.md) | `WatchRule.spec.sourceNamespace`, `GitTarget.spec.allowedSourceNamespaces`, the delegation flag, the gate, `SourceNamespaceAuthorized`, and the source-scope service. | 1, 2 | **landed** |
-| 5 | [The ClusterWatchRule ceiling](pr5-clusterwatchrule-source-ceiling.md) | A declared `allowedSourceNamespaces` narrows a ClusterWatchRule's namespaced streams. | 1, 2, 4 | not started |
+| 5 | [Cluster-scope + deletion safety](pr5-cluster-scope-and-deletion-safety.md) | ClusterWatchRule becomes cluster-scoped only (scope by kind, `scope: Namespaced` removed), WatchRule gains a per-rule-item `namespace` with `"*"` = all-admitted, and `GitTarget.spec.prune` (`never`/`onEvent`/`always`, default `onEvent`) + a volume guard make scope mistakes non-destructive. Breaking. Replaces the [abandoned runtime ceiling](pr5-clusterwatchrule-source-ceiling.md). | 1, 2, 4 | not started |
 
 **PR 1 gated everything, and has landed.** It was not a cleanup to slot in opportunistically: the
 resync sweep was scoped by type but not by namespace, so the first change that let one GitTarget
@@ -128,10 +128,13 @@ Git. PRs 2, 4, and 5 each introduce exactly that fan-out, independently, so land
 first would have been silent data loss in a tenant's repository. With PR 1 in, that floor is in
 place and the remaining four are unblocked.
 
-**Release gate: do not cut a release between PR 4 and PR 5.** PR 4 ships the field; until PR 5 lands
-the field is enforced on the rule kind that cannot bypass it and unenforced on the one that can, and
+**Release gate: do not cut a release between PR 4 and PR 5.** PR 4 shipped the field; until PR 5 lands,
+`allowedSourceNamespaces` is enforced on the rule kind that cannot bypass it (WatchRule) and unenforced
+on the one that can (ClusterWatchRule's `scope: Namespaced`), and
 [use case 4](#the-driving-use-case-multi-tenancy-with-crds-on-day-one) is exactly the configuration
-that hits the gap. They may merge separately; they must ship together.
+that hits the gap. The replacement PR 5 closes it by **removing** that scope rather than bounding it, so
+the gate still holds: do not release with PR 4 in and PR 5 out. PR 5's `prune` default (`onEvent`) is
+also what makes a rollback across PR 5 recoverable instead of a tenant-data-loss event.
 
 PR 3 is independent of the rest and can go at any point.
 

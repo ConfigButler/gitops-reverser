@@ -1,277 +1,283 @@
-# Alternative — make ClusterWatchRule cluster-scoped only, and pluralize the WatchRule field
+# Alternative — the two-object model: scope is carried by the kind, and the enum is removed
 
-> **Status: proposal, for review. Not agreed, not scheduled.** An alternative to
-> [PR 5](pr5-clusterwatchrule-source-ceiling.md) and an amendment to
-> [PR 4](pr4-source-namespace-field.md), inside the
-> [source-namespace addressing](README.md) workstream.
+> **Status: proposal, for review. Not agreed, not scheduled.** The crisp, breaking form of the
+> WatchRule-side redesign, sibling to the non-breaking
+> [alt-per-item-source-namespace.md](alt-per-item-source-namespace.md). Both share the same WatchRule
+> interface (a per-rule-item `namespace`); they differ only on ClusterWatchRule, and that difference
+> is the whole breaking/non-breaking axis this page exists to compare.
 >
-> **PR 4 is being implemented as this is written** —
-> [`WatchRule.spec.sourceNamespace`](../../../api/v1alpha3/watchrule_types.go#L71) already exists in
-> the tree with its full doc comment. This page is therefore written as a *delta against work in
-> flight*, not as a greenfield design. The migration section says exactly what it would cost to adopt
-> late; the answer is "less than it looks", and the deciding factor is whether the field is plural
-> before it ships in a release, not before it is written.
+> Supersedes this file's earlier "narrow the enum to `Cluster`" framing: narrowing left a vestigial
+> single-value `scope: Cluster` field on every rule. The crisper move is to **remove the field
+> entirely** — scope is redundant with discovery, so the kind can carry it. See
+> [why remove, not narrow](#why-remove-the-enum-not-narrow-it).
 >
-> Code references verified against the tree on 2026-07-20.
+> **PR 4 is being implemented as this is written, top-level singular.** The compiled rule already
+> reads `SourceNamespace` at [watched_type_resolver.go:301](../../../internal/watch/watched_type_resolver.go#L301).
+> This page is a delta against that; the [comparison](#comparing-the-approaches--breaking-change-consequences)
+> is the point of the page.
+>
+> Code references verified against the tree on 2026-07-21.
 
-## The proposal
+## The model
 
-Two changes, one API-shaped and one field-shaped:
+Two objects, each monomorphic in scope, with scope carried by the **kind** rather than by a field:
 
-1. **`ClusterWatchRule` selects cluster-scoped types only.** Narrow
-   [`ClusterResourceRule.Scope`](../../../api/v1alpha3/clusterwatchrule_types.go#L110) to
-   `Cluster`. Namespaced types are selected exclusively by `WatchRule`.
-2. **`WatchRule.spec.sourceNamespace` becomes `sourceNamespaces`**, a list of names, since it is now
-   the only object that can address namespaced resources at all.
+- **`WatchRule`** follows **namespaced** resources. Its `ResourceRule` list items gain a `namespace`
+  option — omitted means the rule's own namespace (legacy), `"*"` means every namespace the
+  GitTarget's `allowedSourceNamespaces` **admits**, an explicit name means that source namespace. This
+  is the interface designed in full in
+  [alt-per-item-source-namespace.md](alt-per-item-source-namespace.md); it is unchanged here.
+- **`ClusterWatchRule`** follows **cluster-scoped** resources. Its `ClusterResourceRule` list items
+  **lose** the `Scope` field. Every rule is cluster-scoped, because that is what the kind means.
 
-`GitTarget.spec.allowedSourceNamespaces` and the ClusterProvider delegation flag are unchanged, and
-so is [PR 4](pr4-source-namespace-field.md)'s gate. What changes is that they become the *only* path
-into a target, rather than one of two with a runtime ceiling reconciling them.
+The [`ResourceScope` enum](../../../api/v1alpha3/clusterwatchrule_types.go#L9-L19) is removed from the
+API surface of both kinds — WatchRule never had it, ClusterWatchRule no longer needs it. (The internal
+`typeset.Scope` used for discovery matching stays; only the user-facing spec field goes.)
 
-## Why: PR 5 re-imposes at runtime a boundary the API can make unrepresentable
+~~~yaml
+# namespaced — WatchRule, per-item namespace
+kind: WatchRule
+metadata: { name: repo-config, namespace: tenant-acme }
+spec:
+  targetRef: { name: acme }
+  rules:
+    - resources: [configmaps]                    # own namespace (legacy)
+    - resources: [secrets]
+      namespace: repo-config                      # one source namespace
+    - resources: [deployments]
+      namespace: "*"                              # every namespace the target's policy admits
+---
+# cluster-scoped — ClusterWatchRule, no scope field at all
+kind: ClusterWatchRule
+metadata: { name: acme-crds }
+spec:
+  targetRef: { name: acme, namespace: tenant-acme }
+  rules:
+    - resources: [customresourcedefinitions]      # cluster-scoped, implicitly
+      apiGroups: [apiextensions.k8s.io]
+~~~
 
-[PR 5](pr5-clusterwatchrule-source-ceiling.md) exists for exactly one reason: `ClusterWatchRule`
-accepts `scope: Namespaced`, and its `targetRef` is cross-namespace by design
-([clusterwatchrule_types.go:22-44](../../../api/v1alpha3/clusterwatchrule_types.go#L22-L44)), so a
-rule can deliver every source namespace into a GitTarget that declared an allow-list. PR 5 answers
-that by resolving the target's policy inside the watch resolver and expanding a cluster-wide
-selection into one selection per admitted namespace.
+The result is the sentence the whole folder was trying to make legible, now true by construction:
 
-That is a correct design for the constraint as posed. The observation here is that the constraint is
-self-imposed. Removing `Namespaced` from the enum makes the bypass **unrepresentable** rather than
-**checked**, and the following all cease to exist:
+> **ClusterWatchRule is the cluster-global surface. WatchRule is the namespaced surface, and every
+> namespace it reaches is named in its spec and admitted by its GitTarget.** Which object watches what
+> is answerable from the *kind*, never from an audit of a per-rule scope field.
 
-| PR 5 section | What it costs today | Under this proposal |
-|---|---|---|
-| §1 apply the ceiling in selection | expand `namespace: ""` per admitted namespace in `collectClusterWatchRuleSelections` ([watched_type_resolver.go:306-323](../../../internal/watch/watched_type_resolver.go#L306-L323)) | gone — cluster-scoped rules legitimately emit `""` |
-| §2 resolved scope into table invalidation | `clusterWatchRuleFingerprint` must hash state that **is not rule state** ([watched_type_resolver.go:463-500](../../../internal/watch/watched_type_resolver.go#L463-L500)); an unchanged rule under a changed policy must still re-project the table | gone — a ClusterWatchRule's scope is spec-derived again |
-| §2b unknown is not empty | the ClusterWatchRule half of the narrow-then-sweep hazard | gone — nothing narrows |
-| §3 reactivity | GitTarget → ClusterWatchRules mapper; informer fan-out to ClusterWatchRules | gone |
-| release gate | PR 4 must not ship without PR 5 | survives, but for a smaller reason — see [migration](#if-pr-4-has-already-shipped-singular) |
+## Why remove the enum, not narrow it
 
-§2 is the one worth dwelling on, because it is the subtlest defect in the folder and it is created
-entirely by the ceiling: the ceiling's inputs (GitTarget policy, source-cluster Namespace labels) are
-not rule state, so a mapper that requeues the rule is not sufficient — reconciliation runs, the
-fingerprint is unchanged, the rebuild is skipped, and the resident table keeps the old namespace set
-while every diff looks correct. Designing that away is worth more than the field it protects.
+The [earlier revision of this page] narrowed `Scope` to a single legal value, `Cluster`. That leaves a
+field every rule must still spell out (`scope: Cluster`) whose only legal value is the default — pure
+boilerplate. Removal is crisper, and it is *safe*, because the field is **redundant with discovery**:
 
-### It also makes the documented caveat into a definition
+- Discovery records already carry scope: [`TypeRecord.Identity.Scope`](../../../internal/typeset/model.go#L39)
+  is `Namespaced` / `ClusterScoped` / `Unknown`.
+- [`matchFollowableRecords`](../../../internal/watch/watched_type_resolver.go#L342) already filters the
+  declared enum **against** that discovered truth via
+  [`matchesScope`](../../../internal/watch/watched_type_resolver.go#L397).
 
-[README § what the ceiling does not do](README.md#what-the-ceiling-does-not-do) already concedes that
-a namespace allow-list cannot partition cluster-scoped objects, and warns that "my allow-list bounds
-what this tenant sees" is false for the cluster-scoped half. Under this proposal that stops being a
-caveat attached to a field and becomes the definition of the object:
+So the operator never needed the user to tell it whether `configmaps` is namespaced — it knows. Under
+the two-object model the *kind* supplies the scope filter (WatchRule keeps `ScopeNamespaced` records,
+ClusterWatchRule keeps `ScopeCluster` records) and discovery supplies the fact. Nothing is lost by
+deleting the field; a class of user error — declaring a scope that contradicts discovery — is deleted
+with it.
 
-> **ClusterWatchRule is the cluster-global surface. It is not namespace-bounded, by construction.**
-> **WatchRule is the namespaced surface, and every namespace it reaches is named in its spec and
-> admitted by its GitTarget.**
+## This deletes PR 5 outright
 
-Two objects, two sentences, no overlap. The operator's answer to *"will this stream objects from
-namespaces outside my allow-list?"* is a property of the kind, not of an audit.
+[PR 5](pr5-clusterwatchrule-source-ceiling.md) exists solely to make `allowedSourceNamespaces` bind
+ClusterWatchRule's `scope: Namespaced` streams. If a ClusterWatchRule can only watch cluster-scoped
+resources, a **namespace** allow-list is simply not applicable to it — exactly as the
+[overview already concedes](README.md#what-the-ceiling-does-not-do) that the ceiling cannot partition
+cluster-scoped objects. So the entire PR disappears, not just its API:
 
-The day-one multi-tenant use case ([README § driving use case](README.md#the-driving-use-case-multi-tenancy-with-crds-on-day-one),
-item 4) is unaffected: a tenant still needs a ClusterWatchRule from day one to capture CRDs, and that
-is precisely what the narrowed object does. `config/samples/clusterwatchrule.yaml` already uses only
-`scope: Cluster`.
+| PR 5 mechanism | Fate under the two-object model |
+|---|---|
+| §1 expand `namespace: ""` per admitted namespace in `collectClusterWatchRuleSelections` | gone — ClusterWatchRule emits `""` for genuinely cluster-scoped streams, no expansion |
+| §2 hash resolved scope into `clusterWatchRuleFingerprint` — state that **is not rule state** | gone — a ClusterWatchRule's scope is spec-derived again. This is the subtlest defect in the folder, and it evaporates |
+| §2b "unknown is not empty" (the ClusterWatchRule half of the sweep hazard) | gone — nothing narrows on ClusterWatchRule |
+| §3 GitTarget → ClusterWatchRules mapper + informer fan-out | gone |
+| the release gate coupling PR 4 to PR 5 | gone — there is no second rule kind to leave unenforced |
 
-## The cost: `scope: Namespaced` is the only expression of two capabilities
+The dynamic-scope machinery is not *eliminated* — `WatchRule` still needs it for `"*"` against a
+**selector** policy — but it is *consolidated onto one kind* instead of living on both. Under the
+as-designed plan it exists twice: PR 4's selector `allowedSourceNamespaces` on WatchRule **and** PR 5's
+ceiling on ClusterWatchRule. Here it exists once, on WatchRule, and only for rules that write `"*"`.
 
-This is the part a reviewer should push on, because the capability does not disappear — it
-**relocates**, and the proposal is only a win if the new home is the right one.
+## Comparing the approaches — breaking-change consequences
 
-**Capability A — "watch this type in every namespace."** One object, no enumeration, and it covers
-namespaces that do not exist yet. `sourceNamespaces` as a list of *names* does not replace this:
-enumeration is not "all", and it goes stale on namespace creation. Expressing "all" again requires a
-wildcard entry or a `sourceNamespaceSelector`.
+Three approaches are now on the table. They agree on the WatchRule interface (per-item `namespace`,
+`"*"` bounded by the allow-list); they differ **only** on ClusterWatchRule, and that is the entire
+breaking/non-breaking split.
 
-**Capability B — platform-authored namespaced watching for a tenant's target.**
-`ClusterWatchRule.targetRef` is cross-namespace, so a platform team can configure a tenant's mirror
-without owning an object in the tenant's namespace. `WatchRule.targetRef` is a `LocalTargetReference`
-with no namespace field ([watchrule_types.go:24-42](../../../api/v1alpha3/watchrule_types.go#L24-L42)),
-so the replacement must live in the tenant's namespace and be authored by whoever can write there.
+| | **As-designed** (PR 4 + PR 5) | **Per-item, non-breaking** ([sibling](alt-per-item-source-namespace.md)) | **Two-object** (this page) |
+|---|---|---|---|
+| ClusterWatchRule namespaced watch | `scope: Namespaced`, bounded at runtime by PR 5 | `scope: Namespaced`, bounded at runtime by PR 5 | **removed** — use WatchRule `namespace: "*"` |
+| Breaking change | no (additive) | no (additive) | **yes** |
+| PR 5 runtime ceiling needed | yes | yes | **no — deleted** |
+| §2 fingerprint-not-rule-state hazard | present (must be built) | present (must be built) | **absent** |
+| Dynamic (`"*"`/selector) machinery | two kinds | two kinds | **one kind** (WatchRule) |
+| Migration of existing objects | none | none | **manual, cross-kind** |
+| Conversion webhook can automate it | n/a | n/a | **no** (cross-*kind*) |
+| API legibility ("which object watches what") | audit each rule's scope | audit each rule's scope | **read the kind** |
+| Enum boilerplate | `scope:` on every cluster rule | `scope:` on every cluster rule | **none** |
 
-So the honest framing of this proposal is **not** "cluster-scoped resources belong on a cluster-scoped
-object". It is:
+The additive approaches cost **more permanent machinery**; the two-object approach costs a **one-time
+breaking migration**. The consequences of that migration, in descending order of sharpness:
 
-> Which object may say *"all namespaces"*, and under whose sign-off?
+### 1. No conversion webhook can migrate it — the move is cross-*kind*
 
-Today: ClusterWatchRule, under nothing but cluster-admin's ability to create one. Under this proposal:
-WatchRule, under `allowedSourceNamespaces` plus the delegation flag — the pair PR 4 already builds,
-readable off the GitTarget. That is a better answer. It is not an elimination, and a review that
-treats it as one will be surprised later.
+A conversion webhook translates one **kind** between API **versions**. Moving "watch namespaced
+resources cluster-wide" from `ClusterWatchRule{scope: Namespaced}` to `WatchRule{namespace: "*"}` is a
+move between **kinds**, which no conversion webhook can express. So migration is inherently
+out-of-band: a one-shot migration tool, or a human editing manifests. The additive approaches need
+**no** migration at all, because the old spelling keeps working. This is the single structural fact
+that makes the two-object model "breaking" in a way pluralizing a field never is.
 
-**Two questions decide whether the win is large or merely structural:**
+### 2. Rollback is a data-plane hazard, not just a config revert
 
-1. Does any real configuration need "all namespaces" as a live, self-updating scope? If yes, a
-   wildcard or selector must ship in v1 and the machinery does not fully disappear — it moves.
-2. Must a platform team be able to author namespaced watching for a tenant target without an object
-   in the tenant namespace? If yes, this proposal removes a capability with no replacement, and
-   should be rejected or paired with one.
+This is the consequence most likely to be underweighted. After migrating a namespaced ClusterWatchRule
+to a WatchRule with `namespace: "*"`, rolling the controller **back** to a version that predates the
+per-item field means the old controller does not understand `namespace` — it silently watches the
+WatchRule's **own** namespace only. That is a scope *collapse*, and a collapsed scope is the input to
+the resync sweep ([PR 1](pr1-namespace-scoped-resync.md) is what makes the sweep namespace-safe, not
+sweep-free). So a rollback can **delete a tenant's Git content** for every namespace the `"*"` used to
+cover. The additive approaches roll back cleanly, because the old field is still present and still
+understood.
 
-## Names-only plural is cheap; a selector is not
+### 3. Rolling upgrade is non-atomic (HA skew)
 
-Split the plural question, because the two halves have very different cost.
+During an HA upgrade the old and new controllers run concurrently. The old one reads
+`scope: Namespaced` and watches namespaced; the new one ignores/refuses it. A WatchRule written for the
+new controller with `namespace: "*"` is invisible to the old one. So there is a window of divergent
+behavior that no amount of care removes — the migration cannot be flipped atomically. The additive
+approaches have no skew: both controller versions understand both spellings.
 
-**`sourceNamespaces: [a, b]`, names only.** The resolved scope stays spec-derived. `watchRuleFingerprint`
-([watched_type_resolver.go:478-482](../../../internal/watch/watched_type_resolver.go#L478-L482)) keeps
-working with no new invalidation input; no source-cluster Namespace informer is needed for the *rule*
-side; and *cannot say* collapses to a pure **establishing** question. That last point cuts into PR 4
-as well — the [source-scope service](pr4-source-namespace-field.md#the-source-scope-service--define-this-interface-before-writing-the-gate)
-and the three-valued readiness result are dragged in mostly by **selector** policies, not by the field
-itself. A names-only v1 on both sides (`sourceNamespaces` and `allowedSourceNamespaces`) would defer
-the informer entirely.
+### 4. Stored objects are reinterpreted silently unless explicitly refused
 
-**`sourceNamespaceSelector`.** This pulls the whole *maintaining* column of
-[establishing versus maintaining](pr4-source-namespace-field.md#establishing-versus-maintaining-a-scope)
-onto WatchRule, where today it applies only to PR 5's ceiling. A WatchRule's resolved set can now
-narrow, and a narrowed set is the input to a sweep — the destructive path
-[PR 1](pr1-namespace-scoped-resync.md) landed first to make survivable. The machinery deleted from
-ClusterWatchRule reappears on WatchRule the moment the field is dynamic. Net simplification is still
-positive — one path instead of two — but it is not free, and it should not be sold as free.
+CRD schema validation runs on **write**, not read. An existing `ClusterWatchRule{scope: Namespaced}`
+stays stored and served after the field is removed from the schema; the controller simply stops reading
+`scope` and now treats every rule as cluster-scoped. A rule selecting `configmaps` would resolve
+against **cluster-scoped** discovery records, match nothing, and go quietly dead — or worse, a rule
+selecting a name that exists in both scopes would flip meaning. **The field removal must be paired with
+an explicit compile-path refusal** (see [next section](#removing-the-field-does-not-retract-stored-objects)).
+The additive approaches never reinterpret anything.
 
-**Recommended split:** names-only in v1; selector as a follow-up whose entire subject is the
-maintaining contract, rather than a subsection of a field addition.
+### 5. GitOps apply loops break loudly
 
-### One consequence of plural to check, not assume
+A user who manages the operator's own CRs through Flux/Argo has `ClusterWatchRule{scope: Namespaced}`
+manifests in a Git repo. After the schema change their apply either fails validation (enum value gone)
+or silently prunes the field, and their sync goes degraded until they rewrite the manifest as a
+WatchRule. That is a visible outage of *their* reconciliation, triggered by upgrading the operator. The
+additive approaches leave those manifests valid.
 
-A single WatchRule fanning out over N namespaces needs an identity-complete placement template —
-`{name}` plus `{namespace}` or `{namespaceOrCluster}` — or two source namespaces collapse onto one
-Git path. That is enforced statically only for core Secrets today
-([placement.go:550-552](../../../internal/manifestanalyzer/placement.go#L550-L552),
-[gittarget_placement_validation.go:67](../../../internal/controller/gittarget_placement_validation.go#L67));
-operator-configured sensitive types rely on write-time guards. The hazard is not created by plural —
-two singular WatchRules on one GitTarget already reach it — but plural makes it reachable with one
-object and no second author. Worth a static check on any rule that can resolve to more than one
-namespace. **Verify against the placement code; do not take this paragraph as settled.**
+### 6. Documentation, samples, e2e, and tests — mechanical but not zero
 
-## Narrowing the enum does not retract stored objects
+Every `scope: Namespaced` in the tree changes, plus the docs sentence promising ClusterWatchRule
+watches "namespaced resources across multiple namespaces". Surveyed in
+[known breakage](#known-breakage).
 
-The step most likely to be skipped, and it is a security step, not a cleanup.
+### What the breaking cost buys
 
-CRD schema validation applies on **write**, not on read. A `ClusterWatchRule` already stored with
-`scope: Namespaced` continues to be served, continues to be compiled by
-[`bootstrapRuleStore`](../../../internal/watch/bootstrap.go#L49-L68), and continues to emit
-`namespace: ""` — so the bypass survives the enum change for every object created before it. The
-narrowed enum only prevents *new* ones.
+Set against all six: the additive approaches carry PR 5's runtime ceiling **forever** — including the
+§2 fingerprint-not-rule-state hazard, which is the subtlest and most regression-prone thing in the
+folder — and they answer "will this stream namespaces outside my allow-list?" only by audit. The
+two-object model pays once, at a controlled upgrade, and thereafter the answer is the kind. Whether a
+one-time cross-kind migration with a genuine rollback hazard is worth deleting a permanent class of
+runtime machinery is the decision this page exists to frame. It is not obviously yes; it is a real
+trade, and the rollback hazard (#2) is the reason it is not.
 
-So the change is two-part:
+## Removing the field does not retract stored objects
 
-1. narrow the enum (blocks new and blocks updates to existing); **and**
-2. make the compile path refuse a `Namespaced` cluster rule explicitly — in the same single gated
-   function [PR 4 step 7](pr4-source-namespace-field.md#implementation-steps) routes both the
-   reconciler and bootstrap through — with a terminal condition naming the replacement.
+The step most likely to be skipped, and it is a **security/correctness** step, not a cleanup — sharpened
+from the enum-narrowing version because now the field is *gone*, not merely restricted:
 
-Doing (1) without (2) is the same class of defect this folder was written to fix: a scope computed in
-one place and not enforced in another. A test asserting that a *pre-existing* `Namespaced` cluster
-rule is refused at bootstrap is the one that keeps it honest, because no manifest in the repo can
-create the object once the enum lands.
+1. Remove the `Scope` field from the schema (blocks new namespaced cluster rules and blocks updates).
+2. **In the single gated compile path** [PR 4 step 7](pr4-source-namespace-field.md#implementation-steps)
+   routes both the reconciler and `bootstrapRuleStore` through, refuse any `ClusterWatchRule` rule
+   whose resource resolves — **via discovery** — to a namespaced type, with a terminal condition naming
+   the migration ("watch namespaced resources with a WatchRule and `namespace`"). Discovery already
+   knows the scope ([`matchesScope`](../../../internal/watch/watched_type_resolver.go#L397)), so this
+   is a check the resolver can already make.
 
-## If PR 4 has already shipped singular
+Doing (1) without (2) is the exact defect this folder was written to remove: a scope decided in one
+place and not enforced in another. The must-have test is `TestBootstrap_PreExistingNamespacedClusterRuleIsRefused`
+— a stored ClusterWatchRule selecting a namespaced type is not compiled and starts no stream, asserted
+at bootstrap before any reconcile. No manifest in the repo can create that object once the field is
+gone, so the test is the only thing that can catch a regression in the refusal.
 
-The cost of adopting late is bounded and depends only on whether a release has gone out.
+## Capability A/B — the questions this model resolves by relocation
 
-**Before any release carrying `sourceNamespace`** — the pluralization is a rename with no compatibility
-surface. This is a preliminary v1alpha3 API and [README § compatibility](README.md#compatibility)
-already accepts observable changes with no conversion webhook. The field is new, so it is unset
-everywhere; nothing to migrate.
+The two capabilities `scope: Namespaced` uniquely expressed do not vanish; they move, and the move must
+be deliberate:
 
-**After a release** — accept both, or accept the churn. `sourceNamespace` and `sourceNamespaces` can
-coexist with a CEL rule rejecting both-set and the controller reading singular as a one-element list,
-which is ugly but small. Preferred instead: pluralize at the next API version with conversion, and do
-not ship singular into a second release.
-
-Either way, **the rest of PR 4 is unaffected**. The gate, the `SourceNamespaceAuthorized` condition,
-the printer column, the fingerprint change, the single gated compile path, and the reactivity mappers
-all apply per-namespace-in-the-set exactly as written for one namespace. The work in flight is not
-wasted by this proposal; the diff is the field's cardinality and the loop around the gate.
-
-The release gate survives in a weaker form: `Namespaced` must be removed from `ClusterWatchRule`
-before, or in, the release that first ships `allowedSourceNamespaces`. Otherwise the allow-list is
-enforced on the kind that cannot bypass it and unenforced on the kind that can — the same gap
-[PR 5](pr5-clusterwatchrule-source-ceiling.md#why-this-is-launch-set-not-follow-up) describes, for the
-same reason.
-
-## Labels: two axes, only one is affected
-
-These get conflated, and conflating them muddies both:
-
-- **Labels on namespaces** — `sourceNamespaceSelector`, or the selector half of
-  `allowedSourceNamespaces`. Shares the source-cluster Namespace informer, and carries the
-  narrow-then-sweep hazard above. Affected by this proposal.
-- **Labels on resources** — "mirror only objects carrying `x=y`", a per-rule object filter on
-  [`ResourceRule`](../../../api/v1alpha3/watchrule_types.go#L83). Composes with whatever namespace
-  scoping exists, needs no authorization gate, has no sweep semantics beyond what a scope change
-  already has. **Unaffected by this proposal**, and it should be designed separately so it does not
-  get entangled with the authorization work.
-
-So "this fits the label vision better" is true for namespace selectors and neutral for resource
-labels.
+- **A — "watch this type in every namespace."** Relocates to WatchRule `namespace: "*"`, **bounded by
+  the GitTarget policy** — never "every namespace that exists". A tenant author cannot express
+  "follow the whole cluster"; the ceiling is the destination's. This is the safe form of A, and it is
+  why the model can ship without answering "should we allow live all-namespaces?" — the answer is
+  "yes, bounded, and its liveness equals the allow-list's".
+- **B — platform-authored namespaced watching from *outside* the tenant namespace.** `WatchRule.targetRef`
+  is a `LocalTargetReference` with no namespace ([watchrule_types.go:24-42](../../../api/v1alpha3/watchrule_types.go#L24-L42)),
+  so the WatchRule must live in the namespace it watches from, authored by whoever can write there.
+  ClusterWatchRule's cross-namespace `targetRef` was the only way for a platform team to configure a
+  tenant's namespaced mirror without an object in the tenant namespace — **and the two-object model
+  removes that, with no replacement.** If a real deployment relies on B, this model is wrong for it,
+  or must add a WatchRule with a namespaced `targetRef` (itself a change). **This is the argument that
+  can defeat the whole page; a reviewer who needs B should say so.**
 
 ## Known breakage
 
-Small, from a repo-wide sweep on 2026-07-20 (excluding `external-sources/`):
+From a repo-wide sweep on 2026-07-21 (excluding `external-sources/`):
 
 - [config/samples/clusterwatchrule.yaml](../../../config/samples/clusterwatchrule.yaml) — already
-  `scope: Cluster`. No change.
+  `scope: Cluster`; drop the now-removed field.
 - [test/e2e/unsupported_folder_e2e_test.go:177](../../../test/e2e/unsupported_folder_e2e_test.go#L177)
-  — uses `scope: Namespaced` with ConfigMaps, but only because the refusal test needs *some* rule
-  kind. Convert to `scope: Cluster` or to a WatchRule.
+  — a `scope: Namespaced` ConfigMap ClusterWatchRule used only to exercise the refusal path; convert
+  to a WatchRule or a cluster-scoped rule.
 - [docs/configuration.md](../../configuration.md) — "namespaced resources across multiple namespaces"
-  in the `ClusterWatchRule` section becomes false and must change in the same PR.
-- The `ResourceScopeNamespaced` constant
-  ([clusterwatchrule_types.go:17-18](../../../api/v1alpha3/clusterwatchrule_types.go#L17-L18)) stays:
-  WatchRule resolution uses it internally
-  ([watched_type_resolver.go:294](../../../internal/watch/watched_type_resolver.go#L294),
-  [stream_readiness.go:142](../../../internal/watch/stream_readiness.go#L142),
-  [manager_catalog.go:389](../../../internal/watch/manager_catalog.go#L389)). Only the
-  `ClusterResourceRule.Scope` **enum** narrows.
-- Unit tests constructing `Namespaced` cluster rules across `internal/watch` and
-  `internal/controller` — several files; mechanical.
+  under `ClusterWatchRule` becomes false; the `ClusterWatchRule` example and the `scope` field docs go.
+- The [`ResourceScope` enum + constants](../../../api/v1alpha3/clusterwatchrule_types.go#L9-L19) leave
+  the **API**; `typeset.Scope` and `matchesScope` stay (discovery still needs them).
+- Unit tests across `internal/watch`, `internal/controller`, `internal/rulestore` that construct
+  `Namespaced` cluster rules — mechanical.
 
-This list is a sweep, not a proof. A reviewer who believes a real deployment depends on capability A
-or B above should say so; that is the argument that defeats this page, and no amount of the above
-outweighs it.
+This is a sweep, not a proof: a reviewer who believes a deployment depends on capability B above
+outweighs all of it.
 
 ## Test plan delta
 
 Relative to PR 4 and PR 5 as written:
 
-- **Deleted:** every PR 5 test named for the ceiling — narrowing, sparing cluster-scoped rules,
-  `clusterWatchRuleFingerprint` resolved-scope, table rebuild on policy-only change, retain-on-unknown,
-  and the establishing/maintaining pair for ClusterWatchRule.
-- **Added:** `TestBootstrap_PreExistingNamespacedClusterRuleIsRefused` — a stored ClusterWatchRule with
-  `scope: Namespaced` is not compiled and starts no stream, asserted at bootstrap before any reconcile.
-  This is the enum-narrowing gap above and it is the single most important new test.
-- **Added:** admission rejects `scope: Namespaced` on create and on update, with a message naming
-  WatchRule plus `sourceNamespaces` as the replacement.
-- **Changed:** every PR 4 gate case becomes a set case. Specifically: an empty set is the legacy
-  own-namespace behavior; a partially-admitted set is **denied in whole, not silently trimmed** — a
-  rule that quietly watches two of the three namespaces it asked for is the plural-specific failure
-  mode, and it needs its own case.
-- **Kept as-is:** the two must-have tests from
-  [PR 4](pr4-source-namespace-field.md#the-two-tests-that-must-exist), the fingerprint and selection
-  silent-failure guards, and the e2e proving Git paths follow the *source object's* namespace
-  ([Appendix A](pr4-source-namespace-field.md#appendix-a-the-source-objects-namespace-already-names-the-git-folder)).
+- **Deleted:** every PR 5 ceiling test — narrowing, sparing cluster-scoped rules, the
+  `clusterWatchRuleFingerprint` resolved-scope test, the table-rebuild-on-policy-change test,
+  retain-on-unknown, and the establishing/maintaining pair for ClusterWatchRule. The mechanisms they
+  guard no longer exist.
+- **Added (the critical one):** `TestBootstrap_PreExistingNamespacedClusterRuleIsRefused` — §4 above.
+- **Added:** admission/compile refuses a namespaced-resolving ClusterWatchRule rule, message naming the
+  WatchRule + `namespace` migration.
+- **Inherited from the sibling doc:** the whole WatchRule per-item namespace test plan
+  ([alt-per-item § test plan delta](alt-per-item-source-namespace.md#test-plan-delta-relative-to-pr-4-as-written)),
+  including the partial-object deny-in-whole case and the `"*"` establishing/maintaining cases.
+- **Kept:** PR 4's two must-have tests, the fingerprint/selection silent-failure guards, and the
+  Appendix-A Git-path e2e.
 
 ## Open questions for the reviewer
 
-1. Capability A — is a live "all namespaces" scope required at launch? If yes, does it come back as a
-   wildcard entry, a selector, or not at all?
-2. Capability B — must a platform team author namespaced watching for a tenant target from outside the
-   tenant namespace?
-3. Names-only in v1 on **both** `sourceNamespaces` and `allowedSourceNamespaces`, deferring the
-   source-scope service and the Namespace informer wholesale? That is a much larger cut to PR 4 than
-   the pluralization itself, and it should be decided on its own merits.
-4. Partial admission of a set: deny in whole (recommended) or trim to the admitted subset? Trimming is
-   friendlier and is a silent narrowing, which is the failure class this folder exists to remove.
-5. Is the enum narrowing acceptable churn on a preliminary v1alpha3, given
-   [README § compatibility](README.md#compatibility) already accepts observable changes without
+1. **Capability B** — must a platform team author namespaced watching for a tenant target from outside
+   the tenant namespace? If yes, the two-object model removes it with no replacement and should be
+   rejected or paired with a namespaced-`targetRef` WatchRule.
+2. **Is the one-time cross-kind migration, with the rollback data-plane hazard (#2), an acceptable
+   price** for deleting PR 5's permanent machinery — on a preliminary v1alpha3 whose
+   [compatibility policy](README.md#compatibility) already accepts observable changes without
    conversion?
+3. **Migration tooling** — ship a one-shot converter (ClusterWatchRule `scope: Namespaced` → WatchRule
+   `namespace: "*"`), or document the manual rewrite? A converter cannot be a conversion webhook (#1),
+   so it is a standalone tool either way.
+4. **Singular `namespace` vs plural `namespaces`** on the WatchRule rule item, and **name-only `"*"`
+   first vs selector-backed `"*"`** — both inherited from the
+   [sibling doc's open questions](alt-per-item-source-namespace.md#open-questions-for-the-reviewer);
+   the selector choice is what determines whether the one remaining dynamic machinery ships now or later.
 
-## What this does not change
+## What does not change
 
-PR 1, PR 2, and PR 3 are unaffected and remain landed. `GitTarget.spec.allowedSourceNamespaces`, the
-delegation flag, and the whole authorization argument in
-[PR 4](pr4-source-namespace-field.md#what-the-delegation-flag-means) — including the in-cluster
-sign-off and the `IsLocalSource()` trap — stand exactly as written. Git placement still follows the
-source object's own namespace, so the write path still needs no change.
+PR 1, PR 2, PR 3 are unaffected and remain landed. `GitTarget.allowedSourceNamespaces`, the delegation
+flag, the in-cluster sign-off argument, and the `IsLocalSource()` trap all stand verbatim. Git
+placement still follows each mirrored object's own namespace, so the write path needs no change.
