@@ -73,6 +73,7 @@ namespace and target policy, or recognize a ClusterWatchRule as intentionally cl
 | 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule cannot attach to a GitTarget its ClusterProvider does not admit. | landed |
 | 4 | [Scope by kind](pr4-cluster-scope-only.md) | Rework the unshipped source-namespace work for `rules[].sourceNamespace`, narrow ClusterWatchRule to cluster scope, refuse stored namespaced rules, and document the cross-kind migration. | current branch; breaking |
 | 5 | [GitTarget deletion safety](pr5-gittarget-deletion-safety.md) | Add `prune.mode` and make resync sweep opt-in (`always`). | implemented; ships in the same release as PR 4 |
+| 5b | [Retention visibility](pr5-retention-visibility.md) | Report what PR 5 decided to keep, so a retention is observable rather than silent. | plan, for review; same PR as 5 |
 
 The discarded top-level `sourceNamespace` plan is retained as a
 [historical implementation baseline](historical-top-level-source-namespace-baseline.md). Its gate,

@@ -117,6 +117,14 @@ just no longer a separately released prerequisite.
 - Explicit deletes and inferred sweep drops are independently controlled exactly as in the table.
 - `task lint`, `task test`, and `task test-e2e` pass, closing the do-not-release window PR 4 opened.
 
+## Reporting what was kept
+
+This page covers the decision — which deletions happen. Making a retention *observable* is planned
+separately in [retention visibility](pr5-retention-visibility.md), landing in the same pull request:
+a suppressed drop produces no action, no commit, and no stat, so today it is discoverable only from a
+throttled log line. That plan proposes a `status.retention` roll-up, and is deliberately still bound
+by the rule below — an observation, never a condition.
+
 ## Implementation notes
 
 Decisions taken while building this that the design above did not settle. They are recorded because
