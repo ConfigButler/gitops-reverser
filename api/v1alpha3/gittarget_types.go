@@ -87,65 +87,47 @@ type GitTargetSpec struct {
 	// +optional
 	Placement *GitTargetPlacementSpec `json:"placement,omitempty"`
 
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// It defaults to a concrete {name: "default"} rather than an implicit nil so a target that omits
+	// it persists with a ref a reader can jump to. The operator never creates that provider: a
+	// GitTarget naming one that does not exist is held unready rather than silently defaulting to
+	// in-cluster access.
+
 	// ClusterProviderRef names the SOURCE cluster this GitTarget mirrors FROM, by referencing a
-	// cluster-scoped ClusterProvider by name. The ClusterProvider is the home for that cluster's
-	// connectivity credential, namespace-access authorization, and author-attribution mode. This
-	// DEFAULTS to {name: "default"} — a user-created provider by that conventional name, which may
-	// be in-cluster or remote — so a target that omits it persists with a concrete, jumpable ref
-	// rather than an implicit nil. The operator never creates that provider; a GitTarget naming one
-	// that does not exist is held unready. Immutable: a folder's source cluster is part of what the
-	// folder means; delete and recreate to change it.
+	// cluster-scoped ClusterProvider by name. That ClusterProvider owns the cluster's connectivity
+	// credential, namespace-access authorization, and author-attribution mode. The default provider
+	// name is "default" and must exist; it may be in-cluster or remote.
+	// Immutable: a folder's source cluster is part of what the folder means; delete and recreate.
 	// +kubebuilder:default={name: "default"}
 	// +optional
 	ClusterProviderRef *ClusterProviderReference `json:"clusterProviderRef,omitempty"`
 
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// There is deliberately NO self-namespace exception. An implicit carve-out would mean the field
+	// does not actually bound what arrives here, so a reader auditing it would be wrong about the
+	// target's contents — which is the whole reason the field exists. The resulting authoring
+	// footgun (adding a policy for one override silently denies co-resident legacy rules) is
+	// mitigated by being LOUD: SourceNamespaceAuthorized=False, Stalled=True, and a message naming
+	// the exact fix. `selector: {}` is the replacement for the removed cluster-wide namespaced
+	// ClusterWatchRule — declared by the destination owner rather than the rule author, and
+	// self-updating as namespaces come and go. The exact-names half stays answerable without any
+	// source-cluster Namespace access; that degradation path is deliberate, and it is the half most
+	// likely to regress unnoticed.
+
 	// AllowedSourceNamespaces bounds which SOURCE-cluster namespaces may be mirrored INTO this
-	// target. It is a property of the DESTINATION, not of any requesting rule: when declared it is
-	// exhaustive for every WatchRule that writes here.
+	// target. It belongs to the DESTINATION, not to any requesting rule: once declared it is
+	// exhaustive for every WatchRule that writes here, with no exception for a rule's own namespace.
 	//
-	// The invariant everything else serves — a declared policy is exhaustive:
-	//
-	//	| declared? | a WatchRule item may watch                            |
-	//	| no        | the WatchRule's own namespace only (legacy)           |
-	//	| yes       | exactly what the policy admits, and nothing else      |
-	//
-	// It is also what a rules[].sourceNamespace of "*" resolves THROUGH:
-	//
-	//	| policy                       | "*" resolves to                                     |
-	//	| undeclared                   | denied — deny-by-default; "*" is not a backdoor     |
-	//	| {} (declared, empty)         | nothing                                             |
-	//	| names: [a, b]                | exactly a and b, with no source-cluster access      |
-	//	| selector: {matchLabels: …}   | every source namespace carrying those labels, live  |
-	//	| selector: {}                 | EVERY source namespace — the "all namespaces" form  |
-	//
-	// The last row is the deliberate "all source namespaces" declaration, and it is the
-	// replacement for the removed cluster-wide namespaced ClusterWatchRule: declared by the
-	// destination owner rather than by the rule author, legible here, and self-updating as
-	// namespaces come and go.
-	//
-	// There is deliberately NO self-namespace exception. Once a policy is declared it must admit
-	// every namespace that may reach this target, INCLUDING a co-resident legacy WatchRule's own
-	// namespace. An implicit carve-out would mean the field does not actually bound what arrives
-	// here, so a reader auditing it would be wrong about the target's contents — which is the
-	// whole reason the field exists. The resulting authoring footgun (adding a policy for one
-	// override silently denies co-resident legacy rules) is mitigated by being LOUD:
-	// SourceNamespaceAuthorized=False, Stalled=True, and a message naming the exact fix.
-	//
-	// Its selector matches labels on Namespaces in the SOURCE cluster this target mirrors from —
-	// not the control cluster ClusterProvider.allowedNamespaces describes. Evaluating it therefore
-	// needs Namespace get/list/watch for the identity in that cluster's credential; an
-	// exact-NAMES entry stays usable without it, which is a deliberate degradation path that also
-	// keeps "*" resolvable against a names-only policy.
-	//
-	// Empty or omitted are NOT the same: omitted declares no policy (a WatchRule keeps its own
-	// namespace), while a declared-but-empty policy admits nothing. Naming any namespace other
-	// than the WatchRule's own — including "*" — additionally requires the ClusterProvider to set
-	// spec.allowSourceNamespaceOverride.
-	//
-	// It does NOT bound ClusterWatchRule. Cluster-scoped objects have no namespace, so a
-	// ClusterWatchRule is intentionally cluster-global and this field is neither consulted nor a
-	// bound for it; isolating cluster-scoped objects between tenants takes separate source
-	// credentials/ClusterProviders.
+	// Omitted and empty differ. Omitted declares no policy, and a WatchRule keeps its own namespace;
+	// a declared-but-empty policy admits nothing; `selector: {}` admits every source namespace.
+	// Selector labels are read in the SOURCE cluster, so evaluating one needs Namespace
+	// get/list/watch for that cluster's credential, while exact names need no such access. This is
+	// also what a rules[].sourceNamespace of "*" resolves through. Naming any namespace other than
+	// the WatchRule's own — including "*" — additionally requires the ClusterProvider to set
+	// spec.allowSourceNamespaceOverride. It does NOT bound ClusterWatchRule, whose cluster-scoped
+	// objects have no namespace. Full resolution table: docs/configuration.md.
 	// +optional
 	AllowedSourceNamespaces *NamespaceMatcher `json:"allowedSourceNamespaces,omitempty"`
 }

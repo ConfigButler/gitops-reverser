@@ -43,27 +43,13 @@ spec:
       openAPIV3Schema:
         description: |-
           ClusterWatchRule selects CLUSTER-SCOPED resources on the source cluster its GitTarget mirrors
-          from. It is the cluster-scoped half of the two-object model: scope is carried by the rule KIND,
-          so it has no per-rule scope choice and no source-namespace selection at all.
+          from — Nodes, PersistentVolumes, StorageClasses, ClusterRoles, CRDs, and the like. Scope is
+          carried by the rule KIND, so it has no per-rule scope choice and no source-namespace selection.
 
-          Security model:
-            - ClusterWatchRule is cluster-scoped and requires cluster-admin permissions.
-            - It references a GitTarget via targetRef (namespace required), and the referenced target's
-              namespace must be admitted by that target's ClusterProvider.
-            - Cluster-scoped objects have no namespace, so GitTarget.spec.allowedSourceNamespaces is
-              neither consulted nor a bound for them. A ClusterWatchRule is intentionally cluster-global
-              and is limited only by its source credential's Kubernetes RBAC. Isolating cluster-scoped
-              objects between tenants therefore takes separate credentials/ClusterProviders, not a
-              namespace allow-list.
-
-          Use cases:
-            - Audit cluster infrastructure (Nodes, PersistentVolumes, StorageClasses)
-            - Audit RBAC changes (ClusterRoles, ClusterRoleBindings)
-            - Audit CRD installations and updates
-
-          To mirror NAMESPACED resources, use a WatchRule in the tenant namespace and set
-          spec.rules[].sourceNamespace — "*" reaches every namespace the GitTarget's
-          allowedSourceNamespaces admits, which replaces the removed cluster-wide namespaced scope.
+          It is cluster-scoped and requires cluster-admin permissions. Its targetRef names a GitTarget
+          (namespace required), whose namespace must be admitted by that target's ClusterProvider. To
+          mirror NAMESPACED resources use a WatchRule in the tenant namespace and set
+          spec.rules[].sourceNamespace, whose "*" reaches every namespace the GitTarget admits.
         properties:
           apiVersion:
             description: |-
@@ -160,19 +146,9 @@ spec:
                     scope:
                       default: Cluster
                       description: |-
-                        Scope is REMOVED as a choice: a ClusterWatchRule is cluster-scoped only, so the only
-                        accepted value is "Cluster" — which is also the default, making the field omittable.
-
-                        To watch NAMESPACED resources, use a WatchRule in the tenant namespace and set
-                        spec.rules[].sourceNamespace ("*" reaches every namespace the GitTarget admits).
-
-                        The field is retained in the schema for one release purely so that re-applying a manifest
-                        that still says "Namespaced" FAILS. Deleting it outright would be worse and silent twice
-                        over: CRD pruning happens on write, so the value would be dropped without an error and the
-                        rule would quietly stop mirroring namespaced objects; and a stored pre-release object would
-                        keep its value in etcd with no Go field left to read, leaving the controller nothing to
-                        refuse. The narrowed enum rejects it at admission, and the compile path refuses a stored
-                        value with a message naming the replacement.
+                        Scope is REMOVED as a choice: a ClusterWatchRule is cluster-scoped only, so "Cluster" is the
+                        only accepted value and also the default, making the field omittable. To watch NAMESPACED
+                        resources, use a WatchRule in the tenant namespace and set spec.rules[].sourceNamespace.
 
                         Deprecated: ClusterWatchRule is cluster-scope-only; use WatchRule with
                         spec.rules[].sourceNamespace for namespaced resources. Removed one release from now, or at

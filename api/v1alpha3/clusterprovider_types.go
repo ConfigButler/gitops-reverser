@@ -56,13 +56,14 @@ type ClusterProviderReference struct {
 // but permits the empty string; an empty name can never resolve a Secret, so reject it here.
 // +kubebuilder:validation:XValidation:rule="!has(self.kubeConfig) || !has(self.kubeConfig.secretRef) || size(self.kubeConfig.secretRef.name) > 0",message="spec.kubeConfig.secretRef.name must not be empty"
 type ClusterProviderSpec struct {
-	// KubeConfig names the SOURCE CLUSTER this provider represents and the credentials to reach
-	// it (Flux's meta.KubeConfigReference, embedded verbatim). OMITTED means the operator's own
-	// in-cluster cluster, for any provider name. IMMUTABLE. The referenced Secret is
-	// resolved from the operator's namespace — the credential for a cluster never has to live on
-	// that cluster. When secretRef.key is empty the resolver reads "value" then "value.yaml"
-	// (Flux's order). Only secretRef is honored (configMapRef is rejected); unsafe kubeconfigs
-	// (exec auth, insecure-skip-tls-verify) are rejected with a Validated=False reason unless the
+	// KubeConfig names the SOURCE CLUSTER this provider represents and the credentials to reach it
+	// (Flux's meta.KubeConfigReference, embedded verbatim). OMITTED means the operator's own
+	// in-cluster cluster, for any provider name. IMMUTABLE.
+	//
+	// The referenced Secret is resolved from the operator's namespace, so a cluster's credential
+	// never has to live on that cluster. Only secretRef is honored; configMapRef is rejected. When
+	// secretRef.key is empty the resolver reads "value" then "value.yaml" (Flux's order). Unsafe
+	// kubeconfigs (exec auth, insecure-skip-tls-verify) are rejected with Validated=False unless the
 	// operator opts in via flags.
 	// +optional
 	KubeConfig *meta.KubeConfigReference `json:"kubeConfig,omitempty"`
@@ -74,35 +75,33 @@ type ClusterProviderSpec struct {
 	// +optional
 	AllowedNamespaces *NamespaceMatcher `json:"allowedNamespaces,omitempty"`
 
-	// AllowSourceNamespaceOverride delegates SOURCE-namespace selection to the GitTargets this
-	// provider admits. While false (the default) a WatchRule mirroring through this provider may
-	// watch only its OWN namespace, whatever any GitTarget policy says.
-	//
-	// The flag does not grant access by itself — an admitted GitTarget must still admit the
-	// namespace in spec.allowedSourceNamespaces. What it delegates is the AUTHORITY to choose: a
-	// target owner may then configure a broad allow-list, including one matching every source
-	// namespace, so the source credential's own RBAC remains the hard maximum. Set it only when
-	// the owners of admitted GitTargets are trusted to pick a subset of what that credential
-	// may read.
-	//
-	// It is required for EVERY cross-source-namespace request, including a
-	// rules[].sourceNamespace of "*": a wildcard expresses a request to follow the target's
-	// policy set, so a later policy edit could otherwise widen the watch with no platform-admin
-	// opt-in. It does not apply to ClusterWatchRule, which is cluster-scope-only and selects no
-	// namespaces at all.
+	// Design rationale, kept out of the generated CRD description by the blank line below.
 	//
 	// Remote and in-cluster providers use the same mechanism but deserve very different sign-off.
 	// For a REMOTE provider the config-plane namespace and the source namespace are on different
 	// clusters, so their sharing a name never was a boundary and naming one widens nothing. For an
-	// IN-CLUSTER provider (kubeConfig omitted) the same-name coupling WAS the boundary: setting
-	// this deliberately bypasses live namespace RBAC, letting the owner of an admitted GitTarget
-	// in one namespace mirror another namespace's objects — read through the operator's own
-	// cluster-wide credential — into a Git destination they control. That is legitimate for a
-	// cluster-admin to grant on purpose, and must never happen by default or as a side effect of
-	// another field, which is why this exists and defaults to false.
+	// IN-CLUSTER provider (kubeConfig omitted) the same-name coupling WAS the boundary: setting this
+	// deliberately bypasses live namespace RBAC, letting the owner of an admitted GitTarget in one
+	// namespace mirror another namespace's objects — read through the operator's own cluster-wide
+	// credential — into a Git destination they control. That is legitimate for a cluster-admin to
+	// grant on purpose, and must never happen by default or as a side effect of another field,
+	// which is why this exists and defaults to false. LOCALITY is not the switch: in-cluster-ness
+	// follows from spec.kubeConfig, and neither that nor the provider's name decides this.
 	//
-	// Note that LOCALITY is not the switch: whether a provider is in-cluster follows from
-	// spec.kubeConfig, and neither that nor the provider's name decides this. Only this flag does.
+	// A wildcard needs the flag for the same reason a named namespace does: it requests the
+	// target's policy SET, so a later policy edit could otherwise widen the watch with no
+	// platform-admin opt-in.
+
+	// AllowSourceNamespaceOverride delegates SOURCE-namespace selection to the GitTargets this
+	// provider admits. While false (the default) a WatchRule mirroring through this provider may
+	// watch only its OWN namespace, whatever any GitTarget policy says.
+	//
+	// It grants no access by itself: an admitted GitTarget must still admit the namespace in its
+	// spec.allowedSourceNamespaces, and the source credential's own RBAC remains the hard maximum.
+	// What it delegates is the AUTHORITY to choose, so set it only when the owners of admitted
+	// GitTargets are trusted to pick a subset of what that credential may read. Every
+	// cross-namespace request needs it, including a rules[].sourceNamespace of "*". It does not
+	// apply to ClusterWatchRule, which selects no namespaces at all.
 	// +optional
 	// +kubebuilder:default=false
 	AllowSourceNamespaceOverride bool `json:"allowSourceNamespaceOverride,omitempty"`
@@ -148,19 +147,17 @@ type ClusterProviderStatus struct {
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster
-// a GitTarget mirrors FROM, and is the home for that cluster's connectivity credential
-// (spec.kubeConfig), namespace-access authorization (spec.allowedNamespaces), and per-cluster
-// status. Its NAME is the cluster's identity everywhere: the /audit-webhook/<name> ingress route
-// and the attribution fact-index key. No name is special: "default" is merely the name
-// GitTarget.spec.clusterProviderRef defaults to when omitted. Whether a provider is the operator's
-// own cluster or a remote follows from spec.kubeConfig (omitted = in-cluster), not from its name,
-// so "default" may just as well name a remote cluster.
+// ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster a
+// GitTarget mirrors FROM, and owns that cluster's connectivity credential (spec.kubeConfig),
+// namespace-access authorization (spec.allowedNamespaces), and per-cluster status. Its NAME is the
+// cluster's identity everywhere — the /audit-webhook/<name> ingress route and the attribution
+// fact-index key. No name is special: "default" is merely what an omitted
+// GitTarget.spec.clusterProviderRef points at, and it may just as well name a remote cluster, since
+// in-cluster-ness follows from spec.kubeConfig (omitted = in-cluster) rather than from the name.
 //
-// Security model:
-//   - ClusterProvider is cluster-scoped and requires platform-admin permissions to create.
-//   - A GitTarget may reference it only from a namespace its spec.allowedNamespaces admits
-//     (deny-by-default), enforced at admission AND before any watch starts.
+// It is cluster-scoped and requires platform-admin permissions to create. A GitTarget may reference
+// it only from a namespace spec.allowedNamespaces admits — deny-by-default, enforced at admission
+// and again before any watch starts.
 type ClusterProvider struct {
 	metav1.TypeMeta `json:",inline"`
 

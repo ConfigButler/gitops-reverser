@@ -322,6 +322,24 @@ func (g *itemGate) decide(
 		return base, nil
 	}
 
+	// (4) A declared policy whose names could never BE namespace names is unevaluatable, not
+	//     narrower. The schema rejects them at admission, but a policy stored before that validation
+	//     shipped is still in etcd — and the two ways to carry on are both worse than refusing:
+	//     honouring the valid subset silently mirrors less than the operator asked for, and
+	//     resolving a wildcard THROUGH such a name produces a scope pointing at a namespace that
+	//     cannot exist. Unavailable is the accurate verdict: only an operator edit fixes it, and the
+	//     establishing/maintaining contract already handles it correctly in both directions.
+	if err := g.target.Spec.AllowedSourceNamespaces.ValidateNames(); err != nil {
+		base.Verdict = SourceScopeUnavailable
+		base.Reason = ReasonSourceNamespacePolicyUnavailable
+		base.Message = fmt.Sprintf(
+			"%s: GitTarget %s/%s spec.allowedSourceNamespaces cannot be evaluated: %v; a policy "+
+				"admits namespaces by NAME or by selector, never by pattern — use `selector: {}` to "+
+				"admit every source namespace",
+			g.describeItem(index, item), g.target.Namespace, g.target.Name, err)
+		return base, nil
+	}
+
 	if item.IsSourceNamespaceWildcard() {
 		return g.expandWildcard(ctx, index, item, base), nil
 	}

@@ -94,54 +94,28 @@ spec:
             description: spec defines the desired state of GitTarget
             properties:
               allowedSourceNamespaces:
-                description: "AllowedSourceNamespaces bounds which SOURCE-cluster
-                  namespaces may be mirrored INTO this\ntarget. It is a property of
-                  the DESTINATION, not of any requesting rule: when declared it is\nexhaustive
-                  for every WatchRule that writes here.\n\nThe invariant everything
-                  else serves — a declared policy is exhaustive:\n\n\t| declared?
-                  | a WatchRule item may watch                            |\n\t| no
-                  \       | the WatchRule's own namespace only (legacy)           |\n\t|
-                  yes       | exactly what the policy admits, and nothing else      |\n\nIt
-                  is also what a rules[].sourceNamespace of \"*\" resolves THROUGH:\n\n\t|
-                  policy                       | \"*\" resolves to                                     |\n\t|
-                  undeclared                   | denied — deny-by-default; \"*\" is
-                  not a backdoor     |\n\t| {} (declared, empty)         | nothing
-                  \                                            |\n\t| names: [a, b]
-                  \               | exactly a and b, with no source-cluster access
-                  \     |\n\t| selector: {matchLabels: …}   | every source namespace
-                  carrying those labels, live  |\n\t| selector: {}                 |
-                  EVERY source namespace — the \"all namespaces\" form  |\n\nThe last
-                  row is the deliberate \"all source namespaces\" declaration, and
-                  it is the\nreplacement for the removed cluster-wide namespaced ClusterWatchRule:
-                  declared by the\ndestination owner rather than by the rule author,
-                  legible here, and self-updating as\nnamespaces come and go.\n\nThere
-                  is deliberately NO self-namespace exception. Once a policy is declared
-                  it must admit\nevery namespace that may reach this target, INCLUDING
-                  a co-resident legacy WatchRule's own\nnamespace. An implicit carve-out
-                  would mean the field does not actually bound what arrives\nhere,
-                  so a reader auditing it would be wrong about the target's contents
-                  — which is the\nwhole reason the field exists. The resulting authoring
-                  footgun (adding a policy for one\noverride silently denies co-resident
-                  legacy rules) is mitigated by being LOUD:\nSourceNamespaceAuthorized=False,
-                  Stalled=True, and a message naming the exact fix.\n\nIts selector
-                  matches labels on Namespaces in the SOURCE cluster this target mirrors
-                  from —\nnot the control cluster ClusterProvider.allowedNamespaces
-                  describes. Evaluating it therefore\nneeds Namespace get/list/watch
-                  for the identity in that cluster's credential; an\nexact-NAMES entry
-                  stays usable without it, which is a deliberate degradation path
-                  that also\nkeeps \"*\" resolvable against a names-only policy.\n\nEmpty
-                  or omitted are NOT the same: omitted declares no policy (a WatchRule
-                  keeps its own\nnamespace), while a declared-but-empty policy admits
-                  nothing. Naming any namespace other\nthan the WatchRule's own —
-                  including \"*\" — additionally requires the ClusterProvider to set\nspec.allowSourceNamespaceOverride.\n\nIt
-                  does NOT bound ClusterWatchRule. Cluster-scoped objects have no
-                  namespace, so a\nClusterWatchRule is intentionally cluster-global
-                  and this field is neither consulted nor a\nbound for it; isolating
-                  cluster-scoped objects between tenants takes separate source\ncredentials/ClusterProviders."
+                description: |-
+                  AllowedSourceNamespaces bounds which SOURCE-cluster namespaces may be mirrored INTO this
+                  target. It belongs to the DESTINATION, not to any requesting rule: once declared it is
+                  exhaustive for every WatchRule that writes here, with no exception for a rule's own namespace.
+
+                  Omitted and empty differ. Omitted declares no policy, and a WatchRule keeps its own namespace;
+                  a declared-but-empty policy admits nothing; `selector: {}` admits every source namespace.
+                  Selector labels are read in the SOURCE cluster, so evaluating one needs Namespace
+                  get/list/watch for that cluster's credential, while exact names need no such access. This is
+                  also what a rules[].sourceNamespace of "*" resolves through. Naming any namespace other than
+                  the WatchRule's own — including "*" — additionally requires the ClusterProvider to set
+                  spec.allowSourceNamespaceOverride. It does NOT bound ClusterWatchRule, whose cluster-scoped
+                  objects have no namespace. Full resolution table: docs/configuration.md.
                 properties:
                   names:
-                    description: Names is an explicit allow-list of namespace names.
+                    description: |-
+                      Names is an explicit allow-list of namespace names. Entries are namespace names (DNS-1123
+                      labels), never patterns — `*` is rejected. To admit every namespace, declare `selector: {}`.
                     items:
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
                     type: array
                     x-kubernetes-list-type: set
@@ -206,13 +180,10 @@ spec:
                   name: default
                 description: |-
                   ClusterProviderRef names the SOURCE cluster this GitTarget mirrors FROM, by referencing a
-                  cluster-scoped ClusterProvider by name. The ClusterProvider is the home for that cluster's
-                  connectivity credential, namespace-access authorization, and author-attribution mode. This
-                  DEFAULTS to {name: "default"} — a user-created provider by that conventional name, which may
-                  be in-cluster or remote — so a target that omits it persists with a concrete, jumpable ref
-                  rather than an implicit nil. The operator never creates that provider; a GitTarget naming one
-                  that does not exist is held unready. Immutable: a folder's source cluster is part of what the
-                  folder means; delete and recreate to change it.
+                  cluster-scoped ClusterProvider by name. That ClusterProvider owns the cluster's connectivity
+                  credential, namespace-access authorization, and author-attribution mode. The default provider
+                  name is "default" and must exist; it may be in-cluster or remote.
+                  Immutable: a folder's source cluster is part of what the folder means; delete and recreate.
                 properties:
                   group:
                     default: configbutler.ai

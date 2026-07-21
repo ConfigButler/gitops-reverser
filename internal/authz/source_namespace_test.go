@@ -581,6 +581,45 @@ func TestResolveWatchRuleSourceScope_ExactNamesNeedNoResolver(t *testing.T) {
 	})
 }
 
+// TestResolveWatchRuleSourceScope_PatternInPolicyNamesCannotBeEvaluated covers the policy the
+// schema now rejects but etcd may still hold.
+//
+// `names: ["*"]` reads like "every namespace" and is nothing of the sort: `*` is a literal name
+// Kubernetes matches against nothing, so honouring it would resolve a wildcard item to a namespace
+// that cannot exist — an authorized-looking rule mirroring zero objects. The verdict must therefore
+// be UNAVAILABLE (an operator edit is required) rather than a smaller admitted scope, and it must
+// condemn the whole policy: admitting the entries that happen to be well-formed is silent
+// narrowing, which is the failure this design refuses everywhere else.
+func TestResolveWatchRuleSourceScope_PatternInPolicyNamesCannotBeEvaluated(t *testing.T) {
+	t.Run("a wildcard item cannot resolve through it", func(t *testing.T) {
+		resolved := resolveOne(t, snWildcard,
+			&configv1alpha3.NamespaceMatcher{Names: []string{"*"}}, true, admitting())
+
+		assert.Equal(t, authz.SourceScopeUnavailable, resolved.Verdict)
+		assert.Equal(t, authz.ReasonSourceNamespacePolicyUnavailable, resolved.Reason)
+		assert.Empty(t, resolved.NamespacesFor(0),
+			"no scope may be resolved from a policy that cannot be evaluated")
+		assert.Contains(t, resolved.Message, "selector: {}",
+			"the message must name the form that actually admits every namespace")
+	})
+
+	t.Run("a valid name alongside it does not rescue the policy", func(t *testing.T) {
+		resolved := resolveOne(t, snSourceNS,
+			&configv1alpha3.NamespaceMatcher{Names: []string{snSourceNS, "*"}}, true, admitting())
+
+		assert.Equal(t, authz.SourceScopeUnavailable, resolved.Verdict,
+			"a partially valid policy is not a smaller policy")
+	})
+
+	t.Run("a legacy own-namespace rule against no policy is untouched", func(t *testing.T) {
+		resolved := resolveOne(t, "", nil, false, nil)
+
+		assert.Equal(t, authz.SourceScopeAdmitted, resolved.Verdict,
+			"validation applies to a DECLARED policy; it must not disturb the legacy path")
+		assert.Equal(t, authz.ReasonLegacySourceNamespace, resolved.Reason)
+	})
+}
+
 // TestResolveWatchRuleSourceScope_NameFastPathSkipsTheResolver pins the degradation path's
 // mechanism, not just its outcome: a name match must be answered WITHOUT consulting the
 // source-scope service at all, or "exact names keep working without Namespace access" is only

@@ -28,6 +28,44 @@ func TestNamespaceMatcher_DenyByDefault(t *testing.T) {
 	assert.True(t, empty.Declared(), "but it IS declared, which is what makes it exhaustive")
 }
 
+// TestNamespaceMatcher_ValidateNamesRejectsPatterns pins the half of the policy that cannot be
+// expressed as a pattern.
+//
+// `*` is the case that matters and the reason is counter-intuitive: it is NOT interpreted as "every
+// namespace" anywhere in the stack. Kubernetes treats `namespaces/*` as a literal name, so a policy
+// carrying it resolves a wildcard item to a namespace that can never exist — and the rule then
+// reports itself authorized while mirroring nothing. Refusing the name is what turns that silent
+// no-op into something an operator can see.
+func TestNamespaceMatcher_ValidateNamesRejectsPatterns(t *testing.T) {
+	var nilMatcher *NamespaceMatcher
+	assert.NoError(t, nilMatcher.ValidateNames(), "a nil matcher has no names to reject")
+	assert.NoError(t, (&NamespaceMatcher{}).ValidateNames(), "nor does a declared-but-empty one")
+
+	valid := &NamespaceMatcher{Names: []string{"repo-config", "tenant-acme", "a"}}
+	assert.NoError(t, valid.ValidateNames(), "real namespace names stay valid")
+
+	tests := map[string]string{
+		"the wildcard":         "*",
+		"a prefix pattern":     "tenant-*",
+		"an empty name":        "",
+		"an uppercase name":    "Repo-Config",
+		"a path-ish name":      "team/repo-config",
+		"a trailing separator": "repo-config-",
+		"a name over 63 chars": "n0123456789012345678901234567890123456789012345678901234567890123",
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := (&NamespaceMatcher{Names: []string{value}}).ValidateNames()
+			require.Error(t, err, "%q could never be a namespace name", value)
+			assert.Contains(t, err.Error(), "is not a namespace name")
+		})
+	}
+
+	// One bad entry condemns the whole policy: honouring the valid remainder is silent narrowing.
+	mixed := &NamespaceMatcher{Names: []string{"repo-config", "*"}}
+	assert.Error(t, mixed.ValidateNames(), "a policy is not partially evaluatable")
+}
+
 // TestNamespaceMatcher_NamesAndSelectorAreOred covers the OR contract and, more importantly, that
 // the NAME half never consults labels — the property that keeps exact-name policies working
 // against a cluster whose Namespace reads are denied.

@@ -3,8 +3,12 @@
 package v1alpha3
 
 import (
+	"fmt"
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // NamespaceMatcher is the one deny-by-default namespace-policy SHAPE this API uses wherever a
@@ -29,9 +33,23 @@ import (
 // rather than fetching them, and MatchesName exists so an exact-name policy stays answerable when
 // the labels cannot be read at all (see the source-scope service's degradation path).
 type NamespaceMatcher struct {
-	// Names is an explicit allow-list of namespace names.
+	// Design rationale, kept out of the generated CRD description by the blank line below.
+	//
+	// `*` is rejected for a reason that is not cosmetic: Kubernetes treats it as a LITERAL namespace
+	// name — a list or watch against `namespaces/*` matches nothing — so `names: ["*"]` would
+	// resolve a `sourceNamespace: "*"` item to a namespace that cannot exist. The rule would report
+	// itself authorized, plan a stream, and mirror NOTHING: a silent no-op wearing a green
+	// condition, which is precisely what the NoAdmittedSourceNamespaces reason exists to make loud.
+	// `selector: {}` is the "every namespace" form because it resolves live and keeps the snapshot
+	// and audit guarantees a pattern would bypass.
+
+	// Names is an explicit allow-list of namespace names. Entries are namespace names (DNS-1123
+	// labels), never patterns — `*` is rejected. To admit every namespace, declare `selector: {}`.
 	// +optional
 	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=63
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Names []string `json:"names,omitempty"`
 
 	// Selector is a label selector matched against Namespace labels; a namespace whose labels
@@ -56,6 +74,27 @@ func (m *NamespaceMatcher) MatchesName(nsName string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateNames reports the first entry in Names that could never be a namespace name, or nil when
+// every entry could be one.
+//
+// The schema rejects these at admission, so this is the DEFENSIVE half: an object stored before that
+// validation shipped keeps its value in etcd, where the only two options are to refuse it loudly or
+// to honour the entries that happen to be valid. The second is silent narrowing — a policy that
+// mirrors less than its author asked for, with nothing in status saying so — which is why callers
+// must treat a non-nil error as "this policy cannot be evaluated as written" rather than as a
+// smaller policy.
+func (m *NamespaceMatcher) ValidateNames() error {
+	if m == nil {
+		return nil
+	}
+	for _, n := range m.Names {
+		if errs := validation.IsDNS1123Label(n); len(errs) > 0 {
+			return fmt.Errorf("names[%q] is not a namespace name: %s", n, strings.Join(errs, "; "))
+		}
+	}
+	return nil
 }
 
 // HasSelector reports whether the matcher declares a label selector, i.e. whether evaluating it
