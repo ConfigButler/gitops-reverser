@@ -641,3 +641,60 @@ func TestAttributionIndex_SharedAuditRouteJoinsAcrossProviders(t *testing.T) {
 	_, ok = idx.LookupAuthor(ctx, "srcns-delegating", appsDeploymentGVR(), "uid-1", "101", true)
 	require.False(t, ok, "a route nobody wrote to must miss, or the partition means nothing")
 }
+
+// TestAttributionIndex_WriteFactKeysByFactShape pins which keys each fact shape writes, which is
+// where the v3 schema's §5 escape hatch lives. The rules are not symmetric and the asymmetry is
+// deliberate: a UID-bearing fact's rv-only key would be DEAD, because the watch side always carries
+// a UID and resolves via object:<uid>:… first, so writing one would be a key nobody ever reads.
+func TestAttributionIndex_WriteFactKeysByFactShape(t *testing.T) {
+	const route, gr = "prod-eu-1", "apps/deployments"
+	raw := []byte(`{"author":"alice"}`)
+
+	tests := []struct {
+		name      string
+		uid, rv   string
+		wantWrote bool
+	}{
+		{
+			name: "uid and rv write the immutable exact key and the last pointer",
+			uid:  "uid-1", rv: "101", wantWrote: true,
+		},
+		{
+			name: "uid without rv writes only the last pointer",
+			uid:  "uid-1", wantWrote: true,
+		},
+		{
+			name: "rv without uid writes only the rv-only hatch",
+			rv:   "101", wantWrote: true,
+		},
+		{
+			name: "neither uid nor rv writes nothing at all",
+			// An event that carries no joinable identity cannot ever be matched, so recording it
+			// would leave a key that only expires. Reporting wrote=false also keeps the "written"
+			// fact-event counter honest.
+			wantWrote: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx, mr := newTestAttributionIndexWithRedis(t)
+			ctx := context.Background()
+
+			wrote, err := idx.writeFactKeys(ctx, route, gr, tt.uid, tt.rv, raw)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantWrote, wrote)
+
+			exists := func(key string) bool {
+				_, getErr := mr.Get(key)
+				return getErr == nil
+			}
+			require.Equal(t, tt.uid != "" && tt.rv != "", exists(idx.factKeyExact(route, gr, tt.uid, tt.rv)),
+				"the exact key needs both a uid and the rv that write produced")
+			require.Equal(t, tt.uid != "", exists(idx.factKeyLast(route, gr, tt.uid)),
+				"the last-writer pointer is keyed by uid alone")
+			require.Equal(t, tt.uid == "" && tt.rv != "", exists(idx.factKeyRV(route, gr, tt.rv)),
+				"the rv-only hatch exists only for a fact that has no uid")
+		})
+	}
+}
