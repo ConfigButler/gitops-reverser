@@ -4,14 +4,21 @@ package watch
 
 import (
 	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -215,7 +222,7 @@ func TestCompileWatchRule_RetainsScopeWhenPolicyBecomesUnevaluatable(t *testing.
 	selector := *snbGitTarget(&configv1alpha3.NamespaceMatcher{
 		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
 	})
-	m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{forbidden: true})
+	m.sourceScope().store(snbProvider, namespaceSnapshot{forbidden: true})
 
 	resolved, err = CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, selector, provider)
 
@@ -251,7 +258,7 @@ func TestCompileWatchRule_UnevaluatablePolicyEstablishesNothing(t *testing.T) {
 		snbGitTarget(nil), snbGitProvider(), snbClusterProvider(true),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: snbTenantNS}},
 	)
-	m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{forbidden: true})
+	m.sourceScope().store(snbProvider, namespaceSnapshot{forbidden: true})
 
 	selector := *snbGitTarget(&configv1alpha3.NamespaceMatcher{
 		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
@@ -279,7 +286,7 @@ func TestCompileWatchRule_RetentionIsSpecSpecific(t *testing.T) {
 	granted := snbWatchRule(snbSourceNS)
 	grantKey := k8stypes.NamespacedName{Name: snbRule, Namespace: snbTenantNS}
 	m.RecordSourceScopeGrant(grantKey, SourceScopeSpecHash(granted), [][]string{{snbSourceNS}})
-	m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{forbidden: true})
+	m.sourceScope().store(snbProvider, namespaceSnapshot{forbidden: true})
 
 	selector := *snbGitTarget(&configv1alpha3.NamespaceMatcher{
 		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
@@ -343,7 +350,7 @@ func TestResolveSourceNamespace_ThreeValuedResults(t *testing.T) {
 
 	t.Run("forbidden Namespace list is terminal", func(t *testing.T) {
 		m := snbManager(t)
-		m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{forbidden: true})
+		m.sourceScope().store(snbProvider, namespaceSnapshot{forbidden: true})
 		result := m.ResolveSourceNamespace(ctx, target, snbSourceNS)
 		assert.Equal(t, authz.SourceScopeUnavailable, result.Verdict)
 		assert.Contains(t, result.Message, "use exact names")
@@ -351,7 +358,7 @@ func TestResolveSourceNamespace_ThreeValuedResults(t *testing.T) {
 
 	t.Run("synced cache with matching labels admits", func(t *testing.T) {
 		m := snbManager(t)
-		m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{
+		m.sourceScope().store(snbProvider, namespaceSnapshot{
 			synced: true,
 			labels: map[string]map[string]string{snbSourceNS: {"mirrorable": "true"}},
 		})
@@ -361,7 +368,7 @@ func TestResolveSourceNamespace_ThreeValuedResults(t *testing.T) {
 
 	t.Run("synced cache with non-matching labels denies", func(t *testing.T) {
 		m := snbManager(t)
-		m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{
+		m.sourceScope().store(snbProvider, namespaceSnapshot{
 			synced: true,
 			labels: map[string]map[string]string{snbSourceNS: {"mirrorable": "false"}},
 		})
@@ -371,7 +378,7 @@ func TestResolveSourceNamespace_ThreeValuedResults(t *testing.T) {
 
 	t.Run("synced cache missing the namespace denies with a legible cause", func(t *testing.T) {
 		m := snbManager(t)
-		m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{
+		m.sourceScope().store(snbProvider, namespaceSnapshot{
 			synced: true,
 			labels: map[string]map[string]string{"elsewhere": {"mirrorable": "true"}},
 		})
@@ -379,6 +386,166 @@ func TestResolveSourceNamespace_ThreeValuedResults(t *testing.T) {
 		assert.Equal(t, authz.SourceScopeDenied, result.Verdict)
 		assert.Contains(t, result.Message, "does not exist")
 	})
+}
+
+// TestResolveSourceNamespace_ReadsTheGitTargetsOwnCluster is the divergent-labels test, and the
+// divergence is the entire point: with both clusters labelled the same way, this passes against a
+// resolver reading either one.
+//
+// A GitTarget's policy is a statement about ITS source cluster. Resolving it through the
+// Declare-time cache — which defaults an undeclared GitTarget to the config plane — means a remote
+// target's selector is answered from config-plane Namespace labels during the window between the
+// WatchRule reconcile and the GitTarget controller's Declare. Those two controllers run
+// concurrently after a restart, so the window is ordinary operation, not a corner case. Here the
+// config plane would admit and the real source cluster would not; admitting is the bug.
+func TestResolveSourceNamespace_ReadsTheGitTargetsOwnCluster(t *testing.T) {
+	ctx := context.Background()
+	target := snbGitTarget(&configv1alpha3.NamespaceMatcher{
+		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
+	})
+	m := snbManager(t)
+
+	// The config plane carries a same-named namespace that DOES match, plus one the source cluster
+	// has never heard of. Neither may reach a decision about this target.
+	m.sourceScope().store(configPlaneClusterID, namespaceSnapshot{
+		synced: true,
+		labels: map[string]map[string]string{
+			snbSourceNS:    {"mirrorable": "true"},
+			"only-up-here": {"mirrorable": "true"},
+		},
+	})
+	m.sourceScope().store(snbProvider, namespaceSnapshot{
+		synced: true,
+		labels: map[string]map[string]string{snbSourceNS: {"mirrorable": "false"}},
+	})
+
+	result := m.ResolveSourceNamespace(ctx, target, snbSourceNS)
+	assert.Equal(t, authz.SourceScopeDenied, result.Verdict,
+		"the source cluster's labels decide, not a same-named namespace on the config plane")
+
+	names, enumeration := m.EnumerateSourceNamespaces(ctx, target)
+	require.Equal(t, authz.SourceScopeAdmitted, enumeration.Verdict)
+	assert.Empty(t, names,
+		"a wildcard expands over the SOURCE cluster's namespaces; the config plane's must not leak in")
+
+	// The refresh loop must be armed for the same cluster the answer came from — otherwise the
+	// snapshot that gets refreshed and the snapshot that gets read are two different clusters, and
+	// the enqueue that carries a revocation matches no GitTarget at all.
+	assert.Equal(t, []string{snbProvider}, m.sourceScope().wantedClusters())
+}
+
+// stubNamespaceLister is a dynamic.Interface serving one canned Namespace list, which reports the
+// context its List was given. Only List is implemented: the embedded interfaces are nil, so any
+// other call panics loudly instead of passing silently.
+type stubNamespaceLister struct {
+	dynamic.Interface
+
+	onList func(ctx context.Context)
+}
+
+func (s stubNamespaceLister) Resource(schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+	return stubNamespaceResource{onList: s.onList}
+}
+
+type stubNamespaceResource struct {
+	dynamic.NamespaceableResourceInterface
+
+	onList func(ctx context.Context)
+}
+
+func (s stubNamespaceResource) List(
+	ctx context.Context, _ metav1.ListOptions,
+) (*unstructured.UnstructuredList, error) {
+	s.onList(ctx)
+	return &unstructured.UnstructuredList{}, nil
+}
+
+// armStubCluster makes clusterID a cluster the refresh loop wants, backed by a stub client.
+func armStubCluster(m *Manager, clusterID string, onList func(context.Context)) {
+	m.sourceScope().want(clusterID)
+	m.cluster(clusterID).dynamicClient = stubNamespaceLister{onList: onList}
+}
+
+// TestRefreshSourceNamespaceScopes_BoundsEveryClustersList pins the deadline.
+//
+// A source cluster's REST config deliberately carries no request timeout — its watches must stay
+// open — and only its dial is bounded, so a cluster that accepts the connection and then never
+// answers would block this refresh forever. Because the refresh runs inside
+// ReconcileForRuleChange, "forever" also means the watched-type tables and target watches after it
+// never refresh again, for every tenant.
+func TestRefreshSourceNamespaceScopes_BoundsEveryClustersList(t *testing.T) {
+	m := snbManager(t)
+
+	var mu sync.Mutex
+	remaining := map[string]time.Duration{}
+	unbounded := []string{}
+
+	for _, id := range []string{"cluster-a", "cluster-b"} {
+		armStubCluster(m, id, func(ctx context.Context) {
+			mu.Lock()
+			defer mu.Unlock()
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				unbounded = append(unbounded, id)
+				return
+			}
+			remaining[id] = time.Until(deadline)
+		})
+	}
+
+	m.refreshSourceNamespaceScopes(context.Background())
+
+	assert.Empty(t, unbounded, "every cluster's list must run under its own deadline")
+	require.Len(t, remaining, 2, "every wanted cluster must be listed")
+	for id, left := range remaining {
+		assert.Positive(t, left, "%s got an already-expired deadline", id)
+		assert.LessOrEqual(t, left, sourceNamespaceListTimeout,
+			"%s got a deadline longer than the bound", id)
+	}
+}
+
+// TestRefreshSourceNamespaceScopes_OneWedgedClusterCannotStarveTheOthers pins the fan-out.
+//
+// Serially, total latency grows as clusterCount × the slowest cluster, so ONE tenant's unreachable
+// source cluster delays every other tenant's grants and revocations — the same failure the catalog
+// refresh already had, and fixed, one file over. The barrier is what makes this a real test: it
+// only falls through once every cluster is inside its list at the same moment, which a serial loop
+// can never achieve.
+func TestRefreshSourceNamespaceScopes_OneWedgedClusterCannotStarveTheOthers(t *testing.T) {
+	const clusters = 3
+
+	m := snbManager(t)
+	entered := make(chan struct{}, clusters)
+	release := make(chan struct{})
+	var concurrent atomic.Bool
+	concurrent.Store(true)
+
+	for i := range clusters {
+		armStubCluster(m, fmt.Sprintf("cluster-%d", i), func(context.Context) {
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second):
+				concurrent.Store(false)
+			}
+		})
+	}
+
+	go func() {
+		for range clusters {
+			<-entered
+		}
+		close(release)
+	}()
+
+	m.refreshSourceNamespaceScopes(context.Background())
+
+	assert.True(t, concurrent.Load(),
+		"every wanted cluster must be listed concurrently, so one wedged cluster blocks only itself")
+	for i := range clusters {
+		_, ok := m.sourceScope().snapshot(fmt.Sprintf("cluster-%d", i))
+		assert.True(t, ok, "cluster-%d was never listed", i)
+	}
 }
 
 // TestSourceNamespaceSnapshot_StoreDetectsObservableChange pins the ENQUEUE trigger. Only a real

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +30,18 @@ func namespacesGVR() schema.GroupVersionResource {
 // sourceNamespaceEventsBuffer sizes the grant/revocation channel. A full buffer means reconciles
 // are already pending, so a dropped event is harmless — the periodic requeue is the backstop.
 const sourceNamespaceEventsBuffer = 256
+
+// sourceNamespaceListTimeout bounds ONE source cluster's Namespace list. A list that has not
+// answered in this long is not slow, it is wedged, and the refresh runs again on the next reconcile
+// anyway — so giving up costs at most one interval's freshness, while not giving up costs every
+// other tenant their reconcile. A deadline is the right tool here (unlike the discovery path, which
+// needs a rest.Config timeout because ServerGroupsAndResources takes no context).
+const sourceNamespaceListTimeout = 15 * time.Second
+
+// maxConcurrentSourceNamespaceRefreshes bounds how many source clusters are listed at once, so a
+// large tenant fan-out cannot open an unbounded number of simultaneous connections. It mirrors
+// maxConcurrentCatalogRefreshes, which bounds the same fan-out for the catalog.
+const maxConcurrentSourceNamespaceRefreshes = 8
 
 // sourceNamespaceScope is the SOURCE-SCOPE SERVICE: the manager-owned answer to "does this
 // GitTarget's allowedSourceNamespaces admit this namespace in its source cluster?".
@@ -114,6 +127,22 @@ func (m *Manager) sourceScope() *sourceNamespaceScope {
 // WatchManagerInterface can carry it and tests can supply a stand-in.
 func (m *Manager) SourceScope() SourceScopeService { return m }
 
+// sourceScopeClusterID is the cluster whose Namespace labels decide a GitTarget's source-namespace
+// policy: the one the GitTarget itself names.
+//
+// It deliberately does NOT go through clusterIDForGitTarget, which defaults an undeclared GitTarget
+// to the config plane. That default is right for the read paths it was written for — a status read
+// racing the first Declare — and wrong here, because AUTHORIZATION is not a status read. The
+// WatchRule reconciler gates as soon as it has resolved the GitTarget, while DeclareForGitTarget is
+// the GitTarget controller's job, and after a restart the two run concurrently; resolving through
+// the cache in that window would evaluate a REMOTE target's selector against CONFIG-PLANE Namespace
+// labels, so a namespace could be admitted because a same-named namespace here carried the right
+// label. The GitTarget carries the answer already, and the two can never disagree: the controller
+// passes exactly this value to DeclareForGitTarget.
+func sourceScopeClusterID(target *configv1alpha3.GitTarget) string {
+	return target.SourceCluster()
+}
+
 // ResolveSourceNamespace answers whether a GitTarget's declared allowedSourceNamespaces admits a
 // namespace in that target's source cluster. It implements authz.SourceNamespaceResolver.
 //
@@ -125,7 +154,7 @@ func (m *Manager) ResolveSourceNamespace(
 	target *configv1alpha3.GitTarget,
 	namespace string,
 ) authz.SourceScopeResult {
-	clusterID := m.clusterIDForGitTarget(types.NewResourceReference(target.Name, target.Namespace))
+	clusterID := sourceScopeClusterID(target)
 	scope := m.sourceScope()
 
 	// Arm the refresh loop for this cluster. The first question is always "cannot say yet"; the
@@ -181,7 +210,7 @@ func (m *Manager) EnumerateSourceNamespaces(
 	_ context.Context,
 	target *configv1alpha3.GitTarget,
 ) ([]string, authz.SourceScopeResult) {
-	clusterID := m.clusterIDForGitTarget(types.NewResourceReference(target.Name, target.Namespace))
+	clusterID := sourceScopeClusterID(target)
 	scope := m.sourceScope()
 
 	// Arm the refresh loop for this cluster, exactly as the single-candidate path does.
@@ -361,14 +390,41 @@ func labelSetsEqual(a, b map[string]map[string]string) bool {
 // has asked about, and enqueues the affected GitTargets when the answer changed. It runs on the
 // manager's existing reconcile cadence, so a grant or revocation lands within one interval rather
 // than waiting for a WatchRule to happen to be edited.
+//
+// Each cluster is listed under its OWN timeout and they are listed CONCURRENTLY, for the reason
+// refreshRemoteCatalogsConcurrently already documents one file over: serially, total latency grows
+// as clusterCount × the slowest cluster, so one tenant's unreachable source cluster delays every
+// other tenant's grants and revocations. The timeout is the other half of that — a source config
+// deliberately carries no rest.Config.Timeout (its watches must stay open) and only its DIAL is
+// bounded, so a cluster that accepts the connection and then hangs on the response would otherwise
+// block ReconcileForRuleChange forever, and the watched-type tables and target watches after this
+// call would never refresh at all.
 func (m *Manager) refreshSourceNamespaceScopes(ctx context.Context) {
 	scope := m.sourceScope()
-	for _, clusterID := range scope.wantedClusters() {
-		next := m.listSourceNamespaces(ctx, clusterID)
-		if scope.store(clusterID, next) {
-			m.enqueueSourceNamespaceChange(clusterID)
-		}
+	clusters := scope.wantedClusters()
+	if len(clusters) == 0 {
+		return
 	}
+
+	sem := make(chan struct{}, maxConcurrentSourceNamespaceRefreshes)
+	var wg sync.WaitGroup
+	for _, clusterID := range clusters {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(clusterID string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			listCtx, cancel := context.WithTimeout(ctx, sourceNamespaceListTimeout)
+			defer cancel()
+
+			next := m.listSourceNamespaces(listCtx, clusterID)
+			if scope.store(clusterID, next) {
+				m.enqueueSourceNamespaceChange(clusterID)
+			}
+		}(clusterID)
+	}
+	wg.Wait()
 }
 
 // listSourceNamespaces reads one source cluster's Namespace labels, classifying failure into the
