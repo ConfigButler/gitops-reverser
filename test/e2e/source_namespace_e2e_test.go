@@ -210,6 +210,43 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		}, 20*time.Second, 4*time.Second).Should(Succeed())
 	})
 
+	It("keeps two explicitly-named source namespaces in separate folders", func() {
+		// The same SHAPE a wildcard expands to — one GitTarget, one type, two source namespaces —
+		// reached without the wildcard. It separates a defect in wildcard EXPANSION from one in how
+		// a target handles more than one source namespace at all, which is reachable by two
+		// ordinary rules and does not need `"*"`.
+		const ruleA, ruleB = "srcns-two-a", "srcns-two-b"
+		const cmA, cmB = "srcns-two-cm-a", "srcns-two-cm-b"
+
+		By("creating two rules on ONE target, each naming a different source namespace")
+		Expect(applyWatchRuleWithSourceNamespace(ruleA, configNS, grantedTarget, sourceNS)).Error().
+			NotTo(HaveOccurred(), "failed to apply the first explicit rule")
+		Expect(applyWatchRuleWithSourceNamespace(ruleB, configNS, grantedTarget, wildcardNS)).Error().
+			NotTo(HaveOccurred(), "failed to apply the second explicit rule")
+		verifyResourceStatus("watchrule", ruleA, configNS, "True", "Ready", "")
+		verifyResourceStatus("watchrule", ruleB, configNS, "True", "Ready", "")
+
+		By("creating one ConfigMap in each watched namespace")
+		_, err := kubectlRunInNamespace(sourceNS, "create", "configmap", cmA, "--from-literal=k=v")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = kubectlRunInNamespace(wildcardNS, "create", "configmap", cmB, "--from-literal=k=v")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("asserting each lands under ITS OWN namespace's folder")
+		wantA := path.Join(grantedPath, fmt.Sprintf("%s/configmaps/%s.yaml", sourceNS, cmA))
+		wantB := path.Join(grantedPath, fmt.Sprintf("%s/configmaps/%s.yaml", wildcardNS, cmB))
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, srcnsRepo.CheckoutDir)
+			g.Expect(filepath.Join(srcnsRepo.CheckoutDir, wantA)).To(BeAnExistingFile(),
+				"the first source namespace must own its folder. Recent commits:\n%s",
+				recentCommitDiagnostics(srcnsRepo.CheckoutDir, grantedPath))
+			g.Expect(filepath.Join(srcnsRepo.CheckoutDir, wantB)).To(BeAnExistingFile(),
+				"a SECOND source namespace on the same target must get its own folder too, not be "+
+					"folded into the first's. Recent commits:\n%s",
+				recentCommitDiagnostics(srcnsRepo.CheckoutDir, grantedPath))
+		}).Should(Succeed())
+	})
+
 	It("refuses an override the ClusterProvider does not delegate, and writes nothing", func() {
 		By("recording the repository head before the refused rule exists")
 		var headBefore string
