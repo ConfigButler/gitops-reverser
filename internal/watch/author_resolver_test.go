@@ -165,3 +165,40 @@ func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
 
 	assert.Equal(t, git.AttributionUnresolved, outcome)
 }
+
+// TestAuthorResolver_WarnsOnceForARouteThatNeverResolves drives the whole resolver, not just the
+// health counter, so the warning path is exercised the way production reaches it: repeated events
+// on one audit route that never match a fact.
+//
+// This is the loud half of the audit-route fix. A ClusterProvider pointed at a route no API server
+// posts under mirrors correctly and loses only the commit author, which is why the original bug went
+// unnoticed until an explicit unresolved-author placeholder made it visible in Git.
+func TestAuthorResolver_WarnsOnceForARouteThatNeverResolves(t *testing.T) {
+	// hitAfter is beyond any call this test makes, so every lookup misses.
+	lookup := &fakeLookup{hitAfter: 1 << 30}
+	resolver := NewAuthorResolver(lookup, 0, logr.Discard())
+	concrete, ok := resolver.(*attributionResolver)
+	require.True(t, ok)
+
+	const route = "srcns-delegating"
+	for range attributionUnresolvedWarnThreshold {
+		_, outcome := resolver.ResolveAuthor(
+			context.Background(), route, resolverGVR, "uid-1", "101", true)
+		require.Equal(t, git.AttributionUnresolved, outcome)
+	}
+
+	// The threshold has been reached, so the route is marked warned and never warns again.
+	warn, _ := concrete.health.observe(route, false)
+	assert.False(t, warn, "a configuration mistake is worth saying once, not once per event")
+
+	// A route that resolves is never implicated, even after the other one has warned.
+	other := &fakeLookup{
+		resolution: queue.AuthorResolution{
+			Fact:   queue.AuthorFact{Author: "alice"},
+			Result: queue.AttributionExactUser,
+		},
+	}
+	healthy := NewAuthorResolver(other, 0, logr.Discard())
+	_, outcome := healthy.ResolveAuthor(context.Background(), "default", resolverGVR, "uid-2", "1", true)
+	assert.Equal(t, git.AttributionResolved, outcome)
+}
