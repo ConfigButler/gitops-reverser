@@ -10,7 +10,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
-	"github.com/ConfigButler/gitops-reverser/internal/authz"
 )
 
 // bootstrapRuleStore loads existing WatchRule and ClusterWatchRule objects into the in-memory RuleStore
@@ -64,14 +63,14 @@ func (m *Manager) bootstrapWatchRule(ctx context.Context, rule configv1alpha3.Wa
 	// override and watch a namespace the policy refuses. A denial is not fatal to startup: the
 	// rule is simply left out of the store (bootstrap has no controllers yet and cannot publish
 	// status), and the first reconcile re-decides and writes the terminal condition.
-	decision, err := CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, target, provider)
+	resolved, err := CompileWatchRule(ctx, m.Client, m.RuleStore, m, rule, target, provider)
 	if err != nil {
 		return fmt.Errorf("evaluating source-namespace authorization for WatchRule %s/%s: %w",
 			rule.Namespace, rule.Name, err)
 	}
-	if !decision.Admitted() {
-		return fmt.Errorf("WatchRule %s/%s may not watch source namespace %q: %s",
-			rule.Namespace, rule.Name, decision.Namespace, decision.Message)
+	if !resolved.Admitted() {
+		return fmt.Errorf("WatchRule %s/%s source-namespace scope was not authorized: %s",
+			rule.Namespace, rule.Name, resolved.Message)
 	}
 
 	return nil
@@ -88,29 +87,20 @@ func (m *Manager) bootstrapClusterWatchRule(ctx context.Context, rule configv1al
 		return err
 	}
 
-	// Re-apply the referenced GitTarget's ClusterProvider admission before seeding. Bootstrap runs
+	// Route through the SHARED gated compile path, never straight at the store. Bootstrap runs
 	// BEFORE the first reconcile on every restart, so a gate the reconciler alone enforced would be
 	// bypassed for the whole startup window — long enough to compile a rule and plan a stream for a
-	// target the provider never admitted. A denial is not fatal to startup: the rule is simply left
-	// out of the store, and the reconciler's own gate re-decides (and can grant it) as soon as the
-	// controller's initial sync reaches this rule.
-	admitted, admitErr := authz.GitTargetAdmitted(ctx, m.Client, &target)
-	if admitErr != nil {
-		return fmt.Errorf("evaluating ClusterProvider admission for GitTarget %s/%s: %w",
-			target.Namespace, target.Name, admitErr)
+	// target the provider never admitted, or to open a namespaced watch for a stored
+	// `scope: Namespaced` this release no longer supports. A refusal is not fatal to startup: the
+	// rule is simply left out of the store, and the reconciler's own gate re-decides (and can grant
+	// it) as soon as the controller's initial sync reaches this rule.
+	decision, err := CompileClusterWatchRule(ctx, m.Client, m.RuleStore, rule, target, provider)
+	if err != nil {
+		return fmt.Errorf("evaluating admission for ClusterWatchRule %q: %w", rule.Name, err)
 	}
-	if !admitted.Allowed {
-		return fmt.Errorf("ClusterWatchRule %q may not compile against GitTarget %s/%s: %s",
-			rule.Name, target.Namespace, target.Name, admitted.Message)
+	if !decision.Admitted {
+		return fmt.Errorf("ClusterWatchRule %q was not compiled: %s", rule.Name, decision.Message)
 	}
-
-	m.RuleStore.AddOrUpdateClusterWatchRule(
-		rule,
-		target.Name, target.Namespace,
-		provider.Name, provider.Namespace,
-		target.Spec.Branch,
-		target.Spec.Path,
-	)
 
 	return nil
 }

@@ -93,14 +93,13 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 	require.NoError(t, configv1alpha3.AddToScheme(scheme))
 
 	existingClusterWatchRule := &configv1alpha3.ClusterWatchRule{
-		ObjectMeta: metav1.ObjectMeta{Name: "cluster-services"},
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-namespaces"},
 		Spec: configv1alpha3.ClusterWatchRuleSpec{
 			TargetRef: configv1alpha3.NamespacedTargetReference{Name: "ops-target", Namespace: "ops"},
 			Rules: []configv1alpha3.ClusterResourceRule{{
-				Scope:       configv1alpha3.ResourceScopeNamespaced,
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
-				Resources:   []string{"services"},
+				Resources:   []string{"namespaces"},
 			}},
 		},
 	}

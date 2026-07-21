@@ -126,8 +126,8 @@ func cwaClusterWatchRule() *configbutleraiv1alpha3.ClusterWatchRule {
 				Kind: "GitTarget", Name: cwaTargetName, Namespace: cwaTargetNS,
 			},
 			Rules: []configbutleraiv1alpha3.ClusterResourceRule{{
-				Scope:     configbutleraiv1alpha3.ResourceScopeNamespaced,
-				Resources: []string{"configmaps"},
+				Resources: []string{"customresourcedefinitions"},
+				APIGroups: []string{"apiextensions.k8s.io"},
 			}},
 		},
 	}

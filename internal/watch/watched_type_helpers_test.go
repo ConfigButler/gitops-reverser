@@ -13,8 +13,10 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// clusterRuleForResource builds a "test-target" ClusterWatchRule for one core/v1 namespaced
-// resource. Shared by the watched-type-table and materialization tests.
+// clusterRuleForResource builds a "test-target" ClusterWatchRule for one core/v1 CLUSTER-SCOPED
+// resource. Shared by the watched-type-table and materialization tests. A ClusterWatchRule selects
+// cluster-scoped types only, so the fixture's resources must be genuinely cluster-scoped for the
+// rule to resolve anything at all.
 func clusterRuleForResource(name, resource string) configv1alpha3.ClusterWatchRule {
 	return configv1alpha3.ClusterWatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -27,7 +29,6 @@ func clusterRuleForResource(name, resource string) configv1alpha3.ClusterWatchRu
 				APIGroups:   []string{""},
 				APIVersions: []string{"v1"},
 				Resources:   []string{resource},
-				Scope:       configv1alpha3.ResourceScopeNamespaced,
 			}},
 		},
 	}
@@ -55,7 +56,7 @@ func watchRuleForTarget(name, gitTargetName, namespace string) configv1alpha3.Wa
 func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "configmaps"),
+		clusterRuleForResource("rule-1", "namespaces"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 
@@ -72,7 +73,7 @@ func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 	}
 	// Concurrently add a second rule mid-flight.
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-2", "secrets"),
+		clusterRuleForResource("rule-2", "nodes"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	wg.Wait()
@@ -85,5 +86,5 @@ func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 	for _, wt := range table.Types {
 		kinds[wt.GVK.Kind] = true
 	}
-	assert.True(t, kinds["ConfigMap"] && kinds["Secret"], "the settled table reflects both rules")
+	assert.True(t, kinds["Namespace"] && kinds["Node"], "the settled table reflects both rules")
 }
