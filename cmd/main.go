@@ -24,7 +24,6 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -240,13 +239,9 @@ func main() {
 		auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
 			MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
 			FactRecorder:        attributionIndex,
-			// Gate every /audit-webhook/<name> route on the ClusterProvider existing. The audit
-			// server already requires a CA-signed client cert (RequireAndVerifyClientCert), so this
-			// only decides which named source clusters an authenticated apiserver may post for.
-			ProviderResolver: clusterProviderExistence{reader: mgr.GetClient()},
 			// Empty leaves the bare /audit-webhook endpoint disabled (400); set, it demultiplexes a
 			// shared stream per event by this annotation.
-			ClusterAnnotationKey: cfg.clusterAnnotationKey,
+			AuditRouteAnnotationKey: cfg.auditRouteAnnotationKey,
 		})
 		fatalIfErr(err, "unable to build audit handler")
 
@@ -262,13 +257,13 @@ func main() {
 		)
 		setupLog.Info("author attribution enabled: matched audit facts name the commit author",
 			"redisAddr", cfg.redisAddr, "grace", cfg.attributionGrace.String(),
-			"clusterAnnotationKey", cfg.clusterAnnotationKey)
-		if cfg.clusterAnnotationKey == "" {
+			"auditRouteAnnotationKey", cfg.auditRouteAnnotationKey)
+		if cfg.auditRouteAnnotationKey == "" {
 			setupLog.Info("audit routes are named: post to /audit-webhook/<cluster-provider-name>; " +
 				"the bare /audit-webhook endpoint is disabled")
 		} else {
 			setupLog.Info("shared audit stream enabled on the bare /audit-webhook endpoint: each event's "+
-				"ClusterProvider is read from its annotation", "annotationKey", cfg.clusterAnnotationKey)
+				"ClusterProvider is read from its annotation", "annotationKey", cfg.auditRouteAnnotationKey)
 		}
 	case cfg.redisAddr != "":
 		setupLog.Info("configured-author mode: author attribution disabled; commits use the configured "+
@@ -397,7 +392,7 @@ type appConfig struct {
 	authorAttribution           bool
 	attributionFactTTL          time.Duration
 	attributionGrace            time.Duration
-	clusterAnnotationKey        string
+	auditRouteAnnotationKey     string
 	branchBufferMaxBytes        int64
 	sensitiveResources          types.SensitiveResourcePolicy
 	sshHostKeys                 git.SSHHostKeyConfig
@@ -508,13 +503,14 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
 			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+
 			"at the cost of commit latency.")
-	fs.StringVar(&cfg.clusterAnnotationKey, "author-attribution-cluster-annotation-key", "",
-		"Audit-event annotation naming the ClusterProvider each event belongs to. Setting it enables the "+
+	fs.StringVar(&cfg.auditRouteAnnotationKey, "author-attribution-audit-route-annotation-key", "",
+		"Audit-event annotation naming the AUDIT ROUTE each event belongs to. Setting it enables the "+
 			"bare /audit-webhook endpoint for a SHARED audit stream carrying several logical clusters: the "+
-			"source cluster is resolved per event, so one batch may fan out to several providers. An event "+
-			"with no annotation, or naming a provider that does not exist, is rejected (counted and logged) "+
-			"rather than credited to a fallback. Empty (the default) leaves the bare endpoint disabled, and "+
-			"every producer must post to /audit-webhook/<cluster-provider-name>.")
+			"route is read per event, so one batch may fan out to several routes. A ClusterProvider joins "+
+			"a route by setting spec.attribution.auditRoute to the same value (it defaults to the "+
+			"provider's own name). An event carrying no annotation is rejected (counted and logged) rather "+
+			"than credited to a fallback. Empty (the default) leaves the bare endpoint disabled, and every "+
+			"producer must post to /audit-webhook/<audit-route>.")
 	branchBufferMaxSizeStr := os.Getenv("BRANCH_BUFFER_MAX_SIZE")
 	if branchBufferMaxSizeStr == "" {
 		branchBufferMaxSizeStr = defaultBranchBufferMaxSizeStr
@@ -618,9 +614,9 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	// The annotation key only has a receiver to configure when the audit ingress is running at all;
 	// silently ignoring it would look like annotation routing was enabled when nothing serves it.
-	if strings.TrimSpace(cfg.clusterAnnotationKey) != "" && !cfg.authorAttribution {
+	if strings.TrimSpace(cfg.auditRouteAnnotationKey) != "" && !cfg.authorAttribution {
 		return errors.New(
-			"author-attribution-cluster-annotation-key requires author-attribution to be enabled; " +
+			"author-attribution-audit-route-annotation-key requires author-attribution to be enabled; " +
 				"without it there is no audit ingress to route")
 	}
 	if strings.TrimSpace(cfg.redisAddr) == "" {
@@ -855,22 +851,6 @@ func buildServerTLSConfig(tlsOpts []func(*tls.Config)) *tls.Config {
 		opt(serverTLS)
 	}
 	return serverTLS
-}
-
-// clusterProviderExistence adapts the manager client to the audit handler's AuditProviderResolver:
-// it reports whether a ClusterProvider (a named source cluster) exists, gating remote
-// /audit-webhook/<name> routes. The read is cached; during startup it blocks until the cache syncs.
-type clusterProviderExistence struct{ reader client.Reader }
-
-func (c clusterProviderExistence) ProviderExists(ctx context.Context, name string) (bool, error) {
-	var cp configbutleraiv1alpha3.ClusterProvider
-	if err := c.reader.Get(ctx, client.ObjectKey{Name: name}, &cp); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
 }
 
 func buildAuditServerTLSConfig(cfg appConfig, tlsOpts []func(*tls.Config)) (*tls.Config, error) {

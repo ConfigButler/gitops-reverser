@@ -194,7 +194,7 @@ nodeSelector:
 | `attribution.enabled` | Run audit ingress and name mirrored-resource commit authors from matching kube-apiserver audit facts | `false` |
 | `attribution.ttl` | How long an attribution fact is retained waiting for the matching watch event to join it | `10m` |
 | `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
-| `attribution.clusterAnnotationKey` | Audit-event annotation naming the `ClusterProvider` each event belongs to. Empty keeps audit routes named (`/audit-webhook/<name>`). Set it only for a control plane emitting **one shared audit stream** for several logical clusters: it enables the bare `/audit-webhook`, which resolves the source cluster per event. An event with no annotation, or naming a provider that does not exist, is rejected (counted and logged) and never credited to a fallback | `""` |
+| `attribution.auditRouteAnnotationKey` | Audit-event annotation naming the **audit route** each event belongs to. Empty keeps audit routes named (`/audit-webhook/<audit-route>`). Set it only for a control plane emitting **one shared audit stream** for several logical clusters: it enables the bare `/audit-webhook`, which reads the route per event. A `ClusterProvider` joins a route via `spec.attribution.auditRoute` (default: its own name). An event with no annotation is rejected (counted and logged) and never credited to a fallback | `""` |
 | `clusterProvider.createDefault` | Render and own a `ClusterProvider` named `default` — the source cluster a `GitTarget` mirrors from when it omits `spec.clusterProviderRef`. The **operator never creates one**, so without this you commit the object yourself. Chart-owned: turning it off makes Helm delete the provider it created, and a `GitTarget` referencing a missing provider is held unready (`ClusterProviderNotFound`). The `quickstart` values never create one | `true` |
 | `clusterProvider.default.kubeConfig.secretRef.name` | Secret (release namespace) holding a kubeconfig for the rendered `default` provider. Empty means the operator's **own in-cluster** cluster; a name points `default` at a **remote** cluster instead — the name is a convention, not a claim about which cluster it is | `""` |
 | `clusterProvider.default.kubeConfig.secretRef.key` | Key within that Secret. Empty reads `value` then `value.yaml` | `""` |
@@ -238,7 +238,7 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 When `attribution.enabled=true`, `https://<service>:9444/audit-webhook/<cluster-provider-name>`
 receives audit events from kube-apiserver — audit routes are **named**, including
 `/audit-webhook/default`. The bare `/audit-webhook` is rejected with **400** unless
-`attribution.clusterAnnotationKey` is set, which turns it into the shared-stream endpoint that
+`attribution.auditRouteAnnotationKey` is set, which turns it into the shared-stream endpoint that
 resolves each event's source cluster from that annotation. The operator extracts a minimal attribution fact from each (auditID, user, verb,
 resourceVersion, GVR, namespace, name, UID, status, timestamps) into the Redis attribution index
 (populated only when audit attribution is enabled). When a Redis endpoint is configured it also stores

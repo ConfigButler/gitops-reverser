@@ -10,8 +10,8 @@ import (
 // DefaultClusterProviderName is the conventionally opinionated ClusterProvider name that an
 // omitted GitTarget.spec.clusterProviderRef points at. That defaulting is its ONLY special
 // behavior: it is an ordinary user-created object that may omit kubeConfig (the operator's own
-// in-cluster config) or set it to mirror a remote cluster, it is existence-gated on its
-// /audit-webhook/default route like every other name, and it is never created by the operator.
+// in-cluster config) or set it to mirror a remote cluster, its audit route defaults to its name like
+// every other provider's, and it is never created by the operator.
 const DefaultClusterProviderName = "default"
 
 // ClusterProviderReference references the cluster-scoped ClusterProvider a GitTarget sources
@@ -118,6 +118,35 @@ type ClusterProviderSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	Burst *int32 `json:"burst,omitempty"`
+
+	// Attribution groups this cluster's author-attribution settings. The block is spelled
+	// "attribution" rather than "authorAttribution" even though the operator flags are
+	// --author-attribution-*: the prefix groups a flat flag namespace, and a block on a
+	// source-cluster object already supplies that scope.
+	// +optional
+	Attribution *ClusterProviderAttribution `json:"attribution,omitempty"`
+}
+
+// ClusterProviderAttribution holds the per-cluster author-attribution settings. It exists as a
+// block so later per-cluster knobs (grace, mode) have a home beside auditRoute.
+type ClusterProviderAttribution struct {
+	// AuditRoute is the route this cluster's audit events arrive on. The sender is the API server's
+	// webhook backend (https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend),
+	// and this is the <name> segment its configured URL ends in: /audit-webhook/<name>. When several
+	// logical clusters share one backend it is instead the value of the audit-event annotation named
+	// by --author-attribution-audit-route-annotation-key.
+	//
+	// It partitions the attribution facts, so two ClusterProviders carrying the same route read one
+	// cluster's facts, and two carrying different routes can never cross-credit an author.
+	//
+	// Empty means metadata.name. Set it when several ClusterProviders name one cluster, since an API
+	// server has one webhook backend and so posts under one route: every other provider for that
+	// cluster must be pointed at the same route or it resolves no authors at all. Set it also when
+	// the events are labelled for something other than this object, such as a kcp logical cluster.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	AuditRoute string `json:"auditRoute,omitempty"`
 }
 
 // ClusterProviderStatus defines the observed state of ClusterProvider.
@@ -150,8 +179,10 @@ type ClusterProviderStatus struct {
 // ClusterProvider is the cluster-scoped, read-side peer of GitProvider: it names a SOURCE cluster a
 // GitTarget mirrors FROM, and owns that cluster's connectivity credential (spec.kubeConfig),
 // namespace-access authorization (spec.allowedNamespaces), and per-cluster status. Its NAME is the
-// cluster's identity everywhere — the /audit-webhook/<name> ingress route and the attribution
-// fact-index key. No name is special: "default" is merely what an omitted
+// cluster's identity for the watch data plane, and the DEFAULT for its audit route: attribution
+// facts are partitioned by spec.attribution.auditRoute, which falls back to this name. Several
+// providers may name one cluster by declaring one route, which is what an API server with a single
+// audit webhook backend requires. No name is special: "default" is merely what an omitted
 // GitTarget.spec.clusterProviderRef points at, and it may just as well name a remote cluster, since
 // in-cluster-ness follows from spec.kubeConfig (omitted = in-cluster) rather than from the name.
 //
@@ -189,6 +220,23 @@ type ClusterProviderList struct {
 // either omit kubeConfig for the in-cluster client or set it for a remote cluster.
 func (p *ClusterProvider) IsInCluster() bool {
 	return p.Spec.KubeConfig == nil
+}
+
+// AuditRoute is the identity this provider's attribution facts are keyed under: the route its
+// cluster's audit events arrive on, defaulting to the provider's own name. It is resolved through
+// this method rather than read off the field so no caller ever handles the empty case, the same
+// shape as (api/v1alpha3).GitTarget.SourceCluster().
+//
+// The default is what makes this change invisible to an existing install: one ClusterProvider per
+// cluster already partitions its facts by name, so an unset field resolves exactly what it always
+// resolved. Deliberately NOT conditional on locality: defaulting an in-cluster provider to the
+// literal "default" would make that name reserved for the local cluster again, a rule this project
+// enforced with CEL and then reversed before shipping (docs/finished/multi-cluster-author-attribution.md).
+func (p *ClusterProvider) AuditRoute() string {
+	if p.Spec.Attribution == nil || p.Spec.Attribution.AuditRoute == "" {
+		return p.Name
+	}
+	return p.Spec.Attribution.AuditRoute
 }
 
 // AllowsNamespace reports whether a namespace (by name and labels) may reference this provider

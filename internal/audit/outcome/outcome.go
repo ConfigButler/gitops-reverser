@@ -84,10 +84,6 @@ const (
 	// that carries no source-cluster annotation, so it names no ClusterProvider. Never credited to a
 	// fallback; a rising rate means a producer is not stamping the annotation.
 	MissingClusterAnnotation Outcome = "missing_cluster_annotation"
-	// UnknownClusterProvider — the source-cluster annotation names a ClusterProvider that does not
-	// exist. Dropped rather than guessed: a wrong source cluster would let a user from one logical
-	// cluster author a matching object in another.
-	UnknownClusterProvider Outcome = "unknown_cluster_provider"
 
 	// WriteError — a redis/enqueue failure; the event never reached the log.
 	WriteError Outcome = "write_error"
@@ -104,7 +100,7 @@ func (o Outcome) Category() Category {
 	case NotNeeded, NilEvent, Stage, ReadOnlyOrUnknownVerb, FailedRequest, DryRun,
 		UnchangedResourceVersion, MalformedAdditional, NonScaleSubresource,
 		ShallowDropped, RVLessEmptyHighWater, OlderThanHighWater, NonNumericRV,
-		MissingClusterAnnotation, UnknownClusterProvider:
+		MissingClusterAnnotation:
 		return Dropped
 	case WriteError:
 		return Error

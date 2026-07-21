@@ -8,8 +8,10 @@
 > provider-name-partitioned attribution facts, reconcile-time namespace authorization, and named
 > audit routes. Remaining ingress work:
 > [`../design/multi-source-audit-ingress-hardening.md`](../design/multi-source-audit-ingress-hardening.md).
-> Purge-on-delete was later answered separately:
-> [`clusterprovider-fact-purge.md`](clusterprovider-fact-purge.md).
+> Purge-on-delete was answered separately and rejected, and its record has since been removed. The
+> reasoning that still binds lives on `LegacyClusterProviderFinalizer` in
+> [`clusterprovider_controller.go`](../../internal/controller/clusterprovider_controller.go): no
+> finalizer, because `helm uninstall` would strand the object in `Terminating`.
 
 ## The problem
 
@@ -170,7 +172,7 @@ no recent mutations must not read as unready.
 | Admission attribution | Cut entirely (above) — needs a source-side agent, not a webhook. |
 | Mutable `kubeConfig` / endpoint repointing | v1 promised it; a mutable *endpoint* silently retargets and misattributes. `kubeConfig` is immutable; Secret **contents** rotation stays transparent. |
 | Workload identity (`configMapRef`), ServiceAccount impersonation | Present in the embedded Flux type; rejected by CEL for now. |
-| Fact purge on delete | Answered separately and **rejected**: [`clusterprovider-fact-purge.md`](clusterprovider-fact-purge.md). |
+| Fact purge on delete | Answered separately and **rejected**. No finalizer: `helm uninstall` would strand the object in `Terminating`. See `LegacyClusterProviderFinalizer` in [`clusterprovider_controller.go`](../../internal/controller/clusterprovider_controller.go). |
 | Managed control planes (EKS/GKE/AKS) | Needs the source-side agent. |
 | `ReferenceGrant`-style per-namespace consent | `allowedNamespaces` is one object for the admin; revisit if self-service consent is wanted. |
 

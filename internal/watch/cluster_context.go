@@ -275,6 +275,39 @@ func (m *Manager) rememberGitTargetCluster(gitDest types.ResourceReference, clus
 	m.gitTargetClusters[gitDest.Key()] = clusterID
 }
 
+// rememberClusterAuditRoute captures the audit route a source cluster's attribution facts are keyed
+// under, from (api/v1alpha3).ClusterProvider.AuditRoute(). It is keyed by CLUSTER, not by GitTarget:
+// the route is a property of the provider, so every GitTarget mirroring from it writes the same
+// value and the last Declare wins harmlessly.
+//
+// Unlike the cluster id, this is MUTABLE — spec.attribution.auditRoute may be edited to correct a
+// misconfiguration. The GitTarget controller re-declares on a ClusterProvider spec change
+// (clusterProviderReadyOrSpecChanged), so an edit lands here without a restart.
+func (m *Manager) rememberClusterAuditRoute(clusterID, auditRoute string) {
+	if auditRoute == "" {
+		return
+	}
+	m.gitTargetClustersMu.Lock()
+	defer m.gitTargetClustersMu.Unlock()
+	if m.clusterAuditRoutes == nil {
+		m.clusterAuditRoutes = map[string]string{}
+	}
+	m.clusterAuditRoutes[clusterID] = auditRoute
+}
+
+// auditRouteForCluster resolves the audit route a source cluster's facts are keyed under. An
+// uncaptured cluster falls back to the cluster id, which is the ClusterProvider's own name and
+// exactly what AuditRoute() defaults to, so a lookup racing the first Declare reads the same key a
+// provider with no auditRoute set would.
+func (m *Manager) auditRouteForCluster(clusterID string) string {
+	m.gitTargetClustersMu.Lock()
+	defer m.gitTargetClustersMu.Unlock()
+	if route := m.clusterAuditRoutes[clusterID]; route != "" {
+		return route
+	}
+	return clusterID
+}
+
 // DeclaredSourceCluster reports the source cluster captured for a GitTarget at Declare time and
 // whether that GitTarget has declared at all. It is the observable form of the capture-on-Declare
 // contract: a GitTarget the controller's Validated gate refused never reaches DeclareForGitTarget,
@@ -316,6 +349,11 @@ func (m *Manager) forgetGitTargetCluster(gitDest types.ResourceReference) {
 			stillReferenced = true
 			break
 		}
+	}
+	// The captured route dies with the cluster it belongs to, so a provider recreated against a
+	// different audit route cannot inherit its predecessor's key.
+	if had && !stillReferenced {
+		delete(m.clusterAuditRoutes, clusterID)
 	}
 	m.gitTargetClustersMu.Unlock()
 

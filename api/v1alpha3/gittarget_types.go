@@ -318,9 +318,10 @@ type GitTarget struct {
 // SourceCluster is the identity the watch data plane keys a GitTarget's source cluster on: the
 // referenced ClusterProvider's NAME. It defaults to "default" when clusterProviderRef is unset —
 // so a source-cluster-unaware caller still gets a concrete, non-empty name, and there is no ""
-// sentinel. That name is a convention, not a claim about which physical cluster it is. The name is
-// the cluster's identity everywhere: the fact-index key, the GVK→GVR registry key, and the
-// /audit-webhook/<name> route.
+// sentinel. That name is a convention, not a claim about which physical cluster it is. The name
+// keys the GVK→GVR registry and the watch context. It is NOT the attribution partition: facts are
+// keyed by the referenced ClusterProvider's AuditRoute(), which defaults to this name but may
+// differ when several providers share one cluster's single audit stream.
 func (g *GitTarget) SourceCluster() string {
 	if g.Spec.ClusterProviderRef == nil || g.Spec.ClusterProviderRef.Name == "" {
 		return DefaultClusterProviderName

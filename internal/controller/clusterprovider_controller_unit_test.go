@@ -145,9 +145,10 @@ func TestClusterProviderReconcile_InClusterDefault(t *testing.T) {
 
 // TestClusterProviderReconcile_TakesNoFinalizer pins the contract: this controller never makes a
 // ClusterProvider undeletable. Nothing has to happen before one goes away — attribution facts are
-// keyed by (cluster, group/resource, uid, resourceVersion) and expire on their own, so a
+// keyed by (audit route, group/resource, uid, resourceVersion) and expire on their own, so a
 // re-provisioned cluster reusing a provider name mints different object UIDs and cannot join a
-// stale fact. See docs/finished/clusterprovider-fact-purge.md.
+// stale fact. The reason a finalizer must never come back is on LegacyClusterProviderFinalizer:
+// helm uninstall would strand the object in Terminating.
 func TestClusterProviderReconcile_TakesNoFinalizer(t *testing.T) {
 	provider := clusterProviderWithKubeConfig("default", "", "")
 	cl := fake.NewClientBuilder().
