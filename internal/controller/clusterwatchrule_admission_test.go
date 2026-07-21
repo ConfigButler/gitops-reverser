@@ -33,6 +33,10 @@ type cwaWatchManager struct {
 	replans     int
 	replanErr   error
 	onReconcile func()
+
+	// scope is the source-scope service this double hands back. It stays nil unless a test needs
+	// grants to be observable, so every existing test keeps the "no data plane is wired" path.
+	scope watch.SourceScopeService
 }
 
 func (m *cwaWatchManager) ReconcileForRuleChange(context.Context) error {
@@ -71,9 +75,10 @@ func (m *cwaWatchManager) StreamSummaryForClusterWatchRule(
 	return cwaRunningSummary()
 }
 
-// SourceScope returns nil: this double has no source cluster, so selector-based
-// allowedSourceNamespaces degrades to "cannot say yet" while exact names stay fully answerable.
-func (m *cwaWatchManager) SourceScope() watch.SourceScopeService { return nil }
+// SourceScope returns the injected service, or nil when a test wired none — in which case
+// selector-based allowedSourceNamespaces degrades to "cannot say yet" while exact names stay fully
+// answerable.
+func (m *cwaWatchManager) SourceScope() watch.SourceScopeService { return m.scope }
 
 // SourceNamespaceEvents returns nil, so no source-cluster Namespace channel is wired.
 func (m *cwaWatchManager) SourceNamespaceEvents() <-chan event.GenericEvent { return nil }

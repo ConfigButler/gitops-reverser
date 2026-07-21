@@ -71,6 +71,18 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			r.RuleStore.Delete(req.NamespacedName)
 			log.Info("WatchRule deleted, removed from store", "name", req.Name, "namespace", req.Namespace)
 
+			// Drop the retained source-scope grant with it. The grant is what tells the gate a rule
+			// is MAINTAINING an already-resolved scope rather than ESTABLISHING one, and a rule that
+			// no longer exists is neither. Left behind, it is inherited by the next rule created
+			// under the same name and spec — a name a different tenant may now own — and an
+			// unevaluatable policy then reads as "retaining a known-good scope" instead of "no
+			// scope was ever established". The rule sits Unknown and Reconciling indefinitely
+			// rather than publishing the terminal, actionable refusal that tells its owner the
+			// policy cannot be evaluated. A recreated rule must establish from scratch.
+			if scope := r.sourceScope(); scope != nil {
+				scope.ForgetSourceScopeGrant(req.NamespacedName)
+			}
+
 			// Trigger WatchManager reconciliation for deletion
 			if r.WatchManager != nil {
 				if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {

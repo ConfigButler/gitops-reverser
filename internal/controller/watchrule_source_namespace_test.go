@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/authz"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
@@ -322,6 +323,115 @@ func TestReconcile_DeclaredPolicyAdmittingOwnNamespaceCompiles(t *testing.T) {
 	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceAllowed, cond.Reason)
+}
+
+// wrsnScopeRecorder is a SourceScopeService that keeps grants exactly as the real one does — keyed
+// by rule AND spec hash — and answers every selector question with a configurable verdict, so a
+// test can make a policy unevaluatable without a source cluster.
+type wrsnScopeRecorder struct {
+	grants    map[k8stypes.NamespacedName]string
+	forgotten []k8stypes.NamespacedName
+	answer    authz.SourceScopeResult
+}
+
+func newWRSNScopeRecorder(answer authz.SourceScopeResult) *wrsnScopeRecorder {
+	return &wrsnScopeRecorder{grants: map[k8stypes.NamespacedName]string{}, answer: answer}
+}
+
+func (s *wrsnScopeRecorder) ResolveSourceNamespace(
+	context.Context, *configbutleraiv1alpha3.GitTarget, string,
+) authz.SourceScopeResult {
+	return s.answer
+}
+
+func (s *wrsnScopeRecorder) EnumerateSourceNamespaces(
+	context.Context, *configbutleraiv1alpha3.GitTarget,
+) ([]string, authz.SourceScopeResult) {
+	return nil, s.answer
+}
+
+func (s *wrsnScopeRecorder) RetainedSourceScope(
+	rule k8stypes.NamespacedName, specHash string,
+) ([][]string, bool) {
+	stored, ok := s.grants[rule]
+	if !ok || stored != specHash {
+		return nil, false
+	}
+	return [][]string{{wrsnSourceNS}}, true
+}
+
+func (s *wrsnScopeRecorder) RecordSourceScopeGrant(
+	rule k8stypes.NamespacedName, specHash string, _ [][]string,
+) {
+	s.grants[rule] = specHash
+}
+
+func (s *wrsnScopeRecorder) ForgetSourceScopeGrant(rule k8stypes.NamespacedName) {
+	s.forgotten = append(s.forgotten, rule)
+	delete(s.grants, rule)
+}
+
+// TestReconcile_DeletedWatchRuleForgetsItsRetainedScope closes the delete/recreate inheritance.
+//
+// The retained grant is the ONE thing that distinguishes a rule MAINTAINING an already-resolved
+// scope from one ESTABLISHING its first — and the two branches are deliberately opposite: the first
+// retains and reports Unknown, the second refuses and reports a terminal, actionable Stalled. A
+// grant left behind by a deleted rule is inherited by the next rule created under that name and
+// spec, which a different tenant may now own, and its unevaluatable policy then reads as
+// "maintaining" forever. The rule never runs and never explains why.
+//
+// The recreated rule here is byte-identical to the deleted one, because that is the case the spec
+// hash cannot catch — only forgetting the grant can.
+func TestReconcile_DeletedWatchRuleForgetsItsRetainedScope(t *testing.T) {
+	ctx := context.Background()
+	ruleKey := k8stypes.NamespacedName{Name: wrsnRule, Namespace: wrsnTenantNS}
+
+	f := newWRSNFixture(t, wrsnBaseObjects(
+		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnSourceNS}}, true, wrsnSourceNS))
+	scope := newWRSNScopeRecorder(authz.SourceScopeResult{
+		Verdict: authz.SourceScopeUnavailable,
+		Message: "listing Namespaces is forbidden for this credential",
+	})
+	f.wm.scope = scope
+
+	// An exact-name policy needs no source-cluster access, so the rule compiles and records a grant.
+	_, err := f.reconcile(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []string{wrsnRule}, f.compiledNames())
+	require.Contains(t, scope.grants, ruleKey, "precondition: an admitted rule records its grant")
+
+	// Delete it.
+	require.NoError(t, f.client.Delete(ctx, wrsnWatchRule(wrsnSourceNS)))
+	_, err = f.reconcile(ctx)
+	require.NoError(t, err)
+	require.Empty(t, f.compiledNames())
+
+	assert.Equal(t, []k8stypes.NamespacedName{ruleKey}, scope.forgotten,
+		"the deleted rule's grant must be dropped with it")
+	assert.NotContains(t, scope.grants, ruleKey)
+
+	// The same name and the same spec come back — but now the target's policy is a selector that
+	// cannot be evaluated. With no grant of its own, this rule is ESTABLISHING.
+	target := &configbutleraiv1alpha3.GitTarget{}
+	require.NoError(t, f.client.Get(ctx,
+		k8stypes.NamespacedName{Name: wrsnTarget, Namespace: wrsnTenantNS}, target))
+	target.Spec.AllowedSourceNamespaces = &configbutleraiv1alpha3.NamespaceMatcher{
+		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"mirrorable": "true"}},
+	}
+	require.NoError(t, f.client.Update(ctx, target))
+	require.NoError(t, f.client.Create(ctx, wrsnWatchRule(wrsnSourceNS)))
+
+	_, err = f.reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, f.compiledNames(), "an unevaluatable policy establishes nothing")
+	rule := f.reloadRule(ctx, t)
+	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status,
+		"establishing must refuse; inheriting the dead rule's grant would report Unknown instead")
+	assert.Equal(t, WatchRuleReasonSourceNamespacePolicyUnavailable, cond.Reason)
+	assert.Equal(t, metav1.ConditionTrue, wrsnCondition(t, rule, ConditionTypeStalled).Status,
+		"only an operator change fixes this, so it must be terminal and visible")
 }
 
 // TestReconcile_SelectorPolicyWithNoSourceScopeIsInProgress covers the Unknown row of the status
