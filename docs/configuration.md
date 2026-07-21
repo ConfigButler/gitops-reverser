@@ -472,6 +472,8 @@ The important fields are:
 - `spec.placement`: optional policy for where **new** resources are written (see
   [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it to follow
   the repository's existing layout
+- `spec.prune`: which deletion paths may remove documents from this target's folder (see
+  [Deletion policy](#deletion-policy-specprunemode)); omit it for the safe default
 
 Example:
 
@@ -519,8 +521,80 @@ The most useful status fields are:
 - `StreamsRunning`: true when the source watches are past initial replay and routing live events.
 - `GitPathAccepted`: true when the target Git path is safe to materialize.
 - `status.streams`: bounded counts for tracked, running, replaying, and blocked streams.
+- `status.retention`: how many documents `spec.prune.mode` is keeping, and under which mode.
 
 Use conditions for automation.
+
+### Deletion policy (`spec.prune.mode`)
+
+A target removes a document from Git for one of two very different reasons, and `spec.prune.mode`
+controls them separately:
+
+- an **explicit source DELETE event** — the source cluster told the operator the resource is gone;
+- a **resync mark-and-sweep** — a snapshot taken when a watch stream starts or restarts did not
+  contain a resource that Git still has a document for, so its absence is *inferred*.
+
+The second is only as trustworthy as the snapshot's **scope**. A snapshot the operator could not
+finish is not the risk: a failed list or watch blocks the stream and enqueues no resync at all, and a
+replay cut short before its initial-events bookmark enqueues nothing — so a source-cluster outage or
+a revoked RBAC grant currently stops a sweep rather than shrinking one.
+
+The risk is a snapshot that is *complete* but gathered against the wrong scope: a watch rule narrower
+than you intended, version skew, or an older controller that does not understand a newer scope field.
+That snapshot is smaller than reality and indistinguishable from a converged one, and a sweep turns
+it into deleted manifests. `OnEvent` is the defence, and it also covers the outage case in depth —
+failing closed there is a property of how the gather works today, not a guarantee the API makes.
+
+| Mode | Explicit source DELETE | Resync mark-and-sweep | Use it for |
+|---|---|---|---|
+| `Never` | kept | kept | an archive or tombstone mirror that only ever gains documents |
+| `OnEvent` (default) | mirrored | kept | mirroring observed deletes without ever inferring one |
+| `Always` | mirrored | swept | full desired-state convergence, including cleaning up stale documents |
+
+```yaml
+spec:
+  prune:
+    mode: Always
+```
+
+Omitting `spec.prune` means `OnEvent`. That applies to a `GitTarget` created before this field
+existed as well: an upgrade never changes an existing target to a more destructive policy, and you
+do not have to edit anything to be safe.
+
+Choose `Always` when the folder is meant to be a faithful, converged mirror and you accept that a
+bad watch scope can delete manifests. Choose `Never` when the folder is an audit trail.
+
+#### Seeing what was kept
+
+A retained document is invisible in Git by design — nothing is written, so a retaining mirror and a
+converged one look identical in the folder and in `git log`. Three signals report it instead, and
+none of them is a failure: retention is the configured outcome, so no condition goes `False` for it.
+
+```console
+$ kubectl get gittarget acme -o jsonpath='{.status.retention}'
+{"mode":"OnEvent","retainedDocuments":3,"observedTime":"2026-07-21T13:20:00Z"}
+```
+
+- `status.retention.retainedDocuments` is how many managed documents a converged mirror would not
+  hold. `0` means a resync ran and found nothing to retain; an **absent** `retention` block means no
+  resync has reported yet, which is not the same thing. `mode` is the *effective* mode the count was
+  produced under — the only place a `GitTarget` that predates `spec.prune` shows one at all.
+- A throttled log line names the target, its path, and the scope (one per target folder per 10
+  minutes; the full detail is at `-v1`).
+- `gitopsreverser_prune_retained_documents_total`, labelled by `gittarget_namespace`,
+  `gittarget_name`, and `prune_mode`.
+
+`status.retention` covers the resync sweep only. Under `Never` a suppressed source DELETE is not
+counted, so a `Never` target can report `0` while still declining to mirror deletes.
+
+The count is refreshed when a resync runs, so it lags a change in the cluster until the next one —
+read `observedTime` before treating a `0` as live.
+
+`spec.prune` is mutable — unlike `providerRef`, `branch`, and `path` — so a target can be moved to
+`Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists
+the target's watched scopes, so the cleanup runs on the edit instead of waiting for the next replay.
+Tightening it applies to the next write and leaves the streams alone, which is what makes it usable
+as a stop button.
 
 ### Where new resources are written (`spec.placement`)
 

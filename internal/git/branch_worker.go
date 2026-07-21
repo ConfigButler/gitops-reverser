@@ -20,6 +20,7 @@ import (
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -139,6 +140,12 @@ type BranchWorker struct {
 
 	// firsts surfaces the first successful commit and push at default verbosity.
 	firsts branchWorkerLogFirsts
+
+	// retentionLoggedAt throttles the default-verbosity "prune policy retained documents"
+	// line to one per GitTarget subtree per retentionLogInterval. Retaining is a steady
+	// state, so the log must not scale with the reconcile rate. Owned by the event loop
+	// goroutine, like firsts, so it carries no lock.
+	retentionLoggedAt map[string]time.Time
 
 	// hasUnpushedWork mirrors whether the event loop is currently holding a live
 	// open window or any committed-but-not-yet-pushed pending writes. The event
@@ -1241,11 +1248,67 @@ func (w *BranchWorker) rebuildPendingWrites(
 		return "", plumbing.ZeroHash, err
 	}
 
+	// A replay re-PLANS against the rebased worktree, so it can decide deletions the first apply
+	// never made — under whatever policy was in force when the write was planned. Re-check the
+	// policy before that happens, so an operator who tightened it in the meantime is obeyed.
+	if err := w.tightenPendingPruneModes(w.ctx, pendingWrites); err != nil {
+		return "", plumbing.ZeroHash, err
+	}
+
 	if _, err := w.executePendingWrites(w.ctx, repo, pendingWrites); err != nil {
 		return "", plumbing.ZeroHash, fmt.Errorf("execute replay pending writes: %w", err)
 	}
 
 	return baseBranch, baseHash, nil
+}
+
+// tightenPendingPruneModes lowers every retained write's captured prune mode to the more
+// restrictive of (captured, current) before the write is replayed. Tightening only: see
+// PruneMode.MoreRestrictiveOf for why the loosening direction must NOT propagate here.
+//
+// It mutates the Targets map in place, which is the point — the map is shared with the retained
+// PendingWrite, so one pass covers both deletion paths (the resync sweep reads it through
+// PendingWrite.Target, the steady-state DELETE writer through pruneModeForBase) and the tightening
+// survives every subsequent push attempt.
+//
+// The two failure modes are answered differently on purpose:
+//
+//   - the GitTarget is GONE — a definite answer, and no policy exists to authorize anything, so
+//     the write replays under the most restrictive mode. Retrying could not produce a better one.
+//   - the read FAILED — no answer. Returning the error leaves the pending writes retained and the
+//     push cycle retries them, so neither a legitimate delete is dropped nor an unauthorized one
+//     applied. Guessing either way here would do one or the other.
+func (w *BranchWorker) tightenPendingPruneModes(ctx context.Context, pendingWrites []PendingWrite) error {
+	current := map[pendingTargetKey]configv1alpha3.PruneMode{}
+	// Ranged by value on purpose: Targets is a map, so writing through this copy still updates the
+	// retained write's own map — which is exactly the sharing this relies on.
+	for _, pendingWrite := range pendingWrites {
+		for key, md := range pendingWrite.Targets {
+			mode, cached := current[key]
+			if !cached {
+				target, err := w.getGitTarget(ctx, key.Name, key.Namespace)
+				switch {
+				case apierrors.IsNotFound(err):
+					mode = configv1alpha3.PruneNever
+				case err != nil:
+					return fmt.Errorf("re-read prune policy for %s/%s before replay: %w", key.Namespace, key.Name, err)
+				default:
+					mode = target.EffectivePruneMode()
+				}
+				current[key] = mode
+			}
+			tightened := md.PruneMode.MoreRestrictiveOf(mode)
+			if tightened == md.PruneMode.OrDefault() {
+				continue
+			}
+			w.Log.Info("prune policy tightened since this write was planned; replaying under the stricter mode",
+				"gitTarget", key.Namespace+"/"+key.Name,
+				"planned", string(md.PruneMode.OrDefault()), "replaying", string(tightened))
+			md.PruneMode = tightened
+			pendingWrite.Targets[key] = md
+		}
+	}
+	return nil
 }
 
 // estimateEventSize approximates the serialized YAML size for an event's object.

@@ -67,7 +67,26 @@ func configMapTargetEvent(name, username, target string) Event {
 	return event
 }
 
+// createPlainGitTarget creates a GitTarget that declares NO prune policy — the legacy shape, and
+// the one an existing cluster holds after an upgrade. Its effective mode is therefore onEvent, so
+// a resync through it must not sweep. Tests that want convergence say so with
+// createGitTargetWithPruneMode.
 func createPlainGitTarget(t *testing.T, worker *BranchWorker, name, path string) {
+	t.Helper()
+	createGitTarget(t, worker, name, path, nil)
+}
+
+// createGitTargetWithPruneMode creates a GitTarget declaring an explicit spec.prune.mode.
+func createGitTargetWithPruneMode(
+	t *testing.T, worker *BranchWorker, name, path string, mode configv1alpha3.PruneMode,
+) {
+	t.Helper()
+	createGitTarget(t, worker, name, path, &configv1alpha3.PrunePolicy{Mode: mode})
+}
+
+func createGitTarget(
+	t *testing.T, worker *BranchWorker, name, path string, prune *configv1alpha3.PrunePolicy,
+) {
 	t.Helper()
 
 	require.NoError(t, worker.Client.Create(worker.ctx, &configv1alpha3.GitTarget{
@@ -81,6 +100,7 @@ func createPlainGitTarget(t *testing.T, worker *BranchWorker, name, path string)
 			},
 			Branch: worker.Branch,
 			Path:   path,
+			Prune:  prune,
 		},
 	}))
 }
@@ -1042,7 +1062,7 @@ func TestEventLoop_AtomicPushFailure_DoesNotAdvanceCooldownOrLosePendingWrite(t 
 func TestResync_WorkerAppliesMarkAndSweepAndCommits(t *testing.T) {
 	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
 	worker.mapper = configMapMapper()
-	createPlainGitTarget(t, worker, "target-a", "live")
+	createGitTargetWithPruneMode(t, worker, "target-a", "live", configv1alpha3.PruneAlways)
 
 	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -1120,7 +1140,7 @@ func TestResync_WorkerNoopDoesNotRetainOrPush(t *testing.T) {
 func TestResync_WorkerEmptyDesiredSweepsManagedResource(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	worker.mapper = configMapMapper()
-	createPlainGitTarget(t, worker, "target-a", "live")
+	createGitTargetWithPruneMode(t, worker, "target-a", "live", configv1alpha3.PruneAlways)
 
 	loop := newBranchWorkerEventLoop(worker, 0)
 	loop.lastPushAt = time.Now()

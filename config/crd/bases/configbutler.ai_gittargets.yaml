@@ -338,6 +338,25 @@ spec:
                 required:
                 - name
                 type: object
+              prune:
+                description: |-
+                  Prune controls which deletion paths may remove documents from this target's folder: an
+                  explicit source DELETE event, and the resync mark-and-sweep that infers a deletion from a
+                  desired snapshot. Omitted, it is `mode: OnEvent` — observed deletes are mirrored, inferred
+                  ones are not — for a stored GitTarget as well as a new one.
+                properties:
+                  mode:
+                    default: OnEvent
+                    description: |-
+                      Mode selects which deletion paths are enabled. `Never` removes nothing; `OnEvent` mirrors an
+                      observed source DELETE but never infers a deletion from a resync snapshot; `Always` enables
+                      both, restoring full desired-state convergence. Omitted, it is `OnEvent`.
+                    enum:
+                    - Never
+                    - OnEvent
+                    - Always
+                    type: string
+                type: object
             required:
             - branch
             - path
@@ -435,6 +454,36 @@ spec:
                   by the controller.
                 format: int64
                 type: integer
+              retention:
+                description: |-
+                  Retention reports documents a resync kept because this target's spec.prune.mode suppressed
+                  the mark-and-sweep. It covers the INFERRED deletion path only: under `never`, a suppressed
+                  source DELETE is not counted here, so a `never` target can report zero while still declining
+                  to mirror deletes. It is informational either way — retention is the configured behavior,
+                  never a fault, and no condition changes state because of it.
+                properties:
+                  mode:
+                    description: |-
+                      Mode is the EFFECTIVE spec.prune.mode this roll-up was produced under. It is reported here
+                      rather than left to be read from the spec because a GitTarget that predates spec.prune has
+                      no stored value at all, so the spec alone cannot explain why documents are being kept.
+                    type: string
+                  observedTime:
+                    description: |-
+                      ObservedTime is when this roll-up was last computed. A retention that begins just after a
+                      reconcile is not visible until the next one, so read this before treating a zero as live.
+                    format: date-time
+                    type: string
+                  retainedDocuments:
+                    description: |-
+                      RetainedDocuments is how many managed documents the policy kept that a converged mirror
+                      would not hold. Zero means a resync ran and found nothing to retain — the mirror is
+                      converged. An ABSENT retention block means something different: no resync has reported yet.
+                    format: int32
+                    type: integer
+                required:
+                - retainedDocuments
+                type: object
               streams:
                 description: |-
                   Streams is the bounded data-plane roll-up over this GitTarget's tracked types.

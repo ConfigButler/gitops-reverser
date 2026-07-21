@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -59,7 +60,7 @@ func TestRenderFidelityRefusal_BlocksLiveAndResyncWrites(t *testing.T) {
 			name: "live event",
 			run: func(worker *BranchWorker, worktree *gogit.Worktree) error {
 				_, err := worker.flushEventsToWorktree(
-					context.Background(), worktree, "", []Event{postBuildTokenEvent()}, nil)
+					context.Background(), worktree, "", []Event{postBuildTokenEvent()}, nil, v1alpha3.PruneOnEvent)
 				return err
 			},
 		},
@@ -67,11 +68,12 @@ func TestRenderFidelityRefusal_BlocksLiveAndResyncWrites(t *testing.T) {
 			name: "scoped resync",
 			run: func(worker *BranchWorker, worktree *gogit.Worktree) error {
 				_, _, err := worker.applyResyncToWorktree(
-					context.Background(), worktree, "", "",
+					context.Background(), worktree, "",
+					ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
 					[]manifestanalyzer.DesiredResource{{
 						Resource: postBuildTokenEvent().Identifier,
 						Object:   postBuildTokenEvent().Object,
-					}}, nil, nil)
+					}}, nil)
 				return err
 			},
 		},

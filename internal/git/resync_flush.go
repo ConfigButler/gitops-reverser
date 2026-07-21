@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
@@ -239,7 +241,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 	}
 
 	stats, anyChanges, err := w.applyResyncToWorktree(
-		ctx, worktree, base, target.SourceCluster, pendingWrite.Desired, pendingWrite.Scope, target.Placement,
+		ctx, worktree, base, target, pendingWrite.Desired, pendingWrite.Scope,
 	)
 	if err != nil {
 		return 0, err
@@ -315,21 +317,39 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 // is swept clean to match. Nothing is flushed until every action applies cleanly, so a
 // mid-resync error (e.g. an encryption failure) commits nothing rather than a partial
 // sweep.
+//
+// The sweep half is additionally gated by the GitTarget's effective spec.prune.mode: under
+// `never` and `onEvent` the planner emits no managed drop at all, so a resync whose desired
+// set is narrowed by a bad scope, an outage, or a controller that does not understand a newer
+// scope field updates and creates but removes nothing. `always` is the opt-in that restores
+// the full convergence described above.
 func (w *BranchWorker) applyResyncToWorktree(
 	ctx context.Context,
 	worktree *gogit.Worktree,
-	base, clusterID string,
+	base string,
+	target ResolvedTargetMetadata,
 	desired []manifestanalyzer.DesiredResource,
 	scope *ResyncScope,
-	policy *manifestanalyzer.PlacementPolicy,
 ) (ResyncStats, bool, error) {
+	// Normalize the prune mode ONCE, here, on this function's own copy of the metadata: everything
+	// below asks the mode a question (may I sweep? what do I report?), and the empty string answers
+	// "Never" to all of them while meaning "OnEvent". Doing it at the single entry point is why no
+	// individual reader has to remember.
+	target.PruneMode = target.PruneMode.OrDefault()
 	root := worktree.Filesystem.Root()
 	scoped, err := scanRenderScope(root, base)
 	if err != nil {
 		return ResyncStats{}, false, err
 	}
 
-	batch := newWriteBatch(ctx, w.contentWriter, w.mapperForCluster(clusterID), scoped.scan, policy, scoped.writeSubdir)
+	batch := newWriteBatch(
+		ctx,
+		w.contentWriter,
+		w.mapperForCluster(target.SourceCluster),
+		scoped.scan,
+		target.Placement,
+		scoped.writeSubdir,
+	)
 	// First materialization is the adoption gate: refuse a subtree that holds content the
 	// operator cannot safely manage (unsupported kustomization, duplicate identity, impure
 	// or non-KRM files, foreign content, a catastrophic .gittargetignore) and commit nothing,
@@ -342,12 +362,14 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
 	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
 	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
-	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scope)
+	plan := resyncPlan(batch.store, scoped.scan.YAMLFiles, desired, scope, target.PruneMode)
+	w.reportRetainedOrphans(ctx, plan, target, base, scope)
 
 	stats, err := batch.applyResyncPlan(ctx, desired, plan)
 	if err != nil {
 		return ResyncStats{}, false, err
 	}
+	stats.PruneMode = target.PruneMode
 	// Anchored at renderBase; the write jail (writeSubdir) is enforced inside the flush.
 	changed, err := batch.flush(ctx, worktree, root, scoped.renderBase)
 	return stats, changed, err
@@ -403,7 +425,94 @@ func (wb *writeBatch) applyResyncPlan(
 	// Skipped stays a plan view (documents present but not editable in place); it is
 	// informational only and not part of the GitTarget status.
 	stats.Skipped = plan.Counts()[manifestanalyzer.PlanSkip]
+	// Retained is a plan view too, and necessarily so: it counts drops the planner did NOT emit,
+	// so there is no action to observe here. Carrying it on the stats is what lets it leave the
+	// writer at all.
+	stats.Retained = plan.RetainedOrphans
 	return stats, nil
+}
+
+// retentionLogInterval bounds how often ONE GitTarget subtree's suppressed sweep is reported at
+// default verbosity. A resync fires per watched type, and per namespace within a type, so an
+// unthrottled line would repeat for every one of them on every reconcile of a target that is
+// deliberately retaining — a steady state, not an incident. V(1) is never throttled.
+const retentionLogInterval = 10 * time.Minute
+
+// reportRetainedOrphans surfaces a mark-and-sweep the target's prune policy suppressed.
+//
+// Retention is the CONFIGURED outcome, so every signal here is informational: no error, no
+// GitTarget condition, no background-failure count. A stale Git document under `onEvent` is the
+// feature working, and raising a failure for it would train operators to ignore the one condition
+// that means their mirror is actually broken.
+//
+// It is worth reporting at all because a suppressed drop is otherwise INVISIBLE: it produces no
+// plan action, no commit, and no ResyncStats entry, so an operator comparing the folder to the
+// cluster has nothing to distinguish "converged" from "deliberately retaining stale documents".
+// The GitTarget is named on BOTH signals, because neither is actionable without it and `path`
+// cannot stand in: two GitTargets in different namespaces may write the same spec.path on
+// different branches of one repository, so a folder does not identify a target.
+func (w *BranchWorker) reportRetainedOrphans(
+	ctx context.Context,
+	plan manifestanalyzer.Plan,
+	target ResolvedTargetMetadata,
+	base string,
+	scope *ResyncScope,
+) {
+	if plan.RetainedOrphans == 0 {
+		return
+	}
+	gitTarget := target.Namespace + "/" + target.Name
+	recordPruneRetention(ctx, target, plan.RetainedOrphans)
+	logger := log.FromContext(ctx).WithValues(
+		"retained", plan.RetainedOrphans, "pruneMode", string(target.PruneMode),
+		"gitTarget", gitTarget, "path", base, "scope", scope.String())
+	logger.V(1).Info("resync retained managed documents (spec.prune.mode)")
+	if !w.shouldLogRetention(gitTarget + "@" + base) {
+		return
+	}
+	logger.Info("resync retained managed documents absent from the cluster; " +
+		"set spec.prune.mode: Always on the GitTarget to remove them")
+}
+
+// shouldLogRetention reports whether one target subtree's retention may be logged at default
+// verbosity now, stamping the moment when it may. The key is the GitTarget plus its path rather
+// than the path alone: co-resident targets writing the same path on different branches share a
+// worker only by accident, but when they do, one throttling the other's line is a silent loss.
+//
+// The event loop is the only caller and it is single-goroutine (handleQueueItem, and the
+// rebase-replay that re-executes retained writes, both run on it), so the map needs no lock — the
+// same ownership branchWorkerLogFirsts relies on.
+func (w *BranchWorker) shouldLogRetention(key string) bool {
+	now := time.Now()
+	if last, seen := w.retentionLoggedAt[key]; seen && now.Sub(last) < retentionLogInterval {
+		return false
+	}
+	if w.retentionLoggedAt == nil {
+		w.retentionLoggedAt = make(map[string]time.Time)
+	}
+	w.retentionLoggedAt[key] = now
+	return true
+}
+
+// recordPruneRetention counts documents a prune policy kept, labelled by the GitTarget that kept
+// them and the mode it kept them under — "which target is retaining, and why" is the operational
+// question, and a counter that cannot name the target only answers it for a single-target
+// deployment. It is the retention twin of ResyncSweepDeletesTotal.
+//
+// Cardinality is bounded by the number of GitTargets, not by resources: the per-path, per-scope and
+// per-document detail deliberately stays in the log line. The label names follow the convention
+// TargetReconcileCompletedTotal already sets — gittarget_namespace / gittarget_name rather than the
+// reserved namespace / name, because a pod scrape with honor_labels=false overwrites a metric's
+// `namespace` attribute with the scraping pod's own and silently breaks any per-target selector.
+func recordPruneRetention(ctx context.Context, target ResolvedTargetMetadata, retained int) {
+	if telemetry.PruneRetainedDocumentsTotal == nil {
+		return
+	}
+	telemetry.PruneRetainedDocumentsTotal.Add(ctx, int64(retained), metric.WithAttributes(
+		attribute.String("prune_mode", string(target.PruneMode)),
+		attribute.String("gittarget_namespace", target.Namespace),
+		attribute.String("gittarget_name", target.Name),
+	))
 }
 
 func recordResyncSweepDelete(ctx context.Context, resource types.ResourceIdentifier) {
@@ -467,19 +576,31 @@ func resyncPlan(
 	files []manifestedit.FileContent,
 	desired []manifestanalyzer.DesiredResource,
 	scope *ResyncScope,
+	pruneMode v1alpha3.PruneMode,
 ) manifestanalyzer.Plan {
+	policy := resyncPlanPolicy(pruneMode)
 	if scope == nil {
-		return manifestanalyzer.BuildPlan(store, files, desired, resyncPlanPolicy())
+		return manifestanalyzer.BuildPlan(store, files, desired, policy)
 	}
-	return manifestanalyzer.BuildScopedPlan(store, files, desired, resyncPlanPolicy(), scope.Matches)
+	return manifestanalyzer.BuildScopedPlan(store, files, desired, policy, scope.Matches)
 }
 
 // resyncPlanPolicy is the planning policy for a resync: the same sanitized projection
 // and edit options the steady-state writer uses, so a resync and a live event reach
-// the same patch/replace/skip decision for the same resource.
-func resyncPlanPolicy() manifestanalyzer.Policy {
+// the same patch/replace/skip decision for the same resource — plus the target's prune
+// policy, which is the only input that differs between the two.
+//
+// The mode is translated to a SweepMode here rather than passed down, because the planner
+// models only the INFERRED deletion path: `never` and `onEvent` are the same instruction to
+// it (retain), and they diverge only at the writer, which the planner never reaches.
+func resyncPlanPolicy(pruneMode v1alpha3.PruneMode) manifestanalyzer.Policy {
+	sweep := manifestanalyzer.SweepRetainOrphans
+	if pruneMode.SweepsOrphans() {
+		sweep = manifestanalyzer.SweepDropOrphans
+	}
 	return manifestanalyzer.Policy{
 		Project:     manifestreport.Project,
 		EditOptions: manifestreport.EditOptions(),
+		Sweep:       sweep,
 	}
 }

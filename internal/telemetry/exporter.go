@@ -35,6 +35,13 @@ var (
 	// ResyncSweepDeletesTotal counts managed documents deleted by mark-and-sweep
 	// resyncs, labelled by the swept resource {group, version, resource}.
 	ResyncSweepDeletesTotal metric.Int64Counter
+	// PruneRetainedDocumentsTotal counts managed documents a GitTarget's spec.prune.mode
+	// KEPT that a mark-and-sweep would otherwise have deleted, labelled by
+	// {prune_mode, gittarget_namespace, gittarget_name}. It is the retention twin of
+	// ResyncSweepDeletesTotal and the only numeric trace a suppressed drop leaves: such a
+	// drop produces no plan action, no commit, and no ResyncStats entry. A non-zero value
+	// is the configured behaviour, never a fault.
+	PruneRetainedDocumentsTotal metric.Int64Counter
 
 	// TargetReconcileCompletedTotal counts completed watch recovery passes per
 	// GitTarget: each increment marks either a streaming-snapshot resync applied on
@@ -209,6 +216,7 @@ func registerCounters() error {
 		{"gitopsreverser_objects_written_total", &ObjectsWrittenTotal},
 		{"gitopsreverser_commits_total", &CommitsTotal},
 		{"gitopsreverser_resync_sweep_deletes_total", &ResyncSweepDeletesTotal},
+		{"gitopsreverser_prune_retained_documents_total", &PruneRetainedDocumentsTotal},
 		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
 		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
 		{"gitopsreverser_audit_events_total", &AuditEventsTotal},

@@ -7,6 +7,62 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased — a resync no longer deletes Git documents by default (next minor; behavior change)
+
+**`GitTarget` gained `spec.prune.mode`, and its effective default changes what a resync does.**
+Previously every resync mark-and-swept: a managed document whose resource was absent from the
+desired snapshot was deleted. That is now opt-in.
+
+| Mode | Explicit source DELETE | Resync mark-and-sweep |
+|---|---|---|
+| `Never` | kept | kept |
+| `OnEvent` — the effective default | mirrored | kept |
+| `Always` — the previous behavior | mirrored | swept |
+
+**Deleting a resource in the cluster still deletes its file.** Only the *inferred* deletion changes:
+the operator no longer concludes "Git has a document, the snapshot does not list it, therefore delete
+it". That inference is only as good as the snapshot's scope — a watch rule narrower than you
+intended, or version skew against a controller that does not understand a newer scope field, both
+produce a complete-looking snapshot that is smaller than reality. (A snapshot the operator could not
+*finish* is already handled: a failed list or watch enqueues no resync, so an outage stops a sweep
+rather than shrinking one.)
+
+### What you have to do
+
+**Nothing, to be safe.** An existing `GitTarget` has no `spec.prune` and resolves to `OnEvent`
+without being edited — Kubernetes does not retro-fill defaults into stored objects, so the operator
+applies the default itself.
+
+**To keep the old behavior**, declare it on each target that needs full convergence:
+
+```yaml
+spec:
+  prune:
+    mode: Always
+```
+
+The field is mutable, so you can switch a target to `Always` after confirming its watch scope
+without recreating it. The switch re-lists that target's watched scopes, so the documents a resync
+had been keeping are swept on the edit rather than at some later replay.
+
+### How to tell whether it affects you
+
+```console
+$ kubectl get gittarget acme -o jsonpath='{.status.retention}'
+{"mode":"OnEvent","retainedDocuments":3,"observedTime":"2026-07-21T13:20:00Z"}
+```
+
+A non-zero `retainedDocuments` means the mirror holds documents a converged one would not — the
+configured outcome, not a fault, so no condition goes `False` for it. `0` means a resync ran and
+found nothing to retain; an absent `retention` block means none has reported yet. The same event
+logs a throttled line naming the target and increments
+`gitopsreverser_prune_retained_documents_total`, labelled by GitTarget and mode. See
+[configuration.md](configuration.md#seeing-what-was-kept).
+
+This ships in the **same release** as the rule-kind scope change below, and is what makes that
+migration non-destructive: a converted `WatchRule` that resolves to a narrower set of namespaces than
+you intended leaves the affected documents in Git instead of deleting them.
+
 ## Unreleased — scope is now carried by the rule kind (next minor; breaking)
 
 **Scope moved from a per-rule field onto the rule KIND.** `WatchRule` is the namespaced surface and
@@ -88,7 +144,7 @@ For each one:
 A narrowing that slips through is visible rather than silent — `SourceNamespaceAuthorized=False`,
 `Stalled=True`, streams stopped, and a message naming the failing item — but the documents already in
 Git are governed by `GitTarget.spec.prune.mode`, which ships in the same release and defaults to
-`onEvent`: prior documents are **left in place** rather than swept. (The two changes are never
+`OnEvent`: prior documents are **left in place** rather than swept. (The two changes are never
 released apart.) Verify with `kubectl get watchrules -o wide`, whose `SourceAuthorized` column carries
 the verdict.
 

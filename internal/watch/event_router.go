@@ -235,6 +235,11 @@ func (r *EventRouter) drainScopedResync(
 		if r.WatchManager != nil {
 			r.WatchManager.MarkTargetGitPathAccepted(gitDest)
 			r.WatchManager.MarkTargetRenderFidelityScopeClean(gitDest, renderFidelityEpoch, key)
+			// Recorded for every applied resync, including the ones that retained nothing: zero
+			// is the converged signal and is only meaningful if it is published as actively as a
+			// non-zero count.
+			r.WatchManager.MarkTargetRetention(
+				gitDest, key, renderFidelityEpoch, result.Stats.PruneMode, result.Stats.Retained)
 		}
 		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
 		// per-pod counter advances after a restart — the drain signal the restart-reconcile

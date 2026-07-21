@@ -551,7 +551,7 @@ Instead:
   3. the warning that a target with no policy admits **only** a WatchRule whose every item watches its
      own namespace — every wildcard or cross-namespace item a conversion produces is denied — so
      converting without also declaring `allowedSourceNamespaces` narrows production data; and that
-     under PR 5's `onEvent` default the narrowing leaves stale documents in Git rather than deleting
+     under PR 5's `OnEvent` default the narrowing leaves stale documents in Git rather than deleting
      them;
   4. a `kubectl get clusterwatchrules -o json | jq …` one-liner that lists every affected object and its
      target.
@@ -680,7 +680,7 @@ Fixture conversions worth calling out, because they change what the test proves:
   proof, kept.
 - A target whose policy admits `repo-config` never receives an object from `tenant-zen`, asserted
   against a real commit.
-- Narrowing a policy under PR 5's `onEvent` default leaves the prior documents in Git rather than
+- Narrowing a policy under PR 5's `OnEvent` default leaves the prior documents in Git rather than
   sweeping them.
 
 ## Done when

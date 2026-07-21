@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -119,7 +120,14 @@ func TestPlanFlush_DeleteByGVROnlyFollowsMovedManifestViaMapper(t *testing.T) {
 		},
 		Operation: "DELETE",
 	}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{del}, nil)
+	changed, err := w.flushEventsToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		[]Event{del},
+		nil,
+		v1alpha3.PruneOnEvent,
+	)
 	require.NoError(t, err)
 	assert.True(t, changed, "the moved manifest must be deleted via the resolved resource identity")
 	_, statErr := os.Stat(placedFull)

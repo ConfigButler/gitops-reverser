@@ -30,6 +30,14 @@ type Plan struct {
 	// Diagnostics are planning-level problems (e.g. a touched file whose bytes were
 	// not provided for hydration). Store-level diagnostics stay on the ManifestStore.
 	Diagnostics []manifestedit.Diagnostic
+	// RetainedOrphans counts the managed drops the sweep policy SUPPRESSED: documents
+	// that would have been PlanDropOrphan under SweepDropOrphans and produced no action
+	// at all under SweepRetainOrphans. It exists because a suppressed drop leaves no other
+	// trace — the whole point is that it is absent from Actions, so nothing downstream
+	// could otherwise tell "the mirror is converged" from "the mirror has stale documents
+	// the policy is deliberately keeping". Purely informational: it is a count, not an
+	// action, and it never reaches the commit path.
+	RetainedOrphans int
 }
 
 // PlanActionKind enumerates what a single action does. The seven kinds are the
@@ -138,6 +146,39 @@ type DesiredResource struct {
 	Object   *unstructured.Unstructured
 }
 
+// SweepMode decides whether the Git-only mark-and-sweep may turn an unmatched managed
+// document into a managed drop. It is the planner-local shape of a GitTarget's
+// spec.prune.mode, kept as its own type (like PlacementPolicy) so manifestanalyzer stays
+// free of any Kubernetes API type dependency.
+//
+// Only the INFERRED deletion path is modelled here. An explicit source DELETE event
+// never reaches this planner — it is resolved by PlanDelete and gated at the writer — so
+// PruneNever and PruneOnEvent both map to SweepRetainOrphans. The two differ only on the
+// path this type knows nothing about.
+type SweepMode string
+
+const (
+	// SweepUnspecified is the ZERO VALUE, and it RETAINS.
+	//
+	// The direction is not arbitrary. A caller that forgets this field gets the outcome
+	// whose failure mode is a stale document; the other default's failure mode is deleting
+	// a tenant's manifests from a snapshot that was never authoritative. Every production
+	// caller sets the field explicitly regardless — this is the backstop for the one that
+	// is added later, not a default anyone should rely on.
+	SweepUnspecified SweepMode = ""
+	// SweepRetainOrphans emits no managed drop. An unmatched document produces no action
+	// at all, so it is absent from the plan, the plan's action ordering, and the commit —
+	// it is not a filtered-out action but an action that was never planned.
+	SweepRetainOrphans SweepMode = "retain"
+	// SweepDropOrphans emits PlanDropOrphan for every unmatched, followable managed
+	// document in scope: full desired-state convergence.
+	SweepDropOrphans SweepMode = "drop"
+)
+
+// DropsOrphans reports whether this mode may emit a managed drop. Only SweepDropOrphans
+// does; every other value, including an unrecognized one, retains.
+func (m SweepMode) DropsOrphans() bool { return m == SweepDropOrphans }
+
 // Policy is the injected planning policy. The planner stays a pure function and
 // pulls every cluster-shaped or rendering-shaped decision out into this struct, so
 // the production wiring (manifestreport.Project / EditOptions) lives at the call
@@ -149,6 +190,9 @@ type Policy struct {
 	// EditOptions are the manifestedit options (canonical renderer, list-match) used
 	// when Decide must compare and choose patch vs. whole-replace.
 	EditOptions manifestedit.EditOptions
+	// Sweep decides whether the Git-only mark-and-sweep may emit managed drops. Its zero
+	// value retains, so every caller that wants convergence must say so — see SweepMode.
+	Sweep SweepMode
 }
 
 // BuildPlan computes the Plan from the byte-free ManifestStore, the file bytes
@@ -166,7 +210,8 @@ type Policy struct {
 // The store is expected to have been built with the same mapper whose watched set
 // produced desired; under a structure-only store (no resolved mappings) no managed
 // drop is ever emitted, preserving the no-cluster promise even if a desired set is
-// passed by mistake.
+// passed by mistake. policy.Sweep is the second, independent gate on the same
+// deletions — the caller's declared prune policy — and its zero value retains.
 func BuildPlan(
 	store *ManifestStore,
 	files []manifestedit.FileContent,
@@ -214,6 +259,7 @@ func BuildScopedPlan(
 		collided:      collidedIdentities(store),
 		matched:       map[*DocumentModel]bool{},
 		inScope:       inScope,
+		sweep:         policy.Sweep,
 	}
 
 	// Desired side: create / patch / replace / skip for every cluster object, and
@@ -241,7 +287,7 @@ func BuildScopedPlan(
 	}
 
 	sortActions(b.actions)
-	return Plan{Actions: b.actions, Diagnostics: b.diags}
+	return Plan{Actions: b.actions, Diagnostics: b.diags, RetainedOrphans: b.retained}
 }
 
 // planBuilder accumulates a plan's actions and diagnostics while BuildPlan walks
@@ -263,6 +309,13 @@ type planBuilder struct {
 	// whole-folder BuildPlan it is allInScope (always true); for a per-type reconcile/sweep
 	// it matches one type's (group, resource), so out-of-scope documents are never dropped.
 	inScope func(types.ResourceIdentifier) bool
+	// sweep decides whether an in-scope, unmatched document becomes a managed drop at all.
+	// It is orthogonal to inScope: inScope answers "is this document any of my business",
+	// sweep answers "may I delete the ones that are".
+	sweep SweepMode
+	// retained counts the in-scope managed drops sweep suppressed, surfaced as
+	// Plan.RetainedOrphans.
+	retained int
 }
 
 // planDesired classifies one desired resource against the store and appends its
@@ -386,12 +439,20 @@ func (b *planBuilder) planGitOnly(dm *DocumentModel) {
 	// one the registry resolved to a served, policy-allowed GVR — is dropped.
 	// Not-followable KRM and no-source documents produce no action: they are refused
 	// at acceptance, never pruned.
-	if dm.Mapping == MappingFollowable {
-		b.actions = append(b.actions, PlanAction{
-			Kind: PlanDropOrphan, Ref: ref, Identity: dm.ManifestIdentity, Resource: resourceOf(dm),
-			Reason: "watched resource absent from the cluster: managed drop",
-		})
+	if dm.Mapping != MappingFollowable {
+		return
 	}
+	if !b.sweep.DropsOrphans() {
+		// The target's prune policy keeps inferred deletions off. The drop is not planned
+		// at all — not planned and then filtered — so it cannot reach the plan's action
+		// list, its ordering, or the commit. Counting it is the only trace it leaves.
+		b.retained++
+		return
+	}
+	b.actions = append(b.actions, PlanAction{
+		Kind: PlanDropOrphan, Ref: ref, Identity: dm.ManifestIdentity, Resource: resourceOf(dm),
+		Reason: "watched resource absent from the cluster: managed drop",
+	})
 }
 
 // actionFromDecision maps a manifestedit decision intent to a plan action kind. The

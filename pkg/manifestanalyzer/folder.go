@@ -150,6 +150,7 @@ func (r FolderReport) WriteJSON(w io.Writer) error {
 func folderScanPolicy() internalanalyzer.ScanPolicy {
 	return internalanalyzer.ScanPolicy{
 		Acceptance: internalanalyzer.AcceptancePolicy{Allowlist: internalanalyzer.DefaultAllowlist()},
+		Plan:       internalanalyzer.FolderScanPlanPolicy(),
 	}
 }
 

@@ -383,7 +383,8 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	// before it opens any watch, so it records even though opening watches fails here (no discovery
 	// client is wired) — which is exactly the capture a refused GitTarget must not produce.
 	other := types.NewResourceReference("authorized", ns).WithUID("other-uid")
-	_ = watchManager.DeclareForGitTarget(context.Background(), other, providerName)
+	_ = watchManager.DeclareForGitTarget(
+		context.Background(), other, providerName, configbutleraiv1alpha3.PruneOnEvent)
 	id, declaredOther := watchManager.DeclaredSourceCluster(other)
 	require.True(t, declaredOther, "the positive control must declare, or the assertion above proves nothing")
 	assert.Equal(t, providerName, id)

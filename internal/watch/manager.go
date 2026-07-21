@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -199,6 +200,20 @@ type Manager struct {
 	// under the same name never inherits its predecessor's cursor.
 	gitTargetUIDsMu sync.Mutex
 	gitTargetUIDs   map[string]string
+
+	// gitTargetPruneModes maps a GitTarget key to the effective spec.prune.mode of its LAST
+	// successful Declare. Unlike the UID and the source cluster this value is mutable, and it is
+	// remembered for exactly one reason: to detect the edge where an operator widens the policy to
+	// one that sweeps, which must force a fresh replay or the newly authorized cleanup never runs.
+	// See prune_declaration.go. Guarded by gitTargetPruneModesMu.
+	gitTargetPruneModesMu sync.Mutex
+	gitTargetPruneModes   map[string]v1alpha3.PruneMode
+
+	// targetRetention holds each GitTarget's per-scope retained-document counts, epoch-keyed so a
+	// scope that leaves the watch plan takes its count with it. Projected onto status.retention.
+	// See retention_rollup.go. Guarded by targetRetentionMu.
+	targetRetentionMu sync.Mutex
+	targetRetention   map[string]targetRetentionState
 
 	// declaredGVRsMu guards declaredGVRs: the type-set each GitTarget last Declared. The watch-first
 	// data plane reads it to drive the per-(GitTarget, type) watch set; re-declaring is idempotent.

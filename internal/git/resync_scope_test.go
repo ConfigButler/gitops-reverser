@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -136,7 +137,14 @@ func TestResync_NamespaceScopedSweepLeavesSiblingNamespacesAlone(t *testing.T) {
 	// team-a replays and finds nothing: its namespace is empty at the pinned revision.
 	w := &BranchWorker{contentWriter: writer, mapper: configMapMapper()}
 	scope := &ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", nil, scope, nil)
+	stats, changed, err := w.applyResyncToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
+		nil,
+		scope,
+	)
 	require.NoError(t, err)
 	require.True(t, changed, "team-a's orphaned document is swept")
 	assert.Equal(t, 1, stats.Deleted, "exactly team-a's document is swept, not team-b's")
@@ -160,9 +168,11 @@ func TestResync_NamespaceScopedSweepStillDropsOrphansInItsOwnNamespace(t *testin
 	w := &BranchWorker{contentWriter: writer, mapper: configMapMapper()}
 	scope := &ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}
 	stats, changed, err := w.applyResyncToWorktree(
-		context.Background(), worktree, "", "", []manifestanalyzer.DesiredResource{
+		context.Background(), worktree, "",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
+		[]manifestanalyzer.DesiredResource{
 			desiredCMIn("kept", "team-a", "blue"),
-		}, scope, nil)
+		}, scope)
 	require.NoError(t, err)
 	require.True(t, changed)
 	assert.Equal(t, 1, stats.Deleted, "the orphan inside the scoped namespace is still swept")
@@ -184,7 +194,14 @@ func TestResync_ClusterWideScopeStillSweepsEveryNamespace(t *testing.T) {
 
 	w := &BranchWorker{contentWriter: writer, mapper: configMapMapper()}
 	scope := &ResyncScope{GVR: configmapsGVRForScope} // no namespace: all-namespaces
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", "", nil, scope, nil)
+	stats, changed, err := w.applyResyncToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
+		nil,
+		scope,
+	)
 	require.NoError(t, err)
 	require.True(t, changed)
 	assert.Equal(t, 2, stats.Deleted, "an all-namespaces scope sweeps the type in every namespace")
