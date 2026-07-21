@@ -1,9 +1,9 @@
 # PR 5 — GitTarget deletion safety
 
-> Phase 5 of [source-namespace addressing](README.md). This is an independently releasable
-> **rollback-floor** release: it deliberately contains no source-namespace API change. It must be
-> released, and all controller instances upgraded to it, before [PR 6](pr6-cluster-scope-only.md)
-> introduces the breaking WatchRule and ClusterWatchRule API changes.
+> Phase 5 of [source-namespace addressing](README.md). It deliberately contains no source-namespace
+> API change. It is implemented in the PR immediately **after**
+> [PR 4](pr4-cluster-scope-only.md), and **no release may be cut between the two merges** — the first
+> release containing PR 4's breaking API changes also contains this one.
 >
 > **Status: proposal, not started.** Depends on [PR 1](pr1-namespace-scoped-resync.md) and
 > [PR 2](pr2-stream-scope-collapse.md), which identify the resync sweep boundary this PR controls.
@@ -98,16 +98,19 @@ they want to model `always` or `onEvent`.
 
 ## Release and rollback
 
-Release this PR by itself. Upgrade the CRD and controller, then wait until every controller pod runs
-this version. That version is the rollback floor for PR 6: a rollback from PR 6 to PR 5 still
-understands `prune.mode: onEvent`, so it cannot turn a newer namespace scope into a sweep.
+This PR merges immediately after [PR 4](pr4-cluster-scope-only.md) and the two are released together;
+`main` is in a do-not-release window between the merges. There is therefore **no released version
+containing PR 4 but not this PR**, and no PR-5 rollback floor to fall back to.
 
-Do not claim safety for a rollback past PR 5 after PR-6 manifests have been applied: an older
-controller neither understands `prune` nor the new rule-item namespace field.
+Do not claim safety for a rollback past that release once PR-4 manifests have been applied: an older
+controller neither understands `prune` nor the rule-item source-namespace field, so it resolves a
+narrower desired set *and* sweeps it. Remove or narrow the affected WatchRules first.
+
+Inside the shipping release, `onEvent` is still what makes a scope mistake non-destructive — it is
+just no longer a separately released prerequisite.
 
 ## Done when
 
 - `prune.mode` defaults effectively to `onEvent` for both new and existing GitTargets.
 - Explicit deletes and inferred sweep drops are independently controlled exactly as in the table.
-- The release has passed `task lint`, `task test`, and `task test-e2e` and has become the required
-  rollback floor before PR 6 starts its manifest migration.
+- `task lint`, `task test`, and `task test-e2e` pass, closing the do-not-release window PR 4 opened.

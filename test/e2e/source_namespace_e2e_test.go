@@ -14,7 +14,8 @@ import (
 )
 
 // This spec covers WatchRule.spec.sourceNamespace end to end (see
-// docs/design/watchrule-source-namespace/pr4-source-namespace-field.md).
+// docs/design/watchrule-source-namespace/historical-top-level-source-namespace-baseline.md; the
+// field moves onto spec.rules[] in pr4-cluster-scope-only.md).
 //
 // The load-bearing assertion is the GIT PATH one. The whole design rests on a claim that is
 // invisible from the API types: sourceNamespace changes which namespace is WATCHED and nothing

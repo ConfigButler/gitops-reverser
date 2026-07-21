@@ -68,8 +68,7 @@ Each of the remaining PRs breaks that invariant, independently — which is why 
 | PR | New source of multi-namespace fan-out on one GVR |
 |---|---|
 | [PR 2](pr2-stream-scope-collapse.md) | Named and cluster-wide selections become distinct concurrent streams for the same GVR. |
-| [PR 4](pr4-source-namespace-field.md) | The original implementation baseline proves source-namespace authorization and its gate. |
-| [PR 6](pr6-cluster-scope-only.md) | Rule-item namespaces can expand one namespaced-resource selection into N concrete source namespaces. |
+| [PR 4](pr4-cluster-scope-only.md) | Rule-item namespaces can expand one namespaced-resource selection into N concrete source namespaces. |
 
 So this was not a defect to fix opportunistically alongside the feature. It is the load-bearing floor
 under all three, and the failure mode is silent data loss in a tenant's repository — a replay for
@@ -153,5 +152,5 @@ Verified by reverting the namespace half of `ResyncScope.Matches`:
 - ✅ `task lint`, `task test`, `task test-e2e` pass.
 - ⏭ **Retention-on-revocation is documented above but not yet enforced by a test.** Nothing in this
   PR can revoke a namespace — no code path removes one from a watch set yet — so the test has no
-  subject until PR 6 introduces rule-item namespace expansion. It is carried as the retained-scope
+  subject until PR 4 introduces rule-item namespace expansion. It is carried as the retained-scope
   and policy-revocation tests in that plan. Recording it here rather than silently dropping it.

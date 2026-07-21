@@ -1,19 +1,21 @@
-# PR 4 (superseded implementation baseline) — the top-level sourceNamespace gate
+# Historical implementation baseline — the top-level sourceNamespace gate
 
-> Phase 4 of [source-namespace addressing](README.md). **Status: implemented and green in an open
-> pull request; do not merge or release unchanged.** Its authorization model, conditions,
-> bootstrap gate, source-scope snapshot, and reactivity work are the implementation baseline for
-> [PR 6](pr6-cluster-scope-only.md). Its public top-level `sourceNamespace` field is superseded by
-> `rules[].namespace` before reaching a release.
+> This is an **unreleased, superseded implementation record**, not a deliverable phase of
+> [source-namespace addressing](README.md). Its authorization model, conditions, bootstrap gate,
+> source-scope snapshot, and reactivity work are the implementation baseline for
+> [PR 4 scope by kind](pr4-cluster-scope-only.md). Its public top-level `sourceNamespace` field is
+> replaced by `rules[].sourceNamespace` before reaching a release, and its ClusterProvider delegation
+> boolean is renamed to `allowSourceNamespaceOverride`. Field names below are as built, not as
+> shipped.
 >
-> Keep this document as evidence for the reusable work. The selected release sequence is
-> [PR 5 deletion safety](pr5-gittarget-deletion-safety.md), released first, followed by PR 6. Do not
-> cut a release with the API described below.
+> Keep this document as evidence for reusable work. Development is reworked in PR 4; its release is
+> blocked on [PR 5 deletion safety](pr5-gittarget-deletion-safety.md). Do not cut a release with the
+> API described below.
 
 This original plan adds `WatchRule.spec.sourceNamespace`, `GitTarget.spec.allowedSourceNamespaces`,
 `ClusterProvider.spec.allowWatchRuleSourceNamespaceOverride`, and the reconciler gate that binds them.
 Only the first field's *location and cardinality* are superseded. The rest of the authorization model
-is retained by PR 6.
+is retained by PR 4.
 
 ## Example
 
@@ -82,7 +84,7 @@ so the source credential's RBAC remains the hard maximum. Set it only when the o
 GitTarget is trusted to choose a subset of what that credential may read.
 
 The flag gates **granting only**. In the selected design, `allowedSourceNamespaces` authorizes
-WatchRule namespace selection; after PR 6 ClusterWatchRule is cluster-only and has no namespace to
+WatchRule namespace selection; after PR 4 ClusterWatchRule is cluster-only and has no namespace to
 narrow. The delegation flag therefore remains solely an explicit authority grant, never an accidental
 side effect of connectivity configuration.
 
@@ -205,7 +207,7 @@ Half of this is already wired:
 The watch manager already owns source-cluster watch lifecycles. This adds one Namespace label
 snapshot **per active source cluster**, not one per WatchRule, emitting only meaningful label
 changes and mapping them to WatchRules whose GitTarget resolves through that cluster.
-[PR 6](pr6-cluster-scope-only.md) reworks this snapshot for WatchRule rule-item scopes. It does not
+[PR 4](pr4-cluster-scope-only.md) reworks this snapshot for WatchRule rule-item scopes. It does not
 extend it to ClusterWatchRule, which becomes cluster-only.
 
 > **As built: a refresh-cadence snapshot, not an informer.** The shipped implementation
@@ -254,7 +256,7 @@ Exact-name policies must be answerable **without** the cache, so a source cluste
 access is denied still supports name-based policies. That is the degradation path below, and it falls
 out naturally if resolution checks names before consulting the cache.
 
-PR 6 replaces the current one-namespace retained grant with an atomically replaced, whole-WatchRule
+PR 4 replaces the current one-namespace retained grant with an atomically replaced, whole-WatchRule
 resolved scope. The service shape is still worth settling here, but its current representation cannot
 be reused verbatim for rule-item namespaces.
 
@@ -276,7 +278,7 @@ substituted with the empty set, and never with the full set.
 
 | | **Establishing** a grant — no previously resolved scope for this rule | **Maintaining** a scope — a previously resolved scope exists |
 |---|---|---|
-| Where it applies | This PR's gate: a WatchRule asking for a namespace it has not been granted. | A WatchRule already running under a selector-resolved scope. PR 6 defers selector-backed wildcards, but preserves this exact-name selector contract. |
+| Where it applies | This PR's gate: a WatchRule asking for a namespace it has not been granted. | A WatchRule already running under a selector-resolved scope. PR 4 defers selector-backed wildcards, but preserves this exact-name selector contract. |
 | Effect of *cannot say* | The grant is not established, so the rule is **not compiled**. Nothing runs; nothing is swept. | The **last known-good scope is retained** and keeps running. No narrowing, no widening, **no sweep**. |
 | Retryable error (cache syncing, source unreachable) | `Unknown` / `CheckingSourceNamespacePolicy`, `Stalled=False`. Retried. | Same. |
 | Terminal error (source Namespace `list` is `Forbidden` for a selector policy) | `False` / `SourceNamespacePolicyUnavailable`, **`Stalled=True`**. | `Unknown` / `SourceNamespacePolicyUnavailable`, **`Stalled=False`**. |
@@ -522,8 +524,8 @@ need a case — the first is the one that will regress unnoticed.
 - The legacy test above passes and no existing WatchRule changes behavior.
 - A denied override leaves no stream running.
 - `task lint`, `task test`, `task test-e2e` pass.
-- This document's top-level field is not released. Its code is carried forward only through the PR-6
-  rework after PR 5 has established the rollback floor.
+- This document's top-level field is not released. Its code is carried forward only through the PR-4
+  rework, which is released together with PR 5.
 
 ---
 

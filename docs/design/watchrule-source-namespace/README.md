@@ -1,23 +1,23 @@
 # Source-namespace addressing and per-target source scope
 
-> **Design in six PRs.** PRs 1–3 are landed. PR 4 is implemented and green in an open pull request,
-> but its top-level `sourceNamespace` API is superseded and must not be released. PR 5 establishes
-> deletion safety as a separate rollback-floor release; PR 6 reshapes the unshipped PR-4 work and
-> makes ClusterWatchRule cluster-only. Index: [INDEX.md](../../INDEX.md).
+> **Design in five PRs.** PRs 1–3 are landed. The current branch becomes **PR 4**, the selected
+> scope-by-kind design. **PR 5** is the deletion-safety change, implemented in the PR immediately
+> after it. **No release may be cut between the two merges** — the first release containing PR 4 also
+> contains PR 5. Index: [INDEX.md](../../INDEX.md).
 
 ## Decision
 
 The selected end state is the two-object model:
 
-- **WatchRule** is the namespaced source-resource surface. `spec.rules[].namespace` is omitted for
-  the rule's own namespace, names one authorized source namespace, or is `"*"` for every namespace
-  its GitTarget admits.
-- **ClusterWatchRule** is the cluster-scoped source-resource surface. It has no `scope` field.
+- **WatchRule** is the namespaced source-resource surface. `spec.rules[].sourceNamespace` is omitted
+  for the rule's own namespace, names one authorized source namespace, or is `"*"` for every
+  namespace its GitTarget admits — including a live, selector-resolved set.
+- **ClusterWatchRule** is the cluster-scoped source-resource surface. It has no scope choice.
 - **GitTarget** owns both the destination's source-namespace allow-list and the deletion policy.
 
 This deliberately removes platform-authored namespaced mirroring without a WatchRule in the tenant
 namespace. A platform administrator can still manage the manifest, but must put it in that namespace.
-If that placement is unacceptable for a deployment, stop before PR 6 and design a separate API for
+If that placement is unacceptable for a deployment, stop before PR 4 and design a separate API for
 that capability.
 
 ## The model
@@ -34,7 +34,7 @@ WatchRule  ──uses──>  GitTarget  ──uses──>  ClusterProvider
 
 - `GitTarget.spec.allowedSourceNamespaces` is a destination-owned, exhaustive allow-list for
   WatchRule source namespaces. A declared policy has no self-namespace exception.
-- `ClusterProvider.spec.allowWatchRuleSourceNamespaceOverride` is the platform-admin delegation that
+- `ClusterProvider.spec.allowSourceNamespaceOverride` is the platform-admin delegation that
   permits an admitted GitTarget to authorize a WatchRule outside its own namespace.
 - `GitTarget.spec.prune.mode` controls deletion: `never`, `onEvent` (default), or `always`.
 
@@ -49,7 +49,17 @@ that destination is therefore a GitTarget property, not a property of an individ
 A declared `allowedSourceNamespaces` policy is exhaustive: it must list the WatchRule's own namespace
 as well when that legacy WatchRule is to continue writing to this target.
 
-The policy does not apply to ClusterWatchRule after PR 6, because a cluster-only rule has no namespace
+### No self-namespace exception
+
+An omitted `rules[].sourceNamespace` resolves to the WatchRule's own namespace. It is allowed without
+a source-namespace policy only while the GitTarget declares no policy. Once a policy is declared, that
+namespace must be explicitly admitted just like every other source namespace.
+
+A declared policy is also how a destination says **every** source namespace: a present-but-empty
+`selector: {}` admits all of them, live, and is the replacement for the removed
+`ClusterWatchRule` + `scope: Namespaced` capability.
+
+The policy does not apply to ClusterWatchRule after PR 4, because a cluster-only rule has no namespace
 to bound. This makes the audit question straightforward: either read the WatchRule's selected
 namespace and target policy, or recognize a ClusterWatchRule as intentionally cluster-global.
 
@@ -60,31 +70,32 @@ namespace and target policy, or recognize a ClusterWatchRule as intentionally cl
 | 1 | [Namespace-scoped resync](pr1-namespace-scoped-resync.md) | A per-namespace replay cannot sweep another namespace's manifests of the same type. | landed |
 | 2 | [Stream-scope collapse](pr2-stream-scope-collapse.md) | A cluster-wide stream cannot silently widen a co-resident named stream. | landed |
 | 3 | [ClusterWatchRule target admission](pr3-clusterwatchrule-target-admission.md) | A ClusterWatchRule cannot attach to a GitTarget its ClusterProvider does not admit. | landed |
-| 4 | [Original sourceNamespace implementation](pr4-source-namespace-field.md) | Open, green implementation of the authorization model and source-scope service. Its top-level API is superseded; do not release it unchanged. | open, superseded API |
-| 5 | [GitTarget deletion safety](pr5-gittarget-deletion-safety.md) | Add `prune.mode` and make resync sweep opt-in (`always`). Release independently as the rollback floor. | planned |
-| 6 | [Scope by kind](pr6-cluster-scope-only.md) | Rework PR-4 authorization for `rules[].namespace`, remove ClusterWatchRule `scope`, refuse stored namespaced rules, and migrate cross-kind manifests. | planned, breaking |
+| 4 | [Scope by kind](pr4-cluster-scope-only.md) | Rework the unshipped source-namespace work for `rules[].sourceNamespace`, narrow ClusterWatchRule to cluster scope, refuse stored namespaced rules, and document the cross-kind migration. | current branch; breaking |
+| 5 | [GitTarget deletion safety](pr5-gittarget-deletion-safety.md) | Add `prune.mode` and make resync sweep opt-in (`always`). | next PR; ships in the same release as PR 4 |
 
-## Release order and the open PR 4
+The discarded top-level `sourceNamespace` plan is retained as a
+[historical implementation baseline](historical-top-level-source-namespace-baseline.md). Its gate,
+conditions, bootstrap enforcement, source-scope snapshot, and reactivity work are reusable; its public
+field is not. [PR 4's keep/replace map](pr4-cluster-scope-only.md#existing-pr-4-work-to-keep) defines
+the exact rework, including the retained ClusterProvider delegation flag; its
+[closed decisions](pr4-cluster-scope-only.md#closed-design-decisions) resolve the former alternatives'
+open questions.
 
-**Do not merge or release the open PR 4 unchanged just because it is green.** Its reviewed work is
-valuable, but the only user-visible field it adds is known to be the wrong shape and the allow-list is
-not a complete boundary while ClusterWatchRule can still select namespaced resources.
+## Working and release order
 
-Recommended handling:
+Keep the current branch and rework it in place as PR 4. Do not release a version containing the
+top-level `WatchRule.spec.sourceNamespace` field.
 
-1. Preserve the current PR 4 branch and test history as the implementation baseline for its gate,
-   conditions, bootstrap enforcement, source-scope snapshot, and reactivity wiring.
-2. Land and release PR 5 from main independently. Upgrade every controller instance to it; this is
-   the minimum safe rollback version for the later API migration.
-3. Close the present PR 4 as superseded, or retarget it explicitly as the PR-6 branch. Rebase or
-   cherry-pick its reusable implementation after PR 5, then replace the top-level field with rule-item
-   namespace resolution and remove ClusterWatchRule `scope` in the same PR.
-4. Do not cut a release containing the original top-level `sourceNamespace` field. Release PR 6 only
-   after its migration preflight and stored-object refusal are complete.
+1. Implement and review PR 4 on the current branch, then merge it. **`main` is now in a
+   do-not-release window.**
+2. Implement PR 5 in the next PR and merge it. The window closes.
+3. Release both together, with the breaking change in the notes.
 
-Merging the current PR 4 only as an unreleased development checkpoint is technically possible, but it
-creates a dead public field and makes the eventual review harder. Closing or retargeting it is the
-cleaner path.
+There is no release in which PR 4 exists without PR 5, so there is no PR-5 rollback floor to fall
+back to. Rolling the controller back past that release while migrated manifests exist is
+**unsupported**: the older controller both ignores `rules[].sourceNamespace` (resolving a rule to its
+own namespace — a narrower desired set) and lacks `prune.mode` (so a resync sweeps). Remove or narrow
+the affected WatchRules first.
 
 ## Deletion safety
 
@@ -101,23 +112,26 @@ later gain a non-breaking field such as `maxDeletesPerCommit`.
 ## Compatibility
 
 This is preliminary v1alpha3 API. PR 5 changes the default effective sweep behavior in the safe
-direction. PR 6 is deliberately breaking:
+direction. PR 4 is deliberately breaking:
 
-- `WatchRule.spec.sourceNamespace` moves to `WatchRule.spec.rules[].namespace` before it has reached
-  a release.
-- `ClusterResourceRule.scope` and the public `ResourceScope` enum are removed.
+- The unshipped `WatchRule.spec.sourceNamespace` field is replaced with
+  `WatchRule.spec.rules[].sourceNamespace`; it never reaches a release.
+- `ClusterResourceRule.scope` narrows to `Cluster` only. Both superseded fields stay in the schema for
+  one release as **loud rejections** rather than being deleted, because a deleted field is silently
+  pruned from a re-applied legacy manifest.
 - A legacy namespaced ClusterWatchRule cannot be converted automatically into a WatchRule: the move is
-  cross-kind and `namespace: "*"` requires an explicit target policy where legacy cluster rules did
-  not.
+  cross-kind and `sourceNamespace: "*"` requires an explicit target policy where legacy cluster rules
+  did not.
 
-PR 6 supplies a dry-run migration preflight. It must fail rather than silently narrow a target that
-has no compatible `allowedSourceNamespaces` policy. A controller rollback is supported only to the
-released PR-5 version while PR-6 manifests exist; rolling back farther is unsupported.
+There is no migration tool. The breaking change is carried by the release notes and
+[UPGRADING.md](../../UPGRADING.md), which must state that a target with no declared policy admits
+nothing — so converting without declaring `allowedSourceNamespaces` narrows what is mirrored.
 
 ## Deferred work
 
-- Selector-backed `rules[].namespace: "*"` is deferred. The first wildcard release supports
-  names-only allow-lists; selector fan-out needs independent invalidation and retaining semantics.
+- Collapsing wildcard stream fan-out. A `"*"` item opens one stream per (type × admitted namespace);
+  a cluster-wide stream carrying a namespace **set** in its resync scope would collapse that without
+  widening the sweep. Tracked in [docs/TODO.md](../../TODO.md).
 - A source-delete volume guard is deferred. An absolute count alone does not protect a small target's
   whole folder, so it is better added later with a fully specified approval model if needed.
 - A platform-owned, cross-namespace namespaced-watch API is deferred unless a real deployment needs
