@@ -72,6 +72,27 @@ func (m *NamespaceMatcher) Declared() bool {
 	return m != nil
 }
 
+// SelectorAdmits reports whether the matcher's SELECTOR half alone — ignoring Names — admits a
+// namespace carrying these labels. It exists for ENUMERATION: expanding a wildcard means asking
+// this of every namespace in a snapshot, which Matches cannot do because its name check would
+// short-circuit per candidate.
+//
+// A nil matcher or a nil selector admits nothing; a present-but-EMPTY selector admits everything.
+// That asymmetry is not incidental — LabelSelectorAsSelector returns labels.Nothing() for nil and
+// labels.Everything() for an empty selector, which is exactly the absent-versus-declared
+// distinction this type is built around, and `selector: {}` is the deliberate "every namespace"
+// declaration.
+func (m *NamespaceMatcher) SelectorAdmits(nsLabels map[string]string) (bool, error) {
+	if m == nil || m.Selector == nil {
+		return false, nil
+	}
+	sel, err := metav1.LabelSelectorAsSelector(m.Selector)
+	if err != nil {
+		return false, err
+	}
+	return sel.Matches(labels.Set(nsLabels)), nil
+}
+
 // Matches reports whether a namespace (by name and by the labels it carries IN THE CLUSTER THIS
 // FIELD DESCRIBES) is admitted. Names are checked before the selector, so the answer never depends
 // on the labels when a name already admits. A malformed selector is returned as an error rather

@@ -46,13 +46,17 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          WatchRule watches namespaced resources in ONE namespace of the source cluster its GitTarget
-          mirrors from. It provides fine-grained control over which resources trigger Git commits,
-          with filtering by operation type, API group, version, and labels.
+          WatchRule selects NAMESPACED resources on the source cluster its GitTarget mirrors from. It is
+          the namespaced half of the two-object model: scope is carried by the rule KIND, so a WatchRule
+          never selects cluster-scoped types and a ClusterWatchRule never selects namespaced ones.
+
+          It provides fine-grained control over which resources trigger Git commits, with filtering by
+          operation type, API group, version, and source namespace.
 
           Security model:
-            - WatchRule is namespace-scoped and watches its OWN namespace unless spec.sourceNamespace
-              names another one AND that override passes the three-part gate described on that field —
+            - Each spec.rules[] item watches its own source namespace: the WatchRule's OWN namespace when
+              omitted, an explicit name, or "*" for every namespace the GitTarget admits. Anything other
+              than its own namespace passes the three-part gate described on rules[].sourceNamespace —
               provider admission, an explicit provider-side delegation flag, and the GitTarget's
               allowedSourceNamespaces. The gate is deny-by-default and re-evaluated on every reconcile,
               so a policy tightened later revokes a running rule.
@@ -83,9 +87,9 @@ spec:
             properties:
               rules:
                 description: |-
-                  Rules define which resources to watch within this namespace.
+                  Rules define which resources to watch, and in which source namespaces.
                   Multiple rules create a logical OR - a resource matching ANY rule is watched.
-                  Each rule can specify operations, API groups, versions, and resource types.
+                  Each rule can specify operations, API groups, versions, resource types, and a source namespace.
                 items:
                   description: |-
                     ResourceRule defines a set of namespaced resources to watch.
@@ -162,6 +166,41 @@ spec:
                         type: string
                       minItems: 1
                       type: array
+                    sourceNamespace:
+                      description: "SourceNamespace is the namespace this item watches
+                        IN THE SOURCE CLUSTER the referenced\nGitTarget mirrors from.\n\n\t|
+                        value          | meaning                                                              |\n\t|
+                        omitted        | this WatchRule's own namespace — the legacy
+                        behavior                 |\n\t| an exact name  | one source
+                        namespace, subject to the gate below                      |\n\t|
+                        \"*\"            | every namespace GitTarget.spec.allowedSourceNamespaces
+                        admits, live  |\n\nNaming a namespace OTHER than this WatchRule's
+                        own — including \"*\" — requires all three of:\n\n 1. the
+                        GitTarget's namespace is admitted by its ClusterProvider (spec.allowedNamespaces);\n
+                        2. that ClusterProvider sets spec.allowSourceNamespaceOverride;
+                        and\n 3. the GitTarget's spec.allowedSourceNamespaces admits
+                        the namespace.\n\n\"*\" never means \"every namespace that
+                        exists\": it expands to exactly what the GitTarget's\npolicy
+                        admits, so a target that declares no policy denies it. The
+                        outcome for all items is\naggregated into the one SourceNamespaceAuthorized
+                        condition. A DENIED explicit name refuses\nthe whole WatchRule
+                        rather than silently trimming the item; a \"*\" that admits
+                        nothing is\nvalid, starts no stream for this item, and is
+                        reported as NoAdmittedSourceNamespaces.\n\nOnce the GitTarget
+                        declares a policy that policy is exhaustive, so even an OMITTED\nsourceNamespace
+                        is then checked against it — the rule's own namespace gets
+                        no carve-out.\n\nThis changes only which namespace is WATCHED.
+                        It never changes where objects are written:\nGit placement
+                        follows each mirrored object's OWN namespace, so a rule in
+                        \"tenant-acme\"\nwatching \"repo-config\" writes under repo-config/…,
+                        not tenant-acme/….\n\nCost note: a \"*\" item opens one watch
+                        stream per (matched type × admitted namespace) and\nproduces
+                        one resync scope each, rather than a single cluster-wide stream.
+                        That is deliberate —\nit keeps every replay scoped to one
+                        namespace — but it is a real fan-out on a broad policy."
+                      maxLength: 63
+                      pattern: ^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?)$
+                      type: string
                   required:
                   - resources
                   type: object
@@ -169,23 +208,17 @@ spec:
                 type: array
               sourceNamespace:
                 description: |-
-                  SourceNamespace is the namespace to watch IN THE SOURCE CLUSTER the referenced GitTarget
-                  mirrors from. Omitted, it is this WatchRule's own namespace — the legacy behavior, which
-                  needs no authorization as long as the GitTarget declares no allowedSourceNamespaces policy.
+                  SourceNamespace is REMOVED. It moved to spec.rules[].sourceNamespace, so that the source
+                  namespace sits beside the resource selector it applies to.
 
-                  Naming a DIFFERENT namespace requires all three of:
+                  The field is retained in the schema for one release purely so that re-applying a manifest
+                  that still sets it FAILS. Deleting it outright would be worse and silent: CRD pruning happens
+                  on write, so an unrecognised top-level field is dropped without an error and the rule would
+                  quietly watch its own namespace instead of the one it asked for. The XValidation rule on
+                  spec rejects any value at admission, and the compile path refuses a stored one with the same
+                  message.
 
-                   1. the GitTarget's namespace is admitted by its ClusterProvider (spec.allowedNamespaces);
-                   2. that ClusterProvider sets spec.allowWatchRuleSourceNamespaceOverride; and
-                   3. the GitTarget's spec.allowedSourceNamespaces admits this namespace.
-
-                  The outcome is published as the SourceNamespaceAuthorized condition. Once the GitTarget
-                  declares a policy that policy is exhaustive, so even an OMITTED sourceNamespace is then
-                  checked against it — the rule's own namespace gets no implicit carve-out.
-
-                  This changes only which namespace is WATCHED. It never changes where objects are written:
-                  Git placement follows each mirrored object's OWN namespace, so a rule in "tenant-acme"
-                  watching "repo-config" writes under repo-config/…, not tenant-acme/….
+                  Deprecated: use spec.rules[].sourceNamespace. Removed one release from now, or at v1beta1.
                 minLength: 1
                 type: string
               targetRef:
@@ -219,6 +252,9 @@ spec:
             - rules
             - targetRef
             type: object
+            x-kubernetes-validations:
+            - message: spec.sourceNamespace moved to spec.rules[].sourceNamespace
+              rule: '!has(self.sourceNamespace)'
           status:
             description: status defines the observed state of WatchRule
             properties:

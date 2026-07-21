@@ -97,14 +97,26 @@ spec:
                 description: "AllowedSourceNamespaces bounds which SOURCE-cluster
                   namespaces may be mirrored INTO this\ntarget. It is a property of
                   the DESTINATION, not of any requesting rule: when declared it is\nexhaustive
-                  for every rule that writes here, of every kind.\n\nThe invariant
-                  everything else serves — a declared policy is exhaustive:\n\n\t|
-                  declared? | WatchRule                       | ClusterWatchRule (Namespaced
-                  rules) |\n\t| no        | its own namespace only (legacy) | all
-                  source namespaces (legacy)      |\n\t| yes       | exactly what
-                  the policy admits  | exactly what the policy admits      |\n\nThere
+                  for every WatchRule that writes here.\n\nThe invariant everything
+                  else serves — a declared policy is exhaustive:\n\n\t| declared?
+                  | a WatchRule item may watch                            |\n\t| no
+                  \       | the WatchRule's own namespace only (legacy)           |\n\t|
+                  yes       | exactly what the policy admits, and nothing else      |\n\nIt
+                  is also what a rules[].sourceNamespace of \"*\" resolves THROUGH:\n\n\t|
+                  policy                       | \"*\" resolves to                                     |\n\t|
+                  undeclared                   | denied — deny-by-default; \"*\" is
+                  not a backdoor     |\n\t| {} (declared, empty)         | nothing
+                  \                                            |\n\t| names: [a, b]
+                  \               | exactly a and b, with no source-cluster access
+                  \     |\n\t| selector: {matchLabels: …}   | every source namespace
+                  carrying those labels, live  |\n\t| selector: {}                 |
+                  EVERY source namespace — the \"all namespaces\" form  |\n\nThe last
+                  row is the deliberate \"all source namespaces\" declaration, and
+                  it is the\nreplacement for the removed cluster-wide namespaced ClusterWatchRule:
+                  declared by the\ndestination owner rather than by the rule author,
+                  legible here, and self-updating as\nnamespaces come and go.\n\nThere
                   is deliberately NO self-namespace exception. Once a policy is declared
-                  it must list\nevery namespace that may reach this target, INCLUDING
+                  it must admit\nevery namespace that may reach this target, INCLUDING
                   a co-resident legacy WatchRule's own\nnamespace. An implicit carve-out
                   would mean the field does not actually bound what arrives\nhere,
                   so a reader auditing it would be wrong about the target's contents
@@ -116,16 +128,16 @@ spec:
                   from —\nnot the control cluster ClusterProvider.allowedNamespaces
                   describes. Evaluating it therefore\nneeds Namespace get/list/watch
                   for the identity in that cluster's credential; an\nexact-NAMES entry
-                  stays usable without it, which is a deliberate degradation path.\n\nEmpty
-                  or omitted are NOT the same: omitted declares no policy (each rule
-                  kind keeps its\nlegacy scope), while a declared-but-empty policy
-                  admits nothing. Widening a WatchRule beyond\nits own namespace additionally
-                  requires the ClusterProvider to set\nspec.allowWatchRuleSourceNamespaceOverride;
-                  NARROWING never does.\n\nNote that a namespace allow-list cannot
-                  partition CLUSTER-SCOPED objects, which have no\nnamespace: a ClusterWatchRule
-                  selecting cluster-scoped types receives every such object the\nsource
-                  credential can read, and this field is neither consulted nor a bound
-                  for them."
+                  stays usable without it, which is a deliberate degradation path
+                  that also\nkeeps \"*\" resolvable against a names-only policy.\n\nEmpty
+                  or omitted are NOT the same: omitted declares no policy (a WatchRule
+                  keeps its own\nnamespace), while a declared-but-empty policy admits
+                  nothing. Naming any namespace other\nthan the WatchRule's own —
+                  including \"*\" — additionally requires the ClusterProvider to set\nspec.allowSourceNamespaceOverride.\n\nIt
+                  does NOT bound ClusterWatchRule. Cluster-scoped objects have no
+                  namespace, so a\nClusterWatchRule is intentionally cluster-global
+                  and this field is neither consulted nor a\nbound for it; isolating
+                  cluster-scoped objects between tenants takes separate source\ncredentials/ClusterProviders."
                 properties:
                   names:
                     description: Names is an explicit allow-list of namespace names.

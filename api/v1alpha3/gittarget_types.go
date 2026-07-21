@@ -101,15 +101,29 @@ type GitTargetSpec struct {
 
 	// AllowedSourceNamespaces bounds which SOURCE-cluster namespaces may be mirrored INTO this
 	// target. It is a property of the DESTINATION, not of any requesting rule: when declared it is
-	// exhaustive for every rule that writes here, of every kind.
+	// exhaustive for every WatchRule that writes here.
 	//
 	// The invariant everything else serves — a declared policy is exhaustive:
 	//
-	//	| declared? | WatchRule                       | ClusterWatchRule (Namespaced rules) |
-	//	| no        | its own namespace only (legacy) | all source namespaces (legacy)      |
-	//	| yes       | exactly what the policy admits  | exactly what the policy admits      |
+	//	| declared? | a WatchRule item may watch                            |
+	//	| no        | the WatchRule's own namespace only (legacy)           |
+	//	| yes       | exactly what the policy admits, and nothing else      |
 	//
-	// There is deliberately NO self-namespace exception. Once a policy is declared it must list
+	// It is also what a rules[].sourceNamespace of "*" resolves THROUGH:
+	//
+	//	| policy                       | "*" resolves to                                     |
+	//	| undeclared                   | denied — deny-by-default; "*" is not a backdoor     |
+	//	| {} (declared, empty)         | nothing                                             |
+	//	| names: [a, b]                | exactly a and b, with no source-cluster access      |
+	//	| selector: {matchLabels: …}   | every source namespace carrying those labels, live  |
+	//	| selector: {}                 | EVERY source namespace — the "all namespaces" form  |
+	//
+	// The last row is the deliberate "all source namespaces" declaration, and it is the
+	// replacement for the removed cluster-wide namespaced ClusterWatchRule: declared by the
+	// destination owner rather than by the rule author, legible here, and self-updating as
+	// namespaces come and go.
+	//
+	// There is deliberately NO self-namespace exception. Once a policy is declared it must admit
 	// every namespace that may reach this target, INCLUDING a co-resident legacy WatchRule's own
 	// namespace. An implicit carve-out would mean the field does not actually bound what arrives
 	// here, so a reader auditing it would be wrong about the target's contents — which is the
@@ -120,16 +134,18 @@ type GitTargetSpec struct {
 	// Its selector matches labels on Namespaces in the SOURCE cluster this target mirrors from —
 	// not the control cluster ClusterProvider.allowedNamespaces describes. Evaluating it therefore
 	// needs Namespace get/list/watch for the identity in that cluster's credential; an
-	// exact-NAMES entry stays usable without it, which is a deliberate degradation path.
+	// exact-NAMES entry stays usable without it, which is a deliberate degradation path that also
+	// keeps "*" resolvable against a names-only policy.
 	//
-	// Empty or omitted are NOT the same: omitted declares no policy (each rule kind keeps its
-	// legacy scope), while a declared-but-empty policy admits nothing. Widening a WatchRule beyond
-	// its own namespace additionally requires the ClusterProvider to set
-	// spec.allowWatchRuleSourceNamespaceOverride; NARROWING never does.
+	// Empty or omitted are NOT the same: omitted declares no policy (a WatchRule keeps its own
+	// namespace), while a declared-but-empty policy admits nothing. Naming any namespace other
+	// than the WatchRule's own — including "*" — additionally requires the ClusterProvider to set
+	// spec.allowSourceNamespaceOverride.
 	//
-	// Note that a namespace allow-list cannot partition CLUSTER-SCOPED objects, which have no
-	// namespace: a ClusterWatchRule selecting cluster-scoped types receives every such object the
-	// source credential can read, and this field is neither consulted nor a bound for them.
+	// It does NOT bound ClusterWatchRule. Cluster-scoped objects have no namespace, so a
+	// ClusterWatchRule is intentionally cluster-global and this field is neither consulted nor a
+	// bound for it; isolating cluster-scoped objects between tenants takes separate source
+	// credentials/ClusterProviders.
 	// +optional
 	AllowedSourceNamespaces *NamespaceMatcher `json:"allowedSourceNamespaces,omitempty"`
 }
@@ -278,8 +294,8 @@ func (g *GitTarget) IsLocalSource() bool {
 }
 
 // DeclaresSourceNamespacePolicy reports whether this target declares spec.allowedSourceNamespaces
-// at all. A declared policy is EXHAUSTIVE — it bounds every rule kind writing here, with no
-// self-namespace exception — while an absent one leaves each rule kind its legacy scope. Callers
+// at all. A declared policy is EXHAUSTIVE — it bounds every WatchRule item writing here, with no
+// self-namespace exception — while an absent one leaves a WatchRule its own namespace. Callers
 // must branch on this rather than on emptiness: a declared-but-empty policy admits nothing.
 func (g *GitTarget) DeclaresSourceNamespacePolicy() bool {
 	return g.Spec.AllowedSourceNamespaces.Declared()

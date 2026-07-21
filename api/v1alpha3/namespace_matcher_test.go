@@ -79,23 +79,88 @@ func TestNamespaceMatcher_InvalidSelectorIsAnError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestWatchRule_EffectiveSourceNamespace pins the defaulting every consumer keys on. Getting this
-// wrong produces a stale watch, not a visible failure.
-func TestWatchRule_EffectiveSourceNamespace(t *testing.T) {
-	rule := &WatchRule{ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "tenant-acme"}}
+// TestNamespaceMatcher_EmptySelectorMatchesEverything pins the asymmetry the whole "*" design rests
+// on: LabelSelectorAsSelector returns labels.Nothing() for a NIL selector and labels.Everything()
+// for a present-but-EMPTY one, which is exactly the absent-versus-declared distinction this type is
+// built around. `selector: {}` is the deliberate "every source namespace" declaration, so if this
+// ever flipped a target would silently stop admitting anything.
+func TestNamespaceMatcher_EmptySelectorMatchesEverything(t *testing.T) {
+	declared := &NamespaceMatcher{Selector: &metav1.LabelSelector{}}
+	admits, err := declared.SelectorAdmits(nil)
+	require.NoError(t, err)
+	assert.True(t, admits, "a present-but-empty selector admits EVERY namespace, labels or not")
 
-	assert.Equal(t, "tenant-acme", rule.EffectiveSourceNamespace(), "omitted means the rule's own")
-	assert.False(t, rule.OverridesSourceNamespace())
+	admits, err = declared.SelectorAdmits(map[string]string{"anything": "at-all"})
+	require.NoError(t, err)
+	assert.True(t, admits)
 
-	rule.Spec.SourceNamespace = "repo-config"
-	assert.Equal(t, "repo-config", rule.EffectiveSourceNamespace())
-	assert.True(t, rule.OverridesSourceNamespace())
+	absent := &NamespaceMatcher{Names: []string{"repo-config"}}
+	admits, err = absent.SelectorAdmits(map[string]string{"anything": "at-all"})
+	require.NoError(t, err)
+	assert.False(t, admits, "a nil selector admits nothing — names are the caller's to union")
+
+	var nilMatcher *NamespaceMatcher
+	admits, err = nilMatcher.SelectorAdmits(nil)
+	require.NoError(t, err)
+	assert.False(t, admits)
+}
+
+// TestResourceRule_EffectiveSourceNamespace pins the per-item defaulting every consumer keys on.
+// Getting this wrong produces a stale watch, not a visible failure.
+func TestResourceRule_EffectiveSourceNamespace(t *testing.T) {
+	const own = "tenant-acme"
+	item := &ResourceRule{Resources: []string{"configmaps"}}
+
+	assert.Equal(t, own, item.EffectiveSourceNamespace(own), "omitted means the rule's own")
+	assert.False(t, item.OverridesSourceNamespace(own))
+	assert.False(t, item.IsSourceNamespaceWildcard())
+
+	item.SourceNamespace = "repo-config"
+	assert.Equal(t, "repo-config", item.EffectiveSourceNamespace(own))
+	assert.True(t, item.OverridesSourceNamespace(own))
+	assert.False(t, item.IsSourceNamespaceWildcard())
 
 	// Restating the rule's own namespace is NOT an override: it needs no delegation flag.
-	rule.Spec.SourceNamespace = "tenant-acme"
-	assert.Equal(t, "tenant-acme", rule.EffectiveSourceNamespace())
-	assert.False(t, rule.OverridesSourceNamespace(),
+	item.SourceNamespace = own
+	assert.Equal(t, own, item.EffectiveSourceNamespace(own))
+	assert.False(t, item.OverridesSourceNamespace(own),
 		"naming your own namespace explicitly must behave exactly like omitting it")
+
+	// "*" is ALWAYS an override, even against a policy that lists only the rule's own namespace: it
+	// asks to follow the policy's set, and a later policy edit must not widen the watch without the
+	// platform-admin opt-in.
+	item.SourceNamespace = SourceNamespaceWildcard
+	assert.True(t, item.IsSourceNamespaceWildcard())
+	assert.True(t, item.OverridesSourceNamespace(own))
+}
+
+// TestWatchRule_DeclaresRemovedSourceNamespace covers the stored-object half of decision 10: the
+// field is rejected at admission, but a pre-release object keeps its value in etcd and the compile
+// path must still see it.
+func TestWatchRule_DeclaresRemovedSourceNamespace(t *testing.T) {
+	rule := &WatchRule{ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "tenant-acme"}}
+	assert.False(t, rule.DeclaresRemovedSourceNamespace())
+
+	rule.Spec.SourceNamespace = "repo-config"
+	assert.True(t, rule.DeclaresRemovedSourceNamespace(),
+		"a stored top-level sourceNamespace must be visible to Go, or the refusal has nothing to key on")
+}
+
+// TestClusterWatchRuleSpec_DeclaresNamespacedScope covers the other half of decision 10. The
+// refusal keys on the STORED value, never on what the selector happens to resolve.
+func TestClusterWatchRuleSpec_DeclaresNamespacedScope(t *testing.T) {
+	clusterOnly := ClusterWatchRuleSpec{Rules: []ClusterResourceRule{
+		{Resources: []string{"customresourcedefinitions"}, Scope: ResourceScopeCluster},
+		{Resources: []string{"*"}},
+	}}
+	assert.False(t, clusterOnly.DeclaresNamespacedScope(),
+		"an omitted scope defaults to Cluster and a wildcard selector is not itself a refusal")
+
+	stored := ClusterWatchRuleSpec{Rules: []ClusterResourceRule{
+		{Resources: []string{"nodes"}, Scope: ResourceScopeCluster},
+		{Resources: []string{"configmaps"}, Scope: ResourceScopeNamespaced},
+	}}
+	assert.True(t, stored.DeclaresNamespacedScope(), "one namespaced item refuses the whole rule")
 }
 
 // TestGitTarget_SourceNamespacePolicy checks the two thin wrappers stay thin: a declared policy is
@@ -120,6 +185,6 @@ func TestGitTarget_SourceNamespacePolicy(t *testing.T) {
 // must be false on a provider that never mentions it.
 func TestClusterProvider_DelegationFlagDefaultsClosed(t *testing.T) {
 	provider := &ClusterProvider{}
-	assert.False(t, provider.AllowsWatchRuleSourceNamespaceOverride(),
+	assert.False(t, provider.AllowsSourceNamespaceOverride(),
 		"source-namespace override must never be on by default")
 }

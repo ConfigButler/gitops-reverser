@@ -74,21 +74,22 @@ type ClusterProviderSpec struct {
 	// +optional
 	AllowedNamespaces *NamespaceMatcher `json:"allowedNamespaces,omitempty"`
 
-	// AllowWatchRuleSourceNamespaceOverride delegates SOURCE-namespace selection to the GitTargets
-	// this provider admits. While false (the default) a WatchRule mirroring through this provider
-	// may watch only its OWN namespace, whatever any GitTarget policy says.
+	// AllowSourceNamespaceOverride delegates SOURCE-namespace selection to the GitTargets this
+	// provider admits. While false (the default) a WatchRule mirroring through this provider may
+	// watch only its OWN namespace, whatever any GitTarget policy says.
 	//
-	// The flag does not grant access by itself — an admitted GitTarget must still list the
+	// The flag does not grant access by itself — an admitted GitTarget must still admit the
 	// namespace in spec.allowedSourceNamespaces. What it delegates is the AUTHORITY to choose: a
 	// target owner may then configure a broad allow-list, including one matching every source
 	// namespace, so the source credential's own RBAC remains the hard maximum. Set it only when
 	// the owners of admitted GitTargets are trusted to pick a subset of what that credential
 	// may read.
 	//
-	// It gates GRANTING only. spec.allowedSourceNamespaces plays two roles — widening a WatchRule
-	// beyond its own namespace, and narrowing a ClusterWatchRule below cluster-wide — and only the
-	// widening one is an authority grant. Gating a RESTRICTION behind a delegation flag would mean
-	// an admin has to grant extra authority in order to reduce scope.
+	// It is required for EVERY cross-source-namespace request, including a
+	// rules[].sourceNamespace of "*": a wildcard expresses a request to follow the target's
+	// policy set, so a later policy edit could otherwise widen the watch with no platform-admin
+	// opt-in. It does not apply to ClusterWatchRule, which is cluster-scope-only and selects no
+	// namespaces at all.
 	//
 	// Remote and in-cluster providers use the same mechanism but deserve very different sign-off.
 	// For a REMOTE provider the config-plane namespace and the source namespace are on different
@@ -104,7 +105,7 @@ type ClusterProviderSpec struct {
 	// spec.kubeConfig, and neither that nor the provider's name decides this. Only this flag does.
 	// +optional
 	// +kubebuilder:default=false
-	AllowWatchRuleSourceNamespaceOverride bool `json:"allowWatchRuleSourceNamespaceOverride,omitempty"`
+	AllowSourceNamespaceOverride bool `json:"allowSourceNamespaceOverride,omitempty"`
 
 	// QPS overrides the operator's outgoing kube-client query-per-second throttle for this
 	// cluster's watches and discovery. Omitted, the operator-wide --source-cluster-qps applies.
@@ -213,11 +214,11 @@ func (p *ClusterProvider) AllowsNamespace(nsName string, nsLabels map[string]str
 	return p.Spec.AllowedNamespaces.Matches(nsName, nsLabels)
 }
 
-// AllowsWatchRuleSourceNamespaceOverride reports whether this provider delegates source-namespace
-// selection to the GitTargets it admits. See the field's documentation: false (the default) means
-// a WatchRule mirroring through this provider may watch only its own namespace.
-func (p *ClusterProvider) AllowsWatchRuleSourceNamespaceOverride() bool {
-	return p.Spec.AllowWatchRuleSourceNamespaceOverride
+// AllowsSourceNamespaceOverride reports whether this provider delegates source-namespace selection
+// to the GitTargets it admits. See the field's documentation: false (the default) means a WatchRule
+// mirroring through this provider may watch only its own namespace.
+func (p *ClusterProvider) AllowsSourceNamespaceOverride() bool {
+	return p.Spec.AllowSourceNamespaceOverride
 }
 
 func init() {
