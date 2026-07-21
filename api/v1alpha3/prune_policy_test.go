@@ -12,17 +12,17 @@ import (
 //
 // The CRD default only writes onEvent into a NEWLY created object; Kubernetes does not retro-fill
 // stored objects, so a GitTarget written before this field existed reaches the controller with a
-// nil spec.prune forever. If that read as anything other than onEvent, every existing target
+// nil spec.prune forever. If that read as anything other than OnEvent, every existing target
 // would change behaviour on upgrade without anyone editing it — which is exactly the class of
 // surprise this release exists to prevent.
 func TestEffectivePruneMode_LegacyGitTargetIsOnEvent(t *testing.T) {
 	legacy := &GitTarget{}
 	assert.Equal(t, PruneOnEvent, legacy.EffectivePruneMode(),
-		"a GitTarget that never declared spec.prune must be onEvent, not unset")
+		"a GitTarget that never declared spec.prune must be OnEvent, not unset")
 
 	declaredEmpty := &GitTarget{Spec: GitTargetSpec{Prune: &PrunePolicy{}}}
 	assert.Equal(t, PruneOnEvent, declaredEmpty.EffectivePruneMode(),
-		"a prune object written without a mode must also be onEvent")
+		"a prune object written without a mode must also be OnEvent")
 }
 
 // TestEffectivePruneMode_HonoursDeclaredMode covers the three declared values end to end through

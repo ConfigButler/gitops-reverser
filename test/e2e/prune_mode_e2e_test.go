@@ -108,7 +108,7 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		Expect(pruneModeOf(defaultTarget, testNs)).To(BeEmpty(),
 			"a GitTarget with no prune block must persist without one, so the omitted case is real")
 
-		By("a declared-but-empty prune block is defaulted to onEvent by the schema")
+		By("a declared-but-empty prune block is defaulted to OnEvent by the schema")
 		declaredEmpty := "prune-defaulted-target"
 		Expect(applyRawGitTarget(declaredEmpty, testNs, providerName, "e2e/prune-defaulted", "  prune: {}")).
 			To(Succeed(), "a GitTarget declaring an empty prune block must be accepted")
@@ -162,7 +162,7 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 	// The orphan is seeded by pushing straight into the repo, because that is the only way to
 	// manufacture "Git has a managed document the cluster does not" without also making the
 	// cluster emit an event about it.
-	It("sweeps an orphaned document only when prune.mode is always", func() {
+	It("sweeps an orphaned document only when prune.mode is Always", func() {
 		By("seeding an orphaned ConfigMap manifest into both the always and default folders")
 		alwaysOrphan := pruneConfigMapPath(alwaysPath, testNs, orphanName)
 		defaultOrphan := pruneConfigMapPath(defaultPath, testNs, orphanName)
@@ -295,7 +295,7 @@ func retentionModeOf(g Gomega, name, namespace string) string {
 }
 
 // applyPruneGitTarget creates a GitTarget with the given prune mode. An empty mode omits the
-// prune block entirely — the legacy shape, which must resolve to onEvent without being edited.
+// prune block entirely — the legacy shape, which must resolve to OnEvent without being edited.
 func applyPruneGitTarget(name, namespace, providerName, targetPath, mode string) {
 	GinkgoHelper()
 	data := struct {
