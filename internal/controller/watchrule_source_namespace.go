@@ -36,9 +36,6 @@ const (
 	// WatchRuleReasonCheckingSourceNamespacePolicy is the Unknown reason while the answer is still
 	// being established or a retryable source-cluster error is being retried.
 	WatchRuleReasonCheckingSourceNamespacePolicy = authz.ReasonCheckingSourceNamespacePolicy
-	// WatchRuleReasonSourceNamespaceFieldRemoved is the TERMINAL False reason for a stored rule
-	// that still carries the removed top-level spec.sourceNamespace.
-	WatchRuleReasonSourceNamespaceFieldRemoved = authz.ReasonSourceNamespaceFieldRemoved
 )
 
 // gateSourceNamespace is the WatchRule source-namespace gate and the ONE place this controller

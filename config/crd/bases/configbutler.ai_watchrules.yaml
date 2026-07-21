@@ -178,15 +178,6 @@ spec:
                   type: object
                 minItems: 1
                 type: array
-              sourceNamespace:
-                description: |-
-                  SourceNamespace is REMOVED. It moved to spec.rules[].sourceNamespace, so that the source
-                  namespace sits beside the resource selector it applies to. Setting it is rejected; the field
-                  remains in the schema for one release only so that doing so fails loudly.
-
-                  Deprecated: use spec.rules[].sourceNamespace. Removed one release from now, or at v1beta1.
-                minLength: 1
-                type: string
               targetRef:
                 description: |-
                   TargetRef references the GitTarget to use.
@@ -218,9 +209,6 @@ spec:
             - rules
             - targetRef
             type: object
-            x-kubernetes-validations:
-            - message: spec.sourceNamespace moved to spec.rules[].sourceNamespace
-              rule: '!has(self.sourceNamespace)'
           status:
             description: status defines the observed state of WatchRule
             properties:

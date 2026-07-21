@@ -172,18 +172,6 @@ func TestResourceRule_EffectiveSourceNamespace(t *testing.T) {
 	assert.True(t, item.OverridesSourceNamespace(own))
 }
 
-// TestWatchRule_DeclaresRemovedSourceNamespace covers the stored-object half of decision 10: the
-// field is rejected at admission, but a pre-release object keeps its value in etcd and the compile
-// path must still see it.
-func TestWatchRule_DeclaresRemovedSourceNamespace(t *testing.T) {
-	rule := &WatchRule{ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "tenant-acme"}}
-	assert.False(t, rule.DeclaresRemovedSourceNamespace())
-
-	rule.Spec.SourceNamespace = "repo-config"
-	assert.True(t, rule.DeclaresRemovedSourceNamespace(),
-		"a stored top-level sourceNamespace must be visible to Go, or the refusal has nothing to key on")
-}
-
 // TestClusterWatchRuleSpec_DeclaresNamespacedScope covers the other half of decision 10. The
 // refusal keys on the STORED value, never on what the selector happens to resolve.
 func TestClusterWatchRuleSpec_DeclaresNamespacedScope(t *testing.T) {

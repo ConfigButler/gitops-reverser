@@ -116,10 +116,12 @@ This is preliminary v1alpha3 API. PR 5 changes the default effective sweep behav
 direction. PR 4 is deliberately breaking:
 
 - The unshipped `WatchRule.spec.sourceNamespace` field is replaced with
-  `WatchRule.spec.rules[].sourceNamespace`; it never reaches a release.
-- `ClusterResourceRule.scope` narrows to `Cluster` only. Both superseded fields stay in the schema for
-  one release as **loud rejections** rather than being deleted, because a deleted field is silently
-  pruned from a re-applied legacy manifest.
+  `WatchRule.spec.rules[].sourceNamespace`. It never reached a release, so it is simply deleted: no
+  stored object can carry it and no manifest in the wild sets it, which is what makes a rejection shim
+  unnecessary rather than merely inconvenient.
+- `ClusterResourceRule.scope` narrows to `Cluster` only. That field DID ship, so it stays in the schema
+  for one release as a **loud rejection** rather than being deleted, because a deleted field is
+  silently pruned from a re-applied legacy manifest.
 - A legacy namespaced ClusterWatchRule cannot be converted automatically into a WatchRule: the move is
   cross-kind and `sourceNamespace: "*"` requires an explicit target policy where legacy cluster rules
   did not.

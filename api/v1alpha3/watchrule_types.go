@@ -47,29 +47,11 @@ type LocalTargetReference struct {
 // WatchRule selects NAMESPACED resources on its GitTarget's source cluster. Each rules[] item
 // carries its own source namespace: omitted for this WatchRule's own namespace, an explicit name,
 // or "*" for every namespace the GitTarget admits.
-// +kubebuilder:validation:XValidation:rule="!has(self.sourceNamespace)",message="spec.sourceNamespace moved to spec.rules[].sourceNamespace"
 type WatchRuleSpec struct {
 	// TargetRef references the GitTarget to use.
 	// Must be in the same namespace.
 	// +required
 	TargetRef LocalTargetReference `json:"targetRef"`
-
-	// Design rationale, kept out of the generated CRD description by the blank line below.
-	//
-	// The field is retained in the schema purely so that re-applying a manifest that still sets it
-	// FAILS. Deleting it outright would be worse and silent: CRD pruning happens on write, so an
-	// unrecognised top-level field is dropped without an error and the rule would quietly watch its
-	// own namespace instead of the one it asked for. The XValidation rule on spec rejects any value
-	// at admission, and the compile path refuses a stored one with the same message.
-
-	// SourceNamespace is REMOVED. It moved to spec.rules[].sourceNamespace, so that the source
-	// namespace sits beside the resource selector it applies to. Setting it is rejected; the field
-	// remains in the schema for one release only so that doing so fails loudly.
-	//
-	// Deprecated: use spec.rules[].sourceNamespace. Removed one release from now, or at v1beta1.
-	// +optional
-	// +kubebuilder:validation:MinLength=1
-	SourceNamespace string `json:"sourceNamespace,omitempty"`
 
 	// Rules define which resources to watch, and in which source namespaces.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
@@ -301,14 +283,6 @@ type WatchRule struct {
 	// status defines the observed state of WatchRule
 	// +optional
 	Status WatchRuleStatus `json:"status,omitempty"`
-}
-
-// DeclaresRemovedSourceNamespace reports whether a STORED WatchRule still carries the removed
-// top-level spec.sourceNamespace. Admission rejects it, but an object written before this release
-// keeps its value in etcd, so the compile path must refuse it too — otherwise the rule would
-// silently watch its own namespace instead of the one it asked for.
-func (w *WatchRule) DeclaresRemovedSourceNamespace() bool {
-	return w.Spec.SourceNamespace != ""
 }
 
 // +kubebuilder:object:root=true

@@ -68,28 +68,6 @@ var _ = Describe("Superseded source-scope fields are rejected, not pruned", func
 			"the field is omittable and defaults to Cluster, so a converted manifest need not set it")
 	})
 
-	It("rejects the removed top-level WatchRule spec.sourceNamespace at admission", func() {
-		ctx := context.Background()
-
-		rule := &configbutleraiv1alpha3.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "legacy-top-level-source", Namespace: "default"},
-			Spec: configbutleraiv1alpha3.WatchRuleSpec{
-				TargetRef:       configbutleraiv1alpha3.LocalTargetReference{Name: "any-target"},
-				SourceNamespace: "repo-config",
-				Rules: []configbutleraiv1alpha3.ResourceRule{{
-					Resources: []string{"configmaps"},
-				}},
-			},
-		}
-
-		err := k8sClient.Create(ctx, rule)
-
-		Expect(err).To(HaveOccurred(),
-			"a manifest that still sets the top-level field must FAIL, never be silently pruned")
-		Expect(err.Error()).To(ContainSubstring("spec.rules[].sourceNamespace"),
-			"and the rejection must name the replacement")
-	})
-
 	It("accepts rules[].sourceNamespace, including the wildcard", func() {
 		ctx := context.Background()
 

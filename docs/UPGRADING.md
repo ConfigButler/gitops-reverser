@@ -36,18 +36,19 @@ spec:
   `GitTarget.spec.allowedSourceNamespaces: {selector: {}}` plus `sourceNamespace: "*"` — same reach,
   declared by the `GitTarget` owner rather than by the rule author, and legible on the target.
 
-### Both superseded fields are retained for one release as loud rejections
+### `ClusterWatchRule.spec.rules[].scope` is retained for one release as a loud rejection
 
-Neither field was deleted, because a deleted field is the **silent** option: CRD pruning happens on
+The field was not deleted, because deleting it is the **silent** option: CRD pruning happens on
 write, so a re-applied legacy manifest would be accepted with the value dropped — no error anywhere —
-and the rule would quietly change what it mirrors.
+and the rule would quietly stop mirroring namespaced objects.
 
-| Field | Now |
-|---|---|
-| `ClusterWatchRule.spec.rules[].scope` | optional, defaults to `Cluster`, and the enum accepts only `Cluster`. `scope: Namespaced` is **rejected at apply time**; a stored one is refused at compile with `ClusterScopeOnly`. |
-| `WatchRule.spec.sourceNamespace` | **rejected at apply time** (`spec.sourceNamespace moved to spec.rules[].sourceNamespace`); a stored one is refused at compile with `SourceNamespaceFieldRemoved`. |
+It is now optional, defaults to `Cluster`, and its enum accepts only `Cluster`. Applying
+`scope: Namespaced` is **rejected at apply time**, and a stored one is refused at compile with
+`ClusterScopeOnly`. The field is removed entirely one release from now, or at `v1beta1`.
 
-Both are removed entirely one release from now, or at `v1beta1`.
+No such shim exists for `WatchRule.spec.sourceNamespace`, and none is needed: that field never
+reached a release, so no stored object can carry it and no manifest in the wild sets it. It is simply
+absent — the source namespace lives on `spec.rules[].sourceNamespace`.
 
 ### `ClusterProvider.spec.allowWatchRuleSourceNamespaceOverride` → `allowSourceNamespaceOverride`
 

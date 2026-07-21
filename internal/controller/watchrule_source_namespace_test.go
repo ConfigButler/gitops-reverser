@@ -578,28 +578,3 @@ func TestReconcile_EmptyWildcardIsAuthorizedButNotSilentlyHealthy(t *testing.T) 
 	assert.Equal(t, metav1.ConditionFalse, wrsnCondition(t, rule, ConditionTypeStalled).Status,
 		"a rule with nothing to watch is not stalled — nothing is wrong with it")
 }
-
-// TestReconcile_StoredTopLevelSourceNamespaceIsRefused covers decision 10's stored-object half at
-// the reconciler. Admission rejects the field, but an object written before this release keeps its
-// value in etcd; resolving the items as if it had not asked would silently watch the wrong namespace.
-func TestReconcile_StoredTopLevelSourceNamespaceIsRefused(t *testing.T) {
-	ctx := context.Background()
-	objects := wrsnBaseObjects(nil, true, "")
-	for _, obj := range objects {
-		if rule, ok := obj.(*configbutleraiv1alpha3.WatchRule); ok {
-			rule.Spec.SourceNamespace = wrsnSourceNS //nolint:staticcheck // simulating a stored object
-		}
-	}
-	f := newWRSNFixture(t, objects)
-
-	_, err := f.reconcile(ctx)
-	require.NoError(t, err)
-
-	assert.Empty(t, f.compiledNames(), "a stored top-level sourceNamespace must compile nothing")
-
-	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
-	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, WatchRuleReasonSourceNamespaceFieldRemoved, cond.Reason)
-	assert.Contains(t, cond.Message, "spec.rules[].sourceNamespace",
-		"the refusal must name the replacement, because the move is not automatic")
-}

@@ -438,27 +438,6 @@ func TestResolveWatchRuleSourceScope_WildcardOverNamesNeedsNoResolver(t *testing
 		"a names-only policy must never reach the source-scope service")
 }
 
-// TestResolveWatchRuleSourceScope_StoredTopLevelFieldIsRefused covers decision 10's stored-object
-// half: admission rejects spec.sourceNamespace, but a pre-release object keeps its value in etcd and
-// resolving the items as if it had not asked would silently watch the wrong namespace.
-func TestResolveWatchRuleSourceScope_StoredTopLevelFieldIsRefused(t *testing.T) {
-	target := snTarget(nil)
-	cl := fake.NewClientBuilder().WithScheme(snScheme(t)).
-		WithObjects(target, snClusterProvider(true)).Build()
-
-	rule := snRule("")
-	rule.Spec.SourceNamespace = snSourceNS //nolint:staticcheck // the point of the test
-
-	resolved, err := authz.ResolveWatchRuleSourceScope(context.Background(), cl, rule, target, nil)
-
-	require.NoError(t, err)
-	assert.Equal(t, authz.SourceScopeDenied, resolved.Verdict)
-	assert.Equal(t, authz.ReasonSourceNamespaceFieldRemoved, resolved.Reason)
-	assert.Contains(t, resolved.Message, "spec.rules[].sourceNamespace",
-		"the refusal must name the replacement, because the move is not automatic")
-	assert.Empty(t, resolved.Items, "a refused rule resolves no items")
-}
-
 // TestResolveWatchRuleSourceScope_TargetIsolation is the multi-tenant invariant: a GitTarget's
 // policy bounds ONLY that target. zen's policy admitting acme's namespace must not let a rule
 // writing to ACME's target reach it.

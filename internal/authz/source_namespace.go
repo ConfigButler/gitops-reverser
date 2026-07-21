@@ -53,12 +53,6 @@ const (
 	// being retried. It is NOT a denial — encoding "cannot say yet" as "denied" is exactly how a
 	// transient outage becomes a terminal Stalled=True and a stopped stream.
 	ReasonCheckingSourceNamespacePolicy = "CheckingSourceNamespacePolicy"
-
-	// ReasonSourceNamespaceFieldRemoved is the TERMINAL False reason for a STORED WatchRule that
-	// still carries the removed top-level spec.sourceNamespace. Admission rejects the field, but an
-	// object written before this release keeps its value in etcd; refusing it here is what stops
-	// the rule from silently watching its own namespace instead of the one it asked for.
-	ReasonSourceNamespaceFieldRemoved = "SourceNamespaceFieldRemoved"
 )
 
 // SourceScopeVerdict is the THREE-valued answer a source-namespace policy evaluation produces.
@@ -227,13 +221,6 @@ func ResolveWatchRuleSourceScope(
 	target *configv1alpha3.GitTarget,
 	resolver SourceNamespaceResolver,
 ) (ResolvedSourceScope, error) {
-	// A STORED object carrying the removed top-level field is refused before anything else: it
-	// asked for a namespace this controller no longer reads, and resolving the items as if it had
-	// not asked is precisely the silent scope change this design exists to remove.
-	if rule.DeclaresRemovedSourceNamespace() {
-		return removedFieldScope(rule), nil
-	}
-
 	gate := &itemGate{reader: reader, rule: rule, target: target, resolver: resolver}
 	items := make([]SourceNamespaceDecision, 0, len(rule.Spec.Rules))
 	for i := range rule.Spec.Rules {
@@ -244,21 +231,6 @@ func ResolveWatchRuleSourceScope(
 		items = append(items, decision)
 	}
 	return aggregateSourceScope(items), nil
-}
-
-// removedFieldScope is the terminal refusal for a stored spec.sourceNamespace. Reading the
-// deprecated field is the entire point: it is retained precisely so a stored value stays visible to
-// Go and can be refused instead of silently ignored.
-func removedFieldScope(rule *configv1alpha3.WatchRule) ResolvedSourceScope {
-	msg := fmt.Sprintf(
-		"WatchRule %s/%s still sets spec.sourceNamespace (%q): that field moved to "+
-			"spec.rules[].sourceNamespace; move the value onto the rule items it applies to",
-		rule.Namespace, rule.Name, rule.Spec.SourceNamespace) //nolint:staticcheck // deliberate: see above
-	return ResolvedSourceScope{
-		Verdict: SourceScopeDenied,
-		Reason:  ReasonSourceNamespaceFieldRemoved,
-		Message: msg,
-	}
 }
 
 // itemGate carries the per-rule inputs so each item's decision reads as one step rather than a

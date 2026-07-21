@@ -182,9 +182,11 @@ implementation choices to revisit while coding.
    without a new authorization design.
 9. **No migration tool.** The conversion is mechanical and the API is preliminary. The breaking change
    is carried by the release notes and [UPGRADING.md](../../UPGRADING.md) — see [§8](#8-migration).
-10. **Both superseded fields stay in the schema for one release as loud rejections** rather than being
-    deleted outright. Deleting a field makes a re-applied legacy manifest *silently pruned*; keeping it
-    makes the apply fail. See [§1](#1-clusterwatchrule-becomes-cluster-only) and
+10. **The one field that SHIPPED stays in the schema for one release as a loud rejection.** Deleting a
+    field makes a re-applied legacy manifest *silently pruned*; keeping it makes the apply fail. That
+    reasoning applies to `ClusterResourceRule.scope` and only to it — `WatchRule.spec.sourceNamespace`
+    never reached a release, so it is deleted outright. See
+    [§1](#1-clusterwatchrule-becomes-cluster-only) and
     [§2](#2-watchrule-gains-rulessourcenamespace).
 11. **Keep the ClusterProvider delegation boolean, renamed `allowSourceNamespaceOverride`.** `false`
     remains the default and it is required for every cross-source-namespace request, including `"*"`.
@@ -256,20 +258,17 @@ kind.
 | explicit name | One source namespace, admitted by the target policy and the provider delegation gate |
 | `"*"` | Every source namespace `GitTarget.allowedSourceNamespaces` admits — never every namespace that exists |
 
-**Retire `WatchRule.spec.sourceNamespace` the same way as `scope`**
-([watchrule_types.go:53-72](../../../api/v1alpha3/watchrule_types.go#L53-L72)), and for the same reason:
-an unrecognised top-level field is pruned on re-apply, and a stored pre-release value that Go can no
-longer read would make the rule silently watch its own namespace instead of the one it asked for — a
-silent scope change, the failure class this whole folder exists to remove. Keep the field for one
-release and reject it structurally:
+**Delete `WatchRule.spec.sourceNamespace` outright** — unlike `scope`, which is retained as a
+rejection. The retention argument is about STORED objects: an unrecognised top-level field is pruned on
+re-apply, and a stored pre-release value that Go can no longer read would make the rule silently watch
+its own namespace instead of the one it asked for. Neither hazard exists here, because the field was
+never on `main` and so cannot be in any cluster's etcd or in any manifest. Retaining a rejection for a
+field nobody can have set would be ceremony, and it would leave a phantom in `kubectl explain` that
+readers must be told to ignore.
 
-~~~go
-// +kubebuilder:validation:XValidation:rule="!has(self.sourceNamespace)",message="spec.sourceNamespace moved to spec.rules[].sourceNamespace"
-~~~
-
-and refuse a stored value in the compile path with the same message. The field never reached a
-release, so the only manifests affected are pre-release ones — including this repo's own fixtures —
-which is exactly the population that would otherwise fail silently in CI.
+The Go field, the CEL guard, the `SourceNamespaceFieldRemoved` reason, and the compile-path refusal
+all go with it. Pre-release manifests that still set the field — including this repo's own fixtures —
+are updated in the same change, which is the whole affected population.
 
 **A denied explicit name denies the whole WatchRule.** The object reports
 `SourceNamespaceAuthorized=False`, `Stalled=True`, starts no streams, and its message names the failing
@@ -638,8 +637,8 @@ Fixture conversions worth calling out, because they change what the test proves:
   `scope: Namespaced` compiles no stream before the first reconcile can publish status.
 - A ClusterWatchRule with `resources: ["*"]` still resolves its cluster-scoped types: the refusal keys
   on the stored scope, not on what the selector happens to resolve.
-- Applying `scope: Namespaced`, or `spec.sourceNamespace`, is rejected by the API server (envtest against
-  the generated CRDs) — the guard that the fields were narrowed rather than deleted.
+- Applying `scope: Namespaced` is rejected by the API server (envtest against the generated CRDs) — the
+  guard that the field was narrowed rather than deleted.
 
 **Per-item resolution**
 
@@ -686,8 +685,8 @@ Fixture conversions worth calling out, because they change what the test proves:
 
 ## Done when
 
-- The public `scope` choice and the top-level `sourceNamespace` are unreachable: rejected at admission,
-  refused at compile, ignored at resolution.
+- The public `scope` choice is unreachable: rejected at admission, refused at compile, ignored at
+  resolution. The top-level `sourceNamespace` is gone from the API entirely.
 - `rules[].sourceNamespace` resolves omitted, explicit, and wildcard items, with the wildcard backed by
   both halves of `allowedSourceNamespaces`.
 - A policy or source-Namespace-label change re-projects the watched-type table with the rule object
