@@ -17,12 +17,16 @@ import (
 // SourceNamespaceAuthorized condition reasons, re-exported from internal/authz so the decision and
 // the status surface can never drift apart.
 const (
-	// WatchRuleReasonLegacySourceNamespace is the True reason for a rule watching its own
-	// namespace against a GitTarget that declares no allowedSourceNamespaces policy.
+	// WatchRuleReasonLegacySourceNamespace is the True reason when every item watches the rule's
+	// own namespace against a GitTarget that declares no allowedSourceNamespaces policy.
 	WatchRuleReasonLegacySourceNamespace = authz.ReasonLegacySourceNamespace
-	// WatchRuleReasonSourceNamespaceAllowed is the True reason for a namespace a declared policy
-	// admits — an authorized override, or an own-namespace rule the policy explicitly lists.
+	// WatchRuleReasonSourceNamespaceAllowed is the True reason when every item is admitted and at
+	// least one names a namespace other than the rule's own — an authorized override or wildcard,
+	// or an own-namespace item a declared policy explicitly lists.
 	WatchRuleReasonSourceNamespaceAllowed = authz.ReasonSourceNamespaceAllowed
+	// WatchRuleReasonNoAdmittedSourceNamespaces is the True reason when every item is admitted but
+	// the resolved scope is EMPTY. Not stalled — but not silently healthy either.
+	WatchRuleReasonNoAdmittedSourceNamespaces = authz.ReasonNoAdmittedSourceNamespaces
 	// WatchRuleReasonSourceNamespaceNotAllowed is the TERMINAL False reason for a refusal.
 	WatchRuleReasonSourceNamespaceNotAllowed = authz.ReasonSourceNamespaceNotAllowed
 	// WatchRuleReasonSourceNamespacePolicyUnavailable is the reason for a selector policy that
@@ -32,6 +36,9 @@ const (
 	// WatchRuleReasonCheckingSourceNamespacePolicy is the Unknown reason while the answer is still
 	// being established or a retryable source-cluster error is being retried.
 	WatchRuleReasonCheckingSourceNamespacePolicy = authz.ReasonCheckingSourceNamespacePolicy
+	// WatchRuleReasonSourceNamespaceFieldRemoved is the TERMINAL False reason for a stored rule
+	// that still carries the removed top-level spec.sourceNamespace.
+	WatchRuleReasonSourceNamespaceFieldRemoved = authz.ReasonSourceNamespaceFieldRemoved
 )
 
 // gateSourceNamespace is the WatchRule source-namespace gate and the ONE place this controller
@@ -44,6 +51,10 @@ const (
 // checkSourceAuthorization. Running it on every reconcile is what makes a policy TIGHTENED after a
 // rule was accepted revoke that rule.
 //
+// Every item is resolved, and the aggregate is published as one condition per the status contract's
+// reason precedence. A DENIED explicit item refuses the whole rule rather than being trimmed away:
+// mirroring two of the three namespaces a rule asked for is worse than a loud failure.
+//
 // It returns handled=false when the rule compiled and the reconcile should continue; handled=true
 // means the reconcile is over and the caller must return the accompanying result and error
 // unchanged.
@@ -54,30 +65,29 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 	provider configbutleraiv1alpha3.GitProvider,
 	log logr.Logger,
 ) (bool, ctrl.Result, error) {
-	decision, err := watch.CompileWatchRule(
+	resolved, err := watch.CompileWatchRule(
 		ctx, r.Client, r.RuleStore, r.sourceScope(), *watchRule, target, provider)
 	if err != nil {
 		// A transient apiserver failure must NOT tear down a running stream: CompileWatchRule left
 		// the compiled rule in place, so requeue with the error and re-run the gate on real data.
 		log.Error(err, "Failed to evaluate source-namespace authorization",
-			"sourceNamespace", watchRule.EffectiveSourceNamespace(),
 			"gitTargetName", target.Name, "gitTargetNamespace", target.Namespace)
 		return true, ctrl.Result{}, err
 	}
 
 	switch {
-	case decision.Admitted():
+	case resolved.Admitted():
 		r.setTypedCondition(
 			watchRule,
 			ConditionTypeSourceNamespaceAuthorized,
 			metav1.ConditionTrue,
-			decision.Reason,
-			decision.Message,
+			resolved.Reason,
+			resolved.Message,
 		)
 		return false, ctrl.Result{}, nil
 
-	case decision.Terminal():
-		result, refuseErr := r.refuseSourceNamespace(ctx, watchRule, decision, log)
+	case resolved.Terminal():
+		result, refuseErr := r.refuseSourceNamespace(ctx, watchRule, resolved, log)
 		return true, result, refuseErr
 
 	default:
@@ -85,7 +95,7 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 		// rule with an already-resolved scope is retaining it through an unevaluatable policy. In
 		// every case this is PROGRESSING, not failed: turning a temporary connection problem into
 		// a terminal Stalled=True would stop a stream over an outage nobody chose.
-		result, updateErr := r.holdSourceNamespaceUnknown(ctx, watchRule, decision)
+		result, updateErr := r.holdSourceNamespaceUnknown(ctx, watchRule, resolved)
 		return true, result, updateErr
 	}
 }
@@ -104,14 +114,14 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 func (r *WatchRuleReconciler) refuseSourceNamespace(
 	ctx context.Context,
 	watchRule *configbutleraiv1alpha3.WatchRule,
-	decision authz.SourceNamespaceDecision,
+	resolved authz.ResolvedSourceScope,
 	log logr.Logger,
 ) (ctrl.Result, error) {
-	log.Info("Refusing WatchRule: its effective source namespace is not authorized",
+	log.Info("Refusing WatchRule: its source-namespace scope is not authorized",
 		"name", watchRule.Name,
 		"namespace", watchRule.Namespace,
-		"sourceNamespace", decision.Namespace,
-		"reason", decision.Reason)
+		"reason", resolved.Reason,
+		"message", resolved.Message)
 
 	// The compiled rule is already out of the store; replan so the watch manager tears down any
 	// stream this rule was keeping alive.
@@ -128,17 +138,17 @@ func (r *WatchRuleReconciler) refuseSourceNamespace(
 		watchRule,
 		ConditionTypeSourceNamespaceAuthorized,
 		metav1.ConditionFalse,
-		decision.Reason,
-		decision.Message,
+		resolved.Reason,
+		resolved.Message,
 	)
 	r.setTypedCondition(
 		watchRule,
 		ConditionTypeStreamsRunning,
 		metav1.ConditionFalse,
-		decision.Reason,
-		"No streams: the effective source namespace is not authorized",
+		resolved.Reason,
+		"No streams: the rule's source-namespace scope is not authorized",
 	)
-	r.setRuleStalled(watchRule, decision.Reason, decision.Message)
+	r.setRuleStalled(watchRule, resolved.Reason, resolved.Message)
 
 	return r.updateStatusAndRequeue(ctx, watchRule)
 }
@@ -154,20 +164,20 @@ func (r *WatchRuleReconciler) refuseSourceNamespace(
 func (r *WatchRuleReconciler) holdSourceNamespaceUnknown(
 	ctx context.Context,
 	watchRule *configbutleraiv1alpha3.WatchRule,
-	decision authz.SourceNamespaceDecision,
+	resolved authz.ResolvedSourceScope,
 ) (ctrl.Result, error) {
 	r.setTypedCondition(
 		watchRule,
 		ConditionTypeSourceNamespaceAuthorized,
 		metav1.ConditionUnknown,
-		decision.Reason,
-		decision.Message,
+		resolved.Reason,
+		resolved.Message,
 	)
 	r.setTypedCondition(
 		watchRule,
 		ConditionTypeStreamsRunning,
 		metav1.ConditionUnknown,
-		decision.Reason,
+		resolved.Reason,
 		"Streams not re-evaluated while source-namespace authorization is unsettled",
 	)
 	r.setRuleKstatus(watchRule, "WatchRule source-namespace authorization is unsettled")

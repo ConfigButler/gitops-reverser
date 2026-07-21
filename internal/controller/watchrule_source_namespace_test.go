@@ -56,18 +56,24 @@ func wrsnClusterProvider(delegate bool) *configbutleraiv1alpha3.ClusterProvider 
 			AllowedNamespaces: &configbutleraiv1alpha3.NamespaceMatcher{
 				Names: []string{wrsnTenantNS},
 			},
-			AllowWatchRuleSourceNamespaceOverride: delegate,
+			AllowSourceNamespaceOverride: delegate,
 		},
 	}
 }
 
-func wrsnWatchRule(sourceNamespace string) *configbutleraiv1alpha3.WatchRule {
+// wrsnWatchRule builds a rule with one item per given rules[].sourceNamespace ("" = omitted).
+func wrsnWatchRule(sourceNamespaces ...string) *configbutleraiv1alpha3.WatchRule {
+	items := make([]configbutleraiv1alpha3.ResourceRule, 0, len(sourceNamespaces))
+	for _, ns := range sourceNamespaces {
+		items = append(items, configbutleraiv1alpha3.ResourceRule{
+			Resources: []string{"configmaps"}, SourceNamespace: ns,
+		})
+	}
 	return &configbutleraiv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: wrsnRule, Namespace: wrsnTenantNS, Generation: 1},
 		Spec: configbutleraiv1alpha3.WatchRuleSpec{
-			TargetRef:       configbutleraiv1alpha3.LocalTargetReference{Name: wrsnTarget},
-			SourceNamespace: sourceNamespace,
-			Rules:           []configbutleraiv1alpha3.ResourceRule{{Resources: []string{"configmaps"}}},
+			TargetRef: configbutleraiv1alpha3.LocalTargetReference{Name: wrsnTarget},
+			Rules:     items,
 		},
 	}
 }
@@ -136,13 +142,13 @@ func wrsnCondition(t *testing.T, rule *configbutleraiv1alpha3.WatchRule, conditi
 func wrsnBaseObjects(
 	policy *configbutleraiv1alpha3.NamespaceMatcher,
 	delegate bool,
-	sourceNamespace string,
+	sourceNamespaces ...string,
 ) []client.Object {
 	return []client.Object{
 		wrsnGitTarget(policy),
 		wrsnGitProvider(),
 		wrsnClusterProvider(delegate),
-		wrsnWatchRule(sourceNamespace),
+		wrsnWatchRule(sourceNamespaces...),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: wrsnTenantNS}},
 	}
 }
@@ -185,7 +191,7 @@ func TestReconcile_DeniedSourceNamespaceStartsNoWatch(t *testing.T) {
 	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
 	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
-	assert.Contains(t, cond.Message, "allowWatchRuleSourceNamespaceOverride",
+	assert.Contains(t, cond.Message, "allowSourceNamespaceOverride",
 		"the message must name the fix")
 }
 
@@ -232,7 +238,7 @@ func TestReconcile_AuthorizedOverrideCompilesWithItsSourceNamespace(t *testing.T
 
 	compiled := f.store.SnapshotWatchRules()
 	require.Len(t, compiled, 1)
-	assert.Equal(t, wrsnSourceNS, compiled[0].SourceNamespace)
+	assert.Equal(t, []string{wrsnSourceNS}, compiled[0].ResourceRules[0].SourceNamespaces)
 	assert.Equal(t, wrsnTenantNS, compiled[0].Source.Namespace)
 
 	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
@@ -386,4 +392,104 @@ func TestReconcile_ClusterProviderReadErrorRequeuesWithoutDenying(t *testing.T) 
 	require.Error(t, err, "a transient read error must requeue, not silently deny")
 	assert.Equal(t, []string{wrsnRule}, f.compiledNames(),
 		"a running stream must survive an apiserver blip")
+}
+
+// TestReconcile_MixedItemsCompileTheirOwnScopes is the point of moving the field onto the items,
+// asserted through the real reconciler: one rule can follow one type in its own namespace and
+// another in a different, admitted one, and the compiled rule carries both scopes independently.
+func TestReconcile_MixedItemsCompileTheirOwnScopes(t *testing.T) {
+	ctx := context.Background()
+	f := newWRSNFixture(t, wrsnBaseObjects(
+		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnTenantNS, wrsnSourceNS}},
+		true, "", wrsnSourceNS, configbutleraiv1alpha3.SourceNamespaceWildcard))
+
+	_, err := f.reconcile(ctx)
+	require.NoError(t, err)
+
+	compiled := f.store.SnapshotWatchRules()
+	require.Len(t, compiled, 1)
+	require.Len(t, compiled[0].ResourceRules, 3)
+	assert.Equal(t, []string{wrsnTenantNS}, compiled[0].ResourceRules[0].SourceNamespaces,
+		"an omitted item resolves to the rule's own namespace")
+	assert.Equal(t, []string{wrsnSourceNS}, compiled[0].ResourceRules[1].SourceNamespaces,
+		"an explicit item resolves to exactly what it named")
+	assert.Equal(t, []string{wrsnSourceNS, wrsnTenantNS}, compiled[0].ResourceRules[2].SourceNamespaces,
+		`"*" expands to the target's whole admitted set`)
+
+	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, WatchRuleReasonSourceNamespaceAllowed, cond.Reason)
+}
+
+// TestReconcile_DeniedItemRefusesTheWholeRule is decision 5 at the reconciler: a denied explicit
+// item is never trimmed away so the other items can run. Mirroring two of the three namespaces a
+// rule asked for is worse than a loud failure — and the message must name the offending item.
+func TestReconcile_DeniedItemRefusesTheWholeRule(t *testing.T) {
+	ctx := context.Background()
+	f := newWRSNFixture(t, wrsnBaseObjects(
+		&configbutleraiv1alpha3.NamespaceMatcher{Names: []string{wrsnTenantNS, wrsnSourceNS}},
+		true, "", wrsnSourceNS, "tenant-zen"))
+
+	_, err := f.reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, f.compiledNames(),
+		"one denied item stops the WHOLE rule; a partial mirror is worse than a loud failure")
+
+	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, WatchRuleReasonSourceNamespaceNotAllowed, cond.Reason)
+	assert.Contains(t, cond.Message, "spec.rules[2]", "the message names the failing item by index...")
+	assert.Contains(t, cond.Message, "tenant-zen", "...and by what it asked for")
+}
+
+// TestReconcile_EmptyWildcardIsAuthorizedButNotSilentlyHealthy is the other half of decision 5. A
+// "*" against a policy that currently admits nothing is valid — the rule is NOT stalled — but it
+// mirrors nothing, and a rule that mirrors nothing while reporting Ready=True with no explanation is
+// a silent no-op. The reason is what makes it visible.
+func TestReconcile_EmptyWildcardIsAuthorizedButNotSilentlyHealthy(t *testing.T) {
+	ctx := context.Background()
+	f := newWRSNFixture(t, wrsnBaseObjects(
+		&configbutleraiv1alpha3.NamespaceMatcher{}, // declared, and admits nothing
+		true, configbutleraiv1alpha3.SourceNamespaceWildcard))
+
+	_, err := f.reconcile(ctx)
+	require.NoError(t, err)
+
+	compiled := f.store.SnapshotWatchRules()
+	require.Len(t, compiled, 1, "an empty admitted set is not a refusal: the rule still compiles")
+	assert.Empty(t, compiled[0].ResourceRules[0].SourceNamespaces,
+		"...but it watches nothing, rather than falling back to a wider scope")
+
+	rule := f.reloadRule(ctx, t)
+	cond := wrsnCondition(t, rule, ConditionTypeSourceNamespaceAuthorized)
+	assert.Equal(t, metav1.ConditionTrue, cond.Status)
+	assert.Equal(t, WatchRuleReasonNoAdmittedSourceNamespaces, cond.Reason)
+	assert.Equal(t, metav1.ConditionFalse, wrsnCondition(t, rule, ConditionTypeStalled).Status,
+		"a rule with nothing to watch is not stalled — nothing is wrong with it")
+}
+
+// TestReconcile_StoredTopLevelSourceNamespaceIsRefused covers decision 10's stored-object half at
+// the reconciler. Admission rejects the field, but an object written before this release keeps its
+// value in etcd; resolving the items as if it had not asked would silently watch the wrong namespace.
+func TestReconcile_StoredTopLevelSourceNamespaceIsRefused(t *testing.T) {
+	ctx := context.Background()
+	objects := wrsnBaseObjects(nil, true, "")
+	for _, obj := range objects {
+		if rule, ok := obj.(*configbutleraiv1alpha3.WatchRule); ok {
+			rule.Spec.SourceNamespace = wrsnSourceNS //nolint:staticcheck // simulating a stored object
+		}
+	}
+	f := newWRSNFixture(t, objects)
+
+	_, err := f.reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, f.compiledNames(), "a stored top-level sourceNamespace must compile nothing")
+
+	cond := wrsnCondition(t, f.reloadRule(ctx, t), ConditionTypeSourceNamespaceAuthorized)
+	assert.Equal(t, metav1.ConditionFalse, cond.Status)
+	assert.Equal(t, WatchRuleReasonSourceNamespaceFieldRemoved, cond.Reason)
+	assert.Contains(t, cond.Message, "spec.rules[].sourceNamespace",
+		"the refusal must name the replacement, because the move is not automatic")
 }
