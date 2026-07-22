@@ -31,19 +31,34 @@ tracked `.md` files. `CHANGELOG.md` and `docs/finished/` are excluded by both co
 | [`.vale.ini`](../../.vale.ini) and `.vale/styles/HouseStyle/`, encoding [`style-guide.md`](../style-guide.md) | done |
 | [`.markdownlint-cli2.jsonc`](../../.markdownlint-cli2.jsonc) | done |
 | `task lint-markdown`, `task lint-prose` | done |
-| Folded into `task lint` | done, scoped to changed files |
+| Folded into `task lint` | done, gated on [`.docs-lint-scope`](../../.docs-lint-scope) |
 | Whole-tree gate | not started, blocked on the backlogs below |
 
 `task lint-docs` is now the aggregate of three tasks: `lint-doc-links` (the old `lint-docs`),
 `lint-markdown`, and `lint-prose`. The rename kept `lint-docs` pointing at a superset of what it
 used to do, so every existing instruction to run it stays true.
 
-Both new tasks gate **the markdown a branch touches**, resolved by
-[`hack/docs-files.sh`](../../hack/docs-files.sh), which is the single place that builds the file
-list for both tools and for CI. That is the "gate only the files a change touches" plan from
-[How to gate this](#how-to-gate-this), applied to structure as well as prose: measured after the
-config landed, 102 of 174 files fail markdownlint and 148 of 174 fail Vale, so neither backlog
-survives a whole-tree gate today.
+Both new tasks gate **an explicit list of files**, [`.docs-lint-scope`](../../.docs-lint-scope),
+resolved by [`hack/docs-files.sh`](../../hack/docs-files.sh), which is the single place that builds
+the file list for both tools and for CI. Measured after the config landed, 102 of 174 files fail
+markdownlint and 148 of 174 fail Vale, so neither backlog survives a whole-tree gate today.
+
+**A committed list, not the git diff.** The first cut derived the set from
+`git diff <merge-base>`, which is the "gate only the files a change touches" plan from
+[How to gate this](#how-to-gate-this). It works, and it has one bad failure mode: the merge base
+needs history, CI checks out shallow, and an unreachable base made the file list *empty* rather than
+wrong. An empty list is a green gate. Fixing that meant `fetch-depth: 0`, threading
+`GITHUB_BASE_REF` into the lint container, and an explicit "fail if the base is unreachable in CI"
+branch in the script.
+
+A committed list has none of that. It is identical on every machine, needs no history, and grows by
+review rather than by accident. It also drops the diff model's worst property for contributors:
+touching one line of a long unmigrated doc no longer adopts that doc's whole backlog.
+
+What it gives up is coverage of files nobody listed. An unlisted document can be added or edited
+with em dashes and nothing fails. That is the accepted cost of starting narrow, and the reason
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md#documentation-checks) asks people to run both tools on
+what they touch regardless. `task lint-doc-links` is unaffected and still covers everything.
 
 Both configs are live for editor extensions, which is the point: the Vale and markdownlint VS Code
 extensions pick them up and mark a file as you write it. No build fails.
@@ -300,12 +315,12 @@ files exist", via `git ls-files`; which of them to skip stays in each tool's own
 (`ignores` in `.markdownlint-cli2.jsonc`, per-file stanzas in `.vale.ini`). One list of files, one
 list of exclusions, rather than two of each that can disagree.
 
-The unforeseen one: **changed-file scoping needs history, and CI checks out shallow.** The `lint`
-job now sets `fetch-depth: 0`, and the base ref comes from `GITHUB_BASE_REF` rather than a
-hardcoded `main`, because this repository deliberately builds every PR base including stacked PRs.
-Without the full fetch the merge base is unreachable, the file list falls back to the working tree,
-and in CI that is empty: the gate would have passed everything, silently. That failure mode is why
-`hack/docs-files.sh` warns on stderr instead of returning nothing.
+The unforeseen one, which is what moved the scope to a committed list: **deriving the file set from
+the git diff needs history, and CI checks out shallow.** No merge base meant no file list, and no
+file list is a green gate. `.docs-lint-scope` removes the dependency on history entirely, so the
+`lint` job needs no `fetch-depth` and no `GITHUB_BASE_REF`. The one guard that survived is the
+principle behind it: `hack/docs-files.sh` fails when the scope file is missing, empty, or names a
+path git does not track, because each of those silently shrinks the gate.
 
 ## Open questions
 

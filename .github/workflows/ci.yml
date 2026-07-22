@@ -478,12 +478,6 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          # The docs linters gate the markdown a PR touches, which needs a merge base
-          # against the PR's base branch, which needs history. The default shallow
-          # checkout has none, and hack/docs-files.sh would fall back to working-tree
-          # only — in CI an empty set, so the gate would silently pass everything.
-          # 72 MB and ~900 commits, so a full fetch is cheap here.
-          fetch-depth: 0
 
       - name: Login to Docker registry
         if: github.event_name != 'pull_request'
@@ -509,7 +503,6 @@ jobs:
           docker run --rm \
             -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
             -w "${{ env.CI_WORKDIR }}" \
-            -e GITHUB_BASE_REF \
             "${CI_CONTAINER}" \
             bash -lc '
               set -e

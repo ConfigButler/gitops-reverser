@@ -159,20 +159,29 @@ overlaps with the others:
 | `task lint-prose` | Vale | English against [`docs/style-guide.md`](docs/style-guide.md): em dashes, American spelling, product names, words to cut. |
 
 ```bash
-task lint-docs                     # all three, on the markdown this branch touches
+task lint-docs                     # all three, on the gated files
 task lint-markdown-fix             # apply the safe mechanical fixes
 task lint-markdown DOCS_SCOPE=all  # the whole tree, to see the backlog
 ```
 
-**The markdown and prose checks look at the files your branch touches, not the whole tree.** That is
-a rollout choice: 148 of 174 files still carry at least one prose error, almost all of them em
-dashes, and [`docs/style-guide.md`](docs/style-guide.md) says that cleanup must not land as one
-sweeping commit. So a file gets cleaned when someone opens it. `hack/docs-files.sh` builds the list,
-and it is the only place that does, so local runs and CI select identically.
+**Structure and prose are gated on the files [`.docs-lint-scope`](.docs-lint-scope) lists, not the
+whole tree.** That is a rollout position: 102 of 174 files fail markdownlint and 148 of 174 fail
+Vale, almost all of the latter on em dashes, and [`docs/style-guide.md`](docs/style-guide.md) says
+that cleanup must not land as one sweeping commit. The gate starts small and the list grows.
 
-Consequence worth knowing: **opening a file adopts its backlog.** A one-line edit to a long,
-un-migrated doc can surface a dozen findings you did not create. Fix them if the file is small, or
-split the cleanup into its own commit.
+**To add a file to the gate**, clean it and add its path to that file:
+
+```bash
+markdownlint-cli2 docs/some-file.md   # what it would cost
+vale docs/some-file.md
+task lint-markdown-fix DOCS_SCOPE=all # the mechanical half, whole tree
+```
+
+Editing a doc that is not on the list is not blocked, so an unlisted file can still drift. Run the
+two commands above on anything you touch even when nothing forces you to.
+
+**Reference checking is not staged this way.** `task lint-doc-links` always covers every tracked
+markdown, Go, YAML, and shell file, so a moved document breaks the build wherever it is cited.
 
 Only Vale errors fail the build. Warnings and suggestions print and do not block, because
 [`.vale.ini`](.vale.ini) reserves the error level for rules a machine can decide alone. There is no
