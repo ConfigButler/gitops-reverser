@@ -35,6 +35,7 @@ The bootstrap source in [`audit/webhook-config.yaml`](audit/webhook-config.yaml)
 `https://10.43.200.200:9444/audit-webhook`
 
 Notes:
+
 - `insecure-skip-tls-verify: true` is intentional for local e2e
 - `kind-e2e` in the path is the cluster ID label used by tests/metrics
 - after install, `hack/e2e/inject-webhook-tls.sh` replaces the mounted `.stamps` copy with the final CA-trusting mTLS kubeconfig

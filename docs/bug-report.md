@@ -141,10 +141,12 @@ misconfiguration that silently drops it (rather than failing loudly) is high-con
    `controller-gen` on PATH and `HOST_PROJECT_PATH` set — see this repo's `hack/spikes/README.md`).
 2. `kubectl -n gitops-reverser rollout restart deploy/gitops-reverser` to zero the counters.
 3. Run the two specs:
+
    ```sh
    go run github.com/onsi/ginkgo/v2/ginkgo --label-filter='manager' \
      --focus='WatchRule source namespace|Manager GitTarget prune policy' ./test/e2e/
    ```
+
 4. Query Prometheus: `sum by (result,resource) (gitopsreverser_attribution_resolutions_total)` and
    `sum by (op) (gitopsreverser_attribution_fact_events_total)`; and `git log --author` the mirrored
    repos under `.stamps/repos/*/` for `attribution unresolved`.

@@ -172,6 +172,7 @@ Prioritized. Each test names the architecture guarantee it pins, the setup, and 
      witnessed — architecture says committer-authored).
 
 **Notes / pitfalls:**
+
 - Scale-to-0 vs. `rollout restart`: scale-to-0 guarantees a true no-watch window so the delete is
   genuinely missed. A plain rollout may keep a watch alive long enough to catch the delete as a live
   event — which would test the wrong path.
@@ -284,7 +285,7 @@ These came out of the investigation and are genuine forks — capturing them her
 
 **Gate on decision (§4.1):**
 
-4. Test D — unsupported folder. If (a) is chosen, this becomes a small implementation project
+1. Test D — unsupported folder. If (a) is chosen, this becomes a small implementation project
    (acceptance-gate wiring + status condition) with the e2e as its acceptance proof; if (b)/(c), it is a
    documentation test or future-work item.
 

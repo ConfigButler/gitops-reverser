@@ -62,17 +62,20 @@ See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
 ## COMPONENT-SPECIFIC RULES
 
 ### Controller Code (`internal/controller/`)
+
 - Follow kubebuilder patterns and annotations
 - Implement idempotent reconciliation logic
 - Add appropriate RBAC markers
 - Handle finalizers for cleanup
 
 ### Webhook Code (`internal/webhook/`)
+
 - Implement admission webhook interface correctly
 - Add proper validation/mutation logic
 - Update webhook configuration in `config/webhook/`
 
 ### API Changes (`api/v1alpha3/`)
+
 - Add kubebuilder validation tags
 - Include JSON tags and field descriptions
 - Run `task manifests` to update CRDs
@@ -91,12 +94,14 @@ See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
   then compare against `config/crd/bases` with every `description` key stripped from both.
 
 ### Git Operations (`internal/git/`)
+
 - Handle Git errors gracefully
 - Implement proper conflict resolution
 - Add race condition protection
 - Use temporary directories for testing
 
 ### CI Workflows (`.github/workflows/`)
+
 - After editing any workflow, run `task lint-actions` to catch errors with
   `actionlint` before pushing
 - A workflow-only change still counts as a CI/config change, so it is **not**

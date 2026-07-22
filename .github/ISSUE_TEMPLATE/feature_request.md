@@ -23,6 +23,7 @@ Add any other context or screenshots about the feature request here.
 If you have thoughts on how this could be implemented, please share them here.
 
 **Priority**
+
 - [ ] Low
 - [ ] Medium
 - [ ] High

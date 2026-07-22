@@ -2,9 +2,9 @@
 #
 # `task lint` fails on markdownlint findings or Vale errors in these files and
 # ignores every other .md file in the tree. That is a rollout position, not the
-# destination: measured with the committed config, 102 of 174 linted files fail
-# markdownlint and 148 of 174 fail Vale, so gating everything today would be a
-# wall no one could land a change through.
+# destination: measured with the committed config, approximately 89 of 196 linted
+# files fail markdownlint and over 190 of 196 fail Vale, so gating everything
+# today would be a wall no one could land a change through.
 #
 # Add a file here once it passes. Check what it would cost first:
 #

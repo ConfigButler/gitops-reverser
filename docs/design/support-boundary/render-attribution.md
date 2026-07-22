@@ -74,7 +74,9 @@ index, no image name, no field — and records are appended without dedupe. Meas
 a file's entries once per record, builds a chain containing every entry **N times**.
 
 Benign today (re-applying an entry lands on the same result) and not a reason to hold
-#232. But it means the annotation answers *"which kustomizations' transformers ran in the
+
+# 232. But it means the annotation answers *"which kustomizations' transformers ran in the
+
 pipeline that produced this object"* — never *"what touched this object"*, and **never
 which entry**. The mechanism is sound; the comments describing it are not, and they should
 be fixed rather than inherited.
@@ -158,7 +160,7 @@ The cost win is real but secondary, and I don't want the design sold on it: N is
 builds are milliseconds. The dye is right because it is **correct**, not because it is
 cheap.
 
-### Measured: kustomize does not validate the dye. It *matches* on it.
+### Measured: kustomize does not validate the dye. It *matches* on it
 
 The obvious objection — "a tag can't hold that" — is half false, and the instinct to insert
 *long describing strings* is closer to viable than it deserves to be. There is **no
@@ -304,7 +306,7 @@ flowchart TB
 
 ---
 
-## 5. Attribution may be heuristic. Verification may not.
+## 5. Attribution may be heuristic. Verification may not
 
 None of the above is the safety property, and the difference has to be explicit, because it
 is what makes it safe to prefer a cheaper, less-than-total attribution.

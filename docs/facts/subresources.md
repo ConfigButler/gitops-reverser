@@ -111,7 +111,6 @@ spec:
 
 ---
 
-
 **Aggregated API servers** are needed for arbitrary subresources. The Kubernetes
 aggregation layer lets you register an `APIService` that claims an API path; the
 main kube-apiserver then proxies requests for that API group to your own API

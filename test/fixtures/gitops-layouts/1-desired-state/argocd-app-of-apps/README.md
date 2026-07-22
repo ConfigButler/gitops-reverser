@@ -1,6 +1,7 @@
 # argocd-app-of-apps
 
 ## What this is
+
 The classic Argo CD bootstrap pattern, known as "app of apps". A single root
 `Application` does not point at workloads at all — it points at a directory that
 contains *other* `Application` manifests. Argo CD syncs the root, which creates
@@ -11,6 +12,7 @@ widely used because it needs no generator — child Applications are just static
 YAML committed to the repo.
 
 ## Layout
+
 ```
 02-argocd-app-of-apps/
 ├── README.md
@@ -29,6 +31,7 @@ YAML committed to the repo.
 ```
 
 ## What makes it structurally distinct
+
 - **Three distinct roles collide in one repo:**
   1. `bootstrap/root.yaml` and `applications/*.yaml` are Argo CD `Application`
      resources — control-plane objects that *describe where deployments come
@@ -53,6 +56,7 @@ YAML committed to the repo.
   `manifests/frontend/`). Name alone does not tell you which layer you are in.
 
 ## Open questions
+
 - If directory names (`applications/`, `manifests/`) are only conventions, can
   the location of a file be trusted to tell you what role it plays?
 - `manifests/frontend/application.yaml` is a Deployment. What signal, other than

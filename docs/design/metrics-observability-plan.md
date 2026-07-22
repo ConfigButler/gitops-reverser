@@ -192,6 +192,7 @@ Grafana, one dashboard, top-down. The **Audit & Attribution** row is the marquee
 panel is copy-pasteable.
 
 **Row 0 — SLO header (stat panels):**
+
 - Commit rate: `sum(rate(gitopsreverser_commits_total[5m]))`
 - Audit errors (must be 0): `sum(rate(gitopsreverser_audit_events_total{category="error"}[5m]))`
 - Attribution match coverage %: `sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m])) / sum(rate(gitopsreverser_attribution_resolutions_total[5m]))`
@@ -199,6 +200,7 @@ panel is copy-pasteable.
 - Max worker queue depth: `max(gitopsreverser_branch_worker_queue_depth)`
 
 **Row 1 — AUDIT & ATTRIBUTION (marquee):**
+
 - *Live audit stream by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_audit_events_total[1m]))`
 - *Audit outcome mix* (stacked): `sum by (category,outcome)(rate(gitopsreverser_audit_events_total[5m]))`
 - *Attribution match coverage by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m])) / sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total[5m]))`
@@ -209,6 +211,7 @@ panel is copy-pasteable.
 - *EventList ingress + decode errors* (timeseries): `sum by (outcome)(rate(gitopsreverser_audit_eventlists_total[5m]))`
 
 **Row 2 — WATCH INGESTION:**
+
 - Events/sec by type: `sum by (group,version,resource,type)(rate(gitopsreverser_watch_events_total[5m]))`
 - Restarts / `410` pressure: `sum by (group,version,resource,reason)(rate(gitopsreverser_watch_restarts_total[15m]))`
 - Replay p95: `histogram_quantile(0.95, sum by (le,group,version,resource)(rate(gitopsreverser_watch_replay_seconds_bucket[5m])))`
@@ -216,11 +219,13 @@ panel is copy-pasteable.
 - Active watches vs claimed: `sum(gitopsreverser_watch_active)` vs `sum(gitopsreverser_watched_types)`
 
 **Row 3 — GIT WRITE:**
+
 - Commit rate by provider/branch, push latency p95, conflict-retry ratio
   (`rate(git_push_conflicts_total)/rate(commits_total)`), queue depth, objects written, resync sweep
   deletes: `sum by (group,version,resource)(rate(gitopsreverser_resync_sweep_deletes_total[1h]))`.
 
 **Row 4 — DISCOVERY / SECRETS:**
+
 - Allowed resources, degraded group/versions (`> 0` red), refresh outcome mix, encryption failure rate.
 
 > The dashboard ships as JSON under `docs/dashboards/` (or the chart) so it is versioned with the code.

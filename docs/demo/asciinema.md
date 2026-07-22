@@ -3,9 +3,10 @@
 This guide explains how to reproduce the "Hero Demo" GIF for the `gitops-reverser` README. It uses **asciinema** for recording and **agg** for generating the optimized GIF.
 
 The goal is to produce a mobile-friendly, high-contrast, automated terminal session that demonstrates:
-1.  **Drift Detection:** Capturing a manual `kubectl` change.
-2.  **Clean YAML:** Proving the tool strips metadata.
-3.  **Audit Trail:** Showing the user attribution in Git.
+
+1. **Drift Detection:** Capturing a manual `kubectl` change.
+2. **Clean YAML:** Proving the tool strips metadata.
+3. **Audit Trail:** Showing the user attribution in Git.
 
 ---
 
@@ -27,6 +28,7 @@ sudo mv agg /usr/local/bin/
 ```
 
 ## 2. The Setup (Do this once)
+
 We use a temporary configuration file to force the terminal prompt to look professional (hiding your local user@hostname) and set up "storytelling" aliases.
 
 Create a file named `demo-config.sh` in your recording folder:

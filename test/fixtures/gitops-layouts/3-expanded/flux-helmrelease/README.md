@@ -1,6 +1,7 @@
 # flux-helmrelease
 
 ## What this is
+
 Flux CD installing Helm charts the GitOps way: instead of running `helm install`,
 you commit a `HelmRepository`/`OCIRepository` (the chart source) and a
 `HelmRelease` (the desired release), and the helm-controller reconciles them.
@@ -13,6 +14,7 @@ puts all five in one tree, and then adds a Flux Kustomization that rewrites the
 result from outside the app folder.
 
 ## Layout
+
 ```
 10-flux-helmrelease/
 ├── README.md
@@ -42,6 +44,7 @@ result from outside the app folder.
 ```
 
 ## What makes it structurally distinct
+
 - **Five ways values reach a HelmRelease.** The desired state of a Helm release
   is not one document; it is a merge chain:
   1. **inline `spec.values`** — checked straight into `ingress-nginx/helmrelease.yaml`.
@@ -81,6 +84,7 @@ result from outside the app folder.
   inputs. The tree does not contain everything the release depends on.
 
 ## Open questions
+
 - If the effective values are a merge of inline YAML, two ConfigMaps, a Secret,
   and a scalar splice — with later entries overriding earlier ones — what is the
   "desired values" of the release, and can any single file in the repo be said to

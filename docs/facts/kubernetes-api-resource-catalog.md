@@ -373,12 +373,12 @@ in WatchRule or ClusterWatchRule status.
 ## References
 
 - Kubernetes API Discovery documentation:
-  https://kubernetes.io/docs/concepts/overview/kubernetes-api/#discovery-api
+  <https://kubernetes.io/docs/concepts/overview/kubernetes-api/#discovery-api>
 - Kubernetes API concepts and streaming lists:
-  https://kubernetes.io/docs/reference/using-api/api-concepts/#streaming-lists
+  <https://kubernetes.io/docs/reference/using-api/api-concepts/#streaming-lists>
 - Kubernetes aggregation layer:
-  https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/apiserver-aggregation/
+  <https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/apiserver-aggregation/>
 - client-go discovery package:
-  https://pkg.go.dev/k8s.io/client-go/discovery
+  <https://pkg.go.dev/k8s.io/client-go/discovery>
 - Related project primer:
   [`kubernetes-api-discovery.md`](./kubernetes-api-discovery.md)

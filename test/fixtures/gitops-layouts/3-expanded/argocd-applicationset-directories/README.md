@@ -1,6 +1,7 @@
 # argocd-applicationset-directories
 
 ## What this is
+
 An Argo CD `ApplicationSet` using the **git directory generator**: instead of
 writing one `Application` per service, you write one `ApplicationSet` whose git
 generator scans the repository for directories matching a glob (`apps/*`) and
@@ -12,6 +13,7 @@ Application's name and destination namespace are derived from the directory
 basename via Go templating (`{{.path.basename}}`).
 
 ## Layout
+
 ```
 03-argocd-applicationset-directories/
 ├── README.md
@@ -37,6 +39,7 @@ basename via Go templating (`{{.path.basename}}`).
 ```
 
 ## What makes it structurally distinct
+
 - **Wildcard directory selection.** `apps/*` matches every immediate
   subdirectory of `apps/`. The set of Applications is not written down anywhere —
   it is *computed* from the directory listing at sync time.
@@ -61,6 +64,7 @@ basename via Go templating (`{{.path.basename}}`).
   namespace. Renaming a folder renames (and can recreate) an Application.
 
 ## Observed behaviour (live cluster, 2026-07-13)
+
 Run against a real Argo CD (v3.4.5) with a `git.directories: apps/*` generator over
 a real repository, the first open question below **has an answer, and it is yes.**
 
@@ -95,6 +99,7 @@ that fights the generator; omit it and — in every *other* layout — nothing d
 Knowing which shape you are in is not optional.
 
 ## Open questions
+
 - ~~If the list of Applications is derived from a directory listing, is *creating a
   new folder* under `apps/` itself a deployment operation — even before any
   manifest is committed into it?~~ **Answered above: yes.**

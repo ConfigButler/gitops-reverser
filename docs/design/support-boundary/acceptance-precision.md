@@ -29,7 +29,7 @@ They share one theme: **a refusal must name the thing it refuses, and refuse onl
 
 ---
 
-## 1. A stray file does not degrade the target. It stops it dead.
+## 1. A stray file does not degrade the target. It stops it dead
 
 Acceptance is all-or-nothing — `Accepted = len(issues) == 0` — and `writeBatch.refusal()`
 aborts the **entire flush before a byte is written**. There is no partial mode. So a single

@@ -64,6 +64,7 @@ the sweep spec has to churn the rule to make a resync happen at all:
 ~~~go
 By("toggling ConfigMaps off and back on to force a scoped replay resync")
 ~~~
+
 — [`prune_mode_e2e_test.go`](../../../test/e2e/prune_mode_e2e_test.go)
 
 **Fix.** Edge-triggered force. Remember the last-declared effective mode per `gitDest` beside the

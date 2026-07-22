@@ -99,6 +99,7 @@ The chart deploys 1 replica by default:
 ```
 
 **Key Features:**
+
 - **Single-pod operation**: minimal moving parts while HA work is deferred
 - **Split Service topology**: metrics stay in-cluster while audit ingress is exposed separately only
   when `attribution.enabled=true`

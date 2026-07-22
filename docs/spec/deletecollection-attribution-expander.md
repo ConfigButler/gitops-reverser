@@ -256,12 +256,12 @@ is the correct conservative outcome. **Ship §2 + §5 now; Option B is the named
 
 `internal/queue` (expander, §5):
 
-4. A list body with three items → three uid-only facts, each crediting the actor; **no** exact/rv-only keys.
-5. A finalizer-pending item (`deletionTimestamp` + finalizers) **also** gets a fact crediting the actor (it is
+1. A list body with three items → three uid-only facts, each crediting the actor; **no** exact/rv-only keys.
+2. A finalizer-pending item (`deletionTimestamp` + finalizers) **also** gets a fact crediting the actor (it is
    *not* skipped).
-6. A hollow / `Status` / unparseable / absent body → **no facts**, no error (degrade to §6).
-7. A partial list writes facts only for items present (watch + sweep backstop the rest).
-8. Join shape: a removal event with the item's UID and a *different* RV resolves to the actor via the uid-only
+3. A hollow / `Status` / unparseable / absent body → **no facts**, no error (degrade to §6).
+4. A partial list writes facts only for items present (watch + sweep backstop the rest).
+5. Join shape: a removal event with the item's UID and a *different* RV resolves to the actor via the uid-only
    key (proves §3) and surfaces as `exact_deletecollection_item`.
 
 ### 9.2 E2E — implemented

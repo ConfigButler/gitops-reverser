@@ -554,16 +554,16 @@ exact-key set:
 
 ```go
 var operationalAnnotationKeys = map[string]struct{}{
-	"argocd.argoproj.io/tracking-id":     {},
-	"argocd.argoproj.io/installation-id": {},
+ "argocd.argoproj.io/tracking-id":     {},
+ "argocd.argoproj.io/installation-id": {},
 }
 
 func isOperationalAnnotation(key string) bool {
-	if _, ok := operationalAnnotationKeys[key]; ok {
-		return true
-	}
-	return strings.HasPrefix(key, "kubectl.kubernetes.io/") ||
-		// … existing prefixes unchanged
+ if _, ok := operationalAnnotationKeys[key]; ok {
+  return true
+ }
+ return strings.HasPrefix(key, "kubectl.kubernetes.io/") ||
+  // … existing prefixes unchanged
 }
 ```
 

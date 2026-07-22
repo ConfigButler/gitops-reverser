@@ -1,6 +1,7 @@
 # mixed-and-hostile
 
 ## What this is
+
 A deliberately adversarial folder. Nothing here is invented: every trap is
 something real repositories have shipped — a `kustomization.yaml` that is a Flux
 CR, an `application.yaml` that is a Deployment, Helm values beside manifests, CI
@@ -10,6 +11,7 @@ other objects. Collected in one place, this fixture exists to break naive
 assumptions about what a file "is" from its name, extension, or directory.
 
 ## Layout
+
 ```
 15-mixed-and-hostile/
 ├── README.md
@@ -36,6 +38,7 @@ assumptions about what a file "is" from its name, extension, or directory.
 ```
 
 ## What makes it structurally distinct
+
 Each trap and the assumption it breaks:
 
 - **`application.yaml` — filename implies kind.** Named like an Argo CD
@@ -87,6 +90,7 @@ here, but a real reader must still expect them:
   directories in Git" is not the same as "the set of directories on disk."
 
 ## Open questions
+
 - If a tool infers `kind` from filename, what does it do with `application.yaml`
   and `kustomization.yaml` here — and can it recover once it reads the content?
 - When two files claim the reserved name `kustomization.yaml` with different

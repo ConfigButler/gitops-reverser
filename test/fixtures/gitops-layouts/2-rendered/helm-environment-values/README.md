@@ -1,6 +1,7 @@
 # helm-environment-values
 
 ## What this is
+
 One Helm chart deployed to several environments, where each environment is just
 a different stack of values files pointed at the same chart. This is the most
 common way an application team owns its own chart: the chart lives in the repo
@@ -12,6 +13,7 @@ image tag inline via `helm.parameters`. Nothing here duplicates the chart per
 environment — the environments differ only in which values get layered on top.
 
 ## Layout
+
 ```
 07-helm-environment-values/
 ├── README.md
@@ -32,6 +34,7 @@ environment — the environments differ only in which values get layered on top.
 ```
 
 ## What makes it structurally distinct
+
 - **The effective config is a merge, not a file.** What actually runs in `dev`
   is `chart/values.yaml` overlaid by `values/common.yaml`, then
   `values/dev.yaml`, then the inline `helm.parameters` entry from
@@ -74,6 +77,7 @@ packaged chart. Both encode the same "chart plus per-environment overlay" idea;
 they differ only in where the override files sit relative to the chart.
 
 ## Open questions
+
 - When an operator edits an *effective* value (say, the running replica count in
   production), which layer should the change be written back to — the chart
   default, `common.yaml`, `production.yaml`, or the inline `helm.parameters`?

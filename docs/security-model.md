@@ -96,7 +96,6 @@ a namespace: a `GitProvider` may reference a Secret anywhere, so the grant is cl
 namespace it already knows. Narrowing that further is
 [remaining work](future/least-privilege-remaining-work.md).
 
-
 ## Sensitive trust boundaries
 
 | Boundary | Why it matters |

@@ -141,6 +141,7 @@ server: https://10.43.200.200:9444/audit-webhook/default
 **When to use**: Local/dev clusters (k3s, k3d) where you control the CIDR and can reliably pin an IP. Not suitable for clusters where the service CIDR is unpredictable.
 
 **Tradeoffs**:
+
 - Simple and works without extra infrastructure.
 - The fixed ClusterIP will conflict if something else claims it.
 - `insecure-skip-tls-verify` is not acceptable for production.
@@ -160,6 +161,7 @@ server: https://127.0.0.1:9444/audit-webhook/default
 **When to use**: Clusters where you control scheduling on control-plane nodes, and you can tolerate a hostPort or hostNetwork binding.
 
 **Tradeoffs**:
+
 - Avoids the DNS and ClusterIP pinning problems entirely.
 - Requires the pod to be scheduled on the control-plane node (toleration + nodeSelector or DaemonSet on control-plane nodes).
 - hostNetwork gives the pod broad network access — consider security implications.
@@ -179,6 +181,7 @@ server: https://audit.example.com/audit-webhook/default
 **When to use**: When you want the cleanest separation, or when operating on a managed cluster where you cannot configure the service CIDR or pin ClusterIPs.
 
 **Tradeoffs**:
+
 - Most robust and portable.
 - Requires external DNS, a stable IP or tunnel, and certificate management outside the cluster.
 - Adds a dependency on external infrastructure.
@@ -192,6 +195,7 @@ Pre-generate a CA and issue a certificate for the service IP or hostname before 
 **When to use**: Production k3s/Talos/Kamaji clusters where you want proper TLS without an external endpoint.
 
 **Tradeoffs**:
+
 - Proper TLS without `insecure-skip-tls-verify`.
 - Requires a small bootstrap script to generate and distribute the CA and cert.
 - Certificate rotation requires updating the kubeconfig on control-plane nodes and restarting the apiserver — operationally heavier than cert-manager rotation.
@@ -219,6 +223,7 @@ server: https://127.0.0.1:30444/audit-webhook/default
 **When to use**: Single-node or multi-node clusters where you want to avoid IP pinning and hostNetwork, and the apiserver runs directly on a node (i.e. not a managed control plane).
 
 **Tradeoffs**:
+
 - Clean — uses a standard Kubernetes service primitive.
 - NodePort range is typically 30000–32767, which is a slightly unusual port for a webhook.
 - On multi-control-plane clusters the NodePort is reachable from every node, so you need to ensure all control-plane nodes can reach it.
@@ -238,6 +243,7 @@ server: https://127.0.0.1:9444/audit-webhook/default
 **When to use**: Clusters where you want the audit receiver to be co-located with the control plane as a first-class component — similar to how etcd or the scheduler itself runs. Fits naturally on bare-metal k8s, Talos, or any setup where you already manage control-plane static pods.
 
 **Tradeoffs**:
+
 - Very tight coupling between the audit receiver and the control-plane node — both by design.
 - Starts before the API server; no dependency on cluster scheduling.
 - Updating the pod requires writing a new manifest to the node, not a `kubectl rollout`.
@@ -259,6 +265,7 @@ socat TCP-LISTEN:9444,fork TCP:10.43.200.200:9444
 **When to use**: When the cluster-side service IP or port is likely to change, or when you want a clean abstraction between the apiserver config and the cluster topology. Also useful as a temporary bridge while migrating between options.
 
 **Tradeoffs**:
+
 - Adds an extra component to manage on the control-plane node.
 - The proxy config must be updated if the backend changes — but the webhook kubeconfig does not.
 - `socat` is fine for a quick test; for production use something that handles TLS, connection pooling, and health checks.
@@ -278,6 +285,7 @@ server: https://gitops-reverser.gitops-reverser.svc.cluster.local:9444/audit-web
 **When to use**: If you are already running Kamaji for multi-tenancy. The connectivity and TLS problems described in this document largely disappear because the control plane is just another workload.
 
 **Tradeoffs**:
+
 - Only applicable if you are running Kamaji (or a similar hosted-control-plane system like vcluster).
 - Adds a significant operational layer if adopted only to solve this problem.
 - Arguably the cleanest long-term architecture if you need multiple clusters.

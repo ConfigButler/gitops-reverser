@@ -90,6 +90,7 @@ The fix gives the data plane a controller-runtime `source.Channel` edge:
   reason changed, or refusal cleared), so the steady-state resync stream never
   causes a reconcile storm.
 - `internal/controller/gittarget_controller.go:1003` — `SetupWithManager` wires it:
+
   ```go
   b = b.WatchesRawSource(source.Channel(
       r.EventRouter.WatchManager.GitPathEvents(),

@@ -92,6 +92,7 @@ spec:
 **`matchingPrecedence`** controls evaluation order. Every request is matched against all FlowSchemas sorted by ascending `matchingPrecedence`; the first match wins. The built-in `exempt` schema has precedence 1; `catch-all` has 10000.
 
 **`distinguisherMethod`** determines how flows are separated within the priority level's queues:
+
 - `ByUser`: one flow per authenticated user/SA — fair between callers but concentrates load from a single busy SA into one flow
 - `ByNamespace`: one flow per source namespace
 - `None`: all matched requests go into a single flow

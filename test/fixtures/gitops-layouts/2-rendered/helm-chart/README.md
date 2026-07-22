@@ -1,6 +1,7 @@
 # helm-chart
 
 ## What this is
+
 A single, self-contained Helm chart in the canonical directory layout produced
 by `helm create` and standardized by the Helm project. This is the most
 standards-conforming, least ambiguous packaging format in the whole corpus: the
@@ -13,6 +14,7 @@ directly with `helm install` or as the source of an Argo CD / Flux application.
 The chart here is `frontend`, with a conditional `redis` subchart dependency.
 
 ## Layout
+
 ```
 06-helm-chart/
 ├── README.md
@@ -40,6 +42,7 @@ The chart here is `frontend`, with a conditional `redis` subchart dependency.
 ```
 
 ## What makes it structurally distinct
+
 - **`templates/*.yaml` is not plain KRM.** Every file under `templates/` is a Go
   text/template. As stored, `deployment.yaml` does not parse as a valid
   Deployment — `{{ include "frontend.fullname" . }}` and `{{ .Values.* }}` must
@@ -82,6 +85,7 @@ The chart here is `frontend`, with a conditional `redis` subchart dependency.
   file-to-object and value-to-field relationships are many-to-many.
 
 ## Open questions
+
 - Should a chart-template folder be rejected outright as un-editable KRM, or
   should a tool instead expose only safe values editing (`values.yaml`
   constrained by `values.schema.json`) and leave the templates alone?

@@ -611,21 +611,21 @@ criticism.
 
 **Next** (contract alignment, low risk, high interop value):
 
-4. **F5** — `apimeta.SetStatusCondition`, or Flux's sorted `Set`.
-5. **F8** — alias generic reasons to `fluxcd/pkg/apis/meta`; kill `reason == type`; export the
+1. **F5** — `apimeta.SetStatusCondition`, or Flux's sorted `Set`.
+2. **F8** — alias generic reasons to `fluxcd/pkg/apis/meta`; kill `reason == type`; export the
    domain reasons from `api/v1alpha3`.
-6. **F4** — delete `Reconciling`/`Stalled` rather than writing them False.
-7. **F7** — wire an `EventRecorder`; emit on every terminal outcome and every push failure.
+3. **F4** — delete `Reconciling`/`Stalled` rather than writing them False.
+4. **F7** — wire an `EventRecorder`; emit on every terminal outcome and every push failure.
 
 **Then** (API surface — do the breaking ones while still `v1alpha3`):
 
-8. **F6** — `spec.suspend` on GitTarget/WatchRule/ClusterWatchRule/GitProvider; `spec.interval` on
+1. **F6** — `spec.suspend` on GitTarget/WatchRule/ClusterWatchRule/GitProvider; `spec.interval` on
    GitProvider at minimum; jitter the requeue; `reconcile.configbutler.ai/requestedAt` +
    `status.lastHandledReconcileAt`.
-9. **F12** — ~~decide `PruneMode` casing **now**~~ (done, pre-release); trim printer columns; unify
+2. **F12** — ~~decide `PruneMode` casing **now**~~ (done, pre-release); trim printer columns; unify
    ObjectMeta tags.
-10. **F10** — CommitRequest lifecycle (TTL or ownerRef) and the `delete` verb.
-11. **F9** — verify the `scope: Namespaced` status-write path on the minimum supported Kubernetes
+3. **F10** — CommitRequest lifecycle (TTL or ownerRef) and the `delete` verb.
+4. **F9** — verify the `scope: Namespaced` status-write path on the minimum supported Kubernetes
     version.
 
 ---

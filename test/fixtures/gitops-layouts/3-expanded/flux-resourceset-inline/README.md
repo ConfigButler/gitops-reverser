@@ -1,6 +1,7 @@
 # flux-resourceset-inline
 
 ## What this is
+
 A flux-operator `ResourceSet`: one document that carries **both** a template and
 the inputs it is rendered against. The controller renders `spec.resources` once
 per entry in `spec.inputs` and applies the result.
@@ -14,6 +15,7 @@ whole point of this family: over there, every tenant's `Deployment` is a real fi
 here, **no tenant has a file at all**.
 
 ## Layout
+
 ```
 flux-resourceset-inline/
 ├── README.md
@@ -26,6 +28,7 @@ live objects, zero of which have a home file.** The only artifact in Git is the
 `ResourceSet` CR itself.
 
 ## What makes it structurally distinct
+
 - **The KRM is nested inside KRM.** `spec.resources` is a list of arbitrary
   Kubernetes objects embedded in the body of another Kubernetes object. A
   `Deployment` here is not a document — it is a *field value*.
@@ -44,6 +47,7 @@ live objects, zero of which have a home file.** The only artifact in Git is the
   rendered — `spec.replicas` holds a string that must become a number.
 
 ## Observed behaviour (live cluster, 2026-07-13)
+
 Run against a real flux-operator, the children carry:
 
 ```
@@ -59,6 +63,7 @@ plus a `status.inventory` on the `ResourceSet` listing every object it owns.
 labels and an inventory, not by the mechanism Kubernetes provides for it.
 
 ## Open questions
+
 - The `ResourceSet` CR is one editable document, and `spec.inputs[j]` has fan-in
   1. Is "bump tenant2 to 1.5.0" therefore an edit to `spec.inputs[1].image` — an
   edit *into a field of a document*, rather than to a document?
