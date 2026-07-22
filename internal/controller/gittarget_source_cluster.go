@@ -11,7 +11,6 @@ import (
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/authz"
-	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
 // GitTargetReasonNamespaceNotAuthorized is the Validated=False reason when a GitTarget's namespace
@@ -108,33 +107,41 @@ func (r *GitTargetReconciler) auditRouteFor(
 func (r *GitTargetReconciler) clusterProviderReadiness(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
-) (metav1.ConditionStatus, string, string) {
+) conditionValue {
 	name := target.SourceCluster()
+	notReady := func(status metav1.ConditionStatus, format string, args ...any) conditionValue {
+		return conditionValue{
+			Status:  status,
+			Reason:  GitTargetReasonClusterProviderNotReady,
+			Message: fmt.Sprintf(format, args...),
+		}
+	}
+
 	var cp configbutleraiv1alpha3.ClusterProvider
 	if err := r.Get(ctx, k8stypes.NamespacedName{Name: name}, &cp); err != nil {
-		return metav1.ConditionUnknown, GitTargetReasonClusterProviderNotReady,
-			fmt.Sprintf("referenced ClusterProvider %q readiness not observed: %v", name, err)
+		return notReady(metav1.ConditionUnknown,
+			"referenced ClusterProvider %q readiness not observed: %v", name, err)
 	}
 	c := findCondition(cp.Status.Conditions, ConditionTypeReady)
 	switch {
 	case c == nil:
-		return metav1.ConditionUnknown, GitTargetReasonClusterProviderNotReady,
-			fmt.Sprintf("referenced ClusterProvider %q has not reported readiness yet", name)
+		return notReady(metav1.ConditionUnknown, "referenced ClusterProvider %q has not reported readiness yet", name)
 	case c.Status == metav1.ConditionTrue:
-		return metav1.ConditionTrue, GitTargetReasonClusterProviderReady,
-			fmt.Sprintf("referenced ClusterProvider %q is Ready", name)
-	case c.Status == metav1.ConditionFalse:
-		msg := fmt.Sprintf("referenced ClusterProvider %q is not Ready", name)
-		if c.Message != "" {
-			msg = fmt.Sprintf("referenced ClusterProvider %q is not Ready: %s", name, c.Message)
+		return conditionValue{
+			Status:  metav1.ConditionTrue,
+			Reason:  GitTargetReasonClusterProviderReady,
+			Message: fmt.Sprintf("referenced ClusterProvider %q is Ready", name),
 		}
-		return metav1.ConditionFalse, GitTargetReasonClusterProviderNotReady, msg
+	case c.Status == metav1.ConditionFalse:
+		if c.Message != "" {
+			return notReady(metav1.ConditionFalse, "referenced ClusterProvider %q is not Ready: %s", name, c.Message)
+		}
+		return notReady(metav1.ConditionFalse, "referenced ClusterProvider %q is not Ready", name)
 	default:
 		// Ready=Unknown is the provider saying it does not know yet, which is exactly the case the
 		// contract above refuses to downgrade on. Collapsing it into False would hold a GitTarget
 		// down on a provider mid-reconcile.
-		return metav1.ConditionUnknown, GitTargetReasonClusterProviderNotReady,
-			fmt.Sprintf("referenced ClusterProvider %q readiness is unknown", name)
+		return notReady(metav1.ConditionUnknown, "referenced ClusterProvider %q readiness is unknown", name)
 	}
 }
 
@@ -155,101 +162,35 @@ func (r *GitTargetReconciler) gitProviderReadiness(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
-) (metav1.ConditionStatus, string, string) {
-	var gp configbutleraiv1alpha3.GitProvider
+) conditionValue {
 	key := k8stypes.NamespacedName{Name: target.Spec.ProviderRef.Name, Namespace: providerNS}
+	notReady := func(status metav1.ConditionStatus, format string, args ...any) conditionValue {
+		return conditionValue{
+			Status:  status,
+			Reason:  GitTargetReasonGitProviderNotReady,
+			Message: fmt.Sprintf(format, args...),
+		}
+	}
+
+	var gp configbutleraiv1alpha3.GitProvider
 	if err := r.Get(ctx, key, &gp); err != nil {
-		return metav1.ConditionUnknown, GitTargetReasonGitProviderNotReady,
-			fmt.Sprintf("referenced GitProvider %s readiness not observed: %v", key, err)
+		return notReady(metav1.ConditionUnknown, "referenced GitProvider %s readiness not observed: %v", key, err)
 	}
 	c := findCondition(gp.Status.Conditions, ConditionTypeReady)
 	switch {
 	case c == nil:
-		return metav1.ConditionUnknown, GitTargetReasonGitProviderNotReady,
-			fmt.Sprintf("referenced GitProvider %s has not reported readiness yet", key)
+		return notReady(metav1.ConditionUnknown, "referenced GitProvider %s has not reported readiness yet", key)
 	case c.Status == metav1.ConditionTrue:
-		return metav1.ConditionTrue, GitTargetReasonGitProviderReady,
-			fmt.Sprintf("referenced GitProvider %s is Ready", key)
+		return conditionValue{
+			Status:  metav1.ConditionTrue,
+			Reason:  GitTargetReasonGitProviderReady,
+			Message: fmt.Sprintf("referenced GitProvider %s is Ready", key),
+		}
+	case c.Message != "":
+		return notReady(metav1.ConditionFalse, "referenced GitProvider %s is not Ready: %s", key, c.Message)
 	default:
-		msg := fmt.Sprintf("referenced GitProvider %s is not Ready", key)
-		if c.Message != "" {
-			msg = fmt.Sprintf("referenced GitProvider %s is not Ready: %s", key, c.Message)
-		}
-		return metav1.ConditionFalse, GitTargetReasonGitProviderNotReady, msg
+		return notReady(metav1.ConditionFalse, "referenced GitProvider %s is not Ready", key)
 	}
-}
-
-// findCondition returns the named condition, or nil.
-func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
-	for i := range conditions {
-		if conditions[i].Type == conditionType {
-			return &conditions[i]
-		}
-	}
-	return nil
-}
-
-// projectSourceAndProvider sets the SourceClusterReachable and GitProviderReady conditions and
-// folds them into the aggregate. It only ever DOWNGRADES Ready — a source-side or
-// destination-side problem holds the target below Ready, but a healthy pair never overrides a
-// data-plane stall (e.g. a still-replaying stream). Precedence: destination first
-// (GitProviderReady, a stall the operator must fix), then source reachability (a transient the
-// data plane retries — False is progressing, Unknown holds Ready at Unknown).
-func (r *GitTargetReconciler) projectSourceAndProvider(
-	target *configbutleraiv1alpha3.GitTarget,
-	sourceReach watch.SourceClusterReachableStatus,
-	providerStatus metav1.ConditionStatus,
-	providerReason, providerMessage string,
-	clusterProviderStatus metav1.ConditionStatus,
-	clusterProviderReason, clusterProviderMessage string,
-) {
-	reachStatus := conditionStatusFromString(sourceReach.State)
-	r.setCondition(
-		target,
-		GitTargetConditionSourceClusterReachable,
-		reachStatus,
-		sourceReach.Reason,
-		sourceReach.Message,
-	)
-	r.setCondition(target, GitTargetConditionGitProviderReady, providerStatus, providerReason, providerMessage)
-	r.setCondition(target, GitTargetConditionClusterProviderReady, clusterProviderStatus,
-		clusterProviderReason, clusterProviderMessage)
-
-	switch {
-	case providerStatus == metav1.ConditionFalse:
-		// Destination-side: the provider's own periodic check is failing. Wait for it to
-		// recover (progressing), which the Watches(&GitProvider{}) trigger promptly re-runs.
-		r.downgradeReady(target, metav1.ConditionFalse, providerReason, providerMessage)
-	case clusterProviderStatus == metav1.ConditionFalse:
-		// Source-config side: the ClusterProvider explicitly reports itself not Ready (e.g. its
-		// kubeconfig stopped validating). Progressing — the Watches(&ClusterProvider{}) trigger
-		// re-runs this as the provider recovers.
-		r.downgradeReady(target, metav1.ConditionFalse, clusterProviderReason, clusterProviderMessage)
-	case reachStatus == metav1.ConditionFalse:
-		// Source-side: an otherwise-valid kubeconfig whose API server cannot be contacted. A
-		// transient the data plane retries, so this is progressing, not stalled.
-		r.downgradeReady(target, metav1.ConditionFalse, sourceReach.Reason, sourceReach.Message)
-	case reachStatus == metav1.ConditionUnknown:
-		// An unconfirmed source is not yet Ready; hold Ready at Unknown until first discovery.
-		r.downgradeReady(target, metav1.ConditionUnknown, sourceReach.Reason, sourceReach.Message)
-	}
-}
-
-// downgradeReady lowers the aggregate below Ready without ever raising it: it is called only on a
-// source/provider problem, and rewrites Ready plus the kstatus Reconciling/Stalled pair to match.
-// Every such problem here is expected to clear on its own (a provider recovers, a source becomes
-// reachable), so it is always PROGRESSING (Reconciling=True, Stalled=False) — a re-check via the
-// Watches triggers converges it. A blocking, needs-a-human problem is handled by the setStalled*
-// path in Reconcile instead, never here.
-func (r *GitTargetReconciler) downgradeReady(
-	target *configbutleraiv1alpha3.GitTarget,
-	readyStatus metav1.ConditionStatus,
-	reason, message string,
-) {
-	r.setCondition(target, GitTargetConditionReady, readyStatus, reason, message)
-	r.setCondition(target, GitTargetConditionReconciling, metav1.ConditionTrue, reason, message)
-	r.setCondition(target, GitTargetConditionStalled, metav1.ConditionFalse, ReasonProgressing,
-		"Reconciliation is making progress")
 }
 
 // conditionStatusFromString maps the watch layer's "True"/"False"/"Unknown" onto the API type.

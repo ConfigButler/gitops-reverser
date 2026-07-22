@@ -570,7 +570,7 @@ func (r argoBiDirectionalRun) startReverserPipeline() {
 	GinkgoHelper()
 	createGitProviderWithURLInNamespace(
 		r.gitProviderName, r.testNs, argoBiDirectionalRepo.GitSecretHTTP, r.repoURL)
-	verifyResourceStatus("gitprovider", r.gitProviderName, r.testNs, "True", "Ready", "")
+	verifyResourceStatus("gitprovider", r.gitProviderName, r.testNs, "True", "Succeeded", "")
 
 	createGitTarget(r.gitTargetName, r.testNs, r.gitProviderName, r.livePath, "main")
 
@@ -586,8 +586,8 @@ func (r argoBiDirectionalRun) startReverserPipeline() {
 		Group:           crdGroupArgoBiDirectional,
 	}, r.testNs)).To(Succeed(), "failed to apply the IceCreamOrder WatchRule")
 
-	verifyResourceStatus("gittarget", r.gitTargetName, r.testNs, "True", "Ready", "")
-	verifyResourceStatus("watchrule", r.watchRuleName, r.testNs, "True", "Ready", "")
+	verifyResourceStatus("gittarget", r.gitTargetName, r.testNs, "True", "Succeeded", "")
+	verifyResourceStatus("watchrule", r.watchRuleName, r.testNs, "True", "Succeeded", "")
 
 	// Gate on StreamsRunning so the IceCreamOrder watch is live before Argo CD
 	// applies anything; otherwise the first live object could be folded into an

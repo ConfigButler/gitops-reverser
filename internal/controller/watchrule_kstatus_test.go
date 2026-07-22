@@ -172,21 +172,10 @@ func TestApplyRuleKstatus_SourceAuthorizationIsAPrerequisite(t *testing.T) {
 				conditions = append(conditions, *tt.sourceNS)
 			}
 
-			got := map[string]metav1.ConditionStatus{}
-			applyRuleKstatus(
-				conditions, "ready", "not stalled",
-				func(conditionType string, status metav1.ConditionStatus, _, _ string) {
-					got[conditionType] = status
-				},
-				func(string, string) {
-					got[ConditionTypeReady] = metav1.ConditionFalse
-					got[ConditionTypeReconciling] = metav1.ConditionFalse
-					got[ConditionTypeStalled] = metav1.ConditionTrue
-				},
-			)
+			trio := ruleReadiness(conditions, "WatchRule", "ready").trio()
 
-			assert.Equal(t, tt.wantReady, got[ConditionTypeReady], "Ready")
-			assert.Equal(t, tt.wantStalled, got[ConditionTypeStalled], "Stalled")
+			assert.Equal(t, tt.wantReady, trio.Ready.Status, "Ready")
+			assert.Equal(t, tt.wantStalled, trio.Stalled.Status, "Stalled")
 		})
 	}
 }

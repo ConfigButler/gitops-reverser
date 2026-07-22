@@ -111,9 +111,9 @@ func (r *quickstartFrameworkRun) runReadmeQuickstartFlow() {
 	r.verifyNoRedisConfiguredAuthor()
 
 	By("verifying the chart's starter resources become Ready")
-	verifyResourceStatus("gitprovider", "example-provider", r.namespace, "True", "Ready", "")
-	verifyResourceCondition("gittarget", "example-target", r.namespace, "Validated", "True", "OK", "")
-	verifyResourceStatus("watchrule", "example-watchrule", r.namespace, "True", "Ready", "")
+	verifyResourceStatus("gitprovider", "example-provider", r.namespace, "True", "Succeeded", "")
+	verifyResourceCondition("gittarget", "example-target", r.namespace, "Validated", "True", "Succeeded", "")
+	verifyResourceStatus("watchrule", "example-watchrule", r.namespace, "True", "Succeeded", "")
 	waitForStreamsRunning("example-target", r.namespace)
 
 	By("verifying the starter GitTarget generated its SOPS age key")
@@ -349,9 +349,9 @@ func (r *quickstartFrameworkRun) applyQuickstartResources() {
 
 func (r *quickstartFrameworkRun) verifyQuickstartResourcesReady() {
 	ns := r.namespace
-	verifyResourceStatus("gitprovider", r.providerName, ns, "True", "Ready", "")
-	verifyResourceCondition("gittarget", r.targetName, ns, "Validated", "True", "OK", "")
-	verifyResourceStatus("watchrule", r.watchRuleName, ns, "True", "Ready", "")
+	verifyResourceStatus("gitprovider", r.providerName, ns, "True", "Succeeded", "")
+	verifyResourceCondition("gittarget", r.targetName, ns, "Validated", "True", "Succeeded", "")
+	verifyResourceStatus("watchrule", r.watchRuleName, ns, "True", "Succeeded", "")
 	waitForStreamsRunning(r.targetName, ns)
 }
 

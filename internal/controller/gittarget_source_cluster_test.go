@@ -397,7 +397,7 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 			Status:     configbutleraiv1alpha3.ClusterProviderStatus{Conditions: conds},
 		}
 	}
-	ready := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "OK"}
+	ready := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded}
 	notReady := metav1.Condition{
 		Type:    ConditionTypeReady,
 		Status:  metav1.ConditionFalse,
@@ -442,9 +442,9 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 					ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: "prod-eu-1"},
 				},
 			}
-			status, _, msg := r.clusterProviderReadiness(context.Background(), target)
-			assert.Equal(t, tc.want, status)
-			assert.NotEmpty(t, msg)
+			got := r.clusterProviderReadiness(context.Background(), target)
+			assert.Equal(t, tc.want, got.Status)
+			assert.NotEmpty(t, got.Message)
 		})
 	}
 }
@@ -456,7 +456,7 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 			Status:     configbutleraiv1alpha3.GitProviderStatus{Conditions: conds},
 		}
 	}
-	ready := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "OK"}
+	ready := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded}
 	notReady := metav1.Condition{
 		Type:    ConditionTypeReady,
 		Status:  metav1.ConditionFalse,
@@ -487,9 +487,9 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 					ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "prov"},
 				},
 			}
-			status, _, msg := r.gitProviderReadiness(context.Background(), target, "team-a")
-			assert.Equal(t, tc.want, status)
-			assert.NotEmpty(t, msg)
+			got := r.gitProviderReadiness(context.Background(), target, "team-a")
+			assert.Equal(t, tc.want, got.Status)
+			assert.NotEmpty(t, got.Message)
 		})
 	}
 }

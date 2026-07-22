@@ -92,7 +92,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 		By("verifying the WatchRule is reconciled")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 		By("cleaning up test resources")
 		cleanupWatchRule(watchRuleName, testNs)
@@ -149,7 +149,7 @@ spec:
 		_, err = kubectlRunWithStdin(testNs, watchRuleManifest, "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply wildcard WatchRule")
 
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 		Eventually(func(g Gomega) {
 			output, getErr := kubectlRunInNamespace(
 				testNs,
@@ -219,8 +219,8 @@ spec:
 
 		err := applyFromTemplate("test/e2e/templates/watchrule-secret.tmpl", data, testNs)
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 		waitForStreamsRunning(destName, testNs)
 
 		By("creating Secret in watched namespace")
@@ -323,7 +323,7 @@ spec:
 
 		err := applyFromTemplate("test/e2e/templates/watchrule-secret.tmpl", data, testNs)
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 		waitForStreamsRunning(destName, testNs)
 
 		By("validating generated encryption secret has recipient and warning annotations")
@@ -467,8 +467,8 @@ spec:
 		Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 		By("verifying WatchRule is ready")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
 
 		// Gate on StreamsRunning so the configmaps watch is past its replay watermark before we create
 		// the ConfigMap: a create observed mid-replay folds into the unattributed baseline instead of
@@ -610,7 +610,7 @@ spec:
 		By("creating GitTarget but no WatchRule yet")
 		destName := watchRuleName + "-dest"
 		createGitTarget(destName, testNs, gitProviderName, "e2e/backfill-rule-add", "main")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
 
 		By("creating the ConfigMap BEFORE the rule that should select it")
 		configMapData := struct {
@@ -648,7 +648,7 @@ spec:
 		}
 		err = applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", watchRuleData, testNs)
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 		By("waiting for the pre-existing ConfigMap to be backfilled into git")
 		verifyBackfill := func(g Gomega) {
@@ -702,8 +702,8 @@ spec:
 		Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 		By("verifying WatchRule is ready")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
 
 		// Gate on StreamsRunning so both the create and the delete below are live per-event commits
 		// rather than baseline folds, making the [DELETE] commit on the file's path deterministic.

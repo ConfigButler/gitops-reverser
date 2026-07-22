@@ -279,10 +279,10 @@ func (r *demoRun) removeLegacyDemoResources() {
 }
 
 func (r *demoRun) verifyCoffeeConfigReverseResourcesReady() {
-	verifyResourceStatus("gitprovider", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Ready", "")
+	verifyResourceStatus("gitprovider", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Succeeded", "")
 	verifyResourceCondition(
-		"gittarget", demoCoffeeConfigGitProviderName, voterTestNamespace, "Validated", "True", "OK", "")
-	verifyResourceStatus("watchrule", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Ready", "")
+		"gittarget", demoCoffeeConfigGitProviderName, voterTestNamespace, "Validated", "True", "Succeeded", "")
+	verifyResourceStatus("watchrule", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Succeeded", "")
 }
 
 func (r *demoRun) touchCoffeeConfig() {

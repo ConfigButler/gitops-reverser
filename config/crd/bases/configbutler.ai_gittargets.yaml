@@ -15,15 +15,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.providerRef.name
-      name: Provider
-      type: string
-    - jsonPath: .spec.branch
-      name: Branch
-      type: string
-    - jsonPath: .spec.path
-      name: Path
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -63,6 +54,18 @@ spec:
       type: string
     - jsonPath: .spec.encryption.provider
       name: Encryption
+      priority: 1
+      type: string
+    - jsonPath: .spec.providerRef.name
+      name: Provider
+      priority: 1
+      type: string
+    - jsonPath: .spec.branch
+      name: Branch
+      priority: 1
+      type: string
+    - jsonPath: .spec.path
+      name: Path
       priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -444,11 +447,6 @@ spec:
                   push.
                 format: date-time
                 type: string
-              lastReconcileTime:
-                description: LastReconcileTime is the timestamp of the most recent
-                  reconcile attempt.
-                format: date-time
-                type: string
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.
@@ -494,10 +492,6 @@ spec:
                       be watched.
                     format: int32
                     type: integer
-                  observedTime:
-                    description: ObservedTime is when this roll-up was last computed.
-                    format: date-time
-                    type: string
                   ready:
                     description: Ready is how many tracked types are Streaming.
                     format: int32
@@ -508,7 +502,12 @@ spec:
                     format: int32
                     type: integer
                   summary:
-                    description: Summary is the display-only ready/total ratio.
+                    description: |-
+                      Summary is the display-only ready/total ratio, e.g. "3/4".
+
+                      It restates Ready and Total, which the API conventions would normally rule out. It exists
+                      solely to feed the Streams printer column: a column can read one JSONPath, not format two.
+                      Do not compute anything from it — read ready and total.
                     type: string
                   total:
                     description: Total is how many types this target tracks.

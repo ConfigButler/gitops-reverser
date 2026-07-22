@@ -134,7 +134,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// First sight: stamp the still-running conditions so the object reports its
 	// progress (kstatus InProgress) and AuthorAttributed is settled immediately. A
 	// disabled controller returns above, so it never stamps.
-	if conditionByType(commitRequest.Status.Conditions, ConditionTypeReady) == nil {
+	if findCondition(commitRequest.Status.Conditions, ConditionTypeReady) == nil {
 		markCommitRequestWaitingForCloseDelay(commitRequest, attribution)
 		if err := r.Status().Update(ctx, commitRequest); err != nil {
 			return ctrl.Result{}, err
@@ -223,7 +223,7 @@ func (r *CommitRequestReconciler) recordCloseDelayWait(
 	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	attribution commitRequestAttribution,
 ) error {
-	if c := conditionByType(commitRequest.Status.Conditions, ConditionTypeReconciling); c != nil &&
+	if c := findCondition(commitRequest.Status.Conditions, ConditionTypeReconciling); c != nil &&
 		c.Reason == crReasonWaitingForCloseDelay {
 		return nil
 	}

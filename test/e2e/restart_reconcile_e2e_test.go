@@ -112,8 +112,8 @@ var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial,
 			"test/e2e/templates/restart/watchrule-wildcard.tmpl", wrData, testNs,
 		)).To(Succeed(), "failed to apply wildcard WatchRule")
 
-		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "Succeeded", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 		By("creating quiet IceCreamOrder resources to build up the git mirror")
 		for _, name := range orderNames {

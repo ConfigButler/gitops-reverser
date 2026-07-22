@@ -10,7 +10,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestUpsertCondition_DeduplicatesAndUpdatesFields(t *testing.T) {
+// TestUpsertCondition_UpdatesInPlaceAndKeepsOrder pins the property the hand-rolled setter did not
+// have: a touched condition keeps its POSITION. The old implementation filtered the target type out
+// and re-appended it, so every reconcile that touched Ready shuffled the list — a diff in
+// `kubectl get -o yaml` and, for a cluster mirroring its own config objects into Git, a stream of
+// commits that reorder conditions and change nothing.
+func TestUpsertCondition_UpdatesInPlaceAndKeepsOrder(t *testing.T) {
 	oldTransition := metav1.NewTime(time.Now().Add(-5 * time.Minute))
 	conditions := []metav1.Condition{
 		{
@@ -22,10 +27,10 @@ func TestUpsertCondition_DeduplicatesAndUpdatesFields(t *testing.T) {
 			LastTransitionTime: oldTransition,
 		},
 		{
-			Type:               GitTargetConditionReady,
+			Type:               GitTargetConditionStreamsRunning,
 			Status:             metav1.ConditionTrue,
-			Reason:             "Duplicate",
-			Message:            "Duplicate",
+			Reason:             "AllStreamsReady",
+			Message:            "1/1 streams running",
 			ObservedGeneration: 1,
 			LastTransitionTime: oldTransition,
 		},
@@ -40,8 +45,9 @@ func TestUpsertCondition_DeduplicatesAndUpdatesFields(t *testing.T) {
 		9,
 	)
 
-	require.Len(t, conditions, 1)
-	require.Equal(t, GitTargetConditionReady, conditions[0].Type)
+	require.Len(t, conditions, 2)
+	require.Equal(t, GitTargetConditionReady, conditions[0].Type, "the touched condition must not migrate")
+	require.Equal(t, GitTargetConditionStreamsRunning, conditions[1].Type)
 	require.Equal(t, metav1.ConditionTrue, conditions[0].Status)
 	require.Equal(t, GitTargetReasonOK, conditions[0].Reason)
 	require.Equal(t, "Updated message", conditions[0].Message)

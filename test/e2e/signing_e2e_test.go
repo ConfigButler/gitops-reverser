@@ -118,7 +118,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 				g.Expect(strings.TrimSpace(output)).To(HavePrefix("ssh-"), "signingPublicKey should be populated")
 				signingPublicKey = strings.TrimSpace(output)
 			}).Should(Succeed())
-			verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+			verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 
 			By("registering the generated signing public key with Gitea")
 			registered, err := gitea.RegisterSigningPublicKey(signingRepo.User, signingPublicKey,
@@ -146,7 +146,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 				DestinationName string
 			}{watchRuleName, testNs, destName}
 			Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, testNs)).To(Succeed())
-			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 			waitForStreamsRunning(destName, testNs)
 
 			By("triggering a per-event commit")
@@ -246,7 +246,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		Expect(applyFromTemplate("test/e2e/templates/gitprovider-signing.tmpl", data, testNs)).To(Succeed())
 
 		By("waiting for GitProvider to become Ready and to surface the BYOK public key")
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 		var statusKey string
 		Eventually(func(g Gomega) {
 			output, err := kubectlRunInNamespace(testNs, "get", "gitprovider", providerName,
@@ -269,7 +269,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			DestinationName string
 		}{watchRuleName, testNs, destName}
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, testNs)).To(Succeed())
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 		waitForStreamsRunning(destName, testNs)
 
 		By("triggering a per-event commit")
@@ -340,7 +340,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			GenerateWhenMissing: true,
 		}
 		Expect(applyFromTemplate("test/e2e/templates/gitprovider-signing.tmpl", data, testNs)).To(Succeed())
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 
 		createValidatedGitTarget(destName, testNs, providerName, commitPath)
 
@@ -350,7 +350,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			DestinationName string
 		}{watchRuleName, testNs, destName}
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, testNs)).To(Succeed())
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 		waitForStreamsRunning(destName, testNs)
 
 		_, err := kubectlRunInNamespace(testNs, "create", "configmap", cmName, "--from-literal=key=template-test")
@@ -445,7 +445,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			GenerateWhenMissing: true,
 		}
 		Expect(applyFromTemplate("test/e2e/templates/gitprovider-signing.tmpl", data, testNs)).To(Succeed())
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 
 		createValidatedGitTarget(destName, testNs, providerName, commitPath)
 
@@ -455,7 +455,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			DestinationName string
 		}{watchRuleName, testNs, destName}
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, testNs)).To(Succeed())
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 		By("recreating the GitTarget now that the WatchRule is active to force a fresh reconcile batch")
 		cleanupGitTarget(destName, testNs)
@@ -558,14 +558,14 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			SigningSecretName:   "signing-key-overlap",
 			GenerateWhenMissing: true,
 		}, testNs)).To(Succeed())
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 
 		By("creating target A and its WatchRule, then waiting for A to reconcile the seed band")
 		createValidatedGitTarget(destNameA, testNs, providerName, commitPathA)
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", struct {
 			Name, Namespace, DestinationName string
 		}{watchRuleNameA, testNs, destNameA}, testNs)).To(Succeed())
-		verifyResourceStatus("watchrule", watchRuleNameA, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleNameA, testNs, "True", "Succeeded", "")
 		waitForStreamsRunning(destNameA, testNs)
 
 		By("proving the shared ConfigMap tail is live for A via a probe per-event commit")
@@ -590,8 +590,8 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", struct {
 			Name, Namespace, DestinationName string
 		}{watchRuleNameB, testNs, destNameB}, testNs)).To(Succeed())
-		verifyResourceCondition("gittarget", destNameB, testNs, "Validated", "True", "OK", "")
-		verifyResourceStatus("watchrule", watchRuleNameB, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destNameB, testNs, "Validated", "True", "Succeeded", "")
+		verifyResourceStatus("watchrule", watchRuleNameB, testNs, "True", "Succeeded", "")
 		waitForStreamsRunning(destNameB, testNs)
 
 		By("asserting seed + overlap content converges under path B with no seed leaked as a per-event commit")

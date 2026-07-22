@@ -269,12 +269,13 @@ func TestClusterProviderReconcile_InvalidStatusWriteFails(t *testing.T) {
 		WithObjects(provider).
 		WithStatusSubresource(&configbutleraiv1alpha3.ClusterProvider{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			SubResourceUpdate: func(
+			SubResourcePatch: func(
 				_ context.Context,
 				_ client.Client,
 				_ string,
 				_ client.Object,
-				_ ...client.SubResourceUpdateOption,
+				_ client.Patch,
+				_ ...client.SubResourcePatchOption,
 			) error {
 				return errors.New("status write boom")
 			},
@@ -317,17 +318,19 @@ func TestValidateProviderKubeConfig_NilSecretRef(t *testing.T) {
 	assert.NotEmpty(t, msg)
 }
 
-// TestClusterProviderUpdateStatus_DeletedObject checks the status writer treats a vanished object
-// as done (the NotFound branch of the retry loop) rather than erroring.
+// TestClusterProviderUpdateStatus_DeletedObject checks the shared status writer treats a vanished
+// object as done rather than erroring: a reconcile that raced a delete must not fail the workqueue.
 func TestClusterProviderUpdateStatus_DeletedObject(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(scScheme(t)).
 		WithStatusSubresource(&configbutleraiv1alpha3.ClusterProvider{}).
 		Build()
-	r := &ClusterProviderReconciler{Client: cl, OperatorNamespace: cpOperatorNS}
-	// The object was never created, so the retry loop's Get returns NotFound -> success, no error.
-	err := r.updateStatusWithRetry(context.Background(), clusterProviderWithKubeConfig("gone", "", ""))
-	require.NoError(t, err)
+	provider := clusterProviderWithKubeConfig("gone", "", "")
+	st := beginStatus(cl, nil, provider, &provider.Status.Conditions)
+	st.set(ConditionTypeReady, metav1.ConditionTrue, ReasonSucceeded, "gone but written")
+
+	// The object was never created, so the patch returns NotFound -> treated as done, no error.
+	require.NoError(t, st.commit(context.Background()))
 }
 
 // TestClusterProviderReconcile_RemoteInvalidKubeConfig checks a remote provider whose kubeconfig
