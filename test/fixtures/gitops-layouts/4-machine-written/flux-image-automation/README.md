@@ -31,7 +31,7 @@ shares the repo with a non-human committer that runs on an interval.
         ├── apps.yaml             # Flux Kustomization CR
         ├── image-automation.yaml # Flux Kustomization CR
         └── kustomization.yaml    # kustomize build file
-```yaml
+```
 
 ## What makes it structurally distinct
 

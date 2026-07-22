@@ -50,7 +50,7 @@ copy of every manifest.
     │       ├── deployment.yaml
     │       └── service.yaml
     └── namespaces.yaml
-```yaml
+```
 
 ## What makes it structurally distinct
 

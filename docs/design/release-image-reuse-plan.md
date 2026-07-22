@@ -17,7 +17,7 @@ release-please PR exists; nothing has been cut since #190).
 
 [#191]: https://github.com/ConfigButler/gitops-reverser/pull/191
 
-### What is live on `main` now
+## What is live on `main` now
 
 Verify against the tree — these are the anchors, not a substitute for reading
 `ci.yml`/`release.yml`:
@@ -44,7 +44,7 @@ Verify against the tree — these are the anchors, not a substitute for reading
   release.
 - **Docs updated:** `docs/ci-overview.md`, `.github/RELEASES.md`.
 
-### What remains (exact current-tree state for the next context)
+## What remains (exact current-tree state for the next context)
 
 - **PR 2 — point the e2e `quickstart` lane at the release-grade amd64
   digest on main.** *Current tree:* `e2e` still
@@ -387,7 +387,7 @@ per-commit images are instrumented builds you'd never promote).
 
 ## 6. Is it worth it?
 
-**Gains**
+### Gains
 
 | Gain | Size |
 | --- | --- |
@@ -398,7 +398,7 @@ per-commit images are instrumented builds you'd never promote).
 | `release.yml` loses its most complex job | less to maintain in the trust-critical file |
 | PR and main e2e share one delivery path (artifact + k3d load) | the fork-safe path becomes the only path; a stack of `if: pull_request` conditionals is deleted; instrumented builds never touch the registry |
 
-**Costs**
+### Costs
 
 | Cost | Size |
 | --- | --- |

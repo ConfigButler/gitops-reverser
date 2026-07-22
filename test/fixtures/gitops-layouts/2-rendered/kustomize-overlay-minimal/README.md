@@ -22,7 +22,7 @@ overlays/
     kustomization.yaml
   staging/                  # same shape, different namespace + tag
     kustomization.yaml
-```yaml
+```
 
 ## What it forces
 

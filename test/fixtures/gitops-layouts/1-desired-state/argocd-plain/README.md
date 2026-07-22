@@ -26,7 +26,7 @@ while the workload manifests live under `apps/frontend/`.
         ├── ingress.yaml
         ├── rbac-and-config.yaml    # multi-doc: ServiceAccount + ConfigMap
         └── ci-metadata.yaml        # YAML but NOT a Kubernetes object
-```yaml
+```
 
 ## What makes it structurally distinct
 

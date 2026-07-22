@@ -41,7 +41,7 @@ result from outside the app folder.
         ├── infrastructure.yaml       # Flux Kustomization CRs (NOT build files)
         ├── apps.yaml                 # Flux Kustomization CR w/ postBuild + targetNamespace
         └── kustomization.yaml         # kustomize.config.k8s.io (build file)
-```yaml
+```
 
 ## What makes it structurally distinct
 

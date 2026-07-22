@@ -18,7 +18,7 @@ flux-resourceset-pull-requests/
 ├── README.md
 └── previews/
     └── preview-envs.yaml    # ResourceSetInputProvider + ResourceSet
-```yaml
+```
 
 ## What makes it structurally distinct
 

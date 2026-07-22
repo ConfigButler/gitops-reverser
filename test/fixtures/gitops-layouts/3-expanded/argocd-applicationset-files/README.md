@@ -29,7 +29,7 @@ in-repo Helm chart under `chart/`, parameterised from the generator file.
     └── templates/
         ├── deployment.yaml          # NOT parseable YAML - Helm/Go template
         └── service.yaml             # NOT parseable YAML - Helm/Go template
-```yaml
+```
 
 ## What makes it structurally distinct
 

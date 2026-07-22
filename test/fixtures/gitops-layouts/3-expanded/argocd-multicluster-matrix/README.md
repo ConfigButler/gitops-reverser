@@ -39,7 +39,7 @@ The set of rendered Applications is therefore a **product, not a sum**: it is
     │   └── frontend.yaml           # NOT KRM — backend values intentionally absent
     └── staging/
         └── frontend.yaml           # NOT KRM — backend values intentionally absent
-```yaml
+```
 
 ## What makes it structurally distinct
 

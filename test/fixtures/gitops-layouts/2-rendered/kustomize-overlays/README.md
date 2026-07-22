@@ -45,7 +45,7 @@ overlay instead builds on a **remote** base fetched from another repository.
         └── overlays/
             └── production/
                 └── kustomization.yaml   # uses a REMOTE base (github.com/...)
-```yaml
+```
 
 ## What makes it structurally distinct
 

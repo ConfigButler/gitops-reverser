@@ -186,7 +186,7 @@ dependencies on.
 
 ## 4. Pros and cons
 
-**Pros**
+### Pros
 
 - **One policy, one place.** "Additions fast, removals slow" currently has three
   implementations (catalog retain-on-error, registry grace, materializer freeze) with a
@@ -202,7 +202,7 @@ dependencies on.
 - **Leaf-friendly.** `typeset` stays client-free (facts in, verdicts out), so the moved
   logic remains deterministic and unit-testable.
 
-**Cons / risks**
+### Cons / risks
 
 - **`Registry.Update` contract change.** It currently expects the full merged set;
   feeding it raw scans means it must retain last-known facts for degraded/omitted records

@@ -28,7 +28,7 @@ YAML committed to the repo.
     └── backend/
         ├── deployment.yaml
         └── service.yaml
-```yaml
+```
 
 ## What makes it structurally distinct
 

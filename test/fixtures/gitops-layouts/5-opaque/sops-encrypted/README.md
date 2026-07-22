@@ -33,7 +33,7 @@ is still a syntactically valid Kubernetes object — you can read its `kind`,
     └── production/
         └── apps.yaml                  # Flux Kustomization (+GitRepository),
                                        #   spec.decryption.provider: sops
-```yaml
+```
 
 ## What makes it structurally distinct
 

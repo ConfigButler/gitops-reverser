@@ -36,7 +36,7 @@ basename via Go templating (`{{.path.basename}}`).
         └── monitoring/            # NOT matched: two levels below apps/
             ├── deployment.yaml
             └── service.yaml
-```yaml
+```
 
 ## What makes it structurally distinct
 
@@ -78,7 +78,7 @@ NAME           PATH           SYNC     HEALTH
 app-backend    apps/backend   Synced   Healthy
 app-frontend   apps/frontend  Synced   Healthy
 app-worker     apps/worker    Synced   Healthy      <-- appeared from the folder alone
-```yaml
+```
 
 **Creating a directory is a deployment operation.** The directory listing is a
 field of desired state.
@@ -90,7 +90,7 @@ fight over the same objects:
 ```yaml
 SharedResourceWarning: ConfigMap/worker-config is part of applications
                        argocd/app-worker and worker-authored-by-hand
-```yaml
+```
 
 The generated Application flipped to `OutOfSync`, and the workload's Argo
 `tracking-id` was overwritten to name the hand-authored app. So in a repository of

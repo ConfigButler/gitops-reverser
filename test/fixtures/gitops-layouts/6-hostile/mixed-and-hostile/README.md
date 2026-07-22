@@ -35,7 +35,7 @@ assumptions about what a file "is" from its name, extension, or directory.
 │   └── resourcegraphdefinition.yaml   # KRM whose spec embeds templated KRM
 └── empty-dir/
     └── .gitkeep                       # placeholder for an otherwise-empty dir
-```yaml
+```
 
 ## What makes it structurally distinct
 

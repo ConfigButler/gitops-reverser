@@ -113,7 +113,7 @@ flowchart TD
     D --> E[classify layout +<br/>namespace/variants +<br/>refusal reasons]
     E --> F[Detect overlap / nesting<br/>between candidates]
     F --> G[Emit report:<br/>text + JSON + exit code]
-```text
+```
 
 1. **Walk the whole repo once.** Reuse `collectFiles` semantics but over the
    full tree rather than a single subtree; skip `.git`; honour a root

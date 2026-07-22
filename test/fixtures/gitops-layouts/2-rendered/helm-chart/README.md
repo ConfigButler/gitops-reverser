@@ -39,7 +39,7 @@ The chart here is `frontend`, with a conditional `redis` subchart dependency.
             ├── NOTES.txt           # plain-text post-install message
             └── tests/
                 └── test-connection.yaml   # Pod behind a helm.sh/hook: test
-```yaml
+```
 
 ## What makes it structurally distinct
 
