@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.38.0...v0.39.0) (2026-07-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **attribution:** --author-attribution-cluster-annotation-key is renamed to --author-attribution-audit-route-annotation-key, and the chart value attribution.clusterAnnotationKey to attribution.auditRouteAnnotationKey. There is no deprecated alias: an operator still passing the old flag fails to start. The fact-key infix changes from cluster: to route: with no dual-read, so a rolling upgrade has a TTL-bounded window where events commit as the configured committer.
+* **api:** a resync no longer deletes Git documents whose resources are absent from the desired snapshot. Set spec.prune.mode: always on a GitTarget that needs full desired-state convergence. Deleting a resource in the cluster still deletes its file. Ships in the same release as the rule-kind scope change, which it exists to make non-destructive.
+* **api:** `ClusterWatchRule` is cluster-scope-only and `WatchRule.spec.sourceNamespace` moved to `spec.rules[].sourceNamespace`. A namespaced `ClusterWatchRule` becomes a `WatchRule` in the tenant namespace; its namespaced items become `sourceNamespace: "*"` (or explicit names). A target that declares no `allowedSourceNamespaces` admits NOTHING to a `"*"` item, so converting without also declaring that policy narrows production data. See docs/UPGRADING.md.
+
+### Features
+
+* **api:** add GitTarget.spec.prune.mode and stop inferring deletions ([#260](https://github.com/ConfigButler/gitops-reverser/issues/260)) ([f103ca8](https://github.com/ConfigButler/gitops-reverser/commit/f103ca85380d02516b55f77bfdc36c235dbe0aa4))
+* **api:** scope by kind — per-item WatchRule source namespaces, cluster-only ClusterWatchRule ([#259](https://github.com/ConfigButler/gitops-reverser/issues/259)) ([982e816](https://github.com/ConfigButler/gitops-reverser/commit/982e81649e5d875a55a0d687e59a991ba0b0590b))
+* make unresolved attribution explicit and harden operations ([#257](https://github.com/ConfigButler/gitops-reverser/issues/257)) ([e41f69c](https://github.com/ConfigButler/gitops-reverser/commit/e41f69cca46258e93713a1e61fc51ba9351824b8))
+
+
+### Bug Fixes
+
+* **attribution:** partition author facts by declared audit route ([#263](https://github.com/ConfigButler/gitops-reverser/issues/263)) ([0d61128](https://github.com/ConfigButler/gitops-reverser/commit/0d61128ca890b2188bd8613eecf1f2834258c5aa))
+* **watch:** a cluster-wide selection must not collapse named-namespace streams ([#255](https://github.com/ConfigButler/gitops-reverser/issues/255)) ([10a530a](https://github.com/ConfigButler/gitops-reverser/commit/10a530a8754e1e32d21b41d9a4189297cc343b55))
+* **watch:** enforce ClusterProvider admission wherever rules compile ([#258](https://github.com/ConfigButler/gitops-reverser/issues/258)) ([82d0c39](https://github.com/ConfigButler/gitops-reverser/commit/82d0c39f82e6195a121d1e56bf7473f213f2af71))
+
+
+### Documentation
+
+* five-PR plan for WatchRule source namespaces, plus PR 1 — namespace-scoped resync ([#254](https://github.com/ConfigButler/gitops-reverser/issues/254)) ([a60590b](https://github.com/ConfigButler/gitops-reverser/commit/a60590bba17c81c33423a09885ef4651db492228))
+
 ## [0.38.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.37.0...v0.38.0) (2026-07-18)
 
 
