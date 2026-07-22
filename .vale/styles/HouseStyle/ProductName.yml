@@ -12,5 +12,10 @@ swap:
   'Gitops Reverser': 'GitOps Reverser'
   'GitOps reverser': 'GitOps Reverser'
   'Git Ops': 'GitOps'
+  # Measured across tracked docs: 71 `kube-apiserver` against 3 stragglers, one
+  # per spelling below. The list was two entries and caught one of the three.
+  # offical spelling is kube-apiserver: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
   'kube-API server': 'kube-apiserver'
   'Kube API server': 'kube-apiserver'
+  'kube-api server': 'kube-apiserver'
+  'Kube-apiserver': 'kube-apiserver'

@@ -1,27 +1,31 @@
-# docs/style-guide.md -> "Words to cut".
+# docs/style-guide.md -> "Words to cut", the rows the table marks "always cut".
 #
-# Warning, not error: the test is "does deleting it change the meaning?", and a
-# linter cannot run that test. `actually` survives in "where the value actually
-# lives" because it marks a contrast with the rendered output you might have
-# expected; it does not survive in "the operator actually retries".
+# These name no property in any sentence, so a linter can decide them on its own.
+# `powerful` and `robust` claim a quality without saying which one; `simply`
+# blames the reader for finding it hard; `leverage` is `use`.
 #
-# `powerful`, `robust`, and `seamless` are always wrong here. They are kept at
-# warning with the rest so the rule has one level and one meaning.
+# This file used to also carry `just`, `actually`, `genuinely`, and `really`, and
+# it failed on its own terms. The guide's test is "does deleting it change the
+# meaning?", and the comment here blessed "where the value actually lives" while
+# the rule flagged that exact sentence in the root README. A rule that fires on
+# its own documented exception teaches people to skim its output. Those four moved
+# to Filler-Judgment.yml at suggestion level, which is the honest level for a call
+# a machine cannot make.
+#
+# What is left is mechanical, so this is the list that can carry an error level
+# once the gate lands. It is warning today because the backlog is real: `docs/`
+# and the README hold about 22 uses of `powerful`/`robust` and 52 of `simply`.
 extends: existence
-message: "'%s' -- delete it if deleting it does not change the meaning."
+message: "'%s' names no property. Say which one, or cut it."
 link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#words-to-cut
 level: warning
 ignorecase: true
 tokens:
-  - just
-  - actually
-  - genuinely
-  - simply
-  - really
   - powerful
   - robust
   - seamless
   - seamlessly
   - effortlessly
+  - simply
   - leverages?
   - leveraging

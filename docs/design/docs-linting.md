@@ -9,13 +9,14 @@ headings, lists, tables, and blank lines. [Vale](https://github.com/vale-cli/val
 the em dash rule, American spelling, the words to cut, and sentence-case headings. Neither replaces
 `hack/doccheck`, which resolves references and is the only check that reads Go comments.
 
-Nothing here is wired into `task lint` yet. The binaries and their configuration ship so the rules
-can be exercised against real content before anything gates on them. Run either by hand:
+Both are wired into `task lint` as of the change that added
+[`hack/docs-files.sh`](../../hack/docs-files.sh), scoped to the files a branch touches. See
+[Status](#status) and [CONTRIBUTING.md](../../CONTRIBUTING.md#documentation-checks).
 
 ```bash
-vale docs/some-file.md
-markdownlint-cli2 docs/some-file.md
-markdownlint-cli2 --fix docs/some-file.md
+task lint-docs                     # links, structure, and prose on this branch's markdown
+task lint-markdown-fix             # the safe mechanical fixes
+task lint-prose DOCS_SCOPE=all     # the whole tree, to see the backlog
 ```
 
 **Every number below was measured**, not estimated, with the committed configuration over all 196
@@ -27,10 +28,22 @@ tracked `.md` files. `CHANGELOG.md` and `docs/finished/` are excluded by both co
 | Piece | State |
 |---|---|
 | `markdownlint-cli2` and `vale` in the container, reachable from CI | done |
-| [`.vale.ini`](../../.vale.ini) and `.vale/styles/HouseStyle/`, encoding [`style-guide.md`](../style-guide.md) | committed, gates nothing |
-| [`.markdownlint-cli2.jsonc`](../../.markdownlint-cli2.jsonc) | committed, gates nothing |
-| `task lint-markdown`, `task lint-prose` | not started |
-| Folded into `task lint` | not started |
+| [`.vale.ini`](../../.vale.ini) and `.vale/styles/HouseStyle/`, encoding [`style-guide.md`](../style-guide.md) | done |
+| [`.markdownlint-cli2.jsonc`](../../.markdownlint-cli2.jsonc) | done |
+| `task lint-markdown`, `task lint-prose` | done |
+| Folded into `task lint` | done, scoped to changed files |
+| Whole-tree gate | not started, blocked on the backlogs below |
+
+`task lint-docs` is now the aggregate of three tasks: `lint-doc-links` (the old `lint-docs`),
+`lint-markdown`, and `lint-prose`. The rename kept `lint-docs` pointing at a superset of what it
+used to do, so every existing instruction to run it stays true.
+
+Both new tasks gate **the markdown a branch touches**, resolved by
+[`hack/docs-files.sh`](../../hack/docs-files.sh), which is the single place that builds the file
+list for both tools and for CI. That is the "gate only the files a change touches" plan from
+[How to gate this](#how-to-gate-this), applied to structure as well as prose: measured after the
+config landed, 102 of 174 files fail markdownlint and 148 of 174 fail Vale, so neither backlog
+survives a whole-tree gate today.
 
 Both configs are live for editor extensions, which is the point: the Vale and markdownlint VS Code
 extensions pick them up and mark a file as you write it. No build fails.
@@ -269,33 +282,30 @@ without fixing anything.
   OOM-killed the host once already through an unrooted `**` glob. Both linters must be handed an
   explicit file list from `git ls-files`, never a bare recursive glob.
 
-## The Taskfile shape, when we get there
+## The Taskfile shape, as built
 
-Sketch, not yet written:
+Both constraints predicted here held, and a third appeared.
 
-```yaml
-lint-markdown:
-  desc: Structural markdown lint (markdownlint-cli2)
-  cmds:
-    - markdownlint-cli2 $(git ls-files '*.md' | grep -vE '^(CHANGELOG.md|docs/finished/)')
+**No `sources:` on any of the three.** The real input is "every tracked `.md`", which Task cannot
+express: a rooted per-tree list drifts out of sync silently, and an unrooted `**` walks
+`external-sources/` and can exhaust host memory. All three run every time and cost a few seconds.
 
-lint-prose:
-  desc: Prose lint against docs/style-guide.md (Vale)
-  cmds:
-    - vale $(git ls-files '*.md' | grep -vE '^(CHANGELOG.md|docs/finished/)')
-```
+**The CI cache assertion had to learn the new names.** The `lint` job runs `task lint` twice and
+asserts the second run is fully cached apart from an exempt list, by name, in an `awk` filter. That
+list is now four entries. Adding a task to `task lint` without `sources:` and without adding it
+there fails the step, which is the intended forcing function.
 
-Two constraints will bite whoever writes this.
+**The exclusion list did not get copied a third time.** `hack/docs-files.sh` answers only "which
+files exist", via `git ls-files`; which of them to skip stays in each tool's own config
+(`ignores` in `.markdownlint-cli2.jsonc`, per-file stanzas in `.vale.ini`). One list of files, one
+list of exclusions, rather than two of each that can disagree.
 
-**Do not add `sources:`.** The real input is "every tracked `.md`", which Task cannot express. A
-rooted per-tree list drifts out of sync silently, and an unrooted `**` walks `external-sources/`
-and can exhaust host memory. `lint-docs` already carries this reasoning in a comment; follow it.
-
-**Then update the cache assertion in CI.** The `lint` job runs `task lint` twice and asserts the
-second run is fully cached apart from `lint-docs`, by name, in an `awk` filter. Un-fingerprinted
-tasks added to `task lint` must be added to that filter or the job fails. Both tools finish in
-under three seconds over the whole tree, so paying that on every lint run is cheaper than getting
-the fingerprints wrong.
+The unforeseen one: **changed-file scoping needs history, and CI checks out shallow.** The `lint`
+job now sets `fetch-depth: 0`, and the base ref comes from `GITHUB_BASE_REF` rather than a
+hardcoded `main`, because this repository deliberately builds every PR base including stacked PRs.
+Without the full fetch the merge base is unreachable, the file list falls back to the working tree,
+and in CI that is empty: the gate would have passed everything, silently. That failure mode is why
+`hack/docs-files.sh` warns on stderr instead of returning nothing.
 
 ## Open questions
 

@@ -11,8 +11,20 @@
 # file rather than once per paragraph. "Roughly one per page" has to become a
 # number, and files here run to several pages: max 3 flags 75 files, max 1 flags
 # 110, max 5 flags 52. Three is the middle, and it is a warning, so it informs an
-# edit rather than blocking one. The cost of `raw` is that a match inside a code
-# block counts; that is rare enough to accept.
+# edit rather than blocking one.
+#
+# The cost of `raw` is that a match inside a code block counts, and that guess has
+# now been measured: 20 in-fence matches across 16 files, of which exactly two are
+# pushed over budget by them and would otherwise sit at the limit --
+# docs/spec/type-followability.md and
+# test/fixtures/gitops-layouts/2-rendered/helm-environment-values/README.md.
+# Two false alarms at warning level is cheaper than the alternative, which is
+# giving up `raw` and counting per paragraph, where a budget of three is no budget
+# at all. Left as is; do not re-litigate without new numbers.
+#
+# Note that unlike EmDash.yml, this rule needs no escape hatch. `raw` disables the
+# in-file suppression comments there too, but a warning that fires once per file
+# does not have to be silenced.
 extends: occurrence
 message: "Several 'X, not Y' correctives in one file. Budget roughly one per page, and prefer stating the correct thing positively."
 link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#the-construction-the-dash-is-hiding

@@ -25,6 +25,11 @@ vars:
     ./internal/webhook:FuzzDecodeEventList
   FUZZ_SMOKE_TIME: '{{.FUZZ_SMOKE_TIME | default "15s"}}'
   FUZZ_TIME: '{{.FUZZ_TIME | default "2m"}}'
+  # Which markdown files the docs linters see: `changed` (this branch's, the gate)
+  # or `all` (every tracked file, the backlog view). hack/docs-files.sh resolves it
+  # and is the only place that builds the list. Override per run:
+  #   task lint-markdown DOCS_SCOPE=all
+  DOCS_SCOPE: '{{.DOCS_SCOPE | default "changed"}}'
 
 tasks:
   manifests:
@@ -195,7 +200,7 @@ tasks:
         done
 
   lint:
-    desc: Run all linters (Go, Dockerfiles, workflows, Helm chart, doc links); deps run in parallel where safe
+    desc: Run all linters (Go, Dockerfiles, workflows, Helm chart, docs); deps run in parallel where safe
     deps:
       - lint-golang
       - lint-dockerfiles
@@ -204,6 +209,23 @@ tasks:
       - lint-docs
 
   lint-docs:
+    desc: All documentation checks — references, markdown structure, and prose
+    # The three docs linters do not overlap and each is bad at the others' job, so
+    # they stay three tasks and this aggregates them. See docs/design/docs-linting.md.
+    #
+    #   lint-doc-links  references resolve, including doc paths inside Go comments
+    #   lint-markdown   markdown structure: fences, headings, lists, blank lines
+    #   lint-prose      English against docs/style-guide.md
+    #
+    # This kept the name `lint-docs` because AGENTS.md, docs/style-guide.md, and the
+    # CI cache assertion all name it. It is now a superset of what it used to do, so
+    # every existing instruction to "run task lint-docs" is still true.
+    deps:
+      - lint-doc-links
+      - lint-markdown
+      - lint-prose
+
+  lint-doc-links:
     desc: Check that every doc reference resolves — markdown links, and docs/**.md cited in Go comments
     # Re-run whenever a doc moves or a Go comment changes. Task fingerprints these
     # under .task/ and skips the run otherwise.
@@ -228,6 +250,64 @@ tasks:
     # The whole check takes ~0.2s. That is not worth a cache that can be wrong.
     cmds:
       - go run ./hack/doccheck
+
+  lint-markdown:
+    desc: 'Markdown structure (markdownlint-cli2). DOCS_SCOPE=all lints every tracked file'
+    # Scope defaults to the files this branch touches, and that is a rollout choice,
+    # not a permanent one. Measured over the 174 linted files: 102 fail today, 90
+    # still fail after `--fix`. Gating the whole tree would mean fixing 257 findings
+    # in one commit that collides with everything in flight, and weakening the rules
+    # to make a green run is worse than a narrow gate. So a file gets cleaned when
+    # someone opens it, and the backlog drains through normal editing.
+    #
+    # `DOCS_SCOPE=all` is the backlog view. It is what the whole-tree gate will run
+    # once the residue is gone; see docs/design/docs-linting.md.
+    #
+    # No `sources:`. Same reasoning as lint-doc-links above: the real input is "every
+    # tracked .md", which Task cannot express without an unrooted `**` that walks
+    # external-sources/ and has OOM-killed the host. Both tools finish the whole tree
+    # in under three seconds, so this always runs. CI's cache assertion exempts it.
+    cmds:
+      - ./hack/docs-files.sh {{.DOCS_SCOPE}} | xargs -r markdownlint-cli2
+
+  lint-markdown-fix:
+    desc: 'Apply the safe, mechanical markdown fixes (markdownlint-cli2 --fix)'
+    # Deterministic and reviewable rule by rule: blank lines, bullet style, hard tabs.
+    # It does NOT clear everything -- over the whole tree it fixes 466 of 723 findings
+    # and leaves 257 that need a human, led by MD013 line-length (119), MD040 missing
+    # fence languages (54), and MD036 emphasis-used-as-heading (43). There is no
+    # equivalent for prose: Vale can suggest, but nothing here rewrites English.
+    #
+    # Not `xargs`, unlike the two checking tasks, because this one has to tell the
+    # exit codes apart and xargs collapses every one of them to 123. Measured:
+    # 0 clean, 1 findings remain, 2 config or usage error. The word split is safe
+    # because git tracks no markdown path containing a space.
+    cmds:
+      - |
+        files="$(./hack/docs-files.sh {{.DOCS_SCOPE}})"
+        [ -n "${files}" ] || exit 0
+        rc=0
+        # shellcheck disable=SC2086
+        markdownlint-cli2 --fix ${files} || rc=$?
+        # Exit 1 means findings remain, which is the normal outcome: --fix cannot
+        # repair a long line, a missing fence language, or bold used as a heading.
+        # Tolerated so `task lint-fix` still reaches the Go half. Never silent: the
+        # note below says work is left, and `task lint-markdown` names it.
+        [ "${rc}" -le 1 ] || exit "${rc}"
+        [ "${rc}" -eq 0 ] || echo "note: findings remain that --fix cannot repair; run 'task lint-markdown' to see them" >&2
+
+  lint-prose:
+    desc: 'Prose against docs/style-guide.md (Vale). DOCS_SCOPE=all lints every tracked file'
+    # Scoped to changed files for the same reason as lint-markdown, one order of
+    # magnitude more so: 148 of 174 files carry at least one error, almost all of them
+    # em dashes. docs/style-guide.md says the spelling cleanup must not land as one
+    # sweeping commit, and the same argument applies here.
+    #
+    # Vale's exit code tracks errors only, so the gate is EmDash, Spelling, and
+    # ProductName. Headings, WordsToCut, and Correctives print and do not block, which
+    # is what .vale.ini's level table is for.
+    cmds:
+      - ./hack/docs-files.sh {{.DOCS_SCOPE}} | xargs -r vale
 
   lint-golang:
     desc: Run golangci-lint
@@ -291,7 +371,12 @@ tasks:
       - helm lint charts/gitops-reverser
 
   lint-fix:
-    desc: Run golangci-lint and perform fixes
+    desc: Apply every safe automatic fix (Go and markdown)
+    # Folds in lint-markdown-fix so there is one "fix what can be fixed" entry point.
+    # Both halves are deterministic. Neither touches prose: Vale findings are always
+    # hand-edits, by design, because a machine rewriting English changes meaning.
+    deps:
+      - lint-markdown-fix
     cmds:
       - '{{.GOLANGCI_LINT}} run --fix'
 

@@ -45,6 +45,9 @@ exceptions:
   - Apache
   - Go
   - Vale
+  # Language names, from the spelling section's headings.
+  - American
+  - English
   # CRD kinds and Go types
   - GitTarget
   - GitProvider
@@ -64,6 +67,10 @@ exceptions:
   - CustomResourceDefinition
   - Materializer
   - Mapper
+  - BranchWorker
+  - RuleStore
+  - TypeRegistry
+  - WatchedTypeTable
   # Acronyms
   - API
   - APIs
