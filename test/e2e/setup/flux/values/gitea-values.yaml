@@ -1,6 +1,34 @@
 # Gitea Helm values for e2e testing.
 # Optimized for speed and CI environments.
 
+# Pull the Gitea image from Docker Hub instead of the chart's default
+# docker.gitea.com. That registry became unreachable from the devcontainer and
+# from CI (connect timeout to 35.91.213.186:443), which fails the whole suite in
+# BeforeSuite with `Ran 0 of N Specs`: the gitea pod sits in Init:ImagePullBackOff
+# and nothing else can start. The chart source, dl.gitea.com, is a separate host
+# and is fine, so only the registry moves.
+#
+# Same image, verified rather than assumed: docker.io/gitea/gitea:1.27.0-rootless
+# is sha256:414ba5b2b1163480e9ed4213a989cd798579cfa88582a2359303273009b2b852,
+# published by the Gitea org for amd64 and arm64.
+#
+# `repository` has to move with the registry. The chart composes
+# `registry/repository`, and its default pair is `docker.gitea.com` + `gitea`;
+# on Docker Hub the org is part of the path, so it is `gitea/gitea`. Setting only
+# the registry renders `docker.io/gitea`, which is a different (nonexistent)
+# image, and the render is the only place that shows it.
+#
+# The tag is still left to the chart, which derives it from appVersion and
+# appends `-rootless`, so a chart bump still moves the image.
+#
+# This trades one availability risk for another: Docker Hub rate-limits anonymous
+# pulls per IP, and CI runners share addresses. A pull-through cache fixes both
+# and is the intended follow-up; until then a rate-limit failure looks like this
+# same ImagePullBackOff, so check the kubelet event before suspecting the suite.
+image:
+  registry: docker.io
+  repository: gitea/gitea
+
 persistence:
   enabled: false
 
