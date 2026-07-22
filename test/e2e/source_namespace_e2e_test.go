@@ -103,8 +103,8 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 			configNS, refusedTarget, providerName, refusedPath, nonDelegatingCP, sourceNS)).Error().
 			NotTo(HaveOccurred(), "failed to apply refused GitTarget")
 
-		verifyResourceCondition("gittarget", grantedTarget, configNS, "Validated", "True", "OK", "")
-		verifyResourceCondition("gittarget", refusedTarget, configNS, "Validated", "True", "OK", "")
+		verifyResourceCondition("gittarget", grantedTarget, configNS, "Validated", "True", "Succeeded", "")
+		verifyResourceCondition("gittarget", refusedTarget, configNS, "Validated", "True", "Succeeded", "")
 	})
 
 	AfterAll(func() {
@@ -128,7 +128,7 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		By("asserting the override is authorized")
 		verifyResourceCondition("watchrule", grantedRule, configNS,
 			"SourceNamespaceAuthorized", "True", "SourceNamespaceAllowed", "")
-		verifyResourceStatus("watchrule", grantedRule, configNS, "True", "Ready", "")
+		verifyResourceStatus("watchrule", grantedRule, configNS, "True", "Succeeded", "")
 		waitForStreamsRunning(grantedTarget, configNS)
 
 		By("creating a ConfigMap in the SOURCE namespace")
@@ -165,7 +165,7 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		By("asserting the wildcard is authorized")
 		verifyResourceCondition("watchrule", wildcardRule, configNS,
 			"SourceNamespaceAuthorized", "True", "SourceNamespaceAllowed", "")
-		verifyResourceStatus("watchrule", wildcardRule, configNS, "True", "Ready", "")
+		verifyResourceStatus("watchrule", wildcardRule, configNS, "True", "Succeeded", "")
 
 		By("creating one ConfigMap in the wildcard-only namespace and one in an unadmitted namespace")
 		// wildcardNS is admitted by the target's policy but named by NO rule item, so anything
@@ -223,8 +223,8 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 			NotTo(HaveOccurred(), "failed to apply the first explicit rule")
 		Expect(applyWatchRuleWithSourceNamespace(ruleB, configNS, grantedTarget, wildcardNS)).Error().
 			NotTo(HaveOccurred(), "failed to apply the second explicit rule")
-		verifyResourceStatus("watchrule", ruleA, configNS, "True", "Ready", "")
-		verifyResourceStatus("watchrule", ruleB, configNS, "True", "Ready", "")
+		verifyResourceStatus("watchrule", ruleA, configNS, "True", "Succeeded", "")
+		verifyResourceStatus("watchrule", ruleB, configNS, "True", "Succeeded", "")
 
 		By("creating one ConfigMap in each watched namespace")
 		_, err := kubectlRunInNamespace(sourceNS, "create", "configmap", cmA, "--from-literal=k=v")

@@ -8,11 +8,10 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,7 +33,7 @@ const (
 	ClusterWatchRuleReasonAccessDenied          = "AccessDenied"
 	ClusterWatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	ClusterWatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
-	ClusterWatchRuleReasonReady                 = "Ready"
+	ClusterWatchRuleReasonReady                 = ReasonSucceeded
 	ClusterWatchRuleReasonResourcesResolved     = "Resolved"
 	ClusterWatchRuleReasonUnresolvedResources   = "UnresolvedResources"
 
@@ -56,6 +55,8 @@ type ClusterWatchRuleReconciler struct {
 	Scheme       *runtime.Scheme
 	RuleStore    *rulestore.RuleStore
 	WatchManager WatchManagerInterface
+	// Recorder emits a Kubernetes Event on every persisted Ready transition; nil disables Events.
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterwatchrules,verbs=get;list;watch;create;update;patch;delete
@@ -101,73 +102,59 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		"target", clusterRule.Spec.TargetRef,
 		"generation", clusterRule.Generation,
 		"resourceVersion", clusterRule.ResourceVersion)
+	st := beginStatus(r.Client, r.Recorder, &clusterRule, &clusterRule.Status.Conditions)
 	clusterRule.Status.ObservedGeneration = clusterRule.Generation
 
-	// Set initial validating status
-	log.Info("Setting initial validating status")
-	r.setCondition(&clusterRule, metav1.ConditionUnknown,
-		ClusterWatchRuleReasonValidating, "Validating ClusterWatchRule configuration...")
-	r.setTypedCondition(
-		&clusterRule,
+	// Seed the axis conditions as not-yet-evaluated. There is deliberately no placeholder write of
+	// the Ready/Reconciling/Stalled trio here: every path below ends in exactly one applyReadiness.
+	st.set(
 		ConditionTypeStreamsRunning,
 		metav1.ConditionUnknown,
 		GitTargetStreamsRunningReasonNotReady,
 		"Blocked by validation; streams not evaluated",
 	)
-	r.setTypedCondition(
-		&clusterRule,
+	st.set(
 		ConditionTypeGitTargetReady,
 		metav1.ConditionUnknown,
 		ReasonProgressing,
 		"Blocked by validation; GitTarget not evaluated",
 	)
-	r.setTypedCondition(&clusterRule, ConditionTypeReconciling, metav1.ConditionTrue, ReasonChecking,
-		"Validating ClusterWatchRule")
-	r.setTypedCondition(&clusterRule, ConditionTypeStalled, metav1.ConditionFalse, ReasonChecking,
-		"ClusterWatchRule is not stalled")
 
 	// Delegate to target-based reconciliation
-	return r.reconcileClusterWatchRuleViaTarget(ctx, &clusterRule)
+	return r.reconcileClusterWatchRuleViaTarget(ctx, st, &clusterRule)
 }
 
 // reconcileClusterWatchRuleViaTarget validates and stores a ClusterWatchRule that references a GitTarget.
 func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	ctx context.Context,
+	st *reconcileStatus,
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("reconcileClusterWatchRuleViaTarget")
 
 	// Target is required
 	if clusterRule.Spec.TargetRef.Name == "" {
-		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
-			"Target.name must be specified for ClusterWatchRule")
-		r.setTypedCondition(
-			clusterRule,
+		st.set(
 			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
 			ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.name must be specified for ClusterWatchRule",
 		)
-		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitDestinationInvalid,
+		return r.stallRule(ctx, st, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.name must be specified for ClusterWatchRule")
-		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
 	// For ClusterWatchRule, target namespace must be specified
 	targetNS := clusterRule.Spec.TargetRef.Namespace
 	if targetNS == "" {
-		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
-			"Target.namespace must be specified for ClusterWatchRule")
-		r.setTypedCondition(
-			clusterRule,
+		st.set(
 			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
 			ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.namespace must be specified for ClusterWatchRule",
 		)
-		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitDestinationInvalid,
+		return r.stallRule(ctx, st, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.namespace must be specified for ClusterWatchRule")
-		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
 	// Fetch GitTarget
@@ -177,10 +164,16 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 		log.Error(err, "Failed to get referenced GitTarget",
 			"gitTargetName", clusterRule.Spec.TargetRef.Name,
 			"gitTargetNamespace", targetNS)
-		r.setGitTargetNotFound(clusterRule, targetNS, err)
-		return r.updateStatusAndRequeue(ctx, clusterRule)
+		st.set(
+			ConditionTypeGitTargetReady,
+			metav1.ConditionFalse,
+			ClusterWatchRuleReasonGitTargetNotFound,
+			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v",
+				targetNS, clusterRule.Spec.TargetRef.Name, err),
+		)
+		return r.stallRule(ctx, st, ClusterWatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
 	}
-	r.setGitTargetReadyCondition(clusterRule, target)
+	r.setGitTargetReadyCondition(st, target)
 
 	// Resolve GitProvider from target
 	providerName := target.Spec.ProviderRef.Name
@@ -191,22 +184,14 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	if err := r.Get(ctx, providerKey, &provider); err != nil {
 		log.Error(err, "Failed to resolve GitProvider from GitTarget",
 			"gitProviderName", providerName, "gitProviderNamespace", providerNS)
-		r.setCondition(
-			clusterRule,
+		st.set(
+			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
 			ClusterWatchRuleReasonGitProviderNotFound,
 			fmt.Sprintf("GitProvider '%s/%s' (from GitTarget) not found: %v",
 				providerNS, providerName, err),
 		)
-		r.setTypedCondition(
-			clusterRule,
-			ConditionTypeGitTargetReady,
-			metav1.ConditionFalse,
-			ClusterWatchRuleReasonGitProviderNotFound,
-			"Referenced GitProvider not found",
-		)
-		r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
-		return r.updateStatusAndRequeue(ctx, clusterRule)
+		return r.stallRule(ctx, st, ClusterWatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
 	}
 
 	// Ready check
@@ -216,7 +201,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	// deliberately no AddOrUpdateClusterWatchRule here: routing every compilation through
 	// watch.CompileClusterWatchRule is what stops the startup bootstrap from being a second,
 	// ungated path into the store.
-	if handled, result, err := r.gateClusterWatchRule(ctx, clusterRule, target, provider, log); handled {
+	if handled, result, err := r.gateClusterWatchRule(ctx, st, clusterRule, target, provider, log); handled {
 		return result, err
 	}
 
@@ -226,14 +211,20 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 			log.Error(err, "Failed to reconcile watch manager after cluster rule update")
 			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
 		}
-		r.setResourceResolutionCondition(ctx, clusterRule)
-		r.setStreamsReadyCondition(clusterRule, r.WatchManager.StreamSummaryForClusterWatchRule(*clusterRule))
+		r.setResourceResolutionCondition(ctx, st, clusterRule)
+		r.setStreamsReadyCondition(st, clusterRule, r.WatchManager.StreamSummaryForClusterWatchRule(*clusterRule))
 	} else {
-		r.setStreamsReadyCondition(clusterRule, noResolvedStreamsSummary())
+		r.setStreamsReadyCondition(st, clusterRule, noResolvedStreamsSummary())
 	}
 
 	log.Info("ClusterWatchRule reconciliation via GitTarget successful", "name", clusterRule.Name)
-	return r.setReadyAndUpdateStatusWithTarget(ctx, clusterRule)
+
+	msg := fmt.Sprintf(
+		"ClusterWatchRule is ready and monitoring resources via GitTarget '%s/%s'",
+		clusterRule.Spec.TargetRef.Namespace,
+		clusterRule.Spec.TargetRef.Name,
+	)
+	return r.commitRule(ctx, st, ruleReadiness(clusterRule.Status.Conditions, "ClusterWatchRule", msg))
 }
 
 // gateClusterWatchRule is the ClusterWatchRule gate and the ONE place this controller compiles a
@@ -255,6 +246,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 // unchanged.
 func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 	ctx context.Context,
+	st *reconcileStatus,
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	target configbutleraiv1alpha3.GitTarget,
 	provider configbutleraiv1alpha3.GitProvider,
@@ -273,7 +265,7 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 		return false, ctrl.Result{}, nil
 	}
 
-	result, refuseErr := r.refuseClusterWatchRule(ctx, clusterRule, decision, log)
+	result, refuseErr := r.refuseClusterWatchRule(ctx, st, clusterRule, decision, log)
 	return true, result, refuseErr
 }
 
@@ -291,6 +283,7 @@ func (r *ClusterWatchRuleReconciler) gateClusterWatchRule(
 // edit converting the rule to the cluster-only model.
 func (r *ClusterWatchRuleReconciler) refuseClusterWatchRule(
 	ctx context.Context,
+	st *reconcileStatus,
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	decision watch.ClusterWatchRuleDecision,
 	log logr.Logger,
@@ -311,91 +304,58 @@ func (r *ClusterWatchRuleReconciler) refuseClusterWatchRule(
 		}
 	}
 
-	r.setTypedCondition(
-		clusterRule,
+	st.set(
 		ConditionTypeGitTargetReady,
 		metav1.ConditionFalse,
 		decision.Reason,
 		decision.Message,
 	)
-	r.setTypedCondition(
-		clusterRule,
+	st.set(
 		ConditionTypeStreamsRunning,
 		metav1.ConditionFalse,
 		decision.Reason,
 		"No streams: the ClusterWatchRule was refused",
 	)
-	r.setRuleStalled(clusterRule, decision.Reason, decision.Message)
 
-	return r.updateStatusAndRequeue(ctx, clusterRule)
+	return r.stallRule(ctx, st, decision.Reason, decision.Message)
 }
 
-// setReadyAndUpdateStatusWithTarget sets Ready with target message and updates status with retry.
-func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
+// stallRule publishes a terminal ClusterWatchRule outcome and ends the reconcile.
+func (r *ClusterWatchRuleReconciler) stallRule(
 	ctx context.Context,
-	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
+	st *reconcileStatus,
+	reason, message string,
 ) (ctrl.Result, error) {
-	msg := fmt.Sprintf(
-		"ClusterWatchRule is ready and monitoring resources via GitTarget '%s/%s'",
-		clusterRule.Spec.TargetRef.Namespace,
-		clusterRule.Spec.TargetRef.Name,
-	)
-	r.setRuleKstatus(clusterRule, msg)
-	if err := r.updateStatusWithRetry(ctx, clusterRule); err != nil {
+	rd := newRuleReadiness("ClusterWatchRule", "")
+	rd.stalled(reason, message)
+	return r.commitRule(ctx, st, rd)
+}
+
+// commitRule writes the trio, persists the status, and picks the requeue cadence from the same
+// verdict — so the cadence can never disagree with what status says.
+func (r *ClusterWatchRuleReconciler) commitRule(
+	ctx context.Context,
+	st *reconcileStatus,
+	rd *readiness,
+) (ctrl.Result, error) {
+	st.applyReadiness(rd)
+	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
-	if conditionIsFalse(clusterRule.Status.Conditions, ConditionTypeResourcesResolved) {
-		return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
-	}
-	if !conditionIsTrue(clusterRule.Status.Conditions, ConditionTypeGitTargetReady) {
-		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
-	}
-	if !conditionIsTrue(clusterRule.Status.Conditions, ConditionTypeStreamsRunning) {
-		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
-	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
-}
-
-// setCondition sets or updates the Ready condition.
-func (r *ClusterWatchRuleReconciler) setCondition(
-	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
-	status metav1.ConditionStatus,
-	reason, message string,
-) {
-	r.setTypedCondition(clusterRule, ConditionTypeReady, status, reason, message)
-}
-
-func (r *ClusterWatchRuleReconciler) setGitTargetNotFound(
-	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
-	targetNS string,
-	err error,
-) {
-	r.setCondition(
-		clusterRule,
-		metav1.ConditionFalse,
-		ClusterWatchRuleReasonGitTargetNotFound,
-		fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v", targetNS, clusterRule.Spec.TargetRef.Name, err),
-	)
-	r.setTypedCondition(
-		clusterRule,
-		ConditionTypeGitTargetReady,
-		metav1.ConditionFalse,
-		ClusterWatchRuleReasonGitTargetNotFound,
-		"Referenced GitTarget not found",
-	)
-	r.setRuleStalled(clusterRule, ClusterWatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
+	return ctrl.Result{RequeueAfter: requeueFor(rd)}, nil
 }
 
 func (r *ClusterWatchRuleReconciler) setGitTargetReadyCondition(
-	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
+	st *reconcileStatus,
 	target configbutleraiv1alpha3.GitTarget,
 ) {
 	ready := gitTargetReadyCondition(target)
-	r.setTypedCondition(clusterRule, ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
+	st.setValue(ConditionTypeGitTargetReady, ready)
 }
 
 func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
 	ctx context.Context,
+	st *reconcileStatus,
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 ) {
 	resolved, message := r.WatchManager.ResolveClusterWatchRuleResources(ctx, *clusterRule)
@@ -405,146 +365,27 @@ func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
 		status = metav1.ConditionTrue
 		reason = ClusterWatchRuleReasonResourcesResolved
 	}
-	r.setTypedCondition(clusterRule, ConditionTypeResourcesResolved, status, reason, message)
+	st.set(ConditionTypeResourcesResolved, status, reason, message)
 }
 
 func (r *ClusterWatchRuleReconciler) setStreamsReadyCondition(
+	st *reconcileStatus,
 	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
 	streams watch.StreamSummary,
 ) {
 	clusterRule.Status.Streams = watchRuleStreamsStatus(streams)
-	r.setTypedCondition(
-		clusterRule,
-		ConditionTypeStreamsRunning,
-		streamConditionStatus(streams),
-		streams.Reason,
-		streams.Message,
-	)
-}
-
-func (r *ClusterWatchRuleReconciler) setRuleStalled(
-	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
-	reason string,
-	message string,
-) {
-	r.setTypedCondition(clusterRule, ConditionTypeReady, metav1.ConditionFalse, reason, message)
-	r.setTypedCondition(
-		clusterRule,
-		ConditionTypeReconciling,
-		metav1.ConditionFalse,
-		reason,
-		"Reconciliation is stalled",
-	)
-	r.setTypedCondition(clusterRule, ConditionTypeStalled, metav1.ConditionTrue, reason, message)
-}
-
-func (r *ClusterWatchRuleReconciler) setRuleKstatus(
-	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
-	readyMessage string,
-) {
-	applyRuleKstatus(
-		clusterRule.Status.Conditions,
-		readyMessage,
-		"ClusterWatchRule is not stalled",
-		func(conditionType string, status metav1.ConditionStatus, reason, message string) {
-			r.setTypedCondition(clusterRule, conditionType, status, reason, message)
-		},
-		func(reason, message string) {
-			r.setRuleStalled(clusterRule, reason, message)
-		},
-	)
-}
-
-func (r *ClusterWatchRuleReconciler) setTypedCondition(
-	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
-	conditionType string,
-	status metav1.ConditionStatus,
-	reason string,
-	message string,
-) {
-	clusterRule.Status.Conditions = upsertCondition(
-		clusterRule.Status.Conditions,
-		conditionType,
-		status,
-		reason,
-		message,
-		clusterRule.Generation,
-	)
-}
-
-// updateStatusAndRequeue updates the status and returns requeue result.
-func (r *ClusterWatchRuleReconciler) updateStatusAndRequeue(
-	ctx context.Context,
-	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
-) (ctrl.Result, error) {
-	if err := r.updateStatusWithRetry(ctx, clusterRule); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
-}
-
-// updateStatusWithRetry updates the status with retry logic to handle race conditions.
-//
-//nolint:dupl // Similar retry logic pattern used across controllers
-func (r *ClusterWatchRuleReconciler) updateStatusWithRetry(
-	ctx context.Context,
-	clusterRule *configbutleraiv1alpha3.ClusterWatchRule,
-) error {
-	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
-
-	log.Info("Starting status update with retry",
-		"name", clusterRule.Name,
-		"conditionsCount", len(clusterRule.Status.Conditions))
-
-	return wait.ExponentialBackoff(wait.Backoff{
-		Duration: RetryInitialDuration,
-		Factor:   RetryBackoffFactor,
-		Jitter:   RetryBackoffJitter,
-		Steps:    RetryMaxSteps,
-	}, func() (bool, error) {
-		log.Info("Attempting status update")
-
-		// Get the latest version of the resource
-		latest := &configbutleraiv1alpha3.ClusterWatchRule{}
-		key := client.ObjectKeyFromObject(clusterRule)
-		if err := r.Get(ctx, key, latest); err != nil {
-			if k8serrors.IsNotFound(err) {
-				log.Info("Resource was deleted, nothing to update")
-				return true, nil
-			}
-			log.Error(err, "Failed to get latest resource version")
-			return false, err
-		}
-
-		log.Info("Got latest resource version",
-			"generation", latest.Generation,
-			"resourceVersion", latest.ResourceVersion)
-
-		// Copy our status to the latest version
-		latest.Status = clusterRule.Status
-
-		log.Info("Attempting to update status",
-			"conditionsCount", len(latest.Status.Conditions))
-
-		// Attempt to update
-		if err := r.Status().Update(ctx, latest); err != nil {
-			if k8serrors.IsConflict(err) {
-				log.Info("Resource version conflict, retrying")
-				return false, nil
-			}
-			log.Error(err, "Failed to update status")
-			return false, err
-		}
-
-		log.Info("Status update successful")
-		return true, nil
-	})
+	st.set(ConditionTypeStreamsRunning, streamConditionStatus(streams), streams.Reason, streams.Message)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha3.ClusterWatchRule{}).
+		// A For() predicate is not an optimisation here, it closes a self-triggering edge: a status
+		// write bumps resourceVersion and fires an Update watch event that EnqueueRequestForObject
+		// turns straight back into a queued request, un-rate-limited. reconcileStatus.commit()
+		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
+		// matches what GitProvider and ClusterProvider already do.
+		For(&configbutleraiv1alpha3.ClusterWatchRule{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// GenerationChangedPredicate keeps these watches reacting to a freshly
 		// applied or spec-changed dependency while ignoring the status-only
 		// updates the controllers write themselves — without it every GitTarget

@@ -4,9 +4,16 @@
 > Date: 2026-07-21
 > Reviewed at: branch `feat/gittarget-prune-mode-pr5`, commit `f37a7ba`.
 >
-> **Scheduled and done so far:** F12's *enum casing* only — `PruneMode` is now
-> `Never`/`OnEvent`/`Always`, taken before the release because it was the last moment it was free.
-> Every other finding, including the rest of F12, is still open.
+> **Done so far.** F12's *enum casing* (`PruneMode` is now `Never`/`OnEvent`/`Always`, taken before
+> the release because it was the last moment it was free), and then the whole of §4's
+> **"Before the next release"** and **"Next"** blocks: **F1, F2, F3, F5, F7, F8, F11** and the rest
+> of **F12**, shipped together on `feat/flux-status-contract`. See §6 for exactly what landed and
+> what each fix looks like now.
+>
+> **Still open:** **F4** (abnormal-true polarity — resolved the other way, deliberately; see §6),
+> **F6** (`spec.suspend`, `spec.interval`, reconcile-request annotation), **F9** (the stored
+> `scope: Namespaced` status-write question), **F10** (CommitRequest lifecycle). Those are §4's
+> "Then (API surface)" block and are a separate change.
 > Stance: reviewed as if this API were proposed for the GitOps Toolkit, with Flux's own
 > source (`external-sources/flux/`) and kstatus (`sigs.k8s.io/cli-utils/pkg/kstatus`) as ground
 > truth rather than recollection.
@@ -650,3 +657,57 @@ object *operable* by the reflexes a platform team already has from Flux, and rig
 those reflexes return anything here. Most of it is already designed in
 `docs/design/reconcile-triggering.md`; it needs building. `spec.suspend` first, because this
 controller writes to Git and there is currently no way to make it stop.
+
+---
+
+## 6. What was built (2026-07-22, branch `feat/flux-status-contract`)
+
+The review's own ordering was followed: §4's "Before the next release" and "Next" blocks, plus the
+cheap F12 nits. The API-surface block (F6, F9, F10) is deliberately left for a separate change,
+because each of those adds or changes a spec field and deserves its own review.
+
+Two pieces of shared machinery carry most of it, and both replace code that had been copied five or
+six times:
+
+**`internal/controller/readiness.go` — the accumulator that owns the trio.** Gates no longer set
+`Ready`/`Reconciling`/`Stalled`; they *contribute* a verdict at one of three levels (converged,
+progressing, stalled) and the trio is derived once at the end. Within a level the first contributor
+wins, so the precedence is the order of a handful of adjacent calls in `gitTargetReadinessGates` /
+`ruleReadiness` — readable in one place rather than emergent from which gate ran last. This is the
+`summarize`-once shape the review pointed at, without taking `fluxcd/pkg/runtime` as a dependency.
+
+**`internal/controller/status.go` — the per-reconcile status session.** `beginStatus` captures the
+object as read, `set`/`applyReadiness` collect what the reconcile wants to say, and `commit` writes
+the difference exactly once. It replaced five near-identical `updateStatusWithRetry` copies and, with
+them, three shared defects, plus six `setCondition`/`setTypedCondition` wrappers and eight
+trio-setting helpers (`setStalledConditions` ×3, `setProgressingConditions`, `setReadyConditions`,
+`setRuleStalled` ×2, `setRuleProgressing`, `downgradeReady`).
+
+| Finding | What landed |
+|---|---|
+| **F1** — `downgradeReady` erased a terminal `Stalled` | The accumulator. `downgradeReady` is gone; the source/provider projection now only *publishes* its three conditions and contributes progressing verdicts. The regression cell ("refused path **and** unready provider") is a table row in `gittarget_status_test.go` that runs the real `kstatus.Compute` over reconciler output. |
+| **F2** — a GitTarget with no WatchRules never reached `Current` | `streamsAxis` reports `True` when `Ready == Total`, which is vacuously true at zero. `status.streams.summary` still reads `0/0` and the reason is still `NoResolvedTypes`, so the zero stays visible. "Data plane not wired" is now a *different* state (reason `Progressing`) so the two can never be confused. |
+| **F3** — unconditional writes, moving timestamps, no self-predicate | All three legs. `commit` sends nothing when the status is unchanged; `status.lastReconcileTime` and `status.streams.observedTime` were removed rather than excluded from the comparison (they existed only to be overwritten); `GenerationChangedPredicate` added to the `For()` of GitTarget, WatchRule and ClusterWatchRule. |
+| **F5** — `upsertCondition` reordered the list on every touch | Delegates to `apimeta.SetStatusCondition`, which updates in place. The test now pins position stability rather than de-duplication of an input `listType=map` makes impossible. |
+| **F7** — zero Kubernetes Events | Every reconciler takes an `EventRecorder`; the shared writer emits one Event per **persisted** `Ready` transition (`Normal` on True, `Warning` otherwise). After the patch, not beside each `set`, so intermediate values a reconcile never stored are never announced. |
+| **F8** — ad-hoc reasons, `Reason == Type` | Generic reasons alias `fluxcd/pkg/apis/meta`. `OK` and `Ready` as *reasons* became `Succeeded` across all six kinds and the e2e suite. Domain reasons kept. |
+| **F11** — `observedGeneration` for a generation never observed | Comes free with the patch: the write uses optimistic concurrency, so a spec that moved under the reconcile loses the write instead of being mislabelled. The conflict is dropped rather than retried — the write that beat us already enqueued a fresh pass. |
+| **F12** — API-conventions nits | GitTarget's default printer columns cut from seven to four (`Provider`/`Branch`/`Path` moved to `priority=1`); `patchStrategy`/`patchMergeKey` added to `GitProviderStatus.Conditions`; `ObjectMeta` json tags unified on `omitempty,omitzero`; `status.streams.summary`'s field doc now says *why* it duplicates the counts beside it. |
+
+### F4 was resolved the other way, on purpose
+
+The review is right that the code and `docs/spec/status-conditions-guide.md` disagreed, and right
+that "pick one" was the answer. The one picked was **keep writing the pair when False**, and the
+guide now says so and says why.
+
+kstatus tolerates it — it tests for `== True` and ignores everything else — so nothing downstream
+misreads it. Against that: `kubectl wait --for=condition=Stalled=false` reads the explicit `False`,
+this repo's e2e suite asserts it in several specs, and a condition that vanishes is harder for a
+human to reason about than one that reads `False`. The cost of the deviation is three extra condition
+entries in `-o yaml`; the cost of removing it is a real capability plus a suite-wide rewrite. What
+*was* wrong and is now fixed is the incoherent message the review quoted
+(`Reconciling=False, message="Reconciliation is stalled"` is at least true of the object, and it is
+now written from one place rather than as leftover state from a gate that lost).
+
+The deviation is recorded in the guide as the single knowing departure from the API conventions, so
+the two documents cannot silently drift again.

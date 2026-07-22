@@ -61,7 +61,7 @@ var _ = Describe("Manager Higher-Level KRM (HelmRelease)",
 
 			By("creating the GitProvider")
 			createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-			verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+			verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 		})
 
 		AfterAll(func() {
@@ -81,8 +81,8 @@ var _ = Describe("Manager Higher-Level KRM (HelmRelease)",
 				DestinationName string
 			}{Name: ruleName, Namespace: testNs, DestinationName: destName}, testNs)
 			Expect(err).NotTo(HaveOccurred(), "failed to apply HelmRelease WatchRule")
-			verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
-			verifyResourceStatus("watchrule", ruleName, testNs, "True", "Ready", "")
+			verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
+			verifyResourceStatus("watchrule", ruleName, testNs, "True", "Succeeded", "")
 			waitForStreamsRunning(destName, testNs)
 
 			By(fmt.Sprintf("creating the HelmRelease with chart version %s", initialVersion))

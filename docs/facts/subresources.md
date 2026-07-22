@@ -200,11 +200,10 @@ spec:
   path: clusters/dev
 status:
   observedGeneration: 4
-  lastReconcileTime: "2026-06-08T10:00:00Z"
   conditions:
     - type: Ready
       status: "True"
-      reason: OK
+      reason: Succeeded
 ```
 
 The user owns `spec`; the controller owns `status`. `observedGeneration` is what

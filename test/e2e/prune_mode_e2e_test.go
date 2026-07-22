@@ -76,7 +76,7 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		applyPruneGitTarget(neverTarget, testNs, providerName, neverPath, "Never")
 		applyPruneGitTarget(alwaysTarget, testNs, providerName, alwaysPath, "Always")
 		for _, name := range []string{defaultTarget, neverTarget, alwaysTarget} {
-			verifyResourceCondition("gittarget", name, testNs, "Validated", "True", "OK", "")
+			verifyResourceCondition("gittarget", name, testNs, "Validated", "True", "Succeeded", "")
 		}
 
 		By("each target watches ConfigMaps in this namespace")
@@ -84,7 +84,7 @@ var _ = Describe("Manager GitTarget prune policy", Label("manager"), Ordered, fu
 		applyIsolationWatchRule(neverRule, testNs, neverTarget, `"configmaps"`)
 		applyIsolationWatchRule(alwaysRule, testNs, alwaysTarget, `"configmaps"`)
 		for _, name := range []string{defaultRule, neverRule, alwaysRule} {
-			verifyResourceStatus("watchrule", name, testNs, "True", "Ready", "")
+			verifyResourceStatus("watchrule", name, testNs, "True", "Succeeded", "")
 		}
 
 		By("waiting for every target's ConfigMap stream to be live before any event is created")

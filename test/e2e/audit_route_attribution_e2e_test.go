@@ -90,7 +90,7 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 		Expect(applyGitTargetWithSourceNamespaces(
 			testNs, gitTargetName, gitProvName, basePath, clusterProv, testNs, sourceNs)).Error().
 			NotTo(HaveOccurred(), "failed to apply the GitTarget")
-		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "OK", "")
+		verifyResourceCondition("gittarget", gitTargetName, testNs, "Validated", "True", "Succeeded", "")
 	})
 
 	AfterAll(func() {
@@ -142,7 +142,7 @@ var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 		}
 		Expect(applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", data, testNs)).
 			To(Succeed(), "failed to apply the WatchRule")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 		waitForStreamsRunning(gitTargetName, testNs)
 
 		assertCommitAuthor(testNs, fmt.Sprintf("audit-route-cm-%d", GinkgoRandomSeed()),

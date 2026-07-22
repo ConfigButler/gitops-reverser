@@ -51,7 +51,7 @@ var _ = Describe("Manager Foreign Content Refusal", Label("manager", "foreign-co
 
 		By("creating the GitProvider")
 		createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 	})
 
 	AfterAll(func() {

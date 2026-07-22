@@ -45,10 +45,18 @@ Facts first, then the fix, then the gaps, then the toolbox.
 | Controller | Watches (besides `For`) | Predicate | Happy-path requeue | Data-plane edge |
 |---|---|---|---|---|
 | **GitProvider** | *(none)* | `GenerationChanged` on self | 5 min | ❌ |
-| **GitTarget** | GitProvider, WatchRule, ClusterWatchRule | `GenerationChanged` on deps | 5 min | ✅ GitPath channel (new) |
-| **WatchRule** | GitTarget, GitProvider | `GenerationChanged` | 5 min | ❌ |
-| **ClusterWatchRule** | GitTarget, GitProvider | `GenerationChanged` | 5 min | ❌ |
+| **GitTarget** | GitProvider, ClusterProvider, Namespace, WatchRule, ClusterWatchRule | `GenerationChanged` on **self** and on deps | 5 min converged / 10 s settling | ✅ GitPath channel |
+| **WatchRule** | GitTarget, GitProvider, ClusterProvider | `GenerationChanged` on **self** and on deps | 5 min converged / 10 s settling | ✅ source-namespace channel |
+| **ClusterWatchRule** | GitTarget, GitProvider | `GenerationChanged` on **self** and on deps | 5 min converged / 10 s settling | ❌ |
 | **CommitRequest** | *(none)* | — | polls every 2 s | polls worker, no push |
+
+The `For()` predicate on GitTarget, WatchRule and ClusterWatchRule is not an
+optimisation, it closes a self-triggering edge: a status write bumps `resourceVersion`
+and fires an Update watch event that `EnqueueRequestForObject` turns straight back into
+a queued request, un-rate-limited, so every reconcile cost roughly two. The shared status
+writer already suppresses no-op writes (see
+[`../spec/status-conditions-guide.md`](../spec/status-conditions-guide.md)); the predicate
+makes it structural, and matches what GitProvider and ClusterProvider already did.
 
 The GitTarget no longer watches Secrets: the encryption-Secret watch was removed so the
 process stops retaining every Secret value in the cluster; generated-age-Secret recovery
@@ -221,12 +229,21 @@ status heartbeat. The fix for B1 is the same shape: `predicate.Or(
 GenerationChangedPredicate{}, gitTargetReadinessChangedPredicate{})` rather than
 removing the predicate (which reintroduces the storm).
 
-### F4. Conditions **and** Events, every loop (fixes Gap A surfacing)
+### F4. Conditions **and** Events, every loop (fixes Gap A surfacing) — SHIPPED
 
 Flux always patches kstatus conditions (`fluxcd/pkg/runtime/conditions` + `patch`)
 **and** emits a Kubernetes Warning Event (`fluxcd/pkg/runtime/events`, which also
 forwards to notification-controller), then requeues at a shorter failure interval.
 A failure is immediately visible and alertable, not buried in a metric.
+
+**Built.** Every reconciler takes an `EventRecorder` and the shared status writer
+(`internal/controller/status.go`) emits one Event per **persisted** `Ready`
+transition: `Normal` when `Ready=True`, `Warning` otherwise, carrying the condition's
+reason and message. Emitting after the patch rather than beside each condition write
+is deliberate — a reconcile may write `Ready` several times and only the last is
+stored, so intermediate values never reach `kubectl describe`. That also means the
+suppressed no-op status write emits nothing, which is the intended behavior: nothing
+changed, so nothing happened.
 
 ### F5. Generalize the data-plane nudge (the §2 recipe, reused)
 

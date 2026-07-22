@@ -410,8 +410,6 @@ func TestCheckRemoteConnectivity(t *testing.T) {
 
 // TestGitProviderConditions tests the condition setting logic.
 func TestGitProviderConditions(t *testing.T) {
-	reconciler := &GitProviderReconciler{}
-
 	// Mock GitProvider
 	gitProvider := &configbutleraiv1alpha3.GitProvider{}
 
@@ -421,7 +419,7 @@ func TestGitProviderConditions(t *testing.T) {
 		reason  string
 		message string
 	}{
-		{metav1.ConditionTrue, "Ready", "Repository connectivity validated"},
+		{metav1.ConditionTrue, ReasonSucceeded, "Repository connectivity validated"},
 		{metav1.ConditionFalse, ReasonConnectionFailed, "Failed to connect"},
 		{metav1.ConditionFalse, ReasonSecretNotFound, "Secret not found"},
 		{metav1.ConditionFalse, ReasonChecking, "Checking repository"},
@@ -429,7 +427,8 @@ func TestGitProviderConditions(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.reason, func(t *testing.T) {
-			reconciler.setCondition(gitProvider, ConditionTypeReady, tc.status, tc.reason, tc.message)
+			st := beginStatus(nil, nil, gitProvider, &gitProvider.Status.Conditions)
+			st.set(ConditionTypeReady, tc.status, tc.reason, tc.message)
 
 			if len(gitProvider.Status.Conditions) == 0 {
 				t.Error("Expected at least one condition")

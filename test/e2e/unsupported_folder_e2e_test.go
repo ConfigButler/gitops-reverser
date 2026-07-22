@@ -50,7 +50,7 @@ var _ = Describe("Manager Unsupported Folder Refusal", Label("manager", "unsuppo
 
 		By("creating the GitProvider")
 		createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 	})
 
 	AfterAll(func() {
