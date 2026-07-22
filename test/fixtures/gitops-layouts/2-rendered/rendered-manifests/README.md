@@ -16,7 +16,7 @@ and the results land under `rendered/<env>/`. Argo CD reads only `rendered/`.
 
 ## Layout
 
-```
+```yaml
 14-rendered-manifests/
 ├── README.md
 ├── src/                                # inputs — the GitOps tool never reads these
@@ -38,7 +38,7 @@ and the results land under `rendered/<env>/`. Argo CD reads only `rendered/`.
 │       └── frontend.yaml                # multi-doc plain KRM, "DO NOT EDIT"
 └── argocd/
     └── production.yaml                  # Application → path: rendered/production
-```
+```yaml
 
 ## What makes it structurally distinct
 

@@ -12,7 +12,7 @@ in-repo Helm chart under `chart/`, parameterised from the generator file.
 
 ## Layout
 
-```
+```yaml
 04-argocd-applicationset-files/
 ├── README.md
 ├── applicationset.yaml              # KRM: kind ApplicationSet
@@ -29,7 +29,7 @@ in-repo Helm chart under `chart/`, parameterised from the generator file.
     └── templates/
         ├── deployment.yaml          # NOT parseable YAML - Helm/Go template
         └── service.yaml             # NOT parseable YAML - Helm/Go template
-```
+```yaml
 
 ## What makes it structurally distinct
 

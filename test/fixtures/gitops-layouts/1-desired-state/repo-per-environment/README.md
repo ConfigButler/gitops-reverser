@@ -16,7 +16,7 @@ copy of every manifest.
 
 ## Layout
 
-```
+```yaml
 11-repo-per-environment/
 ├── README.md                 # this file — explains the simulation
 ├── gitops-dev/               # stands in for a whole repository
@@ -50,7 +50,7 @@ copy of every manifest.
     │       ├── deployment.yaml
     │       └── service.yaml
     └── namespaces.yaml
-```
+```yaml
 
 ## What makes it structurally distinct
 

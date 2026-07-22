@@ -22,7 +22,7 @@ one directory.
 
 ## Layout
 
-```
+```yaml
 08-argocd-external-helm/
 ├── README.md
 ├── applications/
@@ -45,7 +45,7 @@ one directory.
         ├── application.yaml    # an Argo CD Application (multi-source)
         ├── values.yaml         # Helm values -- NOT a Kubernetes object
         └── clusterissuer.yaml  # plain KRM (cert-manager.io/v1 ClusterIssuer)
-```
+```yaml
 
 ## What makes it structurally distinct
 

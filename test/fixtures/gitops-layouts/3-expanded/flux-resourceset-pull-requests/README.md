@@ -13,12 +13,12 @@ breaks a much deeper assumption: **the inputs are not in the repository.**
 
 ## Layout
 
-```
+```yaml
 flux-resourceset-pull-requests/
 ├── README.md
 └── previews/
     └── preview-envs.yaml    # ResourceSetInputProvider + ResourceSet
-```
+```yaml
 
 ## What makes it structurally distinct
 

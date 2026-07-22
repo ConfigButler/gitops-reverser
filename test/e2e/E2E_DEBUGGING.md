@@ -23,7 +23,7 @@ The `test-e2e` target automatically starts port-forwards, so services are immedi
 
 ```bash
 task portforward-ensure
-```
+```yaml
 
 This exposes:
 
@@ -35,7 +35,7 @@ This exposes:
 
 ```bash
 task clean-port-forwards
-```
+```yaml
 
 **Note:** The `task test-e2e` and `task prepare-e2e` targets automatically run
 `task portforward-ensure`, so services are ready immediately after setup.
@@ -75,7 +75,7 @@ Useful commands:
 task clean-cluster
 task clean-cluster CTX=k3d-gitops-reverser-test-e2e
 task test-e2e CTX=k3d-gitops-reverser-test-e2e-fresh
-```
+```yaml
 
 Avoid deleting `.stamps` wholesale unless you actually want the full rebuild cost. The harness
 keeps those artifacts specifically so most reruns stay cheap.
@@ -90,7 +90,7 @@ up{job="gitops-reverser"}
 
 # Count of active pods
 count(up{job="gitops-reverser"})
-```
+```yaml
 
 ### Webhook Events
 
@@ -101,7 +101,7 @@ sum(gitopsreverser_events_received_total)
 # Events by leader vs follower
 gitopsreverser_events_received_total{role="leader"}
 gitopsreverser_events_received_total{role!="leader"}
-```
+```yaml
 
 ### Resource Metrics
 
@@ -114,11 +114,11 @@ process_resident_memory_bytes{job="gitops-reverser"}
 
 # Goroutines
 go_goroutines{job="gitops-reverser"}
-```
+```yaml
 
 ## Network Architecture
 
-```
+```yaml
 Host Machine (port 13000, 19090, 19080)
     ↕ (VS Code forwarded ports from devcontainer)
 DevContainer
@@ -130,7 +130,7 @@ Kind Cluster
     │  └─ Gitea (Git server)
     └─ controller namespace (System Under Test; set via `NAMESPACE`)
        └─ Controller pods (2 replicas, HTTPS metrics)
-```
+```yaml
 
 ## Spec Timings
 
@@ -142,7 +142,7 @@ duration table from the latest run with:
 ```bash
 go run ./test/e2e/tools/spec-timings \
   .stamps/cluster/k3d-gitops-reverser-test-e2e/gitops-reverser/ginkgo-report-full.json
-```
+```yaml
 
 The companion `test/e2e/tools/ts` reads stdin and prefixes each line with
 elapsed seconds + wallclock. Useful for decorating cold-run logs that
@@ -150,14 +150,14 @@ don't have structured JSON yet:
 
 ```bash
 task test-e2e 2>&1 | go run ./test/e2e/tools/ts | tee /tmp/e2e.log
-```
+```yaml
 
 If output looks batched (long pauses then a burst of timestamps), prefix
 with `stdbuf -oL -eL` to force line-buffering on `task`/`go test`:
 
 ```bash
 stdbuf -oL -eL task test-e2e 2>&1 | go run ./test/e2e/tools/ts | tee /tmp/e2e.log
-```
+```yaml
 
 ## Debugging Failed Tests
 
@@ -200,7 +200,7 @@ task clean-cluster CTX=k3d-gitops-reverser-test-e2e
 
 # Stop local port-forwards
 task clean-port-forwards
-```
+```yaml
 
 ## Available Task Targets
 

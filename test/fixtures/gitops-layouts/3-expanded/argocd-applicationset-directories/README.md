@@ -14,7 +14,7 @@ basename via Go templating (`{{.path.basename}}`).
 
 ## Layout
 
-```
+```yaml
 03-argocd-applicationset-directories/
 ├── README.md
 ├── bootstrap/
@@ -36,7 +36,7 @@ basename via Go templating (`{{.path.basename}}`).
         └── monitoring/            # NOT matched: two levels below apps/
             ├── deployment.yaml
             └── service.yaml
-```
+```yaml
 
 ## What makes it structurally distinct
 
@@ -71,14 +71,14 @@ a real repository, the first open question below **has an answer, and it is yes.
 Committing a new folder — and authoring **no** `Application` CR — produced an
 `Application` and deployed its workload:
 
-```
+```yaml
 $ mkdir apps/worker && git add . && git commit && git push   # no CR authored
 $ kubectl -n argocd get applications
 NAME           PATH           SYNC     HEALTH
 app-backend    apps/backend   Synced   Healthy
 app-frontend   apps/frontend  Synced   Healthy
 app-worker     apps/worker    Synced   Healthy      <-- appeared from the folder alone
-```
+```yaml
 
 **Creating a directory is a deployment operation.** The directory listing is a
 field of desired state.
@@ -87,10 +87,10 @@ The corollary is sharper. Authoring an `Application` for that path *as well* —
 is what "add an app = add the manifests **and** the CR" would do — makes the two
 fight over the same objects:
 
-```
+```yaml
 SharedResourceWarning: ConfigMap/worker-config is part of applications
                        argocd/app-worker and worker-authored-by-hand
-```
+```yaml
 
 The generated Application flipped to `OutOfSync`, and the workload's Argo
 `tracking-id` was overwritten to name the hand-authored app. So in a repository of

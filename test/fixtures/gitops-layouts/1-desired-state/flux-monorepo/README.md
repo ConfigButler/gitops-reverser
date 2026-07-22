@@ -16,7 +16,7 @@ authored by humans. This shape is what most teams inherit when they adopt Flux
 
 ## Layout
 
-```
+```yaml
 09-flux-monorepo/
 ├── README.md
 ├── apps/
@@ -55,7 +55,7 @@ authored by humans. This shape is what most teams inherit when they adopt Flux
         ├── apps.yaml                      # Flux Kustomization CR (NOT a build file)
         ├── infrastructure.yaml            # Flux Kustomization CRs (NOT build files)
         └── kustomization.yaml             # kustomize.config.k8s.io (build file)
-```
+```yaml
 
 ## What makes it structurally distinct
 

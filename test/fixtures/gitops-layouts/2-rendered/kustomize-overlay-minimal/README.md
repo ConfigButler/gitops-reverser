@@ -12,7 +12,7 @@ here (`rendered-manifests`, `kustomize-overlays`, `flux-monorepo`) also uses `na
 keys and you get this: `overlay-fan-out-unsupported` — a base read from outside the subtree,
 shared by two render roots.
 
-```
+```yaml
 base/                       # the shared base (a Deployment + a Service)
   kustomization.yaml
   deployment.yaml
@@ -22,7 +22,7 @@ overlays/
     kustomization.yaml
   staging/                  # same shape, different namespace + tag
     kustomization.yaml
-```
+```yaml
 
 ## What it forces
 

@@ -13,7 +13,7 @@ YAML committed to the repo.
 
 ## Layout
 
-```
+```yaml
 02-argocd-app-of-apps/
 ├── README.md
 ├── bootstrap/
@@ -28,7 +28,7 @@ YAML committed to the repo.
     └── backend/
         ├── deployment.yaml
         └── service.yaml
-```
+```yaml
 
 ## What makes it structurally distinct
 

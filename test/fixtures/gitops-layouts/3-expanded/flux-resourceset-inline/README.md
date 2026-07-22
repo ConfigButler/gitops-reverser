@@ -16,12 +16,12 @@ here, **no tenant has a file at all**.
 
 ## Layout
 
-```
+```yaml
 flux-resourceset-inline/
 ├── README.md
 └── tenants/
     └── apps.yaml        # ONE document: template + 3 inputs -> 9 live objects
-```
+```yaml
 
 Three inputs × three resources (`Namespace`, `Deployment`, `Service`) = **nine
 live objects, zero of which have a home file.** The only artifact in Git is the
@@ -50,13 +50,13 @@ live objects, zero of which have a home file.** The only artifact in Git is the
 
 Run against a real flux-operator, the children carry:
 
-```
+```yaml
 labels:
   resourceset.fluxcd.controlplane.io/name: tenant-apps
   resourceset.fluxcd.controlplane.io/namespace: flux-system
 ownerReferences: <none>
 managedFields[].manager: flux-operator
-```
+```yaml
 
 plus a `status.inventory` on the `ResourceSet` listing every object it owns.
 **There is no `ownerReference` anywhere** — the parent/child link is carried by

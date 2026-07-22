@@ -16,7 +16,7 @@ is still a syntactically valid Kubernetes object — you can read its `kind`,
 
 ## Layout
 
-```
+```yaml
 13-sops-encrypted/
 ├── README.md
 ├── .sops.yaml                         # sops creation-rules (NOT a K8s object)
@@ -33,7 +33,7 @@ is still a syntactically valid Kubernetes object — you can read its `kind`,
     └── production/
         └── apps.yaml                  # Flux Kustomization (+GitRepository),
                                        #   spec.decryption.provider: sops
-```
+```yaml
 
 ## What makes it structurally distinct
 

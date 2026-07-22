@@ -14,7 +14,7 @@ environment — the environments differ only in which values get layered on top.
 
 ## Layout
 
-```
+```yaml
 07-helm-environment-values/
 ├── README.md
 ├── chart/
@@ -31,7 +31,7 @@ environment — the environments differ only in which values get layered on top.
 └── argocd/
     ├── dev.yaml                # Argo CD Application (control-plane object)
     └── production.yaml         # Argo CD Application (control-plane object)
-```
+```yaml
 
 ## What makes it structurally distinct
 
