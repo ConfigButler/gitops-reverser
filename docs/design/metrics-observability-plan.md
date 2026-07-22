@@ -248,7 +248,7 @@ panel is copy-pasteable.
 |---|---|---|
 | Audit fact-store errors | `rate(audit_events_total{outcome="write_error"}[10m]) > 0` | Redis fact writes failing |
 | Attribution match coverage drop | match coverage `< 0.5` for 30m while audit flowing | facts stopped matching watch events |
-| Grace window saturating | `attribution_resolution_wait_seconds{result=~"absent|expired"}` p95 → `--author-attribution-grace` | misses are waiting the full grace; raise grace or skip never-attributed types |
+| Grace window saturating | `attribution_resolution_wait_seconds{result=~"absent\|expired"}` p95 → `--author-attribution-grace` | misses are waiting the full grace; raise grace or skip never-attributed types |
 | Watch restart storm | `rate(watch_restarts_total{reason="410_gone"}[15m])` spike | RV churn / compaction pressure |
 | List fallback in use | `rate(watch_recovery_total{mode="list_fallback"}[1h]) > 0` | an aggregated API isn't honoring streaming list |
 | Worker backing up | `branch_worker_queue_depth` rising, not draining | stalled remote |

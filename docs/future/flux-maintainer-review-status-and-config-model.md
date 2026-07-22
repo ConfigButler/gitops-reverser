@@ -11,7 +11,7 @@
 > source (`external-sources/flux/`) and kstatus (`sigs.k8s.io/cli-utils/pkg/kstatus`) as ground
 > truth rather than recollection.
 
-**What was read**
+## What was read
 
 - The API surface: `api/v1alpha3/*.go` (all six kinds plus `NamespaceMatcher`, `PrunePolicy`).
 - The status implementations: `internal/controller/{gittarget,watchrule,clusterwatchrule,gitprovider,clusterprovider,commitrequest}_controller.go`, `condition_helper.go`, `stream_status.go`, `gittarget_dependency_status.go`, `gittarget_source_cluster.go`, `internal/watch/stream_readiness.go`.

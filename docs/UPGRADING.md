@@ -573,7 +573,7 @@ Redis/Valkey is optional in configured-author mode. Set `--redis-addr` to store 
 restart); leave it empty to cold-replay from scratch on restart. Attributed-author mode still requires a
 non-empty `--redis-addr`.
 
-### Migration
+#### Migration
 
 - If you want the easier configured-author install, no chart value is needed.
 - If you currently rely on kube-apiserver audit delivery for named commit authors, set:
@@ -592,7 +592,7 @@ non-empty `--redis-addr`.
 does: after the request author is known, the worker waits this long before closing the matching open
 commit window.
 
-### Migration
+#### Migration
 
 Before:
 
@@ -707,7 +707,7 @@ CRD defaulting:
 - `group` defaults to `configbutler.ai`
 - `kind` defaults to `GitProvider` (a single-value enum)
 
-### Migration
+#### Migration
 
 - If your `GitTarget` only sets `providerRef.name` (the common case), **no change is needed.**
 - If you set `providerRef.group` or `providerRef.kind` explicitly, drop them or set them to the
@@ -746,7 +746,7 @@ Two further tightenings:
 - A `known_hosts` that **is** present but fails to parse is now a **hard error regardless of the
   flag.** The old key silently swallowed an unparseable value; it no longer does.
 
-### Migration
+#### Migration
 
 - **Recommended:** add a real `known_hosts` to the credentials Secret, or supply it via
   `GitProvider.spec.knownHostsRef` / an install-level default ConfigMap, then delete the obsolete

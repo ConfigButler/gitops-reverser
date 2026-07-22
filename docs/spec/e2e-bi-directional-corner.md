@@ -113,7 +113,7 @@ Other keys, verified:
 | Stripped **annotation** prefixes: `kubectl.kubernetes.io/`, `control-plane.alpha.kubernetes.io/`, `deployment.kubernetes.io/`, `autoscaling.alpha.kubernetes.io/`, `kustomize.toolkit.fluxcd.io/`, `applyset.kubernetes.io/` | [`internal/sanitize/types.go:75-82`](../../internal/sanitize/types.go#L75-L82) |
 | **No Argo CD key was stripped, at all.** The strip lists were hardcoded prefix matches; there is no runtime config | same |
 
-*(Line numbers above describe the code as it stood before this change.)*
+Line numbers above describe the code as it stood before this change.
 
 So `kubectl.kubernetes.io/last-applied-configuration` (which Argo's client-side
 apply writes) *was* stripped — good. And `argocd.argoproj.io/tracking-id` (which
