@@ -79,7 +79,7 @@ var _ = Describe("Commit Window Batching",
 			}
 			err = applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", watchRuleData, testNs)
 			Expect(err).NotTo(HaveOccurred(), "failed to apply WatchRule")
-			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 			By("waiting for the configmaps stream to be live so the seed and burst are live events")
 			waitForStreamsRunning(gitTargetName, testNs)

@@ -235,10 +235,6 @@ type WatchRuleStreamsStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=5
 	PendingSample []string `json:"pendingSample,omitempty"`
-
-	// ObservedTime is when this roll-up was last computed.
-	// +optional
-	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
 }
 
 // Design rationale, kept out of the generated CRD description by the blank line below.
@@ -274,7 +270,7 @@ type WatchRule struct {
 
 	// metadata is a standard object metadata
 	// +optional
-	metav1.ObjectMeta `json:"metadata,omitempty"`
+	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
 	// spec defines the desired state of WatchRule
 	// +required

@@ -196,14 +196,10 @@ var _ = Describe("GitProvider Controller", func() {
 	})
 
 	Context("Status Condition Management", func() {
-		var reconciler *GitProviderReconciler
 		var gitProvider *configbutleraiv1alpha3.GitProvider
+		var st *reconcileStatus
 
 		BeforeEach(func() {
-			reconciler = &GitProviderReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
 			gitProvider = &configbutleraiv1alpha3.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-provider",
@@ -213,16 +209,11 @@ var _ = Describe("GitProvider Controller", func() {
 					Conditions: []metav1.Condition{},
 				},
 			}
+			st = beginStatus(k8sClient, nil, gitProvider, &gitProvider.Status.Conditions)
 		})
 
 		It("should set initial checking condition", func() {
-			reconciler.setCondition(
-				gitProvider,
-				ConditionTypeReady,
-				metav1.ConditionFalse,
-				ReasonChecking,
-				"Validating...",
-			)
+			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonChecking, "Validating...")
 
 			Expect(gitProvider.Status.Conditions).To(HaveLen(1))
 			condition := gitProvider.Status.Conditions[0]
@@ -232,23 +223,14 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(condition.Message).To(Equal("Validating..."))
 		})
 
-		It("should update existing condition", func() {
-			// Set initial condition
-			reconciler.setCondition(
-				gitProvider,
-				ConditionTypeReady,
-				metav1.ConditionFalse,
-				ReasonChecking,
-				"Checking...",
-			)
-
-			// Update condition
-			reconciler.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionTrue, "Ready", "Success!")
+		It("should update an existing condition in place", func() {
+			st.set(ConditionTypeReady, metav1.ConditionFalse, ReasonChecking, "Checking...")
+			st.set(ConditionTypeReady, metav1.ConditionTrue, ReasonSucceeded, "Success!")
 
 			Expect(gitProvider.Status.Conditions).To(HaveLen(1))
 			condition := gitProvider.Status.Conditions[0]
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-			Expect(condition.Reason).To(Equal("Ready"))
+			Expect(condition.Reason).To(Equal(ReasonSucceeded))
 			Expect(condition.Message).To(Equal("Success!"))
 		})
 
@@ -263,7 +245,7 @@ var _ = Describe("GitProvider Controller", func() {
 			}
 
 			for _, tc := range testCases {
-				reconciler.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionFalse, tc.reason, tc.message)
+				st.set(ConditionTypeReady, metav1.ConditionFalse, tc.reason, tc.message)
 
 				Expect(gitProvider.Status.Conditions).To(HaveLen(1))
 				condition := gitProvider.Status.Conditions[0]
@@ -351,15 +333,15 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
-			condition := conditionByType(updatedProvider.Status.Conditions, ConditionTypeReady)
+			condition := findCondition(updatedProvider.Status.Conditions, ConditionTypeReady)
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Type).To(Equal("Ready"))
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonSecretNotFound))
 			Expect(condition.Message).To(ContainSubstring("Secret 'nonexistent-secret' not found"))
-			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeReconciling).Status).
+			Expect(findCondition(updatedProvider.Status.Conditions, ConditionTypeReconciling).Status).
 				To(Equal(metav1.ConditionFalse))
-			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
+			Expect(findCondition(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
 				To(Equal(metav1.ConditionTrue))
 		})
 
@@ -414,12 +396,12 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
-			condition := conditionByType(updatedProvider.Status.Conditions, ConditionTypeReady)
+			condition := findCondition(updatedProvider.Status.Conditions, ConditionTypeReady)
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonSecretMalformed))
 			Expect(condition.Message).To(ContainSubstring("Secret 'malformed-secret' malformed"))
-			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
+			Expect(findCondition(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
 				To(Equal(metav1.ConditionTrue))
 		})
 
@@ -473,12 +455,12 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
-			condition := conditionByType(updatedProvider.Status.Conditions, ConditionTypeReady)
+			condition := findCondition(updatedProvider.Status.Conditions, ConditionTypeReady)
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonCommitConfigInvalid))
 			Expect(condition.Message).To(ContainSubstring("invalid commit configuration"))
-			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
+			Expect(findCondition(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
 				To(Equal(metav1.ConditionTrue))
 			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
 		})
@@ -522,12 +504,12 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedProvider.Status.Conditions).To(HaveLen(3))
-			condition := conditionByType(updatedProvider.Status.Conditions, ConditionTypeReady)
+			condition := findCondition(updatedProvider.Status.Conditions, ConditionTypeReady)
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonSecretNotFound))
 			Expect(condition.Message).To(ContainSubstring("signing secret"))
-			Expect(conditionByType(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
+			Expect(findCondition(updatedProvider.Status.Conditions, ConditionTypeStalled).Status).
 				To(Equal(metav1.ConditionTrue))
 			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
 		})

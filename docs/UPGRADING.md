@@ -7,6 +7,51 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## Unreleased: status vocabulary and two removed status fields (next minor; status-only change)
+
+Nothing in `spec` changed and no manifest you wrote needs editing. Three things a **reader of
+status** may notice:
+
+**1. The generic condition reason is now `Succeeded`, not `OK` or `Ready`.** A reason that restates
+the condition type (`Ready=True, reason=Ready`) answers nothing. The generic reasons are now aliases
+of [`github.com/fluxcd/pkg/apis/meta`](https://pkg.go.dev/github.com/fluxcd/pkg/apis/meta)
+(`Succeeded`, `Failed`, `Progressing`, `DependencyNotReady`), so one alerting rule works across every
+kind here and across every Flux kind in the same cluster. Domain reasons (`UnsupportedContent`,
+`WriteBoundaryRefused`, `NoAdmittedSourceNamespaces`, …) are unchanged.
+
+If you match on a reason string, update:
+
+| Was | Now |
+|---|---|
+| `Ready=True`, reason `OK` (GitTarget, `Validated` too) | reason `Succeeded` |
+| `Ready=True`, reason `Ready` (GitProvider, ClusterProvider, WatchRule, ClusterWatchRule) | reason `Succeeded` |
+
+Matching on `status` rather than `reason` (the usual case, and what
+`kubectl wait --for=condition=Ready` does) needs no change.
+
+**2. `GitTarget.status.lastReconcileTime` and `status.streams.observedTime` were removed.** Both were
+stamped with the current time on every pass, which made every reconcile a status write, and every
+status write a fresh watch event that re-queued the object. A condition's `lastTransitionTime` plus
+the `controller_runtime_reconcile_total` metric answer the same question without making every object
+mutable on read. `status.lastPushTime` (a real event) and `status.retention.observedTime` (the
+data plane's own observation time, which you need to tell a stale zero from a live one) both stay.
+
+**3. A GitTarget with no WatchRules now reports `Ready=True`.** It used to sit at
+`Ready=False`/`Reconciling=True`/`NoResolvedTypes` forever, a state the documented setup flow passes
+through, since you create the GitTarget before its rules. Nothing was pending and nothing ever would
+be, so `kubectl wait --for=condition=Ready` never returned and the object re-reconciled every 10
+seconds for its whole life. "Nothing to mirror" is a converged state. `status.streams.summary` still
+reads `0/0` and `StreamsRunning` still carries reason `NoResolvedTypes`, so the zero stays visible.
+
+If you have automation that treats "GitTarget Ready" as "GitTarget is mirroring something", assert
+`status.streams.total > 0` as well.
+
+**Also in this change, with no action needed:** GitTarget's `kubectl get` output drops to four
+columns (`Ready`, `Reason`, `Streams`, `Age`); `Provider`, `Branch` and `Path` moved to
+`-o wide`. And every controller now emits a Kubernetes Event on each persisted `Ready` transition,
+visible in `kubectl describe` and routable by anything that consumes Events. The operator's
+ServiceAccount gained `create`/`patch` on `events` for it, which `helm upgrade` applies.
+
 ## Unreleased — a resync no longer deletes Git documents by default (next minor; behavior change)
 
 **`GitTarget` gained `spec.prune.mode`, and its effective default changes what a resync does.**

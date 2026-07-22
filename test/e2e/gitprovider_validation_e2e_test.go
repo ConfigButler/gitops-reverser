@@ -59,7 +59,7 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 
 		verifyResourceStatus(
 			"gitprovider", gitProviderName, testNs,
-			"True", "Ready", "Repository connectivity validated",
+			"True", "Succeeded", "Repository connectivity validated",
 		)
 
 		By("showing final controller logs")
@@ -91,7 +91,7 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 			validationRepo.RepoURLHTTP,
 		)
 		verifyResourceStatus(
-			"gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated",
+			"gitprovider", gitProviderName, testNs, "True", "Succeeded", "Repository connectivity validated",
 		)
 
 		// GitTarget with branch not matching any pattern should fail
@@ -135,7 +135,7 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 		showControllerLogs("after SSH GitProvider creation")
 
 		verifyResourceStatus(
-			"gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated",
+			"gitprovider", gitProviderName, testNs, "True", "Succeeded", "Repository connectivity validated",
 		)
 
 		By("✅ Final SSH test logs")

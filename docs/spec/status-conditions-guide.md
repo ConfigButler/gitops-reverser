@@ -20,7 +20,61 @@ A list treated as a map keyed by `type`. Don't append duplicates — update the 
 `kubectl wait --for=condition=Ready=true` works by watching this array until the matching type
 hits `"True"`.
 
-Only update `lastTransitionTime` when `status` actually changes — not on every reconcile.
+Only update `lastTransitionTime` when `status` actually changes — not on every reconcile. Update the
+existing entry **in place**: a setter that removes and re-appends reorders the list on every touch,
+which is a diff in `kubectl get -o yaml` and, for a cluster that mirrors its own config objects into
+Git through this operator, a stream of commits that reorder conditions and change nothing.
+
+### One writer for the trio
+
+`Ready`, `Reconciling` and `Stalled` are derived **together, once, at the end of a reconcile**, from
+a precedence stated in one place. Gates do not set them; gates *contribute* to an accumulator
+(`internal/controller/readiness.go`) and the trio falls out of the worst contribution.
+
+This is not a style preference. When each gate wrote the trio itself, the trio said whatever the last
+gate said — so a GitTarget whose Git path had been refused (terminal) was then handed to the
+source/provider projection, which stamped `Stalled=False, Reconciling=True` over the refusal because
+a provider happened to be mid-check. To a human reading `Ready` little changed. To kstatus — which
+never reads `Ready`, only the abnormal-true pair — the object flipped from `Failed` to `InProgress`,
+so `kubectl wait` and every CI gate built on it waited out its timeout on an object that was never
+going to converge.
+
+### Status writes are suppressed when nothing changed
+
+`reconcileStatus.commit` computes the difference between the status as read and the status as
+written, and sends **nothing** when they are equal. A status write bumps `resourceVersion`, which
+fires an Update watch event, which the controller's own `For()` turns straight back into a queued
+request — so an unconditional write makes every reconcile cost roughly two. Status fields that move
+on every pass (a "last reconcile attempt" timestamp) defeat this by construction and were removed;
+`lastTransitionTime` plus `controller_runtime_reconcile_total` answer the same question without
+making every object mutable on read.
+
+The write is a status **patch with optimistic concurrency**, and a conflict is dropped rather than
+retried: a conflict means the object moved under this reconcile, so the status just computed
+describes a generation that is no longer current, and the write that beat us has already enqueued a
+fresh pass.
+
+### Reason vocabulary
+
+Generic reasons are aliases of [`github.com/fluxcd/pkg/apis/meta`](https://pkg.go.dev/github.com/fluxcd/pkg/apis/meta)
+— `Succeeded`, `Failed`, `Progressing`, `DependencyNotReady` — a module this project already depends
+on. Sharing the vocabulary means one alerting rule works across every kind here *and* across every
+Flux kind in the same cluster. A reason that restates the condition type (`Ready=True, reason=Ready`)
+answers nothing and is not used.
+
+Domain reasons stay this project's own — `UnsupportedContent`, `WriteBoundaryRefused`,
+`IgnoreShadowsManagedPath`, `NoAdmittedSourceNamespaces` — because they carry information a generic
+reason cannot. Declaring domain reasons is exactly what the upstream vocabulary asks projects to do.
+
+### One deliberate deviation: the abnormal-true pair is written when False
+
+The Kubernetes API conventions say an abnormal-true condition SHOULD only be present when `True`, and
+Flux deletes `Reconciling`/`Stalled` rather than writing them `False`. This project writes them
+either way. kstatus tolerates it (it tests for `== True` and ignores everything else), and both
+`kubectl wait --for=condition=Stalled=false` and this repo's e2e suite read the explicit `False`. A
+condition that vanishes is harder to reason about than one that reads `False`. This is the only place
+the project knowingly departs from the conventions, and it is recorded here so the code and this
+document cannot silently disagree.
 
 ## Best practices
 
@@ -35,7 +89,16 @@ Only update `lastTransitionTime` when `status` actually changes — not on every
    success, `False` = failed, `Unknown` = in progress — all unambiguous.
 
 4. **Don't duplicate between conditions and status fields.** A string field that mirrors a
-   condition is redundant noise. Pick one representation.
+   condition is redundant noise. Pick one representation. The one exception in this project is
+   `status.streams.summary` (`"3/4"`), which restates `ready` and `total` beside it: a printer
+   column can read one JSONPath, not format two. Its field doc says so, so the next reader does not
+   "clean it up".
+
+5. **Emit an Event on every persisted `Ready` transition.** Conditions say what is true now; Events
+   say what happened. A transient failure that clears before anyone looks is invisible without them,
+   and an Event-driven alerting pipeline has nothing to route. They are emitted after the status
+   patch lands, not beside each condition write, so a reconcile that writes `Ready` twice (a
+   placeholder, then the real outcome) announces only the value that was actually stored.
 
 ## Applied to this project
 
@@ -66,7 +129,12 @@ const (
 
 Canonical reads:
 
-* fully mirrored: `Ready=True`, `Reconciling=False`, `Stalled=False`
+* fully mirrored: `Ready=True`, `Reconciling=False`, `Stalled=False`, reason `Succeeded`
+* **nothing to mirror** — no WatchRule has claimed the GitTarget yet, or its rules were deleted:
+  `Ready=True`, `Reconciling=False`, `Stalled=False`. "I have nothing to mirror" is a *converged*
+  state, not a pending one; `status.streams.summary` keeps showing `0/0` and `StreamsRunning` keeps
+  reason `NoResolvedTypes`, so the zero stays visible without being reported as a failure to
+  converge. (Flux's Kustomization with an empty path reports the same.)
 * initial replay or recheck: `Ready=False`, `Reconciling=True`, `Stalled=False`
 * refused Git path, invalid provider, RBAC denial, or broken encryption: `Ready=False`, `Reconciling=False`,
   `Stalled=True`

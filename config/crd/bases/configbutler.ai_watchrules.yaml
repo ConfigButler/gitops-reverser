@@ -287,10 +287,6 @@ spec:
                       be watched.
                     format: int32
                     type: integer
-                  observedTime:
-                    description: ObservedTime is when this roll-up was last computed.
-                    format: date-time
-                    type: string
                   pendingSample:
                     description: PendingSample is a bounded sample of types not yet
                       ready.

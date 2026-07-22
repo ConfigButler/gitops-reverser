@@ -10,11 +10,9 @@ import (
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +32,9 @@ type GitProviderReconciler struct {
 
 	Scheme *runtime.Scheme
 	firsts gitProviderLogFirsts
+
+	// Recorder emits a Kubernetes Event on every persisted Ready transition; nil disables Events.
+	Recorder record.EventRecorder
 
 	// SSHHostKeys configures SSH host-key resolution (install-level default ConfigMap and the
 	// dev-only missing-key opt-out) for the connectivity check's credential read, so it matches
@@ -55,6 +56,7 @@ type gitProviderLogFirsts struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -77,6 +79,9 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 // reconcileGitProvider performs the main reconciliation logic.
+//
+// Every gate below contributes to ONE readiness accumulator and every exit goes through
+// commitProvider, so the Ready/Reconciling/Stalled trio is written exactly once per reconcile.
 func (r *GitProviderReconciler) reconcileGitProvider(
 	ctx context.Context,
 	log logr.Logger,
@@ -90,43 +95,88 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"generation", gitProvider.Generation,
 		"resourceVersion", gitProvider.ResourceVersion)
 
-	r.setProgressingConditions(gitProvider, ReasonChecking, "Validating repository connectivity...")
+	st := beginStatus(r.Client, r.Recorder, gitProvider, &gitProvider.Status.Conditions)
+	gitProvider.Status.ObservedGeneration = gitProvider.Generation
+	rd := newReadiness(
+		fmt.Sprintf("Repository connectivity validated for %s", gitProvider.Spec.URL),
+		"GitProvider is not stalled",
+	)
+
 	if err := r.validateCommitConfiguration(gitProvider); err != nil {
-		r.setStalledConditions(gitProvider, ReasonCommitConfigInvalid, err.Error())
-		result, _ := r.updateStatusAndRequeue(ctx, gitProvider)
-		return result, nil
+		rd.stalled(ReasonCommitConfigInvalid, err.Error())
+		return r.commitProvider(ctx, st, rd)
 	}
 
 	if err := r.ensureSigningKey(ctx, gitProvider); err != nil {
-		reason := ReasonSecretMalformed
-		if strings.Contains(err.Error(), "secretRef.name") {
-			reason = ReasonCommitConfigInvalid
-		}
-		if strings.Contains(err.Error(), "not found") ||
-			strings.Contains(err.Error(), "generateWhenMissing is disabled") {
-			reason = ReasonSecretNotFound
-		}
-
-		r.setStalledConditions(gitProvider, reason, err.Error())
-		result, _ := r.updateStatusAndRequeue(ctx, gitProvider)
-		return result, nil
+		rd.stalled(signingKeyFailureReason(err), err.Error())
+		return r.commitProvider(ctx, st, rd)
 	}
 
-	// Fetch and validate secret
-	secret, shouldReturn := r.fetchAndValidateSecret(ctx, log, gitProvider)
+	secret, shouldReturn := r.fetchAndValidateSecret(ctx, log, rd, gitProvider)
 	if shouldReturn {
-		result, _ := r.updateStatusAndRequeue(ctx, gitProvider)
-		return result, nil
+		return r.commitProvider(ctx, st, rd)
 	}
 
-	// Extract credentials
-	auth, result, shouldReturn := r.getAuthFromSecret(ctx, log, gitProvider, secret)
-	if shouldReturn {
-		return result, nil
+	auth, err := r.extractCredentials(ctx, gitProvider, secret)
+	if err != nil {
+		log.Error(err, "Failed to extract credentials from secret")
+		rd.stalled(ReasonSecretMalformed,
+			fmt.Sprintf("Secret '%s' malformed: %v", gitProvider.Spec.SecretRef.Name, err))
+		return r.commitProvider(ctx, st, rd)
+	}
+	// secret is nil on the anonymous-access path (no secretRef); in that case there is no secret to
+	// report and gitProvider.Spec.SecretRef is nil, so guard the dereference below.
+	if secret != nil {
+		r.firsts.credentialsLoaded.Do(func() {
+			log.Info("GitProvider credentials loaded from secret",
+				"secretName", gitProvider.Spec.SecretRef.Name,
+				"namespace", gitProvider.Namespace)
+		})
 	}
 
-	// Validate repository connectivity
-	return r.validateAndUpdateStatus(ctx, log, gitProvider, auth)
+	log.V(1).Info("Validating repository connectivity", "url", gitProvider.Spec.URL)
+	branchCount, err := r.checkRemoteConnectivity(ctx, gitProvider.Spec.URL, auth)
+	if err != nil {
+		log.Error(err, "Repository connectivity check failed", "url", gitProvider.Spec.URL)
+		rd.stalled(ReasonConnectionFailed, fmt.Sprintf("Failed to connect to repository: %v", err))
+		return r.commitProvider(ctx, st, rd)
+	}
+
+	r.firsts.validationSuccess.Do(func() {
+		log.Info("First GitProvider validation completed successfully",
+			"name", gitProvider.Name,
+			"namespace", gitProvider.Namespace,
+			"branchCount", branchCount)
+	})
+	return r.commitProvider(ctx, st, rd)
+}
+
+// commitProvider writes the trio and persists the status. Every outcome requeues on the steady
+// interval: a GitProvider's failures are all "the remote or the credential changed", which nothing
+// this controller does will fix sooner.
+func (r *GitProviderReconciler) commitProvider(
+	ctx context.Context,
+	st *reconcileStatus,
+	rd *readiness,
+) (ctrl.Result, error) {
+	st.applyReadiness(rd)
+	if err := st.commit(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+}
+
+// signingKeyFailureReason classifies an ensureSigningKey failure for the Stalled reason.
+func signingKeyFailureReason(err error) string {
+	switch {
+	case strings.Contains(err.Error(), "not found"),
+		strings.Contains(err.Error(), "generateWhenMissing is disabled"):
+		return ReasonSecretNotFound
+	case strings.Contains(err.Error(), "secretRef.name"):
+		return ReasonCommitConfigInvalid
+	default:
+		return ReasonSecretMalformed
+	}
 }
 
 // fetchAndValidateSecret fetches the secret if specified.
@@ -134,6 +184,7 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 func (r *GitProviderReconciler) fetchAndValidateSecret(
 	ctx context.Context,
 	log logr.Logger,
+	rd *readiness,
 	gitProvider *configbutleraiv1alpha3.GitProvider,
 ) (*corev1.Secret, bool) {
 	if gitProvider.Spec.SecretRef == nil {
@@ -157,96 +208,14 @@ func (r *GitProviderReconciler) fetchAndValidateSecret(
 		log.Error(err, "Failed to fetch secret",
 			"secretName", gitProvider.Spec.SecretRef.Name,
 			"namespace", gitProvider.Namespace)
-		r.setStalledConditions(
-			gitProvider,
-			ReasonSecretNotFound,
-			fmt.Sprintf(
-				"Secret '%s' not found in namespace '%s': %v",
-				gitProvider.Spec.SecretRef.Name,
-				gitProvider.Namespace,
-				err,
-			),
-		)
+		rd.stalled(ReasonSecretNotFound, fmt.Sprintf(
+			"Secret '%s' not found in namespace '%s': %v",
+			gitProvider.Spec.SecretRef.Name, gitProvider.Namespace, err))
 		return nil, true
 	}
 
 	log.V(1).Info("Successfully fetched secret", "secretName", gitProvider.Spec.SecretRef.Name)
 	return secret, false
-}
-
-// getAuthFromSecret extracts authentication from the secret.
-// Returns (auth, result, shouldReturn). If shouldReturn is true, caller should return the result immediately.
-func (r *GitProviderReconciler) getAuthFromSecret(
-	ctx context.Context,
-	log logr.Logger,
-	gitProvider *configbutleraiv1alpha3.GitProvider,
-	secret *corev1.Secret,
-) (transport.AuthMethod, ctrl.Result, bool) {
-	log.V(1).Info("Extracting credentials from secret")
-	auth, err := r.extractCredentials(ctx, gitProvider, secret)
-	if err != nil {
-		log.Error(err, "Failed to extract credentials from secret")
-		secretName := gitProvider.Spec.SecretRef.Name
-		r.setStalledConditions(gitProvider, ReasonSecretMalformed,
-			fmt.Sprintf("Secret '%s' malformed: %v", secretName, err))
-		result, _ := r.updateStatusAndRequeue(ctx, gitProvider)
-		return nil, result, true
-	}
-
-	log.V(1).Info("Successfully extracted credentials", "hasAuth", auth != nil)
-	// secret is nil on the anonymous-access path (no secretRef); in that case
-	// there is no secret to report and gitProvider.Spec.SecretRef is nil, so
-	// guard the dereference below.
-	if secret != nil {
-		r.firsts.credentialsLoaded.Do(func() {
-			log.Info("GitProvider credentials loaded from secret",
-				"secretName", gitProvider.Spec.SecretRef.Name,
-				"namespace", gitProvider.Namespace)
-		})
-	}
-	return auth, ctrl.Result{}, false
-}
-
-// validateAndUpdateStatus validates repository connectivity and updates the status.
-func (r *GitProviderReconciler) validateAndUpdateStatus(
-	ctx context.Context,
-	log logr.Logger,
-	gitProvider *configbutleraiv1alpha3.GitProvider,
-	auth transport.AuthMethod,
-) (ctrl.Result, error) {
-	log.V(1).Info("Validating repository connectivity",
-		"url", gitProvider.Spec.URL)
-
-	// Check repository connectivity and get branch count
-	branchCount, err := r.checkRemoteConnectivity(ctx, gitProvider.Spec.URL, auth)
-	if err != nil {
-		log.Error(err, "Repository connectivity check failed",
-			"url", gitProvider.Spec.URL)
-		r.setStalledConditions(gitProvider, ReasonConnectionFailed,
-			fmt.Sprintf("Failed to connect to repository: %v", err))
-		return r.updateStatusAndRequeue(ctx, gitProvider)
-	}
-
-	log.V(1).Info("Repository connectivity validated successfully", "branchCount", branchCount)
-	message := fmt.Sprintf("Repository connectivity validated for %s", gitProvider.Spec.URL)
-	r.setReadyConditions(gitProvider, message)
-
-	log.V(1).Info("GitProvider validation successful", "name", gitProvider.Name)
-	log.V(1).Info("Updating status with success condition")
-
-	if err := r.updateStatusWithRetry(ctx, gitProvider); err != nil {
-		log.Error(err, "Failed to update GitProvider status")
-		return ctrl.Result{}, err
-	}
-
-	r.firsts.validationSuccess.Do(func() {
-		log.Info("First GitProvider validation completed successfully",
-			"name", gitProvider.Name,
-			"namespace", gitProvider.Namespace,
-			"branchCount", branchCount)
-	})
-	log.V(1).Info("Status update completed successfully, scheduling requeue", "requeueAfter", RequeueSteadyInterval)
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
 // fetchSecret retrieves the secret containing Git credentials.
@@ -316,144 +285,6 @@ func (r *GitProviderReconciler) validateCommitConfiguration(
 	}
 
 	return nil
-}
-
-func (r *GitProviderReconciler) setReadyConditions(
-	gitProvider *configbutleraiv1alpha3.GitProvider,
-	message string,
-) {
-	r.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionTrue, ConditionTypeReady, message)
-	r.setCondition(
-		gitProvider,
-		ConditionTypeReconciling,
-		metav1.ConditionFalse,
-		ConditionTypeReady,
-		"Reconciliation complete",
-	)
-	r.setCondition(
-		gitProvider,
-		ConditionTypeStalled,
-		metav1.ConditionFalse,
-		ConditionTypeReady,
-		"GitProvider is not stalled",
-	)
-}
-
-func (r *GitProviderReconciler) setProgressingConditions(
-	gitProvider *configbutleraiv1alpha3.GitProvider,
-	reason string,
-	message string,
-) {
-	r.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionFalse, reason, message)
-	r.setCondition(gitProvider, ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
-	r.setCondition(
-		gitProvider,
-		ConditionTypeStalled,
-		metav1.ConditionFalse,
-		reason,
-		"Reconciliation is making progress",
-	)
-}
-
-func (r *GitProviderReconciler) setStalledConditions(
-	gitProvider *configbutleraiv1alpha3.GitProvider,
-	reason string,
-	message string,
-) {
-	r.setCondition(gitProvider, ConditionTypeReady, metav1.ConditionFalse, reason, message)
-	r.setCondition(gitProvider, ConditionTypeReconciling, metav1.ConditionFalse, reason, "Reconciliation is stalled")
-	r.setCondition(gitProvider, ConditionTypeStalled, metav1.ConditionTrue, reason, message)
-}
-
-// setCondition sets or updates one condition by type.
-func (r *GitProviderReconciler) setCondition(
-	gitProvider *configbutleraiv1alpha3.GitProvider,
-	conditionType string,
-	status metav1.ConditionStatus,
-	reason,
-	message string,
-) {
-	gitProvider.Status.ObservedGeneration = gitProvider.Generation
-	gitProvider.Status.Conditions = upsertCondition(
-		gitProvider.Status.Conditions,
-		conditionType,
-		status,
-		reason,
-		message,
-		gitProvider.Generation,
-	)
-}
-
-// updateStatusAndRequeue updates the status and requeues on the unified control-plane steady
-// interval. The control plane no longer watches Secrets, so every status outcome falls back to
-// this single cadence; see docs/rbac.md.
-func (r *GitProviderReconciler) updateStatusAndRequeue(
-	ctx context.Context,
-	gitProvider *configbutleraiv1alpha3.GitProvider,
-) (ctrl.Result, error) {
-	if err := r.updateStatusWithRetry(ctx, gitProvider); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
-}
-
-// updateStatusWithRetry updates the status with retry logic to handle race conditions.
-//
-
-func (r *GitProviderReconciler) updateStatusWithRetry(
-	ctx context.Context,
-	gitProvider *configbutleraiv1alpha3.GitProvider,
-) error {
-	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
-
-	log.V(1).Info("Starting status update with retry",
-		"name", gitProvider.Name,
-		"namespace", gitProvider.Namespace,
-		"conditionsCount", len(gitProvider.Status.Conditions))
-
-	return wait.ExponentialBackoff(wait.Backoff{
-		Duration: RetryInitialDuration,
-		Factor:   RetryBackoffFactor,
-		Jitter:   RetryBackoffJitter,
-		Steps:    RetryMaxSteps,
-	}, func() (bool, error) {
-		log.V(1).Info("Attempting status update")
-
-		// Get the latest version of the resource
-		latest := &configbutleraiv1alpha3.GitProvider{}
-		key := client.ObjectKeyFromObject(gitProvider)
-		if err := r.Get(ctx, key, latest); err != nil {
-			if apierrors.IsNotFound(err) {
-				log.Info("Resource was deleted, nothing to update")
-				return true, nil
-			}
-			log.Error(err, "Failed to get latest resource version")
-			return false, err
-		}
-
-		log.V(1).Info("Got latest resource version",
-			"generation", latest.Generation,
-			"resourceVersion", latest.ResourceVersion)
-
-		// Copy our status to the latest version
-		latest.Status = gitProvider.Status
-
-		log.V(1).Info("Attempting to update status",
-			"conditionsCount", len(latest.Status.Conditions))
-
-		// Attempt to update
-		if err := r.Status().Update(ctx, latest); err != nil {
-			if apierrors.IsConflict(err) {
-				log.V(1).Info("Resource version conflict, retrying")
-				return false, nil
-			}
-			log.Error(err, "Failed to update status")
-			return false, err
-		}
-
-		log.V(1).Info("Status update successful")
-		return true, nil
-	})
 }
 
 // SetupWithManager sets up the controller with the Manager.

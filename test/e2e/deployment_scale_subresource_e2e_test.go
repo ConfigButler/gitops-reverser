@@ -40,7 +40,7 @@ var _ = Describe("Deployment scale subresource", Label("manager", "subresource")
 		createReadyGitProvider(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
 		createValidatedGitTarget(targetName, testNs, providerName, targetPath)
 		applyDeploymentWatchRule(testNs, watchRuleName, targetName)
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 		By("creating a Deployment with replicas=1")
 		applyScaleTestDeployment(testNs, deploymentName, 1)

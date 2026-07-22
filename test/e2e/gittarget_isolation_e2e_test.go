@@ -63,20 +63,20 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 		)
 		verifyResourceStatus(
 			"gitprovider", providerName, testNs,
-			"True", "Ready", "Repository connectivity validated",
+			"True", "Succeeded", "Repository connectivity validated",
 		)
 
 		By("creating two independent GitTargets writing to separate paths in the same repo")
 		createGitTarget(targetA, testNs, providerName, pathA, "main")
 		createGitTarget(targetB, testNs, providerName, pathB, "main")
-		verifyResourceCondition("gittarget", targetA, testNs, "Validated", "True", "OK", "")
-		verifyResourceCondition("gittarget", targetB, testNs, "Validated", "True", "OK", "")
+		verifyResourceCondition("gittarget", targetA, testNs, "Validated", "True", "Succeeded", "")
+		verifyResourceCondition("gittarget", targetB, testNs, "Validated", "True", "Succeeded", "")
 
 		By("target A and target B both watch ConfigMaps (baseline steady state)")
 		applyIsolationWatchRule(ruleA, testNs, targetA, `"configmaps"`)
 		applyIsolationWatchRule(ruleB, testNs, targetB, `"configmaps"`)
-		verifyResourceStatus("watchrule", ruleA, testNs, "True", "Ready", "")
-		verifyResourceStatus("watchrule", ruleB, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", ruleA, testNs, "True", "Succeeded", "")
+		verifyResourceStatus("watchrule", ruleB, testNs, "True", "Succeeded", "")
 
 		By("waiting for both targets' configmaps streams to be live before any event is created")
 		waitForStreamsRunning(targetA, testNs)

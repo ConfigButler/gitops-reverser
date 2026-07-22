@@ -200,7 +200,7 @@ type ClusterWatchRule struct {
 
 	// metadata is a standard object metadata.
 	// +optional
-	metav1.ObjectMeta `json:"metadata,omitempty"`
+	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
 	// spec defines the desired state of ClusterWatchRule.
 	// +required

@@ -143,7 +143,9 @@ type GitProviderStatus struct {
 	// +optional
 	// +listType=map
 	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
 	// Register this as a signing key on your git platform.

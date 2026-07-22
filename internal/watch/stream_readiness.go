@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
@@ -63,7 +62,6 @@ type StreamSummary struct {
 	Reason        string
 	Message       string
 	PendingSample []string
-	ObservedTime  metav1.Time
 }
 
 // Summary returns the display ratio stored in status.streams.summary.
@@ -241,7 +239,7 @@ func streamSummaryCounts(
 	byGVR map[schema.GroupVersionResource]targetStreamStatus,
 	displayNames map[schema.GroupVersionResource]string,
 ) (StreamSummary, []string, []string) {
-	out := StreamSummary{Total: len(byGVR), ObservedTime: metav1.Now()}
+	out := StreamSummary{Total: len(byGVR)}
 	var blockedNames, replayingNames []string
 	for gvr, status := range byGVR {
 		name := displayNames[gvr]

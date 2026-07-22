@@ -68,7 +68,7 @@ var _ = Describe("Deployment scale author attribution", Label("manager", "subres
 		createReadyGitProvider(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
 		createValidatedGitTarget(targetName, testNs, providerName, targetPath)
 		applyDeploymentWatchRule(testNs, watchRuleName, targetName)
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 		// Authorship only flows through the per-event audit tail. A scale issued
 		// before the live stream is running would land in the unattributed baseline

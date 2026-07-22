@@ -9,167 +9,192 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
-func TestDeriveGitTargetDataPlaneStatus(t *testing.T) {
+// TestGitTargetReadinessGates walks the gate table and asserts what a kstatus CONSUMER would read,
+// not what the conditions happen to say. Every row goes through the real kstatus library.
+func TestGitTargetReadinessGates(t *testing.T) {
+	running := watch.StreamSummary{
+		Total: 3, Ready: 3, Reason: watch.StreamReasonAllStreamsReady, Message: "3/3 streams running",
+	}
+	accepted := watch.GitPathAcceptanceStatus{Accepted: true}
+	matches := watch.RenderFidelityStatus{State: git.RenderFidelityTrue}
+	healthy := conditionValue{Status: metav1.ConditionTrue, Reason: ReasonSucceeded, Message: "healthy"}
+
 	tests := []struct {
-		name              string
-		streams           watch.StreamSummary
-		gitPath           watch.GitPathAcceptanceStatus
-		wantReady         metav1.ConditionStatus
-		wantReconciling   metav1.ConditionStatus
-		wantStalled       metav1.ConditionStatus
-		wantGitPath       metav1.ConditionStatus
-		wantStreams       metav1.ConditionStatus
-		wantStalledReason string
+		name            string
+		streams         watch.StreamSummary
+		gitPath         watch.GitPathAcceptanceStatus
+		render          watch.RenderFidelityStatus
+		provider        conditionValue
+		clusterProvider conditionValue
+		sourceReach     conditionValue
+		want            kstatus.Status
+		wantReadyReason string
 	}{
 		{
-			name: "all streams running and Git path accepted",
-			streams: watch.StreamSummary{
-				Total: 3, Ready: 3, Reason: watch.StreamReasonAllStreamsReady, Message: "3/3 streams running",
-			},
-			gitPath:         watch.GitPathAcceptanceStatus{Accepted: true},
-			wantReady:       metav1.ConditionTrue,
-			wantReconciling: metav1.ConditionFalse,
-			wantStalled:     metav1.ConditionFalse,
-			wantGitPath:     metav1.ConditionTrue,
-			wantStreams:     metav1.ConditionTrue,
+			name: "everything healthy", streams: running, gitPath: accepted, render: matches,
+			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			want: kstatus.CurrentStatus, wantReadyReason: ReasonSucceeded,
 		},
 		{
-			name: "stream replaying",
+			// F2. No WatchRule has claimed this target yet — step 3 of the documented setup flow.
+			// Nothing is pending, so nothing may report as in progress.
+			name:    "no resolved types is converged, not perpetually reconciling",
+			streams: watch.StreamSummary{Reason: watch.StreamReasonNoResolvedTypes, Message: "0/0 streams running"},
+			gitPath: accepted, render: matches,
+			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			want: kstatus.CurrentStatus, wantReadyReason: ReasonSucceeded,
+		},
+		{
+			name: "stream replaying", gitPath: accepted, render: matches,
 			streams: watch.StreamSummary{
 				Total: 2, Ready: 1, Replaying: 1, Reason: watch.StreamReasonReplaying,
 				Message: "1/2 streams running; 1 replaying",
 			},
-			gitPath:         watch.GitPathAcceptanceStatus{Accepted: true},
-			wantReady:       metav1.ConditionFalse,
-			wantReconciling: metav1.ConditionTrue,
-			wantStalled:     metav1.ConditionFalse,
-			wantGitPath:     metav1.ConditionTrue,
-			wantStreams:     metav1.ConditionFalse,
+			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			want: kstatus.InProgressStatus, wantReadyReason: watch.StreamReasonReplaying,
 		},
 		{
-			name: "stream blocked",
+			name: "stream blocked", gitPath: accepted, render: matches,
 			streams: watch.StreamSummary{
 				Total: 2, Ready: 1, Blocked: 1, Reason: watch.StreamReasonWatchError,
 				Message: "1/2 streams running; 1 blocked",
 			},
-			gitPath:           watch.GitPathAcceptanceStatus{Accepted: true},
-			wantReady:         metav1.ConditionFalse,
-			wantReconciling:   metav1.ConditionFalse,
-			wantStalled:       metav1.ConditionTrue,
-			wantGitPath:       metav1.ConditionTrue,
-			wantStreams:       metav1.ConditionFalse,
-			wantStalledReason: watch.StreamReasonWatchError,
+			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			want: kstatus.FailedStatus, wantReadyReason: watch.StreamReasonWatchError,
 		},
 		{
-			name: "Git path refused",
-			streams: watch.StreamSummary{
-				Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
-			},
+			name: "Git path refused", streams: running, render: matches,
 			gitPath: watch.GitPathAcceptanceStatus{
 				Accepted: false,
 				Reason:   GitTargetReasonUnsupportedContent,
 				Message:  "Git path refused at kustomization.yaml: uses patches",
 			},
-			wantReady:         metav1.ConditionFalse,
-			wantReconciling:   metav1.ConditionFalse,
-			wantStalled:       metav1.ConditionTrue,
-			wantGitPath:       metav1.ConditionFalse,
-			wantStreams:       metav1.ConditionTrue,
-			wantStalledReason: GitTargetReasonUnsupportedContent,
+			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			want: kstatus.FailedStatus, wantReadyReason: GitTargetReasonUnsupportedContent,
 		},
 		{
-			// A write-boundary refusal is not "this folder holds content we cannot manage";
-			// it is "this edit had nowhere safe to land". It must carry its own reason all
-			// the way through to Stalled, so an operator can tell the two apart.
-			name: "write boundary refused",
-			streams: watch.StreamSummary{
-				Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
-			},
+			// A write-boundary refusal is not "this folder holds content we cannot manage"; it is
+			// "this edit had nowhere safe to land". It must carry its own reason through to Stalled.
+			name: "write boundary refused", streams: running, render: matches,
 			gitPath: watch.GitPathAcceptanceStatus{
 				Accepted: false,
 				Reason:   GitTargetReasonWriteBoundaryRefused,
 				Message:  "Git path refused at base/deployment.yaml: write-fan-in must be 1",
 			},
-			wantReady:         metav1.ConditionFalse,
-			wantReconciling:   metav1.ConditionFalse,
-			wantStalled:       metav1.ConditionTrue,
-			wantGitPath:       metav1.ConditionFalse,
-			wantStreams:       metav1.ConditionTrue,
-			wantStalledReason: GitTargetReasonWriteBoundaryRefused,
+			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			want: kstatus.FailedStatus, wantReadyReason: GitTargetReasonWriteBoundaryRefused,
+		},
+		{
+			name: "render diverged is terminal", streams: running, gitPath: accepted,
+			render: watch.RenderFidelityStatus{
+				State: git.RenderFidelityFalse, Reason: GitTargetReasonRenderDoesNotMatchLive, Message: "${REGION}",
+			},
+			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			want: kstatus.FailedStatus, wantReadyReason: GitTargetReasonRenderDoesNotMatchLive,
+		},
+		{
+			name: "render rechecking is progress", streams: running, gitPath: accepted,
+			render: watch.RenderFidelityStatus{
+				State: git.RenderFidelityUnknown, Reason: GitTargetReasonRenderRechecking, Message: "waiting",
+			},
+			provider: healthy, clusterProvider: healthy, sourceReach: healthy,
+			want: kstatus.InProgressStatus, wantReadyReason: GitTargetReasonRenderRechecking,
+		},
+		{
+			name: "unready GitProvider holds the target below Ready", streams: running,
+			gitPath: accepted, render: matches,
+			provider: conditionValue{
+				Status: metav1.ConditionFalse, Reason: GitTargetReasonGitProviderNotReady, Message: "no repo",
+			},
+			clusterProvider: healthy, sourceReach: healthy,
+			want: kstatus.InProgressStatus, wantReadyReason: GitTargetReasonGitProviderNotReady,
+		},
+		{
+			// THE F1 REGRESSION. A refused Git path is terminal, and an unready provider is
+			// transient. The provider gate used to run last and stamp Reconciling=True /
+			// Stalled=False over the refusal, flipping the object from kstatus Failed to
+			// InProgress — so `kubectl wait` and every CI gate built on kstatus waited out its
+			// timeout on a target that was never going to converge.
+			name: "refused path AND unready provider stays Failed", streams: running, render: matches,
+			gitPath: watch.GitPathAcceptanceStatus{
+				Accepted: false,
+				Reason:   GitTargetReasonUnsupportedContent,
+				Message:  "Git path refused at kustomization.yaml: uses patches",
+			},
+			provider: conditionValue{
+				Status: metav1.ConditionFalse, Reason: GitTargetReasonGitProviderNotReady, Message: "no repo",
+			},
+			clusterProvider: healthy,
+			sourceReach: conditionValue{
+				Status: metav1.ConditionUnknown, Reason: "AwaitingDiscovery", Message: "not discovered yet",
+			},
+			want: kstatus.FailedStatus, wantReadyReason: GitTargetReasonUnsupportedContent,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := deriveGitTargetDataPlaneStatus(tt.streams, tt.gitPath)
-			assert.Equal(t, tt.wantReady, d.ReadyStatus)
-			assert.Equal(t, tt.wantReconciling, d.ReconcilingStatus)
-			assert.Equal(t, tt.wantStalled, d.StalledStatus)
-			assert.Equal(t, tt.wantGitPath, d.GitPathStatus)
-			assert.Equal(t, tt.wantStreams, d.StreamsStatus)
-			if tt.wantStalledReason != "" {
-				assert.Equal(t, tt.wantStalledReason, d.StalledReason)
+			target := &configbutleraiv1alpha3.GitTarget{}
+			st := beginStatus(nil, nil, target, &target.Status.Conditions)
+			observed := dataPlaneObservation{
+				streams: tt.streams,
+				axes: gitTargetAxes{
+					Streams: streamsAxis(tt.streams),
+					GitPath: gitPathAxis(tt.gitPath),
+					Render:  renderAxis(tt.render),
+				},
 			}
-			assert.NotEmpty(t, d.ReadyMessage)
+			st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
+			st.setValue(GitTargetConditionGitPathAccepted, observed.axes.GitPath)
+			st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
+
+			rd := newGitTargetReadiness()
+			gitTargetReadinessGates(rd, observed, tt.provider, tt.clusterProvider, tt.sourceReach)
+			st.applyReadiness(rd)
+
+			ready := findCondition(target.Status.Conditions, GitTargetConditionReady)
+			require.NotNil(t, ready)
+			assert.Equal(t, tt.wantReadyReason, ready.Reason)
+			assert.NotEmpty(t, ready.Message)
+
+			computed, err := kstatus.Compute(gitTargetStatusObject(unstructuredConditions(target.Status.Conditions)))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, computed.Status,
+				"a kstatus consumer must read %s here", tt.want)
 		})
 	}
 }
 
-func TestApplyDataPlaneConditions_SetsKstatusTrio(t *testing.T) {
-	r := &GitTargetReconciler{}
-	target := &configbutleraiv1alpha3.GitTarget{}
-
-	r.applyDataPlaneConditions(target, watch.StreamSummary{
-		Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
-	}, watch.GitPathAcceptanceStatus{Accepted: true}, watch.RenderFidelityStatus{State: "True"})
-
-	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionReady))
-	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionStreamsRunning))
-	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionGitPathAccepted))
-	require.True(t, isConditionTrue(target.Status.Conditions, GitTargetConditionRenderMatchesLive))
-	require.False(t, isConditionTrue(target.Status.Conditions, GitTargetConditionReconciling))
-	require.False(t, isConditionTrue(target.Status.Conditions, GitTargetConditionStalled))
-}
-
-func TestSetBlockedDataPlane_MarksUnknownAndPending(t *testing.T) {
-	r := &GitTargetReconciler{}
-	target := &configbutleraiv1alpha3.GitTarget{}
-
-	r.setBlockedDataPlane(target)
-
-	streamsRunning := conditionByType(target.Status.Conditions, GitTargetConditionStreamsRunning)
-	require.NotNil(t, streamsRunning)
-	assert.Equal(t, metav1.ConditionUnknown, streamsRunning.Status)
-	assert.Equal(t, GitTargetStreamsRunningReasonNotReady, streamsRunning.Reason)
-	renderMatchesLive := conditionByType(target.Status.Conditions, GitTargetConditionRenderMatchesLive)
-	require.NotNil(t, renderMatchesLive)
-	assert.Equal(t, metav1.ConditionUnknown, renderMatchesLive.Status)
-}
-
-func TestDeriveGitTargetDataPlaneStatusWithRenderFidelity(t *testing.T) {
-	streams := watch.StreamSummary{
-		Total: 1, Ready: 1, Reason: watch.StreamReasonAllStreamsReady, Message: "1/1 streams running",
+// unstructuredConditions renders a real condition set the way kstatus.Compute consumes it, so the
+// conformance assertions above run against reconciler OUTPUT rather than a hand-built fixture.
+func unstructuredConditions(conditions []metav1.Condition) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(conditions))
+	for _, c := range conditions {
+		out = append(out, conditionMap(c.Type, string(c.Status), c.Reason, c.Message))
 	}
-	gitPath := watch.GitPathAcceptanceStatus{Accepted: true}
+	return out
+}
 
-	unknown := deriveGitTargetDataPlaneStatusWithRenderFidelity(
-		streams, gitPath, watch.RenderFidelityStatus{State: "Unknown", Reason: "Rechecking", Message: "waiting"})
-	assert.Equal(t, metav1.ConditionUnknown, unknown.RenderFidelityStatus)
-	assert.Equal(t, metav1.ConditionTrue, unknown.ReconcilingStatus)
-	assert.Equal(t, metav1.ConditionFalse, unknown.StalledStatus)
+// TestGitTargetStall_PublishesTerminalTrio covers the control-plane gates that return before the
+// data plane is ever evaluated.
+func TestGitTargetStall_PublishesTerminalTrio(t *testing.T) {
+	target := &configbutleraiv1alpha3.GitTarget{}
+	st := beginStatus(nil, nil, target, &target.Status.Conditions)
 
-	diverged := deriveGitTargetDataPlaneStatusWithRenderFidelity(
-		streams, gitPath,
-		watch.RenderFidelityStatus{State: "False", Reason: "RenderDoesNotMatchLive", Message: "${REGION}"})
-	assert.Equal(t, metav1.ConditionFalse, diverged.RenderFidelityStatus)
-	assert.Equal(t, metav1.ConditionFalse, diverged.ReadyStatus)
-	assert.Equal(t, metav1.ConditionTrue, diverged.StalledStatus)
-	assert.Equal(t, GitTargetReasonRenderDoesNotMatchLive, diverged.StalledReason)
+	rd := newGitTargetReadiness()
+	rd.stalled(GitTargetReadyReasonValidationFailed, "Validated gate failed: ProviderNotFound")
+	st.applyReadiness(rd)
+
+	computed, err := kstatus.Compute(gitTargetStatusObject(unstructuredConditions(target.Status.Conditions)))
+	require.NoError(t, err)
+	assert.Equal(t, kstatus.FailedStatus, computed.Status)
 }
 
 // TestGitTargetRetentionStatus_AbsentAndZeroMeanDifferentThings is the whole point of the field

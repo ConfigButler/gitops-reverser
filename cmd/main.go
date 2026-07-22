@@ -187,6 +187,7 @@ func main() {
 		Scheme:       mgr.GetScheme(),
 		RuleStore:    ruleStore,
 		WatchManager: watchMgr,
+		Recorder:     mgr.GetEventRecorderFor("watchrule"),
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "WatchRule")
 
 	// ClusterWatchRule controller (with WatchManager reference for dynamic reconciliation)
@@ -195,6 +196,7 @@ func main() {
 		Scheme:       mgr.GetScheme(),
 		RuleStore:    ruleStore,
 		WatchManager: watchMgr,
+		Recorder:     mgr.GetEventRecorderFor("clusterwatchrule"),
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
 	// Valkey/Redis is optional. When configured it holds each GitTarget's watch resume cursor so work
@@ -282,6 +284,7 @@ func main() {
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
 		SSHHostKeys: cfg.sshHostKeys,
+		Recorder:    mgr.GetEventRecorderFor("gitprovider"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitProvider")
 		os.Exit(1)
@@ -291,6 +294,7 @@ func main() {
 		Scheme:            mgr.GetScheme(),
 		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 		KubeConfigSafety:  cfg.kubeConfigSafety,
+		Recorder:          mgr.GetEventRecorderFor("clusterprovider"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterProvider")
 		os.Exit(1)
@@ -300,6 +304,7 @@ func main() {
 		Scheme:        mgr.GetScheme(),
 		WorkerManager: workerManager,
 		EventRouter:   eventRouter,
+		Recorder:      mgr.GetEventRecorderFor("gittarget"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)

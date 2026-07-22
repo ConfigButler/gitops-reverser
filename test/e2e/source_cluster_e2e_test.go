@@ -343,7 +343,7 @@ var _ = Describe("Manager source cluster / ClusterProvider attribution", Label("
 		target := "sc-unreachable-target"
 		_, err = applyGitTargetWithClusterProvider(testNs, target, providerName, "clusters/unreachable", cpName)
 		Expect(err).NotTo(HaveOccurred())
-		verifyResourceCondition("gittarget", target, testNs, "Validated", "True", "OK", "")
+		verifyResourceCondition("gittarget", target, testNs, "Validated", "True", "Succeeded", "")
 		verifyResourceCondition("gittarget", target, testNs,
 			"SourceClusterReachable", "False", "SourceClusterUnreachable", "", "150s")
 	})

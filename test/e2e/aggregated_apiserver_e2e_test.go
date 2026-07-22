@@ -72,7 +72,7 @@ var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func
 		Expect(err).NotTo(HaveOccurred(), "failed to apply aggregated-api WatchRule")
 
 		By("verifying the WatchRule reaches Ready=True")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 		By("waiting for the flunder stream to be live before asserting per-event commits")
 		waitForStreamsRunning(targetName, testNs)

@@ -195,10 +195,6 @@ type GitTargetStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// LastReconcileTime is the timestamp of the most recent reconcile attempt.
-	// +optional
-	LastReconcileTime metav1.Time `json:"lastReconcileTime,omitempty"`
-
 	// LastPushTime is the timestamp of the last successful push.
 	// +optional
 	LastPushTime *metav1.Time `json:"lastPushTime,omitempty"`
@@ -228,7 +224,11 @@ type GitTargetStatus struct {
 // GitTargetStreamsStatus is a bounded roll-up of the stream readiness state for the
 // types this GitTarget tracks.
 type GitTargetStreamsStatus struct {
-	// Summary is the display-only ready/total ratio.
+	// Summary is the display-only ready/total ratio, e.g. "3/4".
+	//
+	// It restates Ready and Total, which the API conventions would normally rule out. It exists
+	// solely to feed the Streams printer column: a column can read one JSONPath, not format two.
+	// Do not compute anything from it — read ready and total.
 	// +optional
 	Summary string `json:"summary,omitempty"`
 
@@ -243,10 +243,6 @@ type GitTargetStreamsStatus struct {
 
 	// Blocked is how many tracked types cannot currently be watched.
 	Blocked int32 `json:"blocked"`
-
-	// ObservedTime is when this roll-up was last computed.
-	// +optional
-	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
 }
 
 // Design rationale, kept out of the generated CRD description by the blank line below.
@@ -282,9 +278,8 @@ type GitTargetRetentionStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.providerRef.name`
-// +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`
-// +kubebuilder:printcolumn:name="Path",type=string,JSONPath=`.spec.path`
+// Seven default-priority columns wrapped `kubectl get gittargets` on any normal terminal.
+// Flux ships three or four; the identity fields stay one `-o wide` away.
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Streams",type=string,JSONPath=`.status.streams.summary`
@@ -296,6 +291,9 @@ type GitTargetRetentionStatus struct {
 // +kubebuilder:printcolumn:name="ClusterProviderReady",type=string,JSONPath=`.status.conditions[?(@.type=="ClusterProviderReady")].status`,priority=1
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`,priority=1
 // +kubebuilder:printcolumn:name="Encryption",type=string,JSONPath=`.spec.encryption.provider`,priority=1
+// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.providerRef.name`,priority=1
+// +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`,priority=1
+// +kubebuilder:printcolumn:name="Path",type=string,JSONPath=`.spec.path`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitTarget is the Schema for the gittargets API.

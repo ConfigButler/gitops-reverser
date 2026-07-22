@@ -17,7 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,7 +55,9 @@ const GitTargetConditionStreamsReady = GitTargetConditionStreamsRunning
 const GitTargetStreamsReadyReasonNotReady = GitTargetStreamsRunningReasonNotReady
 
 const (
-	GitTargetReasonOK                   = "OK"
+	// GitTargetReasonOK is the healthy reason. It is the shared Succeeded vocabulary rather than
+	// a per-kind spelling; the name is kept for call-site stability.
+	GitTargetReasonOK                   = ReasonSucceeded
 	GitTargetReasonProviderNotFound     = "ProviderNotFound"
 	GitTargetReasonBranchNotAllowed     = "BranchNotAllowed"
 	GitTargetReasonTargetConflict       = "TargetConflict"
@@ -107,16 +109,24 @@ type GitTargetReconciler struct {
 	Scheme        *runtime.Scheme
 	WorkerManager *git.WorkerManager
 	EventRouter   *watch.EventRouter
+	// Recorder emits a Kubernetes Event on every persisted Ready transition. It may be nil in
+	// tests, in which case no Event is recorded and nothing else changes.
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+
+// newGitTargetReadiness starts the accumulator that owns this kind's kstatus trio. Its converged
+// outcome is what Ready reports when no gate objected.
+func newGitTargetReadiness() *readiness {
+	return newReadiness("GitTarget is fully reconciled", "GitTarget is not stalled")
+}
 
 // Reconcile validates GitTarget references and drives startup lifecycle gates.
-//
-//nolint:gocognit,cyclop,funlen // Gate pipeline is intentionally explicit to keep status transitions obvious.
 func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("GitTargetReconciler")
 
@@ -125,12 +135,12 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.handleFetchError(err, log, req.NamespacedName)
 	}
 
+	st := beginStatus(r.Client, r.Recorder, &target, &target.Status.Conditions)
 	target.Status.ObservedGeneration = target.Generation
-	target.Status.LastReconcileTime = metav1.Now()
 	gitPathWasRefused := conditionIsFalse(target.Status.Conditions, GitTargetConditionGitPathAccepted)
 
 	providerNS := target.Namespace
-	validated, validationMsg, validationResult, validationErr := r.evaluateValidatedGate(ctx, &target, providerNS)
+	validated, validationMsg, validationResult, validationErr := r.evaluateValidatedGate(ctx, st, &target, providerNS)
 	if validationErr != nil {
 		return ctrl.Result{}, validationErr
 	}
@@ -142,45 +152,28 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// releases the source-cluster context; a later recovery re-declares and re-snapshots. A
 		// local GitTarget names no source cluster, so its streams are left untouched.
 		r.stopSourceClusterMirror(&target)
-		r.setCondition(
-			&target,
+		st.set(
 			GitTargetConditionEncryptionConfigured,
 			metav1.ConditionUnknown,
 			GitTargetReasonBlocked,
 			"Blocked by Validated=False",
 		)
-		r.setBlockedDataPlane(&target)
-		r.setGitPathAcceptedUnknown(&target, "Blocked by Validated=False")
-		r.setStalledConditions(
-			&target,
-			GitTargetReadyReasonValidationFailed,
-			validationMsg,
-		)
-		if validationResult != nil {
-			if err := r.updateStatusWithRetry(ctx, &target); err != nil {
-				return ctrl.Result{}, err
-			}
-			return *validationResult, nil
-		}
-		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+		return r.stall(ctx, st, blockedGate{
+			reason:  GitTargetReadyReasonValidationFailed,
+			message: validationMsg,
+			blocked: "Blocked by Validated=False",
+			result:  validationResult,
+		})
 	}
 
-	encryptionReady, encryptionMessage, encryptionRequeueAfter := r.evaluateEncryptionGate(ctx, &target, log)
+	encryptionReady, encryptionMessage, encryptionRequeueAfter := r.evaluateEncryptionGate(ctx, st, &target, log)
 	if !encryptionReady {
-		r.setBlockedDataPlane(&target)
-		r.setGitPathAcceptedUnknown(&target, "Blocked by EncryptionConfigured=False")
-		r.setStalledConditions(
-			&target,
-			GitTargetReadyReasonEncryptionNotConfigured,
-			encryptionMessage,
-		)
-		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: encryptionRequeueAfter}, nil
+		return r.stall(ctx, st, blockedGate{
+			reason:  GitTargetReadyReasonEncryptionNotConfigured,
+			message: encryptionMessage,
+			blocked: "Blocked by EncryptionConfigured=False",
+			result:  &ctrl.Result{RequeueAfter: encryptionRequeueAfter},
+		})
 	}
 
 	// Ensure the branch worker exists and register the GitTarget's event stream before declaring
@@ -188,96 +181,117 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// destination worker must already be wired.
 	wired, wiringMessage := r.evaluateWorkerWiringGate(&target, providerNS, log)
 	if !wired {
-		r.setBlockedDataPlane(&target)
-		r.setGitPathAcceptedUnknown(&target, "Blocked by worker wiring failure")
-		r.setStalledConditions(
-			&target,
-			GitTargetReadyReasonWorkerUnavailable,
-			wiringMessage,
-		)
-		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+		return r.stall(ctx, st, blockedGate{
+			reason:  GitTargetReadyReasonWorkerUnavailable,
+			message: wiringMessage,
+			blocked: "Blocked by worker wiring failure",
+		})
 	}
 
-	// Ensure watch-first data-plane streams exist, then project source and target readiness
-	// into the kstatus trio.
-	streamsSettling := false
-	var streams watch.StreamSummary
-	gitPath := watch.GitPathAcceptanceStatus{
-		Accepted: true,
-		Reason:   GitTargetReasonGitPathAccepted,
-		Message:  "GitTarget path accepted",
-	}
-	renderFidelity := watch.RenderFidelityStatus{
-		State: "True", Reason: GitTargetReasonRenderMatchesLive, Message: "Every rendered token matches live",
-	}
-	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
-		gitDest := types.NewResourceReference(target.Name, target.Namespace).WithUID(string(target.UID))
-		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(
-			ctx,
-			gitDest,
-			target.SourceCluster(),
-			r.auditRouteFor(ctx, &target),
-			target.EffectivePruneMode(),
-			gitPathWasRefused,
-		); declareErr != nil {
-			log.V(1).Info("stream declaration skipped; surface not observable",
-				"gitDest", gitDest.String(), "err", declareErr.Error())
-			streamsSettling = true
-		}
-		streams = r.EventRouter.WatchManager.StreamSummaryForGitTarget(gitDest)
-		gitPath = r.EventRouter.WatchManager.GitPathAcceptanceForGitTarget(gitDest)
-		renderFidelity = r.EventRouter.WatchManager.RenderFidelityForGitTarget(gitDest)
-		target.Status.Streams = gitTargetStreamsStatus(streams)
-		// Retention is read beside the others and projected the same way, but it feeds NO
-		// condition: a document kept by policy is the configured outcome, not a degraded target.
-		target.Status.Retention = gitTargetRetentionStatus(
-			r.EventRouter.WatchManager.RetentionForGitTarget(gitDest))
-		streamsSettling = streamsSettling || !streams.StreamsRunning() || !gitPath.Accepted ||
-			renderFidelity.State == "Unknown"
-	} else {
-		streams = noResolvedStreamsSummary()
-		target.Status.Streams = gitTargetStreamsStatus(streams)
-		streamsSettling = true
-	}
+	observed := r.observeDataPlane(ctx, &target, gitPathWasRefused, log)
+	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
+	st.setValue(GitTargetConditionGitPathAccepted, observed.axes.GitPath)
+	st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
 
-	r.applyDataPlaneConditions(&target, streams, gitPath, renderFidelity)
+	// Source-cluster reachability (runtime), GitProvider readiness (destination-side) and
+	// ClusterProvider readiness (source-config side) are published as conditions of their own AND
+	// contributed to the trio below. Publishing is all this does: nothing here writes Ready.
+	sourceReach := r.observeSourceReachable(&target)
+	provider := r.gitProviderReadiness(ctx, &target, providerNS)
+	clusterProvider := r.clusterProviderReadiness(ctx, &target)
+	st.setValue(GitTargetConditionSourceClusterReachable, sourceReach)
+	st.setValue(GitTargetConditionGitProviderReady, provider)
+	st.setValue(GitTargetConditionClusterProviderReady, clusterProvider)
 
-	// Project source-cluster reachability (runtime) and GitProvider readiness (destination-side)
-	// and fold both into Ready. This runs AFTER applyDataPlaneConditions so it can only downgrade
-	// Ready — a source/provider problem holds the target below Ready, but a healthy pair never
-	// overrides a still-replaying stream.
-	// A GitTarget with no source cluster mirrors the cluster the operator runs in, which is
-	// reachable by definition — so the default (used when no watch manager is wired, e.g. in
-	// tests) is True/LocalCluster for a local target and Unknown only for a remote one.
-	sourceReach := watch.SourceClusterReachableStatus{State: "True", Reason: "LocalCluster"}
-	if !target.IsLocalSource() {
-		sourceReach = watch.SourceClusterReachableStatus{State: "Unknown", Reason: "AwaitingDiscovery"}
-	}
-	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
-		sourceReach = r.EventRouter.WatchManager.SourceClusterReachable(target.SourceCluster())
-	}
-	providerStatus, providerReason, providerMessage := r.gitProviderReadiness(ctx, &target, providerNS)
-	cpStatus, cpReason, cpMessage := r.clusterProviderReadiness(ctx, &target)
-	r.projectSourceAndProvider(&target, sourceReach, providerStatus, providerReason, providerMessage,
-		cpStatus, cpReason, cpMessage)
-	streamsSettling = streamsSettling || sourceReach.State != "True" ||
-		providerStatus != metav1.ConditionTrue || cpStatus == metav1.ConditionFalse
+	rd := newGitTargetReadiness()
+	gitTargetReadinessGates(rd, observed, provider, clusterProvider, sourceReach)
+	st.applyReadiness(rd)
 
-	if err := r.updateStatusWithRetry(ctx, &target); err != nil {
+	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
+	return ctrl.Result{RequeueAfter: gitTargetRequeue(rd)}, nil
+}
 
-	if streamsSettling {
-		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
+// gitTargetRequeue picks the periodic cadence. Only a converged GitTarget earns the steady interval.
+//
+// A STALLED target gets the fast loop too, which is deliberate and specific to this kind: its
+// terminal states clear when the Git FOLDER changes (someone removes the unsupported file, someone
+// fixes the diverged value), and that produces no Kubernetes event at all. The data-plane
+// acceptance channel is best-effort, so the periodic re-check is what actually recovers a refused
+// target. It is cheap now that a re-check which finds nothing new writes nothing.
+func gitTargetRequeue(rd *readiness) time.Duration {
+	if rd.converged() {
+		return RequeueSteadyInterval
+	}
+	return RequeueStreamSettleInterval
+}
+
+// blockedGate describes a control-plane gate that failed before the data plane could be evaluated.
+type blockedGate struct {
+	// reason and message are the terminal outcome published on the trio.
+	reason, message string
+	// blocked explains, on each data-plane condition, why it was not evaluated at all.
+	blocked string
+	// result overrides the requeue this gate would otherwise get.
+	result *ctrl.Result
+}
+
+// stall publishes a terminal control-plane outcome and ends the reconcile.
+//
+// The three early-return gates used to repeat this block verbatim: mark the data plane
+// not-evaluated, stamp the trio, write status with retry, choose a requeue. They differ only in the
+// values blockedGate carries.
+func (r *GitTargetReconciler) stall(
+	ctx context.Context,
+	st *reconcileStatus,
+	gate blockedGate,
+) (ctrl.Result, error) {
+	st.set(GitTargetConditionStreamsRunning, metav1.ConditionUnknown,
+		GitTargetStreamsRunningReasonNotReady, gate.blocked+"; streams not evaluated")
+	st.set(GitTargetConditionRenderMatchesLive, metav1.ConditionUnknown,
+		GitTargetReasonRenderRechecking, gate.blocked+"; render fidelity not evaluated")
+	st.set(GitTargetConditionGitPathAccepted, metav1.ConditionUnknown,
+		GitTargetReasonNotChecked, gate.blocked)
+
+	rd := newGitTargetReadiness()
+	rd.stalled(gate.reason, gate.message)
+	st.applyReadiness(rd)
+
+	if err := st.commit(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
+	if gate.result != nil {
+		return *gate.result, nil
 	}
 	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
+// observeSourceReachable projects the source cluster's runtime reachability.
+//
+// A GitTarget with no source cluster mirrors the cluster the operator runs in, which is reachable
+// by definition — so the default (used when no watch manager is wired, e.g. in tests) is
+// True/LocalCluster for a local target and Unknown only for a remote one.
+func (r *GitTargetReconciler) observeSourceReachable(
+	target *configbutleraiv1alpha3.GitTarget,
+) conditionValue {
+	reach := watch.SourceClusterReachableStatus{State: "True", Reason: "LocalCluster"}
+	if !target.IsLocalSource() {
+		reach = watch.SourceClusterReachableStatus{State: "Unknown", Reason: "AwaitingDiscovery"}
+	}
+	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
+		reach = r.EventRouter.WatchManager.SourceClusterReachable(target.SourceCluster())
+	}
+	return conditionValue{
+		Status:  conditionStatusFromString(reach.State),
+		Reason:  reach.Reason,
+		Message: reach.Message,
+	}
+}
+
 func (r *GitTargetReconciler) evaluateValidatedGate(
 	ctx context.Context,
+	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
 	providerNS string,
 ) (bool, string, *ctrl.Result, error) {
@@ -286,7 +300,7 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, "", nil, err
 	}
 	if !validated {
-		r.setCondition(target, GitTargetConditionValidated, metav1.ConditionFalse, reason, message)
+		st.set(GitTargetConditionValidated, metav1.ConditionFalse, reason, message)
 		return false, fmt.Sprintf("Validated gate failed: %s", reason), result, nil
 	}
 
@@ -295,14 +309,12 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, "", nil, conflictErr
 	}
 	if conflict {
-		r.setCondition(target, GitTargetConditionValidated, metav1.ConditionFalse, conflictReason, conflictMsg)
+		st.set(GitTargetConditionValidated, metav1.ConditionFalse, conflictReason, conflictMsg)
 		return false, fmt.Sprintf("Validated gate failed: %s", conflictReason), &conflictResult, nil
 	}
 
 	if placementOK, placementMsg := validatePlacementPolicy(target.Spec.Placement); !placementOK {
-		r.setCondition(
-			target,
-			GitTargetConditionValidated,
+		st.set(GitTargetConditionValidated,
 			metav1.ConditionFalse,
 			GitTargetReasonInvalidConfig,
 			placementMsg,
@@ -323,14 +335,12 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, "", nil, authErr
 	}
 	if !authorized {
-		r.setCondition(target, GitTargetConditionValidated, metav1.ConditionFalse, authReason, authMsg)
+		st.set(GitTargetConditionValidated, metav1.ConditionFalse, authReason, authMsg)
 		result := ctrl.Result{RequeueAfter: RequeueSteadyInterval}
 		return false, fmt.Sprintf("Validated gate failed: %s", authReason), &result, nil
 	}
 
-	r.setCondition(
-		target,
-		GitTargetConditionValidated,
+	st.set(GitTargetConditionValidated,
 		metav1.ConditionTrue,
 		GitTargetReasonOK,
 		"Provider, branch, and placement validation passed",
@@ -340,13 +350,12 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 
 func (r *GitTargetReconciler) evaluateEncryptionGate(
 	ctx context.Context,
+	st *reconcileStatus,
 	target *configbutleraiv1alpha3.GitTarget,
 	log logr.Logger,
 ) (bool, string, time.Duration) {
 	if !isTargetAgeEncryptionEnabled(target) {
-		r.setCondition(
-			target,
-			GitTargetConditionEncryptionConfigured,
+		st.set(GitTargetConditionEncryptionConfigured,
 			metav1.ConditionTrue,
 			GitTargetReasonNotRequired,
 			"SOPS age encryption is not enabled for this GitTarget",
@@ -362,7 +371,7 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 		if strings.Contains(err.Error(), "failed to fetch encryption secret") {
 			reason = GitTargetReasonMissingSecret
 		}
-		r.setCondition(target, GitTargetConditionEncryptionConfigured, metav1.ConditionFalse, reason, err.Error())
+		st.set(GitTargetConditionEncryptionConfigured, metav1.ConditionFalse, reason, err.Error())
 		return false, fmt.Sprintf("EncryptionConfigured gate failed: %s", reason), RequeueSteadyInterval
 	}
 	if _, err := git.ResolveTargetEncryption(ctx, r.Client, target); err != nil {
@@ -370,13 +379,11 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 		if strings.Contains(err.Error(), "failed to fetch encryption secret") {
 			reason = GitTargetReasonMissingSecret
 		}
-		r.setCondition(target, GitTargetConditionEncryptionConfigured, metav1.ConditionFalse, reason, err.Error())
+		st.set(GitTargetConditionEncryptionConfigured, metav1.ConditionFalse, reason, err.Error())
 		return false, fmt.Sprintf("EncryptionConfigured gate failed: %s", reason), RequeueSteadyInterval
 	}
 
-	r.setCondition(
-		target,
-		GitTargetConditionEncryptionConfigured,
+	st.set(GitTargetConditionEncryptionConfigured,
 		metav1.ConditionTrue,
 		GitTargetReasonOK,
 		"Encryption configuration is valid",
@@ -423,244 +430,202 @@ func (r *GitTargetReconciler) stopSourceClusterMirror(target *configbutleraiv1al
 	r.EventRouter.WatchManager.ForgetGitTargetDeclaration(gitDest)
 }
 
-func (r *GitTargetReconciler) setBlockedDataPlane(target *configbutleraiv1alpha3.GitTarget) {
-	r.setCondition(
-		target,
-		GitTargetConditionStreamsRunning,
-		metav1.ConditionUnknown,
-		GitTargetStreamsRunningReasonNotReady,
-		"Blocked by control-plane gate; streams not evaluated",
-	)
-	r.setCondition(
-		target,
-		GitTargetConditionRenderMatchesLive,
-		metav1.ConditionUnknown,
-		GitTargetReasonRenderRechecking,
-		"Blocked by control-plane gate; render fidelity not evaluated",
-	)
+// gitTargetAxes are the three data-plane observations a GitTarget publishes as conditions in their
+// own right: what its watch streams are doing, whether its Git folder is safe to materialize, and
+// whether what was rendered still matches live.
+//
+// They are OBSERVATIONS. None of them writes Ready, Reconciling or Stalled — that is
+// gitTargetReadinessGates' job, and splitting the two is what stopped a later gate from silently
+// overwriting an earlier gate's terminal verdict.
+type gitTargetAxes struct {
+	Streams conditionValue
+	GitPath conditionValue
+	Render  conditionValue
 }
 
-func (r *GitTargetReconciler) setGitPathAcceptedUnknown(
+// dataPlaneObservation is everything one reconcile learned from the watch manager.
+type dataPlaneObservation struct {
+	axes    gitTargetAxes
+	streams watch.StreamSummary
+	// declareFailed records that the stream declaration did not land, so the axes describe a
+	// surface that is not yet observable rather than a converged one.
+	declareFailed bool
+}
+
+// observeDataPlane declares this GitTarget's streams, reads back what the watch manager knows, and
+// projects the three data-plane axes. It mutates only the roll-up fields of status.
+func (r *GitTargetReconciler) observeDataPlane(
+	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
-	message string,
-) {
-	r.setCondition(
-		target,
-		GitTargetConditionGitPathAccepted,
-		metav1.ConditionUnknown,
-		GitTargetReasonNotChecked,
-		message,
-	)
-}
-
-func (r *GitTargetReconciler) setStalledConditions(
-	target *configbutleraiv1alpha3.GitTarget,
-	reason, message string,
-) {
-	r.setCondition(target, GitTargetConditionReady, metav1.ConditionFalse, reason, message)
-	r.setCondition(target, GitTargetConditionReconciling, metav1.ConditionFalse, reason, "Reconciliation is stalled")
-	r.setCondition(target, GitTargetConditionStalled, metav1.ConditionTrue, reason, message)
-}
-
-func (r *GitTargetReconciler) applyDataPlaneConditions(
-	target *configbutleraiv1alpha3.GitTarget,
-	streams watch.StreamSummary,
-	gitPath watch.GitPathAcceptanceStatus,
-	renderFidelity watch.RenderFidelityStatus,
-) {
-	d := deriveGitTargetDataPlaneStatusWithRenderFidelity(streams, gitPath, renderFidelity)
-	r.setCondition(target, GitTargetConditionStreamsRunning, d.StreamsStatus, d.StreamsReason, d.StreamsMessage)
-	r.setCondition(target, GitTargetConditionGitPathAccepted, d.GitPathStatus, d.GitPathReason, d.GitPathMessage)
-	r.setCondition(target, GitTargetConditionRenderMatchesLive, d.RenderFidelityStatus,
-		d.RenderFidelityReason, d.RenderFidelityMessage)
-	r.setCondition(target, GitTargetConditionReady, d.ReadyStatus, d.ReadyReason, d.ReadyMessage)
-	r.setCondition(
-		target,
-		GitTargetConditionReconciling,
-		d.ReconcilingStatus,
-		d.ReconcilingReason,
-		d.ReconcilingMessage,
-	)
-	r.setCondition(target, GitTargetConditionStalled, d.StalledStatus, d.StalledReason, d.StalledMessage)
-}
-
-type gitTargetDataPlaneDecision struct {
-	StreamsStatus         metav1.ConditionStatus
-	StreamsReason         string
-	StreamsMessage        string
-	GitPathStatus         metav1.ConditionStatus
-	GitPathReason         string
-	GitPathMessage        string
-	RenderFidelityStatus  metav1.ConditionStatus
-	RenderFidelityReason  string
-	RenderFidelityMessage string
-	ReadyStatus           metav1.ConditionStatus
-	ReadyReason           string
-	ReadyMessage          string
-	ReconcilingStatus     metav1.ConditionStatus
-	ReconcilingReason     string
-	ReconcilingMessage    string
-	StalledStatus         metav1.ConditionStatus
-	StalledReason         string
-	StalledMessage        string
-}
-
-func deriveGitTargetDataPlaneStatus(
-	streams watch.StreamSummary,
-	gitPath watch.GitPathAcceptanceStatus,
-) gitTargetDataPlaneDecision {
-	streamsStatus := metav1.ConditionFalse
-	if streams.StreamsRunning() {
-		streamsStatus = metav1.ConditionTrue
-	}
-	gitPathStatus := metav1.ConditionTrue
-	gitPathReason := GitTargetReasonGitPathAccepted
-	gitPathMessage := "GitTarget path accepted"
-	if !gitPath.Accepted {
-		gitPathStatus = metav1.ConditionFalse
-		gitPathReason = gitPath.Reason
-		if gitPathReason == "" {
-			gitPathReason = GitTargetReasonUnsupportedContent
-		}
-		gitPathMessage = gitPath.Message
-	}
-	if gitPathMessage == "" {
-		gitPathMessage = "GitTarget path accepted"
-	}
-
-	switch {
-	case !gitPath.Accepted:
-		return gitTargetDataPlaneDecision{
-			StreamsStatus:      streamsStatus,
-			StreamsReason:      streams.Reason,
-			StreamsMessage:     streams.Message,
-			GitPathStatus:      gitPathStatus,
-			GitPathReason:      gitPathReason,
-			GitPathMessage:     gitPathMessage,
-			ReadyStatus:        metav1.ConditionFalse,
-			ReadyReason:        gitPathReason,
-			ReadyMessage:       gitPathMessage,
-			ReconcilingStatus:  metav1.ConditionFalse,
-			ReconcilingReason:  gitPathReason,
-			ReconcilingMessage: "Reconciliation is stalled",
-			StalledStatus:      metav1.ConditionTrue,
-			StalledReason:      gitPathReason,
-			StalledMessage:     gitPathMessage,
-		}
-	case streams.Blocked > 0:
-		return gitTargetDataPlaneDecision{
-			StreamsStatus:      metav1.ConditionFalse,
-			StreamsReason:      streams.Reason,
-			StreamsMessage:     streams.Message,
-			GitPathStatus:      gitPathStatus,
-			GitPathReason:      gitPathReason,
-			GitPathMessage:     gitPathMessage,
-			ReadyStatus:        metav1.ConditionFalse,
-			ReadyReason:        streams.Reason,
-			ReadyMessage:       streams.Message,
-			ReconcilingStatus:  metav1.ConditionFalse,
-			ReconcilingReason:  streams.Reason,
-			ReconcilingMessage: "Reconciliation is stalled",
-			StalledStatus:      metav1.ConditionTrue,
-			StalledReason:      streams.Reason,
-			StalledMessage:     streams.Message,
-		}
-	case !streams.StreamsRunning():
-		return gitTargetDataPlaneDecision{
-			StreamsStatus:      metav1.ConditionFalse,
-			StreamsReason:      streams.Reason,
-			StreamsMessage:     streams.Message,
-			GitPathStatus:      gitPathStatus,
-			GitPathReason:      gitPathReason,
-			GitPathMessage:     gitPathMessage,
-			ReadyStatus:        metav1.ConditionFalse,
-			ReadyReason:        ReasonProgressing,
-			ReadyMessage:       streams.Message,
-			ReconcilingStatus:  metav1.ConditionTrue,
-			ReconcilingReason:  streams.Reason,
-			ReconcilingMessage: streams.Message,
-			StalledStatus:      metav1.ConditionFalse,
-			StalledReason:      ReasonProgressing,
-			StalledMessage:     "Reconciliation is making progress",
+	gitPathWasRefused bool,
+	log logr.Logger,
+) dataPlaneObservation {
+	if r.EventRouter == nil || r.EventRouter.WatchManager == nil {
+		// No data plane is wired (tests, standalone). Nothing has been OBSERVED, which is not the
+		// same as "observed to be empty": the streams axis stays False and holds the target below
+		// Ready, and it says Progressing rather than NoResolvedTypes so the two are never confused.
+		streams := noResolvedStreamsSummary()
+		target.Status.Streams = gitTargetStreamsStatus(streams)
+		return dataPlaneObservation{
+			axes: gitTargetAxes{
+				Streams: conditionValue{
+					Status:  metav1.ConditionFalse,
+					Reason:  ReasonProgressing,
+					Message: "Data plane is not wired; streams have not been evaluated",
+				},
+				GitPath: gitPathAxis(watch.GitPathAcceptanceStatus{Accepted: true}),
+				Render:  renderAxis(watch.RenderFidelityStatus{State: git.RenderFidelityTrue}),
+			},
+			streams: streams,
 		}
 	}
-	return gitTargetDataPlaneDecision{
-		StreamsStatus:      metav1.ConditionTrue,
-		StreamsReason:      streams.Reason,
-		StreamsMessage:     streams.Message,
-		GitPathStatus:      gitPathStatus,
-		GitPathReason:      gitPathReason,
-		GitPathMessage:     gitPathMessage,
-		ReadyStatus:        metav1.ConditionTrue,
-		ReadyReason:        GitTargetReasonOK,
-		ReadyMessage:       "GitTarget is fully reconciled",
-		ReconcilingStatus:  metav1.ConditionFalse,
-		ReconcilingReason:  GitTargetReasonOK,
-		ReconcilingMessage: "Reconciliation complete",
-		StalledStatus:      metav1.ConditionFalse,
-		StalledReason:      GitTargetReasonOK,
-		StalledMessage:     "GitTarget is not stalled",
+
+	manager := r.EventRouter.WatchManager
+	gitDest := types.NewResourceReference(target.Name, target.Namespace).WithUID(string(target.UID))
+
+	observation := dataPlaneObservation{}
+	if declareErr := manager.DeclareForGitTarget(
+		ctx,
+		gitDest,
+		target.SourceCluster(),
+		r.auditRouteFor(ctx, target),
+		target.EffectivePruneMode(),
+		gitPathWasRefused,
+	); declareErr != nil {
+		log.V(1).Info("stream declaration skipped; surface not observable",
+			"gitDest", gitDest.String(), "err", declareErr.Error())
+		observation.declareFailed = true
 	}
+
+	observation.streams = manager.StreamSummaryForGitTarget(gitDest)
+	observation.axes = gitTargetAxes{
+		Streams: streamsAxis(observation.streams),
+		GitPath: gitPathAxis(manager.GitPathAcceptanceForGitTarget(gitDest)),
+		Render:  renderAxis(manager.RenderFidelityForGitTarget(gitDest)),
+	}
+
+	target.Status.Streams = gitTargetStreamsStatus(observation.streams)
+	// Retention is read beside the others and projected the same way, but it feeds NO condition: a
+	// document kept by policy is the configured outcome, not a degraded target.
+	target.Status.Retention = gitTargetRetentionStatus(manager.RetentionForGitTarget(gitDest))
+	return observation
 }
 
-// deriveGitTargetDataPlaneStatusWithRenderFidelity layers the independent render-vs-live gate
-// over the existing source-stream and Git-path decisions. A divergence stalls the target without
-// changing GitPathAccepted; an incomplete epoch is progress, not failure.
-func deriveGitTargetDataPlaneStatusWithRenderFidelity(
-	streams watch.StreamSummary,
-	gitPath watch.GitPathAcceptanceStatus,
-	renderFidelity watch.RenderFidelityStatus,
-) gitTargetDataPlaneDecision {
-	decision := deriveGitTargetDataPlaneStatus(streams, gitPath)
-	decision.RenderFidelityStatus = metav1.ConditionTrue
-	decision.RenderFidelityReason = GitTargetReasonRenderMatchesLive
-	decision.RenderFidelityMessage = "Every rendered token matches live"
+// streamsAxis renders StreamsRunning.
+//
+// Zero resolved types reports TRUE — vacuously, and deliberately. It used to report
+// False/NoResolvedTypes, which pinned the GitTarget at Reconciling=True with nothing left that
+// could ever resolve. That is not an exotic state: it is step 3 of the documented setup flow
+// (create the GitTarget, THEN the WatchRules) and the steady state of any target whose rules were
+// deleted. kstatus never reached Current, `kubectl wait --for=condition=Ready` never returned, and
+// the reconcile burned a pass plus a status write every 10 seconds for the life of the object.
+// "I have nothing to mirror" is converged — Flux's Kustomization with an empty path reports the
+// same. The count stays visible: status.streams.summary still reads "0/0" and the condition's
+// reason is still NoResolvedTypes, so the zero is legible without being reported as a failure.
+func streamsAxis(streams watch.StreamSummary) conditionValue {
+	status := metav1.ConditionFalse
+	if streams.Ready == streams.Total {
+		status = metav1.ConditionTrue
+	}
+	return conditionValue{Status: status, Reason: streams.Reason, Message: streams.Message}
+}
 
+// gitPathAxis renders GitPathAccepted from the data plane's write-plan verdict.
+func gitPathAxis(gitPath watch.GitPathAcceptanceStatus) conditionValue {
+	if gitPath.Accepted {
+		message := gitPath.Message
+		if message == "" {
+			message = "GitTarget path accepted"
+		}
+		return conditionValue{
+			Status:  metav1.ConditionTrue,
+			Reason:  GitTargetReasonGitPathAccepted,
+			Message: message,
+		}
+	}
+
+	value := conditionValue{Status: metav1.ConditionFalse, Reason: gitPath.Reason, Message: gitPath.Message}
+	if value.Reason == "" {
+		value.Reason = GitTargetReasonUnsupportedContent
+	}
+	if value.Message == "" {
+		value.Message = "GitTarget path refused"
+	}
+	return value
+}
+
+// renderAxis renders RenderMatchesLive. A divergence is terminal; an incomplete epoch is progress.
+func renderAxis(renderFidelity watch.RenderFidelityStatus) conditionValue {
+	value := conditionValue{
+		Status:  metav1.ConditionTrue,
+		Reason:  GitTargetReasonRenderMatchesLive,
+		Message: "Every rendered token matches live",
+	}
 	switch renderFidelity.State {
 	case git.RenderFidelityFalse:
-		decision.RenderFidelityStatus = metav1.ConditionFalse
-		decision.RenderFidelityReason = GitTargetReasonRenderDoesNotMatchLive
-		decision.RenderFidelityMessage = renderFidelity.Message
+		value = conditionValue{
+			Status:  metav1.ConditionFalse,
+			Reason:  GitTargetReasonRenderDoesNotMatchLive,
+			Message: renderFidelity.Message,
+		}
 	case git.RenderFidelityUnknown:
-		decision.RenderFidelityStatus = metav1.ConditionUnknown
-		decision.RenderFidelityReason = GitTargetReasonRenderRechecking
-		decision.RenderFidelityMessage = renderFidelity.Message
+		value = conditionValue{
+			Status:  metav1.ConditionUnknown,
+			Reason:  GitTargetReasonRenderRechecking,
+			Message: renderFidelity.Message,
+		}
 	case git.RenderFidelityTrue:
 	}
 	if renderFidelity.Reason != "" {
-		decision.RenderFidelityReason = renderFidelity.Reason
+		value.Reason = renderFidelity.Reason
 	}
-	if decision.RenderFidelityMessage == "" {
-		decision.RenderFidelityMessage = "Waiting for render-vs-live verification"
+	if value.Message == "" {
+		value.Message = "Waiting for render-vs-live verification"
 	}
+	return value
+}
 
-	if !gitPath.Accepted || streams.Blocked > 0 || !streams.StreamsRunning() {
-		return decision
-	}
-	switch renderFidelity.State {
-	case git.RenderFidelityFalse:
-		decision.ReadyStatus = metav1.ConditionFalse
-		decision.ReadyReason = decision.RenderFidelityReason
-		decision.ReadyMessage = decision.RenderFidelityMessage
-		decision.ReconcilingStatus = metav1.ConditionFalse
-		decision.ReconcilingReason = decision.RenderFidelityReason
-		decision.ReconcilingMessage = "Reconciliation is stalled"
-		decision.StalledStatus = metav1.ConditionTrue
-		decision.StalledReason = decision.RenderFidelityReason
-		decision.StalledMessage = decision.RenderFidelityMessage
-	case git.RenderFidelityUnknown:
-		decision.ReadyStatus = metav1.ConditionFalse
-		decision.ReadyReason = decision.RenderFidelityReason
-		decision.ReadyMessage = decision.RenderFidelityMessage
-		decision.ReconcilingStatus = metav1.ConditionTrue
-		decision.ReconcilingReason = decision.RenderFidelityReason
-		decision.ReconcilingMessage = decision.RenderFidelityMessage
-		decision.StalledStatus = metav1.ConditionFalse
-		decision.StalledReason = ReasonProgressing
-		decision.StalledMessage = "Reconciliation is making progress"
-	case git.RenderFidelityTrue:
-	}
-	return decision
+// gitTargetReadinessGates contributes every GitTarget gate to the accumulator that owns the trio.
+//
+// THIS FUNCTION IS THE PRECEDENCE. Read it top to bottom: a stall always beats a progressing gate
+// whatever the order, and within each group the first contributor wins, so the order of these calls
+// is the order in which competing explanations are preferred. Adding a gate means adding a line
+// here, in the position where its answer should outrank the ones below it — not calling a setter
+// from wherever the gate happens to be evaluated.
+func gitTargetReadinessGates(
+	rd *readiness,
+	observed dataPlaneObservation,
+	provider, clusterProvider, sourceReach conditionValue,
+) {
+	// Terminal, most specific first. Each of these needs a human: the folder holds content the
+	// operator will not manage, a watch is refused, or what was written no longer matches live.
+	rd.stalledIf(observed.axes.GitPath.Status == metav1.ConditionFalse,
+		observed.axes.GitPath.Reason, observed.axes.GitPath.Message)
+	rd.stalledIf(observed.streams.Blocked > 0, observed.streams.Reason, observed.streams.Message)
+	rd.stalledIf(observed.axes.Render.Status == metav1.ConditionFalse,
+		observed.axes.Render.Reason, observed.axes.Render.Message)
+
+	// Transient. Each of these clears on its own and each has a Watches() edge that re-runs this
+	// reconcile when it does, so they are progress, never a stall. Dependencies before this
+	// object's own data plane: "your GitProvider is down" is a more actionable answer than
+	// "streams are still replaying", and it is usually the cause of the latter.
+	rd.progressingIf(provider.Status == metav1.ConditionFalse, metav1.ConditionFalse,
+		provider.Reason, provider.Message)
+	rd.progressingIf(clusterProvider.Status == metav1.ConditionFalse, metav1.ConditionFalse,
+		clusterProvider.Reason, clusterProvider.Message)
+	rd.progressingIf(sourceReach.Status == metav1.ConditionFalse, metav1.ConditionFalse,
+		sourceReach.Reason, sourceReach.Message)
+	// An unconfirmed source has not been established at all, so Ready is Unknown rather than False.
+	rd.progressingIf(sourceReach.Status == metav1.ConditionUnknown, metav1.ConditionUnknown,
+		sourceReach.Reason, sourceReach.Message)
+	rd.progressingIf(observed.axes.Render.Status == metav1.ConditionUnknown, metav1.ConditionFalse,
+		observed.axes.Render.Reason, observed.axes.Render.Message)
+	rd.progressingIf(observed.axes.Streams.Status != metav1.ConditionTrue, metav1.ConditionFalse,
+		observed.axes.Streams.Reason, observed.axes.Streams.Message)
+	// Last: the declaration itself did not land, so every axis above describes a surface that was
+	// never observed. Nothing else objected, but this target is not converged either.
+	rd.progressingIf(observed.declareFailed, metav1.ConditionFalse, ReasonProgressing,
+		"Stream declaration has not landed yet; the data-plane surface is not observable")
 }
 
 func (r *GitTargetReconciler) ensureEventStream(
@@ -713,32 +678,6 @@ func (r *GitTargetReconciler) ensureEventStream(
 	stream := reconcile.NewGitTargetEventStream(target.Name, target.Namespace, worker, log)
 	r.EventRouter.RegisterGitTargetEventStream(gitDest, stream)
 	return stream, nil
-}
-
-// isConditionTrue returns true if the named condition is present with Status=True.
-func isConditionTrue(conditions []metav1.Condition, conditionType string) bool {
-	for _, c := range conditions {
-		if c.Type == conditionType {
-			return c.Status == metav1.ConditionTrue
-		}
-	}
-	return false
-}
-
-func (r *GitTargetReconciler) setCondition(
-	target *configbutleraiv1alpha3.GitTarget,
-	conditionType string,
-	status metav1.ConditionStatus,
-	reason, message string,
-) {
-	target.Status.Conditions = upsertCondition(
-		target.Status.Conditions,
-		conditionType,
-		status,
-		reason,
-		message,
-		target.Generation,
-	)
 }
 
 func (r *GitTargetReconciler) validateProviderAndBranch(
@@ -1069,17 +1008,12 @@ func clampIntToInt32(value int) int32 {
 }
 
 func gitTargetStreamsStatus(streams watch.StreamSummary) *configbutleraiv1alpha3.GitTargetStreamsStatus {
-	observed := streams.ObservedTime
-	if observed.IsZero() {
-		observed = metav1.Now()
-	}
 	return &configbutleraiv1alpha3.GitTargetStreamsStatus{
-		Summary:      streams.Summary(),
-		Total:        clampIntToInt32(streams.Total),
-		Ready:        clampIntToInt32(streams.Ready),
-		Replaying:    clampIntToInt32(streams.Replaying),
-		Blocked:      clampIntToInt32(streams.Blocked),
-		ObservedTime: &observed,
+		Summary:   streams.Summary(),
+		Total:     clampIntToInt32(streams.Total),
+		Ready:     clampIntToInt32(streams.Ready),
+		Replaying: clampIntToInt32(streams.Replaying),
+		Blocked:   clampIntToInt32(streams.Blocked),
 	}
 }
 
@@ -1105,45 +1039,15 @@ func gitTargetRetentionStatus(summary watch.RetentionSummary) *configbutleraiv1a
 	}
 }
 
-// updateStatusWithRetry updates the status with retry logic to handle race conditions.
-func (r *GitTargetReconciler) updateStatusWithRetry(
-	ctx context.Context,
-	target *configbutleraiv1alpha3.GitTarget,
-) error {
-	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
-
-	return wait.ExponentialBackoff(wait.Backoff{
-		Duration: RetryInitialDuration,
-		Factor:   RetryBackoffFactor,
-		Jitter:   RetryBackoffJitter,
-		Steps:    RetryMaxSteps,
-	}, func() (bool, error) {
-		latest := &configbutleraiv1alpha3.GitTarget{}
-		key := client.ObjectKeyFromObject(target)
-		if err := r.Get(ctx, key, latest); err != nil {
-			if apierrors.IsNotFound(err) {
-				return true, nil
-			}
-			return false, err
-		}
-
-		latest.Status = target.Status
-		if err := r.Status().Update(ctx, latest); err != nil {
-			if apierrors.IsConflict(err) {
-				log.V(1).Info("Status conflict, retrying")
-				return false, nil
-			}
-			return false, err
-		}
-
-		return true, nil
-	})
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha3.GitTarget{}).
+		// A For() predicate is not an optimisation here, it closes a self-triggering edge: a status
+		// write bumps resourceVersion and fires an Update watch event that EnqueueRequestForObject
+		// turns straight back into a queued request, un-rate-limited. reconcileStatus.commit()
+		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
+		// matches what GitProvider and ClusterProvider already do.
+		For(&configbutleraiv1alpha3.GitTarget{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// No control-plane Secret watch. Reacting to age-key Secret changes with a
 		// full-object Secret watch made the process retain every Secret value in the
 		// cluster. Generated-age-Secret recovery and out-of-band age-key updates are

@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -67,6 +67,9 @@ type ClusterProviderReconciler struct {
 	KubeConfigSafety kubeconfig.SafetyPolicy
 
 	firsts clusterProviderLogFirsts
+
+	// Recorder emits a Kubernetes Event on every persisted Ready transition; nil disables Events.
+	Recorder record.EventRecorder
 }
 
 // clusterProviderLogFirsts keeps startup progress visible without turning every routine
@@ -79,6 +82,7 @@ type clusterProviderLogFirsts struct {
 // It never creates or deletes one, so it takes neither verb.
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile validates a ClusterProvider's inputs and updates its status.
 func (r *ClusterProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -149,32 +153,36 @@ func (r *ClusterProviderReconciler) reconcileClusterProvider(
 		"inCluster", provider.IsInCluster(),
 		"generation", provider.Generation)
 
-	r.setProgressingConditions(provider, ReasonChecking, "Validating cluster provider inputs...")
+	st := beginStatus(r.Client, r.Recorder, provider, &provider.Status.Conditions)
+	provider.Status.ObservedGeneration = provider.Generation
 
 	valid, reason, message, err := r.validateProviderKubeConfig(ctx, provider)
 	if err != nil {
 		log.Error(err, "failed to read ClusterProvider kubeconfig Secret", "name", provider.Name)
 		return ctrl.Result{}, err
 	}
+
+	validated := metav1.ConditionTrue
+	rd := newReadiness(message, "ClusterProvider is not stalled")
 	if !valid {
-		r.setCondition(provider, ClusterProviderConditionValidated, metav1.ConditionFalse, reason, message)
-		r.setStalledConditions(provider, reason, message)
-		// A failed status write is a real failure, not a verdict: propagate it so the invalid
-		// provider is retried rather than left reporting a stale status for a whole steady interval.
-		return r.updateStatusAndRequeue(ctx, provider)
+		validated = metav1.ConditionFalse
+		rd.stalled(reason, message)
 	}
+	st.set(ClusterProviderConditionValidated, validated, reason, message)
+	st.applyReadiness(rd)
 
-	r.setCondition(provider, ClusterProviderConditionValidated, metav1.ConditionTrue, reason, message)
-	r.setReadyConditions(provider, message)
-
-	if err := r.updateStatusWithRetry(ctx, provider); err != nil {
+	// A failed status write is a real failure, not a verdict: propagate it so the provider is
+	// retried rather than left reporting a stale status for a whole steady interval.
+	if err := st.commit(ctx); err != nil {
 		log.Error(err, "failed to update ClusterProvider status", "name", provider.Name)
 		return ctrl.Result{}, err
 	}
 
-	r.firsts.validationSuccess.Do(func() {
-		log.Info("First ClusterProvider validation completed successfully", "name", provider.Name)
-	})
+	if valid {
+		r.firsts.validationSuccess.Do(func() {
+			log.Info("First ClusterProvider validation completed successfully", "name", provider.Name)
+		})
+	}
 	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
@@ -224,96 +232,6 @@ func (r *ClusterProviderReconciler) validateProviderKubeConfig(
 		return false, rej.Reason, fmt.Sprintf("kubeconfig Secret %s key %q: %s", secretKey, usedKey, rej.Message), nil
 	}
 	return true, ReasonValidated, fmt.Sprintf("kubeconfig Secret %s validated", secretKey), nil
-}
-
-func (r *ClusterProviderReconciler) setReadyConditions(
-	provider *configbutleraiv1alpha3.ClusterProvider,
-	message string,
-) {
-	r.setCondition(provider, ConditionTypeReady, metav1.ConditionTrue, ConditionTypeReady, message)
-	r.setCondition(provider, ConditionTypeReconciling, metav1.ConditionFalse, ConditionTypeReady,
-		"Reconciliation complete")
-	r.setCondition(provider, ConditionTypeStalled, metav1.ConditionFalse, ConditionTypeReady,
-		"ClusterProvider is not stalled")
-}
-
-func (r *ClusterProviderReconciler) setProgressingConditions(
-	provider *configbutleraiv1alpha3.ClusterProvider,
-	reason, message string,
-) {
-	r.setCondition(provider, ConditionTypeReady, metav1.ConditionFalse, reason, message)
-	r.setCondition(provider, ConditionTypeReconciling, metav1.ConditionTrue, reason, message)
-	r.setCondition(provider, ConditionTypeStalled, metav1.ConditionFalse, reason,
-		"Reconciliation is making progress")
-}
-
-func (r *ClusterProviderReconciler) setStalledConditions(
-	provider *configbutleraiv1alpha3.ClusterProvider,
-	reason, message string,
-) {
-	r.setCondition(provider, ConditionTypeReady, metav1.ConditionFalse, reason, message)
-	r.setCondition(provider, ConditionTypeReconciling, metav1.ConditionFalse, reason,
-		"Reconciliation is stalled")
-	r.setCondition(provider, ConditionTypeStalled, metav1.ConditionTrue, reason, message)
-}
-
-// setCondition sets or updates one condition by type and pins observedGeneration.
-func (r *ClusterProviderReconciler) setCondition(
-	provider *configbutleraiv1alpha3.ClusterProvider,
-	conditionType string,
-	status metav1.ConditionStatus,
-	reason, message string,
-) {
-	provider.Status.ObservedGeneration = provider.Generation
-	provider.Status.Conditions = upsertCondition(
-		provider.Status.Conditions,
-		conditionType,
-		status,
-		reason,
-		message,
-		provider.Generation,
-	)
-}
-
-// updateStatusAndRequeue updates the status and requeues on the steady interval.
-func (r *ClusterProviderReconciler) updateStatusAndRequeue(
-	ctx context.Context,
-	provider *configbutleraiv1alpha3.ClusterProvider,
-) (ctrl.Result, error) {
-	if err := r.updateStatusWithRetry(ctx, provider); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
-}
-
-// updateStatusWithRetry updates the status, re-reading the latest object on conflict.
-func (r *ClusterProviderReconciler) updateStatusWithRetry(
-	ctx context.Context,
-	provider *configbutleraiv1alpha3.ClusterProvider,
-) error {
-	return wait.ExponentialBackoff(wait.Backoff{
-		Duration: RetryInitialDuration,
-		Factor:   RetryBackoffFactor,
-		Jitter:   RetryBackoffJitter,
-		Steps:    RetryMaxSteps,
-	}, func() (bool, error) {
-		latest := &configbutleraiv1alpha3.ClusterProvider{}
-		key := client.ObjectKeyFromObject(provider)
-		if err := r.Get(ctx, key, latest); err != nil {
-			if apierrors.IsNotFound(err) {
-				return true, nil
-			}
-			return false, err
-		}
-		latest.Status = provider.Status
-		if err := r.Status().Update(ctx, latest); err != nil {
-			if apierrors.IsConflict(err) {
-				return false, nil
-			}
-			return false, err
-		}
-		return true, nil
-	})
 }
 
 // clusterProviderReconcilePredicate admits spec changes and the start of deletion. A deletion

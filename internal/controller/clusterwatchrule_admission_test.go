@@ -289,14 +289,14 @@ func TestReconcile_RefusalStopsDataPlaneBeforePublishingStatus(t *testing.T) {
 		cwaClusterProvider(cwaDenying()),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cwaTargetNS}},
 	}, interceptor.Funcs{
-		SubResourceUpdate: func(
+		SubResourcePatch: func(
 			ctx context.Context, c client.Client, _ string,
-			obj client.Object, opts ...client.SubResourceUpdateOption,
+			obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption,
 		) error {
 			seq++
 			statusWrittenAt = seq
 			compiledAtStatusWrite = len(f.store.SnapshotClusterWatchRules())
-			return c.Status().Update(ctx, obj, opts...)
+			return c.Status().Patch(ctx, obj, patch, opts...)
 		},
 	})
 

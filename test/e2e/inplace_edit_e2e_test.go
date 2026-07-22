@@ -55,7 +55,7 @@ var _ = Describe("Manager In-Place Manifest Editing", Label("manager", "inplace-
 
 		By("creating the GitProvider")
 		createGitProviderWithURLInNamespace("inplace-edit-provider", testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-		verifyResourceStatus("gitprovider", "inplace-edit-provider", testNs, "True", "Ready", "")
+		verifyResourceStatus("gitprovider", "inplace-edit-provider", testNs, "True", "Succeeded", "")
 	})
 
 	AfterAll(func() {
@@ -74,8 +74,8 @@ var _ = Describe("Manager In-Place Manifest Editing", Label("manager", "inplace-
 			DestinationName string
 		}{Name: ruleName, Namespace: testNs, DestinationName: destName}, testNs)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap WatchRule")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
-		verifyResourceStatus("watchrule", ruleName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
+		verifyResourceStatus("watchrule", ruleName, testNs, "True", "Succeeded", "")
 		waitForStreamsRunning(destName, testNs)
 
 		By("creating the ConfigMap with color=blue")
@@ -179,7 +179,7 @@ var _ = Describe(
 
 			By("creating the GitProvider")
 			createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-			verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+			verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 		})
 
 		AfterAll(func() {
@@ -211,8 +211,8 @@ var _ = Describe(
 				DestinationName string
 			}{Name: ruleName, Namespace: testNs, DestinationName: destName}, testNs)
 			Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap WatchRule")
-			verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
-			verifyResourceStatus("watchrule", ruleName, testNs, "True", "Ready", "")
+			verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
+			verifyResourceStatus("watchrule", ruleName, testNs, "True", "Succeeded", "")
 			waitForStreamsRunning(destName, testNs)
 
 			By("patching ConfigMaps that live in a multi-document file and a nested folder")

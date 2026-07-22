@@ -67,7 +67,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		// would match — its initial reconcile would establish main before the spec's own edit, hiding
 		// the pure "branch not even created until something is finalized" behaviour this suite tests.
 		applyDeploymentWatchRule(testNs, watchRuleName, gitTargetName)
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 		// Gate on StreamsRunning=True before any spec creates a Deployment: under watch-first, "Ready" only
 		// means the watch set is reconciled, not that each watch has opened and finished its
@@ -317,7 +317,7 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		// main stays absent until the bundle is finalized — unlike a ConfigMap rule,
 		// which would mirror the pre-existing kube-root-ca.crt and establish main early.
 		applyDeploymentWatchRule(testNs, watchRuleName, gitTargetName)
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
 		// Gate on StreamsRunning=True before any spec creates a Deployment: under watch-first, "Ready" only
 		// means the watch set is reconciled, not that each watch has opened and finished its
