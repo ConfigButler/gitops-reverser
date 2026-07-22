@@ -198,7 +198,9 @@ that still has a violation, but the reported count is a lower bound: re-run afte
 of trusting one list to be the whole job. Worth reporting upstream once there is a minimal
 reproduction.
 
-**Heading case needs a vocabulary.** The capitalization rule fires 503 times. Spot-checking says
+**Heading case needs a vocabulary.** The capitalization rule is the 378 in the table above, and it
+is the one count here that moves as documents are cleaned: sentence-casing the headings of the three
+gated files took it to 346. Spot-checking says
 most are real and they cluster in files written in title case throughout, such as
 [`.devcontainer/README.md`](../../.devcontainer/README.md). But `VS Code`, `SSH`, and every product
 name trip it too, so the rule is unusable without an `exceptions` list. Build that list from the

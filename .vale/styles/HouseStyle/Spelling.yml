@@ -17,7 +17,19 @@ extends: substitution
 message: "American spelling in prose: use '%s', not '%s'."
 link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#spelling-american-english
 level: error
-ignorecase: false
+# `ignorecase: false` was a silent hole: the swap keys are lowercase, so a form
+# at the start of a sentence went straight through the gate. Measured on a
+# specimen file, `behaviour` was flagged and `Behaviour`, `Organisation`,
+# `Labelled`, and `Modelled` all passed. Over every tracked doc the case-blind
+# rule finds 152 spellings where the case-sensitive one found 143.
+#
+# `capitalize: true` is what makes this safe to pair with `ignorecase: true`: it
+# carries the source token's case into the replacement, so the message reads
+# "use 'Behavior', not 'Behaviour'" rather than suggesting a lowercase word at
+# the start of a sentence. Vale still skips fenced and inline code, so no
+# identifier reaches the rule whatever its case.
+ignorecase: true
+capitalize: true
 swap:
   behaviour: behavior
   behaviours: behaviors

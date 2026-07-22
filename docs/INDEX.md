@@ -65,7 +65,7 @@ says what we support and refuse** — and then its
 kustomize field taxonomy, the write boundary, the orchestrator/expansion line, and
 how secrets are handled.
 
-Thirteen other open items:
+Twelve other open items:
 
 | Doc | Open question |
 |---|---|
