@@ -1,7 +1,7 @@
 # Refuse unsupported folder content — design + implementation plan
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: IMPLEMENTED — shipped as `GitPathAccepted` (internal/git/git_path_refusal.go,
 > test/e2e/unsupported_folder_e2e_test.go). Originally written 2026-06-26, revised 2026-06-27;
 > the "PROPOSAL" label was stale and was corrected 2026-07-11. The mechanics (refuse a GitTarget path the
@@ -147,7 +147,7 @@ health checks, `helm --wait` (HIP-0022), `kubectl wait` — reads a small, fixed
 answer one question: *is this object done, still progressing, or blocked?* Our highly-technical target
 users live in exactly those tools. So the conditions split into two layers:
 
-```
+```text
 LAYER 1 — kstatus generic trio (the contract tooling reads)
   Ready        positive polarity   True  = latest observed generation satisfies the GitTarget contract
                                             (control plane valid AND data plane live)
@@ -384,7 +384,7 @@ unsafe folder. Both share one helper.
 
 ### Data flow
 
-```
+```text
 watch replay → enqueueScopedResync → BranchWorker.applyResync
    └─ scan subtree → build store (DefaultAllowlist) → Accept(structure-only + hard-kustomize)
         ├─ accepted  → commit as today                      → GitPathAccepted=True

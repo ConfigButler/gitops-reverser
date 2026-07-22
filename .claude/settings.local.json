@@ -17,7 +17,17 @@
       "Bash(xargs -r markdownlint-cli2)",
       "Bash(grep -n \"^\\\\*\\\\*Migration\\\\*\\\\*$\" /workspaces/gitops-reverser2/docs/UPGRADING.md)",
       "Bash(markdownlint-cli2 docs/facts/audit-webhook-api-server-connectivity.md)",
-      "Bash(sort -t'[' -k2 -rn)"
+      "Bash(sort -t'[' -k2 -rn)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'docs: fix audit-webhook-api-server-connectivity.md line-length errors *)",
+      "Bash(markdownlint-cli2 docs/spec/unsupported-folder-refusal-plan.md)",
+      "Bash(markdownlint-cli2 --version)",
+      "Bash(markdownlint-cli2 \"docs/facts/kubernetes-apf-and-inflight-tuning.md\")",
+      "Bash(task lint-markdown *)",
+      "Bash(tee /tmp/markdown-lint-full.txt)",
+      "Bash(cat /tmp/markdown-lint-full.txt | grep -E \"error MD\" | wc -l)",
+      "Read(//tmp/**)",
+      "Bash(task lint-markdown-fix *)"
     ]
   }
 }
