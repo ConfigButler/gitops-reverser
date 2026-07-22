@@ -4,9 +4,11 @@
 // hack/doccheck's. See docs/design/docs-linting.md for what each choice cost
 // when measured against the real corpus.
 //
-// Nothing runs this yet. `task lint` does not call markdownlint; run it by hand:
+// `task lint-markdown` runs this, and `task lint` includes it, over the files
+// .docs-lint-scope lists. Everything else is checked only when you ask:
 //   markdownlint-cli2 docs/some-file.md
-//   markdownlint-cli2 --fix docs/some-file.md
+//   task lint-markdown DOCS_SCOPE=all
+//   task lint-markdown-fix DOCS_SCOPE=all
 //
 // Never point this at a bare recursive glob: external-sources/ holds gitignored
 // upstream checkouts with symlink cycles that have OOM-killed the host once.

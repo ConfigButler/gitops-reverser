@@ -10,11 +10,12 @@ the em dash rule, American spelling, the words to cut, and sentence-case heading
 `hack/doccheck`, which resolves references and is the only check that reads Go comments.
 
 Both are wired into `task lint` as of the change that added
-[`hack/docs-files.sh`](../../hack/docs-files.sh), scoped to the files a branch touches. See
+[`hack/docs-files.sh`](../../hack/docs-files.sh), gated on the files
+[`.docs-lint-scope`](../../.docs-lint-scope) lists rather than on the whole tree. See
 [Status](#status) and [CONTRIBUTING.md](../../CONTRIBUTING.md#documentation-checks).
 
 ```bash
-task lint-docs                     # links, structure, and prose on this branch's markdown
+task lint-docs                     # links everywhere; structure and prose on the gated files
 task lint-markdown-fix             # the safe mechanical fixes
 task lint-prose DOCS_SCOPE=all     # the whole tree, to see the backlog
 ```
