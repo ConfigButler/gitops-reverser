@@ -37,10 +37,11 @@ workflow or Dockerfile change is covered by the normal lint gate; you can also r
 `golangci-lint` all ship in the devcontainer image.
 
 It also runs the documentation checks via `task lint-docs`, which is three tasks:
-`lint-doc-links` (`hack/doccheck`, every tracked file), `lint-markdown` (markdownlint-cli2),
-and `lint-prose` (Vale, against [`docs/style-guide.md`](./docs/style-guide.md)). Structure and
-prose gate only the files [`.docs-lint-scope`](./.docs-lint-scope) lists, so editing an unlisted
-document fails nothing; run `markdownlint-cli2` and `vale` on what you touch anyway.
+`lint-doc-links` (`hack/doccheck`, every tracked file), `lint-markdown` (markdownlint-cli2,
+every tracked file), and `lint-prose` (Vale, against
+[`docs/style-guide.md`](./docs/style-guide.md)). Only prose gates a subset — the files
+[`.docs-lint-scope`](./.docs-lint-scope) lists — so editing an unlisted document fails no prose
+check; run `vale` on what you touch anyway.
 `task lint-markdown-fix` applies the mechanical half. Both tools ship in the devcontainer image.
 See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
 
