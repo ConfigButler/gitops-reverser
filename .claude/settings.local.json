@@ -37,7 +37,8 @@
       "Bash(git commit -m 'docs: fix trailing whitespace *)",
       "Bash(awk -F: '{print $1\":\"$2}')",
       "Bash(task lint-docs *)",
-      "Bash(cat /tmp/full-lint.txt | grep \"error MD\" | cut -d' ' -f3 | cut -d'/' -f1 | sort | uniq -c | sort -rn)"
+      "Bash(cat /tmp/full-lint.txt | grep \"error MD\" | cut -d' ' -f3 | cut -d'/' -f1 | sort | uniq -c | sort -rn)",
+      "Bash(git commit -m 'docs: batch-fix fence language in test fixture files *)"
     ]
   }
 }

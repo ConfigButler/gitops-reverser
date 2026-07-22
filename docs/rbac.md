@@ -25,7 +25,7 @@ rbac:
   watchTypes:
     mode: any # any | selected
     selected: []
-```
+```text
 
 **`mode: any`** (default) grants cluster-wide read on every resource. A `WatchRule` can name
 any type, including one installed after the operator, and it will just work. The price is

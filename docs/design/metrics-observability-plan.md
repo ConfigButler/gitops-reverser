@@ -132,7 +132,7 @@ rules/CRDs change (pairs with `target_reconcile_completed_total{trigger=rule_cha
 This is the subsystem you want glass-box. The model
 ([architecture.md → Optional Attribution](../architecture.md#optional-attribution)):
 
-```
+```text
 kube-apiserver --POST--> /audit-webhook --gate--> write attribution fact (Redis, TTL)
                                                           |
 watch event ---------> resolver waits up to --author-attribution-grace --> join by RV/UID

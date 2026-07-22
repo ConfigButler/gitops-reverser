@@ -85,7 +85,7 @@ added later without breaking that invariant**: `.deletions/` or `.tombstones/` r
 objects, commit-message trailers, status reporting. Example of an *optional, later* enrichment (explicitly not
 v1):
 
-```
+```text
 .deletions/widgets/team-a/foo.yaml   # kind: DeleteIntent, requestedBy: alice, requestedAt, finalizersAtRequest
 ```
 

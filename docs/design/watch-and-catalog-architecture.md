@@ -222,7 +222,7 @@ Beyond the four beliefs above, a complete design needs:
 
 ## 2.2 Control flow today
 
-```
+```text
 discovery / CRD trigger / 30s tick
         │
         ▼

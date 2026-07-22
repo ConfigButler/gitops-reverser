@@ -284,7 +284,7 @@ produces.
    (ports 13000/19090/16379/19080/18081 are taken; 18080 is free),
 3. prints the URL and the admin password:
 
-```
+```text
 Argo CD UI:  http://localhost:18080
 username:    admin
 password:    <kubectl -n argocd get secret argocd-initial-admin-secret \

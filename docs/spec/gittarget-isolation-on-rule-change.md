@@ -52,7 +52,7 @@ computes global GVR additions/removals and passes them as a `force` flag:
 
 ```go
 targets := m.snapshotTargetsNeedingDelivery(len(added) > 0 || len(removed) > 0)
-```
+```text
 
 `added`/`removed` are *global* deltas. When `force=true`,
 `snapshotTargetsNeedingDelivery` **bypasses the per-target hash comparison** and

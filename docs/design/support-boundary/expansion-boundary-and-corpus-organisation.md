@@ -212,7 +212,7 @@ sufficient either, which is the subtle half:
 
 The measurements sharpen that into a trap with a name:
 
-```
+```text
 kustomize.toolkit.fluxcd.io/name   → source is a folder of files → MIRROR IT
 helm.toolkit.fluxcd.io/name        → source is a chart           → NEVER MIRROR
 ```

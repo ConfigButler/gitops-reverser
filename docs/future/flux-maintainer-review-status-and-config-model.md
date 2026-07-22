@@ -34,7 +34,7 @@ which defines the abnormal-true polarity rule. Flux codifies both in
 readiness down to one CEL expression
 (`external-sources/flux/flux-operator/api/v1/common_types.go:23`):
 
-```
+```text
 status.conditions.filter(c, c.type == 'Ready').all(c, c.status == 'True' && c.observedGeneration == metadata.generation)
 ```
 

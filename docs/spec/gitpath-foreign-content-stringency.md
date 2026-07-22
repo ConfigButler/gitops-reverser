@@ -140,7 +140,7 @@ but make the *only* way for a non-managed file to be acceptable **membership in 
 recognized roles** (stance B's mechanism). Concretely, every filesystem entry under `spec.path` is
 classified into exactly one of five roles; the last is **foreign → refused**:
 
-```
+```text
 ACCEPTED under spec.path
   1. Managed KRM            a YAML document the operator materializes              (already modeled)
   2. Active build directive kustomization.yaml / .yml — READ and ACTED ON          (DefaultAllowlist)
