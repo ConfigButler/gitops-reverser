@@ -131,7 +131,8 @@ maintainers of all of these.
 ### Git server, state & secrets
 
 - [Gitea](https://about.gitea.com/) — the local Git server the reversed repos push to.
-- [Valkey](https://valkey.io/) — Redis-compatible watch-resume state — and [Redis](https://redis.io/), whose protocol and lineage it carries.
+- [Valkey](https://valkey.io/) — Redis-compatible watch-resume state — and
+  [Redis](https://redis.io/), whose protocol and lineage it carries.
 - [SOPS](https://github.com/getsops/sops) and [age](https://github.com/FiloSottile/age) — Secret encryption before commit.
 
 ### Testing, quality & observability
@@ -140,8 +141,10 @@ maintainers of all of these.
 - [Allure](https://allurereport.org/) (Qameta) — the timeline report.
 - [Prometheus](https://prometheus.io/) and the [Prometheus Operator](https://prometheus-operator.dev/) — metrics.
 - [golangci-lint](https://golangci-lint.run/), [staticcheck](https://staticcheck.dev/),
-  [actionlint](https://github.com/rhysd/actionlint), and [Delve](https://github.com/go-delve/delve) — keeping the code honest and debuggable.
-- [envtest / setup-envtest](https://github.com/kubernetes-sigs/controller-runtime/tree/main/tools/setup-envtest) and [Codecov](https://about.codecov.io/) — fast API-server tests and the coverage ratchet.
+  [actionlint](https://github.com/rhysd/actionlint), and [Delve](https://github.com/go-delve/delve)
+  — keeping the code honest and debuggable.
+- [envtest / setup-envtest](https://github.com/kubernetes-sigs/controller-runtime/tree/main/tools/setup-envtest)
+  and [Codecov](https://about.codecov.io/) — fast API-server tests and the coverage ratchet.
 
 ### Build, release & language
 

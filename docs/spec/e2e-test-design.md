@@ -53,14 +53,19 @@ These requirements should shape any further e2e reorganization:
 - all e2e suites should remain visible and browsable in the VS Code Testing pane
 - top-level `Describe` blocks should be independently runnable and safe to execute in parallel when selected together
 - we should keep a high-signal subset of e2e coverage that finishes within 10 minutes on a normal local development run
-- the `Taskfile` is a core part of the harness and remains the source of truth for preparing the real k3d cluster and installing required resources
+- the `Taskfile` is a core part of the harness and remains the source of truth for preparing the
+  real k3d cluster and installing required resources
 
 In practice, that means:
 
-- IDE discoverability matters as much as CLI convenience; the suite layout should stay compatible with standard Go and Ginkgo test discovery instead of hiding scenarios behind shell-only wrappers
-- shared setup from `BeforeSuite` may stay, but mutable test state must be isolated so one `Describe` does not depend on another `Describe` having run first
-- the default `task test-e2e` path and focused Task targets should optimize for useful local feedback, while install-matrix confidence comes from dedicated quickstart tasks
-- direct `go test` runs should continue to delegate environment preparation to Task targets instead of duplicating cluster bootstrap logic in Go
+- IDE discoverability matters as much as CLI convenience; the suite layout should stay compatible
+  with standard Go and Ginkgo test discovery instead of hiding scenarios behind shell-only wrappers
+- shared setup from `BeforeSuite` may stay, but mutable test state must be isolated so one
+  `Describe` does not depend on another `Describe` having run first
+- the default `task test-e2e` path and focused Task targets should optimize for useful local
+  feedback, while install-matrix confidence comes from dedicated quickstart tasks
+- direct `go test` runs should continue to delegate environment preparation to Task targets instead
+  of duplicating cluster bootstrap logic in Go
 
 ## Harness Direction
 
@@ -75,9 +80,12 @@ The current preferred direction for the harness is:
 In practice, that means:
 
 - shared infrastructure such as the cluster, controller install, webhook TLS, and port-forwards can stay suite-level
-- repo creation, namespace seeding, and other scenario-specific state should stay close to the test file that actually needs it
-- `Ordered` containers are acceptable when a workflow is inherently staged, but they should not become a substitute for cross-file isolation
-- install mode should not reshape the product-behavior suites; installer variation belongs primarily in the dedicated quickstart/install-path checks
+- repo creation, namespace seeding, and other scenario-specific state should stay close to the test
+  file that actually needs it
+- `Ordered` containers are acceptable when a workflow is inherently staged, but they should not
+  become a substitute for cross-file isolation
+- install mode should not reshape the product-behavior suites; installer variation belongs primarily
+  in the dedicated quickstart/install-path checks
 
 ## Install Mode Strategy
 
@@ -120,10 +128,13 @@ installing the system under test.
 The intended interpretation of these entry points is:
 
 - `task test-e2e` is the standard controller behavior check and should normally run on the default `config-dir` install
-- `task test-image-refresh` validates the rebuild/reload workflow and is run explicitly by CI rather than as part of the normal `task test-e2e` path
+- `task test-image-refresh` validates the rebuild/reload workflow and is run explicitly by CI rather
+  than as part of the normal `task test-e2e` path
 - `task test-e2e-quickstart-helm` is the important validation for the Helm install path
 - `task test-e2e-quickstart-manifest` is the important validation for the single-file manifest install path
-- `task test-e2e` is a broad spec run but **excludes** the bi-directional corner (its label filter defaults to `!image-refresh && !bi-directional`), because that corner needs an Argo CD install `task prepare-e2e` does not perform — run it with `task test-e2e-bi-directional`
+- `task test-e2e` is a broad spec run but **excludes** the bi-directional corner (its label filter
+  defaults to `!image-refresh && !bi-directional`), because that corner needs an Argo CD install
+  `task prepare-e2e` does not perform — run it with `task test-e2e-bi-directional`
 
 ## Lifecycle Layers
 
@@ -477,7 +488,8 @@ In other words:
 
 - the checkout itself is clearly reusable across runs
 - some of the generated credentials and helper manifests are much more ephemeral
-- preserving the namespace-scoped layout may be preferable in the short term if it keeps the Task migration closer to the old behavior
+- preserving the namespace-scoped layout may be preferable in the short term if it keeps the Task
+  migration closer to the old behavior
 
 So the document should not treat a separated `gitea/runs/` layout as the only correct answer. It is one clean option,
 but not the only defensible one.

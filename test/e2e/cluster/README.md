@@ -95,7 +95,9 @@ gitopsreverser_audit_events_total
 
 ## Troubleshooting
 
-`failed to stat file/directory ... volume mount ...`: this can appear in Docker-outside-of-Docker setups when the host path is valid for the Docker daemon but not visible inside the devcontainer. `start-cluster.sh` includes compatibility symlink logic for this.
+`failed to stat file/directory ... volume mount ...`: this can appear in Docker-outside-of-Docker
+setups when the host path is valid for the Docker daemon but not visible inside the devcontainer.
+`start-cluster.sh` includes compatibility symlink logic for this.
 
 No audit events:
 

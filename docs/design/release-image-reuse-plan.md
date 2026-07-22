@@ -166,7 +166,9 @@ flowchart TD
   RP -- yes --> H["publish-helm:<br/>push chart from CI artifact"]:::rel
 ```
 
-**Target** — PR 1 is live (blue = new, orange = changed, green = unchanged; the rebuild jobs are gone). The dashed phase-2 quickstart edge and the phase-3 `SIGN` node are **not yet built** (PRs 2–3):
+**Target** — PR 1 is live (blue = new, orange = changed, green = unchanged; the rebuild jobs are
+gone). The dashed phase-2 quickstart edge and the phase-3 `SIGN` node are **not yet built** (PRs
+2–3):
 
 ```mermaid
 flowchart TD
@@ -321,8 +323,14 @@ sequenceDiagram
      registry-served digest users actually pull. This is also where the
      plan's *single* skip-tolerant gate lives (PR 2, deliberately not PR 1):
      e2e gains `build-release-amd64` in its `needs`, which is skipped on
-     PRs, so e2e's condition becomes
-     `if: always() && needs.ci-container.result == 'success' && needs.build.result == 'success' && needs.lint-helm.result == 'success' && (github.event_name == 'pull_request' || needs.build-release-amd64.result == 'success')`.
+     PRs, so e2e's condition becomes:
+
+     ```yaml
+     if: always() && needs.ci-container.result == 'success'
+       && needs.build.result == 'success' && needs.lint-helm.result == 'success'
+       && (github.event_name == 'pull_request' || needs.build-release-amd64.result == 'success')
+     ```
+
    - Stamp OCI labels (`metadata-action`) in `build-release` — today they're
      applied by the release build.
 2. **`.github/workflows/release.yml`**

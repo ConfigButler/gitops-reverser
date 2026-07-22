@@ -655,5 +655,7 @@ neither is `Serial`.
 - [`docs/bi-directional.md`](../bi-directional.md) — the user-facing guidance this closes gaps in
 - [`docs/design/e2e-serial-registry.md`](e2e-serial-registry.md) — parallelism and shared cluster state
 - [`docs/design/e2e-ci-runner-sharding-plan.md`](../finished/e2e-ci-runner-sharding-plan.md) — leg membership and rebalancing
-- [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go) — the two specs in this corner
+- [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and
+  [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go) —
+  the two specs in this corner
 - [`internal/sanitize/types.go`](../../internal/sanitize/types.go) — the strip lists

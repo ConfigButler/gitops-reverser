@@ -207,7 +207,8 @@ objects**. The owner's trap: *in a few seconds you could see more than one `dele
 
 - **Option A — keep it around and guess by scope.** Reject. Two independent mis-attribution modes: (1) two
   actors deleting in the same `(type, namespace)` window → honest answer is conflict→unresolved, so it degrades to
-  the explicit unresolved author under exactly the load that makes the case interesting; (2) even a single collection delete would
+  the explicit unresolved author under exactly the load that makes the case interesting; (2) even a
+  single collection delete would
   capture an *unrelated* plain `kubectl delete configmap x` in the same window. Selector re-matching narrows but
   doesn't remove it (selectors overlap; empty selector matches all). Violates "a wrong author is worse than no
   author."

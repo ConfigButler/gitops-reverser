@@ -4,7 +4,8 @@
 > Related:
 > [kustomize-support-boundary.md](kustomize-support-boundary.md) §4 — the decision to embed the renderer ·
 > [render-root-scoping.md](render-root-scoping.md) — the oracle, and §6's tolerate-don't-author plan ·
-> *patching-kustomize.md* (ConfigButler/kustomize-tracer, `plans/`) — **revises §4**: the fork is ~30 lines, and it is built ·
+> *patching-kustomize.md* (ConfigButler/kustomize-tracer, `plans/`) — **revises §4**: the fork is
+> ~30 lines, and it is built ·
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md) — what shipped ·
 > [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md)
 >

@@ -171,7 +171,8 @@ refusal, and helm inflation must not be reported as an adoptable overlay. The fo
 
 Two renderings, matching the existing `--format text|json` split. JSON is the interface a
 tool built on top consumes. The shape below is what the
-[first cut](#first-cut-shipped-2026-07-09) emits, per candidate — **except `proposedGitTarget`, which is the eventual goal and is
+[first cut](#first-cut-shipped-2026-07-09) emits, per candidate — **except `proposedGitTarget`,
+which is the eventual goal and is
 not emitted yet** (CR proposal is deferred). Do not copy `proposedGitTarget` as if it
 were live output. (The block is fenced `jsonc` because it carries an explanatory
 comment — the shipped report is strict JSON.)

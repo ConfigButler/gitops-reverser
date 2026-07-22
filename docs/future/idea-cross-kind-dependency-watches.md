@@ -2,7 +2,9 @@
 
 > Status: idea — captured after issue #145.
 > Date: 2026-05-20
-> Triggering bug: [#145](https://github.com/ConfigButler/gitops-reverser/issues/145) — GitTarget / ClusterWatchRule / WatchRule did not react to their referenced dependency appearing, recovering only on the periodic `RequeueShortInterval` (~2 min).
+> Triggering bug: [#145](https://github.com/ConfigButler/gitops-reverser/issues/145) — GitTarget /
+> ClusterWatchRule / WatchRule did not react to their referenced dependency appearing, recovering
+> only on the periodic `RequeueShortInterval` (~2 min).
 
 ## The bug class in one sentence
 
@@ -110,8 +112,11 @@ can:
 To make this work we need to upgrade the convention beyond a free-text `message` field.
 Two options:
 
-- **Annotation-level**: dependents carry `configbutler.ai/unmet: configbutler.ai/v1alpha3/GitProvider/gitops-reverser/cozystack-example` while their dependency is missing; cleared on Ready.
-- **Status-level** (preferred): a `status.unmetReferences []TypedObjectReference` field on every CRD that participates. Same idea, schema-validated, no annotation churn.
+- **Annotation-level**: dependents carry
+  `configbutler.ai/unmet: configbutler.ai/v1alpha3/GitProvider/gitops-reverser/cozystack-example`
+  while their dependency is missing; cleared on Ready.
+- **Status-level** (preferred): a `status.unmetReferences []TypedObjectReference` field on every CRD
+  that participates. Same idea, schema-validated, no annotation churn.
 
 This is the same shape as kstatus's reason taxonomy and Crossplane's composition references;
 it scales because the per-controller code is "fill in `unmetReferences`", not "wire up

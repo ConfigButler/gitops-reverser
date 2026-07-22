@@ -14,9 +14,14 @@
 ## What was read
 
 - The API surface: `api/v1alpha3/*.go` (all six kinds plus `NamespaceMatcher`, `PrunePolicy`).
-- The status implementations: `internal/controller/{gittarget,watchrule,clusterwatchrule,gitprovider,clusterprovider,commitrequest}_controller.go`, `condition_helper.go`, `stream_status.go`, `gittarget_dependency_status.go`, `gittarget_source_cluster.go`, `internal/watch/stream_readiness.go`.
+- The status implementations:
+  `internal/controller/{gittarget,watchrule,clusterwatchrule,gitprovider,clusterprovider,commitrequest}_controller.go`,
+  `condition_helper.go`, `stream_status.go`, `gittarget_dependency_status.go`,
+  `gittarget_source_cluster.go`, `internal/watch/stream_readiness.go`.
 - `docs/configuration.md`, `docs/spec/status-conditions-guide.md`, `docs/spec/where-validation-lives.md`, `docs/design/reconcile-triggering.md`.
-- Flux as ground truth: `external-sources/flux/pkg/apis/meta`, `external-sources/flux/pkg/runtime/{conditions,patch}`, `external-sources/flux/pkg/apis/acl`, `external-sources/flux/flux2/rfcs/`, `external-sources/flux/flux-operator/api/v1`.
+- Flux as ground truth: `external-sources/flux/pkg/apis/meta`,
+  `external-sources/flux/pkg/runtime/{conditions,patch}`, `external-sources/flux/pkg/apis/acl`,
+  `external-sources/flux/flux2/rfcs/`, `external-sources/flux/flux-operator/api/v1`.
 - kstatus itself: `sigs.k8s.io/cli-utils/pkg/kstatus/status` from the module cache.
 
 Read-only review: no builds, no tests, no edits to the tree.
@@ -223,7 +228,7 @@ misconfiguration, that is what an Event or a `Ready` *reason* is for, not a perm
 
 ---
 
-### F3 — Unconditional status writes with always-moving timestamps, plus no self-predicate, create a self-triggering reconcile edge (High)
+### F3 — Always-moving timestamps and no self-predicate create a self-triggering reconcile edge (High)
 
 Three things compose badly.
 

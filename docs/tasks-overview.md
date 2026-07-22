@@ -22,9 +22,11 @@ It's all very powerful, but for me it's all a bit too much.
 Task keeps the behavior easier to follow:
 
 - **Clean YAML.** `desc`/`sources`/`generates`/`deps` are declared up front, it's boring in the good way.
-- **A clear DAG.** [Dependencies](https://taskfile.dev/docs/guide#task-dependencies) are explicit and visible, so the e2e flow reads top-to-bottom
+- **A clear DAG.** [Dependencies](https://taskfile.dev/docs/guide#task-dependencies) are explicit
+  and visible, so the e2e flow reads top-to-bottom
   instead of being reconstructed from prerequisite tricks.
-- **[Fingerprinting support](https://taskfile.dev/docs/guide#prevent-unnecessary-work), kept on purpose.** Task orchestrates; `.stamps` hold the runtime
+- **[Fingerprinting support](https://taskfile.dev/docs/guide#prevent-unnecessary-work), kept on
+  purpose.** Task orchestrates; `.stamps` hold the runtime
   facts as files (cluster ready, image loaded) that a checksum cache shouldn't own. Helper scripts under
   `hack/e2e/` still do the detailed work.
 

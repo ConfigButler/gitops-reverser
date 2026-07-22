@@ -203,9 +203,17 @@ panel is copy-pasteable.
 
 - *Live audit stream by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_audit_events_total[1m]))`
 - *Audit outcome mix* (stacked): `sum by (category,outcome)(rate(gitopsreverser_audit_events_total[5m]))`
-- *Attribution match coverage by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m])) / sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total[5m]))`
+- *Attribution match coverage by type* (timeseries):
+
+  ```promql
+  sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m]))
+    / sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total[5m]))
+  ```
+
 - *Commit author mix* (pie/stacked): `sum by (author_kind)(rate(gitopsreverser_commits_total[15m]))`
-- *Grace-window wait p95 by result* (timeseries) with an `--author-attribution-grace` threshold line: `histogram_quantile(0.95, sum by (le,result)(rate(gitopsreverser_attribution_resolution_wait_seconds_bucket[5m])))`
+- *Grace-window wait p95 by result* (timeseries) with an `--author-attribution-grace` threshold
+  line:
+  `histogram_quantile(0.95, sum by (le,result)(rate(gitopsreverser_attribution_resolution_wait_seconds_bucket[5m])))`
 - *Fact-index health* (timeseries): `sum by (op)(rate(gitopsreverser_attribution_fact_events_total[5m]))` + `gitopsreverser_attribution_fact_index_size`
 - *Top dropped audit outcomes* (table): `topk(10, sum by (resource,verb,outcome)(rate(gitopsreverser_audit_events_total{category="dropped"}[5m])))`
 - *EventList ingress + decode errors* (timeseries): `sum by (outcome)(rate(gitopsreverser_audit_eventlists_total[5m]))`
