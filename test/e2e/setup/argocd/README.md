@@ -33,10 +33,10 @@ them.
 The chart is **not** vendored. `_argocd-installed` `helm pull`s the pinned chart
 into the cluster stamp dir and `helm upgrade --install`s it with `values.yaml`:
 
-```sh
+```bash
 helm upgrade --install argocd .stamps/cluster/k3d-gitops-reverser-test-e2e/argocd/argo-cd-<ver>.tgz \
   -n argocd --create-namespace -f test/e2e/setup/argocd/values.yaml --wait
-```yaml
+```
 
 **Why `helm`, not a flat `kubectl apply`:** `redis-secret-init` runs as a
 **pre-install hook** that must finish before redis and the controllers start — they

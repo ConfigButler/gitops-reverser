@@ -342,7 +342,7 @@ and snapshots (kills gap 2.4.1):
 Replace whole-target snapshotting with a **cell reconciler** driven by two delta
 sources — rule changes and surface deltas — joined against current plans:
 
-```
+```text
 SurfaceDelta{GVR, …}  ─┐   (triggers only)
 RuleChange{target}    ─┼─►  RE-DIFF desired cells (WatchPlan over current
 periodic tick         ─┘     surface+generation) vs active cells + managed files

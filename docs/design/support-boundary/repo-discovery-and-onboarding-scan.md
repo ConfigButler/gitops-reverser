@@ -217,7 +217,7 @@ gate is deferred.
 
 A new mode on `manifest-analyzer` (shipped form):
 
-```
+```bash
 manifest-analyzer --mode scan-repo --format json <repo-root>
 ```
 
