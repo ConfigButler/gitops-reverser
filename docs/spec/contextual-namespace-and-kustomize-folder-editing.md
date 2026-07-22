@@ -1,7 +1,7 @@
 # Contextual namespace support for real manifest folders
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+> 
 > Status: investigation → partially implemented (graph-aware namespace inference and
 > ambiguity refusal landed in the manifest store; GitTarget-level refusal and
 > kustomize scoping still pending)

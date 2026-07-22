@@ -1,6 +1,8 @@
+# Demo Setup
+
 Setup the repo by
 
-```
+```bash
 task clean-cluster
 REPO_NAME=demo task test-e2e-demo
 ```

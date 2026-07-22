@@ -201,7 +201,7 @@ listed resources. This is exactly the **pull-on-push** trigger (§5) and the
 **But the stock Receiver cannot target our CRDs.** `spec.resources[].kind` is a
 hard-coded enum (`notification-controller/api@v1.8.4/v1/reference_types.go:27`):
 
-```
+```text
 Enum=Bucket;GitRepository;Kustomization;HelmRelease;HelmChart;HelmRepository;
   ImageRepository;ImagePolicy;ImageUpdateAutomation;OCIRepository;
   ArtifactGenerator;ExternalArtifact

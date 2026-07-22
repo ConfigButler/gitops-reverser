@@ -1,7 +1,7 @@
 # SOPS and multi-document YAML: single-file decision
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+> 
 > Status: decided
 > Captured: 2026-06-08
 > Related:

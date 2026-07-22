@@ -1,7 +1,7 @@
 # Commit Window And Commit Planning
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: implemented
 > Date: 2026-05-01
 

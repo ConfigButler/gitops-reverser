@@ -97,11 +97,11 @@ The projection is **pull-based**, which the codebase already establishes: the Gi
 reads data-plane state from the watch `Manager` on each reconcile
 ([`gittarget_controller.go`](../../../internal/controller/gittarget_controller.go)):
 
-~~~go
+```go
 streams        = r.EventRouter.WatchManager.StreamSummaryForGitTarget(gitDest)
 gitPath        = r.EventRouter.WatchManager.GitPathAcceptanceForGitTarget(gitDest)
 renderFidelity = r.EventRouter.WatchManager.RenderFidelityForGitTarget(gitDest)
-~~~
+```
 
 Retention becomes a fourth reader beside them. The full path:
 
@@ -159,13 +159,13 @@ so this is one extra parameter, not new plumbing.
 
 **The metric:**
 
-~~~go
+```go
 telemetry.PruneRetainedDocumentsTotal.Add(ctx, int64(retained), metric.WithAttributes(
     attribute.String("prune_mode", string(mode)),
     attribute.String("gittarget_namespace", ns),   // new
     attribute.String("gittarget_name", name),      // new
 ))
-~~~
+```
 
 Cardinality is bounded by the number of GitTargets, not by resources, and the label names follow the
 convention `TargetReconcileCompletedTotal` already sets — `gittarget_namespace` / `gittarget_name`

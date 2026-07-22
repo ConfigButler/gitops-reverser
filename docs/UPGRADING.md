@@ -468,6 +468,7 @@ may read, so a narrowed role reached this path — which is exactly the path thi
 to enter.
 
 ## Unreleased — `manifest-analyzer` scan modes renamed, and `--format json` now emits a
+
 versioned contract (next minor; breaking)
 
 The analyzer's machine-readable output moved to the new public

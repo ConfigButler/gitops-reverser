@@ -1,7 +1,7 @@
 # DeleteCollection attribution & deletion-as-intent
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+> 
 > Status: **IMPLEMENTED** — 2026-06-28 (rev. 2: deletion-as-intent reframe). The render rule (§2), the
 > expander (§5), the `exact_deletecollection_item` reason code (§8), unit tests (§9.1), and the four e2e
 > specs (§9.2) have all landed and pass `task lint`/`task test`/`task test-e2e`.

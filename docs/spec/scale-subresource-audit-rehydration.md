@@ -1,7 +1,7 @@
 # Subresource Audit Resolution
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+> 
 > Status: design proposal, captured 2026-06-08, revised 2026-06-08.
 >
 > Trigger: `kubectl scale deployment` updates the live Deployment through the
