@@ -129,21 +129,17 @@ const (
 
 	// The generic condition reasons below are ALIASES of github.com/fluxcd/pkg/apis/meta, a module
 	// this project already depends on. Sharing the vocabulary is the point: one alerting rule
-	// written against reason=Failed or reason=Succeeded works across every kind here AND across
-	// every Flux kind in the same cluster, which is not true of a per-project spelling. Domain
-	// reasons (UnsupportedContent, WriteBoundaryRefused, NoAdmittedSourceNamespaces, ...) stay ours
-	// — those carry information a generic reason cannot, and declaring them is exactly what the
+	// written against reason=Succeeded works across every kind here AND across every Flux kind in
+	// the same cluster, which is not true of a per-project spelling. Domain
+	// reasons (UnsupportedContent, WriteBoundaryRefused, NoAdmittedSourceNamespaces, ...) stay ours:
+	// those carry information a generic reason cannot, and declaring them is exactly what the
 	// upstream vocabulary asks projects to do.
 
 	// ReasonSucceeded is the reason on a healthy, fully reconciled object. It replaces the former
 	// "OK"/"Ready" spellings, which restated the condition type instead of answering "why".
 	ReasonSucceeded = fluxmeta.SucceededReason
-	// ReasonFailed indicates an observed failure: declared state does not match actual state.
-	ReasonFailed = fluxmeta.FailedReason
 	// ReasonProgressing indicates that a stream or control-plane gate is still converging.
 	ReasonProgressing = fluxmeta.ProgressingReason
-	// ReasonDependencyNotReady indicates that a referenced object is not ready yet.
-	ReasonDependencyNotReady = fluxmeta.DependencyNotReadyReason
 
 	// ReasonChecking indicates that the controller is checking the resource status.
 	ReasonChecking = "Checking"

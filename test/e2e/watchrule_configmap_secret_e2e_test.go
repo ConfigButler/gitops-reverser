@@ -50,7 +50,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 		)
 		verifyResourceStatus(
 			"gitprovider", "gitprovider-normal", testNs,
-			"True", "Ready", "Repository connectivity validated",
+			"True", "Succeeded", "Repository connectivity validated",
 		)
 	})
 
@@ -66,7 +66,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 		// gitprovider-normal is created and verified in BeforeAll; this spec
 		// re-asserts it stays Ready without re-creating it.
 		verifyResourceStatus(
-			"gitprovider", "gitprovider-normal", testNs, "True", "Ready", "Repository connectivity validated",
+			"gitprovider", "gitprovider-normal", testNs, "True", "Succeeded", "Repository connectivity validated",
 		)
 	})
 

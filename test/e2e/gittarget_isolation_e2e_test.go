@@ -63,7 +63,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 		)
 		verifyResourceStatus(
 			"gitprovider", providerName, testNs,
-			"True", "Ready", "Repository connectivity validated",
+			"True", "Succeeded", "Repository connectivity validated",
 		)
 
 		By("creating two independent GitTargets writing to separate paths in the same repo")
