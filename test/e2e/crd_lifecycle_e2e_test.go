@@ -53,7 +53,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		)
 		verifyResourceStatus(
 			"gitprovider", "gitprovider-normal", testNs,
-			"True", "Ready", "Repository connectivity validated",
+			"True", "Succeeded", "Repository connectivity validated",
 		)
 	})
 

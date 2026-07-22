@@ -101,9 +101,13 @@ func (r *readiness) contribute(level readinessLevel, verdict conditionValue) {
 	r.verdict = verdict
 }
 
-// converged reports whether no gate objected — the signal a reconcile uses to pick the steady
-// requeue cadence over the fast one.
+// converged reports whether no gate objected.
 func (r *readiness) converged() bool { return r.level == readinessConverged }
+
+// converging reports whether something is pending that is expected to clear on its own. It is
+// distinct from !converged() because a STALLED object is neither: it is waiting for a human, or for
+// the world outside Kubernetes to change.
+func (r *readiness) converging() bool { return r.level == readinessProgressing }
 
 // kstatusTrio is the Ready/Reconciling/Stalled triple, derived together so they cannot disagree.
 type kstatusTrio struct {

@@ -210,13 +210,17 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: requeueFor(rd)}, nil
+	return ctrl.Result{RequeueAfter: gitTargetRequeue(rd)}, nil
 }
 
-// requeueFor picks the periodic cadence. Only a converged object earns the steady interval: a
-// target that is still settling — or one that is stalled and waiting for the world to change under
-// it — is re-checked on the fast loop so it converges (or recovers) promptly.
-func requeueFor(rd *readiness) time.Duration {
+// gitTargetRequeue picks the periodic cadence. Only a converged GitTarget earns the steady interval.
+//
+// A STALLED target gets the fast loop too, which is deliberate and specific to this kind: its
+// terminal states clear when the Git FOLDER changes (someone removes the unsupported file, someone
+// fixes the diverged value), and that produces no Kubernetes event at all. The data-plane
+// acceptance channel is best-effort, so the periodic re-check is what actually recovers a refused
+// target. It is cheap now that a re-check which finds nothing new writes nothing.
+func gitTargetRequeue(rd *readiness) time.Duration {
 	if rd.converged() {
 		return RequeueSteadyInterval
 	}
@@ -235,9 +239,9 @@ type blockedGate struct {
 
 // stall publishes a terminal control-plane outcome and ends the reconcile.
 //
-// The four early-return gates used to repeat this block verbatim: mark the data plane
+// The three early-return gates used to repeat this block verbatim: mark the data plane
 // not-evaluated, stamp the trio, write status with retry, choose a requeue. They differ only in the
-// four values blockedGate carries.
+// values blockedGate carries.
 func (r *GitTargetReconciler) stall(
 	ctx context.Context,
 	st *reconcileStatus,

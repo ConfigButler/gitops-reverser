@@ -52,7 +52,7 @@ var _ = Describe("Manager GitTarget Overlap Guard", Label("manager"), Ordered, f
 		)
 		verifyResourceStatus(
 			"gitprovider", providerName, testNs,
-			"True", "Ready", "Repository connectivity validated",
+			"True", "Succeeded", "Repository connectivity validated",
 		)
 	})
 

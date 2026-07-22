@@ -81,7 +81,7 @@ var _ = Describe("WatchRule source namespace", Label("manager"), Ordered, func()
 		createGitProviderWithURLInNamespace(
 			providerName, configNS, srcnsRepo.GitSecretHTTP, srcnsRepo.RepoURLHTTP)
 		verifyResourceStatus("gitprovider", providerName, configNS,
-			"True", "Ready", "Repository connectivity validated")
+			"True", "Succeeded", "Repository connectivity validated")
 
 		By("declaring two in-cluster ClusterProviders that differ ONLY in the delegation flag")
 		// Both omit kubeConfig, so both name the operator's own cluster: this is deliberately the
