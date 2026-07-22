@@ -1,7 +1,7 @@
 # Metrics & Audit Observability — improvement plan
 
 > **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: PROPOSAL — 2026-06-26. **Architecture-led**: [architecture.md](../architecture.md) is the
 > spine; every metric below maps to a stage in
 > [Common Flows](../architecture.md#common-flows). The live baseline and the

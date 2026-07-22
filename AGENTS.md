@@ -46,7 +46,8 @@ See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
 
 ## PRE-IMPLEMENTATION BEHAVIOR
 
-1. **Check Docker availability for e2e tests**: Before running `task test-e2e`, verify Docker is running with `docker info` or ask user to start Docker daemon if needed
+1. **Check Docker availability for e2e tests**: Before running `task test-e2e`, verify Docker is
+   running with `docker info` or ask user to start Docker daemon if needed
 2. **Always read project context first**: Use `read_file` to understand existing patterns in target directories
 3. **Search for similar implementations**: Use `search_files` to find existing patterns before writing new code
 4. **Follow established architecture**: Maintain consistency with `internal/` directory structure

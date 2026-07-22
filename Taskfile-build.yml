@@ -29,8 +29,8 @@ vars:
   # lists, which is what CI enforces) or `all` (every tracked file, the backlog
   # view). hack/docs-files.sh resolves it and is the only place that builds the
   # list. Override per run:
-  #   task lint-markdown DOCS_SCOPE=all
-  DOCS_SCOPE: '{{.DOCS_SCOPE | default "gated"}}'
+  #   task lint-markdown DOCS_SCOPE=gated
+  DOCS_SCOPE: '{{.DOCS_SCOPE | default "all"}}'
 
 tasks:
   manifests:

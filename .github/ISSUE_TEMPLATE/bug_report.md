@@ -37,5 +37,6 @@ Add any other context about the problem here.
 **Logs**
 Please include relevant logs:
 
-```
+```bash
 Paste logs here
+```

@@ -105,5 +105,7 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 Research work:
 
-- Replace metrics mechanism with <https://docs.victoriametrics.com/helm/victoria-metrics-operator/> (so that it's also helm and so that we can have proper deps)
+- Replace metrics mechanism with
+  <https://docs.victoriametrics.com/helm/victoria-metrics-operator/> (so that it's also helm and
+  so that we can have proper deps)
 - Read more on how resource versions work (and can work in the HA rebruild): <https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions>

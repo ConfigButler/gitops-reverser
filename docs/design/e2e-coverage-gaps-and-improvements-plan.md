@@ -1,7 +1,7 @@
 # E2E Coverage Gaps & Improvements — plan
 
 > **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: PROPOSAL — 2026-06-26. **Architecture-led**: [architecture.md](../architecture.md) is the
 > spine. This plan reads the current e2e suite against the architecture's load-bearing guarantees,
 > records where the suite is strong, names the gaps, and proposes a small, prioritized set of new
@@ -94,7 +94,7 @@ The architecture is explicit that this is the load-bearing guarantee:
 > **Not losing changes.** A dropped or late event must never leave Git *permanently* wrong — in
 > particular, a delete that happens while no watch is running must still be reconciled.
 > — [architecture.md → Mental Model](../architecture.md#mental-model)
-
+>
 > This mark-and-sweep is **load-bearing and fires only on watch re-establishment** … It is the only
 > thing that reconciles a delete that happened while no watch was running.
 > — [architecture.md → State Ingestion](../architecture.md#state-ingestion-and-not-losing-deletes)

@@ -20,7 +20,8 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 
 - ✅ **Git synchronization**: Push Kubernetes changes back to Git repositories
 - ✅ **Single-pod stability**: 1 replica by default while multi-pod support is in progress
-- ✅ **Automatic CRD installation**: GitProvider, GitTarget, WatchRule, ClusterWatchRule, and CommitRequest CRDs installed automatically
+- ✅ **Automatic CRD installation**: GitProvider, GitTarget, WatchRule, ClusterWatchRule, and
+  CommitRequest CRDs installed automatically
 - ✅ **Watch-based ingestion**: object state comes from the Kubernetes watch API
 - ✅ **Optional audit attribution**: name commit authors from kube-apiserver audit events over HTTPS
 - ✅ **Prometheus metrics**: Built-in monitoring support
@@ -72,7 +73,7 @@ helm install gitops-reverser \
 
 The chart deploys 1 replica by default:
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │         Kubernetes API Server           │
 └──────────────┬──────────────────────────┘
@@ -242,8 +243,9 @@ receives audit events from kube-apiserver — the route is
 Audit routes are **named**, including
 `/audit-webhook/default`. The bare `/audit-webhook` is rejected with **400** unless
 `attribution.auditRouteAnnotationKey` is set, which turns it into the shared-stream endpoint that
-resolves each event's source cluster from that annotation. The operator extracts a minimal attribution fact from each (auditID, user, verb,
-resourceVersion, GVR, namespace, name, UID, status, timestamps) into the Redis attribution index
+resolves each event's source cluster from that annotation. The operator extracts a minimal attribution
+fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID, status, timestamps)
+into the Redis attribution index
 (populated only when audit attribution is enabled). When a Redis endpoint is configured it also stores
 each GitTarget's watch resume cursors, so reconnects resume a normal watch from the last processed
 resourceVersion when the apiserver can still serve that history. Object state itself comes from

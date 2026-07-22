@@ -44,7 +44,7 @@ same in-cluster apiserver, as the same e2e identity, under the same audit policy
 **The 5 `absent` are, in both runs, exactly the objects the source-namespace spec mirrors** — and
 *only* those (the prune spec's objects all resolved):
 
-```
+```text
 [CREATE] v1/configmaps/srcns-mirrored            → unknown (attribution unresolved)
 [CREATE] v1/configmaps/srcns-wildcard-admitted   → unknown (attribution unresolved)
 [CREATE] v1/configmaps/srcns-two-cm-a            → unknown (attribution unresolved)
@@ -55,7 +55,7 @@ same in-cluster apiserver, as the same e2e identity, under the same audit policy
 **The `absent` resolutions waited the FULL grace and no fact ever arrived**
 (`gitopsreverser_attribution_resolution_wait_seconds_bucket{result="absent"}`):
 
-```
+```text
 wait <= 10.0s : 0
 wait <= +Inf  : 5     ← all 5 exceeded the 10s grace; a fact was never matched
 ```
@@ -63,7 +63,7 @@ wait <= +Inf  : 5     ← all 5 exceeded the 10s grace; a fact was never matched
 **Facts are being written — they are just not matched for these objects**
 (`gitopsreverser_attribution_fact_events_total`, Run B):
 
-```
+```text
 written                 = 66
 matched                 = 12      ← == exact_user(9) + weak(3); the resolved population only
 deletecollection_expanded = 18
@@ -142,7 +142,7 @@ misconfiguration that silently drops it (rather than failing loudly) is high-con
 2. `kubectl -n gitops-reverser rollout restart deploy/gitops-reverser` to zero the counters.
 3. Run the two specs:
 
-   ```sh
+   ```bash
    go run github.com/onsi/ginkgo/v2/ginkgo --label-filter='manager' \
      --focus='WatchRule source namespace|Manager GitTarget prune policy' ./test/e2e/
    ```

@@ -42,7 +42,7 @@ Expected outcome:
 
 ### The Release Flow
 
-```
+```text
 Push to main
     ↓
 [CI: Build & Test + E2E]
@@ -100,7 +100,7 @@ Push to main
 
 ### Format
 
-```
+```text
 <type>(<optional scope>): <description>
 
 [optional body]
@@ -165,7 +165,8 @@ Migration guide: docs/migration-v1.md"
 
 ### Error: "GitHub Actions is not permitted to create or approve pull requests"
 
-**Solution:** Enable at org level first (if greyed out), then repo level. See [Prerequisites Setup](#prerequisites-setup) above.
+**Solution:** Enable at org level first (if greyed out), then repo level.
+See [Prerequisites Setup](#prerequisites-setup) above.
 
 ### No Release PR Created
 
@@ -240,7 +241,7 @@ gh run rerun <run-id>
 
 ✅ **Good:**
 
-```
+```bash
 feat(controller): add support for custom branch names
 
 Users can now specify different branch names for different GitRepoConfigs,
@@ -249,7 +250,7 @@ allowing more flexible repository organization.
 
 ❌ **Bad:**
 
-```
+```bash
 add stuff
 fix bug
 wip

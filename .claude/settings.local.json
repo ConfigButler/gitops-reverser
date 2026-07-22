@@ -12,7 +12,12 @@
       "Bash(cat:*)",
       "Bash(task test-e2e:*)",
       "Bash(k3d cluster *)",
-      "Bash(kubectl config *)"
+      "Bash(kubectl config *)",
+      "Bash(./hack/docs-files.sh all *)",
+      "Bash(xargs -r markdownlint-cli2)",
+      "Bash(grep -n \"^\\\\*\\\\*Migration\\\\*\\\\*$\" /workspaces/gitops-reverser2/docs/UPGRADING.md)",
+      "Bash(markdownlint-cli2 docs/facts/audit-webhook-api-server-connectivity.md)",
+      "Bash(sort -t'[' -k2 -rn)"
     ]
   }
 }

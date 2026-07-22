@@ -331,7 +331,7 @@ write straight through into a base shared by two render paths, which is the one 
 `fan-in = 1` exists to forbid. Silently accepting an unbuildable folder disarmed the guard
 protecting it.
 
-**Migration**
+### Migration
 
 - Run `kustomize build` on the folder your `GitTarget` points at. If it fails, the operator
   now fails the target with `GitPathAccepted=False` / `UnsupportedContent` instead of writing
@@ -355,7 +355,7 @@ Believing the wrong render, the projection compared the real live object against
 concluded the user had *removed* the tag, and wrote the tag out of the source document —
 `app:1.0.0` became `app`. On every reconcile, silently, with no refusal and no diagnostic.
 
-**Migration**
+### Migration
 
 - **Check the affected files.** Any manifest referenced by a kustomization whose `images:`
   entry sets `digest:` may have lost its tag in Git. The fix stops the rewrite but does not
@@ -383,7 +383,7 @@ every case the new behaviour is the one that agrees with the renderer:
 | `imageTags:` / `bases:` (deprecated spellings) | `imageTags` ignored; `bases` read | both **normalised** into `images`/`resources`, as the builder does |
 | a case-variant key (`newtag:`), or a blank optional component (`newName: ""`) | **refused** | **accepted** — kustomize honours both, so folders that render fine are no longer refused |
 
-**Migration**
+### Migration
 
 - **The first three refuse folders that previously worked.** All three were unsafe: two let
   the operator write into a folder whose render it had misunderstood, and the third let it
@@ -410,7 +410,7 @@ when render-root scoping ships, unlike `refused-structural`, which is the perman
 boundary. The old name encoded an internal roadmap label (`F2`) that meant nothing outside
 our planning docs; the new one says what it means.
 
-**Migration**
+### Migration
 
 - **Go consumers** get a compile error naming the constant. Rename and rebuild.
 - **Consumers matching the JSON `code` string get no error.** This is the one to look for:
@@ -439,7 +439,7 @@ excluded from the manager cache, so every read is a direct `get` of a Secret a `
 `apiservices`.** They were previously reachable only through the wildcard. The API-resource catalog
 and its trigger informers read both.
 
-**Migration**
+### Migration
 
 - Default installs (`rbac.watchTypes` unset): no action. Helm creates `<release>-watch-any` and its
   binding; `kubectl apply` of `dist/install.yaml` includes the same pair.
@@ -467,7 +467,8 @@ reflector retried the denial forever. Discovery reports what the server serves, 
 may read, so a narrowed role reached this path — which is exactly the path this release makes easy
 to enter.
 
-## Unreleased — `manifest-analyzer` scan modes renamed, and `--format json` now emits a versioned contract (next minor; breaking)
+## Unreleased — `manifest-analyzer` scan modes renamed, and `--format json` now emits a
+versioned contract (next minor; breaking)
 
 The analyzer's machine-readable output moved to the new public
 [`pkg/manifestanalyzer`](../pkg/manifestanalyzer), which is a supported Go API and the single
@@ -499,7 +500,7 @@ The JSON documents also gained a `schemaVersion` field, and one field was droppe
   directive.
 - `--mode analyze` and every `--format text` output are unchanged.
 
-**Migration**
+### Migration
 
 - Replace `--mode scan` with `--mode scan-folder`, and `--mode repo-walker` with `--mode scan-repo`.
   A stale invocation fails loudly rather than falling back to the default `analyze` mode.
@@ -530,7 +531,7 @@ The Helm chart now defaults to the simple, Redis-free `configured-author` path, 
 - `quickstart.namespace` now defaults to `gitops-reverser-quickstart-demo` (was `default`), and a new
   `quickstart.createNamespace` (default `false`) controls whether the chart creates it.
 
-**Migration**
+### Migration
 
 - To keep the previous behavior, set the values explicitly: `--set queue.redis.addr=valkey:6379
   --set queue.redis.auth.existingSecret=valkey-auth --set servers.admission.enabled=true`.
@@ -544,7 +545,7 @@ reflect the accumulated schema and status changes on this branch. `v1alpha2` is 
 co-served — there is no conversion webhook, so the old version stops being recognized once the new
 CRDs are applied.
 
-**Migration**
+### Migration
 
 - Update every manifest, GitOps source, and client to `apiVersion: configbutler.ai/v1alpha3`
   (`GitProvider`, `GitTarget`, `WatchRule`, `ClusterWatchRule`, `CommitRequest`). The kinds, field
@@ -571,7 +572,7 @@ Redis/Valkey is optional in configured-author mode. Set `--redis-addr` to store 
 restart); leave it empty to cold-replay from scratch on restart. Attributed-author mode still requires a
 non-empty `--redis-addr`.
 
-**Migration**
+### Migration
 
 - If you want the easier configured-author install, no chart value is needed.
 - If you currently rely on kube-apiserver audit delivery for named commit authors, set:
@@ -590,7 +591,7 @@ non-empty `--redis-addr`.
 does: after the request author is known, the worker waits this long before closing the matching open
 commit window.
 
-**Migration**
+### Migration
 
 Before:
 
@@ -705,7 +706,7 @@ CRD defaulting:
 - `group` defaults to `configbutler.ai`
 - `kind` defaults to `GitProvider` (a single-value enum)
 
-**Migration**
+### Migration
 
 - If your `GitTarget` only sets `providerRef.name` (the common case), **no change is needed.**
 - If you set `providerRef.group` or `providerRef.kind` explicitly, drop them or set them to the
@@ -744,7 +745,7 @@ Two further tightenings:
 - A `known_hosts` that **is** present but fails to parse is now a **hard error regardless of the
   flag.** The old key silently swallowed an unparseable value; it no longer does.
 
-**Migration**
+### Migration
 
 - **Recommended:** add a real `known_hosts` to the credentials Secret, or supply it via
   `GitProvider.spec.knownHostsRef` / an install-level default ConfigMap, then delete the obsolete
