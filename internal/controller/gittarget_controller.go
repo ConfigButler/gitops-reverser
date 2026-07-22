@@ -201,6 +201,13 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 	}
 
+	// One read of the source ClusterProvider serves everything below it: the audit route captured on
+	// Declare and the ClusterProviderReady projection. Reading it twice invited the two to disagree.
+	sourceProvider, sourceProviderErr := r.resolveSourceClusterProvider(ctx, &target)
+	if sourceProviderErr != nil {
+		return ctrl.Result{}, sourceProviderErr
+	}
+
 	// Ensure watch-first data-plane streams exist, then project source and target readiness
 	// into the kstatus trio.
 	streamsSettling := false
@@ -219,7 +226,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			ctx,
 			gitDest,
 			target.SourceCluster(),
-			r.auditRouteFor(ctx, &target),
+			sourceProvider.AuditRoute(),
 			target.EffectivePruneMode(),
 			gitPathWasRefused,
 		); declareErr != nil {
@@ -260,7 +267,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		sourceReach = r.EventRouter.WatchManager.SourceClusterReachable(target.SourceCluster())
 	}
 	providerStatus, providerReason, providerMessage := r.gitProviderReadiness(ctx, &target, providerNS)
-	cpStatus, cpReason, cpMessage := r.clusterProviderReadiness(ctx, &target)
+	cpStatus, cpReason, cpMessage := clusterProviderReadiness(sourceProvider)
 	r.projectSourceAndProvider(&target, sourceReach, providerStatus, providerReason, providerMessage,
 		cpStatus, cpReason, cpMessage)
 	streamsSettling = streamsSettling || sourceReach.State != "True" ||
