@@ -18,7 +18,7 @@ This document is in three parts:
 
 ---
 
-# Part 1 — Requirements: how it should work
+## Part 1 — Requirements: how it should work
 
 ## 1.0 One sentence
 
@@ -194,7 +194,7 @@ Beyond the four beliefs above, a complete design needs:
 
 ---
 
-# Part 2 — Current architecture
+## Part 2 — Current architecture
 
 ## 2.1 Components
 
@@ -275,7 +275,7 @@ ReconcileForRuleChange  (manager.go:740)
 
 ---
 
-# Part 3 — Target architecture
+## Part 3 — Target architecture
 
 The strategy: make the **catalog** a proper live model that emits deltas and
 confidence, make the **watch plan** a single deterministic projection consumed in

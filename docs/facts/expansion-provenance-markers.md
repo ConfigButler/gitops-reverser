@@ -50,7 +50,7 @@ secrets doc; they are not re-measured here.)
 
 ### 2. The label prefix is not the discriminator, and it looks exactly like one
 
-```
+```text
 kustomize.toolkit.fluxcd.io/name   → the source is a folder of files → MIRROR IT
 helm.toolkit.fluxcd.io/name        → the source is a chart           → NEVER MIRROR
 ```
@@ -117,7 +117,7 @@ note in `types.go`.
 An `ApplicationSet` with a `git.directories: apps/*` generator, over a real
 repository:
 
-```
+```bash
 $ mkdir apps/worker && git add . && git commit && git push    # NO Application CR authored
 $ kubectl -n argocd get applications
 NAME           PATH            SYNC     HEALTH
@@ -130,7 +130,7 @@ of desired state.
 And the corollary — what happens if a tool "helpfully" authors the CR as well, which
 is what *"add an app = add the manifests and author the CR"* would do:
 
-```
+```text
 SharedResourceWarning: ConfigMap/worker-config is part of applications
                        argocd/app-worker and worker-authored-by-hand
 ```
@@ -151,7 +151,7 @@ An `ApplicationSet` template using `{{.cluster}}` **without** `spec.goTemplate: 
 does not fail loudly — it renders the literal string. Every element then produces the
 same name and Argo reports:
 
-```
+```text
 ApplicationSet guestbook contains applications with duplicate name: {{.cluster}}-guestbook
 ```
 

@@ -33,7 +33,9 @@
       "Bash(markdownlint-cli2 \"docs/design/reconcile-triggering.md\")",
       "Bash(markdownlint-cli2 \"docs/design/support-boundary/render-attribution.md\")",
       "Bash(awk -F: '{print $1}')",
-      "Bash(markdownlint-cli2 \"docs/design/watch-and-catalog-architecture.md\")"
+      "Bash(markdownlint-cli2 \"docs/design/watch-and-catalog-architecture.md\")",
+      "Bash(git commit -m 'docs: fix trailing whitespace *)",
+      "Bash(awk -F: '{print $1\":\"$2}')"
     ]
   }
 }
