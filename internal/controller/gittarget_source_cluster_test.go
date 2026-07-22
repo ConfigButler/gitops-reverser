@@ -384,7 +384,7 @@ func TestReconcile_UnauthorizedNamespaceStartsNoWatch(t *testing.T) {
 	// client is wired) — which is exactly the capture a refused GitTarget must not produce.
 	other := types.NewResourceReference("authorized", ns).WithUID("other-uid")
 	_ = watchManager.DeclareForGitTarget(
-		context.Background(), other, providerName, configbutleraiv1alpha3.PruneOnEvent)
+		context.Background(), other, providerName, providerName, configbutleraiv1alpha3.PruneOnEvent)
 	id, declaredOther := watchManager.DeclaredSourceCluster(other)
 	require.True(t, declaredOther, "the positive control must declare, or the assertion above proves nothing")
 	assert.Equal(t, providerName, id)
@@ -490,6 +490,68 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 			status, _, msg := r.gitProviderReadiness(context.Background(), target, "team-a")
 			assert.Equal(t, tc.want, status)
 			assert.NotEmpty(t, msg)
+		})
+	}
+}
+
+// TestAuditRouteFor covers how a GitTarget learns the audit route its author facts are keyed under.
+// The controller reads it here, on the control plane, so the watch data plane needs no Kubernetes
+// client of its own to attribute an event.
+//
+// The fallback is the load-bearing case: an unreadable provider must resolve the provider NAME,
+// which is exactly what AuditRoute() defaults to. Resolving anything else would key the read to a
+// partition the audit handler never writes, which is the failure this whole change removes.
+func TestAuditRouteFor(t *testing.T) {
+	const providerName = "srcns-delegating"
+
+	target := func() *configbutleraiv1alpha3.GitTarget {
+		return &configbutleraiv1alpha3.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "tenant"},
+			Spec: configbutleraiv1alpha3.GitTargetSpec{
+				ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: providerName},
+			},
+		}
+	}
+	provider := func(attribution *configbutleraiv1alpha3.ClusterProviderAttribution) client.Object {
+		return &configbutleraiv1alpha3.ClusterProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: providerName},
+			Spec:       configbutleraiv1alpha3.ClusterProviderSpec{Attribution: attribution},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		objects []client.Object
+		want    string
+	}{
+		{
+			name: "a declared route is used",
+			objects: []client.Object{
+				provider(&configbutleraiv1alpha3.ClusterProviderAttribution{AuditRoute: "default"}),
+			},
+			want: "default",
+		},
+		{
+			name:    "an empty attribution block falls back to the provider name",
+			objects: []client.Object{provider(&configbutleraiv1alpha3.ClusterProviderAttribution{})},
+			want:    providerName,
+		},
+		{
+			name:    "no attribution block falls back to the provider name",
+			objects: []client.Object{provider(nil)},
+			want:    providerName,
+		},
+		{
+			name:    "an unreadable provider falls back to the provider name",
+			objects: nil,
+			want:    providerName,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cl := fake.NewClientBuilder().WithScheme(scScheme(t)).WithObjects(tc.objects...).Build()
+			r := &GitTargetReconciler{Client: cl}
+			assert.Equal(t, tc.want, r.auditRouteFor(context.Background(), target()))
 		})
 	}
 }

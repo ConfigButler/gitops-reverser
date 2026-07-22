@@ -87,6 +87,15 @@ All flags for one component share a prefix and don't drift. If the toggle is
 `--author-attribution-grace` — not a bare `--attribution-ttl` next to a prefixed
 `--audit-attribution-enabled`. Pick the prefix once; apply it to the whole group.
 
+**The prefix is a flat-namespace device, so nested configuration drops it.** Chart values and CRD
+fields are already scoped by their block, and repeating the prefix inside one stutters:
+`attribution.ttl` in `values.yaml` maps to `--author-attribution-ttl`, and
+`ClusterProvider.spec.attribution` needs no `author` because a source-cluster object has no other
+kind of attribution. Flags have no such scope, which is why they keep the qualifier: this product
+has two attribution concepts, author attribution and
+[render attribution](design/support-boundary/render-attribution.md), and only the flat namespace has
+to tell them apart.
+
 ### 6. Positive phrasing; reserve `--no-<feature>` for genuine on-by-default toggles
 
 Avoid double negatives in names and in help text. Flux controllers use

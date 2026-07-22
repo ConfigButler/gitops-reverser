@@ -764,12 +764,15 @@ func (m *Manager) attachAuthor(
 	// author fact's post-write RV, so it may consult the /last pointer; a create/update is
 	// exact-capable and must not fall through to /last.
 	exactCapable := event.Operation != string(configv1alpha3.OperationDelete)
-	// event.SourceCluster (stamped just above, before this call) is the SOURCE CLUSTER — the
-	// ClusterProvider name — this event was watched on. It keys the author read against exactly
-	// the facts the audit handler recorded for that cluster, so a fact from cluster A can never
-	// name the author of an object watched on cluster B.
+	// event.SourceCluster (stamped just above, before this call) is the ClusterProvider NAME this
+	// event was watched on; auditRouteForCluster turns it into the AUDIT ROUTE the handler filed
+	// facts under. The two differ whenever several providers name one cluster: an API server has one
+	// webhook backend and posts under one route, so every other provider for that cluster declares
+	// that same route and joins the same facts. Keying the read on the provider name instead was
+	// the bug this indirection exists to prevent, and a fact from cluster A still cannot name the
+	// author of an object watched on cluster B, because their routes differ.
 	userInfo, outcome := m.AuthorResolver.ResolveAuthor(
-		ctx, event.SourceCluster, gvr, u.GetUID(), u.GetResourceVersion(), exactCapable,
+		ctx, m.auditRouteForCluster(event.SourceCluster), gvr, u.GetUID(), u.GetResourceVersion(), exactCapable,
 	)
 	// Stamp the outcome even when no actor was named: an unresolved attribution is a fact the
 	// writer, the author_kind metric, and CommitRequest matching all need. Leaving it at the

@@ -36,14 +36,17 @@ const DefaultKeyPrefix = "gitops-reverser"
 const (
 	// attributionKeySuffix namespaces audit-sourced resource author facts under the
 	// top-level author domain, e.g.
-	// "gitops-reverser:author:v1:audit:cluster:<name>:<group/resource>:...".
+	// "gitops-reverser:author:v1:audit:route:<route>:<group/resource>:...".
 	attributionKeySuffix = ":author:v1:audit:"
-	// clusterKeyInfix carries the SOURCE CLUSTER dimension (a ClusterProvider name, "default"
-	// for the in-cluster provider) so a fact from cluster A never joins a watch event from
-	// cluster B — the rv-only hatch especially, since RV is not globally unique. It sits right
-	// after attributionKeySuffix so a provider's facts share a single glob prefix
-	// "…:author:v1:audit:cluster:<name>:*", which the delete-on-provider purge scans.
-	clusterKeyInfix = "cluster:"
+	// routeKeyInfix carries the AUDIT ROUTE dimension so a fact from cluster A never joins a watch
+	// event from cluster B — the rv-only hatch especially, since RV is not globally unique. The
+	// route is what the audit events arrived under, NOT the ClusterProvider's name: an API server
+	// has one webhook backend and posts under one route, so several providers naming one cluster
+	// all declare that route and share its facts (ClusterProvider.AuditRoute()). It is spelled
+	// "route" rather than "auditRoute" because the key already says audit one segment earlier. It
+	// sits right after attributionKeySuffix so a route's facts share a single glob prefix
+	// "…:author:v1:audit:route:<route>:*", so one route's facts are inspectable with a single SCAN.
+	routeKeyInfix = "route:"
 	// factObjectInfix groups every fact for one object under one prefix, so a SCAN of
 	// "<group/resource>:object:<uid>:*" shows the whole history-in-flight for that object.
 	factObjectInfix = ":object:"
@@ -126,7 +129,7 @@ type AttributionIndex struct {
 // It is a no-op for events without an objectRef, a resolvable name, or a user — those
 // can never name an author. The caller (the audit handler) has already rejected reads,
 // failures, dry-runs, and non-ResponseComplete stages.
-func (a *AttributionIndex) RecordFact(ctx context.Context, providerName string, event auditv1.Event) error {
+func (a *AttributionIndex) RecordFact(ctx context.Context, auditRoute string, event auditv1.Event) error {
 	if event.ObjectRef == nil {
 		return nil
 	}
@@ -139,7 +142,7 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, providerName string, 
 	// A deletecollection is name-less, so it can never name a single object. When the
 	// API server returns the deleted set, expand it into one fact per object instead.
 	if strings.EqualFold(event.Verb, "deletecollection") {
-		return a.RecordDeleteCollectionFacts(ctx, providerName, event)
+		return a.RecordDeleteCollectionFacts(ctx, auditRoute, event)
 	}
 
 	op, _ := auditutil.VerbToOperation(event.Verb)
@@ -179,7 +182,7 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, providerName string, 
 		return fmt.Errorf("marshal attribution fact: %w", err)
 	}
 
-	wrote, err := a.writeFactKeys(ctx, providerName, gr, uid, rv, raw)
+	wrote, err := a.writeFactKeys(ctx, auditRoute, gr, uid, rv, raw)
 	if err != nil {
 		return err
 	}
@@ -195,15 +198,19 @@ func (a *AttributionIndex) RecordFact(ctx context.Context, providerName string, 
 // known, or the type-scoped rv-only escape hatch when the fact has an RV but no UID.
 // The exact key is written once per (uid, rv) and never contended, so there is no
 // conflict marking. It reports whether any key was written.
-func (a *AttributionIndex) writeFactKeys(ctx context.Context, cluster, gr, uid, rv string, raw []byte) (bool, error) {
+func (a *AttributionIndex) writeFactKeys(
+	ctx context.Context,
+	auditRoute, gr, uid, rv string,
+	raw []byte,
+) (bool, error) {
 	switch {
 	case uid != "":
 		if rv != "" {
-			if err := a.setFact(ctx, a.factKeyExact(cluster, gr, uid, rv), raw); err != nil {
+			if err := a.setFact(ctx, a.factKeyExact(auditRoute, gr, uid, rv), raw); err != nil {
 				return false, fmt.Errorf("store exact attribution fact: %w", err)
 			}
 		}
-		if err := a.setFact(ctx, a.factKeyLast(cluster, gr, uid), raw); err != nil {
+		if err := a.setFact(ctx, a.factKeyLast(auditRoute, gr, uid), raw); err != nil {
 			return false, fmt.Errorf("store last attribution fact: %w", err)
 		}
 		return true, nil
@@ -211,7 +218,7 @@ func (a *AttributionIndex) writeFactKeys(ctx context.Context, cluster, gr, uid, 
 		// The §5 escape hatch: a UID-bearing fact's rv-only key would be dead (the watch
 		// side always carries a UID and resolves via object:<uid>:… first), so it is
 		// written only when there is no UID.
-		if err := a.setFact(ctx, a.factKeyRV(cluster, gr, rv), raw); err != nil {
+		if err := a.setFact(ctx, a.factKeyRV(auditRoute, gr, rv), raw); err != nil {
 			return false, fmt.Errorf("store rv-only attribution fact: %w", err)
 		}
 		return true, nil
@@ -234,7 +241,7 @@ func (a *AttributionIndex) writeFactKeys(ctx context.Context, cluster, gr, uid, 
 // See docs/spec/deletecollection-attribution-expander.md.
 func (a *AttributionIndex) RecordDeleteCollectionFacts(
 	ctx context.Context,
-	providerName string,
+	auditRoute string,
 	event auditv1.Event,
 ) error {
 	if !strings.EqualFold(event.Verb, "deletecollection") || event.ObjectRef == nil || event.ObjectRef.Resource == "" {
@@ -262,7 +269,7 @@ func (a *AttributionIndex) RecordDeleteCollectionFacts(
 	}
 	return a.storeDeleteCollectionFacts(
 		ctx,
-		providerName,
+		auditRoute,
 		event.ObjectRef.APIGroup,
 		event.ObjectRef.Resource,
 		items,
@@ -275,7 +282,7 @@ func (a *AttributionIndex) RecordDeleteCollectionFacts(
 // one item was written.
 func (a *AttributionIndex) storeDeleteCollectionFacts(
 	ctx context.Context,
-	cluster string,
+	auditRoute string,
 	group, resource string,
 	items []deleteCollectionItem,
 	base AuthorFact,
@@ -295,7 +302,7 @@ func (a *AttributionIndex) storeDeleteCollectionFacts(
 		if err != nil {
 			return fmt.Errorf("marshal deletecollection fact: %w", err)
 		}
-		if err := a.setFact(ctx, a.factKeyLast(cluster, gr, string(item.UID)), raw); err != nil {
+		if err := a.setFact(ctx, a.factKeyLast(auditRoute, gr, string(item.UID)), raw); err != nil {
 			return fmt.Errorf("store deletecollection fact %q: %w", item.Name, err)
 		}
 		expanded = true
@@ -351,13 +358,13 @@ func deleteCollectionItems(obj *runtime.Unknown) []deleteCollectionItem {
 // policy: see LookupAuthorResolution.
 func (a *AttributionIndex) LookupAuthor(
 	ctx context.Context,
-	providerName string,
+	auditRoute string,
 	gvr schema.GroupVersionResource,
 	uid types.UID,
 	rv string,
 	exactCapable bool,
 ) (AuthorFact, bool) {
-	resolution := a.LookupAuthorResolution(ctx, providerName, gvr, uid, rv, exactCapable)
+	resolution := a.LookupAuthorResolution(ctx, auditRoute, gvr, uid, rv, exactCapable)
 	return resolution.Fact, resolution.Result != AttributionAbsent
 }
 
@@ -374,7 +381,7 @@ func (a *AttributionIndex) LookupAuthor(
 // A miss returns AttributionAbsent; there is no tombstone and so no expired outcome.
 func (a *AttributionIndex) LookupAuthorResolution(
 	ctx context.Context,
-	providerName string,
+	auditRoute string,
 	gvr schema.GroupVersionResource,
 	uid types.UID,
 	rv string,
@@ -382,17 +389,17 @@ func (a *AttributionIndex) LookupAuthorResolution(
 ) AuthorResolution {
 	gr := groupResourceKey(gvr.Group, gvr.Resource)
 	if uid != "" && rv != "" {
-		if res, ok := a.matchFactKey(ctx, a.factKeyExact(providerName, gr, string(uid), rv), false); ok {
+		if res, ok := a.matchFactKey(ctx, a.factKeyExact(auditRoute, gr, string(uid), rv), false); ok {
 			return res
 		}
 	}
 	if !exactCapable && uid != "" {
-		if res, ok := a.matchFactKey(ctx, a.factKeyLast(providerName, gr, string(uid)), true); ok {
+		if res, ok := a.matchFactKey(ctx, a.factKeyLast(auditRoute, gr, string(uid)), true); ok {
 			return res
 		}
 	}
 	if rv != "" {
-		if res, ok := a.matchFactKey(ctx, a.factKeyRV(providerName, gr, rv), true); ok {
+		if res, ok := a.matchFactKey(ctx, a.factKeyRV(auditRoute, gr, rv), true); ok {
 			return res
 		}
 	}
@@ -430,75 +437,42 @@ func attributionResultForFact(fact AuthorFact, weak bool) AttributionResult {
 	return AttributionExactUser
 }
 
-// clusterFactPrefix is the per-cluster glob prefix under which every fact for one source cluster
-// lives, e.g. "gitops-reverser:author:v1:audit:cluster:prod-eu-1:". The delete-on-provider purge
-// SCANs "<prefix>*".
-func (a *AttributionIndex) clusterFactPrefix(cluster string) string {
-	return resolveKeyPrefix(a.keyPrefix) + attributionKeySuffix + clusterKeyInfix + escapeKeyField(cluster) + ":"
+// routeFactPrefix is the per-route glob prefix under which every fact for one audit route lives,
+// e.g. "gitops-reverser:author:v1:audit:route:prod-eu-1:".
+func (a *AttributionIndex) routeFactPrefix(auditRoute string) string {
+	return resolveKeyPrefix(a.keyPrefix) + attributionKeySuffix + routeKeyInfix + escapeKeyField(auditRoute) + ":"
 }
 
 // factKeyBase is the per-(cluster,type) prefix shared by every fact key, e.g.
-// "gitops-reverser:author:v1:audit:cluster:default:apps/deployments".
-func (a *AttributionIndex) factKeyBase(cluster, gr string) string {
-	return a.clusterFactPrefix(cluster) + gr
+// "gitops-reverser:author:v1:audit:route:default:apps/deployments".
+func (a *AttributionIndex) factKeyBase(auditRoute, gr string) string {
+	return a.routeFactPrefix(auditRoute) + gr
 }
 
 // factKeyExact is the immutable per-write fact key, e.g.
-// "gitops-reverser:author:v1:audit:cluster:default:apps/deployments:object:<uid>:101".
-func (a *AttributionIndex) factKeyExact(cluster, gr, uid, rv string) string {
-	return a.factKeyBase(cluster, gr) + factObjectInfix + escapeKeyField(uid) + ":" + escapeKeyField(rv)
+// "gitops-reverser:author:v1:audit:route:default:apps/deployments:object:<uid>:101".
+func (a *AttributionIndex) factKeyExact(auditRoute, gr, uid, rv string) string {
+	return a.factKeyBase(auditRoute, gr) + factObjectInfix + escapeKeyField(uid) + ":" + escapeKeyField(rv)
 }
 
 // factKeyLast is the latest-writer-wins pointer for an object, e.g.
-// "gitops-reverser:author:v1:audit:cluster:default:apps/deployments:object:<uid>:last".
-func (a *AttributionIndex) factKeyLast(cluster, gr, uid string) string {
-	return a.factKeyBase(cluster, gr) + factObjectInfix + escapeKeyField(uid) + ":" + factLastLeaf
+// "gitops-reverser:author:v1:audit:route:default:apps/deployments:object:<uid>:last".
+func (a *AttributionIndex) factKeyLast(auditRoute, gr, uid string) string {
+	return a.factKeyBase(auditRoute, gr) + factObjectInfix + escapeKeyField(uid) + ":" + factLastLeaf
 }
 
 // factKeyRV is the (cluster, type)-scoped rv-only escape hatch, e.g.
-// "gitops-reverser:author:v1:audit:cluster:default:apps/deployments:rv:101". RV is opaque per the
+// "gitops-reverser:author:v1:audit:route:default:apps/deployments:rv:101". RV is opaque per the
 // Kubernetes API contract and not globally unique — not even within a cluster's type, and
 // certainly not across clusters — so this key always includes both the cluster and the type.
-func (a *AttributionIndex) factKeyRV(cluster, gr, rv string) string {
-	return a.factKeyBase(cluster, gr) + factRVInfix + escapeKeyField(rv)
+func (a *AttributionIndex) factKeyRV(auditRoute, gr, rv string) string {
+	return a.factKeyBase(auditRoute, gr) + factRVInfix + escapeKeyField(rv)
 }
 
 // setFact writes one fact value under its key with the bounded fact TTL. No sibling
 // keys: v3 keeps no :seen tombstone and no :miss marker.
 func (a *AttributionIndex) setFact(ctx context.Context, key string, raw []byte) error {
 	return a.client.Set(ctx, key, raw, a.factTTL).Err()
-}
-
-// PurgeClusterFacts deletes every attribution fact keyed to one source cluster (a ClusterProvider
-// name). It is run by the ClusterProvider delete finalizer so a recreated name — a cluster torn
-// down and stood up again under the same provider name — starts with a clean keyspace and can
-// never join a stale predecessor's facts. It SCANs the per-cluster glob prefix and deletes in
-// batches (facts also self-expire on the TTL, so this is the belt to that suspenders). It returns
-// the number of keys removed.
-func (a *AttributionIndex) PurgeClusterFacts(ctx context.Context, providerName string) (int, error) {
-	pattern := a.clusterFactPrefix(providerName) + "*"
-	var cursor uint64
-	var removed int
-	for {
-		keys, next, err := a.client.Scan(ctx, cursor, pattern, attributionFactScanBatchSize).Result()
-		if err != nil {
-			return removed, fmt.Errorf("scan cluster facts %q: %w", pattern, err)
-		}
-		if len(keys) > 0 {
-			if err := a.client.Del(ctx, keys...).Err(); err != nil {
-				return removed, fmt.Errorf("delete cluster facts %q: %w", pattern, err)
-			}
-			removed += len(keys)
-		}
-		cursor = next
-		if cursor == 0 {
-			break
-		}
-	}
-	if removed > 0 {
-		a.recordFactEvent(ctx, "cluster_purged")
-	}
-	return removed, nil
 }
 
 func (a *AttributionIndex) recordFactEvent(ctx context.Context, op string) {

@@ -1048,25 +1048,31 @@ annotation key is set:
 
 ```yaml
 attribution:
-  clusterAnnotationKey: example.io/source-cluster
+  auditRouteAnnotationKey: example.io/source-cluster
 ```
 
 When this option is set, the receiver reads `example.io/source-cluster` from each event. Its value is
-the name of the `ClusterProvider` that owns the event, so events in the same batch may route to
-different source clusters.
+the **audit route** the event belongs to, so events in the same batch may route to different
+partitions. A `ClusterProvider` joins a route by setting `spec.attribution.auditRoute` to the same
+value; it defaults to the provider's own name.
 
-**The bare endpoint never guesses a source cluster.** Rejection happens at two levels:
+**The bare endpoint never guesses a route.** Rejection happens at two levels:
 
 | Situation | Result |
 |---|---|
-| A request reaches `/audit-webhook` while `clusterAnnotationKey` is unset | The whole request is rejected with **400**. The bare endpoint is not enabled, so a producer posting to it is misconfigured. |
-| An event carries no annotation, or names a `ClusterProvider` that does not exist | That **event** is rejected: it produces no attribution fact and is never credited to a fallback provider. The request still returns 200, so correctly-annotated events in the same batch are kept. |
+| A request reaches `/audit-webhook` while `auditRouteAnnotationKey` is unset | The whole request is rejected with **400**. The bare endpoint is not enabled, so a producer posting to it is misconfigured. |
+| An event carries no annotation | That **event** is rejected: it produces no attribution fact and is never credited to a fallback route. The request still returns 200, so correctly-annotated events in the same batch are kept. |
+
+An annotation naming a route no `ClusterProvider` has declared is **not** rejected. The route is a
+partition name rather than a claim about an object, so the fact is stored and expires unread if
+nothing joins it. That keeps ingestion free of Kubernetes reads, and lets a provider created after
+its events started flowing pick them up.
 
 The second row is a per-event rejection rather than a per-request one on purpose. A shared stream is
 heterogeneous by definition, so failing the whole batch would discard events that routed correctly and
 leave the apiserver retrying a batch that can never succeed. Rejected events are counted and logged, so
 a producer that is not stamping the annotation is visible rather than silent — if that count rises,
-point the producer at `/audit-webhook/<name>` instead.
+point the producer at `/audit-webhook/<audit-route>` instead.
 
 Use an annotation that the producing control plane sets consistently as source metadata. This is
 routing metadata only: it keeps the audit fact and the watch event in the same source-cluster
