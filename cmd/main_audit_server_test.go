@@ -392,3 +392,52 @@ func mustMakeTestRootCA(t *testing.T) string {
 
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes}))
 }
+
+// The annotation key is normalized at parse time so validation and every use site read one
+// string. They used to disagree: validation trimmed, the handler and the startup log took the
+// raw value. A padded key therefore passed validation, enabled the bare /audit-webhook
+// endpoint, and then matched no event, so attribution resolved nobody and said nothing.
+func TestParseFlags_AuditRouteAnnotationKeyIsTrimmed(t *testing.T) {
+	tests := map[string]struct {
+		value string
+		want  string
+	}{
+		"padded key is trimmed to the key events actually carry": {
+			value: "  configbutler.ai/audit-route  ",
+			want:  "configbutler.ai/audit-route",
+		},
+		// The whole point: whitespace-only must collapse to empty, which is what leaves the
+		// bare endpoint disabled. Untrimmed it read as "set" and opened an unusable route.
+		"whitespace-only collapses to empty and leaves the bare endpoint disabled": {
+			value: "   ",
+			want:  "",
+		},
+		"an ordinary key is untouched": {
+			value: "configbutler.ai/audit-route",
+			want:  "configbutler.ai/audit-route",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := parseArgs(t,
+				"--author-attribution=true",
+				"--redis-addr=localhost:6379",
+				"--author-attribution-audit-route-annotation-key="+tc.value,
+			)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.auditRouteAnnotationKey)
+		})
+	}
+}
+
+// Whitespace-only must not satisfy the "requires author-attribution" guard either: before
+// normalization the guard trimmed and so let it through, while the use sites saw a set value.
+func TestParseFlags_WhitespaceAuditRouteKeyDoesNotRequireAttribution(t *testing.T) {
+	cfg, err := parseArgs(t,
+		"--author-attribution=false",
+		"--author-attribution-audit-route-annotation-key=   ",
+	)
+	require.NoError(t, err)
+	require.Empty(t, cfg.auditRouteAnnotationKey)
+}

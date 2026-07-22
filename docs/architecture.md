@@ -54,8 +54,9 @@ attribution, CommitRequest author capture, and HA. Attributed-author mode requir
 require it as the shared store across replicas.
 
 **Audit is an optional attribution lookup.** When attribution is enabled, kube-apiserver posts audit
-events to `/audit-webhook/<cluster-provider-name>` (or a configured annotation-routed shared endpoint).
-The operator stores a minimal fact under that source-provider partition and joins it to a watch event
+events to `/audit-webhook/<audit-route>` (or a configured annotation-routed shared endpoint). The route
+is `ClusterProvider.spec.attribution.auditRoute`, which defaults to the provider's own name.
+The operator stores a minimal fact under that route's partition and joins it to a watch event
 within a bounded grace window. A missing, late, or absent fact never blocks state capture; it only
 changes the author.
 
@@ -607,17 +608,18 @@ per-mutation change log.
 - **Resolver (grace window join)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
 
 Attribution runs only when `--author-attribution=true`; Redis is then its required state store. A normal
-source posts audit `EventList` payloads to `/audit-webhook/<cluster-provider-name>`. The bare
+source posts audit `EventList` payloads to `/audit-webhook/<audit-route>`, where the route is
+`ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name. The bare
 `/audit-webhook` endpoint is enabled only with `--author-attribution-audit-route-annotation-key`, for a
-trusted control plane that puts a provider name in each event. There is no supplementary body endpoint or
+trusted control plane that puts an audit route in each event. There is no supplementary body endpoint or
 body joiner, because watch (not audit) carries the object body. The handler applies an intrinsic accept
 gate (StageResponseComplete, a mutating verb, success, non-dry-run, a changed resourceVersion, and the
-`/scale` subresource only), then writes the minimal attribution fact to the provider's Redis partition.
+`/scale` subresource only), then writes the minimal attribution fact to that route's Redis partition.
 
 | Endpoint | Role |
 |---|---|
-| `/audit-webhook/<provider>` | One source provider's audit stream; the provider must exist |
-| `/audit-webhook` | Shared stream only when annotation routing is configured; each event names its provider |
+| `/audit-webhook/<audit-route>` | One audit route's stream; some ClusterProvider must carry that route |
+| `/audit-webhook` | Shared stream only when annotation routing is configured; each event names its route |
 
 The handler accepts a client certificate signed by the audit CA, but it does not yet bind that certificate
 to a named provider. Do not treat named routes as an isolation boundary for independently administered

@@ -235,8 +235,10 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 
 ### Audit Webhook URL Contract
 
-When `attribution.enabled=true`, `https://<service>:9444/audit-webhook/<cluster-provider-name>`
-receives audit events from kube-apiserver — audit routes are **named**, including
+When `attribution.enabled=true`, `https://<service>:9444/audit-webhook/<audit-route>`
+receives audit events from kube-apiserver — the route is
+`ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name.
+Audit routes are **named**, including
 `/audit-webhook/default`. The bare `/audit-webhook` is rejected with **400** unless
 `attribution.auditRouteAnnotationKey` is set, which turns it into the shared-stream endpoint that
 resolves each event's source cluster from that annotation. The operator extracts a minimal attribution fact from each (auditID, user, verb,

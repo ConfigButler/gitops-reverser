@@ -1027,7 +1027,8 @@ Progress and outcome are reported through kstatus-compatible **conditions** (no 
 ## Audit ingestion settings
 
 Object state comes from Kubernetes **watch**, not from audit. Audit is an optional attribution lookup:
-kube-apiserver posts audit events to a named path, `/audit-webhook/<cluster-provider-name>`, and the
+kube-apiserver posts audit events to a named path, `/audit-webhook/<audit-route>`, where the route is
+`ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name. The
 operator extracts a minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID,
 status, timestamps) into a Redis attribution index keyed for the join. A resolver attaches the commit
 author to each watch event by matching a fact (by resourceVersion/UID) within a bounded grace window.
