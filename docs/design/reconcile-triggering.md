@@ -1,5 +1,4 @@
 ---
-title: Reconcile triggering — how our controllers wake up, and where that fails
 status: investigation + design
 date: 2026-06-29
 related:

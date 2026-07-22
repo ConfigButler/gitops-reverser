@@ -30,7 +30,10 @@
       "Bash(task lint-markdown-fix *)",
       "Bash(git commit -m 'docs: fix unsupported-folder-refusal-plan.md fence language and blockquote *)",
       "Bash(markdownlint-cli2 docs/design/reconcile-triggering.md)",
-      "Bash(markdownlint-cli2 \"docs/design/reconcile-triggering.md\")"
+      "Bash(markdownlint-cli2 \"docs/design/reconcile-triggering.md\")",
+      "Bash(markdownlint-cli2 \"docs/design/support-boundary/render-attribution.md\")",
+      "Bash(awk -F: '{print $1}')",
+      "Bash(markdownlint-cli2 \"docs/design/watch-and-catalog-architecture.md\")"
     ]
   }
 }

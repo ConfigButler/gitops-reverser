@@ -75,8 +75,7 @@ a file's entries once per record, builds a chain containing every entry **N time
 
 Benign today (re-applying an entry lands on the same result) and not a reason to hold
 
-# 232. But it means the annotation answers *"which kustomizations' transformers ran in the
-
+**232.** But it means the annotation answers *"which kustomizations' transformers ran in the
 pipeline that produced this object"* — never *"what touched this object"*, and **never
 which entry**. The mechanism is sound; the comments describing it are not, and they should
 be fixed rather than inherited.
