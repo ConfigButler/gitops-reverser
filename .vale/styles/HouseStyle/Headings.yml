@@ -1,0 +1,111 @@
+# docs/style-guide.md -> "Structure", sentence case headings.
+#
+# Measured 2,098 sentence case to 140 title case, so this is descriptive of the
+# docs and prescriptive only for the stragglers -- which cluster in whole files
+# written in title case throughout, such as .devcontainer/README.md.
+#
+# The exceptions list is what makes this usable. Without it the rule fires on
+# every proper noun and every CRD kind. It was built from the alerts the rule
+# produced on the real corpus; extend it when a genuine name trips it, never to
+# silence a heading that is simply title case.
+extends: capitalization
+message: "Headings are sentence case: '%s'."
+link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#structure
+level: warning
+scope: heading
+match: $sentence
+exceptions:
+  # This product
+  - GitOps
+  - Reverser
+  - ConfigButler
+  # Kubernetes and the ecosystem
+  - Kubernetes
+  - Argo
+  - Flux
+  - Helm
+  - Kustomize
+  - SOPS
+  - Redis
+  - Valkey
+  - Prometheus
+  - Grafana
+  - Docker
+  - Tilt
+  - Ginkgo
+  - Git
+  - GitHub
+  - GitLab
+  - Bitbucket
+  - Codecov
+  - Dependabot
+  - Scorecard
+  - Sigstore
+  - OpenSSF
+  - Apache
+  - Go
+  - Vale
+  # Language names, from the spelling section's headings.
+  - American
+  - English
+  # CRD kinds and Go types
+  - GitTarget
+  - GitProvider
+  - WatchRule
+  - ClusterWatchRule
+  - ClusterProvider
+  - CommitRequest
+  - APIResourceCatalog
+  - HelmRelease
+  - Kustomization
+  - Application
+  - ApplicationSet
+  - Secret
+  - Secrets
+  - ConfigMap
+  - Namespace
+  - CustomResourceDefinition
+  - Materializer
+  - Mapper
+  - BranchWorker
+  - RuleStore
+  - TypeRegistry
+  - WatchedTypeTable
+  # Acronyms
+  - API
+  - APIs
+  - CI
+  - CD
+  - E2E
+  - PR
+  - PRs
+  - RBAC
+  - SSA
+  - SSH
+  - GPG
+  - TLS
+  - DNS
+  - HTTP
+  - HTTPS
+  - URL
+  - URLs
+  - YAML
+  - JSON
+  - CRD
+  - CRDs
+  - GVK
+  - GVR
+  - SAR
+  - HA
+  - UI
+  - CLI
+  - SDK
+  - OIDC
+  - IAM
+  - EKS
+  - GKE
+  - AKS
+  - OOM
+  - TTL
+  - VS
+  - Code

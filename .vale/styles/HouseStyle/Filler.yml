@@ -1,0 +1,20 @@
+# docs/style-guide.md -> "Words to cut", the phrase list at the end.
+#
+# The docs are mostly clean of these already. This rule keeps them that way.
+#
+# Note: a specimen quoted in bare quotation marks is NOT exempt -- Vale only
+# skips code fences and inline code. Quote a banned phrase in backticks, which
+# the style guide asks for anyway.
+extends: existence
+message: "'%s' carries no information. Cut it."
+link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#words-to-cut
+level: warning
+ignorecase: true
+tokens:
+  - "it's worth noting"
+  - 'it is worth noting'
+  - 'keep in mind'
+  - 'at the end of the day'
+  - 'delve into'
+  - 'in summary'
+  - 'needless to say'

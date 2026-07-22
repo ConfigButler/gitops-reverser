@@ -1,0 +1,78 @@
+# docs/style-guide.md -> "Spelling: American English".
+#
+# American everywhere, with no carve-outs. The code is American (`authorization`,
+# `sanitize`, `catalog`, `finalize`, `materialize`, `analyzer`), Kubernetes is
+# American, and the docs sit next to both. Choosing American means the doc word
+# and the code word are the same string, so this file needs no exceptions at all.
+#
+# The one exemption left is identifiers, and the parser handles it: Vale skips
+# backticked text and fenced blocks, so `internal/sanitize` never reaches a rule.
+#
+# This list is short by design. It rejects the British forms the repo still
+# carries; it does not try to be a spellchecker. See the design doc for why
+# Vale's built-in en_US dictionary is not enabled: it flags 4,915 words across
+# 742 distinct terms, nearly all of them technical vocabulary such as
+# `namespace`, `kubeconfig`, and `apiserver`.
+extends: substitution
+message: "American spelling in prose: use '%s', not '%s'."
+link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#spelling-american-english
+level: error
+# `ignorecase: false` was a silent hole: the swap keys are lowercase, so a form
+# at the start of a sentence went straight through the gate. Measured on a
+# specimen file, `behaviour` was flagged and `Behaviour`, `Organisation`,
+# `Labelled`, and `Modelled` all passed. Over every tracked doc the case-blind
+# rule finds 152 spellings where the case-sensitive one found 143.
+#
+# `capitalize: true` is what makes this safe to pair with `ignorecase: true`: it
+# carries the source token's case into the replacement, so the message reads
+# "use 'Behavior', not 'Behaviour'" rather than suggesting a lowercase word at
+# the start of a sentence. Vale still skips fenced and inline code, so no
+# identifier reaches the rule whatever its case.
+ignorecase: true
+capitalize: true
+swap:
+  behaviour: behavior
+  behaviours: behaviors
+  behavioural: behavioral
+  organisation: organization
+  organisations: organizations
+  organisational: organizational
+  recognise: recognize
+  recognises: recognizes
+  recognised: recognized
+  recognising: recognizing
+  initialise: initialize
+  initialises: initializes
+  initialised: initialized
+  initialising: initializing
+  summarise: summarize
+  summarises: summarizes
+  summarised: summarized
+  # No `analyses` entry: in American it is the correct plural of "analysis" as
+  # well as the verb form, so swapping it would flag correct prose.
+  analyse: analyze
+  analysed: analyzed
+  analysing: analyzing
+  modelled: modeled
+  modelling: modeling
+  labelled: labeled
+  labelling: labeling
+  cancelled: canceled
+  cancelling: canceling
+  signalled: signaled
+  travelled: traveled
+  defence: defense
+  offence: offense
+  favour: favor
+  favours: favors
+  favoured: favored
+  centre: center
+  centred: centered
+  licence: license
+  catalogue: catalog
+  catalogues: catalogs
+  practise: practice
+  programme: program
+  towards: toward
+  whilst: while
+  amongst: among

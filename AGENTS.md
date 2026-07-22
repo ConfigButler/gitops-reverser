@@ -19,8 +19,8 @@
 
 Exception: if the change is **markdown/docs-only** and does not modify Go code, generated manifests,
 Helm/chart behavior, Taskfiles, CI, shell scripts, or any executable/test configuration, you do
-**not** need to run the full validation suite below. In that case, limit validation to a quick
-sanity check of the edited markdown and links.
+**not** need to run the full validation suite below. In that case run `task lint-docs`, which is the
+whole gate for such a change, and follow [`docs/style-guide.md`](./docs/style-guide.md).
 
 Run the e2e commands sequentially, not in parallel!
 
@@ -35,6 +35,14 @@ task test-e2e  # Must pass end-to-end tests
 workflow or Dockerfile change is covered by the normal lint gate; you can also run
 `task lint-actions` or `task lint-dockerfiles` directly. `actionlint`, `hadolint`, and
 `golangci-lint` all ship in the devcontainer image.
+
+It also runs the documentation checks via `task lint-docs`, which is three tasks:
+`lint-doc-links` (`hack/doccheck`, every tracked file), `lint-markdown` (markdownlint-cli2),
+and `lint-prose` (Vale, against [`docs/style-guide.md`](./docs/style-guide.md)). Structure and
+prose gate only the files [`.docs-lint-scope`](./.docs-lint-scope) lists, so editing an unlisted
+document fails nothing; run `markdownlint-cli2` and `vale` on what you touch anyway.
+`task lint-markdown-fix` applies the mechanical half. Both tools ship in the devcontainer image.
+See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
 
 ## PRE-IMPLEMENTATION BEHAVIOR
 

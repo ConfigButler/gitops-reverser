@@ -377,8 +377,8 @@ func (h *AuditHandler) rejectUnroutableEvent(
 	}
 	h.firsts.unroutableEvent.Do(func() {
 		log.Info("Rejected an unroutable audit event on the shared /audit-webhook endpoint; it names no "+
-			"existing ClusterProvider and is never credited to a fallback. Stamp the annotation, or point "+
-			"this producer at /audit-webhook/<cluster-provider-name>", fields...)
+			"audit route any ClusterProvider carries and is never credited to a fallback. Stamp the "+
+			"annotation, or point this producer at /audit-webhook/<audit-route>", fields...)
 	})
 	log.V(1).Info("Rejected unroutable audit event", fields...)
 }
@@ -517,15 +517,17 @@ func effectiveAuditUsername(event auditv1.Event) string {
 }
 
 // validateAuditWebhookPath accepts the bare shared /audit-webhook and a single-segment
-// /audit-webhook/<cluster-provider-name>. It is a purely SYNTACTIC check; whether the named provider
-// actually exists, and whether the bare endpoint is enabled at all, is enforced in ServeHTTP. It
-// rejects a trailing slash and any extra path segment.
+// /audit-webhook/<audit-route>. The segment is an audit route, not necessarily a ClusterProvider
+// name: a provider joins a route through spec.attribution.auditRoute, which merely defaults to its
+// own name. It is a purely SYNTACTIC check; whether any provider carries the named route, and
+// whether the bare endpoint is enabled at all, is enforced in ServeHTTP. It rejects a trailing
+// slash and any extra path segment.
 func validateAuditWebhookPath(path string) error {
 	if path == "/audit-webhook" {
 		return nil
 	}
 	if !strings.HasPrefix(path, "/audit-webhook/") {
-		return errors.New("invalid path; expected /audit-webhook or /audit-webhook/<cluster-provider-name>")
+		return errors.New("invalid path; expected /audit-webhook or /audit-webhook/<audit-route>")
 	}
 	segment := strings.TrimPrefix(path, "/audit-webhook/")
 	if segment == "" {

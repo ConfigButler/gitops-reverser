@@ -259,11 +259,12 @@ func main() {
 			"redisAddr", cfg.redisAddr, "grace", cfg.attributionGrace.String(),
 			"auditRouteAnnotationKey", cfg.auditRouteAnnotationKey)
 		if cfg.auditRouteAnnotationKey == "" {
-			setupLog.Info("audit routes are named: post to /audit-webhook/<cluster-provider-name>; " +
+			setupLog.Info("audit routes are named: post to /audit-webhook/<audit-route>, where the route is " +
+				"ClusterProvider.spec.attribution.auditRoute and defaults to the provider's own name; " +
 				"the bare /audit-webhook endpoint is disabled")
 		} else {
 			setupLog.Info("shared audit stream enabled on the bare /audit-webhook endpoint: each event's "+
-				"ClusterProvider is read from its annotation", "annotationKey", cfg.auditRouteAnnotationKey)
+				"audit route is read from this annotation", "annotationKey", cfg.auditRouteAnnotationKey)
 		}
 	case cfg.redisAddr != "":
 		setupLog.Info("configured-author mode: author attribution disabled; commits use the configured "+
@@ -553,6 +554,11 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		return appConfig{}, err
 	}
 	cfg.redisAddr = strings.TrimSpace(cfg.redisAddr)
+	// Normalized here so validation and use read the same string. They did not: validation
+	// trimmed, every use site took the raw value, so " key " passed the check, enabled the
+	// bare /audit-webhook endpoint, and then looked up an annotation named " key " that no
+	// event carries. Attribution resolved no authors and nothing said why.
+	cfg.auditRouteAnnotationKey = strings.TrimSpace(cfg.auditRouteAnnotationKey)
 	// Validated even when redis-addr is empty: a typo'd prefix is a configuration error
 	// whether or not this run happens to open the connection it names.
 	normalizedKeyPrefix, err := queue.ValidateKeyPrefix(cfg.redisKeyPrefix)
@@ -614,7 +620,7 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	// The annotation key only has a receiver to configure when the audit ingress is running at all;
 	// silently ignoring it would look like annotation routing was enabled when nothing serves it.
-	if strings.TrimSpace(cfg.auditRouteAnnotationKey) != "" && !cfg.authorAttribution {
+	if cfg.auditRouteAnnotationKey != "" && !cfg.authorAttribution {
 		return errors.New(
 			"author-attribution-audit-route-annotation-key requires author-attribution to be enabled; " +
 				"without it there is no audit ingress to route")

@@ -65,11 +65,11 @@ says what we support and refuse** — and then its
 kustomize field taxonomy, the write boundary, the orchestrator/expansion line, and
 how secrets are handled.
 
-Thirteen other open items:
+Twelve other open items:
 
 | Doc | Open question |
 |---|---|
-| [`docs-linting.md`](design/docs-linting.md) | how to mechanise [`style-guide.md`](style-guide.md) with markdownlint-cli2 and Vale. Both tools are installed and measured but wired into nothing: the structural backlog is 138 fixes after `--fix`, the prose backlog is ~3,000 em dashes, so they need different gates. Open: the `MD013` limit, and whether the prose gate stays changed-files-only |
+| [`docs-linting.md`](design/docs-linting.md) | how to mechanize [`style-guide.md`](style-guide.md) with markdownlint-cli2 and Vale. Both are wired into `task lint`, gated on the files [`.docs-lint-scope`](../.docs-lint-scope) lists rather than the whole tree: 102 of 174 files fail markdownlint and 148 of 174 fail Vale, so the two backlogs need different gates. Open: how the scope list grows to cover the tree, the `MD013` limit, and whether `AGENTS.md` and the chart READMEs are in scope |
 | [`attribution-fact-identity.md`](design/attribution-fact-identity.md) | several `ClusterProvider`s may name one physical cluster, but a kube-apiserver posts audit to one route, so only one of those names is ever fed and every other one authors `unknown (attribution unresolved)`. Proposes a declared `spec.attribution.auditRoute` that partitions the facts instead of `metadata.name`, so several providers can share one cluster's facts while cloned clusters stay separate, ingestion loses its last Kubernetes read, and a misrouted provider becomes loud. Renames the key infix and the annotation-key flag to the same word |
 | [`watch-and-catalog-architecture.md`](design/watch-and-catalog-architecture.md) | the target three-layer watch model — **needs a human call before building** |
 | [`metrics-observability-plan.md`](design/metrics-observability-plan.md) | the watch-stage metrics do not exist yet |

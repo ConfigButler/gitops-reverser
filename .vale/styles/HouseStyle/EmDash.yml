@@ -1,0 +1,38 @@
+# docs/style-guide.md -> "Punctuation: no em dashes", the one hard rule.
+#
+# Vale skips code fences and inline code, so a dash inside a quoted specimen is
+# left alone -- which is exactly what the style guide asks for. docs/style-guide.md
+# itself is full of em dashes and is correctly never flagged.
+#
+# Known limitation: the reported count is a lower bound. A sentence with two
+# dashes sometimes yields one alert. File-level detection is complete, so a gate
+# is sound, but re-run after each pass instead of trusting one list.
+#
+# `scope: raw` was tried and reverted. It is tempting, because per-occurrence
+# recall goes from 37% to 99.9% (measured over every tracked doc with fences and
+# inline code stripped: 1,140 of 3,029 prose dashes at the default scope, 3,027
+# at raw). It is still the wrong trade for a gate, for three measured reasons:
+#
+#  1. It costs the exemption above. Raw makes the whole file one block, so fences
+#     and inline code stop being skipped: 92 of 3,126 dashes (2.9%) across 32
+#     files, and style-guide.md flips from correctly clean to a false positive.
+#  2. It cannot be suppressed. `<!-- vale off -->` and
+#     `<!-- vale HouseStyle.EmDash = NO -->` are markup-layer features that raw
+#     never sees, so the false positives above have no local escape hatch.
+#  3. It does not buy gate correctness, because the default scope already has it.
+#     Over 148 files carrying a prose dash, the default scope misses none of them
+#     entirely and flags no clean file. Raw matches that and adds one false
+#     positive. Recall of the *count* is what improves, and the gate does not
+#     read the count.
+#
+# So: this rule decides whether a file is clean, and it is exact at that job. For
+# the full list while you fix one, the style guide's checklist already ends with
+# `grep '—' <file>`. That division is deliberate; do not re-litigate it with
+# `scope:` without re-running those three measurements.
+extends: existence
+message: "Do not use an em dash in prose. Match the mark to the job: parentheses for an aside, a colon for a definition or expansion, a period or semicolon for two clauses."
+link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#punctuation-no-em-dashes
+level: error
+nonword: true
+tokens:
+  - '—'

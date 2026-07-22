@@ -1,0 +1,24 @@
+# docs/style-guide.md -> "Words to cut", the rows that need the deletion test.
+#
+# Split out of WordsToCut.yml. These four are sometimes correct, and no linter can
+# tell which time it is looking at, so this rule reminds rather than rules.
+#
+# The guide's own example is the proof: `actually` earns its place in "the source
+# document, where the value actually lives", because it marks a contrast with the
+# rendered output the reader might have expected. It earns nothing in "the
+# operator actually retries". Same word, same file, opposite verdicts.
+#
+# Suggestion level, deliberately. Vale's exit code tracks errors only, and these
+# must never gate: a gate on a judgment call is a gate people learn to route
+# around with a suppression comment. `MinAlertLevel = suggestion` in .vale.ini
+# still prints them, which is the whole job.
+extends: existence
+message: "'%s': delete it and re-read the sentence. Keep it only if the meaning changed."
+link: https://github.com/ConfigButler/gitops-reverser/blob/main/docs/style-guide.md#words-to-cut
+level: suggestion
+ignorecase: true
+tokens:
+  - just
+  - actually
+  - genuinely
+  - really

@@ -1,4 +1,4 @@
-# Configuration Model
+# Configuration model
 
 This guide explains the real configuration objects that drive gitops-reverser after the install
 steps in the [root README](../README.md).
@@ -39,7 +39,7 @@ multiple watch rules.
 ## Why the two provider types have different scopes
 
 `GitProvider` and `ClusterProvider` are both named connections, but their scope follows what they
-identify and who normally owns their credentials—not a desire to make the API symmetric. A Git
+identify and who normally owns their credentials. API symmetry was not a goal. A Git
 destination is normally a team's write boundary, so a namespaced `GitProvider` keeps the repository
 credential and its consumers together. A source cluster is a shared physical identity: its client,
 discovery surface, watch state, and attribution partition must mean the same thing to every target
@@ -52,8 +52,8 @@ that uses it. That makes `ClusterProvider` cluster-scoped.
 
 There is no default `GitProvider`: the operator cannot infer a safe repository, branch, or write
 credential. `GitTarget.spec.clusterProviderRef` instead defaults to the conventionally opinionated
-name `default`. That is a convenient, concrete reference—not a claim that `default` is always the
-local cluster.
+name `default`. That is a convenient, concrete reference. It does not claim that `default` is always
+the local cluster.
 
 `ClusterProvider.spec.allowedNamespaces` is the control-cluster authorization boundary for that
 shared source connection: it determines which namespaces may contain `GitTarget`s that reference
@@ -92,7 +92,7 @@ spec:
     - main
 ```
 
-### `GitProvider.spec.secretRef` — the credentials Secret
+### `GitProvider.spec.secretRef`: the credentials Secret
 
 The referenced Secret holds the Git credentials. The examples use the **Kubernetes-native** keys,
 which match the built-in Secret types and the tooling around them (`kubectl create secret generic
@@ -113,7 +113,7 @@ re-authoring it. The keys read for each auth method:
 | Credential | Native key (recommended) | Flux key (also read) | Argo CD key (also read) |
 |---|---|---|---|
 | SSH private key | `ssh-privatekey` | `identity` | `sshPrivateKey` |
-| SSH key passphrase | `ssh-password` | `password` *(when an SSH key is present)* | — *(unsupported by Argo)* |
+| SSH key passphrase | `ssh-password` | `password` *(when an SSH key is present)* | *(unsupported by Argo)* |
 | SSH host keys | `known_hosts` | `known_hosts` | external ConfigMap → supply via `spec.knownHostsRef` |
 | HTTP basic auth | `username` + `password` | `username` + `password` | `username` + `password` |
 | HTTP bearer token | `bearerToken` | `bearerToken` | `bearerToken` |
@@ -123,7 +123,7 @@ certificates, and GitHub App credentials are **not supported**.
 
 > **A reused Secret needs write access.** Flux and Argo CD only *clone*, so their Git credentials are
 > often read-only (a read-only deploy key, a read-scoped token). GitOps Reverser **pushes** commits,
-> so a reused Secret's key or token must have **write** access on the repository — otherwise the
+> so a reused Secret's key or token must have **write** access on the repository; otherwise the
 > commits will fail to push.
 
 SSH host keys are resolved in priority order: the credentials Secret's own `known_hosts`, then
@@ -132,7 +132,7 @@ for data copied out of Argo's `argocd-ssh-known-hosts-cm`), then an install-leve
 ConfigMap in the controller's namespace (`--default-known-hosts-configmap`). If none yields a valid
 host key, SSH fails closed. Host-key rotation is an admin-owned declarative update; verify
 fingerprints out of band. The controller flag `--insecure-allow-missing-known-hosts` relaxes this for
-throwaway/dev clusters only — it permits SSH when **no** source provided any `known_hosts`; a
+throwaway/dev clusters only: it permits SSH when **no** source provided any `known_hosts`; a
 `known_hosts` that is present but unparseable is always a hard error.
 
 ### `GitProvider.spec.push`
@@ -173,7 +173,7 @@ For mirrored-resource commits, the author comes from the configured committer id
 service account. Snapshot/reconcile commits are operator-authored.
 
 When attribution IS enabled and no matching audit fact arrives, the commit is authored
-`unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` — **not** the
+`unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` instead of the
 committer. That distinction is the point: a committer-authored commit means attribution was never
 attempted, while the sentinel means it was attempted and did not resolve, which is worth investigating.
 Such commits also count under `author_kind="unresolved"` in `commits_total`.
@@ -237,7 +237,7 @@ spec:
 - `Username`
 - `GitTarget`
 
-`Username` is empty whenever no actor was named — both in configured-author mode and when
+`Username` is empty whenever no actor was named, both in configured-author mode and when
 attribution ran and did not resolve. The `attribution-unresolved` sentinel is scoped to the Git
 **author header** and deliberately does not reach templates or message bodies, so a template
 rendering `{{.Username}}` never has to special-case it. Use `git log` (or
@@ -392,7 +392,7 @@ policy admits no control-cluster namespace.
 
 Which namespaces are read *from the source cluster* is bounded by
 [`GitTarget.spec.allowedSourceNamespaces`](#bounding-which-source-namespaces-reach-a-target) when
-that target declares one, and by the source connection's Kubernetes RBAC in every case — the
+that target declares one, and by the source connection's Kubernetes RBAC in every case: the
 credential's own RBAC is always the hard maximum. A `WatchRule` may name a source namespace other
 than its own only when this provider also sets:
 
@@ -419,7 +419,7 @@ live source reachability and stream state.
 ### Creating and managing the `default` provider
 
 The operator **never creates a `ClusterProvider`**, and never re-creates one you delete. If a
-`GitTarget` references a provider that does not exist — including `default` — the target is held
+`GitTarget` references a provider that does not exist (including `default`), the target is held
 unready through the ordinary "provider not found" path. That is deliberate: a source cluster is a
 connection with credentials and an authorization policy, so it is yours to declare, review, and roll
 back like any other resource under GitOps.
@@ -429,7 +429,7 @@ There are two supported ways to get one, and both are fully declarative:
 - **Commit it yourself.** The object above is ordinary YAML. Put it in the repository that manages
   this install. This is the recommended path once you are past a first trial.
 - **Let the chart render it.** The chart can create and own a `ClusterProvider` named `default`,
-  including its `allowedNamespaces`, from a single value — see
+  including its `allowedNamespaces`, from a single value. See
   [charts/gitops-reverser/README.md](../charts/gitops-reverser/README.md). Turn that value off to
   manage the object yourself. Helm then deletes the provider it created on the next upgrade, so
   ownership never silently splits between Helm and you. Because a missing provider holds its targets
@@ -530,20 +530,20 @@ Use conditions for automation.
 A target removes a document from Git for one of two very different reasons, and `spec.prune.mode`
 controls them separately:
 
-- an **explicit source DELETE event** — the source cluster told the operator the resource is gone;
-- a **resync mark-and-sweep** — a snapshot taken when a watch stream starts or restarts did not
+- an **explicit source DELETE event**: the source cluster told the operator the resource is gone;
+- a **resync mark-and-sweep**: a snapshot taken when a watch stream starts or restarts did not
   contain a resource that Git still has a document for, so its absence is *inferred*.
 
 The second is only as trustworthy as the snapshot's **scope**. A snapshot the operator could not
 finish is not the risk: a failed list or watch blocks the stream and enqueues no resync at all, and a
-replay cut short before its initial-events bookmark enqueues nothing — so a source-cluster outage or
+replay cut short before its initial-events bookmark enqueues nothing, so a source-cluster outage or
 a revoked RBAC grant currently stops a sweep rather than shrinking one.
 
 The risk is a snapshot that is *complete* but gathered against the wrong scope: a watch rule narrower
 than you intended, version skew, or an older controller that does not understand a newer scope field.
 That snapshot is smaller than reality and indistinguishable from a converged one, and a sweep turns
-it into deleted manifests. `OnEvent` is the defence, and it also covers the outage case in depth —
-failing closed there is a property of how the gather works today, not a guarantee the API makes.
+it into deleted manifests. `OnEvent` is the defense, and it also covers the outage case in depth. Failing
+closed there is a property of how the gather works today, and not a guarantee the API makes.
 
 | Mode | Explicit source DELETE | Resync mark-and-sweep | Use it for |
 |---|---|---|---|
@@ -566,7 +566,7 @@ bad watch scope can delete manifests. Choose `Never` when the folder is an audit
 
 #### Seeing what was kept
 
-A retained document is invisible in Git by design — nothing is written, so a retaining mirror and a
+A retained document is invisible in Git by design: nothing is written, so a retaining mirror and a
 converged one look identical in the folder and in `git log`. Three signals report it instead, and
 none of them is a failure: retention is the configured outcome, so no condition goes `False` for it.
 
@@ -578,19 +578,19 @@ $ kubectl get gittarget acme -o jsonpath='{.status.retention}'
 - `status.retention.retainedDocuments` is how many managed documents a converged mirror would not
   hold. `0` means a resync ran and found nothing to retain; an **absent** `retention` block means no
   resync has reported yet, which is not the same thing. `mode` is the *effective* mode the count was
-  produced under — the only place a `GitTarget` that predates `spec.prune` shows one at all.
+  produced under, and the only place a `GitTarget` that predates `spec.prune` shows one at all.
 - A throttled log line names the target, its path, and the scope (one per target folder per 10
   minutes; the full detail is at `-v1`).
-- `gitopsreverser_prune_retained_documents_total`, labelled by `gittarget_namespace`,
+- `gitopsreverser_prune_retained_documents_total`, labeled by `gittarget_namespace`,
   `gittarget_name`, and `prune_mode`.
 
 `status.retention` covers the resync sweep only. Under `Never` a suppressed source DELETE is not
 counted, so a `Never` target can report `0` while still declining to mirror deletes.
 
-The count is refreshed when a resync runs, so it lags a change in the cluster until the next one —
-read `observedTime` before treating a `0` as live.
+The count is refreshed when a resync runs, so it lags a change in the cluster until the next one.
+Read `observedTime` before treating a `0` as live.
 
-`spec.prune` is mutable — unlike `providerRef`, `branch`, and `path` — so a target can be moved to
+`spec.prune` is mutable (unlike `providerRef`, `branch`, and `path`), so a target can be moved to
 `Always` once its watch scope is confirmed, without recreating it. Widening it to `Always` re-lists
 the target's watched scopes, so the cleanup runs on the edit instead of waiting for the next replay.
 Tightening it applies to the next write and leaves the streams alone, which is what makes it usable
@@ -600,35 +600,35 @@ as a stop button.
 
 Placement decides the file path for a resource that has **no document in Git yet**. Once a document
 exists, updates and deletes always edit it in place at its current location (found by manifest identity,
-not path), so changing placement never moves an existing file — it only affects resources created after
+not path), so changing placement never moves an existing file; it only affects resources created after
 the change.
 
 #### How a path is chosen (the resolution ladder)
 
 For each new resource the operator walks this order and stops at the first that produces a path:
 
-1. **`spec.placement.byType[<exact type>]`** — an explicit template for that resource's type, if you
+1. **`spec.placement.byType[<exact type>]`:** an explicit template for that resource's type, if you
    declared one.
-2. **`spec.placement.default`** — your explicit catch-all template, if you declared one.
-3. **Sibling inference** — follow the layout the repository already uses for resources like this one
+2. **`spec.placement.default`:** your explicit catch-all template, if you declared one.
+3. **Sibling inference:** follow the layout the repository already uses for resources like this one
    (described next).
-4. **Built-in canonical path** — `{namespace}/{group}/{resource}/{name}.yaml`: namespace first, the group
+4. **Built-in canonical path:** `{namespace}/{group}/{resource}/{name}.yaml`, namespace first, the group
    omitted for core resources, no version segment, `_cluster/` in place of the namespace for
    cluster-scoped resources (an illegal namespace name, so it can never clash with a real one), and a
    `.sops.yaml` suffix for sensitive resources.
 
-If you set **no** `spec.placement`, only steps 3 and 4 run — which is why pointing a target at an
+If you set **no** `spec.placement`, only steps 3 and 4 run, which is why pointing a target at an
 existing repository "just continues" that repo's conventions, and a brand-new empty repo gets the tidy
 canonical layout.
 
 #### Following the existing layout (sibling inference)
 
 This is the part that looks like magic but isn't: the operator never reverse-engineers a template. It
-reads the files already in the target and makes two **observed** decisions for the new resource — *which
-directory* (the nearest cohort of resources like it — same type, then same type in any namespace) and
+reads the files already in the target and makes two **observed** decisions for the new resource. *Which
+directory* (the nearest cohort of resources like it: same type, then same type in any namespace) and
 *one-file-or-bundle* (does that cohort keep one resource per file, or share a multi-document file?).
 
-Worked example — a target at `spec.path: clusters/prod` already looks like:
+Worked example. A target at `spec.path: clusters/prod` already looks like:
 
 ```text
 clusters/prod/
@@ -642,7 +642,7 @@ clusters/prod/
   encrypted cohort is `team-a/secrets/` (one-per-file) → a new encrypted file
   **`team-a/secrets/api-token.sops.yaml`**.
 - A new ConfigMap in a **brand-new namespace** `billing`: the ConfigMap cohort is still the `all.yaml`
-  bundle, which is namespace-agnostic, so it is **appended to `all.yaml`** too — the new namespace needs
+  bundle, which is namespace-agnostic, so it is **appended to `all.yaml`** too, and the new namespace needs
   no new segment.
 
 The boundaries that keep it predictable:
@@ -652,12 +652,12 @@ The boundaries that keep it predictable:
 - A resource in a **namespace the target has never written before** only joins an existing cohort when
   that cohort has *proven* it is namespace-agnostic by already holding more than one namespace. One
   directory holding one namespace looks identical to a per-namespace layout whose second namespace has
-  simply not arrived yet, so it is not treated as shared — the resource takes the canonical path, which
+  not arrived yet, so it is not treated as shared. The resource takes the canonical path, which
   carries its own namespace segment. Guessing here would file one namespace's objects under another's
   folder.
 - When a type genuinely lives in two layouts at once, the tie-break is deterministic (the cohort with the
-  most members wins, then the lexically smallest path) — never a coin-flip.
-- Inference can only **continue** a layout that already exists. It cannot invent a greenfield one — "I
+  most members wins, then the lexically smallest path), and it is never a coin-flip.
+- Inference can only **continue** a layout that already exists. It cannot invent a greenfield one. "I
   want all ConfigMaps bundled even though none exist yet" is a job for `byType` below.
 
 The full ladder, tie-break rules, and edge cases are in
@@ -683,7 +683,7 @@ spec:
 - **`default`** is the template for any type with no `byType` entry. Omit it to fall through to sibling
   inference and then the built-in path.
 - Templates are small **brace-variable path templates** (see the table below), validated statically as
-  part of the `Validated` gate — an unknown variable, a path that escapes `spec.path` (a leading `/` or
+  part of the `Validated` gate: an unknown variable, a path that escapes `spec.path` (a leading `/` or
   `..`), or a non-`.yaml`/`.yml` suffix fails the target *before* any write.
 
 #### Template variables
@@ -702,17 +702,17 @@ named `api` in namespace `team-a`:
 | `{group}` | API group; **empty** for core resources | `apps` (a ConfigMap → empty) |
 | `{groupPath}` | the API group as a path segment; equivalent to `{group}` today (the empty core-group segment is dropped either way) | `apps` |
 | `{version}` | API version | `v1` |
-| `{apiVersion}` | manifest `apiVersion` — `group/version`, or just `version` for core | `apps/v1` (a ConfigMap → `v1`) |
+| `{apiVersion}` | manifest `apiVersion`: `group/version`, or just `version` for core | `apps/v1` (a ConfigMap → `v1`) |
 | `{kind}` | manifest kind | `Deployment` |
-| `{scope}` | `namespaced` or `cluster` (a readable label — not a namespace-position value) | `namespaced` |
+| `{scope}` | `namespaced` or `cluster` (a readable label, not a namespace-position value) | `namespaced` |
 | `{sensitiveSuffix}` | `.sops.yaml` for a sensitive resource, `.yaml` otherwise | `.yaml` (a Secret → `.sops.yaml`) |
 
-> **`{namespace}` vs `{namespaceOrCluster}` — the one to get right.** For a cluster-scoped resource
+> **`{namespace}` vs `{namespaceOrCluster}`, the one to get right.** For a cluster-scoped resource
 > `{namespace}` is **empty**, so its whole path segment vanishes: a template `{namespace}/{resource}/{name}.yaml`
 > renders `clusterroles/admin.yaml` for a ClusterRole (no scope folder at all). Use `{namespaceOrCluster}`
-> when a single template must also place cluster-scoped resources — it keeps a stable `_cluster/` segment
+> when a single template must also place cluster-scoped resources; it keeps a stable `_cluster/` segment
 > (`_cluster/clusterroles/admin.yaml`) so namespaced and cluster-scoped resources stay cleanly separated.
-> `{scope}` is a *descriptor* (`cluster`/`namespaced`), not a substitute — don't use it as the folder for
+> `{scope}` is a *descriptor* (`cluster`/`namespaced`), not a substitute, so don't use it as the folder for
 > cluster resources.
 
 #### Sensitivity is a write-safety rule, not a placement setting
@@ -721,12 +721,12 @@ Sensitivity is enforced by the operator whatever path is chosen. A `Secret` (and
 sensitive type) is always written encrypted, is never appended to an existing file, and is never
 co-mingled with a plaintext document. Two consequences for your templates:
 
-- A `byType` route for a sensitive type must be **identity-complete** — it must contain `{name}` and a
-  scope such as `{namespace}` — so two of them can never collide onto one file.
+- A `byType` route for a sensitive type must be **identity-complete**: it must contain `{name}` and a
+  scope such as `{namespace}`, so two of them can never collide onto one file.
 - A **bundling `default`** that is not identity-complete (e.g. `"all.yaml"`) is rejected unless every
   sensitive type has its own identity-complete `byType` entry, so a Secret can never fall through into a
   shared file. If an operator-configured sensitive type still reaches such a path at write time, that
-  resource is **skipped fail-safe** — logged and counted in the resync summary (`placementSkipped`) —
+  resource is **skipped fail-safe** (logged and counted in the resync summary as `placementSkipped`)
   rather than written unsafely. It is not surfaced as a dedicated status condition today.
 
 ### Additional sensitive resources
@@ -753,9 +753,9 @@ A target path may contain `kustomization.yaml` files. The operator retains them 
 - **`namespace:` + `resources:`/`bases`** (local files and directory bases): a namespace-less
   resource file inherits its namespace from the kustomization that references it, and
   `metadata.namespace` is kept out of the file on write.
-- **`images:` and `replicas:` overrides**: a live change *produced by* an override entry — an image
+- **`images:` and `replicas:` overrides**: a live change *produced by* an override entry (an image
   tag, name, or digest pinned by `images:`, or a replica count pinned by `replicas:` (including
-  `kubectl scale`) — is written back **to that entry**, preserving comments, and the source manifest
+  `kubectl scale`) is written back **to that entry**, preserving comments, and the source manifest
   keeps its bytes. Only fields the entry already declares are updated; the operator never adds or
   removes entries. Note that one entry is a shared knob, exactly as in kustomize itself: updating it
   affects every resource in the build whose image matches.
@@ -769,7 +769,7 @@ Two kustomize shapes beyond that subset are **supported without being authored**
   by reading that base as read-only context; writes stay inside `spec.path`, and an image/replica
   edit lands on the overlay's own entry.
 
-Everything else outside the modelled subset **refuses the whole target path before anything is
+Everything else outside the modeled subset **refuses the whole target path before anything is
 written**: inline or JSON6902 patches and the deprecated `patchesStrategicMerge`/`patchesJson6902`
 spellings, generators, `components`, Helm fields, `replacements`, `transformers`,
 `namePrefix`/`nameSuffix`, remote bases, and `images:`/`replicas:` values that do not parse (those
@@ -778,9 +778,9 @@ would fail `kustomize build` too). A refusal is loud: the target reports `GitPat
 
 Two situations fall back to plain in-place editing of the source manifest instead of refusing:
 a resource file reachable from more than one render root with differing override chains
-(ambiguous — the operator will not guess which chain governs), and a live change an entry cannot
+(ambiguous, because the operator will not guess which chain governs), and a live change an entry cannot
 express (for example a removed digest, or two containers demanding different values from one
-entry). These fallbacks are recorded as store diagnostics — visible in the analyzer CLI and, for
+entry). These fallbacks are recorded as store diagnostics, visible in the analyzer CLI and, for
 the running operator, in the logs at debug verbosity (`manifest store diagnostic`).
 
 For design details and the exact boundary, see
@@ -789,7 +789,7 @@ For design details and the exact boundary, see
 ## `WatchRule`
 
 `WatchRule` is the **namespaced** watcher: it selects namespaced resources on its `GitTarget`'s
-source cluster and writes them to that `GitTarget`. Scope is carried by the rule kind — a `WatchRule`
+source cluster and writes them to that `GitTarget`. Scope is carried by the rule kind: a `WatchRule`
 never selects cluster-scoped types, and a `ClusterWatchRule` never selects namespaced ones.
 
 Status uses `ResourcesResolved` for selector resolution, `StreamsRunning` for source-watch readiness,
@@ -807,17 +807,17 @@ The important fields are:
 ### Watching a different source namespace
 
 Set `spec.rules[].sourceNamespace` to mirror a namespace other than the one the `WatchRule` lives in
-— the case a shared config plane needs, where a tenant's configuration namespace and their source
+which is the case a shared config plane needs, where a tenant's configuration namespace and their source
 namespace cannot share a name. It sits on the rule item, beside the resource selector it applies to,
 so one `WatchRule` can follow different resource types in different namespaces.
 
 | `rules[].sourceNamespace` | Meaning |
 |---|---|
-| omitted | the `WatchRule`'s own namespace — legacy behavior, byte for byte |
+| omitted | the `WatchRule`'s own namespace: legacy behavior, byte for byte |
 | an exact name | one source namespace |
 | `"*"` | every namespace `GitTarget.spec.allowedSourceNamespaces` admits, resolved live |
 
-Naming anything other than the rule's own namespace — **including `"*"`** — is authorized by three
+Naming anything other than the rule's own namespace, **including `"*"`**, is authorized by three
 things, all of which must hold:
 
 1. the `GitTarget`'s namespace is admitted by its `ClusterProvider`'s `allowedNamespaces`;
@@ -843,12 +843,12 @@ spec:
 
 `"*"` never means "every namespace that exists": it expands to exactly what the target's policy
 admits, so a target that declares no policy **denies** it. Each `"*"` item opens one watch stream per
-(matched type × admitted namespace) — deliberate, because it keeps every replay scoped to a single
+(matched type × admitted namespace). That is deliberate, because it keeps every replay scoped to a single
 namespace, but a real fan-out on a broad policy.
 
 The outcome for all items is aggregated into one `SourceNamespaceAuthorized` condition, also shown by
-`kubectl get watchrules -o wide`. A **denied** explicit name refuses the whole `WatchRule` —
-`Ready=False`, `Stalled=True`, no streams — rather than silently trimming that item and mirroring
+`kubectl get watchrules -o wide`. A **denied** explicit name refuses the whole `WatchRule`
+(`Ready=False`, `Stalled=True`, no streams) rather than silently trimming that item and mirroring
 part of what you asked for; the message names the failing item by index and by what it selects. A
 `"*"` that currently admits nothing is not a refusal: the rule stays `Ready` with reason
 `NoAdmittedSourceNamespaces`, so a no-op rule is visible instead of looking healthy. Authorization is
@@ -873,18 +873,18 @@ spec:
 ```
 
 `names` and `selector` are ORed, and the selector matches labels on `Namespace`s in the **source**
-cluster — so evaluating it needs `namespaces` `get`/`list`/`watch` for that cluster's credential.
+cluster, so evaluating it needs `namespaces` `get`/`list`/`watch` for that cluster's credential.
 Exact `names` keep working without that access, which is a deliberate degradation path.
 
 It is also what `sourceNamespace: "*"` resolves *through*:
 
 | Policy on the `GitTarget` | `sourceNamespace: "*"` resolves to |
 |---|---|
-| undeclared | **denied** — deny-by-default; the message names the fix |
+| undeclared | **denied**, deny-by-default; the message names the fix |
 | `{}` (declared, empty) | nothing |
 | `names: [a, b]` | exactly `a` and `b`, statically, with no source-cluster access |
 | `selector: {matchLabels: …}` | every source namespace carrying those labels, live |
-| `selector: {}` | **every source namespace** — the deliberate "all namespaces" declaration |
+| `selector: {}` | **every source namespace**: the deliberate "all namespaces" declaration |
 
 That last row is how a destination owner says *every* source namespace, and it stays self-updating as
 namespaces come and go. It is the replacement for the removed cluster-wide namespaced
@@ -896,7 +896,7 @@ Two things about this field are easy to get wrong:
   A declared-but-empty policy (`{}`) admits **nothing**.
 - **A declared policy is exhaustive, with no self-namespace exception.** It must admit every namespace
   that may reach the target, *including* a co-resident legacy `WatchRule`'s own namespace. Adding a
-  policy for one override therefore denies those rules until their namespace is admitted — loudly, with
+  policy for one override therefore denies those rules until their namespace is admitted, loudly and with
   a message naming the fix, but it will happen.
 
 A namespace allow-list cannot partition **cluster-scoped** objects, which have no namespace. A
@@ -968,11 +968,11 @@ spec:
 
 Cluster-scoped objects have no namespace, so `GitTarget.spec.allowedSourceNamespaces` does not bound
 a `ClusterWatchRule` at all: it is intentionally cluster-global, limited only by its source
-credential's Kubernetes RBAC. Use this sparingly. It is the more powerful option and usually belongs
+credential's Kubernetes RBAC. Use this sparingly. It grants the widest reach of any rule kind and usually belongs
 to cluster-admin-managed setups.
 
 > `spec.rules[].scope` is deprecated and accepts only `Cluster` (its default). Re-applying a
-> pre-release manifest that still says `scope: Namespaced` is **rejected** — see
+> pre-release manifest that still says `scope: Namespaced` is **rejected**. See
 > [UPGRADING.md](UPGRADING.md) for the conversion.
 
 ## `CommitRequest`
@@ -986,7 +986,7 @@ The important fields are:
 - `spec.targetRef.name`: target whose open window should be finalized
 - `spec.message`: optional verbatim commit message
 - `spec.closeDelaySeconds`: optional 0-300 second delay before the open window is closed, after the
-  request author is known — an extra collect window
+  request author is known, an extra collect window
 
 Example:
 
@@ -1011,7 +1011,7 @@ Progress and outcome are reported through kstatus-compatible **conditions** (no 
 
 - **Ready** (summary): `True` once the request reached a non-error terminal outcome. The `Ready`
   condition's `reason` says which: `Committed` (a commit was pushed; `status.branch`/`status.sha` set),
-  or a benign no-commit — `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`. A failed finalize is
+  or a benign no-commit: `NoWindowInGrace`, `WindowMismatch`, or `AlreadyPresent`. A failed finalize is
   `Ready=False` with reason `FinalizeFailed`.
 - **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` while the
   request is finalizing or waiting through `closeDelaySeconds`; `Stalled=True` when the finalize failed
@@ -1027,7 +1027,8 @@ Progress and outcome are reported through kstatus-compatible **conditions** (no 
 ## Audit ingestion settings
 
 Object state comes from Kubernetes **watch**, not from audit. Audit is an optional attribution lookup:
-kube-apiserver posts audit events to a named path, `/audit-webhook/<cluster-provider-name>`, and the
+kube-apiserver posts audit events to a named path, `/audit-webhook/<audit-route>`, where the route is
+`ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name. The
 operator extracts a minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID,
 status, timestamps) into a Redis attribution index keyed for the join. A resolver attaches the commit
 author to each watch event by matching a fact (by resourceVersion/UID) within a bounded grace window.
@@ -1071,7 +1072,7 @@ its events started flowing pick them up.
 The second row is a per-event rejection rather than a per-request one on purpose. A shared stream is
 heterogeneous by definition, so failing the whole batch would discard events that routed correctly and
 leave the apiserver retrying a batch that can never succeed. Rejected events are counted and logged, so
-a producer that is not stamping the annotation is visible rather than silent — if that count rises,
+a producer that is not stamping the annotation is visible rather than silent. If that count rises,
 point the producer at `/audit-webhook/<audit-route>` instead.
 
 Use an annotation that the producing control plane sets consistently as source metadata. This is
@@ -1081,7 +1082,7 @@ partition, so a user from one logical cluster can never be credited for a matchi
 Valkey/Redis is **optional in configured-author mode**: when `--redis-addr` is set, watch resume cursors are
 stored so restarts pick up where they left off; when left empty, watches cold-replay from scratch on
 restart instead. When author attribution is enabled (`--author-attribution=true`), a non-empty
-`--redis-addr` is required — attribution facts and resume cursors both use the same connection. The Helm
+`--redis-addr` is required: attribution facts and resume cursors both use the same connection. The Helm
 chart defaults to **configured-author** (`attribution.enabled: false`): the audit webhook is unused and every
 mirrored-resource commit is authored by the configured committer.
 
@@ -1108,7 +1109,7 @@ When attribution is enabled, these flags tune the join:
   apiserver's own `--audit-webhook-batch-max-wait` delays every fact by up to that much, so a grace at or
   below it will lose actors systematically.
 
-A matched actor is always named by its own username — humans and service accounts alike (e.g.
+A matched actor is always named by its own username, humans and service accounts alike (e.g.
 `system:serviceaccount:flux-system:kustomize-controller`); there is no option to collapse service
 accounts to the committer.
 

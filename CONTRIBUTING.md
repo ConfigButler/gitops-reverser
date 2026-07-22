@@ -1,6 +1,6 @@
 # Contributing to GitOps Reverser
 
-Contributions are welcome — code, docs, bug reports, and ideas.
+Contributions are welcome: code, docs, bug reports, and ideas.
 
 For security-sensitive reports, please use the private reporting path in [SECURITY.md](SECURITY.md)
 instead of opening a public issue.
@@ -20,9 +20,10 @@ covers `.env`.
 
 ## Defaults values
 
-You can access common services as part of the e2e cluster
-* gitea: http://localhost:13000/ (giteaadmin/giteapassword123)
-* redis://default:e2e-valkey-password@127.0.0.1:16379/0
+You can access common services as part of the e2e cluster:
+
+- gitea: <http://localhost:13000/> (giteaadmin/giteapassword123)
+- redis://default:e2e-valkey-password@127.0.0.1:16379/0
 
 ## Before submitting a PR
 
@@ -41,6 +42,10 @@ task test      # must pass
 task test-e2e  # must pass (requires Docker running)
 ```
 
+Editing markdown? Follow [`docs/style-guide.md`](docs/style-guide.md). A docs-only change runs
+`task lint-docs` instead of the full suite; `git add` new files first so their links resolve.
+See [Documentation checks](#documentation-checks) for what that runs.
+
 ## Unit tests
 
 ```bash
@@ -56,7 +61,7 @@ go tool cover -html=cover.out
 
 `task test` also enforces a coverage ratchet (`task cover-check`): it fails if total coverage drops
 more than ~0.5% below `.coverage-baseline`, a committed high-water mark. When your change improves
-coverage the baseline **auto-raises** — commit the updated `.coverage-baseline` alongside your
+coverage the baseline **auto-raises**, so commit the updated `.coverage-baseline` alongside your
 change so the floor advances. On PRs, [Codecov](https://codecov.io/gh/ConfigButler/gitops-reverser)
 reports the merged unit + e2e coverage.
 
@@ -69,9 +74,9 @@ go test ./internal/git -run TestName -v
 
 ## Dynamic analysis (fuzzing)
 
-The project fuzzes the code that parses untrusted or semi-structured input — manifest
-editing (`internal/git/manifestedit`) and audit/admission request decoding
-(`internal/webhook`) — so hostile input can never crash the controller. `task test`
+The project fuzzes the code that parses untrusted or semi-structured input (manifest
+editing in `internal/git/manifestedit`, and audit/admission request decoding in
+`internal/webhook`) so hostile input can never crash the controller. `task test`
 already replays every fuzz seed and committed crash reproducer as ordinary regression
 cases, so you get that coverage for free on every run.
 
@@ -94,7 +99,7 @@ task test-e2e
 ```
 
 E2E runs against a real k3d cluster with Gitea and Prometheus. The cluster is
-**intentionally not torn down on failure** — this makes debugging easier and reruns faster.
+**intentionally not torn down on failure**, which makes debugging easier and reruns faster.
 Tests are written to append to existing state rather than require a clean slate.
 
 For deeper debugging, see [`test/e2e/E2E_DEBUGGING.md`](test/e2e/E2E_DEBUGGING.md).
@@ -136,10 +141,58 @@ The design note for the playground flow lives in
 [`docs/finished/tilt-playground-plan.md`](docs/finished/tilt-playground-plan.md).
 
 **Troubleshooting:**
+
 - envtest errors: run `task setup-envtest` then retry
 - Docker errors: ensure the Docker daemon is running
 - Permission issues: see [`docs/ci/go-module-permissions.md`](docs/ci/go-module-permissions.md)
 - Windows: see [`docs/ci/windows-devcontainer.md`](docs/ci/windows-devcontainer.md)
+
+## Documentation checks
+
+`task lint-docs` runs all three, and `task lint` includes it. Each owns one thing and none of them
+overlaps with the others:
+
+| Task | Tool | Checks |
+|---|---|---|
+| `task lint-doc-links` | `hack/doccheck` | Every reference resolves, including repo-relative doc paths cited inside Go comments, YAML, and shell. No off-the-shelf tool reads those. |
+| `task lint-markdown` | markdownlint-cli2 | Structure: fences, headings, lists, blank lines, bullet style. |
+| `task lint-prose` | Vale | English against [`docs/style-guide.md`](docs/style-guide.md): em dashes, American spelling, product names, words to cut. |
+
+```bash
+task lint-docs                     # all three, on the gated files
+task lint-markdown-fix             # apply the safe mechanical fixes
+task lint-markdown DOCS_SCOPE=all  # the whole tree, to see the backlog
+```
+
+**Structure and prose are gated on the files [`.docs-lint-scope`](.docs-lint-scope) lists, not the
+whole tree.** That is a rollout position: 102 of 174 files fail markdownlint and 148 of 174 fail
+Vale, almost all of the latter on em dashes, and [`docs/style-guide.md`](docs/style-guide.md) says
+that cleanup must not land as one sweeping commit. The gate starts small and the list grows.
+
+**To add a file to the gate**, clean it and add its path to that file:
+
+```bash
+markdownlint-cli2 docs/some-file.md   # what it would cost
+vale docs/some-file.md
+task lint-markdown-fix DOCS_SCOPE=all # the mechanical half, whole tree
+```
+
+Editing a doc that is not on the list is not blocked, so an unlisted file can still drift. Run the
+two commands above on anything you touch even when nothing forces you to.
+
+**Reference checking is not staged this way.** `task lint-doc-links` always covers every tracked
+markdown, Go, YAML, and shell file, so a moved document breaks the build wherever it is cited.
+
+Only Vale errors fail the build. Warnings and suggestions print and do not block, because
+[`.vale.ini`](.vale.ini) reserves the error level for rules a machine can decide alone. There is no
+autofix for prose, on purpose. `task lint-markdown-fix` does not clear everything either: over the
+whole tree it fixes about two thirds and leaves the rest for a human, led by long lines, missing
+fence languages, and bold text used as a heading.
+
+To add a word, a preferred term, or an exception, edit the rule under `.vale/styles/HouseStyle/`;
+each file explains what it costs, measured against the real corpus. To suppress one genuinely
+exceptional finding, use `<!-- vale HouseStyle.RuleName = NO -->` around the smallest span that
+needs it, never a repository-wide exclusion.
 
 ## Commit format
 
@@ -165,17 +218,17 @@ Repo-specific guidance for AI coding assistants lives in [AGENTS.md](AGENTS.md).
 
 1. Branch from `main`
 2. Make changes, follow the validation steps above
-3. Open a PR against `main` — CI runs automatically
+3. Open a PR against `main`; CI runs automatically
 
 ### Pull requests from forks
 
 External contributions come from a fork, and GitHub gives fork PRs a **read-only**
-`GITHUB_TOKEN` — it cannot push to the org's packages and has no access to repository
+`GITHUB_TOKEN`: it cannot push to the org's packages and has no access to repository
 secrets. CI adapts automatically so that fork PRs still run the **full** pipeline
 (lint, unit, e2e, image scan) without needing any write access:
 
 - **Images are built but never pushed.** The CI base container and the project image
-  are built from your PR's own code in the PR run — a PR that changes
+  are built from your PR's own code in the PR run, so a PR that changes
   `.devcontainer/Dockerfile` is validated against its own toolchain.
 - **Images move between jobs as artifacts, not via the registry.** They are
   `docker save`d, uploaded, and later jobs `docker load` them; the e2e job imports the
@@ -187,7 +240,7 @@ secrets. CI adapts automatically so that fork PRs still run the **full** pipelin
 Nothing is published from a PR regardless of origin: image and chart publishing only
 happen on push to `main` via [release.yml](.github/workflows/release.yml), after the
 full pipeline passed. If this is your first contribution, a maintainer needs to
-approve the workflow run before it starts — that's a GitHub safety default, not a
+approve the workflow run before it starts. That is a GitHub safety default rather than a
 distrust of your patch.
 
 The full design (trust zones, signing, verification) is described in

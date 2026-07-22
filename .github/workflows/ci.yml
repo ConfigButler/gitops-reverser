@@ -112,6 +112,8 @@ jobs:
             golangci-lint version
             actionlint --version
             hadolint --version
+            markdownlint-cli2 --version
+            vale --version
             controller-gen --version
             k3d version
             docker --version
@@ -387,6 +389,8 @@ jobs:
             flux-operator version --client
             golangci-lint version
             actionlint --version
+            markdownlint-cli2 --version
+            vale --version
             k3d version
             task --version
             bash -ic 'complete -p task >/dev/null'
@@ -522,19 +526,27 @@ jobs:
                 fi
               done
 
-              # lint-docs is exempt on purpose. It carries no `sources:` (see
-              # Taskfile-build.yml), because its real input is "every tracked .md, .go,
-              # .yml and .sh" — which Task cannot express: an unrooted `**` glob walks
-              # external-sources/ and has OOMed the host, and a hand-maintained file list
-              # silently drifts out of sync with what doccheck scans. A stale "up to date"
-              # there means the check never runs, so it always runs. It costs ~0.2s.
+              # The four docs tasks are exempt on purpose, and all for one reason: none
+              # of them carries `sources:` (see Taskfile-build.yml). Their real input is
+              # "every tracked .md" (plus .go, .yml and .sh for lint-doc-links) — which
+              # Task cannot express: an unrooted `**` glob walks external-sources/ and has
+              # OOMed the host, and a hand-maintained file list silently drifts out of
+              # sync with what the checkers scan. A stale "up to date" means the check
+              # never runs. All three tools together cost a few seconds over the whole
+              # tree, so they always run. lint-docs itself is the aggregate and has no
+              # cmds of its own.
+              #
+              # Adding a task to `task lint` without `sources:` and without adding it
+              # here fails this step. That is deliberate: it forces the choice to be made
+              # rather than silently skipped.
               #
               # awk, not `grep -qv`: the CI image ships ugrep as grep, whose -q -v returns
               # 1 even when -c reports a selected line. That would make this assertion
               # silently pass whatever it was handed.
-              uncached="$(awk "/^task: \\[/ && !/^task: \\[lint-docs\\]/" "${cache_log}")"
+              exempt="lint-docs|lint-doc-links|lint-markdown|lint-prose"
+              uncached="$(awk -v ex="^task: \\\\[(${exempt})\\\\]" "/^task: \\[/ && \$0 !~ ex" "${cache_log}")"
               if [ -n "${uncached}" ]; then
-                echo "Expected second task lint dry-run to be fully cached apart from lint-docs, but these would run:" >&2
+                echo "Expected second task lint dry-run to be fully cached apart from the docs tasks, but these would run:" >&2
                 printf "%s\n" "${uncached}" >&2
                 exit 1
               fi
