@@ -568,26 +568,6 @@ func TestAttributionIndex_RVOnlyHatchIsClusterScoped(t *testing.T) {
 	require.Equal(t, "bob", us.Fact.Author, "same RV in another cluster must not leak across")
 }
 
-// TestAttributionIndex_PurgeClusterFacts checks the delete-on-provider purge removes exactly one
-// cluster's facts and leaves the others intact.
-func TestAttributionIndex_PurgeClusterFacts(t *testing.T) {
-	idx := newTestAttributionIndex(t)
-	ctx := context.Background()
-
-	require.NoError(t, idx.RecordFact(ctx, "prod-eu-1", mutationEvent("update", "uid-1", "101", "alice")))
-	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-2", "1", "bob")))
-
-	removed, err := idx.PurgeClusterFacts(ctx, "prod-eu-1")
-	require.NoError(t, err)
-	require.Positive(t, removed)
-
-	_, ok := idx.LookupAuthor(ctx, "prod-eu-1", appsDeploymentGVR(), "uid-1", "101", true)
-	require.False(t, ok, "purged cluster's facts are gone")
-	other, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-2", "1", true)
-	require.True(t, ok, "another cluster's facts are untouched")
-	require.Equal(t, "bob", other.Author)
-}
-
 // TestAttributionIndex_SingleProviderMatchesBareInstall proves a single-(default)-provider install
 // round-trips correctly: what RecordFact writes under "default" is exactly what a "default" read
 // joins, so a bare single-cluster install behaves as before the cluster dimension existed.
@@ -603,19 +583,19 @@ func TestAttributionIndex_SingleProviderMatchesBareInstall(t *testing.T) {
 func TestAttributionIndex_FactKeyReadableFormat(t *testing.T) {
 	idx := newTestAttributionIndex(t)
 
-	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:default:apps/deployments:object:uid-1:101",
+	require.Equal(t, "gitops-reverser:author:v1:audit:route:default:apps/deployments:object:uid-1:101",
 		idx.factKeyExact("default", "apps/deployments", "uid-1", "101"))
-	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:default:apps/deployments:object:uid-1:last",
+	require.Equal(t, "gitops-reverser:author:v1:audit:route:default:apps/deployments:object:uid-1:last",
 		idx.factKeyLast("default", "apps/deployments", "uid-1"))
-	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:default:apps/deployments:rv:101",
+	require.Equal(t, "gitops-reverser:author:v1:audit:route:default:apps/deployments:rv:101",
 		idx.factKeyRV("default", "apps/deployments", "101"))
 
 	// A remote provider keys under its own name, so its facts never collide with the local ones.
-	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:prod-eu-1:apps/deployments:object:uid-1:101",
+	require.Equal(t, "gitops-reverser:author:v1:audit:route:prod-eu-1:apps/deployments:object:uid-1:101",
 		idx.factKeyExact("prod-eu-1", "apps/deployments", "uid-1", "101"))
 
 	// The core group drops the group segment.
-	require.Equal(t, "gitops-reverser:author:v1:audit:cluster:default:configmaps:object:uid-2:last",
+	require.Equal(t, "gitops-reverser:author:v1:audit:route:default:configmaps:object:uid-2:last",
 		idx.factKeyLast("default", "configmaps", "uid-2"))
 }
 
@@ -635,4 +615,86 @@ func TestRedisStore_WatchCursorKeyReadableFormat(t *testing.T) {
 func TestNewRedisStore_RequiresAddr(t *testing.T) {
 	_, err := NewRedisStore(RedisStoreConfig{})
 	require.Error(t, err)
+}
+
+// TestAttributionIndex_SharedAuditRouteJoinsAcrossProviders is the reported bug at the keyspace
+// layer. An API server has one audit webhook backend and posts under ONE route, so a fact recorded
+// on that route must be readable by every ClusterProvider that declares it, whatever those
+// providers are named. Before the route existed, each provider read under its own name and only the
+// routed one ever matched.
+func TestAttributionIndex_SharedAuditRouteJoinsAcrossProviders(t *testing.T) {
+	idx := newTestAttributionIndex(t)
+	ctx := context.Background()
+
+	// The local API server posts to /audit-webhook/default, so the fact lands on that route only.
+	require.NoError(t, idx.RecordFact(ctx, "default", mutationEvent("update", "uid-1", "101", "alice")))
+
+	// A dedicated in-cluster provider named srcns-delegating declares auditRoute: default, so its
+	// GitTargets read the same partition and resolve the same author.
+	fact, ok := idx.LookupAuthor(ctx, "default", appsDeploymentGVR(), "uid-1", "101", true)
+	require.True(t, ok)
+	require.Equal(t, "alice", fact.Author)
+
+	// A provider that did NOT declare the route reads its own name and finds nothing. This is the
+	// exact failure the bug report measured, kept as a test so the fix cannot silently regress into
+	// "every route resolves everything".
+	_, ok = idx.LookupAuthor(ctx, "srcns-delegating", appsDeploymentGVR(), "uid-1", "101", true)
+	require.False(t, ok, "a route nobody wrote to must miss, or the partition means nothing")
+}
+
+// TestAttributionIndex_WriteFactKeysByFactShape pins which keys each fact shape writes, which is
+// where the v3 schema's §5 escape hatch lives. The rules are not symmetric and the asymmetry is
+// deliberate: a UID-bearing fact's rv-only key would be DEAD, because the watch side always carries
+// a UID and resolves via object:<uid>:… first, so writing one would be a key nobody ever reads.
+func TestAttributionIndex_WriteFactKeysByFactShape(t *testing.T) {
+	const route, gr = "prod-eu-1", "apps/deployments"
+	raw := []byte(`{"author":"alice"}`)
+
+	tests := []struct {
+		name      string
+		uid, rv   string
+		wantWrote bool
+	}{
+		{
+			name: "uid and rv write the immutable exact key and the last pointer",
+			uid:  "uid-1", rv: "101", wantWrote: true,
+		},
+		{
+			name: "uid without rv writes only the last pointer",
+			uid:  "uid-1", wantWrote: true,
+		},
+		{
+			name: "rv without uid writes only the rv-only hatch",
+			rv:   "101", wantWrote: true,
+		},
+		{
+			name: "neither uid nor rv writes nothing at all",
+			// An event that carries no joinable identity cannot ever be matched, so recording it
+			// would leave a key that only expires. Reporting wrote=false also keeps the "written"
+			// fact-event counter honest.
+			wantWrote: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx, mr := newTestAttributionIndexWithRedis(t)
+			ctx := context.Background()
+
+			wrote, err := idx.writeFactKeys(ctx, route, gr, tt.uid, tt.rv, raw)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantWrote, wrote)
+
+			exists := func(key string) bool {
+				_, getErr := mr.Get(key)
+				return getErr == nil
+			}
+			require.Equal(t, tt.uid != "" && tt.rv != "", exists(idx.factKeyExact(route, gr, tt.uid, tt.rv)),
+				"the exact key needs both a uid and the rv that write produced")
+			require.Equal(t, tt.uid != "", exists(idx.factKeyLast(route, gr, tt.uid)),
+				"the last-writer pointer is keyed by uid alone")
+			require.Equal(t, tt.uid == "" && tt.rv != "", exists(idx.factKeyRV(route, gr, tt.rv)),
+				"the rv-only hatch exists only for a fact that has no uid")
+		})
+	}
 }

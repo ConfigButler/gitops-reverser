@@ -219,6 +219,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			ctx,
 			gitDest,
 			target.SourceCluster(),
+			r.auditRouteFor(ctx, &target),
 			target.EffectivePruneMode(),
 			gitPathWasRefused,
 		); declareErr != nil {

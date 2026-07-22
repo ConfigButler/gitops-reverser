@@ -11,7 +11,7 @@ clusters:
   cluster:
     # Audit routes are NAMED: this cluster's source identity is the "default" ClusterProvider the
     # install creates. The bare /audit-webhook is the shared, annotation-routed endpoint and is
-    # rejected with 400 unless --author-attribution-cluster-annotation-key is set.
+    # rejected with 400 unless --author-attribution-audit-route-annotation-key is set.
     server: https://127.0.0.1:30444/audit-webhook/default
     insecure-skip-tls-verify: true
 contexts:

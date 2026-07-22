@@ -4,6 +4,7 @@ package watch
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -36,7 +37,7 @@ type AttributionLookup interface {
 	// (also consult the last-writer-wins /last pointer).
 	LookupAuthorResolution(
 		ctx context.Context,
-		providerName string,
+		auditRoute string,
 		gvr schema.GroupVersionResource,
 		uid k8stypes.UID,
 		rv string,
@@ -84,7 +85,7 @@ type AuthorResolver interface {
 	// lookup. cmd/main.go:258 only builds one with a non-nil index.
 	ResolveAuthor(
 		ctx context.Context,
-		providerName string,
+		auditRoute string,
 		gvr schema.GroupVersionResource,
 		uid k8stypes.UID,
 		rv string,
@@ -92,10 +93,56 @@ type AuthorResolver interface {
 	) (git.UserInfo, git.AttributionOutcome)
 }
 
+// attributionUnresolvedWarnThreshold is how many consecutive unresolved events one audit route may
+// produce, having never resolved a single one, before the resolver says so. It is not 1 because a
+// lone miss is ordinary: an audit batch can arrive after the grace window under load. A run of them
+// with nothing ever matched is the signature of a route nobody writes to, which is exactly the
+// misconfiguration that used to be silent.
+const attributionUnresolvedWarnThreshold = 5
+
+// routeAttributionHealth tracks, per audit route, whether attribution has ever resolved and how many
+// events have gone unresolved since. It exists to make one specific misconfiguration loud: a
+// ClusterProvider whose spec.attribution.auditRoute names a route no API server posts under reads a
+// partition nothing writes, so every commit is authored "unresolved" with no error, no condition,
+// and no failed reconcile.
+type routeAttributionHealth struct {
+	mu       sync.Mutex
+	resolved map[string]bool
+	absent   map[string]int
+	warned   map[string]bool
+}
+
+// observe records one resolution outcome for a route and reports whether this is the moment to warn,
+// plus the current unresolved run length. It warns at most once per route per process: the condition
+// is a configuration mistake, so repeating it every event would bury the log without telling anyone
+// anything new.
+func (h *routeAttributionHealth) observe(route string, resolved bool) (bool, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.resolved == nil {
+		h.resolved = map[string]bool{}
+		h.absent = map[string]int{}
+		h.warned = map[string]bool{}
+	}
+	if resolved {
+		h.resolved[route] = true
+		delete(h.absent, route)
+		return false, 0
+	}
+	h.absent[route]++
+	streak := h.absent[route]
+	if h.resolved[route] || h.warned[route] || streak < attributionUnresolvedWarnThreshold {
+		return false, streak
+	}
+	h.warned[route] = true
+	return true, streak
+}
+
 type attributionResolver struct {
 	lookup AttributionLookup
 	grace  time.Duration
 	log    logr.Logger
+	health routeAttributionHealth
 }
 
 // NewAuthorResolver builds the conservative author resolver over the attribution
@@ -112,7 +159,7 @@ func NewAuthorResolver(
 
 func (r *attributionResolver) ResolveAuthor(
 	ctx context.Context,
-	providerName string,
+	auditRoute string,
 	gvr schema.GroupVersionResource,
 	uid k8stypes.UID,
 	rv string,
@@ -129,18 +176,16 @@ func (r *attributionResolver) ResolveAuthor(
 	}
 	deadline := time.Now().Add(r.grace)
 	for {
-		resolution := r.lookup.LookupAuthorResolution(ctx, providerName, gvr, uid, rv, exactCapable)
+		resolution := r.lookup.LookupAuthorResolution(ctx, auditRoute, gvr, uid, rv, exactCapable)
 		if resolution.Result != queue.AttributionAbsent {
 			ui, outcome, result := r.userInfoForResolution(resolution)
 			recordAttributionResolution(ctx, gvr, result, time.Since(start))
+			r.health.observe(auditRoute, outcome == git.AttributionResolved)
 			return ui, outcome
 		}
-		if !time.Now().Before(deadline) {
+		if !time.Now().Before(deadline) || !sleepOrDone(ctx, attributionPollInterval) {
 			recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
-			return git.UserInfo{}, git.AttributionUnresolved
-		}
-		if !sleepOrDone(ctx, attributionPollInterval) {
-			recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
+			r.warnIfRouteNeverResolves(auditRoute, gvr)
 			return git.UserInfo{}, git.AttributionUnresolved
 		}
 	}
@@ -183,4 +228,20 @@ func recordAttributionResolution(
 	if telemetry.AttributionResolutionWaitSeconds != nil {
 		telemetry.AttributionResolutionWaitSeconds.Record(ctx, wait.Seconds(), attrs)
 	}
+}
+
+// warnIfRouteNeverResolves says, once per audit route, that a route has produced a run of
+// unresolved events and has never resolved one. That is the shape of a ClusterProvider pointed at a
+// route no API server posts under, which is otherwise invisible: mirroring stays correct and only
+// the commit author is lost. The message names the fix rather than the symptom.
+func (r *attributionResolver) warnIfRouteNeverResolves(auditRoute string, gvr schema.GroupVersionResource) {
+	warn, streak := r.health.observe(auditRoute, false)
+	if !warn {
+		return
+	}
+	r.log.Info("no audit facts have ever arrived on this audit route; every commit through it is "+
+		"authored as attribution-unresolved. An API server posts audit under ONE route, so a second "+
+		"ClusterProvider naming the same cluster must set spec.attribution.auditRoute to the route "+
+		"that cluster actually posts to (it defaults to the provider's own name)",
+		"auditRoute", auditRoute, "unresolvedInARow", streak, "gvr", gvr.String())
 }

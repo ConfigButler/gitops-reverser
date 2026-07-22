@@ -59,9 +59,12 @@ for you with `clusterProvider.createDefault: true`. `default` is only the name a
 points at: that provider may omit `spec.kubeConfig` (the operator's own cluster) or set it to mirror
 a remote one.
 
-The provider's **name is the cluster's identity everywhere** — the attribution fact-index key and
-the `/audit-webhook/<name>` audit route — so a fact from one cluster can never name
-the author of an object watched on another. A provider also carries a deny-by-default
+The provider's **name is the cluster's identity** for the watch data plane, and the default for its
+**audit route**. Attribution facts are partitioned by `spec.attribution.auditRoute`, which falls back
+to the provider's name, so a fact from one cluster can never name the author of an object watched on
+another. Set it explicitly when several providers name one cluster: an API server has a single audit
+webhook backend and posts under one route, so the others must declare that route to see its facts.
+A provider also carries a deny-by-default
 `spec.allowedNamespaces` policy: a `GitTarget` may reference it only from an admitted namespace
 (enforced on every reconcile, before that target's watches start — so tightening the policy also
 stops a `GitTarget` that already exists).

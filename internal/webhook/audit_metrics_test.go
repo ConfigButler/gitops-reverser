@@ -149,7 +149,7 @@ func TestServeHTTP_UnroutableEventOutcomes(t *testing.T) {
 		wantOutcome string
 	}{
 		{"unstamped event", nil, "missing_cluster_annotation"},
-		{"unknown provider", map[string]string{clusterAnnotation: "never-created"}, "unknown_cluster_provider"},
+		{"the key present but empty", map[string]string{clusterAnnotation: ""}, "missing_cluster_annotation"},
 	}
 
 	for _, tt := range tests {
@@ -159,9 +159,8 @@ func TestServeHTTP_UnroutableEventOutcomes(t *testing.T) {
 
 			recorder := &fakeFactRecorder{}
 			handler, err := NewAuditHandler(AuditHandlerConfig{
-				FactRecorder:         recorder,
-				ProviderResolver:     fakeProviderResolver{existing: map[string]bool{"prod-eu-1": true}},
-				ClusterAnnotationKey: clusterAnnotation,
+				FactRecorder:            recorder,
+				AuditRouteAnnotationKey: clusterAnnotation,
 			})
 			require.NoError(t, err)
 

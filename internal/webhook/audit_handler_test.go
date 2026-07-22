@@ -108,21 +108,16 @@ func eventListFixtureBody(t *testing.T, path string) string {
 	return string(body)
 }
 
-// defaultRoute is the named audit route for a ClusterProvider called "default". Audit routes are
-// NAMED, and the bare /audit-webhook is the shared, annotation-routed endpoint that is off unless
-// ClusterAnnotationKey is set — so every test about event classification (rather than routing)
+// defaultRoute is the named audit route a single-cluster install posts to. Audit routes are NAMED,
+// and the bare /audit-webhook is the shared, annotation-routed endpoint that is off unless
+// AuditRouteAnnotationKey is set — so every test about event classification (rather than routing)
 // posts here, exactly as a single-cluster apiserver would.
 const defaultRoute = "/audit-webhook/default"
 
-// routedConfig fills in the ProviderResolver that defaultRoute is existence-gated on, so a
-// classification test can keep stating only what it is actually about. A test that cares about the
-// gate supplies its own resolver, which is left untouched.
-func routedConfig(config AuditHandlerConfig) AuditHandlerConfig {
-	if config.ProviderResolver == nil {
-		config.ProviderResolver = fakeProviderResolver{existing: map[string]bool{"default": true}}
-	}
-	return config
-}
+// routedConfig used to fill in the ProviderResolver that defaultRoute was existence-gated on.
+// Ingestion no longer reads Kubernetes at all, so it is now identity, kept so the classification
+// tests keep reading as "post to a normal route" rather than growing an explanation each.
+func routedConfig(config AuditHandlerConfig) AuditHandlerConfig { return config }
 
 // serveBody runs one POST request through the handler and returns the recorder.
 func serveBody(t *testing.T, handler *AuditHandler, method, path, body string) *httptest.ResponseRecorder {
@@ -156,69 +151,40 @@ func TestAuditHandler_NamedDefaultRouteThreadsItsProvider(t *testing.T) {
 	assert.Equal(t, "default", recorder.lastProvider(), "the named default route keys facts by its own name")
 }
 
-// fakeProviderResolver answers ProviderExists from a fixed set, or with an injectable error.
-type fakeProviderResolver struct {
-	existing map[string]bool
-	err      error
-}
-
-func (f fakeProviderResolver) ProviderExists(_ context.Context, name string) (bool, error) {
-	if f.err != nil {
-		return false, f.err
-	}
-	return f.existing[name], nil
-}
-
-// TestAuditHandler_NamedRouting checks the /audit-webhook/<name> gate: an existing provider is
-// served and its facts keyed by name; a missing provider is 404 (for "default" too); a resolver
-// error is 503; and the bare endpoint is not a fallback for any of them.
+// TestAuditHandler_NamedRouting checks the /audit-webhook/<route> mapping: the route is taken from
+// the path verbatim and keys the facts, with NO check that a ClusterProvider declares it. Ingestion
+// is a partition write, not a claim about an object, so a route nobody reads costs one expiring key
+// and a provider created later still joins its facts.
 func TestAuditHandler_NamedRouting(t *testing.T) {
 	body := eventListBody(acceptedCreateEvent)
 
-	t.Run("existing provider records under its name", func(t *testing.T) {
+	t.Run("a named route records under its own name", func(t *testing.T) {
 		recorder := &fakeFactRecorder{}
-		handler, err := NewAuditHandler(AuditHandlerConfig{
-			FactRecorder:     recorder,
-			ProviderResolver: fakeProviderResolver{existing: map[string]bool{"prod-eu-1": true}},
-		})
+		handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
 		require.NoError(t, err)
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body)
 		require.Equal(t, http.StatusOK, w.Code)
 		assert.Equal(t, "prod-eu-1", recorder.lastProvider())
 	})
 
-	t.Run("missing provider is 404, records nothing", func(t *testing.T) {
+	t.Run("a route no ClusterProvider declares is stored, not refused", func(t *testing.T) {
 		recorder := &fakeFactRecorder{}
-		handler, err := NewAuditHandler(AuditHandlerConfig{
-			FactRecorder:     recorder,
-			ProviderResolver: fakeProviderResolver{existing: map[string]bool{}},
-		})
+		handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
 		require.NoError(t, err)
-		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/gone", body)
-		assert.Equal(t, http.StatusNotFound, w.Code)
-		assert.Zero(t, recorder.len())
+		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/not-declared-yet", body)
+		require.Equal(t, http.StatusOK, w.Code,
+			"a 404 here dropped batches in flight while a provider was being created; "+
+				"the API server does not retry one")
+		assert.Equal(t, "not-declared-yet", recorder.lastProvider())
 	})
 
-	t.Run("resolver error is 503", func(t *testing.T) {
-		handler, err := NewAuditHandler(AuditHandlerConfig{
-			FactRecorder:     &fakeFactRecorder{},
-			ProviderResolver: fakeProviderResolver{err: assert.AnError},
-		})
-		require.NoError(t, err)
-		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body)
-		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	})
-
-	t.Run("default is existence-gated like any other name", func(t *testing.T) {
+	t.Run("default is an ordinary route", func(t *testing.T) {
 		recorder := &fakeFactRecorder{}
-		handler, err := NewAuditHandler(AuditHandlerConfig{
-			FactRecorder:     recorder,
-			ProviderResolver: fakeProviderResolver{existing: map[string]bool{}}, // default absent
-		})
+		handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
 		require.NoError(t, err)
 		w := serveBody(t, handler, http.MethodPost, defaultRoute, body)
-		assert.Equal(t, http.StatusNotFound, w.Code, "default has no privileged route")
-		assert.Zero(t, recorder.len())
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "default", recorder.lastProvider(), "default has no privileged route")
 	})
 
 	t.Run("bare endpoint is 400 while no annotation key is configured", func(t *testing.T) {
@@ -227,12 +193,13 @@ func TestAuditHandler_NamedRouting(t *testing.T) {
 		require.NoError(t, err)
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook", body)
 		assert.Equal(t, http.StatusBadRequest, w.Code,
-			"the bare endpoint resolves no provider of its own, so a producer posting to it is misconfigured")
+			"the bare endpoint reads no route of its own, so a producer posting to it is misconfigured")
 		assert.Zero(t, recorder.len())
 	})
 }
 
-// clusterAnnotation is the annotation key a shared audit stream stamps its source cluster into.
+// clusterAnnotation is the audit-event annotation a shared stream stamps with each event's audit
+// route, matching --author-attribution-audit-route-annotation-key.
 const clusterAnnotation = "example.io/source-cluster"
 
 // annotatedEvent builds an otherwise-acceptable create event carrying an audit-event annotation
@@ -252,25 +219,23 @@ func annotatedEvent(auditID string, annotations map[string]string) string {
 }
 
 // TestAuditHandler_AnnotationRouting pins the shared-stream contract: with an annotation key
-// configured the bare endpoint resolves the ClusterProvider PER EVENT, so one batch fans out to
-// several source clusters, and an event that names none — or names one that does not exist — is
-// rejected by itself, never credited to a fallback, while the rest of the batch still lands.
+// configured the bare endpoint reads the AUDIT ROUTE per event, so one batch fans out to several
+// routes, and an event that names none is rejected by itself, never credited to a fallback, while
+// the rest of the batch still lands. A route no ClusterProvider has declared is NOT a rejection.
 func TestAuditHandler_AnnotationRouting(t *testing.T) {
-	newHandler := func(t *testing.T, recorder *fakeFactRecorder, resolver AuditProviderResolver) *AuditHandler {
+	newHandler := func(t *testing.T, recorder *fakeFactRecorder) *AuditHandler {
 		t.Helper()
 		handler, err := NewAuditHandler(AuditHandlerConfig{
-			FactRecorder:         recorder,
-			ProviderResolver:     resolver,
-			ClusterAnnotationKey: clusterAnnotation,
+			FactRecorder:            recorder,
+			AuditRouteAnnotationKey: clusterAnnotation,
 		})
 		require.NoError(t, err)
 		return handler
 	}
-	known := fakeProviderResolver{existing: map[string]bool{"prod-eu-1": true, "prod-us-1": true}}
 
 	t.Run("one batch fans out to several source clusters", func(t *testing.T) {
 		recorder := &fakeFactRecorder{}
-		handler := newHandler(t, recorder, known)
+		handler := newHandler(t, recorder)
 
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(
 			annotatedEvent("eu", map[string]string{clusterAnnotation: "prod-eu-1"}),
@@ -289,11 +254,10 @@ func TestAuditHandler_AnnotationRouting(t *testing.T) {
 			{"no annotation at all", nil},
 			{"the key present but empty", map[string]string{clusterAnnotation: ""}},
 			{"a different key", map[string]string{"other.io/cluster": "prod-eu-1"}},
-			{"an unknown provider", map[string]string{clusterAnnotation: "never-created"}},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
 				recorder := &fakeFactRecorder{}
-				handler := newHandler(t, recorder, known)
+				handler := newHandler(t, recorder)
 
 				w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(
 					annotatedEvent("rejected", tt.annotations),
@@ -308,21 +272,21 @@ func TestAuditHandler_AnnotationRouting(t *testing.T) {
 		}
 	})
 
-	t.Run("a resolver failure retries the whole batch", func(t *testing.T) {
+	t.Run("a route no ClusterProvider declares is stored like any other", func(t *testing.T) {
 		recorder := &fakeFactRecorder{}
-		handler := newHandler(t, recorder, fakeProviderResolver{err: assert.AnError})
+		handler := newHandler(t, recorder)
 
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(
-			annotatedEvent("eu", map[string]string{clusterAnnotation: "prod-eu-1"}),
+			annotatedEvent("eu", map[string]string{clusterAnnotation: "never-declared"}),
 		))
-		assert.Equal(t, http.StatusInternalServerError, w.Code,
-			"a lookup failure is transient, not a verdict that the provider is absent")
-		assert.Zero(t, recorder.len())
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, []string{"never-declared"}, recorder.recordedProviders(),
+			"the annotation names a partition, not an object that must already exist")
 	})
 
 	t.Run("named routes ignore the annotation", func(t *testing.T) {
 		recorder := &fakeFactRecorder{}
-		handler := newHandler(t, recorder, known)
+		handler := newHandler(t, recorder)
 
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-us-1", eventListBody(
 			annotatedEvent("eu", map[string]string{clusterAnnotation: "prod-eu-1"}),
@@ -333,26 +297,18 @@ func TestAuditHandler_AnnotationRouting(t *testing.T) {
 	})
 }
 
-// TestNewAuditHandler_AnnotationRoutingRequiresResolver pins the startup guard: annotation routing
-// must be able to reject an unknown provider, so it cannot be configured without a resolver.
-func TestNewAuditHandler_AnnotationRoutingRequiresResolver(t *testing.T) {
-	_, err := NewAuditHandler(AuditHandlerConfig{ClusterAnnotationKey: clusterAnnotation})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ProviderResolver")
-}
-
-// TestProviderRouteForPath covers the path -> (provider, named) mapping directly. The bare path
+// TestAuditRouteForPath covers the path -> (provider, named) mapping directly. The bare path
 // names no provider at all: it is the shared, annotation-routed endpoint.
-func TestProviderRouteForPath(t *testing.T) {
-	name, named := providerRouteForPath("/audit-webhook")
+func TestAuditRouteForPath(t *testing.T) {
+	name, named := auditRouteForPath("/audit-webhook")
 	assert.Empty(t, name, "the bare path resolves no provider by itself")
 	assert.False(t, named)
 
-	name, named = providerRouteForPath("/audit-webhook/prod-eu-1")
+	name, named = auditRouteForPath("/audit-webhook/prod-eu-1")
 	assert.Equal(t, "prod-eu-1", name)
 	assert.True(t, named, "a segment names a provider")
 
-	name, named = providerRouteForPath(defaultRoute)
+	name, named = auditRouteForPath(defaultRoute)
 	assert.Equal(t, "default", name, "default is an ordinary named route")
 	assert.True(t, named)
 }
@@ -390,7 +346,7 @@ func TestAuditHandler_MethodAndPathValidation(t *testing.T) {
 		// none, so a producer posting there is misconfigured rather than routed to a default.
 		{"bare endpoint rejected without an annotation key", http.MethodPost, "/audit-webhook", http.StatusBadRequest},
 		// A name with no ClusterProvider behind it is 404 — the gate applies to every name.
-		{"unknown named route is 404", http.MethodPost, "/audit-webhook/prod-eu-1", http.StatusNotFound},
+		{"any named route is served", http.MethodPost, "/audit-webhook/prod-eu-1", http.StatusOK},
 	}
 
 	for _, tt := range tests {

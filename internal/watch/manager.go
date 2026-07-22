@@ -128,6 +128,12 @@ type Manager struct {
 	gitTargetClustersMu sync.Mutex
 	gitTargetClusters   map[string]string
 
+	// clusterAuditRoutes maps a source-cluster id to the audit route its attribution facts are
+	// keyed under (ClusterProvider.AuditRoute()), also captured on Declare. It is keyed by CLUSTER
+	// rather than by GitTarget because the route belongs to the provider, and unlike the cluster id
+	// it is mutable. Guarded by gitTargetClustersMu, alongside the map it is captured with.
+	clusterAuditRoutes map[string]string
+
 	// resourceCatalogMu guards every clusterContext's catalog/registry edge-triggered
 	// logging state (catalogDegradedLogged, typeRefusalsLogged).
 	resourceCatalogMu sync.Mutex

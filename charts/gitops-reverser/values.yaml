@@ -213,14 +213,15 @@ attribution:
   # Bounded per-event wait for a matching audit fact before a watch event ships as the committer.
   # Larger values raise attribution hit-rate at the cost of commit latency.
   grace: "3s"
-  # Audit-event annotation naming the ClusterProvider each event belongs to. Audit routes are
-  # normally NAMED (/audit-webhook/<name>, including /audit-webhook/default), and this is empty.
+  # Audit-event annotation naming the AUDIT ROUTE each event belongs to. Audit routes are normally
+  # NAMED (/audit-webhook/<audit-route>, including /audit-webhook/default), and this is empty.
   # Set it only for a control plane that emits ONE shared audit stream for several logical
   # clusters: it enables the bare /audit-webhook endpoint, which reads this annotation from every
-  # event, so one batch may fan out to several source clusters. An event with no annotation, or
-  # naming a ClusterProvider that does not exist, is rejected (counted and logged) and never
-  # credited to a fallback. See docs/configuration.md.
-  clusterAnnotationKey: ""
+  # event, so one batch may fan out to several routes. A ClusterProvider joins a route by setting
+  # spec.attribution.auditRoute to the same value; it defaults to the provider's own name. An event
+  # with no annotation is rejected (counted and logged) and never credited to a fallback.
+  # See docs/configuration.md.
+  auditRouteAnnotationKey: ""
 
 # The source cluster a GitTarget mirrors FROM is a ClusterProvider, and a GitTarget that omits
 # spec.clusterProviderRef references one named "default". The operator NEVER creates a

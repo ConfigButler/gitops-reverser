@@ -608,7 +608,7 @@ per-mutation change log.
 
 Attribution runs only when `--author-attribution=true`; Redis is then its required state store. A normal
 source posts audit `EventList` payloads to `/audit-webhook/<cluster-provider-name>`. The bare
-`/audit-webhook` endpoint is enabled only with `--author-attribution-cluster-annotation-key`, for a
+`/audit-webhook` endpoint is enabled only with `--author-attribution-audit-route-annotation-key`, for a
 trusted control plane that puts a provider name in each event. There is no supplementary body endpoint or
 body joiner, because watch (not audit) carries the object body. The handler applies an intrinsic accept
 gate (StageResponseComplete, a mutating verb, success, non-dry-run, a changed resourceVersion, and the

@@ -275,7 +275,7 @@
         "enabled": { "type": "boolean" },
         "ttl": { "$ref": "#/$defs/duration" },
         "grace": { "$ref": "#/$defs/duration" },
-        "clusterAnnotationKey": {
+        "auditRouteAnnotationKey": {
           "type": "string",
           "description": "Audit-event annotation naming the ClusterProvider each event belongs to. Empty (default) keeps audit routes named (/audit-webhook/<name>); set it only for one shared audit stream carrying several logical clusters, which enables the bare /audit-webhook endpoint."
         }
