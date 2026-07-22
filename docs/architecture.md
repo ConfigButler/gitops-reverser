@@ -1,4 +1,4 @@
-# GitOps Reverser Architecture
+# GitOps Reverser architecture
 
 GitOps Reverser is a Kubernetes operator that observes cluster mutations and writes the resulting
 desired object state to Git. It reverses the traditional GitOps direction: instead of Git driving the
@@ -24,7 +24,7 @@ server deliberately remain separate source partitions.
 
 ***
 
-## Ground Rules
+## Ground rules
 
 These are the design decisions to keep in your head while reading or changing the code:
 
@@ -37,7 +37,7 @@ replays its retained writes from the API.
 Kubernetes watch per claimed `(GVR, scope)` against that source, with `sendInitialEvents=true`. For a
 namespaced type, a scope is one concrete source namespace; cluster-scoped types use the cluster-wide
 scope. Every Git write derives from persisted state the watch observed. Audit never defines *what*
-changed — it only, optionally, explains *who* caused it.
+changed; it only, optionally, explains *who* caused it.
 
 **Sensitive resources are never written in plaintext.** Core Secrets and configured sensitive resource
 types must be encrypted before they touch the Git worktree. If encryption cannot be configured, the write
@@ -65,81 +65,81 @@ conflict replay, path refusal, encryption behavior, and commit semantics are pin
 
 ***
 
-## Mental Model
+## Mental model
 
 The easy part is "write YAML to Git." The hard parts shape the whole architecture:
 
-* **Ordering.** Two updates to the same object must land in Git in cluster order.
-* **Not losing changes.** A dropped or late event must never leave Git *permanently* wrong — in
+- **Ordering.** Two updates to the same object must land in Git in cluster order.
+- **Not losing changes.** A dropped or late event must never leave Git *permanently* wrong. In
   particular, a delete that happens while no watch is running must still be reconciled.
-* **Secrets.** Sensitive objects must never touch disk in plaintext.
-* **Scale.** A cluster holds thousands of objects across hundreds of types; you cannot keep a live
+- **Secrets.** Sensitive objects must never touch disk in plaintext.
+- **Scale.** A cluster holds thousands of objects across hundreds of types; you cannot keep a live
   watch open on all of them.
 
 The solution, in the vocabulary used throughout this document:
 
-* **Watch is the only object-state source.** Each `GitTarget` opens one Kubernetes watch per claimed
+- **Watch is the only object-state source.** Each `GitTarget` opens one Kubernetes watch per claimed
   `(GVR, scope)` with `sendInitialEvents=true`. The apiserver delivers a watch's events already ordered
   by `resourceVersion` for that type, so there is nothing to re-order. Every Git write derives from
   persisted state the watch observed.
-* **Watches are per `GitTarget` and scaled by claims.** A watch opens only for the claimed ∩ followable
+- **Watches are per `GitTarget` and scaled by claims.** A watch opens only for the claimed ∩ followable
   `(GVR, scope)` set, so cost scales with what `GitTarget`s actually claim, not with cluster type count.
-* **Recovery prefers watch.** A new watch normally starts with `sendInitialEvents`, establishes a
+- **Recovery prefers watch.** A new watch normally starts with `sendInitialEvents`, establishes a
   current snapshot boundary, and runs a **mark-and-sweep**: any Git file whose object is no longer
   present is deleted. When Redis has a fresh per-type cursor, the operator skips the snapshot and
   resumes a normal watch from that resourceVersion. Cursors are keyed by `GitTarget` UID and carry a
   TTL refreshed on every watch event and bookmark, so a live watch keeps its cursor warm while a deleted
-  one's cursor simply expires — and a stale resourceVersion (`410 Gone`) rebuilds from a fresh replay.
+  one's cursor expires, and a stale resourceVersion (`410 Gone`) rebuilds from a fresh replay.
   Older APIs that reject `sendInitialEvents` fall back to LIST plus buffered WATCH. The sweep fires on
   snapshot establishment, **never on a timer**.
-* **Audit, when enabled, only names the author.** It is an optional attribution lookup; a missing or
+- **Audit, when enabled, only names the author.** It is an optional attribution lookup; a missing or
   late fact costs author fidelity, never correctness. With attribution disabled the product commits as the
   configured committer. With attribution enabled, an unresolved live change is visibly authored as
   `unknown (attribution unresolved)`, so an installation that expects attribution can investigate its audit
   policy, ingress, Redis connection, or source identity instead of mistaking the result for configured-author mode.
-* **One `BranchWorker` per Git branch serializes all writes.** Every write to a branch funnels through a
+- **One `BranchWorker` per Git branch serializes all writes.** Every write to a branch funnels through a
   single worker and a single commit window, which keeps concurrent GitTargets and authors from racing
   each other into a corrupt tree.
 
 ***
 
-## Data Sources
+## Data sources
 
 GitOps Reverser reads Kubernetes through four mechanisms. Two are required to function; the other two are
 optional and only add *who* did something:
 
 | Source | Answers | Required | What it carries |
 |---|---|---|---|
-| **Discovery** (CRD/APIService) | *what types exist* | yes | the API surface — served GVRs, scope, preferred version, subresources; rules resolve against it |
+| **Discovery** (CRD/APIService) | *what types exist* | yes | the API surface: served GVRs, scope, preferred version, subresources; rules resolve against it |
 | **Watch** (per claimed `(GVR, scope)`) | *what changed* | yes | the object body, ordered per type; the only object-state source, with deletes reconciled via `sendInitialEvents` replay + mark-and-sweep |
 | **Audit webhook** (`/audit-webhook/<provider>`) | *who changed mirrored state* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
 | **Validating admission webhook** (`/validate-operator-types`) | *who issued a command* | no | the submitter of a `CommitRequest`, captured at admission and keyed 1:1 by UID ([CommitRequest Finalize](#commitrequest-finalize)) |
 
-With both optional sources off, the product still mirrors state correctly — every commit is simply authored
+With both optional sources off, the product still mirrors state correctly, and every commit is authored
 by the committer.
 
 ### Why audit, not admission, attributes a mirrored change
 
-For a mirrored change, taking the author from a validating admission webhook is tempting — the request
+For a mirrored change, taking the author from a validating admission webhook is tempting, because the request
 already carries `userInfo`. We tried it; the edge cases are not fixable, because **admission runs *before*
 the write reaches etcd**:
 
-* **Admission sees attempts, not persistence.** A request that passes our webhook can still be rejected by
-  a later webhook or fail an optimistic-concurrency conflict at storage, so the change never becomes state —
+- **Admission sees attempts, not persistence.** A request that passes our webhook can still be rejected by
+  a later webhook or fail an optimistic-concurrency conflict at storage, so the change never becomes state,
   yet we would already have recorded an author for it (a dry-run is the same shape: admission fires, nothing
   persists).
-* **There is nothing to join on yet.** Mirrored attribution matches an author to a *persisted* watch event
+- **There is nothing to join on yet.** Mirrored attribution matches an author to a *persisted* watch event
   by identity **+ resourceVersion**; at admission the resourceVersion does not exist, and for a
-  `generateName` create even the final name/UID is unassigned — so an admission record cannot be coupled to
+  `generateName` create even the final name/UID is unassigned, so an admission record cannot be coupled to
   the watch or audit stream.
 
 Audit avoids both: kube-apiserver posts a `ResponseComplete` event *after* the write persisted, carrying
 the resourceVersion that joins it to the watch event.
 
 The one place admission *is* the right source is the `CommitRequest`, and only for its **command** meaning
-— *who issued the save* — not for mirroring the object. That holds because it is **our own type with a
+(*who issued the save*) and not for mirroring the object. That holds because it is **our own type with a
 memory model we control**: the controller reconciles off its own watch, which only delivers persisted
-objects, so the author is captured at admission and read back 1:1 by UID — no resourceVersion join, no
+objects, so the author is captured at admission and read back 1:1 by UID: no resourceVersion join, no
 persistence proof from audit needed. (We still can't guarantee a create is never blocked, but it holds
 across our edge cases.) If a `WatchRule` also selects CommitRequests, that *mirroring* runs through the
 normal pipeline and is audit-attributed like any other resource. See
@@ -148,18 +148,18 @@ normal pipeline and is audit-attributed like any other resource. See
 ### Proving it on new Kubernetes versions
 
 How Kubernetes actually emits these structures is not something to guess at. A separate, standalone
-project — the **mutation-capture lab** ([design](spec/mutation-capture-lab-design.md),
-[cmd/mutation-capture-lab/](../cmd/mutation-capture-lab/)) — records the exact watch, audit, and admission
+project. The **mutation-capture lab** ([design](spec/mutation-capture-lab-design.md),
+[cmd/mutation-capture-lab/](../cmd/mutation-capture-lab/)) records the exact watch, audit, and admission
 output a real apiserver produces for each interesting scenario and commits it as normalized example YAML (a
 versioned *corpus*). It doubles as a regression harness: point it at a new Kubernetes release, regenerate,
 and any change in verb naming, event ordering, body presence, or deletecollection fan-out surfaces as a
 reviewable corpus diff before it can surprise the operator. The "admission sees attempts, not persistence"
-claim above is read straight out of that corpus — its dry-run, record-and-reject, and conflict scenarios
+claim above is read straight out of that corpus: its dry-run, record-and-reject, and conflict scenarios
 capture audit and admission with **no** resulting watch event.
 
 ***
 
-## Configuration Model
+## Configuration model
 
 You configure GitOps Reverser through six CRDs (group `configbutler.ai`, version `v1alpha3`).
 `WatchRule` and `ClusterWatchRule` choose which Kubernetes resources enter the pipeline.
@@ -198,7 +198,7 @@ graph LR
 The diagram follows one `GitTarget`. A provider with no `spec.kubeConfig` selects the operator's own
 cluster as its source; any provider name, including `default`, can instead select a remote cluster through
 a kubeconfig Secret in the operator namespace. Each referenced `ClusterProvider` gets an independent
-source context — client, discovery catalog, followability registry, source-namespace snapshot, and
+source context: client, discovery catalog, followability registry, source-namespace snapshot, and
 reachability state. Its `GitTarget`s open their source watches through that context. The contexts are keyed
 by provider name and are released when no `GitTarget` references them.
 
@@ -213,9 +213,9 @@ by provider name and are released when no `GitTarget` references them.
 
 ### WatchRule / ClusterWatchRule
 
-* **Sources**: [watchrule_types.go](../api/v1alpha3/watchrule_types.go),
+- **Sources**: [watchrule_types.go](../api/v1alpha3/watchrule_types.go),
   [clusterwatchrule_types.go](../api/v1alpha3/clusterwatchrule_types.go)
-* **Controllers**: [watchrule_controller.go](../internal/controller/watchrule_controller.go),
+- **Controllers**: [watchrule_controller.go](../internal/controller/watchrule_controller.go),
   [clusterwatchrule_controller.go](../internal/controller/clusterwatchrule_controller.go)
 
 Scope is carried by the rule KIND. A `WatchRule` selects NAMESPACED resources and routes matching
@@ -223,18 +223,18 @@ events to a same namespace `GitTarget`; each of its rule items names the source 
 A `ClusterWatchRule` selects CLUSTER SCOPED resources, with an explicit namespace `targetRef` and no
 namespace selection of its own. Both share the rule model:
 
-* `spec.rules[]`: OR resource rules (`MinItems=1`).
-* `rules[].operations`: `CREATE` / `UPDATE` / `DELETE` / `*`; omitted means all.
-* `rules[].apiGroups`: omitted resolves the named resource across served groups; `""` is the core
+- `spec.rules[]`: OR resource rules (`MinItems=1`).
+- `rules[].operations`: `CREATE` / `UPDATE` / `DELETE` / `*`; omitted means all.
+- `rules[].apiGroups`: omitted resolves the named resource across served groups; `""` is the core
   group; `*` is all.
-* `rules[].apiVersions`: omitted means the preferred served version.
-* `rules[].resources`: plural resource names or `*`.
-* `WatchRule` adds `rules[].sourceNamespace`: omitted for the rule's own namespace, an exact name, or
+- `rules[].apiVersions`: omitted means the preferred served version.
+- `rules[].resources`: plural resource names or `*`.
+- `WatchRule` adds `rules[].sourceNamespace`: omitted for the rule's own namespace, an exact name, or
   `*` for every namespace `GitTarget.spec.allowedSourceNamespaces` admits. Anything but the rule's own
   namespace passes the source-namespace gate (`SourceNamespaceAuthorized`); the resolved set is
   expanded to concrete names at compile time, so no wildcard reaches the data plane. A wildcard opens one
   stream for each admitted namespace.
-* `ClusterWatchRule` has no scope or namespace choice. `rules[].scope` is deprecated, accepts only
+- `ClusterWatchRule` has no scope or namespace choice. `rules[].scope` is deprecated, accepts only
   `Cluster`, and a stored `Namespaced` value is refused at compile time.
 
 Subresources are rejected in rule resources. Mirroring operates on top level resources; the selected
@@ -242,9 +242,9 @@ Subresources are rejected in rule resources. Mirroring operates on top level res
 
 The two namespace policies intentionally live in different planes:
 
-* `ClusterProvider.spec.allowedNamespaces` authorizes **control-cluster** namespaces to reference the
+- `ClusterProvider.spec.allowedNamespaces` authorizes **control-cluster** namespaces to reference the
   provider. It is a tenant/export boundary; it neither selects nor grants access to source namespaces.
-* `GitTarget.spec.allowedSourceNamespaces` bounds what a target may mirror **from its source cluster**.
+- `GitTarget.spec.allowedSourceNamespaces` bounds what a target may mirror **from its source cluster**.
   Exact names need no Namespace read; selector and `sourceNamespace: "*"` policies are evaluated from a
   per-source-cluster Namespace-label snapshot. The source credential needs permission to list Namespaces
   for that selector path; otherwise exact-name policies still work but selector policies are held
@@ -252,45 +252,45 @@ The two namespace policies intentionally live in different planes:
 
 ### CommitRequest
 
-* **Source**: [api/v1alpha3/commitrequest_types.go](../api/v1alpha3/commitrequest_types.go)
-* **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
+- **Source**: [api/v1alpha3/commitrequest_types.go](../api/v1alpha3/commitrequest_types.go)
+- **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
 
 A one shot "save now" signal that finalizes the open commit window for a same namespace `GitTarget`
 instead of waiting for the silence timer. The **entire spec is immutable**. Key fields:
 
-* `spec.targetRef.name`: target whose open window should be finalized.
-* `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
-* `spec.closeDelaySeconds`: optional `0–300s` delay before the window is closed, so the author's own
+- `spec.targetRef.name`: target whose open window should be finalized.
+- `spec.message`: optional verbatim commit message (1–1024 chars, no control characters).
+- `spec.closeDelaySeconds`: optional `0–300s` delay before the window is closed, so the author's own
   in flight changes can join the window before it closes.
-* `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
-  terminal outcome that is not an error — a pushed commit, or a benign no-commit);
+- `status.conditions`: kstatus-compatible. **Ready** is the summary (True once the request reached a
+  terminal outcome that is not an error: a pushed commit, or a benign no-commit);
   **Reconciling**/**Stalled** are the kstatus progress/blocked pair; **AuthorAttributed** reports
   whether the `/validate-operator-types` validating admission webhook named the submitter; an absent record
   means the request claims no actor and can attach only to an unnamed window. **Pushed** reports whether the
   commit reached the remote. The `Ready`
   condition's `reason` carries `Committed`, `NoWindowInGrace`, `WindowMismatch`, `AlreadyPresent`, or
-  `FinalizeFailed`. A benign no-commit (e.g. `NoWindowInGrace`) is `Ready=True`, `Stalled=False` — a correct,
-  non-error outcome — whereas a `FinalizeFailed` is `Ready=False`, `Stalled=True`.
-* `status.branch` / `status.sha`: set when the commit was pushed (`Pushed=True`).
+  `FinalizeFailed`. A benign no-commit (e.g. `NoWindowInGrace`) is `Ready=True`, `Stalled=False`, a correct
+  non-error outcome, whereas a `FinalizeFailed` is `Ready=False`, `Stalled=True`.
+- `status.branch` / `status.sha`: set when the commit was pushed (`Pushed=True`).
 
 How attribution and finalization interact is described under
 [CommitRequest Finalize](#commitrequest-finalize).
 
 ### GitTarget
 
-* **Source**: [api/v1alpha3/gittarget_types.go](../api/v1alpha3/gittarget_types.go)
-* **Controller**: [internal/controller/gittarget_controller.go](../internal/controller/gittarget_controller.go)
+- **Source**: [api/v1alpha3/gittarget_types.go](../api/v1alpha3/gittarget_types.go)
+- **Controller**: [internal/controller/gittarget_controller.go](../internal/controller/gittarget_controller.go)
 
 One materialization from a source provider to a Git destination: `(cluster provider, provider, branch, path)`.
 Key fields:
 
-* `spec.providerRef`: a `GitProvider` in the same namespace (`group`/`kind` default to
+- `spec.providerRef`: a `GitProvider` in the same namespace (`group`/`kind` default to
   `configbutler.ai`/`GitProvider`, the only accepted values).
-* `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
-* `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
-* `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
+- `spec.clusterProviderRef`: a cluster-scoped source `ClusterProvider`; it defaults to `{name: default}`.
+- `spec.branch`: immutable branch, validated against `GitProvider.spec.allowedBranches`.
+- `spec.path`: immutable, required path under the repo (`MinLength=1`; `.` means repo root and must be
   chosen explicitly).
-* `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
+- `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
 
 `providerRef`, `clusterProviderRef`, `branch`, and `path` are immutable so a target cannot silently
 orphan an old materialization or change its source cluster. The controller also rejects path overlaps
@@ -298,17 +298,17 @@ between GitTargets sharing a provider and branch.
 
 Status has a kstatus-compatible summary layer plus domain conditions:
 
-* `Ready`, `Reconciling`, and `Stalled` are the generic conditions used by GitOps tooling. `Ready=True`
+- `Ready`, `Reconciling`, and `Stalled` are the generic conditions used by GitOps tooling. `Ready=True`
   means the latest observed generation is valid, the Git path is accepted, and source streams are running.
   Initial replay reports `Reconciling=True`. A human-fixable block reports `Stalled=True`.
-* `Validated` and `EncryptionConfigured` explain control-plane health.
-* `StreamsRunning` explains the source side: every tracked type is past initial replay and routing live
+- `Validated` and `EncryptionConfigured` explain control-plane health.
+- `StreamsRunning` explains the source side: every tracked type is past initial replay and routing live
   events.
-* `ClusterProviderReady` and `SourceClusterReachable` distinguish valid source configuration from a
+- `ClusterProviderReady` and `SourceClusterReachable` distinguish valid source configuration from a
   source API the data plane can currently reach.
-* `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
+- `GitPathAccepted` explains the target side: the selected Git path is safe for the operator to
   materialize.
-* `status.streams` is a bounded count summary, not a per-type list.
+- `status.streams` is a bounded count summary, not a per-type list.
 
 WatchRule and ClusterWatchRule add `ResourcesResolved` and `GitTargetReady`. `ResourcesResolved` explains
 the source selector. `GitTargetReady` mirrors the referenced GitTarget's write readiness. This keeps
@@ -316,20 +316,20 @@ the source selector. `GitTargetReady` mirrors the referenced GitTarget's write r
 
 ### GitProvider
 
-* **Source**: [api/v1alpha3/gitprovider_types.go](../api/v1alpha3/gitprovider_types.go)
-* **Controller**: [internal/controller/gitprovider_controller.go](../internal/controller/gitprovider_controller.go)
+- **Source**: [api/v1alpha3/gitprovider_types.go](../api/v1alpha3/gitprovider_types.go)
+- **Controller**: [internal/controller/gitprovider_controller.go](../internal/controller/gitprovider_controller.go)
 
 Represents a Git repository and the credentials/configuration used to write it. Key fields:
 
-* `spec.url`: immutable repository URL.
-* `spec.secretRef`: optional Secret in the same namespace for HTTP/SSH authentication.
-* `spec.knownHostsRef`: optional SSH known hosts source.
-* `spec.allowedBranches`: glob patterns that gate writable branches.
-* `spec.push.commitWindow`: rolling silence window for grouped commits, defaulting to `5s`.
-* `spec.commit.committer`: committer identity (defaults to `GitOps Reverser` / `noreply@configbutler.ai`).
-* `spec.commit.message`: `eventTemplate` / `reconcileTemplate` / `groupTemplate` Go templates.
-* `spec.commit.signing`: SSH signing key reference and optional key generation.
-* `status.signingPublicKey`: populated when signing is configured and key material is available.
+- `spec.url`: immutable repository URL.
+- `spec.secretRef`: optional Secret in the same namespace for HTTP/SSH authentication.
+- `spec.knownHostsRef`: optional SSH known hosts source.
+- `spec.allowedBranches`: glob patterns that gate writable branches.
+- `spec.push.commitWindow`: rolling silence window for grouped commits, defaulting to `5s`.
+- `spec.commit.committer`: committer identity (defaults to `GitOps Reverser` / `noreply@configbutler.ai`).
+- `spec.commit.message`: `eventTemplate` / `reconcileTemplate` / `groupTemplate` Go templates.
+- `spec.commit.signing`: SSH signing key reference and optional key generation.
+- `status.signingPublicKey`: populated when signing is configured and key material is available.
 
 The controller verifies repository reachability and manages the signing key lifecycle. It generates an
 ed25519 keypair when `signing.generateWhenMissing` is set. The portable artifact across GitOps
@@ -349,7 +349,7 @@ source identity must not vary by target because it keys source clients, discover
 attribution. The identity is the provider name rather than a deduplicated physical-cluster identity, so
 two providers pointing at the same API server still have separate contexts and authorization boundaries.
 `spec.allowedNamespaces` is therefore a deny-by-default control-cluster policy, enforced on every
-reconcile before watches start — so tightening it also stops an already-existing `GitTarget`, which an
+reconcile before watches start, so tightening it also stops an already-existing `GitTarget`, which an
 admission-time check could not do. It guards which tenant may cause the operator to export a shared source;
 it does not expand that source credential's Kubernetes permissions. The `ClusterProvider` validates its
 connection inputs, while a `GitTarget` projects provider readiness and live source reachability.
@@ -357,12 +357,12 @@ connection inputs, while a `GitTarget` projects provider readiness and live sour
 Remote credentials are re-read on the catalog-refresh cadence, not on every watch reconnect. A rotated
 Secret or a `qps`/`burst` change rebuilds that provider's clients and restarts only the watches using that
 provider; a definitively invalid or missing credential fails closed and stops those watches. An unreachable
-remote similarly makes only its dependent targets unready — it does not block discovery or watches for
+remote similarly makes only its dependent targets unready; it does not block discovery or watches for
 other source contexts.
 
 ***
 
-## Common Flows
+## Common flows
 
 Say a `GitTarget` in control-cluster namespace `team-a` watches ConfigMaps, and a user runs `kubectl apply`
 to edit the ConfigMap `team-a/app-config` in that target's selected source cluster. Here is the path that
@@ -426,7 +426,7 @@ Following the ConfigMap edit:
    resourceVersion/UID. On a strong match the real user or named service account becomes the author. With
    attribution disabled, the configured committer is the author; with attribution enabled but no usable fact,
    the explicit `unknown (attribution unresolved)` author marks the unresolved change. This wait is per-event
-   and never reorders a watch — see [Watch Event Ordering](#watch-event-ordering).
+   and never reorders a watch. See [Watch Event Ordering](#watch-event-ordering).
 4. **Route + window.** The event flows into the
    [GitTargetEventStream](../internal/reconcile/git_target_event_stream.go), and the
    [BranchWorker](../internal/git/branch_worker.go) appends it to the open commit window for
@@ -443,7 +443,8 @@ only by the resolver in step 3; it never creates or repairs object state.
 
 **And if the watch had been lost?** A delete that happened while no watch was running is reconciled on
 the next watch (re)connect: the `sendInitialEvents` replay plus **mark-and-sweep** removes any Git file
-whose object no longer exists — see [State Ingestion and Not Losing Deletes](#state-ingestion-and-not-losing-deletes).
+whose object no longer exists. See
+[State Ingestion and Not Losing Deletes](#state-ingestion-and-not-losing-deletes).
 No path silently drops a delete.
 
 ### Normal commit flow
@@ -510,7 +511,7 @@ local SHA from before the retry.
 
 ***
 
-## What It Writes to Git
+## What it writes to Git
 
 A `GitTarget` owns one subtree (`spec.path`) on one branch. A new object follows the layout the folder
 already has (or a declared policy); once a document exists it is edited in place wherever it already
@@ -526,7 +527,7 @@ team-a-config/                              # GitTarget spec.path
 │   └── apps/deployments/api.yaml
 ```
 
-The **built-in default** path is `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml` — namespace
+The **built-in default** path is `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml`, namespace
 first, the API group omitted for core resources, no version segment, and a `.sops.yaml` suffix for
 sensitive resources; a cluster-scoped resource uses the literal `cluster/` in place of the namespace.
 But that default is only the cold-start seed: a new resource first follows its **siblings'** existing
@@ -535,7 +536,7 @@ layout, and a `GitTarget` can declare its own placement policy. Details and the 
 
 ***
 
-## State Ingestion and Not Losing Deletes
+## State ingestion and not losing deletes
 
 This is the heart of the system. Object state is ingested by **watch**, and the guarantee is: every
 persisted mutation observed while watching reaches Git, and no delete is ever silently dropped across a
@@ -562,10 +563,10 @@ that replay:
 
 1. every replayed object is **marked** `ADDED`, up to `initial-events-end`;
 2. at the bookmark, any Git file under that GitTarget whose object was **not** marked no longer exists,
-   so a `DELETED` is emitted for it (committer-authored — the actual delete was never witnessed);
+   so a `DELETED` is emitted for it (committer-authored, because the actual delete was never witnessed);
 3. then the watch streams live events.
 
-**This mark-and-sweep is load-bearing and fires only on watch re-establishment, never on a timer** —
+**This mark-and-sweep is load-bearing and fires only on watch re-establishment, never on a timer**:
 there is no periodic **object** LIST or hourly object-drift sweep. (A target using a
 selector-based `allowedSourceNamespaces` policy periodically lists only Namespace labels to maintain that
 authorization scope; it never uses that list to infer object state or sweep Git.) The sweep is the only
@@ -583,11 +584,11 @@ older aggregated API servers that do not implement streaming lists.
 Watch has no audit policy, so it delivers every persisted `MODIFIED`, including controller status churn.
 The relevance filter reproduces that filter in product code, on the hot path:
 
-* **Sanitization** ([internal/sanitize](../internal/sanitize/)) strips status, managedFields, and
+- **Sanitization** ([internal/sanitize](../internal/sanitize/)) strips status, managedFields, and
   volatile metadata before diffing, so runtime churn never masquerades as a desired-state change.
-* **Followability** ([internal/typeset](../internal/typeset/)) encodes "controller-owned → don't mirror"
-  — a type that is not followable never gets a watch.
-* **No-op suppression.** A `*/status` write bumps `resourceVersion` but its sanitized projection equals
+- **Followability** ([internal/typeset](../internal/typeset/)) encodes "controller-owned → don't mirror"
+  A type that is not followable never gets a watch.
+- **No-op suppression.** A `*/status` write bumps `resourceVersion` but its sanitized projection equals
   the prior commit; the writer diffs it to a no-op and discards it.
 
 ### History granularity
@@ -599,17 +600,17 @@ per-mutation change log.
 
 ***
 
-## Optional Attribution
+## Optional attribution
 
-* **Handler / fact extractor**: [internal/webhook/audit_handler.go](../internal/webhook/audit_handler.go)
-* **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
-* **Resolver (grace window join)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
+- **Handler / fact extractor**: [internal/webhook/audit_handler.go](../internal/webhook/audit_handler.go)
+- **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
+- **Resolver (grace window join)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
 
 Attribution runs only when `--author-attribution=true`; Redis is then its required state store. A normal
 source posts audit `EventList` payloads to `/audit-webhook/<cluster-provider-name>`. The bare
 `/audit-webhook` endpoint is enabled only with `--author-attribution-cluster-annotation-key`, for a
 trusted control plane that puts a provider name in each event. There is no supplementary body endpoint or
-body joiner, because watch — not audit — carries the object body. The handler applies an intrinsic accept
+body joiner, because watch (not audit) carries the object body. The handler applies an intrinsic accept
 gate (StageResponseComplete, a mutating verb, success, non-dry-run, a changed resourceVersion, and the
 `/scale` subresource only), then writes the minimal attribution fact to the provider's Redis partition.
 
@@ -625,7 +626,7 @@ remote sources that share a client credential; provider-bound ingress authentica
 ### Optional, but never casual
 
 Attribution being optional does **not** make it casual or take-it-or-leave-it. When it is enabled the
-operator does everything it can to name the real actor — but it values **high certainty over a plausible
+operator does everything it can to name the real actor, but it values **high certainty over a plausible
 guess**. Attaching a name to a change is a consequential, sometimes politically charged claim ("*this*
 person did *that*"), so it must not be made lightly. The design therefore fails toward honesty: a weak,
 conflicting, late, or absent fact produces an explicit unresolved author rather than a guessed person or a
@@ -635,14 +636,14 @@ is a concrete signal to check audit delivery and attribution configuration.
 
 Two engineering choices follow directly from that stance:
 
-* **mTLS on the audit ingress is on by default.** The audit server requires and verifies a client
+- **mTLS on the audit ingress is on by default.** The audit server requires and verifies a client
   certificate (`tls.RequireAndVerifyClientCert` against a configured CA; `--audit-insecure` defaults to
   `false`). This authenticates membership in that CA's client set. It is not yet a sender-to-provider
   binding, so multi-source deployments must not share a credential across independently trusted sources.
-* **Tests pin the behavior.** Because a misattribution is a real harm, the attribution and resolver paths
-  carry unit and e2e tests that prove the concrete cases — strong match, weak/last-key match, deletes whose
+- **Tests pin the behavior.** Because a misattribution is a real harm, the attribution and resolver paths
+  carry unit and e2e tests that prove the concrete cases: strong match, weak/last-key match, deletes whose
   audit RV differs from the watch RV, missing/late/expired facts, service-account vs human actor,
-  impersonation, and the explicit unresolved outcome — so these certainty guarantees cannot silently regress.
+  impersonation, and the explicit unresolved outcome, so these certainty guarantees cannot silently regress.
 
 ### Attribution fact shape
 
@@ -667,7 +668,7 @@ state.
 ### The resolver and its grace window
 
 A watch event waits a **bounded grace window** (`--author-attribution-grace`, default `3s`) for a matching fact
-to arrive, then ships regardless. On a strong match the actor becomes the author — a human or a service
+to arrive, then ships regardless. On a strong match the actor becomes the author: a human or a service
 account alike, always named by its own username (e.g.
 `system:serviceaccount:flux-system:kustomize-controller`). A weak, conflicting, missing, or expired fact
 produces `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` instead of a
@@ -675,36 +676,36 @@ guessed actor. A late fact that arrives after a commit has shipped **never rewri
 disabled the resolver is absent and every commit is committer-authored.
 
 The CommitRequest controller does **not** read this audit index. A CommitRequest's submitter is named by
-the `/validate-operator-types` validating admission webhook instead — captured synchronously at admission,
+the `/validate-operator-types` validating admission webhook instead, captured synchronously at admission,
 never joined from an audit fact (see [CommitRequest Finalize](#commitrequest-finalize)).
 
 ### Author and committer identity in Git
 
-Git natively carries **two** identities on every commit — the *committer* (who created the commit object)
-and the *author* (who wrote the change) — and GitOps Reverser uses both on purpose
+Git natively carries **two** identities on every commit, the *committer* (who created the commit object)
+and the *author* (who wrote the change), and GitOps Reverser uses both on purpose
 ([commit.go](../internal/git/commit.go)):
 
-* The **committer is always the operator** — the configured `GitProvider.spec.commit.committer`, defaulting
+- The **committer is always the operator:** the configured `GitProvider.spec.commit.committer`, defaulting
   to `GitOps Reverser <noreply@configbutler.ai>`. Every commit, attributed or not, is committed by the
   operator, because the operator is what actually wrote it to Git.
-* The **author is the real actor — but only when we are sure.** On a strong attribution match the author is
+- The **author is the real actor, but only when we are sure.** On a strong attribution match the author is
   set to that actor. Git always carries an author, so it is **never left blank**, and it is never a guessed
   person. What fills it when we are not sure depends on WHY:
-  * **Attribution is switched off** (configured-author mode, and reconcile/resync writes that have no actor
-    at all): the author is the operator, identical to the committer. That is honest — the operator really is
+  - **Attribution is switched off** (configured-author mode, and reconcile/resync writes that have no actor
+    at all): the author is the operator, identical to the committer. That is honest, because the operator really is
     the author.
-  * **Attribution ran and did not resolve an actor**: the author is the explicit sentinel
+  - **Attribution ran and did not resolve an actor**: the author is the explicit sentinel
     `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`. It is deliberately
     NOT the operator, because authoring it as the operator made a lost actor byte-identical to a
-    configured-author commit — so the gap was invisible in Git history and only countable in a metric.
+    configured-author commit, so the gap was invisible in Git history and only countable in a metric.
 
   A commit whose author is a **person** is therefore a positive statement that the operator is confident who
   made the change; one authored by the sentinel is a positive statement that it tried and could not tell.
 
-The author identity is never fabricated as a person — a real author is always taken from the authenticated
-request, and an unresolved one is labelled as unresolved rather than attributed to anybody. The name and email come
+The author identity is never fabricated as a person: a real author is always taken from the authenticated
+request, and an unresolved one is labeled as unresolved rather than attributed to anybody. The name and email come
 from the **OIDC claims** when the apiserver maps them; otherwise they come from the actor's own
-**Kubernetes identity** — the username, which for a controller is its service account
+**Kubernetes identity**: the username, which for a controller is its service account
 (`system:serviceaccount:<namespace>:<name>`), with a stable derived email under `noreply.cluster.local`.
 The two `user.extra` keys the operator reads for the OIDC name and email, and the apiserver config that
 fills them, are in [Wiring OIDC author claims](#wiring-oidc-author-claims).
@@ -746,13 +747,13 @@ CommitDate: Mon Jun 30 12:00:05 2026 +0000
 
 ### Wiring OIDC author claims
 
-* **Audit-path extractor**: [internal/queue/audit_event_parsing.go](../internal/queue/audit_event_parsing.go)
-* **Admission-path extractor**:
+- **Audit-path extractor**: [internal/queue/audit_event_parsing.go](../internal/queue/audit_event_parsing.go)
+- **Admission-path extractor**:
   [internal/webhook/validate_operator_types_handler.go](../internal/webhook/validate_operator_types_handler.go)
-* **Signature construction**: [internal/git/commit.go](../internal/git/commit.go) (`authorName` / `authorEmail`)
+- **Signature construction**: [internal/git/commit.go](../internal/git/commit.go) (`authorName` / `authorEmail`)
 
 The operator never talks to the identity provider. It reads two fixed keys from the request's `user.extra`
-map — the audit attribution path and the CommitRequest admission path resolve the **same** two keys:
+map: the audit attribution path and the CommitRequest admission path resolve the **same** two keys:
 
 | `user.extra` key | OIDC claim it carries | Used for |
 |---|---|---|
@@ -798,23 +799,23 @@ invalid `email` falls back to a derived address under `noreply.cluster.local`.
 
 ***
 
-## Watch Event Ordering
+## Watch event ordering
 
 The grace window is a per-event wait on a **single-threaded watch goroutine** (one goroutine per
 `(GitTarget, GVR, scope)`), and the downstream `GitTargetEventStream → BranchWorker` path is a synchronous
 FIFO. So:
 
-* **Same object / same type order is strictly preserved.** An object's events all flow through one watch
+- **Same object / same type order is strictly preserved.** An object's events all flow through one watch
   goroutine in `resourceVersion` order; the grace wait is head-of-line (it delays the next event, never
   lets it overtake), so an older mutation can never overwrite a newer one.
-* **The cost is throughput, not ordering.** A long wait stalls its own watch up to the grace window.
-* **Unrelated objects on different types** (separate concurrent watches) may interleave or be grouped
+- **The cost is throughput, not ordering.** A long wait stalls its own watch up to the grace window.
+- **Unrelated objects on different types** (separate concurrent watches) may interleave or be grouped
   into commits differently than wall-clock, and `resourceVersion` is not comparable across types anyway.
-  They are usually different files, but they *can* share one — different documents of a multi-document YAML,
-  e.g. when a human or kustomize placed them together — so "different files" is not guaranteed. It still
+  They are usually different files, but they *can* share one, as different documents of a multi-document YAML,
+  e.g. when a human or kustomize placed them together, so "different files" is not guaranteed. It still
   does not affect the materialized state: every write carries its object's current state, all writes to a
   branch funnel through one BranchWorker, and the editor patches each document in place without disturbing
-  its siblings. Only *which* commit each lands in and *when* can differ, and only within the commit window —
+  its siblings. Only *which* commit each lands in and *when* can differ, and only within the commit window.
   a few seconds at most.
 
 The full analysis, worked examples, and the future non-blocking option are in
@@ -822,23 +823,24 @@ The full analysis, worked examples, and the future non-blocking option are in
 
 ***
 
-## Rule and Type Resolution
+## Rule and type resolution
 
 How a user's `WatchRule` becomes "this GitTarget follows these concrete types in these namespaces."
 
 ### RuleStore
 
-* **Source**: [internal/rulestore/store.go](../internal/rulestore/store.go)
+- **Source**: [internal/rulestore/store.go](../internal/rulestore/store.go)
 
 An in memory cache populated through the shared compile paths (`watch.CompileWatchRule` /
 `watch.CompileClusterWatchRule`) that both the controllers and the startup bootstrap call, so a
 restart cannot seed an ungated rule. Compiled rules carry the full chain from rule to `GitTarget`,
-`GitProvider`, branch, and path, plus each WatchRule item's RESOLVED source-namespace set. It is read by the watch manager (to
-build watched type tables for GitTargets) and the rule change reconcile path.
+`GitProvider`, branch, and path, plus each WatchRule item's RESOLVED source-namespace set. It is
+read by the watch manager (to build watched type tables for GitTargets) and the rule change
+reconcile path.
 
 ### APIResourceCatalog
 
-* **Source**: [internal/watch/api_resource_catalog.go](../internal/watch/api_resource_catalog.go)
+- **Source**: [internal/watch/api_resource_catalog.go](../internal/watch/api_resource_catalog.go)
 
 A thin normalizer for each scan: it turns one discovery result into a policy annotated `typeset.Scan` and
 keeps only mechanical bookkeeping. **All judgement across scans lives in the typeset registry**
@@ -852,10 +854,10 @@ trigger informers run only in the **control plane**, where the operator's own CR
 API-surface change is discovered on that periodic refresh or when a rule/target reconciliation explicitly
 refreshes that source.
 
-### TypeRegistry and Followability
+### TypeRegistry and followability
 
-* **Source**: [internal/typeset/](../internal/typeset/)
-* **Design**: [design/manifest/version2/type-followability.md](spec/type-followability.md)
+- **Source**: [internal/typeset/](../internal/typeset/)
+- **Design**: [design/manifest/version2/type-followability.md](spec/type-followability.md)
 
 `internal/typeset` is the single decision surface for "can this type be followed?" Each `TypeRecord`
 carries GVK/GVR identity, scope and preferred version facts, origin classification, subresource facts
@@ -865,7 +867,7 @@ axis via the **Materializer**: a type is materialized only when it is **Followab
 
 ### WatchedTypeTable
 
-* **Source**: [internal/watch/watched_type_table.go](../internal/watch/watched_type_table.go)
+- **Source**: [internal/watch/watched_type_table.go](../internal/watch/watched_type_table.go)
 
 A projection for each `GitTarget` from the type registry, filtered by that target's rules, recording
 resolved GVK/GVR/scope plus namespace and operation coverage. **This is where rule matching effectively
@@ -876,20 +878,20 @@ its own stream and mark-and-sweep boundary.
 
 ***
 
-## Watch Ingestion and Reconcile
+## Watch ingestion and reconcile
 
 Desired state comes from one **raw watch per `(GitTarget, GVR, scope)`**. Each event is sanitized, diffed
-against current Git content, and applied — there is no separate per-type object store to reconstruct,
+against current Git content, and applied. There is no separate per-type object store to reconstruct,
 because Git already holds current state. This section is the authoritative contract; the
 [watch-first design record](finished/watch-first-ingestion-architecture.md) is historical context.
 
-* **Manager**: [internal/watch/manager.go](../internal/watch/manager.go)
-* **Watch / replay / sweep**: [internal/watch/target_watch.go](../internal/watch/target_watch.go)
-* **Author resolver (attribution join + grace window)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
-* **Event router**: [internal/watch/event_router.go](../internal/watch/event_router.go)
-* **Worker resync apply (mark-and-sweep)**: [internal/git/resync_flush.go](../internal/git/resync_flush.go)
+- **Manager**: [internal/watch/manager.go](../internal/watch/manager.go)
+- **Watch / replay / sweep**: [internal/watch/target_watch.go](../internal/watch/target_watch.go)
+- **Author resolver (attribution join + grace window)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
+- **Event router**: [internal/watch/event_router.go](../internal/watch/event_router.go)
+- **Worker resync apply (mark-and-sweep)**: [internal/git/resync_flush.go](../internal/git/resync_flush.go)
 
-### The Watch Manager
+### The watch manager
 
 The watch manager is a controller runtime `Runnable` (`NeedLeaderElection`). It owns **type level**
 discovery, the per-GitTarget watch sets, and the watched type tables for GitTargets. Its object-state
@@ -909,14 +911,15 @@ resolved fail closed against discovery. For each `(GVR, scope)` the manager runs
 opens the watch with `sendInitialEvents=true`, folds the replay into a desired set, runs the
 mark-and-sweep at `initial-events-end`, then streams live events through the relevance filter and the
 author resolver into the GitTargetEventStream. On disconnect or `410 Gone` the goroutine reconnects and
-repeats the replay + sweep. See [Recovery: replay plus mark-and-sweep](#recovery-replay-plus-mark-and-sweep).
+repeats the replay + sweep. See
+[Recovery: resume, replay, or list plus mark-and-sweep](#recovery-resume-replay-or-list-plus-mark-and-sweep).
 
-There is **no periodic object LIST, object checkpoint, or timer-driven object-drift sweep** — the sweep
+There is **no periodic object LIST, object checkpoint, or timer-driven object-drift sweep**. The sweep
 fires only on watch re-establishment. Selector-based source-namespace authorization is separate: it may
 periodically list Namespace labels in the relevant source cluster, but that list never materializes objects
 or triggers a Git sweep.
 
-### Rule Change Reconcile
+### Rule change reconcile
 
 A WatchRule / ClusterWatchRule / GitTarget change, or a **control-plane** CRD / APIService change, reaches
 a GitTarget through the **GitTarget controller**, which `Watches` those objects (generation change
@@ -926,25 +929,25 @@ watch opened (with a `sendInitialEvents` replay) and a type no longer claimed ha
 CRD / APIService change has no trigger informer; the next periodic source-catalog refresh performs the same
 re-resolution. The watch manager then refreshes the watched type tables.
 
-### Mark and Sweep Resync
+### Mark and sweep resync
 
 The BranchWorker applies a reconcile by scanning the GitTarget subtree and building a manifest plan (this
 write side is shared with live writes):
 
-* before anything is planned, a **structure-only acceptance gate** runs over the scanned subtree; if it
-  finds content the operator cannot safely manage — a kustomization using an unsupported feature
+- before anything is planned, a **structure-only acceptance gate** runs over the scanned subtree; if it
+  finds content the operator cannot safely manage: a kustomization using an unsupported feature
   (generators / inline or JSON6902 patches / components / helm / replacements / transformers /
   name(pre|suf)fix / remote bases) or malformed `images:`/`replicas:` overrides, a duplicate manifest
-  identity, an impure managed file, or a standalone non-KRM / invalid YAML —
+  identity, an impure managed file, or a standalone non-KRM / invalid YAML;
   (a path-based strategic-merge `patches:` entry is tolerated as read-only build context, and an
-  overlay reading `../../base` is rendered by reading that base — neither refuses the folder)
+  overlay reading `../../base` is rendered by reading that base, and neither refuses the folder)
   the whole apply is **refused**: nothing is committed, `GitPathAccepted=False`, `Stalled=True`, and
   `Ready=False` with reason `UnsupportedContent` until a human cleans the path;
-* desired resources are upserted through the same content derived path as live writes;
-* existing managed documents that are watched but absent from the desired set are deleted;
-* the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary
+- desired resources are upserted through the same content derived path as live writes;
+- existing managed documents that are watched but absent from the desired set are deleted;
+- the operator's own build directives (`kustomization.yaml`, `.sops.yaml`) and other allowlisted auxiliary
   YAML are retained, not materialised and not refused;
-* nothing is committed if the apply cannot complete safely.
+- nothing is committed if the apply cannot complete safely.
 
 The acceptance gate is **structure-only on purpose**: it never refuses on a discovery-derived
 followability fact (unwatched / out-of-scope), which can blink on a discovery wobble; only facts that are
@@ -959,20 +962,20 @@ reconciled only after the replay completes.
 
 ***
 
-## Git Write Architecture
+## Git write architecture
 
 ### BranchWorker
 
-* **Source**: [internal/git/branch_worker.go](../internal/git/branch_worker.go)
-* **Worker manager**: [internal/git/worker_manager.go](../internal/git/worker_manager.go)
+- **Source**: [internal/git/branch_worker.go](../internal/git/branch_worker.go)
+- **Worker manager**: [internal/git/worker_manager.go](../internal/git/worker_manager.go)
 
 `BranchWorker` owns a local clone and a single FIFO event loop for its `(provider namespace, provider,
 branch)` tuple. Events accumulate in one open commit window, which accepts only one `(author, GitTarget)`
 pair at a time:
 
-* same author + same GitTarget: append to the window;
-* different author or GitTarget: finalize the current window first;
-* repeated writes to the same Git path inside a window use last write wins.
+- same author + same GitTarget: append to the window;
+- different author or GitTarget: finalize the current window first;
+- repeated writes to the same Git path inside a window use last write wins.
 
 The window finalizes when `spec.push.commitWindow` passes with no new matching event, the retained buffer
 reaches `--branch-buffer-max-size` (default `8Mi`), a `CommitRequest` finalize deadline matches the open
@@ -980,10 +983,10 @@ author and GitTarget, or a resync request that is not a heal or shutdown arrives
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during
 bursts. Heal resyncs that arrive during a window are deferred and drained at the next idle boundary.
 
-### Local Clones and Conflict Retry
+### Local clones and conflict retry
 
 Local clones live under
-`/tmp/gitops-reverser-workers/{provider namespace}/{provider}/{branch}/repos/{url-digest}` — the leading
+`/tmp/gitops-reverser-workers/{provider namespace}/{provider}/{branch}/repos/{url-digest}`. The leading
 segments are exactly the `(provider namespace, provider, branch)` tuple that identifies the
 [BranchWorker](../internal/git/branch_worker.go), and the final `{url-digest}` segment is a short digest
 of `GitProvider.spec.url` (a truncated SHA-256 of the remote URL,
@@ -994,16 +997,16 @@ remote diverged it smart fetches the latest tip, hard resets the local clone, re
 writes against the fresh tip (refreshing commit hashes), and retries up to the attempt limit. This is valid
 because every pending write is rebuilt from sanitized API state; nothing depends on locally edited files.
 
-### Durability of the Write Queue (planned)
+### Durability of the write queue (planned)
 
-A BranchWorker's queue — the open commit window's retained writes plus any local commits not yet pushed —
+A BranchWorker's queue (the open commit window's retained writes plus any local commits not yet pushed)
 lives **only in process memory today**. It is about to be **materialized into Redis**, for two reasons:
 
-* **High availability.** Multi-pod HA needs a durable, cross-pod write queue so a branch's
+- **High availability.** Multi-pod HA needs a durable, cross-pod write queue so a branch's
   accepted-but-unpushed work survives a failover: the pod that takes the branch-shard lease resumes that
   queue instead of starting from an empty buffer. This is part of the
   [HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md).
-* **Crash safety that watch replay cannot guarantee.** A crash drops the in-memory queue, and those writes
+- **Crash safety that watch replay cannot guarantee.** A crash drops the in-memory queue, and those writes
   cannot be reliably re-derived by replaying the watch, because **Kubernetes does not guarantee it can
   replay events from every `resourceVersion`.** The apiserver compacts old versions, so resuming from a
   stored cursor can return `410 Gone`; recovery then falls back to a full `sendInitialEvents` replay plus
@@ -1011,38 +1014,38 @@ lives **only in process memory today**. It is about to be **materialized into Re
   [History granularity](#history-granularity)). Persisting the queue lets accepted-but-unpushed writes
   survive a restart on their own, independent of whether the watch can resume from where it left off.
 
-### Manifest Aware Writer
+### Manifest aware writer
 
-* **Steady state**: [internal/git/plan_flush.go](../internal/git/plan_flush.go)
-* **Resync apply**: [internal/git/resync_flush.go](../internal/git/resync_flush.go)
-* **YAML editor**: [internal/git/manifestedit/](../internal/git/manifestedit/)
-* **Analyzer/planner**: [internal/manifestanalyzer/](../internal/manifestanalyzer/)
-* **Object projection**: [internal/manifestreport/](../internal/manifestreport/)
+- **Steady state**: [internal/git/plan_flush.go](../internal/git/plan_flush.go)
+- **Resync apply**: [internal/git/resync_flush.go](../internal/git/resync_flush.go)
+- **YAML editor**: [internal/git/manifestedit/](../internal/git/manifestedit/)
+- **Analyzer/planner**: [internal/manifestanalyzer/](../internal/manifestanalyzer/)
+- **Object projection**: [internal/manifestreport/](../internal/manifestreport/)
 
 For each commit the writer scans YAML files under the GitTarget path, builds a manifest store without bytes
 keyed by resource identity, resolves each event (or each desired resource, for resync) to one action,
 hydrates only touched files into buffers for the commit, and flushes only changed or deleted files.
 
-* **Upserts:** if a managed document for the resource already exists, patch it in place (preserving
+- **Upserts:** if a managed document for the resource already exists, patch it in place (preserving
   siblings in a multi document file); if it is sensitive, encrypt the whole document again at its existing
   path; if no document exists, place a new file per [File Placement](#file-placement) (declared policy,
   then sibling inference, then the canonical default).
-* **Kustomize override edit-through:** a live value produced by a well-formed `images:` or `replicas:`
+- **Kustomize override edit-through:** a live value produced by a well-formed `images:` or `replicas:`
   entry in the document's kustomization chain is written back to that entry (comment-preserving, only
   fields the entry already declares); the source manifest keeps its bytes. Anything the inversion cannot
   express falls back to the plain in-place patch. See
   [images-and-replicas edit-through design](design/support-boundary/finished/images-and-replicas-edit-through.md).
-* **Deletes:** use the manifest identity index, so a moved manifest can still be deleted even when it is
+- **Deletes:** use the manifest identity index, so a moved manifest can still be deleted even when it is
   not at the canonical path.
-* **Field patches** (currently `/scale` → parent `spec.replicas`) are intentionally narrow: they only
+- **Field patches** (currently `/scale` → parent `spec.replicas`) are intentionally narrow: they only
   patch an existing parent manifest and never fabricate a parent object from partial subresource data; a
   `spec.replicas` assignment governed by a `replicas:` override is routed to the entry instead.
 
-### File Placement
+### File placement
 
 Placement runs **only for a resource with no existing document** in the target. Existing resources are
-**match first**: once a document exists in Git, updates and deletes use its current location — found by
-manifest identity, not by path — instead of recomputing placement. So a change to how new files are
+**match first**: once a document exists in Git, updates and deletes use its current location, found by
+manifest identity rather than by path, instead of recomputing placement. So a change to how new files are
 placed never moves a file already in Git. A new resource is placed by the first of these that applies
 ([internal/manifestanalyzer/placement.go](../internal/manifestanalyzer/placement.go),
 [design](spec/gittarget-new-file-placement-rules.md)):
@@ -1051,44 +1054,44 @@ placed never moves a file already in Git. A new resource is placed by the first 
    `[group/]version/resource` → path template) plus a `default` template, rendered from a small
    brace-variable path language (`{namespace}`, `{group}`, `{resource}`, `{name}`, …).
 2. **Sibling inference.** With no matching declared template, the new resource follows the layout its
-   siblings already use — appended to the bundle its type shares, or placed one-per-file beside them —
+   siblings already use: appended to the bundle its type shares, or placed one-per-file beside them.
    so pointing a target at an existing folder just continues that folder's convention. When the whole
    subtree is governed by one supported kustomization and the type is brand new, the file lands beside
    that kustomization and gets a `resources:` entry.
 3. **Canonical fallback.** With nothing to follow (an empty repo, a brand-new type), the built-in default
-   `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml` — namespace-first, group omitted for core, no
-   version, `_cluster/` for cluster-scoped, `.sops.yaml` for sensitive — so a fresh target is deterministic
+   `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml`: namespace-first, group omitted for core, no
+   version, `_cluster/` for cluster-scoped, `.sops.yaml` for sensitive, so a fresh target is deterministic
    and self-propagating.
 
 Sensitivity is a write-safety classifier, not a placement input: whatever path is chosen, a sensitive
 resource is written encrypted, is never appended to an existing file, and is never co-mingled with a
 plaintext document. When those guarantees cannot be honoured (e.g. a bundling `default` would route a
-sensitive resource into a shared file), the resource is **skipped fail-safe** — logged per-resource and
-counted in the resync summary (`placementSkipped`) — rather than written unsafely.
+sensitive resource into a shared file), the resource is **skipped fail-safe** (logged per-resource and
+counted in the resync summary as `placementSkipped`) rather than written unsafely.
 
-### Bootstrap, Encryption, and Signing
+### Bootstrap, encryption, and signing
 
-* **Bootstrap** ([bootstrapped_repo_template.go](../internal/git/bootstrapped_repo_template.go)): the
+- **Bootstrap** ([bootstrapped_repo_template.go](../internal/git/bootstrapped_repo_template.go)): the
   first write to a GitTarget path stages a `README.md` and, when encryption is configured, a `.sops.yaml`
   with age recipient rules. Existing files are preserved.
-* **Encryption** ([encryption.go](../internal/git/encryption.go),
+- **Encryption** ([encryption.go](../internal/git/encryption.go),
   [sops_encryptor.go](../internal/git/sops_encryptor.go),
   [sensitivity policy](../internal/types/sensitive_resource.go)): core Secrets are sensitive by default;
   `--additional-sensitive-resources` adds more. Sensitive resources are **never written in plaintext**. If
   encryption is required and unavailable, the write fails before any plaintext file is created. Encrypted
   output is cached by metadata + plaintext digest to avoid redundant SOPS work.
-* **Signing** ([signing.go](../internal/git/signing.go), [sshsig/](../internal/sshsig/)): commits use
+- **Signing** ([signing.go](../internal/git/signing.go), [sshsig/](../internal/sshsig/)): commits use
   OpenSSH signatures, with the key read from `GitProvider.spec.commit.signing.secretRef` or generated when
   configured.
 
 ***
 
-## CommitRequest Finalize
+## CommitRequest finalize
 
-* **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
-* **Admission handler**:
+- **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
+- **Admission handler**:
   [internal/webhook/validate_operator_types_handler.go](../internal/webhook/validate_operator_types_handler.go)
-* **Admission author cache**:
+- **Admission author cache**:
   [internal/queue/command_author_store.go](../internal/queue/command_author_store.go)
 
 A `CommitRequest` finalizes the open commit window for its GitTarget. The request author is resolved from
@@ -1117,23 +1120,23 @@ by the validating webhook, not derived from the audit attribution index.
 
 ***
 
-## Controller Wiring
+## Controller wiring
 
 Controllers watch their dependencies so dependents reconcile quickly after spec changes:
 
-* `GitTargetReconciler` watches `GitProvider`, `ClusterProvider`, `Namespace`, `WatchRule`, and
+- `GitTargetReconciler` watches `GitProvider`, `ClusterProvider`, `Namespace`, `WatchRule`, and
   `ClusterWatchRule`. Provider readiness/spec changes and namespace-label changes promptly re-check
   source authorization; rules re-declare the claimed `(GVR, scope)` set. It deliberately does **not**
   watch encryption Secrets, so their recovery is picked up by periodic reconciliation without retaining
   every Secret value in the control-plane cache.
-* `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate the
+- `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`, populate the
   RuleStore, and trigger the rule-change reconcile.
-* `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
-* `ClusterProviderReconciler` validates source-connection inputs and projects its readiness to dependent
+- `GitProviderReconciler` validates reachability and manages the signing key lifecycle.
+- `ClusterProviderReconciler` validates source-connection inputs and projects its readiness to dependent
   targets. It also removes the retired fact-purge finalizer from pre-release objects during an upgrade.
-* `CommitRequestReconciler` runs with `MaxConcurrentReconciles=1` and attributes/attaches as above; its
+- `CommitRequestReconciler` runs with `MaxConcurrentReconciles=1` and attributes/attaches as above; its
   optional `AuthorLookup` is the command-author cache populated by the `/validate-operator-types` webhook
-  (wired whenever the admission webhook is enabled — independent of `--author-attribution` — and nil
+  (wired whenever the admission webhook is enabled, independent of `--author-attribution`, and nil
   otherwise, so the request claims no actor).
 
 Dependency watches use narrow predicates to avoid status-only heartbeat churn: a `ClusterProvider` also
@@ -1143,7 +1146,7 @@ invalidate an in-flight finalize.
 
 ***
 
-## Startup Sequence
+## Startup sequence
 
 Defined in [cmd/main.go](../cmd/main.go):
 
@@ -1157,7 +1160,7 @@ flowchart TD
     F --> G[Register WatchRule + ClusterWatchRule controllers]
     G --> H{redis-addr set?}
     H -->|yes| Hi[Create Redis cursor store + wire WatchCursorStore + readiness gate]
-    H -->|no| Hj[Skip Redis — WatchCursorStore nil; watches cold-replay on restart]
+    H -->|no| Hj[Skip Redis: WatchCursorStore nil; watches cold-replay on restart]
     Hi --> Hq{author-attribution?}
     Hj --> Hq
     Hq -->|yes| I[Build attribution index + audit fact extractor + audit HTTP server + resolver]
@@ -1183,18 +1186,18 @@ commit is committer-authored.
 
 ## Observability
 
-* **Source**: [internal/telemetry/exporter.go](../internal/telemetry/exporter.go)
+- **Source**: [internal/telemetry/exporter.go](../internal/telemetry/exporter.go)
 
 Metrics are exported over OTLP / the metrics server. The audit-attribution path is instrumented:
 
-* `gitopsreverser_audit_events_total{outcome,category}` — one terminal outcome per audit event (e.g.
+- `gitopsreverser_audit_events_total{outcome,category}`: one terminal outcome per audit event (e.g.
   `queued`, `stage`, `read_only_or_unknown_verb`, `failed_request`, `dry_run`,
   `unchanged_resource_version`, `non_scale_subresource`, `write_error`);
-* `gitopsreverser_audit_eventlists_total` / `_eventlist_events_total` / `_eventlist_duration_seconds`
-  `{outcome}` — the `/audit-webhook` request boundary;
-* `gitopsreverser_target_reconcile_completed_total{gittarget_*}` — per-GitTarget reconcile completions
+- `gitopsreverser_audit_eventlists_total` / `_eventlist_events_total` / `_eventlist_duration_seconds`
+  `{outcome}`: the `/audit-webhook` request boundary;
+- `gitopsreverser_target_reconcile_completed_total{gittarget_*}`: per-GitTarget reconcile completions
   (read by the restart-reconcile guarantee);
-* resync/background-apply failure counters so a silently-recovered fault stays visible.
+- resync/background-apply failure counters so a silently-recovered fault stays visible.
 
 Per-watch volume/restart/replay metrics and per-attribution result/wait histograms are designed in the
 [metrics observability plan](design/metrics-observability-plan.md) but **not yet emitted**; see
@@ -1202,33 +1205,33 @@ Per-watch volume/restart/replay metrics and per-attribution result/wait histogra
 
 ***
 
-## Operational Boundaries
+## Operational boundaries
 
 Current limitations:
 
-* **Single active replica.** The watch manager and worker manager declare `NeedLeaderElection`, so all
+- **Single active replica.** The watch manager and worker manager declare `NeedLeaderElection`, so all
   object-state work runs on one elected pod; multi-pod HA is not finished. The target design is the
   [HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md), which needs Redis for
   resume cursors, branch-shard leases, and durable write queues.
-* **Resume cursors are best-effort.** Each watch shard stores its last processed resourceVersion in Redis,
+- **Resume cursors are best-effort.** Each watch shard stores its last processed resourceVersion in Redis,
   so short reconnects resume a normal watch from that cursor. Kubernetes does not guarantee replay from an
   arbitrary resourceVersion, so if the apiserver has expired the cursor (`410 Gone`) recovery falls back to
   `sendInitialEvents` replay or LIST + mark-and-sweep.
-* **Per-watch and per-attribution metrics are not yet emitted** (see [Observability](#observability)).
-* **No pull request creation;** the operator writes directly to branches.
-* **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
+- **Per-watch and per-attribution metrics are not yet emitted** (see [Observability](#observability)).
+- **No pull request creation;** the operator writes directly to branches.
+- **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
   annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
   certificate is not bound to one provider. This is an accepted privileged-control-plane assumption, not
   tenant isolation; see [SECURITY.md](../SECURITY.md#shared-audit-ingress-trust-model).
-* **`deletecollection`** is reconciled by the watch (each item arrives as its own `DELETED`, or the
+- **`deletecollection`** is reconciled by the watch (each item arrives as its own `DELETED`, or the
   mark-and-sweep reconciles them on replay).
-* **A fail-safe placement skip has no dedicated status condition.** A resource the writer refuses to
+- **A fail-safe placement skip has no dedicated status condition.** A resource the writer refuses to
   place unsafely is logged per-resource and counted in the resync summary (`placementSkipped`), but is
   not (yet) surfaced as a distinct GitTarget status condition.
 
 ***
 
-## Package Map
+## Package map
 
 | Package | Role |
 |---|---|
@@ -1255,30 +1258,30 @@ Current limitations:
 
 ***
 
-## Design Documents
+## Design documents
 
 Deeper dives live under [docs/design/](design/):
 
 **Ingestion, attribution, and reconcile:**
 
-* [Watch-first ingestion design record](finished/watch-first-ingestion-architecture.md) — historical context
+- [Watch-first ingestion design record](finished/watch-first-ingestion-architecture.md): historical context
   for the current watch-only object-state model and optional audit attribution.
-* [Watch event ordering under the attribution grace window](facts/watch-event-ordering-and-attribution-grace.md)
-* [Reconcile via watchlist mark and sweep](spec/reconcile-via-watchlist-mark-and-sweep.md)
-* [CommitRequest design](spec/commitrequest-design.md)
+- [Watch event ordering under the attribution grace window](facts/watch-event-ordering-and-attribution-grace.md)
+- [Reconcile via watchlist mark and sweep](spec/reconcile-via-watchlist-mark-and-sweep.md)
+- [CommitRequest design](spec/commitrequest-design.md)
 
 **Types, discovery, status, and the Git write side:**
 
-* [Type followability](spec/type-followability.md)
-* [Typeset owns discovery grace](spec/typeset-owns-discovery-grace.md)
-* [Kubernetes API resource catalog](facts/kubernetes-api-resource-catalog.md)
-* [GitTarget status design](spec/status-conditions-guide.md)
-* [GitTarget lifecycle and repo architecture](architecture.md)
-* [Git credentials interop](finished/git-credentials-interop.md)
-* [SOPS/age key management](finished/sops-repo-bootstrap-and-key-management-architecture.md)
-* [Commit signing](commit-signing.md)
-* [Interpreting metrics](interpreting-metrics.md)
+- [Type followability](spec/type-followability.md)
+- [Typeset owns discovery grace](spec/typeset-owns-discovery-grace.md)
+- [Kubernetes API resource catalog](facts/kubernetes-api-resource-catalog.md)
+- [GitTarget status design](spec/status-conditions-guide.md)
+- [GitTarget lifecycle and repo architecture](architecture.md)
+- [Git credentials interop](finished/git-credentials-interop.md)
+- [SOPS/age key management](finished/sops-repo-bootstrap-and-key-management-architecture.md)
+- [Commit signing](commit-signing.md)
+- [Interpreting metrics](interpreting-metrics.md)
 
 **Future direction:**
 
-* [HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md)
+- [HA / GitTarget distribution plan](future/ha-gittarget-distribution-plan.md)
