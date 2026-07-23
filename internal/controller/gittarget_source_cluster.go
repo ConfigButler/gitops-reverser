@@ -71,9 +71,9 @@ const (
 	// the GitTarget, so one `kubectl get gittarget` shows whether the SOURCE cluster's provider is
 	// healthy — distinct from SourceClusterReachable (the data plane's runtime reach) and
 	// GitProviderReady (the destination). It follows the GitProviderReady contract: only an
-	// EXPLICIT Ready=False downgrades the GitTarget; a not-found or not-yet-reported provider is
-	// Unknown and does not (so a single-cluster install that has not yet installed the "default"
-	// provider is not held down).
+	// EXPLICIT Ready=False downgrades the GitTarget; a provider that has not reported readiness yet
+	// is Unknown and does not. A MISSING provider never reaches this projection at all — that is the
+	// Validated gate's hard denial (GitTargetReasonClusterProviderNotFound), not a readiness axis.
 	GitTargetConditionClusterProviderReady = "ClusterProviderReady"
 	// GitTargetReasonClusterProviderNotReady is the ClusterProviderReady=False/Unknown reason.
 	GitTargetReasonClusterProviderNotReady = "ClusterProviderNotReady"
@@ -81,40 +81,42 @@ const (
 	GitTargetReasonClusterProviderReady = "ClusterProviderReady"
 )
 
-// auditRouteFor resolves the audit route this GitTarget's attribution facts are keyed under, from
-// the referenced ClusterProvider's spec.attribution.auditRoute. It is read here, on the control
-// plane, so the watch data plane can capture it on Declare and never needs a Kubernetes client of
-// its own to attribute an event.
+// resolveSourceClusterProvider reads the ClusterProvider this GitTarget mirrors through, ONCE per
+// reconcile, for the two consumers that need it: the audit route captured on Declare, and the
+// ClusterProviderReady projection. It runs AFTER the Validated gate, which already proved through
+// authz.GitTargetAdmitted that this provider exists and admits this namespace — so a failure here
+// means the provider vanished (or the apiserver blinked) mid-reconcile, and it is returned as an
+// error so the reconcile requeues.
 //
-// An unreadable provider falls back to the provider NAME, which is exactly what AuditRoute()
-// defaults to. So a transient read failure resolves the same route a provider that sets nothing
-// would, and never a route that silently matches no facts.
-func (r *GitTargetReconciler) auditRouteFor(
+// Requeuing rather than guessing a route is the point. spec.attribution.auditRoute may be ANY
+// string, so a route inferred from the provider NAME is only correct for a provider that declares
+// none: guess it for a provider that declares `shared-route` and this target's streams are declared
+// under a partition the audit webhook never writes to. Attribution then resolves nobody — or, if
+// some other provider is NAMED `shared-route`, resolves that cluster's facts and writes a wrong
+// author into Git.
+func (r *GitTargetReconciler) resolveSourceClusterProvider(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
-) string {
+) (*configbutleraiv1alpha3.ClusterProvider, error) {
 	name := target.SourceCluster()
 	var cp configbutleraiv1alpha3.ClusterProvider
 	if err := r.Get(ctx, k8stypes.NamespacedName{Name: name}, &cp); err != nil {
-		return name
+		return nil, fmt.Errorf("read source ClusterProvider %q: %w", name, err)
 	}
-	return cp.AuditRoute()
+	return &cp, nil
 }
 
-// clusterProviderReadiness reads the referenced ClusterProvider's Ready condition and projects it,
-// mirroring gitProviderReadiness. It returns Unknown — which does NOT downgrade Ready — when the
-// provider cannot be observed (not found, or no Ready condition yet), so a not-yet-installed
-// "default" provider never blocks a local GitTarget; only an explicit Ready=False downgrades.
-func (r *GitTargetReconciler) clusterProviderReadiness(
-	ctx context.Context,
-	target *configbutleraiv1alpha3.GitTarget,
+// clusterProviderReadiness projects the referenced ClusterProvider's Ready condition, mirroring
+// gitProviderReadiness. It takes the provider resolveSourceClusterProvider already read rather than
+// reading its own, so the readiness reported and the audit route declared always describe the same
+// observation of the same object.
+//
+// Only an EXPLICIT Ready=False downgrades the GitTarget; a provider that has not reported readiness
+// yet is Unknown, which does not.
+func clusterProviderReadiness(
+	cp *configbutleraiv1alpha3.ClusterProvider,
 ) (metav1.ConditionStatus, string, string) {
-	name := target.SourceCluster()
-	var cp configbutleraiv1alpha3.ClusterProvider
-	if err := r.Get(ctx, k8stypes.NamespacedName{Name: name}, &cp); err != nil {
-		return metav1.ConditionUnknown, GitTargetReasonClusterProviderNotReady,
-			fmt.Sprintf("referenced ClusterProvider %q readiness not observed: %v", name, err)
-	}
+	name := cp.Name
 	c := findCondition(cp.Status.Conditions, ConditionTypeReady)
 	switch {
 	case c == nil:

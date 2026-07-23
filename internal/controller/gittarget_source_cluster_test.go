@@ -412,6 +412,9 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 		Message: "validating",
 	}
 
+	// The absent-provider case is deliberately NOT here: this projection runs only after the
+	// Validated gate admitted the target through an existing ClusterProvider, and it is handed the
+	// provider that gate's reconcile already read. A provider that cannot be read never reaches it.
 	tests := []struct {
 		name string
 		cp   *configbutleraiv1alpha3.ClusterProvider
@@ -420,7 +423,6 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 		{"ready", provider([]metav1.Condition{ready}), metav1.ConditionTrue},
 		{"not ready -> False (downgrades)", provider([]metav1.Condition{notReady}), metav1.ConditionFalse},
 		{"no condition -> Unknown (does not downgrade)", provider(nil), metav1.ConditionUnknown},
-		{"absent provider -> Unknown", nil, metav1.ConditionUnknown},
 		// Only an EXPLICIT Ready=False downgrades. A provider reporting Ready=Unknown is mid-flight,
 		// not broken, so it must not hold its GitTargets down.
 		{
@@ -431,18 +433,7 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := fake.NewClientBuilder().WithScheme(scScheme(t))
-			if tc.cp != nil {
-				builder = builder.WithObjects(tc.cp)
-			}
-			r := &GitTargetReconciler{Client: builder.Build()}
-			target := &configbutleraiv1alpha3.GitTarget{
-				ObjectMeta: metav1.ObjectMeta{Name: "gt", Namespace: "team-a"},
-				Spec: configbutleraiv1alpha3.GitTargetSpec{
-					ClusterProviderRef: &configbutleraiv1alpha3.ClusterProviderReference{Name: "prod-eu-1"},
-				},
-			}
-			status, _, msg := r.clusterProviderReadiness(context.Background(), target)
+			status, _, msg := clusterProviderReadiness(tc.cp)
 			assert.Equal(t, tc.want, status)
 			assert.NotEmpty(t, msg)
 		})
@@ -494,14 +485,15 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 	}
 }
 
-// TestAuditRouteFor covers how a GitTarget learns the audit route its author facts are keyed under.
-// The controller reads it here, on the control plane, so the watch data plane needs no Kubernetes
-// client of its own to attribute an event.
+// TestResolveSourceClusterProvider covers the single read that feeds both the audit route a
+// GitTarget's streams are declared under and its ClusterProviderReady projection.
 //
-// The fallback is the load-bearing case: an unreadable provider must resolve the provider NAME,
-// which is exactly what AuditRoute() defaults to. Resolving anything else would key the read to a
-// partition the audit handler never writes, which is the failure this whole change removes.
-func TestAuditRouteFor(t *testing.T) {
+// The load-bearing case is the unreadable provider: it must ERROR, so the reconcile requeues
+// without declaring. Resolving a route by falling back to the provider NAME is right only for a
+// provider that declares none — do it for one that declares `shared-route` and this target's
+// streams are keyed to a partition the audit handler never writes, which is exactly the silent
+// attribution loss this resolution exists to prevent.
+func TestResolveSourceClusterProvider(t *testing.T) {
 	const providerName = "srcns-delegating"
 
 	target := func() *configbutleraiv1alpha3.GitTarget {
@@ -520,38 +512,44 @@ func TestAuditRouteFor(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		objects []client.Object
-		want    string
+		name      string
+		objects   []client.Object
+		wantRoute string
 	}{
 		{
 			name: "a declared route is used",
 			objects: []client.Object{
 				provider(&configbutleraiv1alpha3.ClusterProviderAttribution{AuditRoute: "default"}),
 			},
-			want: "default",
+			wantRoute: "default",
 		},
 		{
-			name:    "an empty attribution block falls back to the provider name",
-			objects: []client.Object{provider(&configbutleraiv1alpha3.ClusterProviderAttribution{})},
-			want:    providerName,
+			name:      "an empty attribution block resolves the provider name",
+			objects:   []client.Object{provider(&configbutleraiv1alpha3.ClusterProviderAttribution{})},
+			wantRoute: providerName,
 		},
 		{
-			name:    "no attribution block falls back to the provider name",
-			objects: []client.Object{provider(nil)},
-			want:    providerName,
-		},
-		{
-			name:    "an unreadable provider falls back to the provider name",
-			objects: nil,
-			want:    providerName,
+			name:      "no attribution block resolves the provider name",
+			objects:   []client.Object{provider(nil)},
+			wantRoute: providerName,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cl := fake.NewClientBuilder().WithScheme(scScheme(t)).WithObjects(tc.objects...).Build()
 			r := &GitTargetReconciler{Client: cl}
-			assert.Equal(t, tc.want, r.auditRouteFor(context.Background(), target()))
+			cp, err := r.resolveSourceClusterProvider(context.Background(), target())
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantRoute, cp.AuditRoute())
 		})
 	}
+
+	t.Run("an unreadable provider errors instead of guessing a route", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scScheme(t)).Build()
+		r := &GitTargetReconciler{Client: cl}
+		cp, err := r.resolveSourceClusterProvider(context.Background(), target())
+		require.Error(t, err, "a guessed route silently mis-keys this target's attribution facts")
+		assert.Nil(t, cp)
+		assert.Contains(t, err.Error(), providerName)
+	})
 }
