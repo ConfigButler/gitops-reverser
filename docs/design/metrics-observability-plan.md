@@ -1,7 +1,7 @@
 # Metrics & Audit Observability — improvement plan
 
 > **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: PROPOSAL — 2026-06-26. **Architecture-led**: [architecture.md](../architecture.md) is the
 > spine; every metric below maps to a stage in
 > [Common Flows](../architecture.md#common-flows). The live baseline and the
@@ -132,7 +132,7 @@ rules/CRDs change (pairs with `target_reconcile_completed_total{trigger=rule_cha
 This is the subsystem you want glass-box. The model
 ([architecture.md → Optional Attribution](../architecture.md#optional-attribution)):
 
-```
+```text
 kube-apiserver --POST--> /audit-webhook --gate--> write attribution fact (Redis, TTL)
                                                           |
 watch event ---------> resolver waits up to --author-attribution-grace --> join by RV/UID
@@ -192,6 +192,7 @@ Grafana, one dashboard, top-down. The **Audit & Attribution** row is the marquee
 panel is copy-pasteable.
 
 **Row 0 — SLO header (stat panels):**
+
 - Commit rate: `sum(rate(gitopsreverser_commits_total[5m]))`
 - Audit errors (must be 0): `sum(rate(gitopsreverser_audit_events_total{category="error"}[5m]))`
 - Attribution match coverage %: `sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m])) / sum(rate(gitopsreverser_attribution_resolutions_total[5m]))`
@@ -199,16 +200,26 @@ panel is copy-pasteable.
 - Max worker queue depth: `max(gitopsreverser_branch_worker_queue_depth)`
 
 **Row 1 — AUDIT & ATTRIBUTION (marquee):**
+
 - *Live audit stream by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_audit_events_total[1m]))`
 - *Audit outcome mix* (stacked): `sum by (category,outcome)(rate(gitopsreverser_audit_events_total[5m]))`
-- *Attribution match coverage by type* (timeseries): `sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m])) / sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total[5m]))`
+- *Attribution match coverage by type* (timeseries):
+
+  ```promql
+  sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*"}[5m]))
+    / sum by (group,version,resource)(rate(gitopsreverser_attribution_resolutions_total[5m]))
+  ```
+
 - *Commit author mix* (pie/stacked): `sum by (author_kind)(rate(gitopsreverser_commits_total[15m]))`
-- *Grace-window wait p95 by result* (timeseries) with an `--author-attribution-grace` threshold line: `histogram_quantile(0.95, sum by (le,result)(rate(gitopsreverser_attribution_resolution_wait_seconds_bucket[5m])))`
+- *Grace-window wait p95 by result* (timeseries) with an `--author-attribution-grace` threshold
+  line:
+  `histogram_quantile(0.95, sum by (le,result)(rate(gitopsreverser_attribution_resolution_wait_seconds_bucket[5m])))`
 - *Fact-index health* (timeseries): `sum by (op)(rate(gitopsreverser_attribution_fact_events_total[5m]))` + `gitopsreverser_attribution_fact_index_size`
 - *Top dropped audit outcomes* (table): `topk(10, sum by (resource,verb,outcome)(rate(gitopsreverser_audit_events_total{category="dropped"}[5m])))`
 - *EventList ingress + decode errors* (timeseries): `sum by (outcome)(rate(gitopsreverser_audit_eventlists_total[5m]))`
 
 **Row 2 — WATCH INGESTION:**
+
 - Events/sec by type: `sum by (group,version,resource,type)(rate(gitopsreverser_watch_events_total[5m]))`
 - Restarts / `410` pressure: `sum by (group,version,resource,reason)(rate(gitopsreverser_watch_restarts_total[15m]))`
 - Replay p95: `histogram_quantile(0.95, sum by (le,group,version,resource)(rate(gitopsreverser_watch_replay_seconds_bucket[5m])))`
@@ -216,11 +227,13 @@ panel is copy-pasteable.
 - Active watches vs claimed: `sum(gitopsreverser_watch_active)` vs `sum(gitopsreverser_watched_types)`
 
 **Row 3 — GIT WRITE:**
+
 - Commit rate by provider/branch, push latency p95, conflict-retry ratio
   (`rate(git_push_conflicts_total)/rate(commits_total)`), queue depth, objects written, resync sweep
   deletes: `sum by (group,version,resource)(rate(gitopsreverser_resync_sweep_deletes_total[1h]))`.
 
 **Row 4 — DISCOVERY / SECRETS:**
+
 - Allowed resources, degraded group/versions (`> 0` red), refresh outcome mix, encryption failure rate.
 
 > The dashboard ships as JSON under `docs/dashboards/` (or the chart) so it is versioned with the code.
@@ -243,7 +256,7 @@ panel is copy-pasteable.
 |---|---|---|
 | Audit fact-store errors | `rate(audit_events_total{outcome="write_error"}[10m]) > 0` | Redis fact writes failing |
 | Attribution match coverage drop | match coverage `< 0.5` for 30m while audit flowing | facts stopped matching watch events |
-| Grace window saturating | `attribution_resolution_wait_seconds{result=~"absent|expired"}` p95 → `--author-attribution-grace` | misses are waiting the full grace; raise grace or skip never-attributed types |
+| Grace window saturating | `attribution_resolution_wait_seconds{result=~"absent\|expired"}` p95 → `--author-attribution-grace` | misses are waiting the full grace; raise grace or skip never-attributed types |
 | Watch restart storm | `rate(watch_restarts_total{reason="410_gone"}[15m])` spike | RV churn / compaction pressure |
 | List fallback in use | `rate(watch_recovery_total{mode="list_fallback"}[1h]) > 0` | an aggregated API isn't honoring streaming list |
 | Worker backing up | `branch_worker_queue_depth` rising, not draining | stalled remote |

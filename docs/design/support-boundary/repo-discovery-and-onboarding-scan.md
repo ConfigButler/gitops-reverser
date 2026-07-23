@@ -171,7 +171,8 @@ refusal, and helm inflation must not be reported as an adoptable overlay. The fo
 
 Two renderings, matching the existing `--format text|json` split. JSON is the interface a
 tool built on top consumes. The shape below is what the
-[first cut](#first-cut-shipped-2026-07-09) emits, per candidate — **except `proposedGitTarget`, which is the eventual goal and is
+[first cut](#first-cut-shipped-2026-07-09) emits, per candidate — **except `proposedGitTarget`,
+which is the eventual goal and is
 not emitted yet** (CR proposal is deferred). Do not copy `proposedGitTarget` as if it
 were live output. (The block is fenced `jsonc` because it carries an explanatory
 comment — the shipped report is strict JSON.)
@@ -217,7 +218,7 @@ gate is deferred.
 
 A new mode on `manifest-analyzer` (shipped form):
 
-```
+```bash
 manifest-analyzer --mode scan-repo --format json <repo-root>
 ```
 
@@ -373,21 +374,21 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
 
 ## Open questions
 
-1. **Mode naming / the `discovery` collision** — _partly settled:_ the repo mode is
+1. **Mode naming / the `discovery` collision** — *partly settled:* the repo mode is
    `scan-repo` and the folder mode is `scan-folder`, mirroring `ScanRepo` / `ScanFolder`
    (no collision). Whether to also rename the K8s-API mode to `api-discovery` is still
    open.
 2. **Stop at `GitTarget`, or also propose `WatchRule`s?** — moot for now: the first cut
    proposes neither (reports only).
 3. **Read-scope depth for overlays the operator refuses today** — how far up the tree to
-   follow `../../base` when the operator would still refuse the folder. _First cut:_
+   follow `../../base` when the operator would still refuse the folder. *First cut:*
    `readScope` is the **minimal** set of out-of-subtree base directories (a base nested
    under another reached base is folded into its parent, so the rendered-document count
    never double-counts a shared nested base). How many levels a caller should *display*
    remains a presentation choice.
-4. **Library vs. CLI as the integration point** — _settled:_ library-first
+4. **Library vs. CLI as the integration point** — *settled:* library-first
    (`ScanRepo`), CLI (`--mode scan-repo`) as the thin wrapper + CI gate.
-5. **`overlay-fan-out-unsupported` naming** — _moot: retired._ Render-root scoping shipped and
+5. **`overlay-fan-out-unsupported` naming** — *moot: retired.* Render-root scoping shipped and
    the scanner now adopts external-base overlays, so this reason is no longer emitted. The
    public `pkg/manifestanalyzer` constant is kept (deprecated) for source compatibility; the
    naming debate is closed because the code is gone from the output.

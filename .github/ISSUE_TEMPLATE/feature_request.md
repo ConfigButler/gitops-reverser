@@ -22,7 +22,8 @@ Add any other context or screenshots about the feature request here.
 **Implementation considerations**
 If you have thoughts on how this could be implemented, please share them here.
 
-**Priority**
+## Priority
+
 - [ ] Low
 - [ ] Medium
 - [ ] High

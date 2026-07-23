@@ -1,6 +1,7 @@
 # flux-resourceset-pull-requests
 
 ## What this is
+
 Ephemeral **preview environments**, one per open pull request. A
 `ResourceSetInputProvider` of type `GitHubPullRequest` queries the Git host's API
 for open PRs carrying the `preview` label, and a `ResourceSet` renders a
@@ -11,7 +12,8 @@ This is the same expansion mechanism as
 breaks a much deeper assumption: **the inputs are not in the repository.**
 
 ## Layout
-```
+
+```yaml
 flux-resourceset-pull-requests/
 ├── README.md
 └── previews/
@@ -19,6 +21,7 @@ flux-resourceset-pull-requests/
 ```
 
 ## What makes it structurally distinct
+
 - **The desired object set is not knowable from the repository.** Every other
   fixture in this corpus can, in principle, be answered by reading files — even
   the ones we refuse. Here the answer is "however many pull requests are open
@@ -38,6 +41,7 @@ flux-resourceset-pull-requests/
   commit in `example-org/frontend`, which is not this repo.
 
 ## Open questions
+
 - A repository scan reports "what is here". For this repo, the honest report is
   "the objects this repo produces cannot be determined from this repo". Is that a
   refusal, a layout classification, or a new kind of answer entirely?

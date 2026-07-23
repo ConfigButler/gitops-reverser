@@ -1,6 +1,7 @@
 # rendered-manifests
 
 ## What this is
+
 The "rendered manifests" (a.k.a. "hydrated manifests" or "rendered YAML")
 pattern. Instead of pointing the GitOps tool at Helm charts or kustomize
 overlays and letting it template at apply time, a CI job runs the renderer
@@ -14,7 +15,8 @@ Here `src/` holds the kustomize sources, `src/render.sh` renders each overlay,
 and the results land under `rendered/<env>/`. Argo CD reads only `rendered/`.
 
 ## Layout
-```
+
+```yaml
 14-rendered-manifests/
 ├── README.md
 ├── src/                                # inputs — the GitOps tool never reads these
@@ -39,6 +41,7 @@ and the results land under `rendered/<env>/`. Argo CD reads only `rendered/`.
 ```
 
 ## What makes it structurally distinct
+
 - **Git is the desired state, exactly.** The files under `rendered/` are the
   literal objects applied to the cluster — no templating, no overlay math
   happens after commit. What you read is what runs.
@@ -64,6 +67,7 @@ and the results land under `rendered/<env>/`. Argo CD reads only `rendered/`.
   `path: rendered/production`. The sources are invisible to the cluster.
 
 ## Open questions
+
 - If a tool edits `rendered/production/frontend.yaml` in place, the next
   `render.sh` overwrites it. Where should an intended change actually be
   written so it survives the next render?

@@ -96,7 +96,6 @@ a namespace: a `GitProvider` may reference a Secret anywhere, so the grant is cl
 namespace it already knows. Narrowing that further is
 [remaining work](future/least-privilege-remaining-work.md).
 
-
 ## Sensitive trust boundaries
 
 | Boundary | Why it matters |
@@ -131,20 +130,20 @@ examples below use the Kubernetes-native key names; the reader also accepts the 
 names so an existing GitOps Secret works unchanged (see
 [`design/git-credentials-interop.md`](finished/git-credentials-interop.md)).
 
-**HTTPS (basic auth)**
+### HTTPS (basic auth)
 
 | Key | Required | Notes |
 |---|---|---|
 | `username` | yes | Git username. |
 | `password` | yes | Token or password. |
 
-**HTTPS (bearer token)**
+### HTTPS (bearer token)
 
 | Key | Required | Notes |
 |---|---|---|
 | `bearerToken` | yes | OAuth/PAT bearer token; sent without a username (GitHub fine-grained PAT, GitLab access token). |
 
-**SSH**
+### SSH
 
 | Key | Required | Notes |
 |---|---|---|

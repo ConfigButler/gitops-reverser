@@ -1,7 +1,7 @@
 # Type followability model
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: greenfield proposal, captured 2026-06-08
 >
 > Supersedes the layered model in
@@ -362,5 +362,5 @@ Greenfield names, but they land on existing packages:
 - [catalog-mapper-vs-watched-type-table.md](type-followability.md)
 - [subresource-scope-reduction.md](scale-subresource-audit-rehydration.md)
 - [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md)
-- [resource-types.md](../facts/resource-types.md)
+- [resource-types.yaml](../facts/resource-types.yaml)
 - [subresources.md](../facts/subresources.md)

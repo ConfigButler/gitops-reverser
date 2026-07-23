@@ -37,6 +37,7 @@ The moment the cluster is up, six labeled ports auto-forward — no hunting for 
 | 19090 | **Prometheus** | Controller metrics + history |
 | 19080 | **Flux Operator UI** | The GitOps side of the house |
 | 16379 | **Valkey (Redis-compatible)** | Watch-resume state |
+
 ## 4. Tilt turns the whole thing into a playground
 
 `tilt up`, open [localhost:10350](http://localhost:10350), and you get a live loop: edit a `.go`
@@ -107,43 +108,53 @@ be **SSH-signed**. It even captures resources served by an **aggregated API serv
 None of the above exists without a huge amount of excellent open-source work. Thank you to the
 maintainers of all of these.
 
-**Kubernetes & the operator toolkit**
+### Kubernetes & the operator toolkit
+
 - [Kubernetes](https://kubernetes.io/) and `kubectl` — the platform this whole project reflects.
 - [Kubebuilder](https://kubebuilder.io/), [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime),
   and [controller-tools](https://github.com/kubernetes-sigs/controller-tools) — the operator scaffolding and codegen.
 - [Kustomize](https://kustomize.io/) and [Helm](https://helm.sh/) — how the controller is packaged and installed.
 - [cert-manager](https://cert-manager.io/) — TLS for the webhooks.
 
-**GitOps & the pattern**
+### GitOps & the pattern
+
 - [Flux](https://fluxcd.io/) and the [Flux Operator](https://github.com/controlplaneio-fluxcd/flux-operator)
   — the reconcilers this project reverses *into*, and part of the e2e environment.
 - [Argo CD](https://argo-cd.readthedocs.io/) — studied closely while thinking about credentials, drift, and comparisons.
 
-**The local cluster & dev loop**
+### The local cluster & dev loop
+
 - [k3d](https://k3d.io/) and [k3s](https://k3s.io/) (SUSE/Rancher) — a real cluster in seconds, visible in your own Docker.
 - [Tilt](https://tilt.dev/) — the live development loop and playground UI.
 - [Docker](https://www.docker.com/) and the [Dev Containers](https://containers.dev/) spec — the one-click environment.
 
-**Git server, state & secrets**
+### Git server, state & secrets
+
 - [Gitea](https://about.gitea.com/) — the local Git server the reversed repos push to.
-- [Valkey](https://valkey.io/) — Redis-compatible watch-resume state — and [Redis](https://redis.io/), whose protocol and lineage it carries.
+- [Valkey](https://valkey.io/) — Redis-compatible watch-resume state — and
+  [Redis](https://redis.io/), whose protocol and lineage it carries.
 - [SOPS](https://github.com/getsops/sops) and [age](https://github.com/FiloSottile/age) — Secret encryption before commit.
 
-**Testing, quality & observability**
+### Testing, quality & observability
+
 - [Ginkgo](https://onsi.github.io/ginkgo/) and [Gomega](https://onsi.github.io/gomega/) — the parallel e2e suite.
 - [Allure](https://allurereport.org/) (Qameta) — the timeline report.
 - [Prometheus](https://prometheus.io/) and the [Prometheus Operator](https://prometheus-operator.dev/) — metrics.
 - [golangci-lint](https://golangci-lint.run/), [staticcheck](https://staticcheck.dev/),
-  [actionlint](https://github.com/rhysd/actionlint), and [Delve](https://github.com/go-delve/delve) — keeping the code honest and debuggable.
-- [envtest / setup-envtest](https://github.com/kubernetes-sigs/controller-runtime/tree/main/tools/setup-envtest) and [Codecov](https://about.codecov.io/) — fast API-server tests and the coverage ratchet.
+  [actionlint](https://github.com/rhysd/actionlint), and [Delve](https://github.com/go-delve/delve)
+  — keeping the code honest and debuggable.
+- [envtest / setup-envtest](https://github.com/kubernetes-sigs/controller-runtime/tree/main/tools/setup-envtest)
+  and [Codecov](https://about.codecov.io/) — fast API-server tests and the coverage ratchet.
 
-**Build, release & language**
+### Build, release & language
+
 - [Go](https://go.dev/) — the language.
 - [Task](https://taskfile.dev/) (go-task) — the build DAG I'm so fond of.
 - [release-please](https://github.com/googleapis/release-please) — automated, Conventional-Commit-driven releases.
 - [scc](https://github.com/boyter/scc) — quick line-of-code counts.
 
-**Docs & media**
+### Docs & media
+
 - [Excalidraw](https://excalidraw.com/) — the architecture diagrams.
 - [asciinema](https://asciinema.org/) and [agg](https://github.com/asciinema/agg) — the hero demo GIF.
 - [Mermaid](https://mermaid.js.org/) — the DAG diagrams rendered inline in the docs.

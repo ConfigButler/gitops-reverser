@@ -191,7 +191,7 @@ and ships either way.
 Both Gitea Services today are **headless** (`clusterIP: None`), so DNS returns pod IPs and the
 declared Service port is bypassed. Probed from inside the live cluster against `gitea-ssh.gitea-e2e.svc`:
 
-```
+```text
 port 22    closed     <- the Service's declared port; nothing listens
 port 2222  OPEN       <- the rootless image's real listener
 port 13000 OPEN       <- http, on the *ssh* service name, because headless

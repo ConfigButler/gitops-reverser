@@ -1,7 +1,7 @@
 # GitTarget new-file placement rules
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: implemented (v1 — Option B2: one `byType`/`default` placement map,
 > with sensitivity treated as an internal write-safety classification rather than a
 > separate user-facing placement namespace) + Option C sibling inference (steps

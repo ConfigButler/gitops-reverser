@@ -1,6 +1,7 @@
 # flux-monorepo
 
 ## What this is
+
 The canonical Flux CD layout promoted in the Flux documentation and the upstream
 `fluxcd/flux2-kustomize-helm-example` repository. A single Git monorepo drives
 one or more clusters. Work is split three ways: `apps/` holds the workloads (a
@@ -14,7 +15,8 @@ authored by humans. This shape is what most teams inherit when they adopt Flux
 `clusters/<name>/` directory.
 
 ## Layout
-```
+
+```yaml
 09-flux-monorepo/
 ├── README.md
 ├── apps/
@@ -56,6 +58,7 @@ authored by humans. This shape is what most teams inherit when they adopt Flux
 ```
 
 ## What makes it structurally distinct
+
 - **Two unrelated kinds share the word "Kustomization."** Every file literally
   named `kustomization.yaml` is a `kustomize.config.k8s.io/v1beta1` Kustomization:
   a *build instruction* that `kustomize`/the kustomize-controller reads to render
@@ -92,6 +95,7 @@ authored by humans. This shape is what most teams inherit when they adopt Flux
   `kind`, but incomplete documents that only mean anything after a merge.
 
 ## Open questions
+
 - Given only a file's contents, how does a tool tell a
   `kustomize.toolkit.fluxcd.io` Kustomization apart from a
   `kustomize.config.k8s.io` one — is the `apiVersion` string the only reliable

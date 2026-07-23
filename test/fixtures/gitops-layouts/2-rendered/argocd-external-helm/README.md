@@ -22,7 +22,7 @@ one directory.
 
 ## Layout
 
-```
+```yaml
 08-argocd-external-helm/
 ├── README.md
 ├── applications/

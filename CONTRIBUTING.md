@@ -159,26 +159,26 @@ overlaps with the others:
 | `task lint-prose` | Vale | English against [`docs/style-guide.md`](docs/style-guide.md): em dashes, American spelling, product names, words to cut. |
 
 ```bash
-task lint-docs                     # all three, on the gated files
-task lint-markdown-fix             # apply the safe mechanical fixes
-task lint-markdown DOCS_SCOPE=all  # the whole tree, to see the backlog
+task lint-docs                  # links and structure everywhere; prose on the gated files
+task lint-markdown-fix          # apply the safe mechanical fixes
+task lint-prose DOCS_SCOPE=all  # the whole tree, to see the prose backlog
 ```
 
-**Structure and prose are gated on the files [`.docs-lint-scope`](.docs-lint-scope) lists, not the
-whole tree.** That is a rollout position: 102 of 174 files fail markdownlint and 148 of 174 fail
-Vale, almost all of the latter on em dashes, and [`docs/style-guide.md`](docs/style-guide.md) says
-that cleanup must not land as one sweeping commit. The gate starts small and the list grows.
+**Links and structure are checked on every tracked file; only prose is gated on the files
+[`.docs-lint-scope`](.docs-lint-scope) lists.** Structure was staged the same way until the residue
+was cleared, so markdownlint now gates the whole tree and a new document cannot regress it. Vale
+still cannot: 145 of the 167 linted files carry at least one error, almost all of them em dashes,
+and [`docs/style-guide.md`](docs/style-guide.md) says that cleanup must not land as one sweeping
+commit. That gate stays small and the list grows.
 
-**To add a file to the gate**, clean it and add its path to that file:
+**To add a file to the prose gate**, clean it and add its path to that file:
 
 ```bash
-markdownlint-cli2 docs/some-file.md   # what it would cost
-vale docs/some-file.md
-task lint-markdown-fix DOCS_SCOPE=all # the mechanical half, whole tree
+vale docs/some-file.md   # what it would cost
 ```
 
-Editing a doc that is not on the list is not blocked, so an unlisted file can still drift. Run the
-two commands above on anything you touch even when nothing forces you to.
+Editing a doc that is not on the list still passes prose, so an unlisted file can drift. Run `vale`
+on anything you touch even when nothing forces you to.
 
 **Reference checking is not staged this way.** `task lint-doc-links` always covers every tracked
 markdown, Go, YAML, and shell file, so a moved document breaks the build wherever it is cited.

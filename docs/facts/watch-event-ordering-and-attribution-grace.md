@@ -1,7 +1,7 @@
 # Watch event ordering under the attribution grace window
 
 > **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: **explainer / decision record**
 > Date: 2026-06-26
 > Related: [Watch-first ingestion architecture](../finished/watch-first-ingestion-architecture.md),

@@ -38,6 +38,7 @@ Operator/runtime notes:
 - You decrypt with matching private keys.
 
 For this repo:
+
 - `.sops.yaml` contains recipient rules (public info).
 - Private key material for Flux-compatible secrets is stored under `*.agekey` keys (for example `identity.agekey`).
 - Secret manifests written to Git are stored as `*.sops.yaml`.
@@ -69,6 +70,7 @@ age-keygen -o age-key.txt
 ```
 
 This creates:
+
 - private key in `age-key.txt` (line starts with `AGE-SECRET-KEY-...`)
 - recipient in a comment line like `# public key: age1...`
 
@@ -92,6 +94,7 @@ creation_rules:
 ```
 
 Notes:
+
 - `path_regex` controls which files are encrypted with this rule.
 - `encrypted_regex` keeps Kubernetes Secret payload fields encrypted.
 - You can add multiple recipients under `age:`.
@@ -149,6 +152,7 @@ spec:
 
 When enabled and the secret is missing, gitops-reverser generates one age key and
 creates the secret. Generated secrets include:
+
 - `configbutler.ai/age-recipient: age1...`
 - `configbutler.ai/backup-warning: REMOVE_AFTER_BACKUP`
 
@@ -174,8 +178,8 @@ sops updatekeys -y path/to/file.sops.yaml
 find . -name '*.sops.yaml' -print0 | xargs -0 -n1 sops updatekeys -y
 ```
 
-4. Deploy new private key to runtime secret.
-5. Remove old recipient from `.sops.yaml` and run `updatekeys` again when ready.
+1. Deploy new private key to runtime secret.
+2. Remove old recipient from `.sops.yaml` and run `updatekeys` again when ready.
 
 ## Repo-specific security note
 

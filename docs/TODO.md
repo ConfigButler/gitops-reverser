@@ -93,11 +93,9 @@ This file is meant to track the smaller current backlog, not historical notes.
   work in [docs/design/manifest/manifest-inventory-file-agnostic-placement.md](spec/manifest-system.md):
   indexing must record the manifest identity and defer rather than fail the whole scan.
 
-
 ## Future directions worth revisiting
 
 - [ ] Simpler setup flows, including more Git provider bootstrap automation.
-
 
 - [ ] Constrained reverse actions for simple, known Kustomize-style mutations.
 
@@ -107,5 +105,7 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 Research work:
 
-* Replace metrics mechanism with https://docs.victoriametrics.com/helm/victoria-metrics-operator/ (so that it's also helm and so that we can have proper deps)
-* Read more on how resource versions work (and can work in the HA rebruild): https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions
+- Replace metrics mechanism with
+  <https://docs.victoriametrics.com/helm/victoria-metrics-operator/> (so that it's also helm and
+  so that we can have proper deps)
+- Read more on how resource versions work (and can work in the HA rebruild): <https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions>

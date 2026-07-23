@@ -20,16 +20,19 @@ If you want isolation between runs, pass a different `CTX` explicitly.
 The `test-e2e` target automatically starts port-forwards, so services are immediately accessible:
 
 **Start port-forwards:**
+
 ```bash
 task portforward-ensure
 ```
 
 This exposes:
-- **Prometheus**: http://localhost:19090
-- **Gitea**: http://localhost:13000 (Username: `testorg`, Password: `gitea`)
-- **Flux Operator Web UI**: http://localhost:19080
+
+- **Prometheus**: <http://localhost:19090>
+- **Gitea**: <http://localhost:13000> (Username: `testorg`, Password: `gitea`)
+- **Flux Operator Web UI**: <http://localhost:19080>
 
 **Stop port-forwards:**
+
 ```bash
 task clean-port-forwards
 ```
@@ -80,6 +83,7 @@ keeps those artifacts specifically so most reruns stay cheap.
 ## Useful Prometheus Queries
 
 ### Check Pod Status
+
 ```promql
 # Are both controller pods being scraped?
 up{job="gitops-reverser"}
@@ -89,6 +93,7 @@ count(up{job="gitops-reverser"})
 ```
 
 ### Webhook Events
+
 ```promql
 # Total webhook events across all pods
 sum(gitopsreverser_events_received_total)
@@ -99,6 +104,7 @@ gitopsreverser_events_received_total{role!="leader"}
 ```
 
 ### Resource Metrics
+
 ```promql
 # CPU usage
 process_cpu_seconds_total{job="gitops-reverser"}
@@ -112,7 +118,7 @@ go_goroutines{job="gitops-reverser"}
 
 ## Network Architecture
 
-```
+```yaml
 Host Machine (port 13000, 19090, 19080)
     ↕ (VS Code forwarded ports from devcontainer)
 DevContainer
@@ -156,28 +162,32 @@ stdbuf -oL -eL task test-e2e 2>&1 | go run ./test/e2e/tools/ts | tee /tmp/e2e.lo
 ## Debugging Failed Tests
 
 1. **Ensure port-forwards are running:**
+
    ```bash
    task portforward-ensure
    ```
 
 2. **Check Prometheus for metrics history:**
+
    ```bash
    # Visit http://localhost:19090
    ```
 
 3. **Check Gitea for repository state:**
+
    ```bash
    # Visit http://localhost:13000
    # Username: testorg, Password: gitea
    ```
 
 4. **View controller logs:**
+
    ```bash
    kubectl logs -n "${NAMESPACE}" -l control-plane=gitops-reverser --tail=100
    ```
 
 5. **Check Prometheus scrape status:**
-   Visit http://localhost:19090/targets
+   Visit <http://localhost:19090/targets>
 
 ## Cleanup
 

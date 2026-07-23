@@ -1,5 +1,4 @@
 ---
-title: Reconcile triggering — how our controllers wake up, and where that fails
 status: investigation + design
 date: 2026-06-29
 related:
@@ -90,6 +89,7 @@ The fix gives the data plane a controller-runtime `source.Channel` edge:
   reason changed, or refusal cleared), so the steady-state resync stream never
   causes a reconcile storm.
 - `internal/controller/gittarget_controller.go:1003` — `SetupWithManager` wires it:
+
   ```go
   b = b.WatchesRawSource(source.Channel(
       r.EventRouter.WatchManager.GitPathEvents(),
@@ -200,7 +200,7 @@ listed resources. This is exactly the **pull-on-push** trigger (§5) and the
 **But the stock Receiver cannot target our CRDs.** `spec.resources[].kind` is a
 hard-coded enum (`notification-controller/api@v1.8.4/v1/reference_types.go:27`):
 
-```
+```text
 Enum=Bucket;GitRepository;Kustomization;HelmRelease;HelmChart;HelmRepository;
   ImageRepository;ImagePolicy;ImageUpdateAutomation;OCIRepository;
   ArtifactGenerator;ExternalArtifact

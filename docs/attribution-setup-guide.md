@@ -182,7 +182,8 @@ Service are removed; you can then also remove the apiserver audit flags on the n
 
 ## Related docs
 
-- [`design/audit-webhook-api-server-connectivity.md`](facts/audit-webhook-api-server-connectivity.md): networking, DNS, and TLS tradeoffs for audit delivery
+- [`design/audit-webhook-api-server-connectivity.md`](facts/audit-webhook-api-server-connectivity.md):
+  networking, DNS, and TLS tradeoffs for audit delivery
 - [`design/audit-webhook-tls-design.md`](finished/audit-webhook-tls-design.md): trusting the audit receiver certificate
 - [`configuration.md`](configuration.md): core configuration objects
 - [`../README.md`](../README.md): product overview and configured-author quick start

@@ -1,7 +1,7 @@
 # Field ownership: the API wins
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: decided
 > Related: [manifestedit-abstraction-plan.md](manifest-system.md)
 > (step 5), [manifest-inventory-file-agnostic-placement.md](manifest-system.md),

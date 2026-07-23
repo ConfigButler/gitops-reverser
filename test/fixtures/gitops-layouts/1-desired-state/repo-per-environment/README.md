@@ -1,6 +1,7 @@
 # repo-per-environment
 
 ## What this is
+
 A layout where the environment boundary is a **repository** boundary rather than a
 directory boundary. Instead of one repo with `dev/`, `staging/`, and `production/`
 folders, each environment gets its own independent Git repository, frequently with
@@ -14,7 +15,8 @@ There is no `base/` or common overlay anywhere; each repo carries a full, standa
 copy of every manifest.
 
 ## Layout
-```
+
+```yaml
 11-repo-per-environment/
 ├── README.md                 # this file — explains the simulation
 ├── gitops-dev/               # stands in for a whole repository
@@ -51,6 +53,7 @@ copy of every manifest.
 ```
 
 ## What makes it structurally distinct
+
 - **The three top-level directories stand in for three independent Git repositories.**
   They are nested inside this one folder only for convenience in this corpus. In the
   real world you would `git clone` each of `gitops-dev`, `gitops-staging`, and
@@ -71,6 +74,7 @@ copy of every manifest.
   Every manifest is a complete standalone copy.
 
 ## Open questions
+
 - What does "promotion" mean here when moving a change from dev to staging to
   production crosses a repository boundary rather than a directory boundary?
 - With no shared base to edit, where does an operator make a change that is meant to

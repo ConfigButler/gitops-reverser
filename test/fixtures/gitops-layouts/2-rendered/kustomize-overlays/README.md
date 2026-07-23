@@ -1,6 +1,7 @@
 # kustomize-overlays
 
 ## What this is
+
 The most recognizable general-purpose GitOps layout: per-app `base/` +
 `overlays/<env>/`. A `base` holds environment-agnostic Kubernetes objects, and
 each overlay layers environment-specific changes on top with a
@@ -10,7 +11,8 @@ each overlay layers environment-specific changes on top with a
 overlay instead builds on a **remote** base fetched from another repository.
 
 ## Layout
-```
+
+```yaml
 05-kustomize-overlays/
 ├── README.md
 └── apps/
@@ -46,6 +48,7 @@ overlay instead builds on a **remote** base fetched from another repository.
 ```
 
 ## What makes it structurally distinct
+
 - **Plain desired objects vs. build inputs.** The base `deployment.yaml` and
   `service.yaml` are complete, checked-in Kubernetes objects. The
   `kustomization.yaml` files, `deployment-patch.yaml` files, `config.properties`
@@ -86,6 +89,7 @@ overlay instead builds on a **remote** base fetched from another repository.
   It is not a Kubernetes object: no `apiVersion`, no `kind`.
 
 ## Open questions
+
 - Which files could a tool safely edit in place and round-trip? The base
   objects have a stable identity, but an overlay's effective object identity is
   the product of `namePrefix`/`nameSuffix`/`namespace` — editing the rendered

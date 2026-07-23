@@ -66,13 +66,13 @@ const (
 
 Canonical reads:
 
-* fully mirrored: `Ready=True`, `Reconciling=False`, `Stalled=False`
-* initial replay or recheck: `Ready=False`, `Reconciling=True`, `Stalled=False`
-* refused Git path, invalid provider, RBAC denial, or broken encryption: `Ready=False`, `Reconciling=False`,
+- fully mirrored: `Ready=True`, `Reconciling=False`, `Stalled=False`
+- initial replay or recheck: `Ready=False`, `Reconciling=True`, `Stalled=False`
+- refused Git path, invalid provider, RBAC denial, or broken encryption: `Ready=False`, `Reconciling=False`,
   `Stalled=True`
-* Git path refusal details live on `GitPathAccepted=False` and `Stalled=True`, reason `UnsupportedContent`
-* WatchRule and ClusterWatchRule carry target dependency health in `GitTargetReady`
-* WatchRule carries source-namespace authorization in `SourceNamespaceAuthorized`, a positive
+- Git path refusal details live on `GitPathAccepted=False` and `Stalled=True`, reason `UnsupportedContent`
+- WatchRule and ClusterWatchRule carry target dependency health in `GitTargetReady`
+- WatchRule carries source-namespace authorization in `SourceNamespaceAuthorized`, a positive
   state-style condition set even for legacy own-namespace rules (reason `LegacySourceNamespace`), so
   the effective authorization is always visible and automation has one condition to inspect. It is an
   additional prerequisite of `Ready`, and is deliberately kept out of `GitTargetReady`, which stays
@@ -139,12 +139,12 @@ at admission; it never has an `Unknown` or audit-wait state.
 
 Canonical reads:
 
-* waiting for the close delay: `Reconciling=True` reason `WaitingForCloseDelay`, `AuthorAttributed`
+- waiting for the close delay: `Reconciling=True` reason `WaitingForCloseDelay`, `AuthorAttributed`
   settled, `Pushed=Unknown` → kstatus InProgress
-* committed: `Ready=True`, `Pushed=True`, `Stalled=False`, reason `Committed` → kstatus Current
-* benign no-commit (nothing to save / already present / foreign open window): `Ready=True`, `Pushed=False`,
+- committed: `Ready=True`, `Pushed=True`, `Stalled=False`, reason `Committed` → kstatus Current
+- benign no-commit (nothing to save / already present / foreign open window): `Ready=True`, `Pushed=False`,
   `Stalled=False`, with the specific reason on `Ready` → kstatus Current (a correct, non-error outcome)
-* failed finalize: `Ready=False`, `Stalled=True`, reason `FinalizeFailed` → kstatus Failed
+- failed finalize: `Ready=False`, `Stalled=True`, reason `FinalizeFailed` → kstatus Failed
 
 `AuthorAttributed=True` (`AttributedFromAdmission`) means the command submitter was captured. `False`
 (`CommitterFallback`) means capture ran but no admission author record exists; `False`

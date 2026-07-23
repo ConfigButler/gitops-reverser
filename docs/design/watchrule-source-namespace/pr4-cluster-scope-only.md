@@ -631,7 +631,7 @@ Fixture conversions worth calling out, because they change what the test proves:
 
 ## Tests
 
-**Refusal and admission**
+### Refusal and admission
 
 - `TestBootstrap_PreExistingNamespacedClusterRuleIsRefused` — a stored ClusterWatchRule with
   `scope: Namespaced` compiles no stream before the first reconcile can publish status.
@@ -640,7 +640,7 @@ Fixture conversions worth calling out, because they change what the test proves:
 - Applying `scope: Namespaced` is rejected by the API server (envtest against the generated CRDs) — the
   guard that the field was narrowed rather than deleted.
 
-**Per-item resolution**
+### Per-item resolution
 
 - Omitted, explicit, and wildcard items each generate the expected selections; a mixed rule resolves each
   item independently.
@@ -653,7 +653,7 @@ Fixture conversions worth calling out, because they change what the test proves:
 - The retained gate suite still proves provider-delegation denial and revocation, target-policy denial
   and revocation, selector uncertainty, and bootstrap refusal before any stream starts.
 
-**Silent-failure guards**
+### Silent-failure guards
 
 - `TestWatchRuleFingerprint_ChangesWithResolvedSourceScope` — two byte-identical WatchRules whose
   GitTargets declare different policies fingerprint differently, and tightening a policy changes the
@@ -665,14 +665,14 @@ Fixture conversions worth calling out, because they change what the test proves:
 - The stream roll-up reports ready for a wildcard rule whose streams are running — the
   [§5](#5-status-contract-for-per-item-scopes) `StreamSummaryForWatchRule` hazard.
 
-**Reactivity (envtest)**
+### Reactivity (envtest)
 
 - Adding the matching label to a source-cluster Namespace grants it to a `"*"` item within a bounded
   time; removing it revokes that namespace's stream rather than only re-rendering status.
 - Editing `allowedSourceNamespaces` and flipping the delegation flag each re-reconcile the affected
   WatchRules.
 
-**End-to-end**
+### End-to-end
 
 - A WatchRule in `tenant-acme` with `sourceNamespace: repo-config` writes under `repo-config/…`, not
   `tenant-acme/…` — the

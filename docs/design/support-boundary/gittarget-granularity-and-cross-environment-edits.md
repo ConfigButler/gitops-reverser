@@ -558,13 +558,13 @@ two would make the common, healthy overlay edit look like a failure.
 
 **Still open:**
 
-3. **Divergence notification (§6)** — build the commit-message trailer on the
+1. **Divergence notification (§6)** — build the commit-message trailer on the
    "override created" transition? Independent; nothing depends on it shipping
    with the write boundary.
-4. **Write-up placement** — fold the §1 L1/L2 model back into
+2. **Write-up placement** — fold the §1 L1/L2 model back into
    [kustomize-support-boundary.md §4](kustomize-support-boundary.md)
    (one canonical invariant statement), or keep §4 as the short invariant and let
    this doc own the two-layer detail?
-5. **Option C sub-questions (deferred with C):** the synthetic base namespace's
+3. **Option C sub-questions (deferred with C):** the synthetic base namespace's
    handling of multi-namespace bases and cluster-scoped resources, and the
    separate "global/defaults editor" RBAC role (§3b).

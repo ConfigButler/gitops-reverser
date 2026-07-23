@@ -1,7 +1,7 @@
 # Current Manifest Support Review
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: architecture review, captured 2026-06-04
 > Related:
 > `implementation-plan.md`,
@@ -749,7 +749,7 @@ Each example shows the **commit-time apply**, so the touched file is already
 hydrated; the per-event path that preceded it only recorded the desired change in
 `PendingChanges` without reading or parsing anything.
 
-**Example 1: update one document in a multi-document file**
+#### Example 1: update one document in a multi-document file
 
 Input file:
 
@@ -795,7 +795,7 @@ git add apps.yaml
 
 No other files are rendered.
 
-**Example 2: delete one document from a multi-document file**
+#### Example 2: delete one document from a multi-document file
 
 Input file:
 
@@ -846,7 +846,7 @@ set means an empty file, because a managed *file* never carries unmanaged
 passenger documents (mixed managed/allowlisted files are refused at acceptance),
 and retained allowlisted files are not `FileModel`s in the store.
 
-**Example 3: create a new resource**
+#### Example 3: create a new resource
 
 The API has `Deployment/default/api`, and no record exists in `ManifestStore`.
 
@@ -870,7 +870,7 @@ Flush:
 git add apps/v1/deployments/default/api.yaml
 ```
 
-**Example 4: refuse a folder with duplicate identities**
+#### Example 4: refuse a folder with duplicate identities
 
 The store contains the same manifest identity twice:
 

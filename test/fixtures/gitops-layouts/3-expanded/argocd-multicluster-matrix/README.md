@@ -1,6 +1,7 @@
 # argocd-multicluster-matrix
 
 ## What this is
+
 An Argo CD `ApplicationSet` using a **matrix generator** to produce one Application
 per (cluster x app) pair. This is the standard way large Argo CD installations fan a
 small set of app directories out across a fleet of clusters: a `clusters` generator
@@ -13,7 +14,8 @@ The set of rendered Applications is therefore a **product, not a sum**: it is
 `(clusters) + (apps)`.
 
 ## Layout
-```
+
+```yaml
 12-multicluster-applicationset/
 ├── README.md                       # this file
 ├── applicationsets/
@@ -40,6 +42,7 @@ The set of rendered Applications is therefore a **product, not a sum**: it is
 ```
 
 ## What makes it structurally distinct
+
 - **The same app directory renders once per cluster.** `apps/frontend/` and
   `apps/backend/` each exist exactly once on disk, but the matrix generator emits one
   Application per selected cluster for each of them. The on-disk file count does not
@@ -64,6 +67,7 @@ The set of rendered Applications is therefore a **product, not a sum**: it is
   plugin or Helm, not applied to any cluster directly.
 
 ## Open questions
+
 - What is "the desired state of `apps/frontend`" when that one directory is deployed
   to multiple clusters, each with different per-cluster values and a different image
   tag or replica count?

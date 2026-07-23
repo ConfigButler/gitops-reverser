@@ -7,9 +7,11 @@
 > Related:
 > [README.md](README.md),
 > [render-root-scoping.md](render-root-scoping.md) — the overlay verification model this generalises,
-> [render-attribution.md](render-attribution.md) §5 — *attribution may be heuristic, verification may not*, and the "shared blind spot" failure,
+> [render-attribution.md](render-attribution.md) §5 — *attribution may be heuristic, verification
+> may not*, and the "shared blind spot" failure,
 > [render-fidelity-scenarios.md](render-fidelity-scenarios.md) — the red-first fixture and gate-state matrix,
-> [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) — reading the Flux/Argo object; the `TransformedOutOfBand` claim,
+> [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) — reading the Flux/Argo
+> object; the `TransformedOutOfBand` claim,
 > [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md),
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md)
 
@@ -294,7 +296,8 @@ refusal retains the file path as well. Scope reduction and the parsed-field walk
 but the first diverging document in one scope follows API replay order, so the representative is not
 a stable cross-run API. It is a sibling of the planned
 `FullyReflected` condition in
-[unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md): `FullyReflected` says *everything you edited was expressed*;
+[unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md): `FullyReflected`
+says *everything you edited was expressed*;
 `RenderMatchesLive` says *our render matches what is running, so we can be trusted at all* — the more
 fundamental of the two. It is recomputable when the watch manager begins a new epoch; steady-state
 write refusals can close it, but cannot clear it.

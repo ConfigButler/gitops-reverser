@@ -1,10 +1,13 @@
-## CI/Devcontainer Findings (Current Baseline)
+# CI/Devcontainer Findings
+
+## Current Baseline
 
 Last updated: 2026-06-02
 
 Recent investigation: [E2E full-suite shared-state flake](../spec/e2e-serial-registry.md)
 
-This folder documents why the repository uses its current devcontainer and CI behavior, especially around Go caches, workspace paths, and k3d cluster access from inside the container.
+This folder documents why the repository uses its current devcontainer and CI behavior, especially
+around Go caches, workspace paths, and k3d cluster access from inside the container.
 
 ### 1) Workspace path model
 
@@ -60,7 +63,8 @@ The current working model is:
 
 Why this is required:
 
-- If Docker publishes the k3d API server on host loopback only (`127.0.0.1`), it is not reachable via `host.docker.internal` from the container.
+- If Docker publishes the k3d API server on host loopback only (`127.0.0.1`), it is not reachable
+  via `host.docker.internal` from the container.
 - The kubeconfig rewrite to `host.docker.internal` makes in-container `kubectl` stable without host networking.
 
 ### 5) Practical verification checklist

@@ -11,12 +11,17 @@
 > source (`external-sources/flux/`) and kstatus (`sigs.k8s.io/cli-utils/pkg/kstatus`) as ground
 > truth rather than recollection.
 
-**What was read**
+## What was read
 
 - The API surface: `api/v1alpha3/*.go` (all six kinds plus `NamespaceMatcher`, `PrunePolicy`).
-- The status implementations: `internal/controller/{gittarget,watchrule,clusterwatchrule,gitprovider,clusterprovider,commitrequest}_controller.go`, `condition_helper.go`, `stream_status.go`, `gittarget_dependency_status.go`, `gittarget_source_cluster.go`, `internal/watch/stream_readiness.go`.
+- The status implementations:
+  `internal/controller/{gittarget,watchrule,clusterwatchrule,gitprovider,clusterprovider,commitrequest}_controller.go`,
+  `condition_helper.go`, `stream_status.go`, `gittarget_dependency_status.go`,
+  `gittarget_source_cluster.go`, `internal/watch/stream_readiness.go`.
 - `docs/configuration.md`, `docs/spec/status-conditions-guide.md`, `docs/spec/where-validation-lives.md`, `docs/design/reconcile-triggering.md`.
-- Flux as ground truth: `external-sources/flux/pkg/apis/meta`, `external-sources/flux/pkg/runtime/{conditions,patch}`, `external-sources/flux/pkg/apis/acl`, `external-sources/flux/flux2/rfcs/`, `external-sources/flux/flux-operator/api/v1`.
+- Flux as ground truth: `external-sources/flux/pkg/apis/meta`,
+  `external-sources/flux/pkg/runtime/{conditions,patch}`, `external-sources/flux/pkg/apis/acl`,
+  `external-sources/flux/flux2/rfcs/`, `external-sources/flux/flux-operator/api/v1`.
 - kstatus itself: `sigs.k8s.io/cli-utils/pkg/kstatus/status` from the module cache.
 
 Read-only review: no builds, no tests, no edits to the tree.
@@ -34,7 +39,7 @@ which defines the abnormal-true polarity rule. Flux codifies both in
 readiness down to one CEL expression
 (`external-sources/flux/flux-operator/api/v1/common_types.go:23`):
 
-```
+```text
 status.conditions.filter(c, c.type == 'Ready').all(c, c.status == 'True' && c.observedGeneration == metadata.generation)
 ```
 
@@ -223,7 +228,7 @@ misconfiguration, that is what an Event or a `Ready` *reason* is for, not a perm
 
 ---
 
-### F3 — Unconditional status writes with always-moving timestamps, plus no self-predicate, create a self-triggering reconcile edge (High)
+### F3 — Always-moving timestamps and no self-predicate create a self-triggering reconcile edge (High)
 
 Three things compose badly.
 
@@ -611,21 +616,21 @@ criticism.
 
 **Next** (contract alignment, low risk, high interop value):
 
-4. **F5** — `apimeta.SetStatusCondition`, or Flux's sorted `Set`.
-5. **F8** — alias generic reasons to `fluxcd/pkg/apis/meta`; kill `reason == type`; export the
+1. **F5** — `apimeta.SetStatusCondition`, or Flux's sorted `Set`.
+2. **F8** — alias generic reasons to `fluxcd/pkg/apis/meta`; kill `reason == type`; export the
    domain reasons from `api/v1alpha3`.
-6. **F4** — delete `Reconciling`/`Stalled` rather than writing them False.
-7. **F7** — wire an `EventRecorder`; emit on every terminal outcome and every push failure.
+3. **F4** — delete `Reconciling`/`Stalled` rather than writing them False.
+4. **F7** — wire an `EventRecorder`; emit on every terminal outcome and every push failure.
 
 **Then** (API surface — do the breaking ones while still `v1alpha3`):
 
-8. **F6** — `spec.suspend` on GitTarget/WatchRule/ClusterWatchRule/GitProvider; `spec.interval` on
+1. **F6** — `spec.suspend` on GitTarget/WatchRule/ClusterWatchRule/GitProvider; `spec.interval` on
    GitProvider at minimum; jitter the requeue; `reconcile.configbutler.ai/requestedAt` +
    `status.lastHandledReconcileAt`.
-9. **F12** — ~~decide `PruneMode` casing **now**~~ (done, pre-release); trim printer columns; unify
+2. **F12** — ~~decide `PruneMode` casing **now**~~ (done, pre-release); trim printer columns; unify
    ObjectMeta tags.
-10. **F10** — CommitRequest lifecycle (TTL or ownerRef) and the `delete` verb.
-11. **F9** — verify the `scope: Namespaced` status-write path on the minimum supported Kubernetes
+3. **F10** — CommitRequest lifecycle (TTL or ownerRef) and the `delete` verb.
+4. **F9** — verify the `scope: Namespaced` status-write path on the minimum supported Kubernetes
     version.
 
 ---
