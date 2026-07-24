@@ -175,12 +175,12 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 			Group:           crdGroupBiDirectional,
 		}, testNs)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply bi-directional WatchRule")
-		verifyResourceStatus("gitprovider", run.gitProviderName, testNs, "True", "Ready", "")
+		verifyResourceStatus("gitprovider", run.gitProviderName, testNs, "True", "Succeeded", "")
 		run.waitForControllerEncryptionSecret()
 		run.applyFluxDecryptionSecretFromControllerSecret()
 		run.applyFluxLiveKustomization()
 		run.waitForGitTargetReady()
-		verifyResourceStatus("watchrule", run.watchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", run.watchRuleName, testNs, "True", "Succeeded", "")
 
 		// Gate on StreamsRunning so the IceCreamOrder watch is live before the API-driven patch below:
 		// the exact commit-count assertions depend on that change arriving as one live per-event
@@ -263,7 +263,7 @@ var _ = Describe("Bi Directional (Flux)", Label("bi-directional", "flux"), Order
 			DestinationName: run.gitTargetName,
 		}, testNs)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply Secret WatchRule")
-		verifyResourceStatus("watchrule", run.secretWatchRuleName, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", run.secretWatchRuleName, testNs, "True", "Succeeded", "")
 
 		_, _ = kubectlRunInNamespace(testNs, "delete", "secret", run.reverseSecretName, "--ignore-not-found=true")
 		_, err = kubectlRunInNamespace(
@@ -709,8 +709,7 @@ func (r biDirectionalRun) waitForOrderSpec(name, container, flavor, topping stri
 
 func (r biDirectionalRun) waitForGitTargetReady() {
 	GinkgoHelper()
-	// The gittarget Ready special-case in verifyResourceCondition accepts reason "Ready" or "OK".
-	verifyResourceStatus("gittarget", r.gitTargetName, r.testNs, "True", "Ready", "")
+	verifyResourceStatus("gittarget", r.gitTargetName, r.testNs, "True", "Succeeded", "")
 }
 
 func (r biDirectionalRun) waitForControllerEncryptionSecret() {

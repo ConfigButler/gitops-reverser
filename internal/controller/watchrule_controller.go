@@ -6,11 +6,10 @@ import (
 	"context"
 	"fmt"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,7 +32,7 @@ const (
 	WatchRuleReasonAccessDenied          = "AccessDenied"
 	WatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	WatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
-	WatchRuleReasonReady                 = "Ready"
+	WatchRuleReasonReady                 = ReasonSucceeded
 	WatchRuleReasonResourcesResolved     = "Resolved"
 	WatchRuleReasonUnresolvedResources   = "UnresolvedResources"
 )
@@ -45,6 +44,8 @@ type WatchRuleReconciler struct {
 	Scheme       *runtime.Scheme
 	RuleStore    *rulestore.RuleStore
 	WatchManager WatchManagerInterface
+	// Recorder emits a Kubernetes Event on every persisted Ready transition; nil disables Events.
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=watchrules,verbs=get;list;watch;create;update;patch;delete
@@ -53,6 +54,7 @@ type WatchRuleReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -103,72 +105,48 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		"target", watchRule.Spec.TargetRef,
 		"generation", watchRule.Generation,
 		"resourceVersion", watchRule.ResourceVersion)
+	st := beginStatus(r.Client, r.Recorder, &watchRule, &watchRule.Status.Conditions)
 	watchRule.Status.ObservedGeneration = watchRule.Generation
 
-	// Set initial validating status
-	log.Info("Setting initial validating status")
-	r.setCondition(&watchRule, metav1.ConditionUnknown, //nolint:lll // Descriptive message
-		WatchRuleReasonValidating, "Validating WatchRule configuration...")
-	r.setTypedCondition(
-		&watchRule,
+	// Seed the axis conditions as not-yet-evaluated. There is deliberately no placeholder write of
+	// the Ready/Reconciling/Stalled trio here: every path below ends in exactly one applyReadiness,
+	// and a placeholder trio would be a second writer of the thing that must have only one.
+	st.set(
 		ConditionTypeStreamsRunning,
 		metav1.ConditionUnknown,
 		GitTargetStreamsRunningReasonNotReady,
 		"Blocked by validation; streams not evaluated",
 	)
-	r.setTypedCondition(
-		&watchRule,
+	st.set(
 		ConditionTypeGitTargetReady,
 		metav1.ConditionUnknown,
 		ReasonProgressing,
 		"Blocked by validation; GitTarget not evaluated",
 	)
-	r.setTypedCondition(
-		&watchRule,
+	st.set(
 		ConditionTypeSourceNamespaceAuthorized,
 		metav1.ConditionUnknown,
 		WatchRuleReasonCheckingSourceNamespacePolicy,
 		"Blocked by validation; source namespace not evaluated",
 	)
-	r.setTypedCondition(
-		&watchRule,
-		ConditionTypeReconciling,
-		metav1.ConditionTrue,
-		ReasonChecking,
-		"Validating WatchRule",
-	)
-	r.setTypedCondition(
-		&watchRule,
-		ConditionTypeStalled,
-		metav1.ConditionFalse,
-		ReasonChecking,
-		"WatchRule is not stalled",
-	)
 
 	// Route by configuration surface (Target is required now)
 	if watchRule.Spec.TargetRef.Name == "" {
-		r.setCondition(
-			&watchRule,
-			metav1.ConditionFalse,
-			WatchRuleReasonGitDestinationInvalid,
-			"Target.name must be specified",
-		)
-		r.setTypedCondition(
-			&watchRule,
+		st.set(
 			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
 			WatchRuleReasonGitDestinationInvalid,
 			"Target.name must be specified",
 		)
-		r.setRuleStalled(&watchRule, WatchRuleReasonGitDestinationInvalid, "Target.name must be specified")
-		return r.updateStatusAndRequeue(ctx, &watchRule)
+		return r.stallRule(ctx, st, WatchRuleReasonGitDestinationInvalid, "Target.name must be specified")
 	}
-	return r.reconcileWatchRuleViaTarget(ctx, &watchRule)
+	return r.reconcileWatchRuleViaTarget(ctx, st, &watchRule)
 }
 
 // reconcileWatchRuleViaTarget validates and stores a WatchRule that references a GitTarget.
 func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	ctx context.Context,
+	st *reconcileStatus,
 	watchRule *configbutleraiv1alpha3.WatchRule,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("reconcileWatchRuleViaTarget")
@@ -183,28 +161,16 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 		log.Error(err, "Failed to get referenced GitTarget",
 			"gitTargetName", watchRule.Spec.TargetRef.Name,
 			"gitTargetNamespace", targetNS)
-		r.setCondition(
-			watchRule,
-			metav1.ConditionFalse,
-			WatchRuleReasonGitTargetNotFound,
-			fmt.Sprintf(
-				"Referenced GitTarget '%s/%s' not found: %v",
-				targetNS,
-				watchRule.Spec.TargetRef.Name,
-				err,
-			),
-		)
-		r.setTypedCondition(
-			watchRule,
+		st.set(
 			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
 			WatchRuleReasonGitTargetNotFound,
-			"Referenced GitTarget not found",
+			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v", targetNS, watchRule.Spec.TargetRef.Name, err),
 		)
-		r.setRuleStalled(watchRule, WatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
-		return r.updateStatusAndRequeue(ctx, watchRule)
+		return r.stallRule(ctx, st, WatchRuleReasonGitTargetNotFound, "Referenced GitTarget not found")
 	}
-	r.setGitTargetReadyCondition(watchRule, target)
+	ready := gitTargetReadyCondition(target)
+	st.set(ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
 
 	// Resolve the GitProvider named by the target. A GitProviderReference is a
 	// name-only reference to a GitProvider in the GitTarget's own namespace.
@@ -216,37 +182,20 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 	if err := r.Get(ctx, providerKey, &provider); err != nil {
 		log.Error(err, "Failed to resolve GitProvider from GitTarget",
 			"gitProviderName", providerName, "gitProviderNamespace", providerNS)
-		r.setCondition(
-			watchRule,
-			metav1.ConditionFalse,
-			WatchRuleReasonGitProviderNotFound, // Reuse reason for now
-			fmt.Sprintf(
-				"GitProvider '%s/%s' (from GitTarget) not found: %v",
-				providerNS,
-				providerName,
-				err,
-			),
-		)
-		r.setTypedCondition(
-			watchRule,
+		st.set(
 			ConditionTypeGitTargetReady,
 			metav1.ConditionFalse,
 			WatchRuleReasonGitProviderNotFound,
-			"Referenced GitProvider not found",
+			fmt.Sprintf("GitProvider '%s/%s' (from GitTarget) not found: %v", providerNS, providerName, err),
 		)
-		r.setRuleStalled(watchRule, WatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
-		return r.updateStatusAndRequeue(ctx, watchRule)
+		return r.stallRule(ctx, st, WatchRuleReasonGitProviderNotFound, "Referenced GitProvider not found")
 	}
-
-	// Ready check (GitProvider doesn't have status conditions yet in my implementation? I added them)
-	// I added GitProviderStatus with Conditions.
-	// TODO: Check GitProvider readiness. For now assume ready if found.
 
 	// Source-namespace gate AND compilation, in that order and in one call — see
 	// gateSourceNamespace. There is deliberately no AddOrUpdateWatchRule here: routing every
 	// compilation through watch.CompileWatchRule is what stops the startup bootstrap from being a
 	// second, ungated path into the store.
-	if handled, result, err := r.gateSourceNamespace(ctx, watchRule, target, provider, log); handled {
+	if handled, result, err := r.gateSourceNamespace(ctx, st, watchRule, target, provider, log); handled {
 		return result, err
 	}
 
@@ -256,59 +205,57 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 			log.Error(err, "Failed to reconcile watch manager after rule update")
 			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
 		}
-		r.setResourceResolutionCondition(ctx, watchRule)
-		r.setStreamsReadyCondition(watchRule, r.WatchManager.StreamSummaryForWatchRule(*watchRule))
+		r.setResourceResolutionCondition(ctx, st, watchRule)
+		r.setStreamsReadyCondition(st, watchRule, r.WatchManager.StreamSummaryForWatchRule(*watchRule))
 	} else {
-		r.setStreamsReadyCondition(watchRule, noResolvedStreamsSummary())
+		r.setStreamsReadyCondition(st, watchRule, noResolvedStreamsSummary())
 	}
 
 	log.Info("WatchRule reconciliation via GitTarget successful", "name", watchRule.Name)
-	return r.setReadyAndUpdateStatusWithTarget(ctx, watchRule, targetNS)
-}
 
-// setReadyAndUpdateStatusWithTarget sets Ready with target message and updates status with retry.
-func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
-	ctx context.Context,
-	watchRule *configbutleraiv1alpha3.WatchRule,
-	targetNS string,
-) (ctrl.Result, error) {
 	msg := fmt.Sprintf(
 		"WatchRule is ready and monitoring resources via GitTarget '%s/%s'",
 		targetNS,
 		watchRule.Spec.TargetRef.Name,
 	)
-	r.setRuleKstatus(watchRule, msg)
-	if err := r.updateStatusWithRetry(ctx, watchRule); err != nil {
+	return r.commitRule(ctx, st, ruleReadiness(watchRule.Status.Conditions, "WatchRule", msg))
+}
+
+// stallRule publishes a terminal WatchRule outcome and ends the reconcile.
+func (r *WatchRuleReconciler) stallRule(
+	ctx context.Context,
+	st *reconcileStatus,
+	reason, message string,
+) (ctrl.Result, error) {
+	rd := newRuleReadiness("WatchRule", "")
+	rd.stalled(reason, message)
+	return r.commitRule(ctx, st, rd)
+}
+
+// commitRule writes the trio, persists the status, and picks the requeue cadence from the same
+// verdict, so the cadence can never disagree with what status says.
+//
+// Only a CONVERGING rule takes the fast loop. A stalled one waits for an event — a ClusterProvider
+// policy change, a source-cluster Namespace label change, an edit to the rule — and every one of
+// those has a watch edge registered in SetupWithManager, so polling it would find nothing.
+func (r *WatchRuleReconciler) commitRule(
+	ctx context.Context,
+	st *reconcileStatus,
+	rd *readiness,
+) (ctrl.Result, error) {
+	st.applyReadiness(rd)
+	if err := st.commit(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
-	if conditionIsFalse(watchRule.Status.Conditions, ConditionTypeResourcesResolved) {
-		return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
-	}
-	if !conditionIsTrue(watchRule.Status.Conditions, ConditionTypeGitTargetReady) {
-		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
-	}
-	if !conditionIsTrue(watchRule.Status.Conditions, ConditionTypeStreamsRunning) {
+	if rd.converging() {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
 	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
 }
 
-// setCondition sets or updates the Ready condition.
-func (r *WatchRuleReconciler) setCondition( //nolint:lll // Function signature
-	watchRule *configbutleraiv1alpha3.WatchRule, status metav1.ConditionStatus, reason, message string) {
-	r.setTypedCondition(watchRule, ConditionTypeReady, status, reason, message)
-}
-
-func (r *WatchRuleReconciler) setGitTargetReadyCondition(
-	watchRule *configbutleraiv1alpha3.WatchRule,
-	target configbutleraiv1alpha3.GitTarget,
-) {
-	ready := gitTargetReadyCondition(target)
-	r.setTypedCondition(watchRule, ConditionTypeGitTargetReady, ready.Status, ready.Reason, ready.Message)
-}
-
 func (r *WatchRuleReconciler) setResourceResolutionCondition(
 	ctx context.Context,
+	st *reconcileStatus,
 	watchRule *configbutleraiv1alpha3.WatchRule,
 ) {
 	resolved, message := r.WatchManager.ResolveWatchRuleResources(ctx, *watchRule)
@@ -318,150 +265,27 @@ func (r *WatchRuleReconciler) setResourceResolutionCondition(
 		status = metav1.ConditionTrue
 		reason = WatchRuleReasonResourcesResolved
 	}
-	r.setTypedCondition(watchRule, ConditionTypeResourcesResolved, status, reason, message)
+	st.set(ConditionTypeResourcesResolved, status, reason, message)
 }
 
 func (r *WatchRuleReconciler) setStreamsReadyCondition(
+	st *reconcileStatus,
 	watchRule *configbutleraiv1alpha3.WatchRule,
 	streams watch.StreamSummary,
 ) {
 	watchRule.Status.Streams = watchRuleStreamsStatus(streams)
-	r.setTypedCondition(
-		watchRule,
-		ConditionTypeStreamsRunning,
-		streamConditionStatus(streams),
-		streams.Reason,
-		streams.Message,
-	)
-}
-
-func (r *WatchRuleReconciler) setRuleStalled(
-	watchRule *configbutleraiv1alpha3.WatchRule,
-	reason string,
-	message string,
-) {
-	r.setTypedCondition(watchRule, ConditionTypeReady, metav1.ConditionFalse, reason, message)
-	r.setTypedCondition(watchRule, ConditionTypeReconciling, metav1.ConditionFalse, reason, "Reconciliation is stalled")
-	r.setTypedCondition(watchRule, ConditionTypeStalled, metav1.ConditionTrue, reason, message)
-}
-
-func (r *WatchRuleReconciler) setRuleKstatus(
-	watchRule *configbutleraiv1alpha3.WatchRule,
-	readyMessage string,
-) {
-	applyRuleKstatus(
-		watchRule.Status.Conditions,
-		readyMessage,
-		"WatchRule is not stalled",
-		func(conditionType string, status metav1.ConditionStatus, reason, message string) {
-			r.setTypedCondition(watchRule, conditionType, status, reason, message)
-		},
-		func(reason, message string) {
-			r.setRuleStalled(watchRule, reason, message)
-		},
-	)
-}
-
-func (r *WatchRuleReconciler) setTypedCondition(
-	watchRule *configbutleraiv1alpha3.WatchRule,
-	conditionType string,
-	status metav1.ConditionStatus,
-	reason string,
-	message string,
-) {
-	watchRule.Status.Conditions = upsertCondition(
-		watchRule.Status.Conditions,
-		conditionType,
-		status,
-		reason,
-		message,
-		watchRule.Generation,
-	)
-}
-
-func conditionIsFalse(conditions []metav1.Condition, conditionType string) bool {
-	for _, condition := range conditions {
-		if condition.Type == conditionType {
-			return condition.Status == metav1.ConditionFalse
-		}
-	}
-	return false
-}
-
-// updateStatusAndRequeue updates the status and requeues on the unified control-plane steady
-// interval. The control plane no longer watches Secrets, so every status outcome falls back to
-// this single cadence; see docs/rbac.md.
-func (r *WatchRuleReconciler) updateStatusAndRequeue(
-	ctx context.Context, watchRule *configbutleraiv1alpha3.WatchRule) (ctrl.Result, error) {
-	if err := r.updateStatusWithRetry(ctx, watchRule); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
-}
-
-// updateStatusWithRetry updates the status with retry logic to handle race conditions
-//
-//nolint:dupl // Similar retry logic pattern used across controllers
-func (r *WatchRuleReconciler) updateStatusWithRetry(
-	ctx context.Context,
-	watchRule *configbutleraiv1alpha3.WatchRule,
-) error {
-	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
-
-	log.Info("Starting status update with retry",
-		"name", watchRule.Name,
-		"namespace", watchRule.Namespace,
-		"conditionsCount", len(watchRule.Status.Conditions))
-
-	return wait.ExponentialBackoff(wait.Backoff{
-		Duration: RetryInitialDuration,
-		Factor:   RetryBackoffFactor,
-		Jitter:   RetryBackoffJitter,
-		Steps:    RetryMaxSteps,
-	}, func() (bool, error) {
-		log.Info("Attempting status update")
-
-		// Get the latest version of the resource
-		latest := &configbutleraiv1alpha3.WatchRule{}
-		key := client.ObjectKeyFromObject(watchRule)
-		if err := r.Get(ctx, key, latest); err != nil {
-			if apierrors.IsNotFound(err) {
-				log.Info("Resource was deleted, nothing to update")
-				return true, nil
-			}
-			log.Error(err, "Failed to get latest resource version")
-			return false, err
-		}
-
-		log.Info("Got latest resource version",
-			"generation", latest.Generation,
-			"resourceVersion", latest.ResourceVersion)
-
-		// Copy our status to the latest version
-		latest.Status = watchRule.Status
-
-		log.Info("Attempting to update status",
-			"conditionsCount", len(latest.Status.Conditions))
-
-		// Attempt to update
-		if err := r.Status().Update(ctx, latest); err != nil {
-			if apierrors.IsConflict(err) {
-				log.Info("Resource version conflict, retrying")
-				return false, nil
-			}
-			log.Error(err, "Failed to update status")
-			return false, err
-		}
-
-		log.Info("Status update successful")
-		return true, nil
-	})
+	st.set(ConditionTypeStreamsRunning, streamConditionStatus(streams), streams.Reason, streams.Message)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha3.WatchRule{}).
+		// A For() predicate is not an optimisation here, it closes a self-triggering edge: a status
+		// write bumps resourceVersion and fires an Update watch event that EnqueueRequestForObject
+		// turns straight back into a queued request, un-rate-limited. reconcileStatus.commit()
+		// already suppresses no-op writes, so the loop has no fuel; this makes it structural, and
+		// matches what GitProvider and ClusterProvider already do.
+		For(&configbutleraiv1alpha3.WatchRule{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// GenerationChangedPredicate keeps these watches reacting to a freshly
 		// applied or spec-changed dependency while ignoring the status-only
 		// updates the controllers write themselves — without it every GitTarget

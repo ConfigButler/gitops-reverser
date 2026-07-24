@@ -232,12 +232,8 @@ func verifyResourceCondition(
 		}
 
 		g.Expect(conditionStatus).To(Equal(expectedStatus))
-		switch {
-		case expectedReason == "":
-			// Status-only gate: caller does not assert a reason.
-		case resourceType == "gittarget" && conditionType == "Ready" && expectedReason == "Ready":
-			g.Expect([]string{"Ready", "OK"}).To(ContainElement(conditionReason))
-		default:
+		// An empty expectedReason is a status-only gate: the caller does not assert a reason.
+		if expectedReason != "" {
 			g.Expect(conditionReason).To(Equal(expectedReason))
 		}
 		if expectedMessageContains != "" {
@@ -265,14 +261,14 @@ func waitForWatchRuleStreamsRunning(name, ns string) { //nolint:unused // Helper
 func createReadyGitProvider(name, ns, secretName, repoURL string) {
 	GinkgoHelper()
 	createGitProviderWithURLInNamespace(name, ns, secretName, repoURL)
-	verifyResourceStatus("gitprovider", name, ns, "True", "Ready", "")
+	verifyResourceStatus("gitprovider", name, ns, "True", "Succeeded", "")
 }
 
 // createReadyGitProviderWithCommitWindow is createReadyGitProvider with an explicit commit window.
 func createReadyGitProviderWithCommitWindow(name, ns, secretName, repoURL, commitWindow string) {
 	GinkgoHelper()
 	createGitProviderWithCommitWindow(name, ns, secretName, repoURL, commitWindow)
-	verifyResourceStatus("gitprovider", name, ns, "True", "Ready", "")
+	verifyResourceStatus("gitprovider", name, ns, "True", "Succeeded", "")
 }
 
 // createValidatedGitTarget creates a GitTarget on the "main" branch and blocks until it accepts
@@ -282,7 +278,7 @@ func createReadyGitProviderWithCommitWindow(name, ns, secretName, repoURL, commi
 func createValidatedGitTarget(name, ns, providerName, path string) {
 	GinkgoHelper()
 	createGitTarget(name, ns, providerName, path, "main")
-	verifyResourceCondition("gittarget", name, ns, "Validated", "True", "OK", "")
+	verifyResourceCondition("gittarget", name, ns, "Validated", "True", "Succeeded", "")
 }
 
 // cleanupPipeline deletes the three namespaced pipeline resources in dependency order (rule, then

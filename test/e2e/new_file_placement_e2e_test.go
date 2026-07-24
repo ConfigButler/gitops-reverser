@@ -51,7 +51,7 @@ var _ = Describe("Manager New-File Placement", Label("manager", "new-file-placem
 
 		By("creating the GitProvider")
 		createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 	})
 
 	AfterAll(func() {
@@ -81,8 +81,8 @@ var _ = Describe("Manager New-File Placement", Label("manager", "new-file-placem
 			DestinationName string
 		}{Name: ruleName, Namespace: testNs, DestinationName: destName}, testNs)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap WatchRule")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
-		verifyResourceStatus("watchrule", ruleName, testNs, "True", "Ready", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
+		verifyResourceStatus("watchrule", ruleName, testNs, "True", "Succeeded", "")
 		waitForStreamsRunning(destName, testNs)
 
 		By("creating a brand-new ConfigMap with no existing document in Git")

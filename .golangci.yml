@@ -363,6 +363,14 @@ linters:
       - text: "SA1019: scheme.Builder is deprecated"
         path: 'api/v1alpha3/groupversion_info\.go'
         linters: [staticcheck]
+      # mgr.GetEventRecorderFor returns the record.EventRecorder our shared status writer emits on
+      # (a single Event per persisted Ready transition). It is the ubiquitous kubebuilder idiom; the
+      # non-deprecated GetEventRecorder returns the newer events.EventRecorder, whose Eventf demands
+      # an action verb and a note and does not fit a one-line status Event. Newer staticcheck
+      # flags the deprecation; scope the allowance to where the manager is wired.
+      - text: "SA1019: mgr.GetEventRecorderFor is deprecated"
+        path: 'cmd/main\.go'
+        linters: [staticcheck]
       # Allow fmt.Print* in test/e2e (debugging outputs)
       - path: 'test/e2e/.*\.go'
         linters: [forbidigo]

@@ -53,7 +53,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		)
 		verifyResourceStatus(
 			"gitprovider", "gitprovider-normal", testNs,
-			"True", "Ready", "Repository connectivity validated",
+			"True", "Succeeded", "Repository connectivity validated",
 		)
 	})
 
@@ -109,8 +109,8 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterWatchRule for CRDs")
 
 		By("verifying ClusterWatchRule is ready")
-		verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Succeeded", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
 
 		By("installing the IceCreamOrder CRD to trigger Git commit")
 		err = applyIceCreamCRD(crdGroupCRDLifecycle)
@@ -218,8 +218,8 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule for CRDs")
 
 		By("verifying WatchRule is ready")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "OK", "")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
+		verifyResourceCondition("gittarget", destName, testNs, "Validated", "True", "Succeeded", "")
 
 		// Gate on StreamsRunning so this and the later modify/delete specs (which share this Ordered
 		// GitTarget) act on a live stream — the [DELETE] commit assertion downstream depends on it.
@@ -618,7 +618,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying ClusterWatchRule is ready")
 
-		verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
+		verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Succeeded", "")
 
 		By("waiting for the CRD stream to be live so the deletion is a live [DELETE] event")
 		waitForStreamsRunning(destName, testNs)

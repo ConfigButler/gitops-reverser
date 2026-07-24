@@ -397,7 +397,7 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 			Status:     configbutleraiv1alpha3.ClusterProviderStatus{Conditions: conds},
 		}
 	}
-	ready := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "OK"}
+	ready := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded}
 	notReady := metav1.Condition{
 		Type:    ConditionTypeReady,
 		Status:  metav1.ConditionFalse,
@@ -433,9 +433,9 @@ func TestClusterProviderReadiness_AllScenarios(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			status, _, msg := clusterProviderReadiness(tc.cp)
-			assert.Equal(t, tc.want, status)
-			assert.NotEmpty(t, msg)
+			got := clusterProviderReadiness(tc.cp)
+			assert.Equal(t, tc.want, got.Status)
+			assert.NotEmpty(t, got.Message)
 		})
 	}
 }
@@ -447,7 +447,7 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 			Status:     configbutleraiv1alpha3.GitProviderStatus{Conditions: conds},
 		}
 	}
-	ready := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "OK"}
+	ready := metav1.Condition{Type: ConditionTypeReady, Status: metav1.ConditionTrue, Reason: ReasonSucceeded}
 	notReady := metav1.Condition{
 		Type:    ConditionTypeReady,
 		Status:  metav1.ConditionFalse,
@@ -463,6 +463,15 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 		{"ready", provider([]metav1.Condition{ready}), metav1.ConditionTrue},
 		{"not ready -> False (downgrades)", provider([]metav1.Condition{notReady}), metav1.ConditionFalse},
 		{"no condition -> Unknown (does not downgrade)", provider(nil), metav1.ConditionUnknown},
+		{
+			"Ready=Unknown -> Unknown (provider mid-reconcile does not downgrade)",
+			provider([]metav1.Condition{{
+				Type:   ConditionTypeReady,
+				Status: metav1.ConditionUnknown,
+				Reason: ReasonProgressing,
+			}}),
+			metav1.ConditionUnknown,
+		},
 		{"absent provider -> Unknown", nil, metav1.ConditionUnknown},
 	}
 	for _, tc := range tests {
@@ -478,9 +487,9 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 					ProviderRef: configbutleraiv1alpha3.GitProviderReference{Name: "prov"},
 				},
 			}
-			status, _, msg := r.gitProviderReadiness(context.Background(), target, "team-a")
-			assert.Equal(t, tc.want, status)
-			assert.NotEmpty(t, msg)
+			got := r.gitProviderReadiness(context.Background(), target, "team-a")
+			assert.Equal(t, tc.want, got.Status)
+			assert.NotEmpty(t, got.Message)
 		})
 	}
 }

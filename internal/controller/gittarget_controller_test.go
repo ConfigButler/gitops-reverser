@@ -305,10 +305,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Eventually(func(g Gomega) {
 				var got configbutleraiv1alpha3.GitTarget
 				g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
-				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionReady)).To(BeFalse())
-				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionReconciling)).To(BeTrue())
-				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionStalled)).To(BeFalse())
-				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionStreamsRunning)).To(BeFalse())
+				g.Expect(conditionIsTrue(got.Status.Conditions, GitTargetConditionReady)).To(BeFalse())
+				g.Expect(conditionIsTrue(got.Status.Conditions, GitTargetConditionReconciling)).To(BeTrue())
+				g.Expect(conditionIsTrue(got.Status.Conditions, GitTargetConditionStalled)).To(BeFalse())
+				g.Expect(conditionIsTrue(got.Status.Conditions, GitTargetConditionStreamsRunning)).To(BeFalse())
 				for _, c := range got.Status.Conditions {
 					g.Expect(c.Type).NotTo(Equal("EventStreamLive"), "EventStreamLive condition was removed")
 				}

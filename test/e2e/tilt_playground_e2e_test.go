@@ -100,9 +100,9 @@ func (r playgroundRun) applyResources() {
 }
 
 func (r playgroundRun) verifyResourcesReady() {
-	verifyResourceStatus("gitprovider", r.providerName, r.namespace, "True", "Ready", "")
-	verifyResourceCondition("gittarget", r.targetName, r.namespace, "Validated", "True", "OK", "")
-	verifyResourceStatus("watchrule", r.watchRuleName, r.namespace, "True", "Ready", "")
+	verifyResourceStatus("gitprovider", r.providerName, r.namespace, "True", "Succeeded", "")
+	verifyResourceCondition("gittarget", r.targetName, r.namespace, "Validated", "True", "Succeeded", "")
+	verifyResourceStatus("watchrule", r.watchRuleName, r.namespace, "True", "Succeeded", "")
 }
 
 func (r playgroundRun) logArtifacts() {

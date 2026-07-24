@@ -97,7 +97,7 @@ func provisionValuesFileEnv(caseName string) valuesFileEnv {
 	providerName := caseName + "-values-provider"
 	By("creating the GitProvider")
 	createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
-	verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+	verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
 
 	DeferCleanup(func() {
 		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
@@ -144,8 +144,8 @@ func assertReferencedValuesFileAdopted(env valuesFileEnv, tc referencedValuesCas
 	DeferCleanup(func() { cleanupWatchRule(ruleName, env.testNs) })
 
 	waitForGitTargetGitPathAccepted(destName, env.testNs)
-	verifyResourceCondition("gittarget", destName, env.testNs, "Validated", "True", "OK", "")
-	verifyResourceStatus("watchrule", ruleName, env.testNs, "True", "Ready", "")
+	verifyResourceCondition("gittarget", destName, env.testNs, "Validated", "True", "Succeeded", "")
+	verifyResourceStatus("watchrule", ruleName, env.testNs, "True", "Succeeded", "")
 	waitForStreamsRunning(destName, env.testNs)
 
 	By("mirroring a live ConfigMap into the adopted folder — a refused folder writes nothing")

@@ -52,7 +52,7 @@ var _ = Describe("Manager GitTarget Overlap Guard", Label("manager"), Ordered, f
 		)
 		verifyResourceStatus(
 			"gitprovider", providerName, testNs,
-			"True", "Ready", "Repository connectivity validated",
+			"True", "Succeeded", "Repository connectivity validated",
 		)
 	})
 
@@ -67,8 +67,8 @@ var _ = Describe("Manager GitTarget Overlap Guard", Label("manager"), Ordered, f
 		createGitTarget("overlap-sibling-a", testNs, providerName, "overlap/team-a", "main")
 		createGitTarget("overlap-sibling-b", testNs, providerName, "overlap/team-b", "main")
 
-		verifyResourceCondition("gittarget", "overlap-sibling-a", testNs, "Validated", "True", "OK", "")
-		verifyResourceCondition("gittarget", "overlap-sibling-b", testNs, "Validated", "True", "OK", "")
+		verifyResourceCondition("gittarget", "overlap-sibling-a", testNs, "Validated", "True", "Succeeded", "")
+		verifyResourceCondition("gittarget", "overlap-sibling-b", testNs, "Validated", "True", "Succeeded", "")
 	})
 
 	It("rejects a path nested inside an existing target's path", func() {
@@ -78,7 +78,7 @@ var _ = Describe("Manager GitTarget Overlap Guard", Label("manager"), Ordered, f
 		// same-second tie. That keeps this spec from flaking.
 		By("creating the parent target first so it wins the overlap election")
 		createGitTarget("overlap-parent", testNs, providerName, "overlap/nested", "main")
-		verifyResourceCondition("gittarget", "overlap-parent", testNs, "Validated", "True", "OK", "")
+		verifyResourceCondition("gittarget", "overlap-parent", testNs, "Validated", "True", "Succeeded", "")
 
 		By("creating a target nested under the parent (created later, must lose)")
 		createGitTarget("overlap-parent-child", testNs, providerName, "overlap/nested/child", "main")

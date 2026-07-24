@@ -57,6 +57,7 @@ const (
 // unchanged.
 func (r *WatchRuleReconciler) gateSourceNamespace(
 	ctx context.Context,
+	st *reconcileStatus,
 	watchRule *configbutleraiv1alpha3.WatchRule,
 	target configbutleraiv1alpha3.GitTarget,
 	provider configbutleraiv1alpha3.GitProvider,
@@ -74,8 +75,7 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 
 	switch {
 	case resolved.Admitted():
-		r.setTypedCondition(
-			watchRule,
+		st.set(
 			ConditionTypeSourceNamespaceAuthorized,
 			metav1.ConditionTrue,
 			resolved.Reason,
@@ -84,7 +84,7 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 		return false, ctrl.Result{}, nil
 
 	case resolved.Terminal():
-		result, refuseErr := r.refuseSourceNamespace(ctx, watchRule, resolved, log)
+		result, refuseErr := r.refuseSourceNamespace(ctx, st, watchRule, resolved, log)
 		return true, result, refuseErr
 
 	default:
@@ -92,7 +92,7 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 		// rule with an already-resolved scope is retaining it through an unevaluatable policy. In
 		// every case this is PROGRESSING, not failed: turning a temporary connection problem into
 		// a terminal Stalled=True would stop a stream over an outage nobody chose.
-		result, updateErr := r.holdSourceNamespaceUnknown(ctx, watchRule, resolved)
+		result, updateErr := r.holdSourceNamespaceUnknown(ctx, st, watchRule, resolved)
 		return true, result, updateErr
 	}
 }
@@ -110,6 +110,7 @@ func (r *WatchRuleReconciler) gateSourceNamespace(
 // the mappers and channel registered in SetupWithManager.
 func (r *WatchRuleReconciler) refuseSourceNamespace(
 	ctx context.Context,
+	st *reconcileStatus,
 	watchRule *configbutleraiv1alpha3.WatchRule,
 	resolved authz.ResolvedSourceScope,
 	log logr.Logger,
@@ -131,23 +132,20 @@ func (r *WatchRuleReconciler) refuseSourceNamespace(
 		}
 	}
 
-	r.setTypedCondition(
-		watchRule,
+	st.set(
 		ConditionTypeSourceNamespaceAuthorized,
 		metav1.ConditionFalse,
 		resolved.Reason,
 		resolved.Message,
 	)
-	r.setTypedCondition(
-		watchRule,
+	st.set(
 		ConditionTypeStreamsRunning,
 		metav1.ConditionFalse,
 		resolved.Reason,
 		"No streams: the rule's source-namespace scope is not authorized",
 	)
-	r.setRuleStalled(watchRule, resolved.Reason, resolved.Message)
 
-	return r.updateStatusAndRequeue(ctx, watchRule)
+	return r.stallRule(ctx, st, resolved.Reason, resolved.Message)
 }
 
 // holdSourceNamespaceUnknown publishes the "cannot say yet" state: SourceNamespaceAuthorized is
@@ -160,31 +158,29 @@ func (r *WatchRuleReconciler) refuseSourceNamespace(
 // outage.
 func (r *WatchRuleReconciler) holdSourceNamespaceUnknown(
 	ctx context.Context,
+	st *reconcileStatus,
 	watchRule *configbutleraiv1alpha3.WatchRule,
 	resolved authz.ResolvedSourceScope,
 ) (ctrl.Result, error) {
-	r.setTypedCondition(
-		watchRule,
+	st.set(
 		ConditionTypeSourceNamespaceAuthorized,
 		metav1.ConditionUnknown,
 		resolved.Reason,
 		resolved.Message,
 	)
-	r.setTypedCondition(
-		watchRule,
+	st.set(
 		ConditionTypeStreamsRunning,
 		metav1.ConditionUnknown,
 		resolved.Reason,
 		"Streams not re-evaluated while source-namespace authorization is unsettled",
 	)
-	r.setRuleKstatus(watchRule, "WatchRule source-namespace authorization is unsettled")
 
-	if err := r.updateStatusWithRetry(ctx, watchRule); err != nil {
-		return ctrl.Result{}, err
-	}
-	// Retry on the fast settle cadence: the answer usually arrives with the next source-cluster
-	// refresh, and the enqueue edge may not fire when nothing observably changed.
-	return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
+	// Progressing, never stalled — and on the fast settle cadence, because the answer usually
+	// arrives with the next source-cluster refresh and the enqueue edge may not fire when nothing
+	// observably changed. requeueFor gives that cadence to any non-converged verdict.
+	rd := ruleReadiness(watchRule.Status.Conditions, "WatchRule",
+		"WatchRule source-namespace authorization is unsettled")
+	return r.commitRule(ctx, st, rd)
 }
 
 // sourceScope returns the source-scope service, or nil when the data plane is not wired. A nil
