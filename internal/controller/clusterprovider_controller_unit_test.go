@@ -318,9 +318,9 @@ func TestValidateProviderKubeConfig_NilSecretRef(t *testing.T) {
 	assert.NotEmpty(t, msg)
 }
 
-// TestClusterProviderUpdateStatus_DeletedObject checks the shared status writer treats a vanished
+// TestReconcileStatusCommit_DeletedObject checks the shared status writer treats a vanished
 // object as done rather than erroring: a reconcile that raced a delete must not fail the workqueue.
-func TestClusterProviderUpdateStatus_DeletedObject(t *testing.T) {
+func TestReconcileStatusCommit_DeletedObject(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(scScheme(t)).
 		WithStatusSubresource(&configbutleraiv1alpha3.ClusterProvider{}).

@@ -463,6 +463,15 @@ func TestGitProviderReadiness_AllScenarios(t *testing.T) {
 		{"ready", provider([]metav1.Condition{ready}), metav1.ConditionTrue},
 		{"not ready -> False (downgrades)", provider([]metav1.Condition{notReady}), metav1.ConditionFalse},
 		{"no condition -> Unknown (does not downgrade)", provider(nil), metav1.ConditionUnknown},
+		{
+			"Ready=Unknown -> Unknown (provider mid-reconcile does not downgrade)",
+			provider([]metav1.Condition{{
+				Type:   ConditionTypeReady,
+				Status: metav1.ConditionUnknown,
+				Reason: ReasonProgressing,
+			}}),
+			metav1.ConditionUnknown,
+		},
 		{"absent provider -> Unknown", nil, metav1.ConditionUnknown},
 	}
 	for _, tc := range tests {

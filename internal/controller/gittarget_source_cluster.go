@@ -185,10 +185,15 @@ func (r *GitTargetReconciler) gitProviderReadiness(
 			Reason:  GitTargetReasonGitProviderReady,
 			Message: fmt.Sprintf("referenced GitProvider %s is Ready", key),
 		}
-	case c.Message != "":
-		return notReady(metav1.ConditionFalse, "referenced GitProvider %s is not Ready: %s", key, c.Message)
-	default:
+	case c.Status == metav1.ConditionFalse:
+		if c.Message != "" {
+			return notReady(metav1.ConditionFalse, "referenced GitProvider %s is not Ready: %s", key, c.Message)
+		}
 		return notReady(metav1.ConditionFalse, "referenced GitProvider %s is not Ready", key)
+	default:
+		// Ready=Unknown is the provider mid-reconcile saying it does not know yet, which is the
+		// case the contract above refuses to downgrade on — same rule as clusterProviderReadiness.
+		return notReady(metav1.ConditionUnknown, "referenced GitProvider %s readiness is unknown", key)
 	}
 }
 

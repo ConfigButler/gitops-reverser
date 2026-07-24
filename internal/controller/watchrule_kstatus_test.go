@@ -119,10 +119,10 @@ func TestWatchRuleSourceNamespaceKstatusContract(t *testing.T) {
 	}
 }
 
-// TestApplyRuleKstatus_SourceAuthorizationIsAPrerequisite asserts the aggregation itself, not just
+// TestRuleReadiness_SourceAuthorizationIsAPrerequisite asserts the aggregation itself, not just
 // its inputs: Ready=True must require SourceNamespaceAuthorized=True even when every pre-existing
 // prerequisite is healthy. Without this, a rule could report Ready while its gate said otherwise.
-func TestApplyRuleKstatus_SourceAuthorizationIsAPrerequisite(t *testing.T) {
+func TestRuleReadiness_SourceAuthorizationIsAPrerequisite(t *testing.T) {
 	healthy := []metav1.Condition{
 		{Type: ConditionTypeResourcesResolved, Status: metav1.ConditionTrue, Reason: "Resolved"},
 		{Type: ConditionTypeGitTargetReady, Status: metav1.ConditionTrue, Reason: "Ready"},

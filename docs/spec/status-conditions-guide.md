@@ -51,8 +51,12 @@ making every object mutable on read.
 
 The write is a status **patch with optimistic concurrency**, and a conflict is dropped rather than
 retried: a conflict means the object moved under this reconcile, so the status just computed
-describes a generation that is no longer current, and the write that beat us has already enqueued a
-fresh pass.
+describes a generation that is no longer current, and publishing it would publish a stale
+observation. Convergence is deferred, not guaranteed to be immediate. A conflict caused by a *spec*
+edit re-enqueues at once; one caused by a metadata- or status-only write does **not**, because every
+`For()` in this project carries `GenerationChangedPredicate`. That case converges on the next
+dependency event or the requeue cadence `commitRule`/`requeueFor` already picked from the same
+verdict — which is why that cadence, and not a retry loop here, is the backstop.
 
 ### Reason vocabulary
 
