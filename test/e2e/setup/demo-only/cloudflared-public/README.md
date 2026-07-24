@@ -1,3 +1,5 @@
+# Cloudflare Tunnel (cloudflared) Setup
+
 This directory contains a local-only `cloudflared` scaffold for exposing one hostname through the k3d cluster.
 
 Files:

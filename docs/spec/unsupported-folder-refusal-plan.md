@@ -1,7 +1,7 @@
 # Refuse unsupported folder content — design + implementation plan
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: IMPLEMENTED — shipped as `GitPathAccepted` (internal/git/git_path_refusal.go,
 > test/e2e/unsupported_folder_e2e_test.go). Originally written 2026-06-26, revised 2026-06-27;
 > the "PROPOSAL" label was stale and was corrected 2026-07-11. The mechanics (refuse a GitTarget path the
@@ -147,7 +147,7 @@ health checks, `helm --wait` (HIP-0022), `kubectl wait` — reads a small, fixed
 answer one question: *is this object done, still progressing, or blocked?* Our highly-technical target
 users live in exactly those tools. So the conditions split into two layers:
 
-```
+```text
 LAYER 1 — kstatus generic trio (the contract tooling reads)
   Ready        positive polarity   True  = latest observed generation satisfies the GitTarget contract
                                             (control plane valid AND data plane live)
@@ -384,7 +384,7 @@ unsafe folder. Both share one helper.
 
 ### Data flow
 
-```
+```text
 watch replay → enqueueScopedResync → BranchWorker.applyResync
    └─ scan subtree → build store (DefaultAllowlist) → Accept(structure-only + hard-kustomize)
         ├─ accepted  → commit as today                      → GitPathAccepted=True
@@ -412,8 +412,8 @@ Each phase is independently compilable and unit-testable; validate per phase bef
 - **Tier 2:** surface `kustomizationDoc.unsupported` to the store's public model and add a new
   `IssueUnsupportedKustomize` refusal in `Accept` for any retained kustomization marked unsupported.
 - Unit tests: duplicates → refused; impure file → refused; non-KRM standalone → refused; hard-Kustomize
-  `kustomization.yaml` (patches) → refused; a clean folder + plain `kustomization.yaml` (only `namespace:`
-  + `resources:`) → **accepted** (no false refusal).
+  `kustomization.yaml` (patches) → refused; a clean folder + plain `kustomization.yaml`
+  (only `namespace:` + `resources:`) → **accepted** (no false refusal).
 
 ### Phase 2 — git writer: call the gate, abort the commit
 
@@ -478,18 +478,20 @@ so the real acceptance criterion is "does generic tooling read this the way we e
 **4a — kstatus-library test (the faithful proxy; highest signal).** Add `sigs.k8s.io/cli-utils` as a
 **test** dependency and call `status.Compute(<GitTarget as unstructured>)` on the live object; assert it
 returns exactly what Flux/Argo would compute:
-  - initial sync in flight → `InProgress`
-  - fully mirrored → `Current`
-  - refused folder → `Failed` (the computed message names the file)
-  - control-plane gate false (e.g. bad provider) → `Failed`
+
+- initial sync in flight → `InProgress`
+- fully mirrored → `Current`
+- refused folder → `Failed` (the computed message names the file)
+- control-plane gate false (e.g. bad provider) → `Failed`
 Flux's health polling *is* kstatus, so a green `status.Compute` is the closest thing to "GitOps tooling
 sees what we expect" without standing up Flux. Cheap enough to run in `envtest` against fabricated status,
 and once in e2e against a real object. The controller itself does **not** import kstatus — it only has to
 *set* the conditions; kstatus is a consumer-side check.
 
 **4b — `kubectl wait` operator-facing smoke (e2e).** Prove the human/CLI contract:
-  - healthy: `kubectl wait --for=condition=Ready=true gittarget/<n> --timeout=120s` succeeds.
-  - refused: `kubectl wait --for=condition=Stalled=true gittarget/<n> --timeout=120s` succeeds
+
+- healthy: `kubectl wait --for=condition=Ready=true gittarget/<n> --timeout=120s` succeeds.
+- refused: `kubectl wait --for=condition=Stalled=true gittarget/<n> --timeout=120s` succeeds
     (and `--for=condition=Ready=false`).
   Caveat (answering "is it verbose / can it show the waiting state?"): **no.** `kubectl wait` blocks
   silently, then prints `condition met` or times out; it cannot display the intermediate `InProgress`. To

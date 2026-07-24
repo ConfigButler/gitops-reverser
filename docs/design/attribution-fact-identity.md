@@ -443,7 +443,8 @@ audit pipeline can act on it.
 | E | B plus the fingerprint as a diagnostic | yes | no | one cached GET per provider |
 
 B is the tempting one, because object UIDs are globally unique and the
-earlier fact-purge decision already leaned on exactly that to justify not purging. It was rejected here for one reason: it makes the cluster boundary an emergent
+earlier fact-purge decision already leaned on exactly that to justify not purging. It was rejected
+here for one reason: it makes the cluster boundary an emergent
 property of UUID uniqueness instead of a stated fact, and that property is the one thing an etcd
 clone breaks. C is B with more machinery and no more safety, since its identity is copied by the
 same clone that copies the object UIDs.

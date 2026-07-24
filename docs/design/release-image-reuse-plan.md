@@ -17,7 +17,7 @@ release-please PR exists; nothing has been cut since #190).
 
 [#191]: https://github.com/ConfigButler/gitops-reverser/pull/191
 
-### What is live on `main` now
+## What is live on `main` now
 
 Verify against the tree — these are the anchors, not a substitute for reading
 `ci.yml`/`release.yml`:
@@ -44,7 +44,7 @@ Verify against the tree — these are the anchors, not a substitute for reading
   release.
 - **Docs updated:** `docs/ci-overview.md`, `.github/RELEASES.md`.
 
-### What remains (exact current-tree state for the next context)
+## What remains (exact current-tree state for the next context)
 
 - **PR 2 — point the e2e `quickstart` lane at the release-grade amd64
   digest on main.** *Current tree:* `e2e` still
@@ -166,7 +166,9 @@ flowchart TD
   RP -- yes --> H["publish-helm:<br/>push chart from CI artifact"]:::rel
 ```
 
-**Target** — PR 1 is live (blue = new, orange = changed, green = unchanged; the rebuild jobs are gone). The dashed phase-2 quickstart edge and the phase-3 `SIGN` node are **not yet built** (PRs 2–3):
+**Target** — PR 1 is live (blue = new, orange = changed, green = unchanged; the rebuild jobs are
+gone). The dashed phase-2 quickstart edge and the phase-3 `SIGN` node are **not yet built** (PRs
+2–3):
 
 ```mermaid
 flowchart TD
@@ -321,8 +323,14 @@ sequenceDiagram
      registry-served digest users actually pull. This is also where the
      plan's *single* skip-tolerant gate lives (PR 2, deliberately not PR 1):
      e2e gains `build-release-amd64` in its `needs`, which is skipped on
-     PRs, so e2e's condition becomes
-     `if: always() && needs.ci-container.result == 'success' && needs.build.result == 'success' && needs.lint-helm.result == 'success' && (github.event_name == 'pull_request' || needs.build-release-amd64.result == 'success')`.
+     PRs, so e2e's condition becomes:
+
+     ```yaml
+     if: always() && needs.ci-container.result == 'success'
+       && needs.build.result == 'success' && needs.lint-helm.result == 'success'
+       && (github.event_name == 'pull_request' || needs.build-release-amd64.result == 'success')
+     ```
+
    - Stamp OCI labels (`metadata-action`) in `build-release` — today they're
      applied by the release build.
 2. **`.github/workflows/release.yml`**
@@ -387,7 +395,7 @@ per-commit images are instrumented builds you'd never promote).
 
 ## 6. Is it worth it?
 
-**Gains**
+### Gains
 
 | Gain | Size |
 | --- | --- |
@@ -398,7 +406,7 @@ per-commit images are instrumented builds you'd never promote).
 | `release.yml` loses its most complex job | less to maintain in the trust-critical file |
 | PR and main e2e share one delivery path (artifact + k3d load) | the fork-safe path becomes the only path; a stack of `if: pull_request` conditionals is deleted; instrumented builds never touch the registry |
 
-**Costs**
+### Costs
 
 | Cost | Size |
 | --- | --- |

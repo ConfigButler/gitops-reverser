@@ -113,7 +113,7 @@ Other keys, verified:
 | Stripped **annotation** prefixes: `kubectl.kubernetes.io/`, `control-plane.alpha.kubernetes.io/`, `deployment.kubernetes.io/`, `autoscaling.alpha.kubernetes.io/`, `kustomize.toolkit.fluxcd.io/`, `applyset.kubernetes.io/` | [`internal/sanitize/types.go:75-82`](../../internal/sanitize/types.go#L75-L82) |
 | **No Argo CD key was stripped, at all.** The strip lists were hardcoded prefix matches; there is no runtime config | same |
 
-*(Line numbers above describe the code as it stood before this change.)*
+Line numbers above describe the code as it stood before this change.
 
 So `kubectl.kubernetes.io/last-applied-configuration` (which Argo's client-side
 apply writes) *was* stripped — good. And `argocd.argoproj.io/tracking-id` (which
@@ -284,7 +284,7 @@ produces.
    (ports 13000/19090/16379/19080/18081 are taken; 18080 is free),
 3. prints the URL and the admin password:
 
-```
+```text
 Argo CD UI:  http://localhost:18080
 username:    admin
 password:    <kubectl -n argocd get secret argocd-initial-admin-secret \
@@ -554,16 +554,16 @@ exact-key set:
 
 ```go
 var operationalAnnotationKeys = map[string]struct{}{
-	"argocd.argoproj.io/tracking-id":     {},
-	"argocd.argoproj.io/installation-id": {},
+ "argocd.argoproj.io/tracking-id":     {},
+ "argocd.argoproj.io/installation-id": {},
 }
 
 func isOperationalAnnotation(key string) bool {
-	if _, ok := operationalAnnotationKeys[key]; ok {
-		return true
-	}
-	return strings.HasPrefix(key, "kubectl.kubernetes.io/") ||
-		// … existing prefixes unchanged
+ if _, ok := operationalAnnotationKeys[key]; ok {
+  return true
+ }
+ return strings.HasPrefix(key, "kubectl.kubernetes.io/") ||
+  // … existing prefixes unchanged
 }
 ```
 
@@ -655,5 +655,7 @@ neither is `Serial`.
 - [`docs/bi-directional.md`](../bi-directional.md) — the user-facing guidance this closes gaps in
 - [`docs/design/e2e-serial-registry.md`](e2e-serial-registry.md) — parallelism and shared cluster state
 - [`docs/design/e2e-ci-runner-sharding-plan.md`](../finished/e2e-ci-runner-sharding-plan.md) — leg membership and rebalancing
-- [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go) — the two specs in this corner
+- [`test/e2e/flux_bi_directional_e2e_test.go`](../../test/e2e/flux_bi_directional_e2e_test.go) and
+  [`test/e2e/argocd_bi_directional_e2e_test.go`](../../test/e2e/argocd_bi_directional_e2e_test.go) —
+  the two specs in this corner
 - [`internal/sanitize/types.go`](../../internal/sanitize/types.go) — the strip lists

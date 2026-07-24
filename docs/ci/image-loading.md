@@ -12,6 +12,7 @@
   on `IMAGE_DELIVERY_MODE`.
 
 `IMAGE_DELIVERY_MODE`:
+
 - `load` (default): import into k3d from the local Docker daemon
 - `pull`: let Kubernetes pull from a registry at rollout time (CI with published images)
 

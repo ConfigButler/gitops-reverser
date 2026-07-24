@@ -10,14 +10,15 @@ the em dash rule, American spelling, the words to cut, and sentence-case heading
 `hack/doccheck`, which resolves references and is the only check that reads Go comments.
 
 Both are wired into `task lint` as of the change that added
-[`hack/docs-files.sh`](../../hack/docs-files.sh), gated on the files
-[`.docs-lint-scope`](../../.docs-lint-scope) lists rather than on the whole tree. See
-[Status](#status) and [CONTRIBUTING.md](../../CONTRIBUTING.md#documentation-checks).
+[`hack/docs-files.sh`](../../hack/docs-files.sh). Structure started gated on the files
+[`.docs-lint-scope`](../../.docs-lint-scope) lists and now covers the whole tree, its residue having
+been cleared; prose is still gated on that list. See [Status](#status) and
+[CONTRIBUTING.md](../../CONTRIBUTING.md#documentation-checks).
 
 ```bash
-task lint-docs                     # links everywhere; structure and prose on the gated files
+task lint-docs                     # links and structure everywhere; prose on the gated files
 task lint-markdown-fix             # the safe mechanical fixes
-task lint-prose DOCS_SCOPE=all     # the whole tree, to see the backlog
+task lint-prose DOCS_SCOPE=all     # the whole tree, to see the prose backlog
 ```
 
 **Every number below was measured**, not estimated, with the committed configuration over all 196
@@ -32,17 +33,26 @@ tracked `.md` files. `CHANGELOG.md` and `docs/finished/` are excluded by both co
 | [`.vale.ini`](../../.vale.ini) and `.vale/styles/HouseStyle/`, encoding [`style-guide.md`](../style-guide.md) | done |
 | [`.markdownlint-cli2.jsonc`](../../.markdownlint-cli2.jsonc) | done |
 | `task lint-markdown`, `task lint-prose` | done |
-| Folded into `task lint` | done, gated on [`.docs-lint-scope`](../../.docs-lint-scope) |
-| Whole-tree gate | not started, blocked on the backlogs below |
+| Folded into `task lint` | done |
+| Whole-tree **structure** gate | done — markdownlint runs on every tracked file |
+| Whole-tree **prose** gate | not started, gated on [`.docs-lint-scope`](../../.docs-lint-scope), blocked on the Vale backlog below |
 
 `task lint-docs` is now the aggregate of three tasks: `lint-doc-links` (the old `lint-docs`),
 `lint-markdown`, and `lint-prose`. The rename kept `lint-docs` pointing at a superset of what it
 used to do, so every existing instruction to run it stays true.
 
-Both new tasks gate **an explicit list of files**, [`.docs-lint-scope`](../../.docs-lint-scope),
-resolved by [`hack/docs-files.sh`](../../hack/docs-files.sh), which is the single place that builds
-the file list for both tools and for CI. Measured after the config landed, 102 of 174 files fail
-markdownlint and 148 of 174 fail Vale, so neither backlog survives a whole-tree gate today.
+Both new tasks started gating **an explicit list of files**,
+[`.docs-lint-scope`](../../.docs-lint-scope), resolved by
+[`hack/docs-files.sh`](../../hack/docs-files.sh), which is still the single place that builds the
+file list for both tools and for CI. Measured after the config landed, 102 of 174 files failed
+markdownlint and 148 of 174 failed Vale, so neither backlog survived a whole-tree gate.
+
+The two have since diverged, because the two backlogs were never the same size. The markdownlint
+residue was mechanical — fence languages, wrapping, emphasis used as a heading — and has been
+cleared, so structure now gates every tracked file and the list no longer constrains it. Vale's is
+editorial: 145 of the 167 linted files still carry at least one error, almost all of them em dashes,
+which [`style-guide.md`](../style-guide.md) says must not land as one sweeping commit. Prose stays on
+the list.
 
 **A committed list, not the git diff.** The first cut derived the set from
 `git diff <merge-base>`, which is the "gate only the files a change touches" plan from

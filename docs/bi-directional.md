@@ -247,5 +247,6 @@ with `task argocd-ui`):
 Design detail:
 
 - [`design/e2e-bi-directional-corner.md`](spec/e2e-bi-directional-corner.md) — the corner
-- [`design/support-boundary/argocd-bi-directional.md`](design/support-boundary/argocd-bi-directional.md) — why `selfHeal` is opposed to bi-directional
+- [`design/support-boundary/argocd-bi-directional.md`](design/support-boundary/argocd-bi-directional.md)
+  — why `selfHeal` is opposed to bi-directional
 - [`design/gittarget-lifecycle-and-repo-architecture.md`](architecture.md) — controller and repo lifecycle

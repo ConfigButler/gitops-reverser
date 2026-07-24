@@ -1,6 +1,7 @@
 # flux-image-automation
 
 ## What this is
+
 Flux's image automation: `ImageRepository` scans a container registry,
 `ImagePolicy` picks one tag, and `ImageUpdateAutomation` **writes that tag back
 into the Git repository and pushes a commit**.
@@ -10,7 +11,8 @@ repository rather than only a reader of it. Anything else that edits these files
 shares the repo with a non-human committer that runs on an interval.
 
 ## Layout
-```
+
+```yaml
 16-flux-image-automation/
 ├── README.md
 ├── apps/
@@ -32,6 +34,7 @@ shares the repo with a non-human committer that runs on an interval.
 ```
 
 ## What makes it structurally distinct
+
 - **A YAML comment is load-bearing.** In `apps/frontend/deployment.yaml` the
   image line ends with `# {"$imagepolicy": "flux-system:frontend"}`. That comment
   is a kustomize *setter*: it is the only thing that marks the field as
@@ -54,6 +57,7 @@ shares the repo with a non-human committer that runs on an interval.
   folder makes is resolvable inside that folder.
 
 ## Open questions
+
 - If another tool rewrites `deployment.yaml`, how does it guarantee the trailing
   `$imagepolicy` comment survives — byte for byte, on the same line as the image?
 - Two writers now target the same file on the same branch. What happens when an

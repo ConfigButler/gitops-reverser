@@ -37,16 +37,18 @@ workflow or Dockerfile change is covered by the normal lint gate; you can also r
 `golangci-lint` all ship in the devcontainer image.
 
 It also runs the documentation checks via `task lint-docs`, which is three tasks:
-`lint-doc-links` (`hack/doccheck`, every tracked file), `lint-markdown` (markdownlint-cli2),
-and `lint-prose` (Vale, against [`docs/style-guide.md`](./docs/style-guide.md)). Structure and
-prose gate only the files [`.docs-lint-scope`](./.docs-lint-scope) lists, so editing an unlisted
-document fails nothing; run `markdownlint-cli2` and `vale` on what you touch anyway.
+`lint-doc-links` (`hack/doccheck`, every tracked file), `lint-markdown` (markdownlint-cli2,
+every tracked file), and `lint-prose` (Vale, against
+[`docs/style-guide.md`](./docs/style-guide.md)). Only prose gates a subset — the files
+[`.docs-lint-scope`](./.docs-lint-scope) lists — so editing an unlisted document fails no prose
+check; run `vale` on what you touch anyway.
 `task lint-markdown-fix` applies the mechanical half. Both tools ship in the devcontainer image.
 See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
 
 ## PRE-IMPLEMENTATION BEHAVIOR
 
-1. **Check Docker availability for e2e tests**: Before running `task test-e2e`, verify Docker is running with `docker info` or ask user to start Docker daemon if needed
+1. **Check Docker availability for e2e tests**: Before running `task test-e2e`, verify Docker is
+   running with `docker info` or ask user to start Docker daemon if needed
 2. **Always read project context first**: Use `read_file` to understand existing patterns in target directories
 3. **Search for similar implementations**: Use `search_files` to find existing patterns before writing new code
 4. **Follow established architecture**: Maintain consistency with `internal/` directory structure
@@ -62,17 +64,20 @@ See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
 ## COMPONENT-SPECIFIC RULES
 
 ### Controller Code (`internal/controller/`)
+
 - Follow kubebuilder patterns and annotations
 - Implement idempotent reconciliation logic
 - Add appropriate RBAC markers
 - Handle finalizers for cleanup
 
 ### Webhook Code (`internal/webhook/`)
+
 - Implement admission webhook interface correctly
 - Add proper validation/mutation logic
 - Update webhook configuration in `config/webhook/`
 
 ### API Changes (`api/v1alpha3/`)
+
 - Add kubebuilder validation tags
 - Include JSON tags and field descriptions
 - Run `task manifests` to update CRDs
@@ -91,12 +96,14 @@ See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
   then compare against `config/crd/bases` with every `description` key stripped from both.
 
 ### Git Operations (`internal/git/`)
+
 - Handle Git errors gracefully
 - Implement proper conflict resolution
 - Add race condition protection
 - Use temporary directories for testing
 
 ### CI Workflows (`.github/workflows/`)
+
 - After editing any workflow, run `task lint-actions` to catch errors with
   `actionlint` before pushing
 - A workflow-only change still counts as a CI/config change, so it is **not**

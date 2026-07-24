@@ -1,19 +1,19 @@
-# Markdown files the documentation linters gate.
+# Markdown files the PROSE linter gates.
 #
-# `task lint` fails on markdownlint findings or Vale errors in these files and
-# ignores every other .md file in the tree. That is a rollout position, not the
-# destination: measured with the committed config, 102 of 174 linted files fail
-# markdownlint and 148 of 174 fail Vale, so gating everything today would be a
-# wall no one could land a change through.
+# `task lint` fails on Vale errors in these files and ignores every other .md file
+# in the tree. That is a rollout position, not the destination: 145 of the 167
+# linted files carry at least one Vale error, almost all of them em dashes, so
+# gating everything today would be a wall no one could land a change through.
 #
-# Add a file here once it passes. Check what it would cost first:
+# Structure (markdownlint) is NOT staged this way any more. It is clean tree-wide
+# and gates every tracked file, so a new document cannot regress it and does not
+# need to be listed here to be checked.
 #
-#   markdownlint-cli2 docs/some-file.md
+# Add a file here once Vale passes on it. Check what it would cost first:
+#
 #   vale docs/some-file.md
-#   task lint-markdown-fix DOCS_SCOPE=all   # the mechanical half, whole tree
 #
-# `task lint-markdown DOCS_SCOPE=all` and `task lint-prose DOCS_SCOPE=all` show
-# the whole backlog without gating on it.
+# `task lint-prose DOCS_SCOPE=all` shows the whole backlog without gating on it.
 #
 # Every path here must be tracked by git; a typo fails the lint run rather than
 # silently shrinking the gate to nothing.

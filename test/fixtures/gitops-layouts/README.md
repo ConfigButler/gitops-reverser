@@ -228,8 +228,10 @@ exist and *are* assertion-driven — do not duplicate them here:
 
 - [`internal/manifestanalyzer/testdata/scan-repo/`](../../../internal/manifestanalyzer/testdata/scan-repo/) —
   repo-discovery fixtures, each with a golden JSON report.
-- [`internal/manifestanalyzer/testdata/contextual-namespace/`](../../../internal/manifestanalyzer/testdata/contextual-namespace/) —
+- [`internal/manifestanalyzer/testdata/contextual-namespace/`][contextual-namespace] —
   the supported/unsupported boundary for kustomize-inherited namespaces.
+
+[contextual-namespace]: ../../../internal/manifestanalyzer/testdata/contextual-namespace/
 
 When a layout here graduates into a decision, that decision belongs in one of those
 corpora (as an assertion) and in

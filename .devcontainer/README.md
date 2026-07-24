@@ -24,7 +24,6 @@ git config --global user.email "you@example.com"
 
 If `ssh-add -L` shows no keys, commit signing inside the devcontainer will fail.
 
-
 ### VS Code
 
 1. Install the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)

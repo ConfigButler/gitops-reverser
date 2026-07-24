@@ -31,6 +31,7 @@ git push origin main
 ```
 
 Expected outcome:
+
 1. CI runs (lint, unit tests, e2e)
 2. If tests pass → Release PR created for v0.2.0
 3. Merge PR → GitHub Release + Docker images published
@@ -41,7 +42,7 @@ Expected outcome:
 
 ### The Release Flow
 
-```
+```text
 Push to main
     ↓
 [CI: Build & Test + E2E]
@@ -99,7 +100,7 @@ Push to main
 
 ### Format
 
-```
+```text
 <type>(<optional scope>): <description>
 
 [optional body]
@@ -127,6 +128,7 @@ Push to main
 ### Examples
 
 **Feature (Minor Bump):**
+
 ```bash
 git commit -m "feat(controller): add multi-repository support
 
@@ -137,6 +139,7 @@ Closes #42"
 ```
 
 **Bug Fix (Patch Bump):**
+
 ```bash
 git commit -m "fix(webhook): prevent race condition in event queue
 
@@ -146,6 +149,7 @@ Fixes #123"
 ```
 
 **Breaking Change (Major Bump):**
+
 ```bash
 git commit -m "feat!: redesign GitRepoConfig API
 
@@ -161,17 +165,20 @@ Migration guide: docs/migration-v1.md"
 
 ### Error: "GitHub Actions is not permitted to create or approve pull requests"
 
-**Solution:** Enable at org level first (if greyed out), then repo level. See [Prerequisites Setup](#prerequisites-setup) above.
+**Solution:** Enable at org level first (if greyed out), then repo level.
+See [Prerequisites Setup](#prerequisites-setup) above.
 
 ### No Release PR Created
 
 **Check:**
+
 - ✅ CI tests passed (green checkmark in Actions tab)
 - ✅ Commit used conventional format (`feat:`, `fix:`, etc.)
 - ✅ Pushed to `main` branch
 - ✅ GitHub Actions has PR creation permissions
 
 **Retry:**
+
 ```bash
 # Check workflow status
 gh run list --branch main --limit 5
@@ -203,6 +210,7 @@ git push origin main
 ### Wrong Version in Release PR
 
 **Causes:**
+
 - Multiple commit types (most significant wins)
 - `!` or `BREAKING CHANGE:` triggers major bump
 - `.release-please-manifest.json` out of sync
@@ -212,6 +220,7 @@ git push origin main
 ### Docker Build Failed
 
 **Check:**
+
 - Build logs in Actions tab
 - Multi-arch build issues (amd64/arm64)
 - Registry authentication (GITHUB_TOKEN permissions)
@@ -231,7 +240,8 @@ gh run rerun <run-id>
 ### 1. Write Clear Commit Messages
 
 ✅ **Good:**
-```
+
+```bash
 feat(controller): add support for custom branch names
 
 Users can now specify different branch names for different GitRepoConfigs,
@@ -239,7 +249,8 @@ allowing more flexible repository organization.
 ```
 
 ❌ **Bad:**
-```
+
+```bash
 add stuff
 fix bug
 wip
@@ -248,6 +259,7 @@ wip
 ### 2. Use Scopes
 
 Indicate which component is affected:
+
 - `feat(controller): ...`
 - `fix(webhook): ...`
 - `docs(readme): ...`
@@ -264,6 +276,7 @@ git commit -m "test: add multi-repo tests"
 ### 4. Review Release PRs Carefully
 
 Before merging:
+
 - ✅ Verify changelog accuracy
 - ✅ Check version bump is appropriate
 - ✅ Ensure all commits are included
@@ -272,6 +285,7 @@ Before merging:
 ### 5. Coordinate Breaking Changes
 
 For major version bumps:
+
 1. Discuss in an issue first
 2. Add migration guide to `docs/`
 3. Update relevant documentation
@@ -284,6 +298,7 @@ For major version bumps:
 ### Auto-Updated Files
 
 These are automatically updated by release-please:
+
 - `.release-please-manifest.json` - Current version
 - `charts/gitops-reverser/Chart.yaml` - Helm chart versions
 - `CHANGELOG.md` - Auto-generated changelog
@@ -291,6 +306,7 @@ These are automatically updated by release-please:
 ### Configuration Files
 
 Don't modify these without understanding the impact:
+
 - `release-please-config.json` - Semantic versioning rules
 - `.github/workflows/ci.yml` - Validation pipeline (PRs + reused on main)
 - `.github/workflows/release.yml` - Release/publish pipeline (push to main)

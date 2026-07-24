@@ -54,7 +54,7 @@ Those rules live in the chart's
 [`values.schema.json`](../charts/gitops-reverser/values.schema.json), which Helm enforces on
 `template`, `lint`, `install` and `upgrade`, naming the offending path:
 
-```
+```text
 Error: values don't meet the specifications of the schema(s) in the following chart(s):
 - at '/rbac/watchTypes/selected/0': additional properties 'verbs' not allowed
 ```

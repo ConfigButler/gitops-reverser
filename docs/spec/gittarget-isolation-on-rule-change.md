@@ -158,7 +158,7 @@ This drives informer lifecycle and is deliberately **target-agnostic** —
 informers are shared, so it does not matter *which* target needs a GVR, only
 that *some* target does.
 
-```
+```text
 RuleStore (intent) ─┐
                     ├─► computeRequestedGVRs() ─► added/removed ─► start/stopInformer
 APIResourceCatalog ─┘                                              (global, shared)
@@ -172,7 +172,7 @@ entries **by GitTarget** (`gitDest.Key()`) and hashes each group. Today it hashe
 the raw rule text; after the fix it hashes the target's *effective watch plan*
 (resolved GVR + scope + operations + destination — see Section 2):
 
-```
+```text
 RuleStore ─► currentRuleSetSnapshots() ─► []ruleSetSnapshotTarget{gitDest, hash}
                                                       │
                   snapshotTargetsNeedingDelivery(...) compares each target's

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.39.0...v0.39.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **attribution:** resolve the audit route from one ClusterProvider read ([#264](https://github.com/ConfigButler/gitops-reverser/issues/264)) ([686fb00](https://github.com/ConfigButler/gitops-reverser/commit/686fb0020d3c9a3c77b775aba15b9348f4ad0b12))
+
+
+### Documentation
+
+* clear the markdownlint backlog and gate structure tree-wide ([#265](https://github.com/ConfigButler/gitops-reverser/issues/265)) ([81b7648](https://github.com/ConfigButler/gitops-reverser/commit/81b7648d62668b0d1e0f84c568251fd8cb374e08))
+
 ## [0.39.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.38.0...v0.39.0) (2026-07-22)
 
 

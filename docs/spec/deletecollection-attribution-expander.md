@@ -1,7 +1,7 @@
 # DeleteCollection attribution & deletion-as-intent
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: **IMPLEMENTED** — 2026-06-28 (rev. 2: deletion-as-intent reframe). The render rule (§2), the
 > expander (§5), the `exact_deletecollection_item` reason code (§8), unit tests (§9.1), and the four e2e
 > specs (§9.2) have all landed and pass `task lint`/`task test`/`task test-e2e`.
@@ -85,7 +85,7 @@ added later without breaking that invariant**: `.deletions/` or `.tombstones/` r
 objects, commit-message trailers, status reporting. Example of an *optional, later* enrichment (explicitly not
 v1):
 
-```
+```text
 .deletions/widgets/team-a/foo.yaml   # kind: DeleteIntent, requestedBy: alice, requestedAt, finalizersAtRequest
 ```
 
@@ -207,7 +207,8 @@ objects**. The owner's trap: *in a few seconds you could see more than one `dele
 
 - **Option A — keep it around and guess by scope.** Reject. Two independent mis-attribution modes: (1) two
   actors deleting in the same `(type, namespace)` window → honest answer is conflict→unresolved, so it degrades to
-  the explicit unresolved author under exactly the load that makes the case interesting; (2) even a single collection delete would
+  the explicit unresolved author under exactly the load that makes the case interesting; (2) even a
+  single collection delete would
   capture an *unrelated* plain `kubectl delete configmap x` in the same window. Selector re-matching narrows but
   doesn't remove it (selectors overlap; empty selector matches all). Violates "a wrong author is worse than no
   author."
@@ -256,12 +257,12 @@ is the correct conservative outcome. **Ship §2 + §5 now; Option B is the named
 
 `internal/queue` (expander, §5):
 
-4. A list body with three items → three uid-only facts, each crediting the actor; **no** exact/rv-only keys.
-5. A finalizer-pending item (`deletionTimestamp` + finalizers) **also** gets a fact crediting the actor (it is
+1. A list body with three items → three uid-only facts, each crediting the actor; **no** exact/rv-only keys.
+2. A finalizer-pending item (`deletionTimestamp` + finalizers) **also** gets a fact crediting the actor (it is
    *not* skipped).
-6. A hollow / `Status` / unparseable / absent body → **no facts**, no error (degrade to §6).
-7. A partial list writes facts only for items present (watch + sweep backstop the rest).
-8. Join shape: a removal event with the item's UID and a *different* RV resolves to the actor via the uid-only
+3. A hollow / `Status` / unparseable / absent body → **no facts**, no error (degrade to §6).
+4. A partial list writes facts only for items present (watch + sweep backstop the rest).
+5. Join shape: a removal event with the item's UID and a *different* RV resolves to the actor via the uid-only
    key (proves §3) and surfaces as `exact_deletecollection_item`.
 
 ### 9.2 E2E — implemented

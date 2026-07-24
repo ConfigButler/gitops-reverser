@@ -1,4 +1,8 @@
-> **reference** — durable background. Index: [`../INDEX.md`](../INDEX.md)
+# reference — durable background. Index: ../INDEX.md
+#
+# Structured facts, not prose: this file is YAML rather than markdown because
+# its whole body is a document, and the documentation linters read a `.md`
+# extension as a promise of markdown.
 
 schemaVersion: 1
 kind: KubernetesResourceTypeFacts

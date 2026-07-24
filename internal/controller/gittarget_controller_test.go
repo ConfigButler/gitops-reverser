@@ -1114,7 +1114,11 @@ var _ = Describe("GitTarget Controller Security", func() {
 			// Delete the secret to simulate accidental removal.
 			Expect(k8sClient.Delete(ctx, &firstSecret)).Should(Succeed())
 
-			// The secret watch should trigger re-reconciliation and recreate it.
+			// Recreation rides the PERIODIC requeue, not a watch: this controller deliberately runs
+			// no control-plane Secret watch (SetupWithManager explains why), so nothing enqueues the
+			// GitTarget when its age-key Secret disappears. The wait must therefore exceed a full
+			// RequeueStreamSettleInterval — with the shared 10s `timeout` it equalled one, so a
+			// deletion landing just after a reconcile lost the race by milliseconds.
 			Eventually(func(g Gomega) {
 				var recreated corev1.Secret
 				err := k8sClient.Get(ctx, secretKey, &recreated)
@@ -1123,7 +1127,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				g.Expect(ageKeyName).NotTo(BeEmpty())
 				g.Expect(string(ageKeyValue)).To(ContainSubstring("AGE-SECRET-KEY-"))
 				g.Expect(recreated.Annotations).To(HaveKey(encryptionSecretRecipientAnnoKey))
-			}, timeout, interval).Should(Succeed())
+			}, RequeueStreamSettleInterval+timeout, interval).Should(Succeed())
 
 			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())

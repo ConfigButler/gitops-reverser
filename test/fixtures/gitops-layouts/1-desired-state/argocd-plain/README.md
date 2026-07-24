@@ -1,6 +1,7 @@
 # argocd-plain
 
 ## What this is
+
 The simplest Argo CD pattern: a single `Application` that points at a plain
 directory of raw Kubernetes manifests in a Git repository. There is no Helm,
 no Kustomize, no templating — Argo CD just reads every YAML file under the
@@ -11,7 +12,8 @@ directory and is typically applied out-of-band (by hand or by a bootstrap job),
 while the workload manifests live under `apps/frontend/`.
 
 ## Layout
-```
+
+```yaml
 01-argocd-plain/
 ├── README.md
 ├── argocd/
@@ -27,6 +29,7 @@ while the workload manifests live under `apps/frontend/`.
 ```
 
 ## What makes it structurally distinct
+
 - **Two roles of YAML in one tree.** `argocd/frontend-application.yaml` is an
   Argo CD control-plane object that *describes where to sync from*; the files
   under `apps/frontend/` are the *workloads it syncs*. They are not
@@ -51,6 +54,7 @@ while the workload manifests live under `apps/frontend/`.
   true` decides whether subdirectories are scanned at all.
 
 ## Open questions
+
 - Given only the files under `apps/frontend/`, how would a tool decide which are
   Kubernetes objects and which (like `ci-metadata.yaml`) are not?
 - The include/exclude globs live in the `Application`, not next to the

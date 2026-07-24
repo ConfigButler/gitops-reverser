@@ -6,9 +6,12 @@
 > Captured: 2026-07-15; implementation status updated: 2026-07-15.
 > Related:
 > [README.md](README.md),
-> [../../bi-directional.md](../../bi-directional.md) — **the user-facing model this expands: the reconciler as a *triggered applier***,
-> [argocd-bi-directional.md](argocd-bi-directional.md) — why `selfHeal` must be off, and why that means nothing reverts a refused edit,
-> [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) — **the ownership model this rides on; it is the first *write* action built on it**,
+> [../../bi-directional.md](../../bi-directional.md) — **the user-facing model this expands: the
+> reconciler as a *triggered applier***,
+> [argocd-bi-directional.md](argocd-bi-directional.md) — why `selfHeal` must be off, and why that
+> means nothing reverts a refused edit,
+> [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md) — **the ownership model
+> this rides on; it is the first *write* action built on it**,
 > [render-fidelity.md](render-fidelity.md) — the shipped gate whose automatic Git-repair recovery depends on this barrier,
 > [admission-consent.md](admission-consent.md) — the sibling half: deciding *whether* a write happens,
 > [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md)

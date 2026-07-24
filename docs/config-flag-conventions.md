@@ -69,7 +69,7 @@ controllers are installed."* One sentence, both ends, no ambiguity.
 
 Template for our booleans:
 
-```
+```text
 "<what true does> (default). When false, <what false does>; <any caveat that still applies>."
 ```
 
@@ -128,7 +128,7 @@ tells the operator how to fix it, not just what's wrong. Flux and our own
 `validateAuditConfig` both do this. A required dependency that's missing should
 say so *and* explain what it is for:
 
-```
+```text
 redis-addr is required when author-attribution is enabled
 ```
 
@@ -141,7 +141,8 @@ Before merging a new or renamed boolean flag, confirm:
 - [ ] Help text states the default explicitly.
 - [ ] Default is the value a careful operator would pick blind.
 - [ ] Flag shares its prefix with the rest of its component's flags.
-- [ ] Any required-dependency caveat that survives the "off" state is spelled out (e.g. "Redis is required when attribution is enabled").
+- [ ] Any required-dependency caveat that survives the "off" state is spelled out (e.g. "Redis is
+  required when attribution is enabled").
 
 ## Numbers, durations, and sizes — five more rules
 
@@ -228,9 +229,12 @@ explicit that `0` is special and that bounds exist:
 
 ### Number / duration help-text checklist
 
-- [ ] Duration flags use `time.Duration` and a role noun (`-timeout`/`-interval`/`-delay`/`-period`/`-deadline`) — no `-seconds`/`-ms` suffix.
-- [ ] Rates, percentages, and raw-byte counts carry the unit in the name (`-qps`, `-percentage`, `-bytes`); plain counts don't.
+- [ ] Duration flags use `time.Duration` and a role noun (`-timeout`/`-interval`/`-delay`/`-period`/
+  `-deadline`) — no `-seconds`/`-ms` suffix.
+- [ ] Rates, percentages, and raw-byte counts carry the unit in the name (`-qps`, `-percentage`,
+  `-bytes`); plain counts don't.
 - [ ] A `-bytes` flag takes integer bytes; a quantity-string flag (`8Mi`) is named `-size`, not `-bytes`.
 - [ ] Paired bounds use `min-`/`max-`; a port is folded into a `host:port` `-bind-address`.
-- [ ] Help text states the unit/format, the default, and what `0` (or any sentinel) means; out-of-range values are rejected early (rule 7).
+- [ ] Help text states the unit/format, the default, and what `0` (or any sentinel) means;
+  out-of-range values are rejected early (rule 7).
 - [ ] The default is written in human units in code (`35*time.Second`, `8Mi`), not a raw literal.

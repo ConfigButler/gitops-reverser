@@ -157,7 +157,7 @@ controller in the middle:
   Git commit within seconds — *including a change to the same shared field from the
   Git side*, which `ignoreDifferences` would have broken.
 
-```
+```text
    API edit ─▶ Cluster ──watch──▶ GitOps Reverser ──commit──▶ Git
       ▲                                                        │
       └──────────── apply ◀── Argo CD (selfHeal off) ◀─push webhook┘

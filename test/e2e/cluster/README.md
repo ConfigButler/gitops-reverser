@@ -35,6 +35,7 @@ The bootstrap source in [`audit/webhook-config.yaml`](audit/webhook-config.yaml)
 `https://10.43.200.200:9444/audit-webhook`
 
 Notes:
+
 - `insecure-skip-tls-verify: true` is intentional for local e2e
 - `kind-e2e` in the path is the cluster ID label used by tests/metrics
 - after install, `hack/e2e/inject-webhook-tls.sh` replaces the mounted `.stamps` copy with the final CA-trusting mTLS kubeconfig
@@ -94,7 +95,9 @@ gitopsreverser_audit_events_total
 
 ## Troubleshooting
 
-`failed to stat file/directory ... volume mount ...`: this can appear in Docker-outside-of-Docker setups when the host path is valid for the Docker daemon but not visible inside the devcontainer. `start-cluster.sh` includes compatibility symlink logic for this.
+`failed to stat file/directory ... volume mount ...`: this can appear in Docker-outside-of-Docker
+setups when the host path is valid for the Docker daemon but not visible inside the devcontainer.
+`start-cluster.sh` includes compatibility symlink logic for this.
 
 No audit events:
 

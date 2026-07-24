@@ -4,7 +4,8 @@ Last updated: 2026-02-13
 
 ## Why Windows behaves differently
 
-When the repo is on the Windows filesystem and mounted into a Linux devcontainer, the mounted workspace does not behave exactly like a native Linux filesystem.
+When the repo is on the Windows filesystem and mounted into a Linux devcontainer, the mounted
+workspace does not behave exactly like a native Linux filesystem.
 
 Typical effects:
 
@@ -61,7 +62,8 @@ go mod tidy
 
 ## Notes about `/go` vs workspace
 
-- `/go` is container filesystem and uses Linux semantics; ACL/setgid strategy documented in `go-module-permissions.md` applies there.
+- `/go` is container filesystem and uses Linux semantics; ACL/setgid strategy documented in
+  `go-module-permissions.md` applies there.
 - `/workspaces/<repo>` is a bind mount from host; behavior depends on host filesystem and Docker Desktop integration.
 
 ## References

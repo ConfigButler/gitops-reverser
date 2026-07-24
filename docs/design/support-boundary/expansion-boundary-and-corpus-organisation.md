@@ -212,7 +212,7 @@ sufficient either, which is the subtle half:
 
 The measurements sharpen that into a trap with a name:
 
-```
+```text
 kustomize.toolkit.fluxcd.io/name   → source is a folder of files → MIRROR IT
 helm.toolkit.fluxcd.io/name        → source is a chart           → NEVER MIRROR
 ```
@@ -590,7 +590,8 @@ Read that table and the honest headline is not "no Helm." It is:
 ### The one real gap, and the precedent that closes it
 
 The genuine hole is the **free-standing values file** — `values/production.yaml`,
-`values/common.yaml` — which `helm-environment-values`, `argocd-external-helm`, and `argocd-multicluster-matrix` are all built around. It is
+`values/common.yaml` — which `helm-environment-values`, `argocd-external-helm`, and
+`argocd-multicluster-matrix` are all built around. It is
 not KRM, so no object for it ever appears in the cluster, so there is nothing for a
 user to edit.
 

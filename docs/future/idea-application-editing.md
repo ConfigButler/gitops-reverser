@@ -39,6 +39,7 @@ the moment where "I'm done experimenting" becomes "ship it."
 ## Open design questions
 
 ### Environment-specific configuration
+
 The most significant gap. A test Application might have `replicas: 1`, no resource limits, and point
 to a test branch. The production version needs different values for all three. The recommended approach
 is a Kustomize overlay per environment that injects the environment-specific values (branch name,
@@ -48,13 +49,16 @@ overlay handles the rest.
 A ConfigMap-merge approach is also possible but adds abstraction that may not pay for itself.
 
 ### The "config branch as source of truth" problem
+
 If a user sets the `Application`'s `spec.source.targetRevision` to the gitops-reverser-managed branch
 (instead of main), they have made the experiment branch the source of truth. This is probably not what
 they intended. Should gitops-reverser detect and warn about this? Should it rewrite the field on merge?
 This needs a clear policy.
 
 ### Merge trigger: PR or automatic?
+
 Two models:
+
 - **PR-gated**: gitops-reverser opens a pull request when a merge signal is detected. A human approves
   and merges. Safe, auditable, fits most team workflows.
 - **Automatic**: gitops-reverser merges the branch directly when some condition is met (e.g. CI passes,
@@ -64,6 +68,7 @@ Both are valid. The PR model is the safer default and maps well to the annotatio
 described above.
 
 ### Deletion semantics
+
 "Branch deleted when Application is deleted" is the clean version of the lifecycle, but it is
 destructive. Deleting a test Application to clean up cluster resources is routine; silently deleting
 the git branch along with it may surprise users. An alternative: deletion closes (but does not delete)
@@ -71,6 +76,7 @@ the branch, or opens a "discard this?" PR. The right answer depends on how recov
 expects deletions to be.
 
 ### Auto-removing the Application on PR close
+
 If the branch is deleted (or the PR is closed without merging), should gitops-reverser delete the
 corresponding `Application` from the cluster? This would make the lifecycle fully bidirectional — git
 events drive cluster state just as cluster state drives git. It is a powerful property but also

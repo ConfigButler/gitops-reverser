@@ -1,7 +1,7 @@
 # Manifest GVK/GVR Mapping Layer
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > Status: design, captured 2026-06-04
 > Related:
 > [current-manifest-support-review.md](current-manifest-support-review.md),
@@ -448,12 +448,12 @@ deleted from Git.
 ## References
 
 - Kubernetes API discovery:
-  https://kubernetes.io/docs/concepts/overview/kubernetes-api/#discovery-api
+  <https://kubernetes.io/docs/concepts/overview/kubernetes-api/#discovery-api>
 - Kubernetes API concepts:
-  https://kubernetes.io/docs/reference/using-api/api-concepts/
+  <https://kubernetes.io/docs/reference/using-api/api-concepts/>
 - Kubernetes API definitions:
-  https://kubernetes.io/docs/reference/kubernetes-api/definitions/
+  <https://kubernetes.io/docs/reference/kubernetes-api/definitions/>
 - client-go discovery:
-  https://pkg.go.dev/k8s.io/client-go/discovery
+  <https://pkg.go.dev/k8s.io/client-go/discovery>
 - metav1 `APIResource`:
-  https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#APIResource
+  <https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#APIResource>

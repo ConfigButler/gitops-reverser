@@ -1,7 +1,6 @@
 # Type lifecycle events, the wobble-settle phase, and consolidation
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
-
 > Status: design direction, captured 2026-06-09. **Implemented 2026-06-09 (M12 first
 > slices):** Proposals 1–2 in [internal/typeset/lifecycle.go](../../internal/typeset/lifecycle.go)
 > (`LifecycleEvent`/`Observer`/`Subscribe`, `SettleWindow`, settle + flap coalescing in

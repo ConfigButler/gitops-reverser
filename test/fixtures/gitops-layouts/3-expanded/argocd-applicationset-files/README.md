@@ -1,6 +1,7 @@
 # argocd-applicationset-files
 
 ## What this is
+
 An Argo CD `ApplicationSet` using the **git files generator**. A single
 `ApplicationSet` object watches a directory of small config files
 (`deployments/**/*.yaml`) and renders one `Application` per file. This is a
@@ -10,7 +11,8 @@ a full `Application` manifest by hand. Each generated `Application` deploys the
 in-repo Helm chart under `chart/`, parameterised from the generator file.
 
 ## Layout
-```
+
+```yaml
 04-argocd-applicationset-files/
 ├── README.md
 ├── applicationset.yaml              # KRM: kind ApplicationSet
@@ -30,6 +32,7 @@ in-repo Helm chart under `chart/`, parameterised from the generator file.
 ```
 
 ## What makes it structurally distinct
+
 - Four distinct *categories* of `.yaml` file live in one directory tree:
   - **A Kubernetes object:** `applicationset.yaml` (kind `ApplicationSet`).
   - **Generator input that is NOT a Kubernetes object:**
@@ -52,6 +55,7 @@ in-repo Helm chart under `chart/`, parameterised from the generator file.
   differ in `replicas`, so file path (not file content) carries the environment.
 
 ## Open questions
+
 - How does a tool decide which `.yaml` file in this tree is a Kubernetes object?
   `apiVersion` + `kind` presence distinguishes `applicationset.yaml` from the
   generator inputs, but `Chart.yaml` also has an `apiVersion` (`v2`) and no

@@ -1,6 +1,7 @@
 # sops-encrypted
 
 ## What this is
+
 The standard way teams keep Secrets in a public or shared GitOps repo: encrypt
 them at rest with [SOPS](https://github.com/getsops/sops), commit the encrypted
 files, and let the GitOps controller decrypt in-cluster at apply time. Flux has
@@ -14,7 +15,8 @@ is still a syntactically valid Kubernetes object — you can read its `kind`,
 `metadata.name`, and `metadata.namespace` — but its `data` values are opaque.
 
 ## Layout
-```
+
+```yaml
 13-sops-encrypted/
 ├── README.md
 ├── .sops.yaml                         # sops creation-rules (NOT a K8s object)
@@ -34,6 +36,7 @@ is still a syntactically valid Kubernetes object — you can read its `kind`,
 ```
 
 ## What makes it structurally distinct
+
 - **A single file is both readable and unreadable.** In `secret.enc.yaml` the
   `apiVersion`, `kind`, `metadata`, and `type` are cleartext and fully
   structural; the values under `data` are `ENC[AES256_GCM,...]` ciphertext.
@@ -60,6 +63,7 @@ is still a syntactically valid Kubernetes object — you can read its `kind`,
   block, and the `mac` are placeholders, not real SOPS output.
 
 ## Open questions
+
 - If a tool must reflect a change to a resource whose `spec`/`data` it cannot
   read, what does it edit? It can see the object's identity but not its current
   values.

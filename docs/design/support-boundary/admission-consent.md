@@ -4,10 +4,13 @@
 > Captured: 2026-07-15
 > Related:
 > [README.md](README.md),
-> [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) — **the tier-1/2/3 model this extends; tier 3 is the admission gate**,
-> [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md) — the write boundary; fan-in = 1; base read-only by L1,
+> [unreflectable-edits-and-write-gating.md](unreflectable-edits-and-write-gating.md) — **the
+> tier-1/2/3 model this extends; tier 3 is the admission gate**,
+> [gittarget-granularity-and-cross-environment-edits.md](gittarget-granularity-and-cross-environment-edits.md)
+> — the write boundary; fan-in = 1; base read-only by L1,
 > [render-attribution.md](render-attribution.md) §5 — attribution may be heuristic, verification may not,
-> [orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md) — **the sibling half: what reverts a refusal that lands anyway**,
+> [orchestrator-reconcile-trigger.md](orchestrator-reconcile-trigger.md) — **the sibling half: what
+> reverts a refusal that lands anyway**,
 > [support-contract.md](support-contract.md)
 
 This is one half of a two-part design. This half is about turning a *refusal* into a *yes* at the

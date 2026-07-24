@@ -188,7 +188,14 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		})
 	}
 
-	observed := r.observeDataPlane(ctx, &target, gitPathWasRefused, log)
+	// One read of the source ClusterProvider serves everything below it: the audit route captured on
+	// Declare and the ClusterProviderReady projection. Reading it twice invited the two to disagree.
+	sourceProvider, sourceProviderErr := r.resolveSourceClusterProvider(ctx, &target)
+	if sourceProviderErr != nil {
+		return ctrl.Result{}, sourceProviderErr
+	}
+
+	observed := r.observeDataPlane(ctx, &target, sourceProvider, gitPathWasRefused, log)
 	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
 	st.setValue(GitTargetConditionGitPathAccepted, observed.axes.GitPath)
 	st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)
@@ -198,7 +205,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// contributed to the trio below. Publishing is all this does: nothing here writes Ready.
 	sourceReach := r.observeSourceReachable(&target)
 	provider := r.gitProviderReadiness(ctx, &target, providerNS)
-	clusterProvider := r.clusterProviderReadiness(ctx, &target)
+	clusterProvider := clusterProviderReadiness(sourceProvider)
 	st.setValue(GitTargetConditionSourceClusterReachable, sourceReach)
 	st.setValue(GitTargetConditionGitProviderReady, provider)
 	st.setValue(GitTargetConditionClusterProviderReady, clusterProvider)
@@ -457,6 +464,7 @@ type dataPlaneObservation struct {
 func (r *GitTargetReconciler) observeDataPlane(
 	ctx context.Context,
 	target *configbutleraiv1alpha3.GitTarget,
+	sourceProvider *configbutleraiv1alpha3.ClusterProvider,
 	gitPathWasRefused bool,
 	log logr.Logger,
 ) dataPlaneObservation {
@@ -488,7 +496,7 @@ func (r *GitTargetReconciler) observeDataPlane(
 		ctx,
 		gitDest,
 		target.SourceCluster(),
-		r.auditRouteFor(ctx, target),
+		sourceProvider.AuditRoute(),
 		target.EffectivePruneMode(),
 		gitPathWasRefused,
 	); declareErr != nil {
