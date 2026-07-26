@@ -90,7 +90,12 @@ grouping strategies nothing else covers.
 [`ha-gittarget-distribution-plan.md`](future/ha-gittarget-distribution-plan.md) is
 the HA plan `architecture.md` cites three times (and the reason Redis is required).
 [`least-privilege-remaining-work.md`](future/least-privilege-remaining-work.md) has
-three open RBAC items. Five more ideas sit beside them.
+three open RBAC items.
+[`config-surface-for-a-structured-repository.md`](future/config-surface-for-a-structured-repository.md)
+reviews the configuration docs and argues the API never caught up with what the
+folder analysis learned — a look-before-you-write mode, a `status.layout`
+projection, an inference switch, and moving `commitWindow` onto the GitTarget.
+Five more ideas sit beside them.
 
 ## History — [`finished/`](finished/)
 
