@@ -92,20 +92,14 @@ type RenderedTypes struct {
 	// These are the exact (type, namespace) pairs, and the only ones.
 	ByNamespace map[string][]string `json:"byNamespace,omitempty"`
 
-	// ClusterScoped lists the types that take no namespace because the API says they take
-	// none.
+	// NamespaceUndeclared lists the types that render WITHOUT a namespace, sorted.
 	//
-	// It is NEVER present today, deliberately: deciding that a type is cluster-scoped
-	// requires API discovery, and this scan has none. An empty list would read as "this
-	// folder has no cluster-scoped types", which is a claim the scan cannot make — those
-	// types are in [RenderedTypes.NamespaceUndeclared] instead. A discovery-aware scan can
-	// fill this and shrink that list accordingly, which is additive.
-	ClusterScoped []string `json:"clusterScoped,omitempty"`
-
-	// NamespaceUndeclared lists the types that render WITHOUT a namespace, sorted. Today
-	// that is two facts this scan cannot tell apart: a cluster-scoped type, and a
-	// namespaced type relying on whatever namespace the applier defaults to. Treat it as
-	// "we do not know where these land", not as "these are cluster-scoped".
+	// It is NOT a list of cluster-scoped types, and must not be read as one. It holds two
+	// facts this scan cannot tell apart: a genuinely cluster-scoped type, and a namespaced
+	// type relying on whatever namespace the applier defaults to. Separating them needs API
+	// discovery, and a structure-only scan has none — so the honest reading is "we do not
+	// know where these land". A scan that does have discovery can split them, in a field
+	// added then rather than a name reserved now.
 	//
 	// A type can appear here AND under ByNamespace. Two ConfigMaps, one carrying a
 	// namespace and one not, is an ordinary folder rather than a contradiction.
@@ -277,7 +271,6 @@ func candidateFrom(cand internalanalyzer.RepoCandidate) Candidate {
 		OverlapsWith: cand.OverlapsWith,
 		RenderedTypes: RenderedTypes{
 			ByNamespace:         cand.RenderedTypes.ByNamespace,
-			ClusterScoped:       cand.RenderedTypes.ClusterScoped,
 			NamespaceUndeclared: cand.RenderedTypes.NamespaceUndeclared,
 		},
 	}

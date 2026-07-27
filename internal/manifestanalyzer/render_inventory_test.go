@@ -100,11 +100,10 @@ func TestRenderInventory_CoversTheBaseOutsideTheSubtree(t *testing.T) {
 	})
 	// The ClusterRole renders with no namespace, and this scan cannot say WHY: it is
 	// cluster-scoped, but proving that needs API discovery the scan does not have. So it
-	// goes to namespaceUndeclared, and clusterScoped stays absent rather than claiming
-	// there are none.
+	// goes to namespaceUndeclared, which is named for what was observed rather than for
+	// what a reader might infer.
 	requireStrings(t, "namespaceUndeclared", cand.RenderedTypes.NamespaceUndeclared,
 		[]string{"rbac.authorization.k8s.io/v1/ClusterRole"})
-	requireStrings(t, "clusterScoped", cand.RenderedTypes.ClusterScoped, nil)
 }
 
 // TestRenderInventory_ATypeCanBeBothNamespacedAndNot covers the shape that looks like a

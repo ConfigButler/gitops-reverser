@@ -99,19 +99,12 @@ type RenderedTypes struct {
 	// ByNamespace lists the types that land in each namespace, sorted, keyed by namespace.
 	ByNamespace map[string][]string `json:"byNamespace,omitempty"`
 
-	// ClusterScoped lists the types that take no namespace because the API says they take
-	// none.
+	// NamespaceUndeclared lists the types that render WITHOUT a namespace, sorted.
 	//
-	// It is NEVER populated today, and is deliberately absent rather than empty: deciding
-	// that a type is cluster-scoped requires API discovery, and this scan has none. An
-	// empty list would read as "this folder has no cluster-scoped types", which is a claim
-	// the scan cannot make — the ClusterRole is in NamespaceUndeclared instead. A
-	// discovery-aware scan can fill this and shrink NamespaceUndeclared accordingly.
-	ClusterScoped []string `json:"clusterScoped,omitempty"`
-
-	// NamespaceUndeclared lists the types that render WITHOUT a namespace, sorted. Today
-	// that is two different facts the scan cannot tell apart: a cluster-scoped type, and a
-	// namespaced type relying on whatever namespace the applier defaults to.
+	// It is NOT a list of cluster-scoped types. It holds two facts this scan cannot tell
+	// apart: a genuinely cluster-scoped type, and a namespaced type relying on whatever
+	// namespace the applier defaults to. Separating them needs API discovery, which a
+	// structure-only scan does not have.
 	//
 	// A type can appear here AND under ByNamespace. Two ConfigMaps, one carrying a
 	// namespace and one not, is an ordinary folder, not a contradiction.

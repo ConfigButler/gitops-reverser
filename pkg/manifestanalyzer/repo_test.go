@@ -199,7 +199,5 @@ func TestScanRepo_CandidateReportsWhatItRenders(t *testing.T) {
 			cand.RenderedTypes.ByNamespace,
 			"each type must stay paired with the namespace it actually lands in")
 		require.Empty(t, cand.RenderedTypes.NamespaceUndeclared)
-		require.Empty(t, cand.RenderedTypes.ClusterScoped,
-			"clusterScoped needs API discovery this scan does not have, so it stays absent")
 	}
 }

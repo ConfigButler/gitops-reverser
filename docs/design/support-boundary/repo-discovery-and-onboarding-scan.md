@@ -292,12 +292,11 @@ in `spec` (`root`, `mode`) and everything found in `status` (`generator`, `candi
   spelling `summary.byGvk` already uses.
 
   **`namespaceUndeclared` is not "cluster-scoped".** It is every type that renders WITHOUT a
-  namespace, which today is two facts this scan cannot separate: a genuinely cluster-scoped
-  type, and a namespaced type relying on whatever the applier defaults to. Deciding between
-  them needs API discovery, and a structure-only scan has none. A `clusterScoped` key is
-  reserved for the discovery-aware scan that can fill it honestly; until then it is **absent
-  rather than empty**, because an empty list would read as "this folder has no cluster-scoped
-  types" — a claim the scan cannot make.
+  namespace, which is two facts this scan cannot separate: a genuinely cluster-scoped type,
+  and a namespaced type relying on whatever the applier defaults to. Deciding between them
+  needs API discovery, and a structure-only scan has none, so the honest reading is "we do
+  not know where these land". A scan that does have discovery can split them — in a field
+  added at that point, not a name reserved now for a shape nobody has designed.
 
   These gate steps that are not cheap to undo. A type the destination does not serve fails
   the forward apply with `no matches for kind` and waits for the next resync rather than
