@@ -1493,6 +1493,12 @@ func (wb *writeBatch) ignoreShadowPrecondition() error {
 			issues = append(issues, manifestanalyzer.AcceptanceIssue{
 				Kind: manifestanalyzer.IssueIgnoreShadowsManaged,
 				Path: rel,
+				// The same answer the parse-time denylist gives, and it has to be given
+				// again here: a pattern narrow enough to pass the initial scan can still
+				// match a write planned later, and that refusal reaches the same reader.
+				// Narrowing the pattern is the author's to do.
+				Permanence: manifestanalyzer.PermanenceFixable,
+				Actor:      manifestanalyzer.ActorAuthor,
 				Message: fmt.Sprintf(
 					"%s pattern %q shadows the managed write path %s; the operator would be blind to its own "+
 						"file. Remove the pattern or move the resource out of its match",

@@ -9,8 +9,10 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 
 ## Unreleased: the analyzer report is a KRM document (next minor; breaking JSON change)
 
-`manifest-analyzer --format json` and the `pkg/manifestanalyzer` report types now emit a KRM
-envelope. `schemaVersion` is gone; `apiVersion` and `kind` replace it, the scan request moves into
+The two published scan modes — `manifest-analyzer --mode scan-folder|scan-repo --format json` —
+and the `pkg/manifestanalyzer` report types now emit a KRM envelope. (`--mode analyze` is
+unaffected: it renders the engine's own structural report, which is not part of the published
+contract.) `schemaVersion` is gone; `apiVersion` and `kind` replace it, the scan request moves into
 `spec`, and everything the scan found moves into `status`:
 
 ```json

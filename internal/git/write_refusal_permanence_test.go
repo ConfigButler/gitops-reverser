@@ -89,6 +89,29 @@ func TestRenderFidelityRefusalIsFixableByThePlatform(t *testing.T) {
 	assertClassified(t, issues)
 }
 
+// TestIgnoreShadowRefusalIsFixableByTheAuthor drives the DYNAMIC half of the
+// .gittargetignore guard. The parse-time denylist catches only a catastrophic pattern; a
+// narrow one passes the initial scan and can still match a write planned later, and that
+// refusal reaches the same reader with the same question to answer.
+func TestIgnoreShadowRefusalIsFixableByTheAuthor(t *testing.T) {
+	matcher, parseIssues := manifestanalyzer.LoadGitTargetIgnore([]byte("secrets/\n"))
+	require.Empty(t, parseIssues, "a narrow pattern must pass the parse-time denylist")
+
+	wb := &writeBatch{
+		store: &manifestanalyzer.ManifestStore{Ignore: matcher},
+		buffers: map[string]*fileBuffer{
+			"secrets/db.yaml": {rel: "secrets/db.yaml", current: []byte("a")},
+		},
+	}
+
+	issues := refusalIssues(t, wb.ignoreShadowPrecondition())
+	require.Len(t, issues, 1)
+	assert.Equal(t, manifestanalyzer.IssueIgnoreShadowsManaged, issues[0].Kind)
+	assert.Equal(t, manifestanalyzer.PermanenceFixable, issues[0].Permanence)
+	assert.Equal(t, manifestanalyzer.ActorAuthor, issues[0].Actor)
+	assertClassified(t, issues)
+}
+
 // TestPathScopeRefusalIsFixableByThePlatform drives the real L1 precondition: widening
 // spec.path, or re-placing the write, is the GitTarget owner's call and nobody else's.
 func TestPathScopeRefusalIsFixableByThePlatform(t *testing.T) {
