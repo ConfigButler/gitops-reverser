@@ -13,7 +13,7 @@ The short version:
 - `ClusterWatchRule` does the same for cluster-scoped resources
 - `CommitRequest` optionally asks the operator to close the current commit window now
 
-The chart's optional `quickstart` values are just a convenience layer that creates starter
+The chart's optional `quickstart` values are a convenience layer that creates starter
 instances of those same resources.
 
 For a first trial, use the root README quick start. It runs configured-author: Git writes work without
@@ -59,8 +59,8 @@ the local cluster.
 shared source connection: it determines which namespaces may contain `GitTarget`s that reference
 the provider. It does not select namespaces in the source cluster or grant permissions there. If a
 platform later needs a shared, platform-owned Git destination, that should be a separate
-cluster-scoped Git-destination concept with an explicit ownership model, rather than changing the
-meaning of the namespaced `GitProvider`.
+cluster-scoped Git-destination concept with an explicit ownership model, leaving the namespaced
+`GitProvider` to mean what it means today.
 
 ## `GitProvider`
 
@@ -618,7 +618,7 @@ For each new resource the operator walks this order and stops at the first that 
    `.sops.yaml` suffix for sensitive resources.
 
 If you set **no** `spec.placement`, only steps 3 and 4 run, which is why pointing a target at an
-existing repository "just continues" that repo's conventions, and a brand-new empty repo gets the tidy
+existing repository "continues" that repo's conventions, and a brand-new empty repo gets the tidy
 canonical layout.
 
 #### Following the existing layout (sibling inference)
@@ -655,7 +655,7 @@ The boundaries that keep it predictable:
   not arrived yet, so it is not treated as shared. The resource takes the canonical path, which
   carries its own namespace segment. Guessing here would file one namespace's objects under another's
   folder.
-- When a type genuinely lives in two layouts at once, the tie-break is deterministic (the cohort with the
+- When a type lives in two layouts at once, the tie-break is deterministic (the cohort with the
   most members wins, then the lexically smallest path), and it is never a coin-flip.
 - Inference can only **continue** a layout that already exists. It cannot invent a greenfield one. "I
   want all ConfigMaps bundled even though none exist yet" is a job for `byType` below.
@@ -702,7 +702,7 @@ named `api` in namespace `team-a`:
 | `{group}` | API group; **empty** for core resources | `apps` (a ConfigMap → empty) |
 | `{groupPath}` | the API group as a path segment; equivalent to `{group}` today (the empty core-group segment is dropped either way) | `apps` |
 | `{version}` | API version | `v1` |
-| `{apiVersion}` | manifest `apiVersion`: `group/version`, or just `version` for core | `apps/v1` (a ConfigMap → `v1`) |
+| `{apiVersion}` | manifest `apiVersion`: `group/version`, or `version` alone for core | `apps/v1` (a ConfigMap → `v1`) |
 | `{kind}` | manifest kind | `Deployment` |
 | `{scope}` | `namespaced` or `cluster` (a readable label, not a namespace-position value) | `namespaced` |
 | `{sensitiveSuffix}` | `.sops.yaml` for a sensitive resource, `.yaml` otherwise | `.yaml` (a Secret → `.sops.yaml`) |

@@ -19,35 +19,38 @@ Reading rules:
   input set that lives in a Git-host API.
 - **A missing candidate matters as much as a refusal**: it means the tool did not
   explain that part of the repository at all.
+- Each refusal reason carries in brackets whether anyone can solve it. A refusal that
+  changes that answer has changed what a user is told to do about it, which is a boundary
+  move like any other and belongs in this diff.
 
 ## Summary
 
 | Fixture | rc | Outcome | Accepted | Refused | Layouts | Unsupported constructs | Reported refusal signal |
 |---|---:|---|---:|---:|---|---|---|
 | 1-desired-state/argocd-app-of-apps | 0 | All reported candidates accepted | 4 | 0 | plain=4 | - | None |
-| 1-desired-state/argocd-plain | 0 | Partial | 1 | 1 | plain=2 | - | non-krm-yaml: ci-metadata.yaml: YAML is not a Kubernetes manifest |
+| 1-desired-state/argocd-plain | 0 | Partial | 1 | 1 | plain=2 | - | non-krm-yaml [solvable]: ci-metadata.yaml: YAML is not a Kubernetes manifest |
 | 1-desired-state/flux-monorepo | 0 | All reported candidates accepted | 6 | 0 | kustomize-overlay=2, kustomize-single=4 | - | None |
 | 1-desired-state/repo-per-environment | 0 | All reported candidates accepted | 9 | 0 | plain=9 | - | None |
 | 2-rendered/argocd-external-helm | 0 | All reported candidates accepted | 3 | 0 | plain=3 | - | None |
 | 2-rendered/helm-chart | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 2-rendered/helm-environment-values | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 2-rendered/kustomize-overlay-minimal | 0 | All reported candidates accepted | 2 | 0 | kustomize-overlay=2 | - | None |
-| 2-rendered/kustomize-overlays | 0 | Partial | 1 | 3 | kustomize-single=1, refused-structural=3 | configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator | refused-structural: kustomization uses unsupported feature(s): remote-base<br>refused-structural: kustomization uses unsupported feature(s): configMapGenerator, nameSuffix, secretGenerator<br>refused-structural: kustomization uses unsupported feature(s): configMapGenerator, namePrefix |
-| 2-rendered/rendered-manifests | 0 | Partial | 3 | 2 | plain=3, refused-structural=2 | namePrefix | refused-structural: kustomization uses unsupported feature(s): namePrefix<br>refused-structural: kustomization uses unsupported feature(s): namePrefix |
+| 2-rendered/kustomize-overlays | 0 | Partial | 1 | 3 | kustomize-single=1, refused-structural=3 | configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator | refused-structural [not solvable]: kustomization uses unsupported feature(s): remote-base<br>refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator, nameSuffix, secretGenerator<br>refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator, namePrefix |
+| 2-rendered/rendered-manifests | 0 | Partial | 3 | 2 | plain=3, refused-structural=2 | namePrefix | refused-structural [not solvable]: kustomization uses unsupported feature(s): namePrefix<br>refused-structural [not solvable]: kustomization uses unsupported feature(s): namePrefix |
 | 3-expanded/argocd-applicationset-directories | 0 | All reported candidates accepted | 5 | 0 | plain=5 | - | None |
-| 3-expanded/argocd-applicationset-files | 0 | No reported candidates accepted | 0 | 1 | plain=1 | - | non-krm-yaml: chart/Chart.yaml: YAML is not a Kubernetes manifest<br>foreign-file: chart/templates/_helpers.tpl: foreign file chart/templates/_helpers.tpl is not a managed manifest; remove it or name it in .gittargetignore<br>non-krm-yaml: chart/templates/deployment.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml: chart/templates/service.yaml: YAML is not a Kubernetes manifest<br>+5 more |
+| 3-expanded/argocd-applicationset-files | 0 | No reported candidates accepted | 0 | 1 | plain=1 | - | non-krm-yaml [solvable]: chart/Chart.yaml: YAML is not a Kubernetes manifest<br>foreign-file [solvable]: chart/templates/_helpers.tpl: foreign file chart/templates/_helpers.tpl is not a managed manifest; remove it or name it in .gittargetignore<br>non-krm-yaml [solvable]: chart/templates/deployment.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml [solvable]: chart/templates/service.yaml: YAML is not a Kubernetes manifest<br>+5 more |
 | 3-expanded/argocd-multicluster-matrix | 0 | All reported candidates accepted | 4 | 0 | plain=4 | - | None |
-| 3-expanded/flux-helmrelease | 0 | Partial | 3 | 1 | kustomize-single=3, refused-structural=1 | configMapGenerator | refused-structural: kustomization uses unsupported feature(s): configMapGenerator |
+| 3-expanded/flux-helmrelease | 0 | Partial | 3 | 1 | kustomize-single=3, refused-structural=1 | configMapGenerator | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator |
 | 3-expanded/flux-resourceset-inline | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 3-expanded/flux-resourceset-pull-requests | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 4-machine-written/flux-image-automation | 0 | All reported candidates accepted | 3 | 0 | kustomize-single=3 | - | None |
 | 5-opaque/sops-encrypted | 0 | All reported candidates accepted | 3 | 0 | kustomize-single=2, plain=1 | - | None |
-| 6-hostile/mixed-and-hostile | 0 | Partial | 3 | 2 | plain=4, refused-structural=1 | unparseable | refused-structural: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec")<br>impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |
+| 6-hostile/mixed-and-hostile | 0 | Partial | 3 | 2 | plain=4, refused-structural=1 | unparseable | refused-structural [solvable]: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec")<br>impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file [solvable]: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |
 
 ## 1-desired-state/argocd-app-of-apps
 
 Reported rc `0`. Accepted `4`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -59,17 +62,22 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 1-desired-state/argocd-plain
 
 Reported rc `0`. Accepted `1`, refused `1`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `apps/frontend` | `plain` | false | `frontend` | 6/6/1 | non-krm-yaml: ci-metadata.yaml: YAML is not a Kubernetes manifest |
+| `apps/frontend` | `plain` | false | `frontend` | 6/6/1 | non-krm-yaml [solvable]: ci-metadata.yaml: YAML is not a Kubernetes manifest |
 | `argocd` | `plain` | true | `argocd` | 1/1/0 | none |
 
 ## 1-desired-state/flux-monorepo
 
 Reported rc `0`. Accepted `6`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
+
+Read graph:
+
+- `apps/production` reads `apps/base/frontend` (not a candidate)
+- `apps/staging` reads `apps/base/frontend` (not a candidate)
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -83,7 +91,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 1-desired-state/repo-per-environment
 
 Reported rc `0`. Accepted `9`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -100,7 +108,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/argocd-external-helm
 
 Reported rc `0`. Accepted `3`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -111,7 +119,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/helm-chart
 
 Reported rc `0`. Accepted `1`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -120,7 +128,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/helm-environment-values
 
 Reported rc `0`. Accepted `1`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -129,7 +137,12 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/kustomize-overlay-minimal
 
 Reported rc `0`. Accepted `2`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
+
+Read graph:
+
+- `overlays/production` reads `base` (not a candidate)
+- `overlays/staging` reads `base` (not a candidate)
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -139,32 +152,42 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/kustomize-overlays
 
 Reported rc `0`. Accepted `1`, refused `3`.
-Unsupported constructs: `configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator`. Fleet root: `false`.
+Unsupported constructs: `configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator`.
+
+Read graph:
+
+- `apps/frontend/overlays/production` reads `apps/frontend/base` (not a candidate)
+- `apps/frontend/overlays/staging` reads `apps/frontend/base` (not a candidate)
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
 | `apps/backend/base` | `kustomize-single` | true | `-` | 2/2/0 | none |
-| `apps/backend/overlays/production` | `refused-structural` | false | `backend-production` | 0/0/0 | refused-structural: kustomization uses unsupported feature(s): remote-base |
-| `apps/frontend/overlays/production` | `refused-structural` | false | `frontend-production` | 2/0/3 | refused-structural: kustomization uses unsupported feature(s): configMapGenerator, nameSuffix, secretGenerator |
-| `apps/frontend/overlays/staging` | `refused-structural` | false | `frontend-staging` | 2/0/1 | refused-structural: kustomization uses unsupported feature(s): configMapGenerator, namePrefix |
+| `apps/backend/overlays/production` | `refused-structural` | false | `backend-production` | 0/0/0 | refused-structural [not solvable]: kustomization uses unsupported feature(s): remote-base |
+| `apps/frontend/overlays/production` | `refused-structural` | false | `frontend-production` | 2/0/3 | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator, nameSuffix, secretGenerator |
+| `apps/frontend/overlays/staging` | `refused-structural` | false | `frontend-staging` | 2/0/1 | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator, namePrefix |
 
 ## 2-rendered/rendered-manifests
 
 Reported rc `0`. Accepted `3`, refused `2`.
-Unsupported constructs: `namePrefix`. Fleet root: `false`.
+Unsupported constructs: `namePrefix`.
+
+Read graph:
+
+- `src/frontend/overlays/production` reads `src/frontend/base` (not a candidate)
+- `src/frontend/overlays/staging` reads `src/frontend/base` (not a candidate)
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
 | `argocd` | `plain` | true | `argocd` | 1/1/0 | none |
 | `rendered/production` | `plain` | true | `frontend-production` | 3/3/0 | none |
 | `rendered/staging` | `plain` | true | `frontend-staging` | 3/3/0 | none |
-| `src/frontend/overlays/production` | `refused-structural` | false | `frontend-production` | 2/0/0 | refused-structural: kustomization uses unsupported feature(s): namePrefix |
-| `src/frontend/overlays/staging` | `refused-structural` | false | `frontend-staging` | 2/0/0 | refused-structural: kustomization uses unsupported feature(s): namePrefix |
+| `src/frontend/overlays/production` | `refused-structural` | false | `frontend-production` | 2/0/0 | refused-structural [not solvable]: kustomization uses unsupported feature(s): namePrefix |
+| `src/frontend/overlays/staging` | `refused-structural` | false | `frontend-staging` | 2/0/0 | refused-structural [not solvable]: kustomization uses unsupported feature(s): namePrefix |
 
 ## 3-expanded/argocd-applicationset-directories
 
 Reported rc `0`. Accepted `5`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -177,16 +200,16 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 3-expanded/argocd-applicationset-files
 
 Reported rc `0`. Accepted `0`, refused `1`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `.` | `plain` | false | `argocd` | 1/1/9 | non-krm-yaml: chart/Chart.yaml: YAML is not a Kubernetes manifest<br>foreign-file: chart/templates/_helpers.tpl: foreign file chart/templates/_helpers.tpl is not a managed manifest; remove it or name it in .gittargetignore<br>non-krm-yaml: chart/templates/deployment.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml: chart/templates/service.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml: chart/values.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml: deployments/dev/backend.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml: deployments/dev/frontend.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml: deployments/production/backend.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml: deployments/production/frontend.yaml: YAML is not a Kubernetes manifest |
+| `.` | `plain` | false | `argocd` | 1/1/9 | non-krm-yaml [solvable]: chart/Chart.yaml: YAML is not a Kubernetes manifest<br>foreign-file [solvable]: chart/templates/_helpers.tpl: foreign file chart/templates/_helpers.tpl is not a managed manifest; remove it or name it in .gittargetignore<br>non-krm-yaml [solvable]: chart/templates/deployment.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml [solvable]: chart/templates/service.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml [solvable]: chart/values.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml [solvable]: deployments/dev/backend.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml [solvable]: deployments/dev/frontend.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml [solvable]: deployments/production/backend.yaml: YAML is not a Kubernetes manifest<br>non-krm-yaml [solvable]: deployments/production/frontend.yaml: YAML is not a Kubernetes manifest |
 
 ## 3-expanded/argocd-multicluster-matrix
 
 Reported rc `0`. Accepted `4`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -198,11 +221,11 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 3-expanded/flux-helmrelease
 
 Reported rc `0`. Accepted `3`, refused `1`.
-Unsupported constructs: `configMapGenerator`. Fleet root: `false`.
+Unsupported constructs: `configMapGenerator`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `apps/frontend` | `refused-structural` | false | `-` | 1/1/1 | refused-structural: kustomization uses unsupported feature(s): configMapGenerator |
+| `apps/frontend` | `refused-structural` | false | `-` | 1/1/1 | refused-structural [not solvable]: kustomization uses unsupported feature(s): configMapGenerator |
 | `clusters/production` | `kustomize-single` | true | `flux-system` | 7/7/0 | none |
 | `infrastructure/controllers/ingress-nginx` | `kustomize-single` | true | `flux-system` | 3/3/0 | none |
 | `infrastructure/sources` | `kustomize-single` | true | `flux-system` | 3/3/0 | none |
@@ -210,7 +233,7 @@ Unsupported constructs: `configMapGenerator`. Fleet root: `false`.
 ## 3-expanded/flux-resourceset-inline
 
 Reported rc `0`. Accepted `1`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -219,7 +242,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 3-expanded/flux-resourceset-pull-requests
 
 Reported rc `0`. Accepted `1`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -228,7 +251,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 4-machine-written/flux-image-automation
 
 Reported rc `0`. Accepted `3`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -239,7 +262,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 5-opaque/sops-encrypted
 
 Reported rc `0`. Accepted `3`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -250,12 +273,12 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 6-hostile/mixed-and-hostile
 
 Reported rc `0`. Accepted `3`, refused `2`.
-Unsupported constructs: `unparseable`. Fleet root: `false`.
+Unsupported constructs: `unparseable`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `.` | `refused-structural` | false | `backend` | 0/0/5 | refused-structural: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec") |
+| `.` | `refused-structural` | false | `backend` | 0/0/5 | refused-structural [solvable]: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec") |
 | `crossplane` | `plain` | true | `-` | 1/1/0 | none |
 | `kro` | `plain` | true | `-` | 1/1/0 | none |
-| `mixed` | `plain` | false | `-` | 3/3/2 | impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |
+| `mixed` | `plain` | false | `-` | 3/3/2 | impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file [solvable]: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |
 | `secrets` | `plain` | true | `backend` | 1/1/0 | none |

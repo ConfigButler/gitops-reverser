@@ -1,0 +1,33 @@
+apiVersion: manifestanalyzer.configbutler.ai/v1alpha1
+kind: RepoReport
+spec:
+  mode: scan-repo
+  root: ../../internal/manifestanalyzer/testdata/scan-repo/unsupported/plain-nonkrm
+status:
+  candidates:
+  - acceptedByOperator: false
+    inferredNamespace: demo
+    layout: plain
+    path: app
+    refusalReasons:
+    - actor: repository-author
+      code: non-krm-yaml
+      detail: 'values.yaml: YAML is not a Kubernetes manifest'
+      solvable: true
+    renderRoot: false
+    renderedTypes:
+      byNamespace:
+        demo:
+        - apps/v1/Deployment
+    resources:
+      editable: 1
+      nonKrm: 1
+      rendered: 1
+  generator:
+    name: manifest-analyzer
+    version: dev
+  summary:
+    accepted: 0
+    candidatesByLayout:
+      plain: 1
+    refused: 1

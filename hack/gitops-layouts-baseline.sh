@@ -37,14 +37,14 @@ emit_summary_row() {
   # $1 = fixture path relative to the corpus, $2 = rc, $3 = json
   local name="$1" rc="$2" json="$3"
   local accepted refused layouts constructs outcome signal
-  accepted=$(jq -r '.summary.accepted // 0' <<<"$json")
-  refused=$(jq -r '.summary.refused // 0' <<<"$json")
-  layouts=$(jq -r "$MD_CELL"'(.summary.candidatesByLayout // {}) | to_entries
+  accepted=$(jq -r '.status.summary.accepted // 0' <<<"$json")
+  refused=$(jq -r '.status.summary.refused // 0' <<<"$json")
+  layouts=$(jq -r "$MD_CELL"'(.status.summary.candidatesByLayout // {}) | to_entries
                    | map("\(.key)=\(.value)") | join(", ") | md | if . == "" then "-" else . end' <<<"$json")
-  constructs=$(jq -r "$MD_CELL"'(.summary.unsupportedConstructs // []) | join(", ") | md
+  constructs=$(jq -r "$MD_CELL"'(.status.summary.unsupportedConstructs // []) | join(", ") | md
                       | if . == "" then "-" else . end' <<<"$json")
-  signal=$(jq -r "$MD_CELL"'[.candidates[]? | select(.acceptedByOperator == false)
-                   | .refusalReasons[]? | "\(.code): \(.detail)" | md]
+  signal=$(jq -r "$MD_CELL"'[.status.candidates[]? | select(.acceptedByOperator == false)
+                   | .refusalReasons[]? | "\(.code) [\(if .solvable then "solvable" else "not solvable" end)]: \(.detail)" | md]
                   | if length == 0 then "None"
                     elif length > 4 then (.[0:4] | join("<br>")) + "<br>+\(length - 4) more"
                     else join("<br>") end' <<<"$json")
@@ -67,28 +67,40 @@ emit_summary_row() {
 
 emit_detail() {
   local name="$1" rc="$2" json="$3"
-  local accepted refused constructs fleet
-  accepted=$(jq -r '.summary.accepted // 0' <<<"$json")
-  refused=$(jq -r '.summary.refused // 0' <<<"$json")
-  constructs=$(jq -r "$MD_CELL"'(.summary.unsupportedConstructs // []) | join(", ") | md
+  local accepted refused constructs
+  accepted=$(jq -r '.status.summary.accepted // 0' <<<"$json")
+  refused=$(jq -r '.status.summary.refused // 0' <<<"$json")
+  constructs=$(jq -r "$MD_CELL"'(.status.summary.unsupportedConstructs // []) | join(", ") | md
                       | if . == "" then "none" else . end' <<<"$json")
-  fleet=$(jq -r '.summary.fleetRoot // false' <<<"$json")
 
   printf '\n## %s\n\n' "$name"
   printf 'Reported rc `%s`. Accepted `%s`, refused `%s`.\n' "$rc" "$accepted" "$refused"
-  printf 'Unsupported constructs: `%s`. Fleet root: `%s`.\n\n' "$constructs" "$fleet"
+  printf 'Unsupported constructs: `%s`.\n\n' "$constructs"
 
-  if [[ "$(jq -r '(.candidates // []) | length' <<<"$json")" == "0" ]]; then
+  # The read graph: which folder renders content out of which other folder. A candidate
+  # accepted with editable 0 is only explicable through these edges, and an edge target
+  # marked (not a candidate) is a folder the scan offers to nobody — most of them are.
+  local edges
+  edges=$(jq -r "$MD_CELL"'[.status.candidates[]?.path] as $cands
+                 | (.status.summary.readEdges // [])[]
+                 | "- `\(.from | md)` reads `\(.to | md)`"
+                   + (if (.to as $t | $cands | index($t)) then "" else " (not a candidate)" end)' <<<"$json")
+  if [[ -n "$edges" ]]; then
+    printf 'Read graph:\n\n%s\n\n' "$edges"
+  fi
+
+  if [[ "$(jq -r '(.status.candidates // []) | length' <<<"$json")" == "0" ]]; then
     printf '_No candidate folders reported._\n'
     return
   fi
 
   printf '| Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |\n'
   printf '|---|---|---|---|---|---|\n'
-  jq -r "$MD_CELL"'.candidates[]
+  jq -r "$MD_CELL"'.status.candidates[]
          | "| `\(.path | md)` | `\(.layout | md)` | \(.acceptedByOperator) | `\(.inferredNamespace // "-" | md)` | "
            + "\(.resources.rendered // 0)/\(.resources.editable // 0)/\(.resources.nonKrm // 0) | "
-           + ((.refusalReasons // []) | map("\(.code): \(.detail)" | md) | join("<br>")
+           + ((.refusalReasons // [])
+              | map("\(.code) [\(if .solvable then "solvable" else "not solvable" end)]: \(.detail)" | md) | join("<br>")
               | if . == "" then "none" else . end)
            + " |"' <<<"$json"
 }
@@ -116,6 +128,9 @@ Reading rules:
   input set that lives in a Git-host API.
 - **A missing candidate matters as much as a refusal**: it means the tool did not
   explain that part of the repository at all.
+- Each refusal reason carries in brackets whether anyone can solve it. A refusal that
+  changes that answer has changed what a user is told to do about it, which is a boundary
+  move like any other and belongs in this diff.
 
 ## Summary
 

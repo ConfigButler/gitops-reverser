@@ -10,6 +10,13 @@
         "rendered": 1,
         "editable": 1,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "flux-system": [
+            "helm.toolkit.fluxcd.io/v2/HelmRelease"
+          ]
+        }
       }
     }
   ],

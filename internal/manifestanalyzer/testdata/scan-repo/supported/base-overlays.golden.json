@@ -13,6 +13,14 @@
         "rendered": 2,
         "editable": 0,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "podinfo-acc": [
+            "apps/v1/Deployment",
+            "v1/Service"
+          ]
+        }
       }
     },
     {
@@ -28,6 +36,14 @@
         "rendered": 2,
         "editable": 0,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "podinfo-prod": [
+            "apps/v1/Deployment",
+            "v1/Service"
+          ]
+        }
       }
     },
     {
@@ -43,6 +59,14 @@
         "rendered": 2,
         "editable": 0,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "podinfo-test": [
+            "apps/v1/Deployment",
+            "v1/Service"
+          ]
+        }
       }
     }
   ],
@@ -51,6 +75,20 @@
       "kustomize-overlay": 3
     },
     "accepted": 3,
-    "refused": 0
+    "refused": 0,
+    "readEdges": [
+      {
+        "from": "overlays/acc",
+        "to": "base"
+      },
+      {
+        "from": "overlays/prod",
+        "to": "base"
+      },
+      {
+        "from": "overlays/test",
+        "to": "base"
+      }
+    ]
   }
 }

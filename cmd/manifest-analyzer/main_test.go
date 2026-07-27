@@ -15,6 +15,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
+
+	publicanalyzer "github.com/ConfigButler/gitops-reverser/pkg/manifestanalyzer"
 )
 
 const deployYAML = `apiVersion: apps/v1
@@ -128,12 +130,91 @@ func TestRun_ScanJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr=%s", code, errBuf.String())
 	}
-	var parsed map[string]any
+	var parsed struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Status     struct {
+			Accepted  bool `json:"accepted"`
+			Generator struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"generator"`
+			Issues []struct {
+				Kind     string `json:"kind"`
+				Solvable bool   `json:"solvable"`
+				Actor    string `json:"actor"`
+			} `json:"issues"`
+		} `json:"status"`
+	}
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
 		t.Fatalf("scan JSON invalid: %v\n%s", err, out.String())
 	}
-	if _, ok := parsed["accepted"]; !ok {
-		t.Errorf("scan JSON missing accepted key: %s", out.String())
+	if parsed.APIVersion != publicanalyzer.APIVersion || parsed.Kind != publicanalyzer.KindFolderReport {
+		t.Errorf("scan JSON is not a KRM document: %s", out.String())
+	}
+	if parsed.Status.Accepted || len(parsed.Status.Issues) == 0 {
+		t.Fatalf("the fixture holds a stray values.yaml and must be refused: %s", out.String())
+	}
+	// A solvable refusal names who can solve it; without that a consumer's only honest
+	// sentence is "this folder cannot be picked".
+	for _, issue := range parsed.Status.Issues {
+		if issue.Solvable && issue.Actor == "" {
+			t.Errorf("solvable issue %q does not say who can solve it: %s", issue.Kind, out.String())
+		}
+	}
+	if parsed.Status.Generator.Name == "" || parsed.Status.Generator.Version == "" {
+		t.Errorf("scan JSON must say what produced it: %s", out.String())
+	}
+}
+
+// --version answers both pin questions in one exec: which release this binary is, and
+// which contract its documents conform to.
+func TestRun_Version(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"--version"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
+	}
+	for _, want := range []string{publicanalyzer.GeneratorName, publicanalyzer.Version(), publicanalyzer.APIVersion} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("--version output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// --format yaml prints the same KRM document as --format json, which is the serialization
+// a human can read in review and commit beside the manifests it describes.
+func TestRun_ScanRepoYAML(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	args := []string{"--mode", "scan-repo", "--format", "yaml", scanRepoFixture(t)}
+	if code := run(args, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
+	}
+	for _, want := range []string{
+		"apiVersion: " + publicanalyzer.APIVersion,
+		"kind: " + publicanalyzer.KindRepoReport,
+		"spec:",
+		"status:",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("scan-repo yaml missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "{") {
+		t.Errorf("scan-repo yaml should not be JSON:\n%s", out.String())
+	}
+}
+
+// yaml serializes the KRM report, so the modes that do not produce one refuse it by name
+// rather than printing the engine's internal shape under a contract-looking flag.
+func TestRun_YAMLIsRejectedForTheEngineModes(t *testing.T) {
+	for _, mode := range []string{"analyze", "discovery"} {
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"--mode", mode, "--format", "yaml", "."}, &out, &errBuf); code != exitUsage {
+			t.Errorf("--mode %s --format yaml: exit = %d, want %d", mode, code, exitUsage)
+		}
+		if !strings.Contains(errBuf.String(), "only available for") {
+			t.Errorf("--mode %s --format yaml: stderr should say why: %s", mode, errBuf.String())
+		}
 	}
 }
 
@@ -167,7 +248,13 @@ func TestRun_ScanRepoText(t *testing.T) {
 	if code := run([]string{"--mode", "scan-repo", scanRepoFixture(t)}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
 	}
-	for _, want := range []string{"candidates:", "kustomize-overlay", "accepted=2 refused=0"} {
+	// The base the overlay renders from is in none of those candidate lines — it is a
+	// candidate for nobody — so the text view names it separately or the reader cannot tell
+	// where the overlay's documents live.
+	for _, want := range []string{
+		"candidates:", "kustomize-overlay", "accepted=2 refused=0",
+		"reads: base", "not a candidate: 1", "read by: overlays/test",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("scan-repo text missing %q:\n%s", want, out.String())
 		}
@@ -181,19 +268,21 @@ func TestRun_ScanRepoJSON(t *testing.T) {
 		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
 	}
 	var parsed struct {
-		Candidates []struct {
-			Path   string `json:"path"`
-			Layout string `json:"layout"`
-		} `json:"candidates"`
-		Summary map[string]any `json:"summary"`
+		Status struct {
+			Candidates []struct {
+				Path   string `json:"path"`
+				Layout string `json:"layout"`
+			} `json:"candidates"`
+			Summary map[string]any `json:"summary"`
+		} `json:"status"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
 		t.Fatalf("scan-repo JSON invalid: %v\n%s", err, out.String())
 	}
-	if len(parsed.Candidates) != 2 {
-		t.Fatalf("want 2 candidates, got %d: %s", len(parsed.Candidates), out.String())
+	if len(parsed.Status.Candidates) != 2 {
+		t.Fatalf("want 2 candidates, got %d: %s", len(parsed.Status.Candidates), out.String())
 	}
-	if parsed.Summary == nil {
+	if parsed.Status.Summary == nil {
 		t.Errorf("scan-repo JSON missing summary: %s", out.String())
 	}
 }

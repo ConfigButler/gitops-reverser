@@ -10,6 +10,14 @@
         "rendered": 2,
         "editable": 2,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "demo": [
+            "apps/v1/Deployment",
+            "v1/Service"
+          ]
+        }
       }
     }
   ],

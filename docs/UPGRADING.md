@@ -7,6 +7,97 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `summary.fleetRoot` is gone from the analyzer report (breaking JSON change)
+
+`manifest-analyzer --mode scan-repo` no longer emits `status.summary.fleetRoot`, the text
+report no longer prints `fleet-root=true`, and `pkg/manifestanalyzer`'s `RepoSummary` no
+longer has a `FleetRoot` field. A reader that indexed the key gets nothing back; there is no
+replacement key to switch to, and none is needed — the field never changed which folders the
+scan offers.
+
+It was a guess, and not one a better heuristic could rescue. It required top-level
+`clusters/` + `apps/` + `infra/` directories, so it read `false` on the layout Flux's own
+documentation and reference repository use (`infrastructure/`) and `true` on any repository
+that happens to use those three names. The deeper problem is that fleet-rootness is not a
+property of a repository at all: a directory is a cluster entry point because some cluster is
+*pointed at* it — a `FluxInstance.spec.sync.path`, a `flux bootstrap` somebody ran once — and
+a read-only scan of the tree cannot see that. The same repository is zero cluster entry
+points, one, or twelve, depending on who syncs it.
+
+Nothing branched on it, here or downstream, and the repository root is not offered as a
+candidate with or without it. When the question needs answering — *is this folder somebody's
+bootstrap directory rather than their app?* — the answer will come from the documents a
+candidate folder holds (a `FluxInstance`, a `flux-system` bootstrap `Kustomization`), which is
+decidable rather than guessed. See
+[orchestrator-knowledge-boundary.md](design/support-boundary/orchestrator-knowledge-boundary.md).
+
+## The analyzer report is a KRM document (breaking JSON change)
+
+The two published scan modes (`manifest-analyzer --mode scan-folder|scan-repo --format json`)
+and the `pkg/manifestanalyzer` report types emit a KRM envelope. (`--mode analyze` is unaffected:
+it renders the engine's own structural report, which is not part of the published contract.)
+`schemaVersion` is gone; `apiVersion` and `kind` replace it, the scan request lives in `spec`, and
+everything the scan found lives in `status`:
+
+```json
+{
+  "apiVersion": "manifestanalyzer.configbutler.ai/v1alpha1",
+  "kind": "RepoReport",
+  "spec": { "root": "/repo", "mode": "scan-repo" },
+  "status": {
+    "generator": { "name": "manifest-analyzer", "version": "v0.39.1" },
+    "candidates": [],
+    "summary": {}
+  }
+}
+```
+
+A bespoke `schemaVersion` left three questions open: what a bump asserts, whether a reader should
+refuse a version it does not know, and what bumps it at all. The Kubernetes API conventions already
+answer all three, in a document every consumer of a GitOps tool has read, so the report cites that
+contract instead of writing its own: `v1alpha1` may change incompatibly in any release, a reader
+that does not know the version it is handed should refuse it rather than best-effort parse, and
+adding a field is still not a bump. The report is never served, never registered, and not
+applyable, which is why it carries no `metadata`.
+
+Three things come with the envelope:
+
+- **`status.generator`** names the build that produced the report (`{name, version}`), so a
+  document that outlives the process that made it still says which release decided its contents.
+  It is never empty: ldflags when the release build sets them, otherwise the module version the Go
+  toolchain records for `go install ...@vX.Y.Z`, otherwise the literal `"dev"`.
+- **`manifest-analyzer --version`** prints that release and the report `apiVersion` together, so
+  one exec answers both questions.
+- **Every refusal says whether it can be solved.** `solvable` is a boolean, and `actor`
+  (`repository-author` or `platform-operator`) names who can solve it. See below.
+
+### Refusals say whether they can be solved, and three more codes are published
+
+`Issue` and `RefusalReason` carry `solvable` (always present) and `actor` (set only when
+`solvable`). They are decided by the check that raised the refusal, because only that check knows:
+`unsupported-kustomize` is solvable for a build file the author broke and not for a generator, and
+no per-code table can express that. `solvable` describes the release you are running and makes no
+promise about the future, so read it on every scan rather than caching a mapping from it.
+
+`pkg/manifestanalyzer` also publishes `IssueRenderRefused`, `IssueRenderDoesNotMatchLive` and
+`IssueUnplaceableEdit`. The engine could already raise all three, but only a live write does, so
+they reached a consumer through GitTarget status with no exported constant to match on.
+`RefusalReason.Code` is typed `IssueKind` rather than `string`, which makes "a candidate's refusal
+is the acceptance gate's own issue" compile-checked rather than merely stated.
+
+### Migration
+
+- Read `apiVersion` where you read `schemaVersion`, and refuse a version you do not know.
+- Move field accesses under `spec`/`status`: `report.Accepted` becomes `report.Status.Accepted`,
+  `report.Root` becomes `report.Spec.Root`, `report.Candidates` becomes `report.Status.Candidates`,
+  and so on. Golden fixtures generated from the old shape need regenerating.
+- If you inferred from the code whether a refusal can be solved (for example, treating
+  `refused-structural` as hopeless and everything else as "not supported yet"), delete that mapping
+  and read `solvable`. A report from a build that predates the field carries no `solvable` key at
+  all; treat that as "nobody said", not as `false`.
+- Record the `status.generator.version` you consumed a report with, if you pin our release
+  elsewhere. That is the whole point of the field.
+
 ## Unreleased: status vocabulary and two removed status fields (next minor; status-only change)
 
 Nothing in `spec` changed and no manifest you wrote needs editing. Three things a **reader of
@@ -532,7 +623,10 @@ nouns — **folder** and **repo**.
 `repo-walker` named an internal traversal phase rather than a contract, and a bare `scan` was
 asymmetric once a repo-level scan existed. `--mode analyze` and `--mode discovery` are unchanged.
 
-The JSON documents also gained a `schemaVersion` field, and one field was dropped:
+The JSON documents also gained a `schemaVersion` field, and one field was dropped.
+(`schemaVersion` is itself gone in a later release — see "The analyzer report is a KRM
+document" above, which replaces it with `apiVersion`. Read this entry as the history of a
+release you are upgrading *across*, not as current advice.)
 
 - `--mode scan-folder --format json` no longer carries `plan`. In folder-scan mode the analyzer has
   no cluster state and no desired resources, so `plan` was structurally always

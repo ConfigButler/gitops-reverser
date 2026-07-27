@@ -103,6 +103,14 @@ type ManifestStore struct {
 	// values-content-architecture.md.
 	ValueFileRefs map[string]struct{}
 
+	// RenderedInventory records what each render root RENDERS TO, keyed by the root's
+	// directory: which type lands in which namespace, from the objects kustomize actually
+	// produced. It is what a tool must settle before it provisions from a folder, and it is
+	// read off a real build, so a `namespace:` transformer or a base outside the subtree is
+	// already accounted for. Empty for a root that failed to build, and absent for a
+	// directory that is not a render root.
+	RenderedInventory map[string]RenderedTypes
+
 	// reachedByMultipleRoots is the set of resource-file paths (slash) that more than one
 	// render root reaches through the resources graph — the generalised write-fan-in
 	// signal, exposed via ReachedByMultipleRenderRoots. Computed once at build time from
@@ -137,6 +145,13 @@ type RetainedDocument struct {
 	// The acceptance gate refuses either (IssueUnsupportedKustomize) rather than writing
 	// into content it cannot safely manage. Only ever set on a whole-file retention.
 	Unsupported bool
+	// UnsupportedFeatures names the constructs that made this retention unsupported, as
+	// the user wrote them ("configMapGenerator", "remote-base", "render-failed"). It
+	// carries the parse-time answer to the refusal, which is what lets the acceptance
+	// gate decide solvability per construct instead of per code — one code with two very
+	// different answers is the whole reason the solvability field exists. Sorted; empty
+	// when Unsupported is false.
+	UnsupportedFeatures []string
 }
 
 // FileModel is one managed file under the scanned root. Its document set and
@@ -223,6 +238,13 @@ type DocumentModel struct {
 	// followability registry. Structure-only analysis is always MappingNoSource
 	// because no API source is wired in.
 	Mapping MappingOutcome
+
+	// MappingRefusal carries the solvability of a MappingNotFollowable outcome, decided
+	// where the registry answer is still in hand. A GVK the registry has never heard of
+	// is a CRD the platform operator can install; a GVK it knows but will not follow —
+	// ambiguous, unserved, missing a verb — is not something either side can solve. The
+	// acceptance gate sees only the outcome, so the split has to be recorded here.
+	MappingRefusal Classification
 
 	// Editable is false for SOPS-encrypted or otherwise non-patchable documents;
 	// Cause carries the structured reason.
@@ -399,7 +421,7 @@ func buildStore(
 	kusts := parseKustomizations(yamlFiles)
 	resourceFiles := resourceFilePaths(yamlFiles)
 	nsAssignments := kustomizeNamespaceAssignments(kusts, resourceFiles)
-	ovAssignments, renderFailures := renderChains(yamlFiles, kusts)
+	ovAssignments, renderedInventory, renderFailures := renderChains(yamlFiles, kusts)
 
 	store := &ManifestStore{
 		FilesByPath:        map[string]*FileModel{},
@@ -422,6 +444,7 @@ func buildStore(
 		// The generalised write-fan-in set: files more than one render root reaches. It
 		// is derived from the same kustomization graph renderRoots reads, so a base
 		// shared by two overlays is flagged whether or not an override entry is at stake.
+		RenderedInventory:      renderedInventory,
 		reachedByMultipleRoots: renderRootFanIn(kusts),
 	}
 
@@ -444,10 +467,12 @@ func buildStore(
 			// write-fan-in guard, which needs the render to see the shared file.
 			_, buildFailed := renderFailures[filepathToSlash(f.Path)]
 			doc := kusts[slashDir(f.Path)]
+			unsupported := isKustomizationFile(f.Path) &&
+				((doc != nil && doc.unsupported) || buildFailed)
 			store.Retained = append(store.Retained, RetainedDocument{
-				Location: manifestedit.Location{Path: f.Path},
-				Unsupported: isKustomizationFile(f.Path) &&
-					((doc != nil && doc.unsupported) || buildFailed),
+				Location:            manifestedit.Location{Path: f.Path},
+				Unsupported:         unsupported,
+				UnsupportedFeatures: retainedUnsupportedFeatures(unsupported, doc, buildFailed),
 			})
 		}
 	}
@@ -987,6 +1012,15 @@ func (s *ManifestStore) resolveMapping(
 	}
 
 	record, known := lookup.ByGVK(gvk)
+	if !known {
+		// Nothing serves this GVK: install the CRD (or widen what the registry may see)
+		// and the same folder is adoptable, so the platform operator can solve it.
+		dm.MappingRefusal = Classification{Solvable: true, Actor: ActorPlatformOperator}
+	} else if !record.Followable() {
+		// Served, but ambiguous, denied, or missing a verb. Nobody can solve that from
+		// the repository or the GitTarget.
+		dm.MappingRefusal = Classification{Solvable: false}
+	}
 	if known && record.Followable() {
 		dm.Mapping = MappingFollowable
 		namespaced := record.Identity.Scope == typeset.ScopeNamespaced

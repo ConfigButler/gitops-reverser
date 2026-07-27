@@ -7,7 +7,9 @@
       "refusalReasons": [
         {
           "code": "non-krm-yaml",
-          "detail": "values.yaml: YAML is not a Kubernetes manifest"
+          "detail": "values.yaml: YAML is not a Kubernetes manifest",
+          "solvable": true,
+          "actor": "repository-author"
         }
       ],
       "renderRoot": false,
@@ -16,6 +18,13 @@
         "rendered": 1,
         "editable": 1,
         "nonKrm": 1
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "demo": [
+            "apps/v1/Deployment"
+          ]
+        }
       }
     }
   ],

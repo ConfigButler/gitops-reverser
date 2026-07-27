@@ -7,7 +7,8 @@
       "refusalReasons": [
         {
           "code": "refused-structural",
-          "detail": "kustomization uses unsupported feature(s): helmCharts"
+          "detail": "kustomization uses unsupported feature(s): helmCharts",
+          "solvable": false
         }
       ],
       "renderRoot": true,
@@ -15,7 +16,8 @@
         "rendered": 0,
         "editable": 0,
         "nonKrm": 0
-      }
+      },
+      "renderedTypes": {}
     }
   ],
   "summary": {

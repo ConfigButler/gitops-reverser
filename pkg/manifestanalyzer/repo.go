@@ -4,7 +4,6 @@ package manifestanalyzer
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 
 	internalanalyzer "github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -27,12 +26,16 @@ const (
 	// refused for a real fault carries that fault's own code, never a forward-looking one.
 	LayoutKustomizeOverlay Layout = "kustomize-overlay"
 	// LayoutRefusedStructural is a render root whose kustomization uses a construct the
-	// writer cannot map back to editable source. This is the permanent support boundary,
-	// never a "not yet".
+	// writer cannot map back to editable source. This is the support boundary; each
+	// refusal it carries says whether anyone can solve it.
 	LayoutRefusedStructural Layout = "refused-structural"
 )
 
-// Refusal reason codes a candidate may carry.
+// Refusal reason codes that are NOT [IssueKind] values. This block is not the
+// enumeration of what [RefusalReason.Code] can hold — it is the two codes that come from
+// somewhere other than the acceptance gate. Every other code a candidate carries is an
+// [IssueKind], because that is where it came from: the gate raised an issue, and
+// RefusalReason is that issue projected one level up.
 const (
 	// ReasonOverlayFanOutUnsupported was the forward-looking refusal for an external-base
 	// overlay. Render-root scoping shipped, so the scanner now ADOPTS such an overlay and no
@@ -41,16 +44,26 @@ const (
 	// it owns); an overlay refused for a real fault carries that fault's own code.
 	//
 	// Deprecated: no longer emitted; kept for source compatibility.
-	ReasonOverlayFanOutUnsupported = "overlay-fan-out-unsupported"
-	// ReasonRefusedStructural is the permanent support boundary.
-	ReasonRefusedStructural = "refused-structural"
+	ReasonOverlayFanOutUnsupported IssueKind = "overlay-fan-out-unsupported"
+	// ReasonRefusedStructural is the permanent support boundary: a render root whose
+	// kustomization uses a construct the writer cannot map back to editable source.
+	ReasonRefusedStructural IssueKind = "refused-structural"
 )
 
 // RefusalReason is one machine-readable reason a candidate is not accepted.
 type RefusalReason struct {
-	Code string `json:"code"`
+	// Code is an [IssueKind] value, or [ReasonRefusedStructural]. The type makes that
+	// relationship compile-checked rather than merely stated: a candidate's refusal is
+	// the acceptance gate's own issue, projected up.
+	Code IssueKind `json:"code"`
 	// Detail is human-readable and not a stable string.
 	Detail string `json:"detail"`
+	// Solvable says whether anyone can make this candidate acceptable with this release.
+	// A report produced before this field shipped carries no `solvable` key at all; read
+	// that as "nobody said", not as false.
+	Solvable bool `json:"solvable"`
+	// Actor names who can solve it. Empty unless Solvable.
+	Actor Actor `json:"actor,omitempty"`
 }
 
 // ResourceCounts splits the KRM a candidate covers into what it renders versus what it
@@ -60,6 +73,37 @@ type ResourceCounts struct {
 	Rendered int `json:"rendered"`
 	Editable int `json:"editable"`
 	NonKRM   int `json:"nonKrm"`
+}
+
+// RenderedTypes says which type a folder renders into which namespace. It is expressed as
+// a map rather than two lists because the PAIRING is the answer: a set of types beside a
+// set of namespaces reads as every combination of the two, and a folder rendering a
+// Deployment into frontend and a Service into backend would then describe two pairs that
+// exist in no repository — enough to authorize a watch that matches nothing.
+//
+// Every type is a canonical GVK string: "group/version/kind", or "version/kind" for the
+// core group. Split on "/" and count the segments; a group never contains one.
+//
+//	apps/v1/Deployment
+//	v1/ConfigMap
+//	rbac.authorization.k8s.io/v1/ClusterRole
+type RenderedTypes struct {
+	// ByNamespace lists the types that land in each namespace, sorted, keyed by namespace.
+	// These are the exact (type, namespace) pairs, and the only ones.
+	ByNamespace map[string][]string `json:"byNamespace,omitempty"`
+
+	// NamespaceUndeclared lists the types that render WITHOUT a namespace, sorted.
+	//
+	// It is NOT a list of cluster-scoped types, and must not be read as one. It holds two
+	// facts this scan cannot tell apart: a genuinely cluster-scoped type, and a namespaced
+	// type relying on whatever namespace the applier defaults to. Separating them needs API
+	// discovery, and a structure-only scan has none — so the honest reading is "we do not
+	// know where these land". A scan that does have discovery can split them, in a field
+	// added then rather than a name reserved now.
+	//
+	// A type can appear here AND under ByNamespace. Two ConfigMaps, one carrying a
+	// namespace and one not, is an ordinary folder rather than a contradiction.
+	NamespaceUndeclared []string `json:"namespaceUndeclared,omitempty"`
 }
 
 // Candidate is one folder that could become a GitTarget.
@@ -72,12 +116,44 @@ type Candidate struct {
 	RefusalReasons     []RefusalReason `json:"refusalReasons,omitempty"`
 	// RenderRoot reports whether the candidate is a kustomize render root.
 	RenderRoot bool `json:"renderRoot"`
-	// ReadScope lists base directories outside this candidate's subtree that its
-	// kustomization reads. Empty for plain and self-contained candidates.
+	// ReadScope lists the directories outside this candidate's subtree whose content its
+	// build renders — base kustomization directories its resources graph reaches, and the
+	// directories holding individual resource files it renders from elsewhere. Empty for
+	// plain and self-contained candidates.
+	//
+	// It is the field that explains the most confusing accept the scan produces: a folder
+	// reported acceptedByOperator with resources.editable 0 is an overlay whose documents
+	// live in a base it does not own. Read with [Candidate.ReadBy] and
+	// [RepoSummary.ReadEdges], it is one direction of the repository's folder graph.
 	ReadScope []string `json:"readScope,omitempty"`
+	// ReadBy names the candidates whose build renders THIS directory's content — the edge
+	// that decides whether adopting a folder is merely wrong or actively disruptive.
+	//
+	// It is usually empty, and structurally so: a directory another kustomization
+	// references is never a render root, so it is never offered as a candidate at all, and
+	// those edges end at a directory no candidate list mentions instead. The exception is a
+	// plain folder holding a file some distant kustomization lists under resources: — a
+	// candidate that another folder genuinely depends on.
+	ReadBy []string `json:"readBy,omitempty"`
 	// InferredNamespace is the namespace the candidate resolves to, when unambiguous.
 	InferredNamespace string         `json:"inferredNamespace,omitempty"`
 	Resources         ResourceCounts `json:"resources"`
+	// RenderedTypes says which type this folder renders into which namespace. For a render
+	// root it is read off a real kustomize build, so it covers what the folder pulls from a
+	// base outside its own subtree and has the namespace transformer already applied; for a
+	// plain folder the documents are the render.
+	//
+	// It answers the two questions that gate provisioning from a folder scan, and both gate
+	// a step that is not cheap to undo. The schemas have to be served wherever this is
+	// applied — a type the destination does not serve does not degrade, the apply fails
+	// with "no matches for kind" and waits for the next resync. And naming a GitTarget's
+	// allowed source namespaces, or one watch rule per (type, namespace), needs the exact
+	// pairs: [Candidate.InferredNamespace] is one name, and a folder can render into
+	// several.
+	//
+	// Everything is empty for a render root kustomize could not build. What it renders is
+	// not knowable, and saying nothing is the honest answer.
+	RenderedTypes RenderedTypes `json:"renderedTypes"`
 	// OverlapsWith lists candidate paths this one nests with. Two overlapping candidates
 	// can never both become GitTargets — a folder has exactly one owner.
 	OverlapsWith []string `json:"overlapsWith,omitempty"`
@@ -89,26 +165,71 @@ type OverlapConflict struct {
 	Descendant string `json:"descendant"`
 }
 
+// ReadEdge is one folder-to-folder read: From's build renders documents that live in To,
+// a directory outside From's own subtree.
+//
+// The edges come from the same render rules the writer uses — which bases a kustomization
+// actually reaches through resources: and relative paths — so a consumer draws the graph
+// the operator would act on rather than one reconstructed from directory names. From is
+// always a candidate. To is a directory offered to nobody unless it is the file-reference
+// case on [Candidate.ReadBy], in which case it is a candidate too.
+//
+// An edge is REACH, not a direct reference: a root that reaches a base through another
+// base gets one edge to each, not a chain, and a directory nested under another directory
+// the same root reads is folded into its parent (reading the parent already reaches it).
+// So the edges answer "which folders does this build depend on" exactly, and "who
+// references whom, in what order" not at all — that is kustomize's business, and asking it
+// is what produced these edges.
+type ReadEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 // RepoSummary is the repository-level roll-up.
 type RepoSummary struct {
 	CandidatesByLayout map[Layout]int    `json:"candidatesByLayout"`
 	Accepted           int               `json:"accepted"`
 	Refused            int               `json:"refused"`
 	OverlapConflicts   []OverlapConflict `json:"overlapConflicts,omitempty"`
-	// FleetRoot reports that the repository root is a cluster/fleet root. A GitTarget
-	// points at an app subtree, never at such a root.
-	FleetRoot bool `json:"fleetRoot,omitempty"`
+	// ReadEdges is the repository's folder dependency graph, sorted: one edge per
+	// (candidate, directory it renders from outside its own subtree). It is the same
+	// relation [Candidate.ReadScope] and [Candidate.ReadBy] report per folder, collected so
+	// a consumer can draw the graph without walking the candidate list.
+	//
+	// Most edges end at a directory that is not a candidate: a folder some kustomization
+	// references is never a render root, so it is offered to nobody, and a consumer that
+	// draws only candidates draws no edges at all. Those nodes are exactly the edge targets
+	// absent from [RepoReportStatus.Candidates] — the report does not also publish them as a
+	// list, because a second copy of a set difference is a second thing to keep true.
+	ReadEdges []ReadEdge `json:"readEdges,omitempty"`
 	// UnsupportedConstructs is the sorted, de-duplicated set of unsupported kustomize
 	// features seen across refused candidates, so a tool can say "this repository uses
 	// Helm inflation, which the operator does not manage".
 	UnsupportedConstructs []string `json:"unsupportedConstructs,omitempty"`
 }
 
-// RepoReport answers "which folders in this repository could become GitTargets?".
+// RepoReport answers "which folders in this repository could become GitTargets?". It is a
+// KRM document: the scan REQUEST is the spec, what was FOUND is the status. See
+// [TypeMeta] for why the envelope, and why the document is never served or applyable.
 type RepoReport struct {
-	SchemaVersion string `json:"schemaVersion"`
-	// Root is the scanned repository root as passed to ScanRepo. Informational.
-	Root       string      `json:"root,omitempty"`
+	TypeMeta `json:",inline"`
+
+	Spec   RepoReportSpec   `json:"spec"`
+	Status RepoReportStatus `json:"status"`
+}
+
+// RepoReportSpec is the scan that was asked for.
+type RepoReportSpec struct {
+	// Root is the scanned repository root as passed to ScanRepo.
+	Root string `json:"root,omitempty"`
+	// Mode is always [ModeScanRepo].
+	Mode string `json:"mode"`
+}
+
+// RepoReportStatus is what the scan found.
+type RepoReportStatus struct {
+	// Generator names the build that produced this report. Never empty.
+	Generator  Generator   `json:"generator"`
 	Candidates []Candidate `json:"candidates"`
 	Summary    RepoSummary `json:"summary"`
 }
@@ -127,38 +248,55 @@ func ScanRepo(ctx context.Context, root string) (RepoReport, error) {
 // WriteJSON writes the report as indented JSON — byte-for-byte what
 // `manifest-analyzer --mode scan-repo --format json` prints.
 func (r RepoReport) WriteJSON(w io.Writer) error {
-	if r.Candidates == nil {
-		r.Candidates = []Candidate{}
+	return writeJSON(w, r.withNonNilCandidates())
+}
+
+// WriteYAML writes the report as YAML — byte-for-byte what
+// `manifest-analyzer --mode scan-repo --format yaml` prints. The report is a KRM document,
+// so this is the serialization it reads best in, and the one a human can commit beside the
+// manifests it describes.
+func (r RepoReport) WriteYAML(w io.Writer) error {
+	return writeYAML(w, r.withNonNilCandidates())
+}
+
+// withNonNilCandidates returns a copy whose Candidates marshals as [] rather than null, so
+// a consumer can iterate it unconditionally.
+func (r RepoReport) withNonNilCandidates() RepoReport {
+	if r.Status.Candidates == nil {
+		r.Status.Candidates = []Candidate{}
 	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(r)
+	return r
 }
 
 // repoReportFrom projects the internal discovery report onto the public contract.
 func repoReportFrom(rep internalanalyzer.RepoReport) RepoReport {
 	out := RepoReport{
-		SchemaVersion: SchemaVersion,
-		Root:          rep.Root,
-		Candidates:    make([]Candidate, 0, len(rep.Candidates)),
-		Summary: RepoSummary{
-			CandidatesByLayout:    make(map[Layout]int, len(rep.Summary.CandidatesByLayout)),
-			Accepted:              rep.Summary.Accepted,
-			Refused:               rep.Summary.Refused,
-			FleetRoot:             rep.Summary.FleetRoot,
-			UnsupportedConstructs: rep.Summary.UnsupportedConstructs,
+		TypeMeta: TypeMeta{APIVersion: APIVersion, Kind: KindRepoReport},
+		Spec:     RepoReportSpec{Root: rep.Root, Mode: ModeScanRepo},
+		Status: RepoReportStatus{
+			Generator:  generator(),
+			Candidates: make([]Candidate, 0, len(rep.Candidates)),
+			Summary: RepoSummary{
+				CandidatesByLayout:    make(map[Layout]int, len(rep.Summary.CandidatesByLayout)),
+				Accepted:              rep.Summary.Accepted,
+				Refused:               rep.Summary.Refused,
+				UnsupportedConstructs: rep.Summary.UnsupportedConstructs,
+			},
 		},
 	}
 	for layout, n := range rep.Summary.CandidatesByLayout {
-		out.Summary.CandidatesByLayout[Layout(layout)] = n
+		out.Status.Summary.CandidatesByLayout[Layout(layout)] = n
 	}
 	for _, conflict := range rep.Summary.OverlapConflicts {
-		out.Summary.OverlapConflicts = append(out.Summary.OverlapConflicts, OverlapConflict{
+		out.Status.Summary.OverlapConflicts = append(out.Status.Summary.OverlapConflicts, OverlapConflict{
 			Ancestor: conflict.Ancestor, Descendant: conflict.Descendant,
 		})
 	}
+	for _, edge := range rep.Summary.ReadEdges {
+		out.Status.Summary.ReadEdges = append(out.Status.Summary.ReadEdges, ReadEdge{From: edge.From, To: edge.To})
+	}
 	for _, cand := range rep.Candidates {
-		out.Candidates = append(out.Candidates, candidateFrom(cand))
+		out.Status.Candidates = append(out.Status.Candidates, candidateFrom(cand))
 	}
 	return out
 }
@@ -170,6 +308,7 @@ func candidateFrom(cand internalanalyzer.RepoCandidate) Candidate {
 		AcceptedByOperator: cand.AcceptedByOperator,
 		RenderRoot:         cand.RenderRoot,
 		ReadScope:          cand.ReadScope,
+		ReadBy:             cand.ReadBy,
 		InferredNamespace:  cand.InferredNamespace,
 		Resources: ResourceCounts{
 			Rendered: cand.Resources.Rendered,
@@ -177,9 +316,18 @@ func candidateFrom(cand internalanalyzer.RepoCandidate) Candidate {
 			NonKRM:   cand.Resources.NonKRM,
 		},
 		OverlapsWith: cand.OverlapsWith,
+		RenderedTypes: RenderedTypes{
+			ByNamespace:         cand.RenderedTypes.ByNamespace,
+			NamespaceUndeclared: cand.RenderedTypes.NamespaceUndeclared,
+		},
 	}
 	for _, reason := range cand.RefusalReasons {
-		out.RefusalReasons = append(out.RefusalReasons, RefusalReason{Code: reason.Code, Detail: reason.Detail})
+		out.RefusalReasons = append(out.RefusalReasons, RefusalReason{
+			Code:     IssueKind(reason.Code),
+			Detail:   reason.Detail,
+			Solvable: reason.Solvable,
+			Actor:    Actor(reason.Actor),
+		})
 	}
 	return out
 }

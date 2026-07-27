@@ -10,6 +10,16 @@
         "rendered": 2,
         "editable": 2,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "argocd": [
+            "argoproj.io/v1alpha1/Application"
+          ]
+        },
+        "namespaceUndeclared": [
+          "cert-manager.io/v1/ClusterIssuer"
+        ]
       }
     }
   ],

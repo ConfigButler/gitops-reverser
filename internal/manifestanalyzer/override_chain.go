@@ -130,6 +130,12 @@ func markReachable(kusts map[string]*kustomizationDoc, dir string, covered map[s
 // root reaches the same document with DIFFERENT chains, which is the fan-in > 1 case
 // we refuse to route through.
 //
+// It also returns what each root RENDERS TO — which type lands in which namespace, from
+// the objects kustomize actually produced — because that is a question only a real build
+// can answer and this is the one place a build already happens. A `namespace:` transformer
+// moves every object it covers, so what a folder's files declare and what it renders to
+// are different answers whenever a layout transform is involved.
+//
 // It also returns, per kustomization path, the roots that FAILED to build. Those
 // must refuse the folder, and it is important to see why a silent skip would be
 // unsafe rather than merely unhelpful: a root that does not build yields no chain,
@@ -142,8 +148,9 @@ func markReachable(kusts map[string]*kustomizationDoc, dir string, covered map[s
 func renderChains(
 	files []manifestedit.FileContent,
 	kusts map[string]*kustomizationDoc,
-) (map[chainKey]*overrideAssignment, map[string]string) {
+) (map[chainKey]*overrideAssignment, map[string]RenderedTypes, map[string]string) {
 	out := map[chainKey]*overrideAssignment{}
+	inventory := map[string]RenderedTypes{}
 	failed := map[string]string{}
 
 	// One dye plan for the whole scan, so the nonces are stable across roots and a base
@@ -164,6 +171,7 @@ func renderChains(
 		// answer is then no attribution — never a fallback to a second guess.
 		dyed, dyeErr := renderRootWith(files, rootDir, plan.replace)
 		attribution := attributeRoot(rendered, dyed, dyeErr, plan)
+		inventory[rootDir] = inventoryOf(rendered)
 
 		for _, ro := range rendered {
 			if ro.OriginPath == "" {
@@ -177,7 +185,62 @@ func renderChains(
 			record(out, key, chainOf(ro, kusts), attribution[key])
 		}
 	}
-	return out, failed
+	return out, inventory, failed
+}
+
+// inventoryOf reduces one root's rendered objects to what a tool must know before it
+// provisions from the folder: which type lands in which namespace.
+//
+// The pairing is the point. Publishing a set of types beside a set of namespaces loses it:
+// a folder rendering Deployment into frontend and Service into backend would read as four
+// combinations, two of which describe nothing, and a consumer generating one watch rule per
+// pair would authorize watches that match no object in the repository.
+func inventoryOf(rendered []renderedObject) RenderedTypes {
+	byNamespace := map[string]map[string]struct{}{}
+	undeclared := map[string]struct{}{}
+	for _, ro := range rendered {
+		gvk := ro.Object.GroupVersionKind()
+		name := GVK{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind}.String()
+		ns := ro.Object.GetNamespace()
+		if ns == "" {
+			undeclared[name] = struct{}{}
+			continue
+		}
+		if byNamespace[ns] == nil {
+			byNamespace[ns] = map[string]struct{}{}
+		}
+		byNamespace[ns][name] = struct{}{}
+	}
+	return RenderedTypes{
+		ByNamespace:         sortedTypesByNamespace(byNamespace),
+		NamespaceUndeclared: sortedKeysOfSet(undeclared),
+	}
+}
+
+// sortedTypesByNamespace turns the accumulated sets into the sorted lists a report
+// publishes, so nothing churns on map iteration.
+func sortedTypesByNamespace(in map[string]map[string]struct{}) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for ns, types := range in {
+		out[ns] = sortedKeysOfSet(types)
+	}
+	return out
+}
+
+// sortedKeysOfSet returns a set's members in sorted order.
+func sortedKeysOfSet(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // chainOf reads the override chain kustomize applied to one object: the images: and

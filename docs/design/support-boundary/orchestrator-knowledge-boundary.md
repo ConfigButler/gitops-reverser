@@ -86,12 +86,19 @@ with no seam between them:
 | Site | Shape of the knowledge |
 |---|---|
 | [`internal/sanitize/types.go`](../../../internal/sanitize/types.go) | Hardcoded label/annotation prefixes (`kustomize.toolkit.fluxcd.io/`, `kro.run/`, `applyset.*`) stripped before a document reaches Git. |
-| [`internal/manifestanalyzer/scan_repo.go`](../../../internal/manifestanalyzer/scan_repo.go) — `isFleetRoot` | Three directory names: `clusters`, `apps`, `infra`. |
+| ~~`internal/manifestanalyzer/scan_repo.go` — `isFleetRoot`~~ | Three directory names: `clusters`, `apps`, `infra`. **Deleted**, see below. |
 
-Neither is wrong to exist. Both are in the wrong place, and the second one is
-wrong on its own terms.
+Neither was wrong to exist. Both were in the wrong place, and the second one was
+wrong on its own terms — enough so that it is now gone rather than relocated.
 
 ## The specimen: `fleetRoot`
+
+> **Resolved by deletion.** `isFleetRoot`, `RepoSummary.FleetRoot`, and the
+> `fleet-root=true` line in the text report are gone; the JSON contract no longer
+> carries `summary.fleetRoot`. The rest of this section is the reasoning that got
+> it there, kept because the *concept* still needs a home — see
+> [The claim vocabulary](#the-claim-vocabulary) — and because the last bullet
+> below is why no better heuristic was substituted.
 
 `fleetRoot` is worth dwelling on, because it shows precisely how this knowledge
 leaks when it has nowhere principled to go.
@@ -118,6 +125,25 @@ that:
 Argo CD's equivalent concept is not a directory at all. It is a *document*: a
 root `Application` (app-of-apps) or an `ApplicationSet`. No directory-name
 heuristic can ever see it.
+
+And the deeper reason a better heuristic was not substituted: **fleet-rootness is
+not a property of a repository at all — it is a property of a (cluster, repo)
+pair.** A directory is a fleet root because some cluster is *pointed at* it, by a
+`FluxInstance.spec.sync.path` or a `flux bootstrap` somebody ran once. Bootstrap a
+cluster at `clusters/staging` in Flux's own reference repository and nothing in
+the tree distinguishes it from `clusters/production`; both are equally shaped, and
+neither is a fleet root until a cluster claims one. The same repository is zero
+fleet roots, one, or twelve, depending on who syncs it, and a structure-only scan
+sees none of that. So the honest choice was not a better guess but no guess: a
+field that can only ever be a guess invites consumers to branch on it, and they
+would be wrong on repositories no test here ever sees.
+
+Nothing read it, which is why deleting it broke nobody: `isFleetRoot` computed it,
+`RepoSummary` carried it, `pkg/manifestanalyzer` copied it, and `RenderRepoText`
+printed one line. No code branched on it, in this repository or in the consumer
+`pkg/manifestanalyzer` was exported for. The repo root is not offered as a
+candidate with or without the field — nothing filters candidates by it — so the
+deletion changed exactly one line of text output and one key in the JSON.
 
 ## The tiering
 
@@ -191,7 +217,9 @@ Renovate later means adding an interpreter, not touching the acceptance gate.
 
 The vocabulary is not invented — it is read straight off the corpus. `WrittenBy`
 is fixtures 16 and 05. `Generated` is 14. `TransformedOutOfBand` is 10.
-`OverriddenBy` is 05 and 07. `NotAnEditingTarget` is the honest `fleetRoot`.
+`OverriddenBy` is 05 and 07. `NotAnEditingTarget` is what `fleetRoot` was reaching
+for, decided from documents rather than directory names — and it is now the only
+place that question is answered, the guess having been deleted.
 
 Note that **encryption is Tier 0b, not Tier 2.** A SOPS document is
 self-describing: the `sops:` stanza is in the file. No orchestrator asserts it.
@@ -252,30 +280,27 @@ through `ResourceCounts`, and stop counting non-editable documents as editable.
 This is a **contract** fix, not only a code fix: the field is exported through
 [`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer).
 
-### 2. `isFleetRoot` uses the wrong evidence
+### 2. `isFleetRoot` used the wrong evidence — shipped as a deletion
 
-Replace the `clusters` + `apps` + `infra` directory-name test with the real
-fingerprint: a `flux-system/` directory containing `gotk-sync.yaml`. Until
-Tier 2 exists, that is a one-function change that both fixes the false negative
-on `09-flux-monorepo` and stops the false positives.
+This was written as *replace the `clusters` + `apps` + `infra` directory-name test
+with the real fingerprint, a `flux-system/` directory containing `gotk-sync.yaml`*.
+That is still the better evidence, and it is still not enough: a bootstrap
+directory is a bootstrap directory only because a cluster points at it, which no
+scan of the repository can see. So the field went rather than the heuristic.
 
-### 3. A public field worth renaming early
+`isFleetRoot`, `RepoSummary.FleetRoot` (internal and in
+[`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer)), and the `fleet-root=true`
+line in the text report are removed. The question returns as
+`NotAnEditingTarget` when Tier 2 exists, decided from the documents a candidate
+folder holds — a `FluxInstance`, or a `flux-system` bootstrap `Kustomization`.
 
-`RepoSummary.FleetRoot` is exported from
-[`pkg/manifestanalyzer`](../../../pkg/manifestanalyzer). It should become something
-honest — `clusterEntryPoints []string`, or a `NotAnEditingTarget` claim carrying a
-reason.
+The public field cost nothing to remove because nothing read it: the package is
+pre-1.0 and [`doc.go`](../../../pkg/manifestanalyzer/doc.go) says so, and the one
+consumer it was exported for had zero references to `fleetRoot`. The clock was
+**adoption, not the doc comment** — the deletion happened while that was still
+true.
 
-That package used to promise that fields are added and never repurposed or removed.
-It no longer does: the project is pre-1.0, and
-[`doc.go`](../../../pkg/manifestanalyzer/doc.go) now says so plainly, so a rename
-costs nothing on paper.
-
-The real clock is **adoption, not the doc comment**. Every consumer that reads
-`fleetRoot` before the rename is a consumer that has to change. Nothing does yet.
-The decision should be made before the write path hardens around the name.
-
-### 4. Onboarding, not refusal, for foreign files
+### 3. Onboarding, not refusal, for foreign files
 
 `01-argocd-plain` is refused because `ci-metadata.yaml` is non-KRM — a file the
 Argo CD `Application` beside it already excludes via `directory.exclude`. Every
@@ -295,7 +320,7 @@ None of the following is built, and none is designed here beyond the shape above
 | Capability | Scope |
 |---|---|
 | **Ownership axis** | `Encrypted`/non-editable in `ResourceCounts`; a core write-gate that refuses a machine-owned or generated destination; `Generated` detection from headers and `config.kubernetes.io/origin`. Fixes the three false accepts. Its first API surface is [`EncryptedSecret`](write-only-encrypted-secrets.md). |
-| **Orchestrator interpreters** | `internal/gitops` claim vocabulary + registry; `argocd` and `flux` interpreters; `fleetRoot` re-expressed as `NotAnEditingTarget`; role classification (workload / control-plane / generated / machine-written) in the repo scan report. |
+| **Orchestrator interpreters** | `internal/gitops` claim vocabulary + registry; `argocd` and `flux` interpreters; the cluster-entry-point question answered as `NotAnEditingTarget` (the deleted `fleetRoot`'s only honest form); role classification (workload / control-plane / generated / machine-written) in the repo scan report. |
 | **Resource capability registry** | Tier 0b: four knobs, three classifiers ([design](resource-capability-model.md)). Carries the derived-object gate below. |
 | **Derived-object gate** | Never mirror an object carrying a controller `ownerReference` — it is a controller's output, not desired state. Live-state, Tier 0, no orchestrator knowledge. Today [`sanitize`](../../../internal/sanitize/sanitize.go) *deletes* that field without ever gating on it, so an ESO- or sealed-secrets-derived `Secret` would be committed as a second source of truth. See [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md). |
 

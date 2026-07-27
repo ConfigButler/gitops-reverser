@@ -104,6 +104,12 @@ const (
 	featureMalformedReplicas = "malformed-replicas"
 )
 
+// featureRenderFailed is reported for a render root kustomize itself cannot build. It is
+// not a parse-time feature — the store adds it when the build fails — but it travels with
+// the parsed feature set so a refusal can classify it like any other construct: a build
+// that fails is the author's file to fix, not the operator's boundary.
+const featureRenderFailed = "render-failed"
+
 // The patch shapes that are refused BY NAME. `patches:` is tolerated in exactly one shape — a
 // `path:` to a sparse KRM document inside the scanned tree — and everything else says so rather
 // than falling through into a folder we would then mishandle.

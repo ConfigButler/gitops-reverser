@@ -10,6 +10,13 @@
         "rendered": 1,
         "editable": 1,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "podinfo": [
+            "apps/v1/Deployment"
+          ]
+        }
       }
     },
     {
@@ -22,6 +29,13 @@
         "rendered": 1,
         "editable": 1,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "flux-system": [
+            "kustomize.toolkit.fluxcd.io/v1/Kustomization"
+          ]
+        }
       }
     },
     {
@@ -34,6 +48,13 @@
         "rendered": 1,
         "editable": 1,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "infra-system": [
+            "apps/v1/Deployment"
+          ]
+        }
       }
     }
   ],
@@ -42,7 +63,6 @@
       "plain": 3
     },
     "accepted": 3,
-    "refused": 0,
-    "fleetRoot": true
+    "refused": 0
   }
 }

@@ -1,25 +1,37 @@
 # Three asks from a downstream consumer of the analyzer
 
-> Status: accepted as work, scheduled as three independent PRs. Written for an implementing
-> party — every claim below was checked against the tree at `v0.39.1`.
-> Date: 2026-07-26, decisions recorded 2026-07-27.
-> Companion to [config-surface-for-a-structured-repository.md](../future/config-surface-for-a-structured-repository.md),
-> which makes the same argument one layer up: the engine learned something and the
-> contract did not carry it.
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
 
-**Two decisions are settled and are not open in implementation:**
+> Shipped 2026-07-27: Ask 3 as [#273](https://github.com/ConfigButler/gitops-reverser/pull/273),
+> Asks 1 and 2 as [#275](https://github.com/ConfigButler/gitops-reverser/pull/275).
+> Written 2026-07-26 against the tree at `v0.39.1`, for an implementing party — so it reads
+> as instructions, and the line numbers and counts it cites are of that tree, not this one.
 
-1. **The KRM envelope is adopted** (Ask 2). `apiVersion`/`kind` replaces `schemaVersion`,
-   `spec` carries the scan request and `status` the findings. This is a deliberate breaking
-   change to the JSON contract, taken now because there are two consumers and both are
-   asking for version clarity in this same document.
-2. **The three unclassified refusal codes are decided during implementation** (Ask 1). The
-   implementing session proposes a permanence per *raise site* from the code, and raises
-   each as a review comment on its PR for the maintainer to accept or overturn. They do not
-   ship as `PermanenceUnknown`, and they do not block the rest of Ask 1.
+## What shipped, and where the live answer is now
 
-Each ask is one PR, in the order below — Ask 3 is unblocked, Ask 1 is scaffolding plus
-fourteen settled classifications, Ask 2 carries the breaking change.
+Read this document for *why*. For *what*, read the code: the reasoning below moved into doc
+comments and tests, which is the whole point it was arguing for.
+
+| This document proposed | What shipped | Live definition |
+|---|---|---|
+| A permanence enum on `RefusalReason` | `solvable bool` + `actor`, decided at the raise site | [`pkg/manifestanalyzer/repo.go`](../../pkg/manifestanalyzer/repo.go) |
+| Four values, keeping a *not-yet* axis | Two, then a plain boolean — see "A boolean, decided 2026-07-27" below | same |
+| A classification table maintained here | A table checked against the SOURCE, so a new kind fails the build | [`solvable_test.go`](../../internal/manifestanalyzer/solvable_test.go) |
+| A KRM envelope replacing `schemaVersion` | `apiVersion`/`kind`, `spec`/`status`, `status.generator`, `--version`, `--format yaml` | [`pkg/manifestanalyzer/contract.go`](../../pkg/manifestanalyzer/contract.go) |
+| `Key()` documented and golden-tested | Both, plus the versionless-identity note | [`internal/types/identifier.go`](../../internal/types/identifier.go) |
+
+Three questions this document left open were answered during implementation, and the
+answers are recorded in place below: `unsupported-kustomize` classifies per construct,
+`unresolved-krm` splits on the registry's answer, and `kustomize-render-refused` is not
+solvable. One row moved: `refused-structural` classifies from the same feature set as
+`unsupported-kustomize`, so the two surfaces cannot disagree about one folder.
+
+The three write-time kinds it was unsure about — `kustomize-render-refused`,
+`render-does-not-match-live`, `unplaceable-edit` — cannot reach `ScanRepo`, but are
+published anyway: they reach a consumer through GitTarget status, where the same
+match-on-our-constants problem applies.
+
+---
 
 The asks come from **two independent consumer teams**, arriving separately and landing on
 the same seams. One links `pkg/manifestanalyzer` as a module and execs `manifest-analyzer
@@ -44,7 +56,7 @@ to solve it.
 
 ---
 
-## Ask 1 — put the permanence of a refusal in the data
+## Ask 1 — the solvability of a refusal belongs in the data
 
 ### What they asked for
 
@@ -55,9 +67,9 @@ taxonomy one level down.
 ### Why — verified
 
 The consumer's onboarding wizard shows a human every folder in their repository and why
-each one cannot be picked. *"Not supported yet"* is a wait; *"cannot be synced"* is a
-redesign; and the two sentences were split on the only signal the type offers, a match on
-one code:
+each one cannot be picked. *"Go fix this file"* and *"this folder cannot be adopted"* are
+different sentences to write, and they were split on the only signal the type offers, a
+match on one code:
 
 ```go
 if r.Code == manifestanalyzer.ReasonRefusedStructural {
@@ -85,8 +97,8 @@ two places: the literal `ReasonRefusedStructural`, and `issuesToReasons`
 ([`internal/manifestanalyzer/scan_repo.go:409`](../../internal/manifestanalyzer/scan_repo.go)),
 which sets `Code: string(iss.Kind)` for **every** acceptance issue. So the live value set
 is the **seventeen** internal `IssueKind` constants plus `refused-structural` — and most of
-them are neither permanent nor pending. They are **fixable today by the person looking at
-the screen**. A folder refused for `invalid-yaml` is one broken document from working, and
+them are neither the support boundary nor a missing feature. They are **solvable today by
+the person looking at the screen**. A folder refused for `invalid-yaml` is one broken document from working, and
 its owner was told "not supported yet".
 
 **A second gap surfaced while counting them, and it needs fixing in the same pass.**
@@ -130,63 +142,80 @@ Two fixes, both cheap:
   kinds. As written it claims to be the enumeration, and it is not.
 
 They are correct that no consumer can maintain this table outside our repo. We added
-fifteen codes without any of them carrying permanence.
+fifteen codes without any of them saying whether they can be solved.
 
 ### The shape
 
 Additive, and inert for anyone who ignores it:
 
 ```go
-// Permanence says whether a refusal can ever stop being one. It is set by the check
-// that raised the refusal, because only that check knows. Consumers MUST treat an
-// unrecognised or absent value as PermanenceUnknown and say nothing about the future.
-type Permanence string
-
-const (
-    PermanenceUnknown   Permanence = ""                 // not classified; say nothing
-    PermanenceFixable   Permanence = "fixable"          // change the repo or the GitTarget
-    PermanencePending   Permanence = "pending-upstream" // a future release may accept it
-    PermanencePermanent Permanence = "permanent"        // the support boundary; never a "not yet"
-)
-
-// Actor names who can act on a fixable refusal. Empty when unclassified or when
-// nobody can act.
+// Actor names who can solve a refusal. Empty unless the refusal is Solvable.
 type Actor string
 
 const (
-    ActorUnknown  Actor = ""
-    ActorAuthor   Actor = "repository-author" // the person who owns the files
-    ActorPlatform Actor = "platform-operator" // the person who owns the GitTarget
+    ActorUnknown          Actor = ""
+    ActorRepositoryAuthor Actor = "repository-author" // the person who owns the files
+    ActorPlatformOperator Actor = "platform-operator" // the person who owns the GitTarget
 )
 
 type RefusalReason struct {
-    Code   string `json:"code"`
-    Detail string `json:"detail"`
-    // Permanence is empty when the check did not classify itself.
-    Permanence Permanence `json:"permanence,omitempty"`
-    // Actor is empty unless Permanence is PermanenceFixable.
+    // Code is an IssueKind value, or ReasonRefusedStructural. The type makes the
+    // relationship compile-checked rather than merely stated.
+    Code   IssueKind `json:"code"`
+    Detail string    `json:"detail"`
+    // Solvable says whether anyone can make this folder acceptable with THIS release.
+    // Decided by the check that raised the refusal, because only that check knows.
+    Solvable bool `json:"solvable"`
+    // Actor names who can solve it. Empty unless Solvable.
     Actor Actor `json:"actor,omitempty"`
 }
 ```
 
+Making this a field means an issue cannot be emitted without explicitly deciding whether it
+can be solved and, when applicable, by whom.
+
 `Issue` takes both fields for the same reason: a policy that treats an issue as blocking
 is making this decision already, without the data to make it.
 
-**Four values, where the second team proposed two** (`permanent | conditional`). Take the
-four deliberately: a two-valued enum drops the *not-yet* axis, which is the exact
-distinction that went degenerate when `ReasonOverlayFanOutUnsupported` was retired and the
-exact one that made their table wrong. Collapsing `pending-upstream` into `conditional`
-tells a user to go fix something no user can fix. And `PermanenceUnknown` has to exist as
-the zero value regardless, or an unclassified path emits a confident wrong answer instead
-of silence. Their `retryable` naming is worth considering for the `fixable` value; the axis
-count is the part not to compromise on.
+**A boolean, decided 2026-07-27.** This document originally argued for a four-valued enum,
+keeping a *not-yet* axis (`pending-upstream`) beside the boundary. Two things were
+overturned, in two steps.
+
+First the *not-yet* axis. It buys the reader nothing — a folder they cannot pick today is
+one they cannot pick today, and the action is identical either way — while putting a
+roadmap promise in a machine-readable field, which ages into a lie in one direction or the
+other: we either never ship what we hinted at, or someone restructures a repository because
+we said "permanent" about something we shipped two releases later. So the field says
+*nobody can solve this with this release*, never *not ever*, and a refusal a later release
+learns to accept simply reports differently on the next scan, because the consumer reads
+this value rather than a table it cached.
+
+Then the enum itself, in favour of a plain `bool`. The enum's remaining argument was its
+zero value: `""` meant "nobody decided", so a forgotten raise site degraded to silence
+rather than to a confident wrong answer, and a test could detect it. **The boolean gives
+that up, and it is worth stating exactly what is lost:** `false` is both the honest answer
+for most refusals and the value a forgotten raise site produces, so at runtime the two are
+indistinguishable. What still guards it is that the classification table is checked against
+the SOURCE — a new `IssueKind` fails until someone decides what it answers, and every
+unmodelled kustomize construct fails until it appears in the map. That catches the omission
+where it is still visible, at the constant, rather than at the emitted value.
+
+The trade was taken deliberately: a simpler contract for every consumer, in exchange for a
+narrower net. It is also why `solvable` is emitted ALWAYS, never `omitempty` — `false` and
+"absent" must stay distinguishable on the wire even though they are not in Go, so a report
+that predates the field is still readable as "nobody said".
+
+What the two-value shape gives up in the first place: the consumer can no longer split "not
+supported yet" from "cannot be synced" on this field alone. The bigger win survives intact —
+separating *solvable today, by this person* from everything else — and that was always the
+half most of their codes needed.
 
 They also note that adding a field is additive and need not move `SchemaVersion`. Correct,
 and it stays correct under the KRM envelope recommended in Ask 2 — that envelope is a
 separate, deliberate breaking change, and this field should not wait for it.
 
 Ship the actor field. The consumer offered it as optional; it is the cheaper half of the
-same constant, and two of our codes are fixable **only** by the platform operator, whom
+same constant, and two of our codes are solvable **only** by the platform operator, whom
 their wizard does not have on the screen. Without it, `out-of-scope` renders as "fix your
 repository" to someone who cannot.
 
@@ -200,60 +229,76 @@ seventeen internal kinds; `refused-structural` is the eighteenth value and is no
 `IssueKind`. Check that arithmetic when adding a kind — it is the only thing keeping this
 table honest until the test below exists.
 
-| Code | Permanence | Actor | Basis |
+| Code | Solvable | Actor | Basis |
 |---|---|---|---|
-| `invalid-yaml` | fixable | author | the document does not parse |
-| `duplicate-identity` | fixable | author | two documents claim one identity |
-| `impure-managed-file` | fixable | author | split the file |
-| `mixed-managed-allowlisted` | fixable | author | move the kustomization to its own file |
-| `ignore-shadows-managed` | fixable | author | narrow the `.gittargetignore` pattern |
-| `non-krm-yaml` | fixable | author | remove it, or ignore it |
-| `foreign-file` | fixable | author | remove it, or ignore it |
-| `foreign-symlink` | fixable | author | the *rule* is permanent, the *folder* is not — remove the link |
-| `foreign-submodule` | fixable | author | as above; relocate the submodule |
-| `out-of-scope` | fixable | **platform** | widen the GitTarget's scope |
-| `write-escapes-scope` | fixable | **platform** | widen `spec.path`, or re-place the write |
-| `render-does-not-match-live` | fixable | **platform** | a diverged live value is out-of-band substitution, not a render artifact |
-| `write-fan-in` | **pending** | — | the doc comment says per-render-root scoping generalizes this |
-| `unplaceable-edit` | **permanent** | — | its comment argues the alternative is measurably wrong, not merely risky |
-| `refused-structural` | **permanent** | — | the support boundary by definition |
+| `invalid-yaml` | yes | author | the document does not parse |
+| `duplicate-identity` | yes | author | two documents claim one identity |
+| `impure-managed-file` | yes | author | split the file |
+| `mixed-managed-allowlisted` | yes | author | move the kustomization to its own file |
+| `ignore-shadows-managed` | yes | author | narrow the `.gittargetignore` pattern |
+| `non-krm-yaml` | yes | author | remove it, or ignore it |
+| `foreign-file` | yes | author | remove it, or ignore it |
+| `foreign-symlink` | yes | author | the *rule* stands, the *folder* is one commit away — remove the link |
+| `foreign-submodule` | yes | author | as above; relocate the submodule |
+| `out-of-scope` | yes | **platform** | widen the GitTarget's scope |
+| `write-escapes-scope` | yes | **platform** | widen `spec.path`, or re-place the write |
+| `render-does-not-match-live` | yes | **platform** | a diverged live value is out-of-band substitution, not a render artifact |
+| `write-fan-in` | **no** | — | the edit has nowhere safe to land while two render roots share the file |
+| `unplaceable-edit` | **no** | — | its comment argues the alternative is measurably wrong, not merely risky |
+| `refused-structural` | **no** | — | the support boundary, unless the constructs behind it are the author's to fix |
 
 Note what the `foreign-symlink` row settles, because it is the rule for every future
-check: **permanence classifies the folder's prospects, not the rule's.** A rule we will
-never relax can still produce a refusal the author clears in one commit. Classify what the
-reader can do, since that is the sentence the field exists to write.
+check: **solvability describes the folder, not the rule.** A rule we will never relax can
+still produce a refusal the author clears in one commit. Classify what the reader can do,
+since that is the sentence the field exists to write.
 
 ### Three that need a decision, not a lookup
 
 **How these three get settled — decided.** The implementing session reads each raise site,
-proposes a permanence for it, and raises the proposal as a review comment on its own PR for
-the maintainer to accept or overturn. They ship classified, never as `PermanenceUnknown`,
-and they do not hold up the fourteen above. The starting positions below are inputs to that
-proposal, not conclusions.
+proposes an answer for it, and raises the proposal as a review comment on its own PR for
+the maintainer to accept or overturn. They ship decided, and they do not hold up the
+fourteen above. **All three are settled below**; the reasoning
+is kept so a later change knows what it is overturning.
 
-**`unsupported-kustomize` — must be classified per construct at the raise site.** This is
-the case that proves the whole ask: one code, both answers. Its doc comment lists
-generators, components, Helm inflation, replacements, transformers, name prefixes and
-remote bases; `v0.37.0` shipped exactly the kind of loosening that moves one of those, and
-`patches:` already moved. Suggested starting split, for the implementer to confirm
-construct by construct:
+**`unsupported-kustomize` — classified per construct at the raise site.** This is the case
+that proves the whole ask: one code, both answers. The split is whether a person can do
+something about it today:
 
-- remote bases, Helm inflation → `pending-upstream`
-- generators, replacements, transformers, name prefix/suffix → **decide**; they are the
-  constructs whose output the writer cannot map back to source at all, which reads
-  permanent, but so did `patches:` before it moved
+- a build file that does not parse, malformed `images`/`replicas`, a patch path outside the
+  tree, a root kustomize cannot build → solvable by the author. One commit clears it, and no support
+  boundary is in play.
+- generators, components, replacements, transformers, name prefix/suffix, inline and
+  JSON6902 patches, `vars`, `validators` → not solvable. Their output cannot be mapped back
+  to a source document at all.
+- remote bases, Helm inflation, `configurations`/`crds`/`openapi` → not solvable. This release does
+  not fetch or model them, and neither the author nor the platform operator can change that
+  from where they stand. Under the four-value proposal these were `pending-upstream`; the
+  decision above folds them into "not solvable", which claims only what is true today.
 
-A static per-code map cannot express this. The field can, and it is why the field goes on
-the emitted reason rather than into a table beside the constants.
+When several constructs are present the **least solvable** one wins: fixing a malformed
+patch does not make a folder adoptable while it also declares a `configMapGenerator`.
 
-**`unresolved-krm` — splits at the raise site.** A kind absent because its CRD is not
-installed is `fixable`/`platform`. A kind that is ambiguous, unserved, or missing a verb is
-`pending` at best. One code, two answers, same argument as above.
+A static per-code map cannot express any of this. The field can, and it is why the field
+goes on the emitted reason rather than into a table beside the constants.
 
-**`kustomize-render-refused` — decide what it classifies.** It refuses a *write*, not a
-folder, so "can this folder ever be picked" is the wrong question for it. Either classify
-it `permanent` (the oracle will always refuse a write it cannot vouch for) or leave it
-`Unknown` deliberately and say so in its comment.
+**`unresolved-krm` — splits at the raise site.** A kind absent because nothing serves it is
+solvable by the platform operator: install the CRD and the same folder is adoptable. A kind
+that is served but ambiguous, denied by policy, or missing a verb is not solvable. One code, two answers, decided
+where the registry's answer is still in hand rather than at the acceptance gate, which sees
+only the verdict.
+
+**`kustomize-render-refused` → not solvable.** It refuses a *write*, not a folder, so "can this
+folder ever be picked" was the wrong question for it. The narrower claim is the true one:
+the oracle refuses a write it cannot vouch for, and neither the repository author nor the
+platform operator can make it vouch.
+
+**One row moved during implementation.** `refused-structural` is classified from the same
+feature set as `unsupported-kustomize` rather than flatly not-solvable. Implementing the settled row
+verbatim made the two surfaces disagree about one directory: a render root whose build file
+merely does not parse read "not solvable" through `refused-structural` while the gate called
+the same fault the author's to fix through `unsupported-kustomize`. Two answers about one
+folder is the bug this document is about, so both classify from one place, reporting not
+solvable whenever the constructs are unknown.
 
 ### Implementation notes
 
@@ -264,22 +309,16 @@ it `permanent` (the oracle will always refuse a write it cannot vouch for) or le
 - Add a test that **every** `IssueKind` constant is classified, failing on a new
   unclassified kind. That test is the ask. Without it this document is prose again in two
   releases, which is how we got here.
-- One test per constant is **not sufficient**, and the three decision cases above are why:
-  `unsupported-kustomize`, `unresolved-krm` and `kustomize-render-refused` each classify
-  differently depending on which branch raised them, so a per-constant test passes while a
-  new branch emits `PermanenceUnknown`. Cover each emission path, not each constant. This
-  is the one place the ask costs more than a constant per site, and skipping it reproduces
-  the original bug one level down.
+- One test per constant is **not sufficient**, and the decision cases above are why:
+  `unsupported-kustomize` and `unresolved-krm` classify differently depending on which
+  branch raised them, so a per-constant test passes while a new branch reports the wrong
+  answer. Cover each emission path, not each constant. This is the one place the ask costs
+  more than a constant per site, and skipping it reproduces the original bug one level down.
 - Reconcile the internal and public kind sets in the same pass, so the classification test
   covers the codes a consumer can actually receive rather than the subset we export.
-- `PermanenceUnknown` must stay the zero value so an unclassified path degrades to silence
-  rather than to a confident wrong sentence.
-
-### Meanwhile, downstream
-
-They have flipped their default from "not supported yet" to unknown — an unrecognised code
-now says only "this folder cannot be picked" — and deleted their `Permanent bool`. That is
-worse for their user than the truth and is the honest maximum from `{Code, Detail}`.
+- `solvable` is emitted always, never `omitempty`: a boolean's zero value is a real answer,
+  so "false" and "absent" must stay distinguishable on the wire even though Go cannot tell
+  them apart.
 
 ---
 
@@ -552,7 +591,7 @@ It makes the change deliberate.
 Each is the same failure at a different layer: a distinction our code knows, published as
 prose no test defends.
 
-- Ask 1 — the check knows whether a refusal is forever; the type carries a code.
+- Ask 1 — the check knows whether a refusal can be solved; the type carries a code.
 - Ask 2 — the binary knows its version; the document carries a schema marker.
 - Ask 3 — `Key()` is an identity contract; the format lives in a comment.
 

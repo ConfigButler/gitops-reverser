@@ -19,7 +19,7 @@ team's Git write boundary: its credential, branch policy, and targets usually be
 client, discovery surface, watch state, and attribution partition must remain consistent across
 namespaces. `allowedNamespaces` then explicitly controls which control-cluster namespaces may reference
 that shared source; it does not grant source-cluster RBAC or select source namespaces. The source identity
-is the `ClusterProvider` name, not an API-server identity probe: two providers configured for the same
+is the `ClusterProvider` name alone, with no API-server identity probe: two providers configured for the same
 server deliberately remain separate source partitions.
 
 ***
@@ -84,7 +84,7 @@ The solution, in the vocabulary used throughout this document:
   by `resourceVersion` for that type, so there is nothing to re-order. Every Git write derives from
   persisted state the watch observed.
 - **Watches are per `GitTarget` and scaled by claims.** A watch opens only for the claimed ∩ followable
-  `(GVR, scope)` set, so cost scales with what `GitTarget`s actually claim, not with cluster type count.
+  `(GVR, scope)` set, so cost scales with what `GitTarget`s claim, not with cluster type count.
 - **Recovery prefers watch.** A new watch normally starts with `sendInitialEvents`, establishes a
   current snapshot boundary, and runs a **mark-and-sweep**: any Git file whose object is no longer
   present is deleted. When Redis has a fresh per-type cursor, the operator skips the snapshot and
@@ -148,7 +148,7 @@ normal pipeline and is audit-attributed like any other resource. See
 
 ### Proving it on new Kubernetes versions
 
-How Kubernetes actually emits these structures is not something to guess at. A separate, standalone
+How Kubernetes emits these structures is not something to guess at. A separate, standalone
 project. The **mutation-capture lab** ([design](spec/mutation-capture-lab-design.md),
 [cmd/mutation-capture-lab/](../cmd/mutation-capture-lab/)) records the exact watch, audit, and admission
 output a real apiserver produces for each interesting scenario and commits it as normalized example YAML (a
@@ -557,7 +557,7 @@ fresh `sendInitialEvents` reconnect.
 
 Losing a watch (pod eviction, rollout, crash, `410 Gone`) is normal. When Redis has a cursor for the
 watch shard, the next session first opens a normal watch from that resourceVersion. If the apiserver
-can supply all events since that cursor, the watch simply continues from there. If the cursor is
+can supply all events since that cursor, the watch continues from there. If the cursor is
 expired, or no cursor exists, the watch opens with `sendInitialEvents=true` and
 `ResourceVersionMatch=NotOlderThan`, so the apiserver streams current state as a replay of `ADDED`
 events terminated by the `initial-events-end` bookmark. The operator runs a **mark-and-sweep** over
@@ -690,12 +690,12 @@ and the *author* (who wrote the change), and GitOps Reverser uses both on purpos
 
 - The **committer is always the operator:** the configured `GitProvider.spec.commit.committer`, defaulting
   to `GitOps Reverser <noreply@configbutler.ai>`. Every commit, attributed or not, is committed by the
-  operator, because the operator is what actually wrote it to Git.
+  operator, because the operator is what wrote it to Git.
 - The **author is the real actor, but only when we are sure.** On a strong attribution match the author is
   set to that actor. Git always carries an author, so it is **never left blank**, and it is never a guessed
   person. What fills it when we are not sure depends on WHY:
   - **Attribution is switched off** (configured-author mode, and reconcile/resync writes that have no actor
-    at all): the author is the operator, identical to the committer. That is honest, because the operator really is
+    at all): the author is the operator, identical to the committer. That is honest, because the operator is
     the author.
   - **Attribution ran and did not resolve an actor**: the author is the explicit sentinel
     `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`. It is deliberately
@@ -1058,7 +1058,7 @@ placed never moves a file already in Git. A new resource is placed by the first 
    brace-variable path language (`{namespace}`, `{group}`, `{resource}`, `{name}`, …).
 2. **Sibling inference.** With no matching declared template, the new resource follows the layout its
    siblings already use: appended to the bundle its type shares, or placed one-per-file beside them.
-   so pointing a target at an existing folder just continues that folder's convention. When the whole
+   so pointing a target at an existing folder continues that folder's convention. When the whole
    subtree is governed by one supported kustomization and the type is brand new, the file lands beside
    that kustomization and gets a `resources:` entry.
 3. **Canonical fallback.** With nothing to follow (an empty repo, a brand-new type), the built-in default

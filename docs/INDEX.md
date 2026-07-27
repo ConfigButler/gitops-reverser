@@ -71,7 +71,6 @@ Thirteen other open items:
 |---|---|
 | [`docs-linting.md`](design/docs-linting.md) | how to mechanize [`style-guide.md`](style-guide.md) with markdownlint-cli2 and Vale. Both are wired into `task lint`, gated on the files [`.docs-lint-scope`](../.docs-lint-scope) lists rather than the whole tree: 102 of 174 files fail markdownlint and 148 of 174 fail Vale, so the two backlogs need different gates. Open: how the scope list grows to cover the tree, the `MD013` limit, and whether `AGENTS.md` and the chart READMEs are in scope |
 | [`attribution-fact-identity.md`](design/attribution-fact-identity.md) | several `ClusterProvider`s may name one physical cluster, but a kube-apiserver posts audit to one route, so only one of those names is ever fed and every other one authors `unknown (attribution unresolved)`. Proposes a declared `spec.attribution.auditRoute` that partitions the facts instead of `metadata.name`, so several providers can share one cluster's facts while cloned clusters stay separate, ingestion loses its last Kubernetes read, and a misrouted provider becomes loud. Renames the key infix and the annotation-key flag to the same word |
-| [`analyzer-consumer-contract-asks.md`](design/analyzer-consumer-contract-asks.md) | three asks from the first downstream consumer of `pkg/manifestanalyzer`, each the same failure at a different layer — a distinction our code knows, published as prose no test defends. Permanence on a `RefusalReason` (they shipped "not supported yet" for `invalid-yaml`, because one deprecated code was the only signal the type offered); the analyzer's version in its own JSON report, plus a signed release binary; and `ResourceIdentifier.Key()`'s string format as a documented contract with a golden test — it has **no test at all** today. Carries our classification of all seventeen internal `IssueKind` values (the public package exports only fourteen, and three codes can reach a consumer with no constant to match on); open: the per-construct split for `unsupported-kustomize`, and whether `Key()` or `ToGitPath()` is the identity when a preferred version bumps |
 | [`watch-and-catalog-architecture.md`](design/watch-and-catalog-architecture.md) | the target three-layer watch model — **needs a human call before building** |
 | [`metrics-observability-plan.md`](design/metrics-observability-plan.md) | the watch-stage metrics do not exist yet |
 | [`reconcile-triggering.md`](design/reconcile-triggering.md) | which controllers still fail to wake up |
@@ -100,9 +99,15 @@ Five more ideas sit beside them.
 
 ## History — [`finished/`](finished/)
 
-Twenty-two shipped plans and closed investigations. **Nothing here binds.** Read one
+Twenty-one shipped plans and closed investigations. **Nothing here binds.** Read one
 only when you want to know *why* something is the way it is; the answer to *what it
 is* always lives in `spec/`.
+
+The newest is
+[`analyzer-consumer-contract-asks.md`](finished/analyzer-consumer-contract-asks.md): why a
+refusal carries whether it can be solved and by whom, why the analyzer's report is a KRM
+document that names the build that produced it, and why `ResourceIdentifier.Key()` is a
+cross-product contract with a golden test. Shipped as #273 and #275.
 
 Note that most of the pre-2026-07 audit-pipeline archaeology has been deleted
 outright: the watch-first rewrite removed `internal/gate`, the audit joiner, and

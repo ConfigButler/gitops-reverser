@@ -15,8 +15,7 @@
 //
 // GitOps Reverser is pre-1.0, and so is this package. It is the surface a tool is meant
 // to build on rather than reaching into internal/, but it carries no compatibility
-// guarantee: fields may be renamed, removed, or given a new meaning in any release, and
-// [SchemaVersion] may bump for reasons that would be breaking after 1.0. Pin a version: each
+// guarantee: fields may be renamed, removed, or given a new meaning in any release. Pin a version: each
 // release is tagged `vX.Y.Z`, so `go get github.com/ConfigButler/gitops-reverser@vX.Y.Z` (and
 // `go install github.com/ConfigButler/gitops-reverser/cmd/manifest-analyzer@vX.Y.Z`) resolve to
 // that release rather than an opaque pseudo-version — the whole repository is one Go module,
@@ -26,6 +25,30 @@
 // new ones do get added. Do not switch on the human-readable strings — [Issue.Message]
 // and [RefusalReason.Detail] are prose, while [IssueKind] and the refusal reason codes
 // are the values worth matching on.
+//
+// # The report is a KRM document, and it says what produced it
+//
+// Both reports carry [APIVersion] and a kind, the scan request in spec and the findings in
+// status. A reader that does not know the apiVersion it is handed should refuse it rather
+// than best-effort parse, by the same rule every Kubernetes client already follows; adding
+// a field is not a version bump. The document is never served and never applyable — see
+// [TypeMeta].
+//
+// [FolderReportStatus.Generator] and [RepoReportStatus.Generator] name the build that
+// produced the report, so a document that outlives the process that made it still says
+// which release decided its contents. `manifest-analyzer --version` prints the same pair.
+//
+// # A refusal says whether it can be solved
+//
+// [Issue] and [RefusalReason] carry a `solvable` boolean and, when someone can act, an
+// [Actor]. A code alone cannot tell "one broken document away from working" from "this
+// folder cannot be adopted", and guessing from the code is how a consumer ends up telling
+// a user to go fix something only their platform team can, or nothing at all. The answer
+// describes this release and makes no promise about the future, so read it on every scan
+// rather than caching a mapping from it.
+//
+// The field is always present. A report produced before it shipped carries no `solvable`
+// key at all, which is the one case where "nobody said" is distinguishable from "no".
 //
 // Everything under internal/ carries no guarantee either, and is not importable from
 // another module. One format from there is nonetheless a contract you may build on: a
@@ -39,8 +62,14 @@
 //
 // The command-line equivalents are `manifest-analyzer --mode scan-folder --format json` and
 // `--mode scan-repo --format json`, which emit exactly the documents [FolderReport]
-// and [RepoReport] marshal to. Exec the binary if Go is not your language; import this
-// package if it is.
+// and [RepoReport] marshal to. `--format yaml` prints the same document in the
+// serialization a KRM document reads best in. Exec the binary if Go is not your language;
+// import this package if it is.
+//
+// To see a whole document before you write a line of parsing, read
+// pkg/manifestanalyzer/testdata/repo-report.golden.yaml and folder-report.golden.yaml.
+// They are checked-in output, regenerated from the real scan, so they cannot describe a
+// shape you will not receive.
 //
 // # What it does not do
 //

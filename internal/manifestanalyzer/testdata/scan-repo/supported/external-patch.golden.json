@@ -1,0 +1,44 @@
+{
+  "candidates": [
+    {
+      "path": "overlays/test",
+      "layout": "kustomize-overlay",
+      "acceptedByOperator": true,
+      "renderRoot": true,
+      "readScope": [
+        "base",
+        "patches"
+      ],
+      "inferredNamespace": "demo",
+      "resources": {
+        "rendered": 1,
+        "editable": 0,
+        "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "demo": [
+            "apps/v1/Deployment"
+          ]
+        }
+      }
+    }
+  ],
+  "summary": {
+    "candidatesByLayout": {
+      "kustomize-overlay": 1
+    },
+    "accepted": 1,
+    "refused": 0,
+    "readEdges": [
+      {
+        "from": "overlays/test",
+        "to": "base"
+      },
+      {
+        "from": "overlays/test",
+        "to": "patches"
+      }
+    ]
+  }
+}

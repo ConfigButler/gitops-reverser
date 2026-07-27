@@ -55,11 +55,12 @@ const (
 	// LayoutRefusedStructural is a render root whose kustomization uses a feature the
 	// contextual-namespace writer cannot map back to editable source (helm inflation,
 	// generators, patches, components, name(pre|suf)fix, remote bases, malformed
-	// images/replicas). This is the permanent support boundary, never a "not yet".
+	// images/replicas). This is the support boundary: the folder cannot be adopted as it
+	// stands, and each refusal says whether anyone can solve that.
 	LayoutRefusedStructural Layout = "refused-structural"
 )
 
-// ReasonRefusedStructural is the permanent support boundary: a render root whose kustomization
+// ReasonRefusedStructural is the support boundary: a render root whose kustomization
 // uses a construct the writer cannot map back to editable source. It is the only render-root
 // refusal reason now that external-base overlays are adopted through render-root scoping (the
 // former forward-looking overlay-fan-out-unsupported reason is retired; the public
@@ -73,6 +74,41 @@ const ReasonRefusedStructural = "refused-structural"
 type RefusalReason struct {
 	Code   string `json:"code"`
 	Detail string `json:"detail"`
+	// Solvable and Actor carry the refusal's own answer to "can this be solved, and by
+	// whom" — projected verbatim from the acceptance issue that raised it, or decided by
+	// the raise site for the reasons that are not issue kinds. Empty means unclassified; say
+	// nothing about whether it can be solved.
+	Solvable bool  `json:"solvable"`
+	Actor    Actor `json:"actor,omitempty"`
+}
+
+// RenderedTypes is what a folder renders, expressed so that the pairing between a type and
+// the namespace it lands in survives. A set of types beside a set of namespaces loses it:
+// a folder rendering a Deployment into frontend and a Service into backend would read as
+// four combinations, and a tool generating one watch rule per pair would authorize two
+// that match nothing in the repository.
+//
+// Every type is a canonical GVK string — "group/version/kind", or "version/kind" for the
+// core group, which is [GVK.String] and the same spelling Summary.ByGVK already uses.
+//
+// For a render root the sets come off a real kustomize build, so a base outside the subtree
+// is included and a `namespace:` transformer is already applied. For a plain folder the
+// documents are the render. A root that failed to build reports nothing at all: what it
+// renders is not knowable.
+type RenderedTypes struct {
+	// ByNamespace lists the types that land in each namespace, sorted, keyed by namespace.
+	ByNamespace map[string][]string `json:"byNamespace,omitempty"`
+
+	// NamespaceUndeclared lists the types that render WITHOUT a namespace, sorted.
+	//
+	// It is NOT a list of cluster-scoped types. It holds two facts this scan cannot tell
+	// apart: a genuinely cluster-scoped type, and a namespaced type relying on whatever
+	// namespace the applier defaults to. Separating them needs API discovery, which a
+	// structure-only scan does not have.
+	//
+	// A type can appear here AND under ByNamespace. Two ConfigMaps, one carrying a
+	// namespace and one not, is an ordinary folder, not a contradiction.
+	NamespaceUndeclared []string `json:"namespaceUndeclared,omitempty"`
 }
 
 // ResourceCounts splits the KRM a candidate covers into what it renders versus what it
@@ -109,15 +145,30 @@ type RepoCandidate struct {
 	// RenderRoot reports whether the candidate is a kustomize render root (versus a
 	// plain KRM folder).
 	RenderRoot bool `json:"renderRoot"`
-	// ReadScope lists the base directories outside this candidate's own subtree that its
-	// kustomization reads. Empty for plain and self-contained candidates.
+	// ReadScope lists the directories outside this candidate's own subtree whose content
+	// its build renders: base kustomization directories its resources graph reaches, and
+	// the directories holding individual resource files it renders from elsewhere. Empty
+	// for plain and self-contained candidates.
 	ReadScope []string `json:"readScope,omitempty"`
+	// ReadBy is the reverse edge: the candidates whose build reads THIS directory. It is
+	// usually empty, and structurally so — a directory another kustomization references is
+	// never a render root, hence never a candidate — but not always: a plain folder holding
+	// one file some distant kustomization lists in resources: is a candidate that another
+	// folder depends on, and adopting it is the disruptive case a consumer must be able to
+	// see. The rest of these edges end at directories no candidate list mentions; see
+	// [RepoSummary.ReadEdges].
+	ReadBy []string `json:"readBy,omitempty"`
 	// InferredNamespace is the namespace the candidate resolves to: the kustomization's
 	// namespace transformer for a render root, or the single explicit metadata.namespace
 	// for a plain folder. Empty when none is set or the folder is ambiguous.
 	InferredNamespace string `json:"inferredNamespace,omitempty"`
 	// Resources counts the KRM this candidate covers (rendered vs editable) plus non-KRM.
 	Resources ResourceCounts `json:"resources"`
+	// RenderedTypes says which type lands in which namespace when this candidate renders.
+	// It is what a tool must know before it provisions from the folder: the schemas that
+	// have to be served where this is applied, and the exact (type, namespace) pairs a
+	// watch rule can be written for. Empty for a render root kustomize could not build.
+	RenderedTypes RenderedTypes `json:"renderedTypes"`
 	// OverlapsWith lists other candidate paths this one nests with. Two overlapping
 	// candidates can never both be proposed (one-owner-per-folder); the conflict is
 	// reported, not resolved, in this cut.
@@ -131,6 +182,15 @@ type OverlapConflict struct {
 	Descendant string `json:"descendant"`
 }
 
+// ReadEdge is one folder-to-folder read: From's build renders documents that live in To,
+// which is outside From's own subtree. From is always a candidate; To is a candidate only
+// in the file-reference case described on [RepoCandidate.ReadBy], and is otherwise a
+// directory the scan offers to nobody.
+type ReadEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 // RepoSummary is the repo-level roll-up a product uses to describe onboardability.
 type RepoSummary struct {
 	// CandidatesByLayout counts candidates per layout class.
@@ -140,10 +200,17 @@ type RepoSummary struct {
 	Refused  int `json:"refused"`
 	// OverlapConflicts lists every nesting conflict between candidates.
 	OverlapConflicts []OverlapConflict `json:"overlapConflicts,omitempty"`
-	// FleetRoot is true when the repo root is a cluster/fleet root (top-level clusters/ +
-	// apps/ + infra/): a GitTarget points at an app subtree, never such a root. The root
-	// is never itself a candidate; leaf folders still surface normally.
-	FleetRoot bool `json:"fleetRoot,omitempty"`
+	// ReadEdges is the repo's folder dependency graph: one edge per (candidate, directory
+	// it renders from outside its own subtree), sorted. It is the same relation each
+	// candidate's readScope/readBy report, collected in one place so a consumer can draw
+	// the graph without walking the candidates.
+	//
+	// Most edges end at a directory that is NOT a candidate — a folder a kustomization
+	// references is never a render root, so it is offered to nobody. Those nodes are the
+	// edge targets absent from Candidates, and nothing else identifies them: they are not
+	// all kustomize bases, since a referenced resource file or an out-of-subtree patch
+	// makes its folder one too.
+	ReadEdges []ReadEdge `json:"readEdges,omitempty"`
 	// UnsupportedConstructs is the sorted, de-duplicated set of unsupported kustomize
 	// features seen across refused-structural candidates, so a product can say "this repo
 	// uses Helm inflation, which we don't manage".
@@ -199,10 +266,14 @@ func scanRepoFS(ctx context.Context, fsys fs.FS) RepoReport {
 
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Path < candidates[j].Path })
 	detectOverlaps(candidates)
+	edges := buildReadGraph(candidates)
+
+	summary := summarize(candidates, kusts)
+	summary.ReadEdges = edges
 
 	return RepoReport{
 		Candidates: candidates,
-		Summary:    summarize(candidates, fsys, kusts),
+		Summary:    summary,
 	}
 }
 
@@ -221,6 +292,15 @@ func classifyRenderRoot(
 	store *ManifestStore,
 ) RepoCandidate {
 	c := RepoCandidate{Path: rootDir, RenderRoot: true, InferredNamespace: renderRootNamespace(kusts, rootDir, store)}
+	// What the root actually renders to, from the build the scan already ran. A root that
+	// failed to build has none, which is honest: we cannot know what it renders.
+	if inv, ok := store.RenderedInventory[rootDir]; ok {
+		c.RenderedTypes = inv
+	}
+	// Every folder this root renders from and does not own — reported for a refused root
+	// too, since "what does it read" is answerable from the resources graph whether or not
+	// the operator would adopt it.
+	c.ReadScope = readDirsOutside(rootDir, kusts)
 	// rendered/editable count only the documents the kustomization graph actually renders
 	// (its resources: entries), never parked YAML a kustomization does not reference.
 	rendered := reachedResourceFilesFrom(rootDir, kusts)
@@ -228,10 +308,7 @@ func classifyRenderRoot(
 	if doc := kusts[rootDir]; doc == nil || doc.unsupported {
 		c.Layout = LayoutRefusedStructural
 		c.AcceptedByOperator = false
-		c.RefusalReasons = []RefusalReason{{
-			Code:   ReasonRefusedStructural,
-			Detail: refusedStructuralDetail(kusts[rootDir], kustContent[rootDir]),
-		}}
+		c.RefusalReasons = []RefusalReason{refusedStructuralReason(kusts[rootDir], kustContent[rootDir])}
 		c.Resources = countResources(store, rootDir, rendered)
 		return c
 	}
@@ -245,7 +322,6 @@ func classifyRenderRoot(
 		// content in the overlay, an unbuildable base, an unsupported nested kustomization)
 		// surfaces as its own reason rather than a blanket overlay refusal.
 		c.Layout = LayoutKustomizeOverlay
-		c.ReadScope = outsideBases
 		acc := overlayCandidateAcceptance(ctx, rootDir, scan, kusts)
 		c.AcceptedByOperator = acc.Accepted
 		if !acc.Accepted {
@@ -267,6 +343,36 @@ func classifyRenderRoot(
 	}
 	c.Resources = countResources(store, rootDir, rendered)
 	return c
+}
+
+// plainFolderInventory is the rendered-type map of a folder with no kustomization: the
+// documents ARE the render, so the types and the namespaces come straight off them.
+// Nothing transforms them on the way to the cluster, which is what makes a plain folder
+// plain.
+func plainFolderInventory(store *ManifestStore, dir string) RenderedTypes {
+	byNamespace := map[string]map[string]struct{}{}
+	undeclared := map[string]struct{}{}
+	for filePath, fm := range store.FilesByPath {
+		if !pathWithin(filePath, dir) {
+			continue
+		}
+		for _, dm := range fm.Documents {
+			id := dm.ManifestIdentity
+			name := ParseGVK(id.APIVersion, id.Kind).String()
+			if id.Namespace == "" {
+				undeclared[name] = struct{}{}
+				continue
+			}
+			if byNamespace[id.Namespace] == nil {
+				byNamespace[id.Namespace] = map[string]struct{}{}
+			}
+			byNamespace[id.Namespace][name] = struct{}{}
+		}
+	}
+	return RenderedTypes{
+		ByNamespace:         sortedTypesByNamespace(byNamespace),
+		NamespaceUndeclared: sortedKeysOfSet(undeclared),
+	}
 }
 
 // plainCandidates enumerates plain KRM leaf folders: directories that directly hold a
@@ -298,11 +404,13 @@ func plainCandidates(
 	out := make([]RepoCandidate, 0, len(dirs))
 	for dir := range dirs {
 		acc := candidateAcceptance(ctx, fsys, dir)
+		renderedTypes := plainFolderInventory(store, dir)
 		cand := RepoCandidate{
 			Path:               dir,
 			Layout:             LayoutPlain,
 			AcceptedByOperator: acc.Accepted,
 			InferredNamespace:  singleExplicitNamespace(store, dir),
+			RenderedTypes:      renderedTypes,
 			// A plain folder is applied directory-wise, so it renders its whole subtree
 			// (renderedFiles nil); no kustomization graph scopes it.
 			Resources: countResources(store, dir, nil),
@@ -395,12 +503,19 @@ func setContains(set map[string]struct{}, key string) bool {
 func candidateAcceptance(ctx context.Context, fsys fs.FS, dir string) Acceptance {
 	sub, err := fs.Sub(fsys, dir)
 	if err != nil {
-		return Acceptance{Issues: []AcceptanceIssue{{Kind: IssueForeignFile, Path: dir, Message: err.Error()}}}
+		return Acceptance{Issues: []AcceptanceIssue{{
+			Kind: IssueForeignFile, Path: dir, Message: err.Error(),
+			Solvable: true, Actor: ActorRepositoryAuthor,
+		}}}
 	}
 	policy := ScanPolicy{Acceptance: AcceptancePolicy{Allowlist: WriterAllowlist()}}
 	return Scan(ctx, sub, nil, nil, policy).Acceptance
 }
 
+// issuesToReasons is the projection for the solvability pair as well as the code: it is
+// already the single choke point through which every acceptance issue becomes a refusal
+// reason, so a check that classifies itself reaches a consumer without any second table.
+//
 // issuesToReasons projects acceptance-gate issues into refusal reasons so a refused plain
 // or self-contained kustomize candidate reports WHY — duplicate identity, non-KRM YAML, a
 // foreign file, a mixed build-directive file, an unsupported nested kustomization — not
@@ -413,9 +528,97 @@ func issuesToReasons(issues []AcceptanceIssue) []RefusalReason {
 		if iss.Path != "" {
 			detail = iss.Path + ": " + iss.Message
 		}
-		out = append(out, RefusalReason{Code: string(iss.Kind), Detail: detail})
+		out = append(out, RefusalReason{
+			Code:     string(iss.Kind),
+			Detail:   detail,
+			Solvable: iss.Solvable,
+			Actor:    iss.Actor,
+		})
 	}
 	return out
+}
+
+// readDirsOutside returns the sorted, MINIMAL set of directories a render root reads that
+// lie outside its own subtree — every folder whose content the root renders yet does not
+// own.
+//
+// It is the directory projection of [renderScopePaths], deliberately and not incidentally:
+// that function already answers "which files does this build load", it is what the scoped
+// acceptance gate renders from, and any second enumeration here would drift from it. A
+// base directory, a `resources: ../shared/deployment.yaml`, and a
+// `patches: [{path: ../../shared/patch.yaml}]` are all the same fact — content this folder
+// renders and does not own — and only one of the three is a kustomize base.
+//
+// Minimal in the same sense as [outOfSubtreeBases]: a directory nested under another in the
+// set is dropped, since reading the parent already reaches it.
+//
+// This is the only relation the read graph is built from — [RepoCandidate.ReadScope],
+// [RepoCandidate.ReadBy] and [RepoSummary.ReadEdges] are three projections of it, so they
+// cannot disagree about which folder reads which.
+func readDirsOutside(rootDir string, kusts map[string]*kustomizationDoc) []string {
+	dirs := map[string]struct{}{}
+	for file := range renderScopePaths(rootDir, kusts) {
+		if dir := slashDir(file); !pathWithin(dir, rootDir) {
+			dirs[dir] = struct{}{}
+		}
+	}
+	if len(dirs) == 0 {
+		return nil // a self-contained root reads nothing outside itself; say so with an absent key
+	}
+	out := minimalDirs(sortedKeysOf(dirs))
+	sort.Strings(out)
+	return out
+}
+
+// buildReadGraph turns the per-candidate read scopes into the repo-level edge list and
+// fills in the reverse direction on each candidate. The edges are the transpose source:
+// ReadBy is derived here rather than recomputed from the kustomization graph, so a folder
+// listed as read by X always has X listing it under readScope.
+func buildReadGraph(candidates []RepoCandidate) []ReadEdge {
+	edges := make([]ReadEdge, 0)
+	readers := map[string][]string{}
+	for _, c := range candidates {
+		for _, dir := range c.ReadScope {
+			edges = append(edges, ReadEdge{From: c.Path, To: dir})
+			readers[dir] = append(readers[dir], c.Path)
+		}
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].From != edges[j].From {
+			return edges[i].From < edges[j].From
+		}
+		return edges[i].To < edges[j].To
+	})
+	for i := range candidates {
+		if from := readers[candidates[i].Path]; len(from) > 0 {
+			sort.Strings(from)
+			candidates[i].ReadBy = from
+		}
+	}
+	return edges
+}
+
+// nonCandidateTargets returns the sorted directories the read edges point at that are not
+// themselves candidates — the other half of the graph's nodes, offered to nobody while
+// several candidates render from them. It is a set difference over the report's own two
+// lists, computed here for the text view; the JSON contract publishes the edges and the
+// candidates and lets a consumer do the same subtraction, rather than shipping an index
+// that could fall out of step with either.
+func nonCandidateTargets(candidates []RepoCandidate, edges []ReadEdge) []string {
+	isCandidate := map[string]struct{}{}
+	for _, c := range candidates {
+		isCandidate[c.Path] = struct{}{}
+	}
+	bases := map[string]struct{}{}
+	for _, e := range edges {
+		if _, ok := isCandidate[e.To]; !ok {
+			bases[e.To] = struct{}{}
+		}
+	}
+	if len(bases) == 0 {
+		return nil
+	}
+	return sortedKeysOf(bases)
 }
 
 // outOfSubtreeBases returns the sorted, MINIMAL base kustomization directories a render
@@ -506,6 +709,32 @@ func reachedResourceFiles(kusts map[string]*kustomizationDoc) map[string]struct{
 		}
 	}
 	return out
+}
+
+// refusedStructuralReason builds the render-root refusal, classified by the constructs
+// that caused it rather than by the code.
+//
+// The code itself MEANS "the writer cannot map this render root back to editable source",
+// so "no" is the answer whenever the constructs are unknown. But the same folder is judged
+// construct by construct when the gate refuses a NESTED kustomization
+// (IssueUnsupportedKustomize), and the two surfaces must not hand a consumer two different
+// answers about one directory: a root refused only because its kustomization does not
+// parse is one commit from being adoptable, and saying "no" there would send its author
+// away for nothing. Classifying both from the same feature set is what keeps them
+// agreeing, and it follows the rule the whole table follows — describe the folder, not the
+// rule.
+func refusedStructuralReason(doc *kustomizationDoc, content []byte) RefusalReason {
+	reason := RefusalReason{
+		Code:     ReasonRefusedStructural,
+		Detail:   refusedStructuralDetail(doc, content),
+		Solvable: false,
+	}
+	if doc == nil {
+		return reason
+	}
+	class := classifyKustomizeFeatures(doc.features)
+	reason.Solvable, reason.Actor = class.Solvable, class.Actor
+	return reason
 }
 
 // refusedStructuralDetail names the specific unsupported kustomize features so the
@@ -663,11 +892,10 @@ func detectOverlaps(candidates []RepoCandidate) {
 	}
 }
 
-// summarize rolls the candidates up into the repo-level summary and adds the fleet-root
-// signal read from the repo's top-level directories. Unsupported constructs are
-// recomputed from each refused-structural candidate's kustomization bytes, so the
+// summarize rolls the candidates up into the repo-level summary. Unsupported constructs
+// are recomputed from each refused-structural candidate's kustomization bytes, so the
 // summary shares one source of truth with the per-candidate detail.
-func summarize(candidates []RepoCandidate, fsys fs.FS, kusts map[string]*kustomizationDoc) RepoSummary {
+func summarize(candidates []RepoCandidate, kusts map[string]*kustomizationDoc) RepoSummary {
 	s := RepoSummary{CandidatesByLayout: map[Layout]int{}}
 	constructs := map[string]struct{}{}
 	for _, c := range candidates {
@@ -697,30 +925,7 @@ func summarize(candidates []RepoCandidate, fsys fs.FS, kusts map[string]*kustomi
 		}
 		return s.OverlapConflicts[i].Descendant < s.OverlapConflicts[j].Descendant
 	})
-	s.FleetRoot = isFleetRoot(fsys)
 	return s
-}
-
-// isFleetRoot reports whether the repo root is a cluster/fleet root: top-level
-// clusters/ + apps/ + infra/ directories. A GitTarget points at an app subtree, never
-// such a root.
-func isFleetRoot(fsys fs.FS) bool {
-	entries, err := fs.ReadDir(fsys, ".")
-	if err != nil {
-		return false
-	}
-	top := map[string]struct{}{}
-	for _, e := range entries {
-		if e.IsDir() {
-			top[e.Name()] = struct{}{}
-		}
-	}
-	for _, want := range []string{"clusters", "apps", "infra"} {
-		if _, ok := top[want]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // kustomizationContentByDir maps each kustomization directory to its raw bytes, so the
@@ -757,6 +962,18 @@ func sortedKeysOf[V any](m map[string]V) []string {
 	return out
 }
 
+// readersOf returns the candidates that read dir, read off the edge list so the text view
+// and the JSON contract answer from the same place.
+func readersOf(edges []ReadEdge, dir string) []string {
+	out := make([]string, 0, 1)
+	for _, e := range edges {
+		if e.To == dir {
+			out = append(out, e.From)
+		}
+	}
+	return out
+}
+
 // RenderRepoText writes a compact human summary of the repo report: one line per
 // candidate, then the roll-up. It is a convenience view; JSON is the contract.
 func RenderRepoText(w io.Writer, rep RepoReport) {
@@ -779,14 +996,23 @@ func RenderRepoText(w io.Writer, rep RepoReport) {
 		if len(c.ReadScope) > 0 {
 			fmt.Fprintf(w, "      reads: %s\n", strings.Join(c.ReadScope, ", "))
 		}
+		if len(c.ReadBy) > 0 {
+			fmt.Fprintf(w, "      read by: %s\n", strings.Join(c.ReadBy, ", "))
+		}
 		if len(c.OverlapsWith) > 0 {
 			fmt.Fprintf(w, "      overlaps: %s\n", strings.Join(c.OverlapsWith, ", "))
 		}
 	}
-	fmt.Fprintf(w, "summary: accepted=%d refused=%d", rep.Summary.Accepted, rep.Summary.Refused)
-	if rep.Summary.FleetRoot {
-		fmt.Fprint(w, " fleet-root=true")
+	// The other half of the graph never appears above: candidates render from these folders
+	// and none of them is offered, so a reader who sees only the candidate list cannot tell
+	// that adopting one of those readers buys a folder whose documents live elsewhere.
+	if targets := nonCandidateTargets(rep.Candidates, rep.Summary.ReadEdges); len(targets) > 0 {
+		fmt.Fprintf(w, "not a candidate: %d\n", len(targets))
+		for _, dir := range targets {
+			fmt.Fprintf(w, "  %-40s read by: %s\n", dir, strings.Join(readersOf(rep.Summary.ReadEdges, dir), ", "))
+		}
 	}
+	fmt.Fprintf(w, "summary: accepted=%d refused=%d", rep.Summary.Accepted, rep.Summary.Refused)
 	if len(rep.Summary.OverlapConflicts) > 0 {
 		fmt.Fprintf(w, " overlap-conflicts=%d", len(rep.Summary.OverlapConflicts))
 	}

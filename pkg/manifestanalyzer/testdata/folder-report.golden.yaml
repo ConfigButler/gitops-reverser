@@ -1,0 +1,31 @@
+apiVersion: manifestanalyzer.configbutler.ai/v1alpha1
+kind: FolderReport
+spec:
+  mode: scan-folder
+status:
+  accepted: false
+  generator:
+    name: manifest-analyzer
+    version: dev
+  issues:
+  - documentIndex: 0
+    kind: unsupported-kustomize
+    message: kustomization kustomization.yaml uses an unsupported feature (generators/components/helm/replacements/transformers/namePrefix/nameSuffix/remote
+      bases, or a patch that is not a strategic-merge document named by path), declares
+      malformed images/replicas overrides, or is a render root kustomize cannot build;
+      the operator cannot map it back to editable source documents and will not write
+      into this folder (a kustomize-build-failed diagnostic on this path carries the
+      build error)
+    path: kustomization.yaml
+    solvable: false
+  - actor: repository-author
+    documentIndex: 0
+    kind: foreign-file
+    message: foreign file notes.txt is not a managed manifest; remove it or name it
+      in .gittargetignore
+    path: notes.txt
+    solvable: true
+  retained:
+  - documentIndex: 0
+    path: kustomization.yaml
+    unsupported: true

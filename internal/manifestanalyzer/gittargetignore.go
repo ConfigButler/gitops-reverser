@@ -274,6 +274,9 @@ func LoadGitTargetIgnore(content []byte) (*IgnoreMatcher, []AcceptanceIssue) {
 			issues = append(issues, AcceptanceIssue{
 				Kind: IssueIgnoreShadowsManaged,
 				Path: GitTargetIgnoreFileName,
+				// Narrow the pattern: the file that raised this is in the repository.
+				Solvable: true,
+				Actor:    ActorRepositoryAuthor,
 				Message: fmt.Sprintf(
 					"%s pattern %q matches essentially every managed write path and would blind the "+
 						"operator to its own files; remove it and name only specific passengers",
@@ -312,6 +315,12 @@ func foreignContentRefusals(store *ManifestStore) []AcceptanceIssue {
 			Kind:    foreignIssueKind(f.Kind),
 			Path:    f.Path,
 			Message: foreignMessage(f),
+			// Solvable describes the FOLDER, not the rule. We refuse symlinks and
+			// submodules and will not relax that, but the folder in front of the reader
+			// is one `git rm` (or one .gittargetignore line) from being adoptable, and
+			// that is the sentence this field exists to write.
+			Solvable: true,
+			Actor:    ActorRepositoryAuthor,
 		})
 	}
 	return out

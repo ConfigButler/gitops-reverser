@@ -41,10 +41,14 @@ func TestScanFolder_AcceptsPlainKRM(t *testing.T) {
 	report, err := manifestanalyzer.ScanFolder(context.Background(), root)
 	require.NoError(t, err)
 
-	require.True(t, report.Accepted)
-	require.Empty(t, report.Issues)
-	require.Equal(t, manifestanalyzer.SchemaVersion, report.SchemaVersion)
-	require.Equal(t, root, report.Root)
+	require.True(t, report.Status.Accepted)
+	require.Empty(t, report.Status.Issues)
+	require.Equal(t, manifestanalyzer.APIVersion, report.APIVersion)
+	require.Equal(t, manifestanalyzer.KindFolderReport, report.Kind)
+	require.Equal(t, manifestanalyzer.ModeScanFolder, report.Spec.Mode)
+	require.Equal(t, root, report.Spec.Root)
+	require.Equal(t, manifestanalyzer.GeneratorName, report.Status.Generator.Name)
+	require.NotEmpty(t, report.Status.Generator.Version, "a report must always say what produced it")
 }
 
 // A folder the operator would refuse must come back as a successful scan with
@@ -59,10 +63,10 @@ func TestScanFolder_RefusalIsNotAnError(t *testing.T) {
 	report, err := manifestanalyzer.ScanFolder(context.Background(), root)
 	require.NoError(t, err)
 
-	require.False(t, report.Accepted)
-	require.NotEmpty(t, report.Issues)
-	kinds := make([]manifestanalyzer.IssueKind, 0, len(report.Issues))
-	for _, issue := range report.Issues {
+	require.False(t, report.Status.Accepted)
+	require.NotEmpty(t, report.Status.Issues)
+	kinds := make([]manifestanalyzer.IssueKind, 0, len(report.Status.Issues))
+	for _, issue := range report.Status.Issues {
 		kinds = append(kinds, issue.Kind)
 	}
 	require.Contains(t, kinds, manifestanalyzer.IssueUnsupportedKustomize,
@@ -100,8 +104,9 @@ spec:
 	}
 	report := manifestanalyzer.ScanFolderFS(context.Background(), fsys)
 
-	require.True(t, report.Accepted, "a referenced values file must not refuse its folder: %+v", report.Issues)
-	for _, issue := range report.Issues {
+	require.True(t, report.Status.Accepted,
+		"a referenced values file must not refuse its folder: %+v", report.Status.Issues)
+	for _, issue := range report.Status.Issues {
 		require.NotEqual(t, manifestanalyzer.IssueNonKRM, issue.Kind,
 			"the values file the Application names is context, not a non-krm-yaml refusal")
 	}
@@ -135,9 +140,9 @@ spec:
 	}
 	report := manifestanalyzer.ScanFolderFS(context.Background(), fsys)
 
-	require.True(t, report.Accepted, "a HelmRelease-referenced values file must not refuse its folder: %+v",
-		report.Issues)
-	for _, issue := range report.Issues {
+	require.True(t, report.Status.Accepted, "a HelmRelease-referenced values file must not refuse its folder: %+v",
+		report.Status.Issues)
+	for _, issue := range report.Status.Issues {
 		require.NotEqual(t, manifestanalyzer.IssueNonKRM, issue.Kind,
 			"the values file the HelmRelease names is context, not a non-krm-yaml refusal")
 	}
@@ -158,12 +163,12 @@ func TestScanFolderFS_ReportsDuplicateIdentity(t *testing.T) {
 	}
 	report := manifestanalyzer.ScanFolderFS(context.Background(), fsys)
 
-	require.False(t, report.Accepted)
-	require.Equal(t, manifestanalyzer.SchemaVersion, report.SchemaVersion)
-	require.Empty(t, report.Root, "an fs.FS has no path to report")
+	require.False(t, report.Status.Accepted)
+	require.Equal(t, manifestanalyzer.APIVersion, report.APIVersion)
+	require.Empty(t, report.Spec.Root, "an fs.FS has no path to report")
 
 	var found bool
-	for _, issue := range report.Issues {
+	for _, issue := range report.Status.Issues {
 		if issue.Kind == manifestanalyzer.IssueDuplicate {
 			found = true
 			require.NotEmpty(t, issue.Path)
@@ -185,11 +190,11 @@ func TestScanFolder_ReportsRetainedKustomization(t *testing.T) {
 
 	report, err := manifestanalyzer.ScanFolder(context.Background(), root)
 	require.NoError(t, err)
-	require.True(t, report.Accepted)
-	require.Len(t, report.Retained, 1)
-	require.Equal(t, "kustomization.yaml", report.Retained[0].Path)
-	require.False(t, report.Retained[0].Unsupported)
-	require.Nil(t, report.Retained[0].Identity,
+	require.True(t, report.Status.Accepted)
+	require.Len(t, report.Status.Retained, 1)
+	require.Equal(t, "kustomization.yaml", report.Status.Retained[0].Path)
+	require.False(t, report.Status.Retained[0].Unsupported)
+	require.Nil(t, report.Status.Retained[0].Identity,
 		"a whole-file retention names no resource; only the refused mixed-file case does")
 }
 
@@ -203,13 +208,14 @@ func TestScanFolder_FlagsUnsupportedRetainedKustomization(t *testing.T) {
 
 	report, err := manifestanalyzer.ScanFolder(context.Background(), root)
 	require.NoError(t, err)
-	require.False(t, report.Accepted)
-	require.Len(t, report.Retained, 1)
-	require.True(t, report.Retained[0].Unsupported)
+	require.False(t, report.Status.Accepted)
+	require.Len(t, report.Status.Retained, 1)
+	require.True(t, report.Status.Retained[0].Unsupported)
 }
 
-// The JSON document is the published contract: schemaVersion is always present, and
-// issues is an empty array rather than null so a consumer can iterate it unconditionally.
+// The JSON document is the published contract: it is a KRM document (apiVersion/kind,
+// request in spec, findings in status), it always says what produced it, and issues is an
+// empty array rather than null so a consumer can iterate it unconditionally.
 func TestFolderReport_WriteJSON_Contract(t *testing.T) {
 	t.Parallel()
 
@@ -225,9 +231,21 @@ func TestFolderReport_WriteJSON_Contract(t *testing.T) {
 
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &raw))
-	require.Equal(t, "v1", raw["schemaVersion"])
-	require.Equal(t, true, raw["accepted"])
-	require.NotContains(t, raw, "retained", "an empty retained set is omitted")
+	require.Equal(t, "manifestanalyzer.configbutler.ai/v1alpha1", raw["apiVersion"])
+	require.Equal(t, "FolderReport", raw["kind"])
+	require.NotContains(t, raw, "schemaVersion", "apiVersion replaces the schemaVersion marker outright")
+	require.NotContains(t, raw, "metadata", "a report observes a path at an instant; it has no identity")
+
+	spec, ok := raw["spec"].(map[string]any)
+	require.True(t, ok, "the scan request is the spec")
+	require.Equal(t, "scan-folder", spec["mode"])
+
+	status, ok := raw["status"].(map[string]any)
+	require.True(t, ok, "what was found is the status")
+	require.Equal(t, true, status["accepted"])
+	require.Equal(t, map[string]any{"name": "manifest-analyzer", "version": manifestanalyzer.Version()},
+		status["generator"], "a report that cannot say what produced it is the failure this field prevents")
+	require.NotContains(t, status, "retained", "an empty retained set is omitted")
 }
 
 // The public report must survive a marshal/unmarshal round trip unchanged, or a consumer

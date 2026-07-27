@@ -13,6 +13,14 @@
         "rendered": 2,
         "editable": 0,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "nested-test": [
+            "apps/v1/Deployment",
+            "v1/ConfigMap"
+          ]
+        }
       }
     }
   ],
@@ -21,6 +29,12 @@
       "kustomize-overlay": 1
     },
     "accepted": 1,
-    "refused": 0
+    "refused": 0,
+    "readEdges": [
+      {
+        "from": "overlays/test",
+        "to": "base"
+      }
+    ]
   }
 }

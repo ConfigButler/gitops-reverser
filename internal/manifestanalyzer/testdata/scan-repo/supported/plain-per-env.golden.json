@@ -10,6 +10,14 @@
         "rendered": 2,
         "editable": 2,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "app-prod": [
+            "apps/v1/Deployment",
+            "v1/Service"
+          ]
+        }
       }
     },
     {
@@ -22,6 +30,14 @@
         "rendered": 2,
         "editable": 2,
         "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "app-test": [
+            "apps/v1/Deployment",
+            "v1/Service"
+          ]
+        }
       }
     }
   ],
