@@ -332,19 +332,28 @@ wants to gate on it. Publish the observation before inventing the assertion.
 
 ```text
 clusters/prod/
-  all.yaml                     # 9 ConfigMaps, one multi-document file
+  all.yaml                     # 9 ConfigMaps in one multi-document file,
+                               #   spanning namespaces team-a and team-b
   team-a/secrets/db.sops.yaml
 ```
 
+The two namespaces are load-bearing, not decoration. Per `configuration.md:652-655`, a resource
+in a namespace the target has never written joins an existing cohort **only** when that cohort
+has proven itself namespace-agnostic by already holding more than one — one directory holding one
+namespace is indistinguishable from a per-namespace layout whose second namespace has not arrived
+yet. So with a single-namespace `all.yaml` the answer below inverts, and the new ConfigMap takes
+the canonical path.
+
 Today (`configuration.md:638-646`): a new ConfigMap is **appended to `all.yaml`**, including one
-in a brand-new namespace, because the bundle has proven itself namespace-agnostic. A new Secret
-goes to `team-a/secrets/`. Both are the right calls, and both are *inferred from mutable repo
-state*.
+in a brand-new `billing` namespace, because the bundle has cleared that bar. A new Secret goes to
+`team-a/secrets/`. Both are the right calls, and both are *inferred from mutable repo state*.
 
 The failure mode is not the logic; it is that a **human editing the repo changes the operator's
-behaviour without touching any Kubernetes object.** Delete `all.yaml`'s last ConfigMap and the
-next new ConfigMap takes the canonical path instead. Nothing in the GitTarget changed. Nothing
-in its status says the placement basis moved.
+behaviour without touching any Kubernetes object.** Delete every `team-b` ConfigMap from
+`all.yaml` and the bundle stops being namespace-agnostic, so the next ConfigMap in a new namespace
+takes the canonical path instead. Nothing in the GitTarget changed. Nothing in its status says the
+placement basis moved — and this is a sharper version of the same point, because the file the
+inference reads is still there and still full of ConfigMaps.
 
 With B3, a team that finds this unacceptable writes one field:
 

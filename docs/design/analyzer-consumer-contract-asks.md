@@ -63,10 +63,24 @@ nothing stops the next one.
 two places: the literal `ReasonRefusedStructural`, and `issuesToReasons`
 ([`internal/manifestanalyzer/scan_repo.go:409`](../../internal/manifestanalyzer/scan_repo.go)),
 which sets `Code: string(iss.Kind)` for **every** acceptance issue. So the live value set
-is the eighteen `IssueKind` constants plus `refused-structural` — and most of them are
-neither permanent nor pending. They are **fixable today by the person looking at the
-screen**. A folder refused for `invalid-yaml` is one broken document from working, and its
-owner was told "not supported yet".
+is the **seventeen** internal `IssueKind` constants plus `refused-structural` — and most of
+them are neither permanent nor pending. They are **fixable today by the person looking at
+the screen**. A folder refused for `invalid-yaml` is one broken document from working, and
+its owner was told "not supported yet".
+
+**A second gap surfaced while counting them, and it needs fixing in the same pass.**
+`internal/manifestanalyzer` defines seventeen kinds; `pkg/manifestanalyzer` re-declares
+**fourteen**. Because `issuesToReasons` copies the internal string through verbatim, three
+codes can reach a consumer that has no exported constant to match on:
+
+- `kustomize-render-refused`
+- `render-does-not-match-live`
+- `unplaceable-edit`
+
+A consumer doing the correct thing — matching on our published constants — silently fails
+to recognise all three. Either export them or state that they never reach `ScanRepo`; the
+implementer should confirm which by checking whether these write-time kinds can appear in a
+structure-only scan. Whatever the answer, the counts must stop disagreeing.
 
 They are correct that no consumer can maintain this table outside our repo. We added
 fifteen codes without any of them carrying permanence.
@@ -120,6 +134,11 @@ repository" to someone who cannot.
 
 This is the part no consumer can write, so it is written here in full. Derived from each
 kind's own doc comment and its raise site.
+
+The fourteen rows below plus the three deferred to the next section account for all
+seventeen internal kinds; `refused-structural` is the eighteenth value and is not an
+`IssueKind`. Check that arithmetic when adding a kind — it is the only thing keeping this
+table honest until the test below exists.
 
 | Code | Permanence | Actor | Basis |
 |---|---|---|---|
@@ -179,6 +198,14 @@ it `permanent` (the oracle will always refuse a write it cannot vouch for) or le
 - Add a test that **every** `IssueKind` constant is classified, failing on a new
   unclassified kind. That test is the ask. Without it this document is prose again in two
   releases, which is how we got here.
+- One test per constant is **not sufficient**, and the three decision cases above are why:
+  `unsupported-kustomize`, `unresolved-krm` and `kustomize-render-refused` each classify
+  differently depending on which branch raised them, so a per-constant test passes while a
+  new branch emits `PermanenceUnknown`. Cover each emission path, not each constant. This
+  is the one place the ask costs more than a constant per site, and skipping it reproduces
+  the original bug one level down.
+- Reconcile the internal and public kind sets in the same pass, so the classification test
+  covers the codes a consumer can actually receive rather than the subset we export.
 - `PermanenceUnknown` must stay the zero value so an unclassified path degrades to silence
   rather than to a confident wrong sentence.
 
@@ -231,16 +258,30 @@ path our own package doc recommends, **ldflags do not apply at all** —
 and no release-workflow change. Use ldflags when set, fall back to `ReadBuildInfo`, and
 emit `"dev"` for a plain `go build`.
 
+A **top-level string on each report**, beside `schemaVersion` — not a nested object, and
+not `omitempty`. The point of the ask is that a report always says what produced it, so a
+shape that permits omission fails it:
+
 ```go
-type ReportProvenance struct {
+type RepoReport struct {
+    SchemaVersion string `json:"schemaVersion"`
     // AnalyzerVersion is the release that produced this report: "v0.39.1", or "dev"
-    // for an unreleased build. Informational — do not gate on it.
-    AnalyzerVersion string `json:"analyzerVersion,omitempty"`
+    // for a build that carries no version. Never empty. Informational — a consumer
+    // records it to trace an answer back, and does not gate on it.
+    AnalyzerVersion string `json:"analyzerVersion"`
+    // … unchanged
 }
 ```
 
-Both reports take it. Adding a field does not bump `SchemaVersion`, which is exactly what
-our own stability note tells consumers to expect.
+`FolderReport` takes the identical field in the same position. The fallback chain is
+ldflags → `debug.ReadBuildInfo()` → the literal `"dev"`, so the field is non-empty on every
+path including `go run`. A consumer may then treat an absent `analyzerVersion` as "produced
+before this shipped" rather than having to distinguish that from "produced by a build that
+did not know its own version".
+
+Adding a field does not bump `SchemaVersion` — which is what our own stability note tells
+consumers to expect, and a reason to answer the `SchemaVersion` question below in the same
+release rather than after it.
 
 ### On `SchemaVersion` — the missing half
 
