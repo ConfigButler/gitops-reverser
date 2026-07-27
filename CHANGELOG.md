@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.39.2...v0.40.0) (2026-07-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **analyzer:** RefusalReason.Code is typed IssueKind, not string.
+
+### Features
+
+* **analyzer:** make the scan report a KRM document that says what it knows ([#275](https://github.com/ConfigButler/gitops-reverser/issues/275)) ([a3daa6b](https://github.com/ConfigButler/gitops-reverser/commit/a3daa6baf1475dedc32099f3cafbc3f5090a33bb))
+
 ## [0.39.2](https://github.com/ConfigButler/gitops-reverser/compare/v0.39.1...v0.39.2) (2026-07-27)
 
 
