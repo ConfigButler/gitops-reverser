@@ -8,18 +8,26 @@
 > which makes the same argument one layer up: the engine learned something and the
 > contract did not carry it.
 
-The three asks come from a product that consumes GitOps Reverser two ways at once — it
-links `pkg/manifestanalyzer` as a module, and it execs `manifest-analyzer --mode
-scan-repo --format json` from a second tool that does not link us at all. It runs the
-reverser itself as an image, pinned to the module by two constants with a build-breaking
-test on their side (their `internal/cluster/cluster.go`). That makes it
-the first consumer that feels every seam in our published contract, and all three asks
-are the same complaint: **a fact our own doc comments assert is carried by prose that
-nothing tests, so it drifts silently and a consumer encodes the stale version.**
+The asks come from **two independent consumer teams**, arriving separately and landing on
+the same seams. One links `pkg/manifestanalyzer` as a module and execs `manifest-analyzer
+--mode scan-repo --format json` from a second tool that does not link us; it runs the
+reverser as an image pinned to the module by two constants with a build-breaking test on
+its side. The other verified everything against `v0.39.1` by measurement — running the
+binary over a corpus and reading the JSON — and filed four issues.
 
-One of them already shipped a wrong sentence to a real user because of it. That is the
-bar these asks are answering, and it is why the fix in each case is *data plus a test*,
-not better prose.
+That convergence is the strongest evidence in this document. Two teams that never spoke to
+each other hit the same three seams, and every one is the same complaint: **a fact our doc
+comments assert, carried by prose nothing tests, so it drifts and a consumer encodes the
+stale version.** One of them shipped a wrong sentence to a real user because of it.
+
+The second team's four issues map onto this document as: their #1 → Ask 1, their #2 → the
+`LayoutKustomizeOverlay` fix already made, their #3 → Ask 2, their #4 → Ask 3. Where they
+asked for something narrower than what is written here, this document says so.
+
+One thing they were explicit about, so it is recorded before someone "fixes" it: **the
+minimal-version-selection diamond is not our bug.** It existed because their tool linked
+our module; it stopped linking, and that is the end of it. Do not restructure the module
+to solve it.
 
 ---
 
@@ -82,6 +90,32 @@ to recognise all three. Either export them or state that they never reach `ScanR
 implementer should confirm which by checking whether these write-time kinds can appear in a
 structure-only scan. Whatever the answer, the counts must stop disagreeing.
 
+**And the block a consumer reads first is the one that misleads.** The second team measured
+a real corpus and got back `unsupported-kustomize` and `non-krm-yaml` as refusal codes, then
+went looking for them. `repo.go` has this:
+
+```go
+// Refusal reason codes a candidate may carry.
+const (
+    ReasonOverlayFanOutUnsupported = "overlay-fan-out-unsupported"  // Deprecated: no longer emitted
+    ReasonRefusedStructural        = "refused-structural"
+)
+```
+
+A block headed "Refusal reason codes a candidate may carry" that lists **two of eighteen**,
+one of them retired. The codes they measured do exist as `IssueKind` constants — but nothing
+says `RefusalReason.Code` draws from `IssueKind`, so a reader who finds this block reasonably
+concludes it is the enumeration and treats everything else as unknown. That is a more direct
+cause of their wrong sentence than the `Layout` comment was.
+
+Two fixes, both cheap:
+
+- **Type it.** `RefusalReason.Code` becomes `IssueKind` rather than `string`, which makes the
+  relationship compile-checked instead of stated. If that is too strong for a JSON-facing
+  field, document it: *"Code is an [IssueKind] value, or [ReasonRefusedStructural]."*
+- **Fix the block's header** so it says what it holds: reason codes that are *not* issue
+  kinds. As written it claims to be the enumeration, and it is not.
+
 They are correct that no consumer can maintain this table outside our repo. We added
 fifteen codes without any of them carrying permanence.
 
@@ -124,6 +158,19 @@ type RefusalReason struct {
 
 `Issue` takes both fields for the same reason: a policy that treats an issue as blocking
 is making this decision already, without the data to make it.
+
+**Four values, where the second team proposed two** (`permanent | conditional`). Take the
+four deliberately: a two-valued enum drops the *not-yet* axis, which is the exact
+distinction that went degenerate when `ReasonOverlayFanOutUnsupported` was retired and the
+exact one that made their table wrong. Collapsing `pending-upstream` into `conditional`
+tells a user to go fix something no user can fix. And `PermanenceUnknown` has to exist as
+the zero value regardless, or an unclassified path emits a confident wrong answer instead
+of silence. Their `retryable` naming is worth considering for the `fixable` value; the axis
+count is the part not to compromise on.
+
+They also note that adding a field is additive and need not move `SchemaVersion`. Correct,
+and it stays correct under the KRM envelope recommended in Ask 2 — that envelope is a
+separate, deliberate breaking change, and this field should not wait for it.
 
 Ship the actor field. The consumer offered it as optional; it is the cheaper half of the
 same constant, and two of our codes are fixable **only** by the platform operator, whom
@@ -224,10 +271,15 @@ worse for their user than the truth and is the honest maximum from `{Code, Detai
 Four things, in their order of value:
 
 1. The analyzer's own version **in the report**.
-2. A `manifest-analyzer --version` flag.
+2. A `manifest-analyzer --version` flag — printing the release version **and the
+   `SchemaVersion` it emits**, so one exec answers both questions.
 3. One sentence on what a `SchemaVersion` bump asserts, and whether a reader should refuse
    a version it does not know.
 4. The analyzer binary attached to the release we already sign.
+
+The second team measured the current flag set to confirm the gap: `manifest-analyzer
+--version` returns `flag provided but not defined: -version`, and the full set is
+`-context`, `-format`, `-kubeconfig`, `-mode`, `-policy`.
 
 ### Why — verified
 
@@ -272,6 +324,14 @@ type RepoReport struct {
     // … unchanged
 }
 ```
+
+The second team proposed a `generator: {name, version}` object instead, on the grounds that
+it is "the version of this that survives being piped into another tool". **Prefer their
+shape**, and put the tool's name in it: a bare `analyzerVersion` says which release without
+saying which *tool*, and a report that has been piped somewhere is exactly where that
+ambiguity bites. Under the KRM envelope below it becomes `status.generator: {name, version}`,
+where `kind` names the document and `generator.name` names what produced it — two different
+facts that a flat string conflates.
 
 `FolderReport` takes the identical field in the same position. The fallback chain is
 ldflags → `debug.ReadBuildInfo()` → the literal `"dev"`, so the field is non-empty on every
@@ -364,11 +424,19 @@ that cannot be, because we publish no binary; the tool that runs it does `go ins
 source. That is the single unverifiable link in an otherwise pinned toolchain, and it is
 the tool deciding which folders they offer a tenant.
 
-They explicitly do **not** want a `sha256sums` file. `v0.39.1` already ships `crds.yaml`,
-`install.yaml` and `sbom.spdx.json`, each with a `.intoto.jsonl` provenance attestation
-and a `.sigstore.json` bundle ([`.github/workflows/release.yml`](../../.github/workflows/release.yml)).
-Adding the analyzer binary to that job makes it verifiable with `gh attestation verify` —
-stronger than a checksum, and machinery we already run.
+**The two teams differ here, and the resolution is to do both.** The first explicitly does
+*not* want a `sha256sums` file, because attestation is stronger. The second asks for
+"publishing the binary with checksums, if that is cheap alongside the existing release job"
+— its devcontainer verifies every other tool that way, so checksums are the mechanism its
+existing tooling already speaks.
+
+`v0.39.1` already ships `crds.yaml`, `install.yaml` and `sbom.spdx.json`, each with a
+`.intoto.jsonl` provenance attestation and a `.sigstore.json` bundle
+([`.github/workflows/release.yml`](../../.github/workflows/release.yml)). Attach the binary
+to that job — verifiable with `gh attestation verify` — **and** emit a `sha256sums` file
+beside it. The attestation is the stronger claim; the checksum is the one a `curl | sha256sum
+-c` line in a Dockerfile can consume without a GitHub token. Neither team is served by
+choosing.
 
 Decision for the implementer: **which platforms.** `linux/amd64` and `linux/arm64` covers
 their devcontainer; `darwin/arm64` is the obvious third. Each is another matrix leg on a
@@ -417,18 +485,27 @@ func (r ResourceIdentifier) Key() string   // "{group}/{version}/{resource}/{nam
 func (r ResourceReference) Key() string    // "namespace/name"
 ```
 
-The golden test pins all three shapes, because those are the cases a reimplementation gets
-wrong:
+The golden test pins **four** shapes — the second team named the fourth, and it is the one
+this document first missed. All four were confirmed by running them:
 
 | case | expected |
 |---|---|
 | namespaced, grouped | `apps/v1/deployments/prod/api` |
 | cluster-scoped, grouped | `rbac.authorization.k8s.io/v1/clusterroles/admin` |
 | namespaced, core group | `/v1/secrets/prod/db` |
+| **cluster-scoped, core group** | `/v1/nodes/node-1` |
 
 The four-segment cluster-scoped form is the sharp edge: `Key()` **drops** the namespace
 segment rather than emitting an empty one, so a naive reimplementation that always joins
-five parts produces `…/clusterroles//admin` and never joins.
+five parts produces `…/clusterroles//admin` and never joins. The core cluster-scoped case
+is the sharpest of the four, since both the group and the namespace are empty — one
+degenerates to a leading `/` and the other vanishes, and a reimplementation has to get two
+opposite rules right in one string.
+
+Their ask includes wording, and it is worth taking verbatim: the test carries a comment
+saying the format is **depended on across product boundaries, so changing it is a breaking
+change rather than a refactor**. That sentence is what turns a red test from an obstacle
+into a decision point.
 
 ### The trap worth naming
 
