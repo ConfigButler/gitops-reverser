@@ -94,6 +94,7 @@ step merges those exact digests into a multi-arch manifest tagged with the semve
 | --- | --- | --- |
 | Multi-arch image (`linux/amd64`, `linux/arm64`) | `ghcr.io/configbutler/gitops-reverser` | cosign keyless signature, SLSA build provenance attestation, SPDX SBOM attestation |
 | Helm chart | `oci://ghcr.io/configbutler/charts/gitops-reverser` | cosign keyless signature |
+| Artifact Hub repository metadata (`charts/artifacthub-repo.yml`) | `oci://ghcr.io/configbutler/charts/gitops-reverser:artifacthub.io` | unsigned; plain OCI artifact pushed with `oras` |
 | `crds.yaml`, `install.yaml`, `sbom.spdx.json` | GitHub release assets | each signed directly (`<asset>.sigstore.json`) and SLSA-attested (`<asset>.intoto.jsonl`), also uploaded as release assets |
 
 The plain-manifest installer ships as **two** files: `crds.yaml` is applied first, then

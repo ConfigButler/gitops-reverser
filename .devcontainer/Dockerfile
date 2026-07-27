@@ -59,6 +59,7 @@ RUN apt-get update \
 # HADOLINT_VERSION -> https://github.com/hadolint/hadolint/releases
 # VALKEY_VERSION -> https://github.com/valkey-io/valkey/releases
 # COSIGN_VERSION -> https://github.com/sigstore/cosign/releases
+# ORAS_VERSION -> https://github.com/oras-project/oras/releases
 # NODE_MAJOR -> https://github.com/nodejs/node/releases (track a current LTS line)
 # MARKDOWNLINT_CLI2_VERSION -> https://www.npmjs.com/package/markdownlint-cli2?activeTab=versions
 # VALE_VERSION -> https://github.com/vale-cli/vale/releases
@@ -77,6 +78,7 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     HADOLINT_VERSION=2.14.0 \
     VALKEY_VERSION=9.1.0 \
     COSIGN_VERSION=v3.1.2 \
+    ORAS_VERSION=1.3.3 \
     NODE_MAJOR=22 \
     MARKDOWNLINT_CLI2_VERSION=0.23.1 \
     VALE_VERSION=3.15.1
@@ -180,6 +182,21 @@ RUN asset="cosign-linux-amd64" \
     && cd "${tmpdir}" \
     && grep "  ${asset}$" checksums.txt | sha256sum -c - \
     && install -m 0755 "${asset}" /usr/local/bin/cosign \
+    && rm -rf "${tmpdir}"
+
+# Install oras (OCI registry client). Like cosign above, this lives in the ci
+# stage because release.yml's publish-helm job runs inside this image and uses
+# oras to push charts/artifacthub-repo.yml to the chart repository under the
+# `artifacthub.io` tag — a plain OCI artifact that `helm push` cannot produce.
+RUN asset="oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+    && base="https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}" \
+    && tmpdir="$(mktemp -d)" \
+    && curl -fsSL "${base}/${asset}" -o "${tmpdir}/${asset}" \
+    && curl -fsSL "${base}/oras_${ORAS_VERSION}_checksums.txt" -o "${tmpdir}/checksums.txt" \
+    && cd "${tmpdir}" \
+    && grep "  ${asset}$" checksums.txt | sha256sum -c - \
+    && tar -xzf "${asset}" oras \
+    && install -m 0755 oras /usr/local/bin/oras \
     && rm -rf "${tmpdir}"
 
 # Install Node.js (provides npm + npx).
