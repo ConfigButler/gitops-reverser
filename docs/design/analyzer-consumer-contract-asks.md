@@ -152,8 +152,10 @@ const (
 )
 
 type RefusalReason struct {
-    Code   string `json:"code"`
-    Detail string `json:"detail"`
+    // Code is an IssueKind value, or ReasonRefusedStructural. The type makes the
+    // relationship compile-checked rather than merely stated.
+    Code   IssueKind `json:"code"`
+    Detail string    `json:"detail"`
     // Solvable says whether anyone can make this folder acceptable with THIS release.
     // Decided by the check that raised the refusal, because only that check knows.
     Solvable bool `json:"solvable"`
