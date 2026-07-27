@@ -28,7 +28,14 @@
 // are the values worth matching on.
 //
 // Everything under internal/ carries no guarantee either, and is not importable from
-// another module.
+// another module. One format from there is nonetheless a contract you may build on: a
+// resource's identity key is "{group}/{version}/{resource}/{namespace}/{name}", with the
+// namespace segment dropped (not emitted empty) for a cluster-scoped resource and an empty
+// group segment for core resources, so the four shapes are "apps/v1/deployments/prod/api",
+// "rbac.authorization.k8s.io/v1/clusterroles/admin", "/v1/secrets/prod/db" and
+// "/v1/nodes/node-1". It is specified and golden-tested at
+// ResourceIdentifier.Key in internal/types/identifier.go, which also records why a join
+// that must survive a storage-version bump keys on the versionless Git path instead.
 //
 // The command-line equivalents are `manifest-analyzer --mode scan-folder --format json` and
 // `--mode scan-repo --format json`, which emit exactly the documents [FolderReport]

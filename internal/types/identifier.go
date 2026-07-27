@@ -33,10 +33,43 @@ func NewResourceIdentifier(group, version, resource, namespace, name string) Res
 
 // Key returns a stable, fully-qualified identifier suitable for map keys and deduplication.
 //
-// Format (namespaced): "group/version/resource/namespace/name"
-// Format (cluster-scoped): "group/version/resource/name"
+// The exact string is a public contract. Tools built around GitOps Reverser key their own
+// rows on this identity and join them against ours, so a consumer that cannot import this
+// package (it lives under internal/) reimplements the format from this comment. Changing
+// any byte of it is a breaking change rather than a refactor, and
+// TestResourceIdentifier_Key_GoldenFormat is the gate that turns such a change into a
+// decision instead of a silent split.
 //
-// For core resources, Group is empty and the key begins with "/" (e.g., "/v1/secrets/ns/name").
+//	namespaced:      "{group}/{version}/{resource}/{namespace}/{name}"
+//	cluster-scoped:  "{group}/{version}/{resource}/{name}"
+//
+// Two rules a reimplementation has to get right, and they pull in opposite directions:
+//
+//   - A cluster-scoped resource DROPS the namespace segment; it does not emit an empty one.
+//     Always joining five parts yields "…/clusterroles//admin", which never joins.
+//   - A core-group resource has an EMPTY group segment, which it does emit, so the key
+//     leads with "/".
+//
+// The four shapes, which are the four cases of the golden test:
+//
+//	apps/v1/deployments/prod/api                        namespaced, grouped
+//	rbac.authorization.k8s.io/v1/clusterroles/admin     cluster-scoped, grouped
+//	/v1/secrets/prod/db                                 namespaced, core group
+//	/v1/nodes/node-1                                    cluster-scoped, core group
+//
+// # Key versus ToGitPath: which one is "the same resource"
+//
+// Key includes Version and [ResourceIdentifier.ToGitPath] deliberately excludes it, so the
+// two disagree about whether a preferred-version bump is the same object. The decision,
+// recorded at both methods: Key is the API-side identity — correct for in-process map keys,
+// deduplication and logs, where every participant observes one version at a time — and the
+// versionless, namespace-first path is the DURABLE identity of the object, which is why a
+// storage-version bump moves no file in Git.
+//
+// A join that must survive a storage-version bump is therefore keyed on the versionless
+// identity, not on Key. Consumers holding rows across releases should drop the version
+// segment (the second) rather than treat "apps/v1/deployments/prod/api" and
+// "apps/v2/deployments/prod/api" as two resources.
 func (r ResourceIdentifier) Key() string {
 	if r.Namespace != "" {
 		return fmt.Sprintf("%s/%s/%s/%s/%s", r.Group, r.Version, r.Resource, r.Namespace, r.Name)
@@ -55,6 +88,12 @@ func (r ResourceIdentifier) Key() string {
 // existing document is always edited in place at its current location (match-first),
 // so changing this shape never moves a file that is already in Git. See
 // docs/spec/gittarget-new-file-placement-rules.md.
+//
+// That omitted version is the other half of the decision recorded at
+// [ResourceIdentifier.Key]: this versionless identity is the durable one — the object stays
+// the same object across a preferred-version bump — while Key is the API-side identity and
+// splits on that bump. Neither is wrong; they answer different questions, and a caller
+// joining data that outlives a release wants this one.
 func (r ResourceIdentifier) ToGitPath() string {
 	scope := r.Namespace
 	if scope == "" {
