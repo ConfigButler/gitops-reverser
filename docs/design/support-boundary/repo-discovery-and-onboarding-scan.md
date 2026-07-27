@@ -257,9 +257,22 @@ A tool consuming this from Go imports [`pkg/manifestanalyzer`](../../../pkg/mani
 supported, versioned projection of the reports below; the engine above stays internal and
 free to move.
 
-**Report shape as shipped**, refining the sketch above. Per candidate: `path`, `layout`,
-`acceptedByOperator`, `refusalReasons[]` (`{code, detail}`), `renderRoot`, `readScope[]`,
-`inferredNamespace`, `resources`, `overlapsWith[]`.
+**Report shape as shipped**, refining the sketch above. The document is a KRM envelope:
+`apiVersion: manifestanalyzer.configbutler.ai/v1alpha1`, `kind: RepoReport`, the scan request
+in `spec` (`root`, `mode`) and everything found in `status` (`generator`, `candidates`,
+`summary`). The candidate blocks below live under `status.candidates`. Per candidate: `path`,
+`layout`, `acceptedByOperator`, `refusalReasons[]` (`{code, detail, permanence, actor}`),
+`renderRoot`, `readScope[]`, `inferredNamespace`, `resources`, `overlapsWith[]`.
+
+- **`permanence` says whether a refusal can ever stop being one** (`fixable`,
+  `pending-upstream`, `permanent`), and `actor` (`repository-author`, `platform-operator`)
+  says who can clear a fixable one. It is set by the check that raised the refusal, because
+  the same code answers differently depending on the branch: `unsupported-kustomize` is
+  `fixable` for a build file the author broke, `pending-upstream` for a remote base or Helm
+  inflation, and `permanent` for a generator. An absent value means say nothing about the
+  future. See [analyzer-consumer-contract-asks.md](../analyzer-consumer-contract-asks.md).
+- **`status.generator`** names the build that produced the report, so a document that
+  outlives the process that made it still says which release decided its contents.
 
 - **`resources` splits the KRM two ways** instead of the sketch's single `documents.krm`:
   `{ rendered, editable, nonKrm }`. `rendered` counts the documents the candidate actually
@@ -278,7 +291,7 @@ free to move.
 candidate — `Scan` with `WriterAllowlist` (kustomize build directives **plus** the
 operator's `.sops.yaml` bootstrap config), so a folder the writer would adopt is not
 falsely reported refused. A refused plain / self-contained candidate carries the gate's
-issues as `refusalReasons` (`{code, detail}` — duplicate identity, non-KRM YAML, a foreign
+issues as `refusalReasons` (`{code, detail, permanence, actor}` — duplicate identity, non-KRM YAML, a foreign
 file, an unsupported nested kustomization, …), never a bare `false`. The structural gate
 refuses `openapi`/`crds` alongside `configurations`, matching the
 [support boundary §1](kustomize-support-boundary.md).
