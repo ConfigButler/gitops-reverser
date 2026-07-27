@@ -86,7 +86,7 @@ func (w *contentWriter) isSensitiveIdentifier(id types.ResourceIdentifier) bool 
 
 func (w *contentWriter) encryptSensitiveContent(ctx context.Context, event Event, plain []byte) ([]byte, error) {
 	meta := buildResourceMeta(event)
-	identityKey := sensitiveIdentityKey(meta.Identifier)
+	identityKey := meta.Identifier.Key()
 	digest := sha256.Sum256(plain)
 	currentMarker := sensitiveMarker{
 		UID:             meta.UID,
@@ -172,8 +172,4 @@ func buildResourceMeta(event Event) resourceMeta {
 	meta.ResourceVersion = event.Object.GetResourceVersion()
 	meta.Generation = event.Object.GetGeneration()
 	return meta
-}
-
-func sensitiveIdentityKey(id types.ResourceIdentifier) string {
-	return fmt.Sprintf("%s/%s/%s/%s/%s", id.Group, id.Version, id.Resource, id.Namespace, id.Name)
 }
