@@ -1,30 +1,37 @@
 # Three asks from a downstream consumer of the analyzer
 
-> Status: accepted as work, scheduled as three independent PRs. Written for an implementing
-> party — every claim below was checked against the tree at `v0.39.1`.
-> Date: 2026-07-26, decisions recorded 2026-07-27.
-> Companion to [config-surface-for-a-structured-repository.md](../future/config-surface-for-a-structured-repository.md),
-> which makes the same argument one layer up: the engine learned something and the
-> contract did not carry it.
+> **finished** — shipped or closed. Kept for context only; **nothing here binds**. For current behaviour see [`../spec/`](../spec/). Index: [`../INDEX.md`](../INDEX.md)
 
-**Two decisions are settled and are not open in implementation:**
+> Shipped 2026-07-27: Ask 3 as [#273](https://github.com/ConfigButler/gitops-reverser/pull/273),
+> Asks 1 and 2 as [#275](https://github.com/ConfigButler/gitops-reverser/pull/275).
+> Written 2026-07-26 against the tree at `v0.39.1`, for an implementing party — so it reads
+> as instructions, and the line numbers and counts it cites are of that tree, not this one.
 
-1. **The KRM envelope is adopted** (Ask 2). `apiVersion`/`kind` replaces `schemaVersion`,
-   `spec` carries the scan request and `status` the findings. This is a deliberate breaking
-   change to the JSON contract, taken now because there are two consumers and both are
-   asking for version clarity in this same document.
-2. **The three unclassified refusal codes are decided during implementation** (Ask 1). The
-   implementing session proposes an answer per *raise site* from the code, and raises each
-   as a review comment on its PR for the maintainer to accept or overturn. They ship
-   decided, and they do not block the rest of Ask 1.
+## What shipped, and where the live answer is now
 
-3. **The field is `Solvable`, a boolean** (Ask 1, decided 2026-07-27, overturning the
-   four-value enum proposed further down this document). It answers one question in words
-   a non-native speaker reads without a glossary: *can this refusal be solved?* `Actor`
-   names who, when someone can. See "The shape".
+Read this document for *why*. For *what*, read the code: the reasoning below moved into doc
+comments and tests, which is the whole point it was arguing for.
 
-Each ask is one PR, in the order below — Ask 3 is unblocked, Ask 1 is scaffolding plus
-fourteen settled classifications, Ask 2 carries the breaking change.
+| This document proposed | What shipped | Live definition |
+|---|---|---|
+| A permanence enum on `RefusalReason` | `solvable bool` + `actor`, decided at the raise site | [`pkg/manifestanalyzer/repo.go`](../../pkg/manifestanalyzer/repo.go) |
+| Four values, keeping a *not-yet* axis | Two, then a plain boolean — see "A boolean, decided 2026-07-27" below | same |
+| A classification table maintained here | A table checked against the SOURCE, so a new kind fails the build | [`solvable_test.go`](../../internal/manifestanalyzer/solvable_test.go) |
+| A KRM envelope replacing `schemaVersion` | `apiVersion`/`kind`, `spec`/`status`, `status.generator`, `--version`, `--format yaml` | [`pkg/manifestanalyzer/contract.go`](../../pkg/manifestanalyzer/contract.go) |
+| `Key()` documented and golden-tested | Both, plus the versionless-identity note | [`internal/types/identifier.go`](../../internal/types/identifier.go) |
+
+Three questions this document left open were answered during implementation, and the
+answers are recorded in place below: `unsupported-kustomize` classifies per construct,
+`unresolved-krm` splits on the registry's answer, and `kustomize-render-refused` is not
+solvable. One row moved: `refused-structural` classifies from the same feature set as
+`unsupported-kustomize`, so the two surfaces cannot disagree about one folder.
+
+The three write-time kinds it was unsure about — `kustomize-render-refused`,
+`render-does-not-match-live`, `unplaceable-edit` — cannot reach `ScanRepo`, but are
+published anyway: they reach a consumer through GitTarget status, where the same
+match-on-our-constants problem applies.
+
+---
 
 The asks come from **two independent consumer teams**, arriving separately and landing on
 the same seams. One links `pkg/manifestanalyzer` as a module and execs `manifest-analyzer
@@ -312,12 +319,6 @@ solvable whenever the constructs are unknown.
 - `solvable` is emitted always, never `omitempty`: a boolean's zero value is a real answer,
   so "false" and "absent" must stay distinguishable on the wire even though Go cannot tell
   them apart.
-
-### Meanwhile, downstream
-
-They have flipped their default from "not supported yet" to unknown — an unrecognised code
-now says only "this folder cannot be picked" — and deleted their `Permanent bool`. That is
-worse for their user than the truth and is the honest maximum from `{Code, Detail}`.
 
 ---
 

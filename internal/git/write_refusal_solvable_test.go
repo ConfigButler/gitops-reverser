@@ -17,7 +17,7 @@ import (
 // carries. Classifying only the folder-level kinds would leave a consumer reading a
 // GitTarget's status with the same "not supported yet" guess the ask exists to kill.
 //
-// See docs/design/analyzer-consumer-contract-asks.md (Ask 1).
+// See docs/finished/analyzer-consumer-contract-asks.md (Ask 1).
 
 // refusalIssues unwraps an AcceptanceRefusedError and returns the issues it carries.
 func refusalIssues(t *testing.T, err error) []manifestanalyzer.AcceptanceIssue {

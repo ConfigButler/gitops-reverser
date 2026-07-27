@@ -27,7 +27,7 @@ import (
 // source, because a constant cannot be enumerated by reflection and a hand-kept list is
 // exactly what drifted.
 //
-// See docs/design/analyzer-consumer-contract-asks.md (Ask 1).
+// See docs/finished/analyzer-consumer-contract-asks.md (Ask 1).
 func TestPublicIssueKindsCoverEveryEngineKind(t *testing.T) {
 	t.Parallel()
 

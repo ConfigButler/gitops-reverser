@@ -599,7 +599,10 @@ nouns — **folder** and **repo**.
 `repo-walker` named an internal traversal phase rather than a contract, and a bare `scan` was
 asymmetric once a repo-level scan existed. `--mode analyze` and `--mode discovery` are unchanged.
 
-The JSON documents also gained a `schemaVersion` field, and one field was dropped:
+The JSON documents also gained a `schemaVersion` field, and one field was dropped.
+(`schemaVersion` is itself gone in a later release — see "The analyzer report is a KRM
+document" above, which replaces it with `apiVersion`. Read this entry as the history of a
+release you are upgrading *across*, not as current advice.)
 
 - `--mode scan-folder --format json` no longer carries `plan`. In folder-scan mode the analyzer has
   no cluster state and no desired resources, so `plan` was structurally always

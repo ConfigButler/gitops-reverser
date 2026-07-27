@@ -38,7 +38,7 @@ import (
 // the table below is checked against the SOURCE — the kind list is the one place the
 // omission is still visible.
 //
-// See docs/design/analyzer-consumer-contract-asks.md (Ask 1).
+// See docs/finished/analyzer-consumer-contract-asks.md (Ask 1).
 
 // classificationByKind is the settled table, in the form this package can check. A kind
 // whose answer depends on the branch that raised it lists every branch it can produce, so

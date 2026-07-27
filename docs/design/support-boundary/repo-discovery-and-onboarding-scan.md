@@ -309,7 +309,7 @@ in `spec` (`root`, `mode`) and everything found in `status` (`generator`, `candi
   branch: `unsupported-kustomize` is solvable for a build file the author broke and not for
   a generator or a remote base. It describes the release you are running and promises
   nothing about the future. See
-  [analyzer-consumer-contract-asks.md](../analyzer-consumer-contract-asks.md).
+  [analyzer-consumer-contract-asks.md](../../finished/analyzer-consumer-contract-asks.md).
 - **`status.generator`** names the build that produced the report, so a document that
   outlives the process that made it still says which release decided its contents.
 
