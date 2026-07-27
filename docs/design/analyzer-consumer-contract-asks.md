@@ -1,12 +1,25 @@
 # Three asks from a downstream consumer of the analyzer
 
-> Status: accepted as work, unscheduled. Written for an implementing party — every
-> claim below was checked against the tree at `v0.39.1`, and each ask ends with the
-> decisions only a maintainer can make.
-> Date: 2026-07-26
+> Status: accepted as work, scheduled as three independent PRs. Written for an implementing
+> party — every claim below was checked against the tree at `v0.39.1`.
+> Date: 2026-07-26, decisions recorded 2026-07-27.
 > Companion to [config-surface-for-a-structured-repository.md](../future/config-surface-for-a-structured-repository.md),
 > which makes the same argument one layer up: the engine learned something and the
 > contract did not carry it.
+
+**Two decisions are settled and are not open in implementation:**
+
+1. **The KRM envelope is adopted** (Ask 2). `apiVersion`/`kind` replaces `schemaVersion`,
+   `spec` carries the scan request and `status` the findings. This is a deliberate breaking
+   change to the JSON contract, taken now because there are two consumers and both are
+   asking for version clarity in this same document.
+2. **The three unclassified refusal codes are decided during implementation** (Ask 1). The
+   implementing session proposes a permanence per *raise site* from the code, and raises
+   each as a review comment on its PR for the maintainer to accept or overturn. They do not
+   ship as `PermanenceUnknown`, and they do not block the rest of Ask 1.
+
+Each ask is one PR, in the order below — Ask 3 is unblocked, Ask 1 is scaffolding plus
+fourteen settled classifications, Ask 2 carries the breaking change.
 
 The asks come from **two independent consumer teams**, arriving separately and landing on
 the same seams. One links `pkg/manifestanalyzer` as a module and execs `manifest-analyzer
@@ -212,6 +225,12 @@ reader can do, since that is the sentence the field exists to write.
 
 ### Three that need a decision, not a lookup
 
+**How these three get settled — decided.** The implementing session reads each raise site,
+proposes a permanence for it, and raises the proposal as a review comment on its own PR for
+the maintainer to accept or overturn. They ship classified, never as `PermanenceUnknown`,
+and they do not hold up the fourteen above. The starting positions below are inputs to that
+proposal, not conclusions.
+
 **`unsupported-kustomize` — must be classified per construct at the raise site.** This is
 the case that proves the whole ask: one code, both answers. Its doc comment lists
 generators, components, Helm inflation, replacements, transformers, name prefixes and
@@ -310,53 +329,42 @@ path our own package doc recommends, **ldflags do not apply at all** —
 and no release-workflow change. Use ldflags when set, fall back to `ReadBuildInfo`, and
 emit `"dev"` for a plain `go build`.
 
-A **top-level string on each report**, beside `schemaVersion` — not a nested object, and
-not `omitempty`. The point of the ask is that a report always says what produced it, so a
-shape that permits omission fails it:
+**The settled shape is `status.generator`**, an object, never `omitempty`. The second team
+proposed `{name, version}` on the grounds that it is "the version of this that survives
+being piped into another tool", and their shape wins: a bare version string says which
+release without saying which *tool*, and a piped report is exactly where that bites. `kind`
+names the document; `generator.name` names what produced it — two different facts a flat
+string conflates.
 
 ```go
-type RepoReport struct {
-    SchemaVersion string `json:"schemaVersion"`
-    // AnalyzerVersion is the release that produced this report: "v0.39.1", or "dev"
-    // for a build that carries no version. Never empty. Informational — a consumer
-    // records it to trace an answer back, and does not gate on it.
-    AnalyzerVersion string `json:"analyzerVersion"`
-    // … unchanged
+// Generator names the build that produced a report. Never empty: a report that cannot
+// say what produced it is the failure this field exists to prevent.
+type Generator struct {
+    // Name is the producing tool, e.g. "manifest-analyzer".
+    Name string `json:"name"`
+    // Version is the release, e.g. "v0.39.1", or "dev" for a build carrying no version.
+    Version string `json:"version"`
 }
 ```
 
-The second team proposed a `generator: {name, version}` object instead, on the grounds that
-it is "the version of this that survives being piped into another tool". **Prefer their
-shape**, and put the tool's name in it: a bare `analyzerVersion` says which release without
-saying which *tool*, and a report that has been piped somewhere is exactly where that
-ambiguity bites. Under the KRM envelope below it becomes `status.generator: {name, version}`,
-where `kind` names the document and `generator.name` names what produced it — two different
-facts that a flat string conflates.
+Both reports carry it at `status.generator`. The fallback chain is ldflags →
+`debug.ReadBuildInfo()` → the literal `"dev"`, so it is non-empty on every path including
+`go run`. A consumer may then read an absent `generator` as "produced before this shipped"
+without having to distinguish that from "produced by a build that did not know itself".
 
-`FolderReport` takes the identical field in the same position. The fallback chain is
-ldflags → `debug.ReadBuildInfo()` → the literal `"dev"`, so the field is non-empty on every
-path including `go run`. A consumer may then treat an absent `analyzerVersion` as "produced
-before this shipped" rather than having to distinguish that from "produced by a build that
-did not know its own version".
-
-Adding a field does not bump `SchemaVersion` — which is what our own stability note tells
-consumers to expect, and a reason to answer the `SchemaVersion` question below in the same
-release rather than after it.
-
-### On `SchemaVersion` — the missing half
+### On `SchemaVersion` — the question the envelope answers
 
 Our doc states the consumer's duties well: pin a version, ignore unknown fields, do not
-switch on prose. It never states what a **bump asserts**. Write that sentence, and answer
-these three:
+switch on prose. It never states what a **bump asserts**, which left three questions open:
 
 - Does a bump mean fields were removed, that a field's meaning changed, or either?
 - Should a reader that knows `v1` hard-fail on `v2`, or attempt a best-effort parse?
 - Since adding a field never bumps it, what is left that *does*?
 
-Until that exists every consumer's version handling is a guess, and they will not all
-guess alike.
+**All three are answered by adopting the KRM envelope below**, which is why that decision
+was taken rather than writing a bespoke policy to answer them one at a time.
 
-### Recommended: make the report a KRM document, and delete the question
+### Decided: the report becomes a KRM document, and the question dissolves
 
 The three questions above are ones the Kubernetes API conventions already answer, in a
 document every consumer of a GitOps tool has read. So stop writing our own versioning
@@ -369,7 +377,7 @@ spec:                       # what was asked for
   root: /repo
   mode: scan-repo
 status:                     # what was found
-  analyzerVersion: v0.39.1
+  generator: {name: manifest-analyzer, version: v0.39.1}
   candidates: [...]
   summary: {...}
 ```
@@ -412,7 +420,7 @@ after: they are asking us for version clarity in this same document, there is ex
 consumer to coordinate with, and every later release makes it dearer. It does not disturb
 their mirrored-struct design — if anything `TypeMeta` is one more thing they can mirror.
 
-**It does not replace Ask 2.** `apiVersion` versions the *contract*; `analyzerVersion`
+**It does not replace Ask 2.** `apiVersion` versions the *contract*; `status.generator`
 records the *build*. Items 1, 2 and 4 stand unchanged; only the `SchemaVersion` question
 above dissolves.
 
@@ -527,7 +535,7 @@ reason for anyone to reimplement either function.
 
 Small, and none of it constrains a pre-1.0 module:
 
-- Godoc on `Key()` naming the format as public, with the three shapes.
+- Godoc on `Key()` naming the format as public, with the four shapes.
 - A table-driven golden test on the exact strings, in `internal/types`.
 - One line in the package doc of `pkg/manifestanalyzer` pointing at the format, since that
   is where a consumer looks.
