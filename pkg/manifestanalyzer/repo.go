@@ -75,15 +75,44 @@ type ResourceCounts struct {
 	NonKRM   int `json:"nonKrm"`
 }
 
-// GroupVersionKind names one Kubernetes type. Group is empty for core types, so a
-// ConfigMap is {"", "v1", "ConfigMap"}.
-type GroupVersionKind struct {
-	Group   string `json:"group"`
-	Version string `json:"version"`
-	Kind    string `json:"kind"`
+// RenderedTypes says which type a folder renders into which namespace. It is expressed as
+// a map rather than two lists because the PAIRING is the answer: a set of types beside a
+// set of namespaces reads as every combination of the two, and a folder rendering a
+// Deployment into frontend and a Service into backend would then describe two pairs that
+// exist in no repository — enough to authorize a watch that matches nothing.
+//
+// Every type is a canonical GVK string: "group/version/kind", or "version/kind" for the
+// core group. Split on "/" and count the segments; a group never contains one.
+//
+//	apps/v1/Deployment
+//	v1/ConfigMap
+//	rbac.authorization.k8s.io/v1/ClusterRole
+type RenderedTypes struct {
+	// ByNamespace lists the types that land in each namespace, sorted, keyed by namespace.
+	// These are the exact (type, namespace) pairs, and the only ones.
+	ByNamespace map[string][]string `json:"byNamespace,omitempty"`
+
+	// ClusterScoped lists the types that take no namespace because the API says they take
+	// none.
+	//
+	// It is NEVER present today, deliberately: deciding that a type is cluster-scoped
+	// requires API discovery, and this scan has none. An empty list would read as "this
+	// folder has no cluster-scoped types", which is a claim the scan cannot make — those
+	// types are in [RenderedTypes.NamespaceUndeclared] instead. A discovery-aware scan can
+	// fill this and shrink that list accordingly, which is additive.
+	ClusterScoped []string `json:"clusterScoped,omitempty"`
+
+	// NamespaceUndeclared lists the types that render WITHOUT a namespace, sorted. Today
+	// that is two facts this scan cannot tell apart: a cluster-scoped type, and a
+	// namespaced type relying on whatever namespace the applier defaults to. Treat it as
+	// "we do not know where these land", not as "these are cluster-scoped".
+	//
+	// A type can appear here AND under ByNamespace. Two ConfigMaps, one carrying a
+	// namespace and one not, is an ordinary folder rather than a contradiction.
+	NamespaceUndeclared []string `json:"namespaceUndeclared,omitempty"`
 }
 
-// Candidate is one folder that could become a GitTarget.
+// Candidate is one folder that could become a GitTarget.// Candidate is one folder that could become a GitTarget.
 type Candidate struct {
 	// Path is slash-separated and relative to the repository root.
 	Path   string `json:"path"`
@@ -99,24 +128,22 @@ type Candidate struct {
 	// InferredNamespace is the namespace the candidate resolves to, when unambiguous.
 	InferredNamespace string         `json:"inferredNamespace,omitempty"`
 	Resources         ResourceCounts `json:"resources"`
-	// Kinds is every distinct type this folder RENDERS, sorted by group, version, kind.
-	// For a render root it comes off a real kustomize build, so it includes what the
-	// folder pulls from a base outside its own subtree; for a plain folder it is the
-	// documents themselves. Empty when the folder renders nothing, or when it is a render
-	// root kustomize could not build — there is no honest answer in that case.
+	// RenderedTypes says which type this folder renders into which namespace. For a render
+	// root it is read off a real kustomize build, so it covers what the folder pulls from a
+	// base outside its own subtree and has the namespace transformer already applied; for a
+	// plain folder the documents are the render.
 	//
-	// It is the set that must already be served wherever this folder is applied. A type
-	// the destination does not serve does not degrade: the apply fails with "no matches
-	// for kind" and waits for the next resync.
-	Kinds []GroupVersionKind `json:"kinds,omitempty"`
-	// Namespaces is every distinct namespace this folder's objects LAND IN, sorted — for a
-	// render root the namespace transformer applied, not what the files happen to say.
-	// Cluster-scoped objects contribute nothing rather than an empty string.
+	// It answers the two questions that gate provisioning from a folder scan, and both gate
+	// a step that is not cheap to undo. The schemas have to be served wherever this is
+	// applied — a type the destination does not serve does not degrade, the apply fails
+	// with "no matches for kind" and waits for the next resync. And naming a GitTarget's
+	// allowed source namespaces, or one watch rule per (type, namespace), needs the exact
+	// pairs: [Candidate.InferredNamespace] is one name, and a folder can render into
+	// several.
 	//
-	// It is the plural of InferredNamespace and the honest one: a folder can render into
-	// several, and a tool that has to name them (on a GitTarget's allowed source
-	// namespaces, or one WatchRule rule per type and namespace) needs the whole set.
-	Namespaces []string `json:"namespaces,omitempty"`
+	// Everything is empty for a render root kustomize could not build. What it renders is
+	// not knowable, and saying nothing is the honest answer.
+	RenderedTypes RenderedTypes `json:"renderedTypes"`
 	// OverlapsWith lists candidate paths this one nests with. Two overlapping candidates
 	// can never both become GitTargets — a folder has exactly one owner.
 	OverlapsWith []string `json:"overlapsWith,omitempty"`
@@ -248,10 +275,11 @@ func candidateFrom(cand internalanalyzer.RepoCandidate) Candidate {
 			NonKRM:   cand.Resources.NonKRM,
 		},
 		OverlapsWith: cand.OverlapsWith,
-		Namespaces:   cand.Namespaces,
-	}
-	for _, gvk := range cand.Kinds {
-		out.Kinds = append(out.Kinds, GroupVersionKind{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind})
+		RenderedTypes: RenderedTypes{
+			ByNamespace:         cand.RenderedTypes.ByNamespace,
+			ClusterScoped:       cand.RenderedTypes.ClusterScoped,
+			NamespaceUndeclared: cand.RenderedTypes.NamespaceUndeclared,
+		},
 	}
 	for _, reason := range cand.RefusalReasons {
 		out.RefusalReasons = append(out.RefusalReasons, RefusalReason{

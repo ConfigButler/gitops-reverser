@@ -11,16 +11,13 @@
         "editable": 1,
         "nonKrm": 0
       },
-      "kinds": [
-        {
-          "group": "helm.toolkit.fluxcd.io",
-          "version": "v2",
-          "kind": "HelmRelease"
+      "renderedTypes": {
+        "byNamespace": {
+          "flux-system": [
+            "helm.toolkit.fluxcd.io/v2/HelmRelease"
+          ]
         }
-      ],
-      "namespaces": [
-        "flux-system"
-      ]
+      }
     }
   ],
   "summary": {

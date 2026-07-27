@@ -7,13 +7,7 @@ status:
   candidates:
   - acceptedByOperator: false
     inferredNamespace: demo
-    kinds:
-    - group: apps
-      kind: Deployment
-      version: v1
     layout: plain
-    namespaces:
-    - demo
     path: app
     refusalReasons:
     - actor: repository-author
@@ -21,6 +15,10 @@ status:
       detail: 'values.yaml: YAML is not a Kubernetes manifest'
       solvable: true
     renderRoot: false
+    renderedTypes:
+      byNamespace:
+        demo:
+        - apps/v1/Deployment
     resources:
       editable: 1
       nonKrm: 1

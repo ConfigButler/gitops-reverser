@@ -19,16 +19,13 @@
         "editable": 1,
         "nonKrm": 1
       },
-      "kinds": [
-        {
-          "group": "apps",
-          "version": "v1",
-          "kind": "Deployment"
+      "renderedTypes": {
+        "byNamespace": {
+          "demo": [
+            "apps/v1/Deployment"
+          ]
         }
-      ],
-      "namespaces": [
-        "demo"
-      ]
+      }
     }
   ],
   "summary": {

@@ -11,21 +11,14 @@
         "editable": 2,
         "nonKrm": 0
       },
-      "kinds": [
-        {
-          "group": "",
-          "version": "v1",
-          "kind": "ConfigMap"
-        },
-        {
-          "group": "apps",
-          "version": "v1",
-          "kind": "Deployment"
+      "renderedTypes": {
+        "byNamespace": {
+          "web": [
+            "apps/v1/Deployment",
+            "v1/ConfigMap"
+          ]
         }
-      ],
-      "namespaces": [
-        "web"
-      ],
+      },
       "overlapsWith": [
         "apps/web/extra"
       ]
@@ -41,16 +34,13 @@
         "editable": 1,
         "nonKrm": 0
       },
-      "kinds": [
-        {
-          "group": "",
-          "version": "v1",
-          "kind": "ConfigMap"
+      "renderedTypes": {
+        "byNamespace": {
+          "web": [
+            "v1/ConfigMap"
+          ]
         }
-      ],
-      "namespaces": [
-        "web"
-      ],
+      },
       "overlapsWith": [
         "apps/web"
       ]

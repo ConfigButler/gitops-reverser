@@ -191,16 +191,15 @@ func TestScanRepo_CandidateReportsWhatItRenders(t *testing.T) {
 		require.Equal(t, manifestanalyzer.LayoutKustomizeOverlay, cand.Layout)
 
 		// The overlay's own subtree holds nothing but a kustomization; every type it
-		// renders comes from the base outside it.
+		// renders comes from the base outside it, and lands in the namespace the overlay's
+		// transformer supplies rather than the one the base files declare.
 		require.Zero(t, cand.Resources.Editable, "a pure passthrough overlay owns no source")
-		require.Contains(t, cand.Kinds,
-			manifestanalyzer.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"})
-		require.Contains(t, cand.Kinds,
-			manifestanalyzer.GroupVersionKind{Group: "", Version: "v1", Kind: "Service"})
-
-		// The namespace is the overlay's transformer applied, which is also what
-		// InferredNamespace names — but Namespaces is the set, and the set is what a
-		// caller has to enumerate.
-		require.Equal(t, []string{cand.InferredNamespace}, cand.Namespaces)
+		require.Equal(t,
+			map[string][]string{cand.InferredNamespace: {"apps/v1/Deployment", "v1/Service"}},
+			cand.RenderedTypes.ByNamespace,
+			"each type must stay paired with the namespace it actually lands in")
+		require.Empty(t, cand.RenderedTypes.NamespaceUndeclared)
+		require.Empty(t, cand.RenderedTypes.ClusterScoped,
+			"clusterScoped needs API discovery this scan does not have, so it stays absent")
 	}
 }

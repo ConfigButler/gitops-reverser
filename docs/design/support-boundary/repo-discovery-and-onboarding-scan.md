@@ -262,26 +262,48 @@ free to move.
 in `spec` (`root`, `mode`) and everything found in `status` (`generator`, `candidates`,
 `summary`). The candidate blocks below live under `status.candidates`. Per candidate: `path`,
 `layout`, `acceptedByOperator`, `refusalReasons[]` (`{code, detail, solvable, actor}`),
-`renderRoot`, `readScope[]`, `inferredNamespace`, `resources`, `kinds[]`, `namespaces[]`,
+`renderRoot`, `readScope[]`, `inferredNamespace`, `resources`, `renderedTypes`,
 `overlapsWith[]`.
 
-- **`kinds[]` and `namespaces[]` say what is IN a candidate, not just how much.** Both are
-  what the folder RENDERS, which is the part only this engine can answer: for a render root
-  they are read off the real kustomize build the scan already runs, so a base outside the
-  subtree is included and a `namespace:` transformer is already applied; for a plain folder
-  the documents are the render. A consumer can scan `apiVersion`/`kind` headers itself, but
-  the moment a layout transform is involved the two answers diverge silently — and in the
-  direction of provisioning something the writer then refuses.
+- **`renderedTypes` says what is IN a candidate, not just how much** — which type lands in
+  which namespace, as the folder RENDERS. For a render root it is read off the real
+  kustomize build the scan already runs, so a base outside the subtree is included and a
+  `namespace:` transformer is already applied; for a plain folder the documents are the
+  render. A consumer can scan `apiVersion`/`kind` headers itself, but the moment a layout
+  transform is involved the two answers diverge silently — and in the direction of
+  provisioning something the writer then refuses.
 
-  They gate steps that are not cheap to undo. A type the destination does not serve fails
+  ```yaml
+  renderedTypes:
+    byNamespace:
+      storefront: [apps/v1/Deployment, v1/Service, v1/ConfigMap]
+      payments:   [apps/v1/Deployment, v1/Service]
+    namespaceUndeclared: [v1/ConfigMap]
+  ```
+
+  **The pairing is the contract, and a union would not do.** A set of types beside a set of
+  namespaces reads as every combination of the two: a folder rendering a Deployment into
+  `storefront` and a Service into `payments` would describe four pairs, two of which exist
+  in no repository, and a tool generating one watch rule per pair would authorize watches
+  that match nothing. `byNamespace` has only the real pairs.
+
+  Types are canonical GVK strings — `group/version/kind`, or `version/kind` for the core
+  group. It is [`GVK.String`](../../../internal/manifestanalyzer/analyzer.go) and the
+  spelling `summary.byGvk` already uses.
+
+  **`namespaceUndeclared` is not "cluster-scoped".** It is every type that renders WITHOUT a
+  namespace, which today is two facts this scan cannot separate: a genuinely cluster-scoped
+  type, and a namespaced type relying on whatever the applier defaults to. Deciding between
+  them needs API discovery, and a structure-only scan has none. A `clusterScoped` key is
+  reserved for the discovery-aware scan that can fill it honestly; until then it is **absent
+  rather than empty**, because an empty list would read as "this folder has no cluster-scoped
+  types" — a claim the scan cannot make.
+
+  These gate steps that are not cheap to undo. A type the destination does not serve fails
   the forward apply with `no matches for kind` and waits for the next resync rather than
   degrading, so the schema has to be installed before the folder is picked. And naming a
   GitTarget's allowed source namespaces, or one WatchRule rule per (type, namespace), needs
-  the whole set — `inferredNamespace` is one name, and a folder can render into several.
-
-  A cluster-scoped object contributes no namespace rather than an empty one. A render root
-  kustomize cannot build reports neither: we do not know what it renders, and saying so is
-  better than guessing.
+  the exact pairs — `inferredNamespace` is one name, and a folder can render into several.
 - **`solvable` says whether anyone can make the candidate acceptable with this release**,
   and `actor` (`repository-author`, `platform-operator`) names who. It is decided by the
   check that raised the refusal, because the same code answers differently depending on the

@@ -12,8 +12,6 @@ import (
 	"sort"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
-
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
@@ -84,17 +82,40 @@ type RefusalReason struct {
 	Actor    Actor `json:"actor,omitempty"`
 }
 
-// RenderInventory is what a render root renders to, reduced to the two distinct sets a
-// tool needs before it provisions from the folder. Both are read off a real kustomize
-// build, so a `namespace:` transformer, a base outside the subtree, and any other layout
-// transform are already applied — these are the objects that reach the cluster, not the
-// ones the files happen to declare.
-type RenderInventory struct {
-	// Kinds is every distinct type the folder renders, sorted.
-	Kinds []GVK
-	// Namespaces is every distinct namespace the folder's objects land in, sorted. A
-	// cluster-scoped object contributes nothing rather than an empty string.
-	Namespaces []string
+// RenderedTypes is what a folder renders, expressed so that the pairing between a type and
+// the namespace it lands in survives. A set of types beside a set of namespaces loses it:
+// a folder rendering a Deployment into frontend and a Service into backend would read as
+// four combinations, and a tool generating one watch rule per pair would authorize two
+// that match nothing in the repository.
+//
+// Every type is a canonical GVK string — "group/version/kind", or "version/kind" for the
+// core group, which is [GVK.String] and the same spelling Summary.ByGVK already uses.
+//
+// For a render root the sets come off a real kustomize build, so a base outside the subtree
+// is included and a `namespace:` transformer is already applied. For a plain folder the
+// documents are the render. A root that failed to build reports nothing at all: what it
+// renders is not knowable.
+type RenderedTypes struct {
+	// ByNamespace lists the types that land in each namespace, sorted, keyed by namespace.
+	ByNamespace map[string][]string `json:"byNamespace,omitempty"`
+
+	// ClusterScoped lists the types that take no namespace because the API says they take
+	// none.
+	//
+	// It is NEVER populated today, and is deliberately absent rather than empty: deciding
+	// that a type is cluster-scoped requires API discovery, and this scan has none. An
+	// empty list would read as "this folder has no cluster-scoped types", which is a claim
+	// the scan cannot make — the ClusterRole is in NamespaceUndeclared instead. A
+	// discovery-aware scan can fill this and shrink NamespaceUndeclared accordingly.
+	ClusterScoped []string `json:"clusterScoped,omitempty"`
+
+	// NamespaceUndeclared lists the types that render WITHOUT a namespace, sorted. Today
+	// that is two different facts the scan cannot tell apart: a cluster-scoped type, and a
+	// namespaced type relying on whatever namespace the applier defaults to.
+	//
+	// A type can appear here AND under ByNamespace. Two ConfigMaps, one carrying a
+	// namespace and one not, is an ordinary folder, not a contradiction.
+	NamespaceUndeclared []string `json:"namespaceUndeclared,omitempty"`
 }
 
 // ResourceCounts splits the KRM a candidate covers into what it renders versus what it
@@ -140,18 +161,11 @@ type RepoCandidate struct {
 	InferredNamespace string `json:"inferredNamespace,omitempty"`
 	// Resources counts the KRM this candidate covers (rendered vs editable) plus non-KRM.
 	Resources ResourceCounts `json:"resources"`
-	// Kinds is every distinct type this candidate RENDERS, sorted. For a render root it
-	// is read off a real kustomize build, so a base outside the subtree is included and a
-	// layout transform is already applied; for a plain folder it is the documents
-	// themselves. A tool must install these schemas before it points anything at the
-	// folder: a kind the destination does not serve fails the forward apply with "no
-	// matches for kind" rather than degrading.
-	Kinds []GVK `json:"kinds,omitempty"`
-	// Namespaces is every distinct namespace this candidate's objects LAND IN, sorted,
-	// which for a render root is the namespace transformer applied rather than whatever
-	// the files say. Cluster-scoped objects contribute nothing. It is the plural of
-	// InferredNamespace and the honest one: a folder can render into several.
-	Namespaces []string `json:"namespaces,omitempty"`
+	// RenderedTypes says which type lands in which namespace when this candidate renders.
+	// It is what a tool must know before it provisions from the folder: the schemas that
+	// have to be served where this is applied, and the exact (type, namespace) pairs a
+	// watch rule can be written for. Empty for a render root kustomize could not build.
+	RenderedTypes RenderedTypes `json:"renderedTypes"`
 	// OverlapsWith lists other candidate paths this one nests with. Two overlapping
 	// candidates can never both be proposed (one-owner-per-folder); the conflict is
 	// reported, not resolved, in this cut.
@@ -258,7 +272,7 @@ func classifyRenderRoot(
 	// What the root actually renders to, from the build the scan already ran. A root that
 	// failed to build has none, which is honest: we cannot know what it renders.
 	if inv, ok := store.RenderedInventory[rootDir]; ok {
-		c.Kinds, c.Namespaces = inv.Kinds, inv.Namespaces
+		c.RenderedTypes = inv
 	}
 	// rendered/editable count only the documents the kustomization graph actually renders
 	// (its resources: entries), never parked YAML a kustomization does not reference.
@@ -305,25 +319,34 @@ func classifyRenderRoot(
 	return c
 }
 
-// plainFolderInventory is the render inventory of a folder with no kustomization: the
-// documents ARE the render, so the types and namespaces come straight off them. Nothing
-// transforms them on the way to the cluster, which is what makes a plain folder plain.
-func plainFolderInventory(store *ManifestStore, dir string) ([]GVK, []string) {
-	kinds := map[schema.GroupVersionKind]struct{}{}
-	namespaces := map[string]struct{}{}
+// plainFolderInventory is the rendered-type map of a folder with no kustomization: the
+// documents ARE the render, so the types and the namespaces come straight off them.
+// Nothing transforms them on the way to the cluster, which is what makes a plain folder
+// plain.
+func plainFolderInventory(store *ManifestStore, dir string) RenderedTypes {
+	byNamespace := map[string]map[string]struct{}{}
+	undeclared := map[string]struct{}{}
 	for filePath, fm := range store.FilesByPath {
 		if !pathWithin(filePath, dir) {
 			continue
 		}
 		for _, dm := range fm.Documents {
-			gvk := ParseGVK(dm.ManifestIdentity.APIVersion, dm.ManifestIdentity.Kind)
-			kinds[schema.GroupVersionKind{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind}] = struct{}{}
-			if ns := dm.ManifestIdentity.Namespace; ns != "" {
-				namespaces[ns] = struct{}{}
+			id := dm.ManifestIdentity
+			name := ParseGVK(id.APIVersion, id.Kind).String()
+			if id.Namespace == "" {
+				undeclared[name] = struct{}{}
+				continue
 			}
+			if byNamespace[id.Namespace] == nil {
+				byNamespace[id.Namespace] = map[string]struct{}{}
+			}
+			byNamespace[id.Namespace][name] = struct{}{}
 		}
 	}
-	return sortedGVKs(kinds), sortedKeysOfSet(namespaces)
+	return RenderedTypes{
+		ByNamespace:         sortedTypesByNamespace(byNamespace),
+		NamespaceUndeclared: sortedKeysOfSet(undeclared),
+	}
 }
 
 // plainCandidates enumerates plain KRM leaf folders: directories that directly hold a
@@ -355,14 +378,13 @@ func plainCandidates(
 	out := make([]RepoCandidate, 0, len(dirs))
 	for dir := range dirs {
 		acc := candidateAcceptance(ctx, fsys, dir)
-		kinds, namespaces := plainFolderInventory(store, dir)
+		renderedTypes := plainFolderInventory(store, dir)
 		cand := RepoCandidate{
 			Path:               dir,
 			Layout:             LayoutPlain,
 			AcceptedByOperator: acc.Accepted,
 			InferredNamespace:  singleExplicitNamespace(store, dir),
-			Kinds:              kinds,
-			Namespaces:         namespaces,
+			RenderedTypes:      renderedTypes,
 			// A plain folder is applied directory-wise, so it renders its whole subtree
 			// (renderedFiles nil); no kustomization graph scopes it.
 			Resources: countResources(store, dir, nil),

@@ -14,21 +14,14 @@
         "editable": 0,
         "nonKrm": 0
       },
-      "kinds": [
-        {
-          "group": "",
-          "version": "v1",
-          "kind": "ConfigMap"
-        },
-        {
-          "group": "apps",
-          "version": "v1",
-          "kind": "Deployment"
+      "renderedTypes": {
+        "byNamespace": {
+          "nested-test": [
+            "apps/v1/Deployment",
+            "v1/ConfigMap"
+          ]
         }
-      ],
-      "namespaces": [
-        "nested-test"
-      ]
+      }
     }
   ],
   "summary": {

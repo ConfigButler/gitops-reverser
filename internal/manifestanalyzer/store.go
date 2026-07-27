@@ -104,13 +104,12 @@ type ManifestStore struct {
 	ValueFileRefs map[string]struct{}
 
 	// RenderedInventory records what each render root RENDERS TO, keyed by the root's
-	// directory: the distinct types and namespaces of the objects kustomize actually
-	// produced. It answers the two questions a tool must settle before it provisions from
-	// a folder — which types have to be served where this is applied, and which namespaces
-	// the objects land in — and it is read off a real build, so a `namespace:` transformer
-	// or a base outside the subtree is already accounted for. Empty for a root that failed
-	// to build, and absent for a directory that is not a render root.
-	RenderedInventory map[string]RenderInventory
+	// directory: which type lands in which namespace, from the objects kustomize actually
+	// produced. It is what a tool must settle before it provisions from a folder, and it is
+	// read off a real build, so a `namespace:` transformer or a base outside the subtree is
+	// already accounted for. Empty for a root that failed to build, and absent for a
+	// directory that is not a render root.
+	RenderedInventory map[string]RenderedTypes
 
 	// reachedByMultipleRoots is the set of resource-file paths (slash) that more than one
 	// render root reaches through the resources graph — the generalised write-fan-in

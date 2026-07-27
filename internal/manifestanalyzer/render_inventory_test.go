@@ -47,10 +47,37 @@ func TestRenderInventory_NamespaceIsWhatRendersNotWhatIsWritten(t *testing.T) {
 
 	cand := candidateAt(t, scanRepoFS(context.Background(), fsys), "overlays/prod")
 
-	requireStrings(t, "namespaces", cand.Namespaces, []string{"where-it-lands"})
-	if len(cand.Kinds) != 1 || cand.Kinds[0].Kind != "Deployment" || cand.Kinds[0].Group != "apps" {
-		t.Errorf("kinds = %+v, want the single apps/v1 Deployment the overlay renders", cand.Kinds)
+	requireTypesByNamespace(t, cand.RenderedTypes, map[string][]string{
+		"where-it-lands": {"apps/v1/Deployment"},
+	})
+	requireStrings(t, "namespaceUndeclared", cand.RenderedTypes.NamespaceUndeclared, nil)
+}
+
+// TestRenderInventory_KeepsEachTypePairedWithItsOwnNamespace is the reason this is a map
+// and not two lists. A folder rendering a Deployment into one namespace and a Service into
+// another has exactly two pairs; published as a type set beside a namespace set it would
+// read as four, and a tool generating one watch rule per pair would authorize two that
+// match nothing in the repository.
+func TestRenderInventory_KeepsEachTypePairedWithItsOwnNamespace(t *testing.T) {
+	const service = `apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: payments
+spec:
+  ports: []
+`
+	fsys := fstest.MapFS{
+		"app/deployment.yaml": {Data: []byte(inventoryDeployment)},
+		"app/service.yaml":    {Data: []byte(service)},
 	}
+
+	cand := candidateAt(t, scanRepoFS(context.Background(), fsys), "app")
+
+	requireTypesByNamespace(t, cand.RenderedTypes, map[string][]string{
+		"written-in-the-file": {"apps/v1/Deployment"},
+		"payments":            {"v1/Service"},
+	})
 }
 
 // TestRenderInventory_CoversTheBaseOutsideTheSubtree pins the other half of "as rendered":
@@ -68,15 +95,37 @@ func TestRenderInventory_CoversTheBaseOutsideTheSubtree(t *testing.T) {
 
 	cand := candidateAt(t, scanRepoFS(context.Background(), fsys), "overlays/prod")
 
-	if len(cand.Kinds) != 2 {
-		t.Fatalf("kinds = %+v, want both types the overlay renders from the base", cand.Kinds)
+	requireTypesByNamespace(t, cand.RenderedTypes, map[string][]string{
+		"prod": {"apps/v1/Deployment"},
+	})
+	// The ClusterRole renders with no namespace, and this scan cannot say WHY: it is
+	// cluster-scoped, but proving that needs API discovery the scan does not have. So it
+	// goes to namespaceUndeclared, and clusterScoped stays absent rather than claiming
+	// there are none.
+	requireStrings(t, "namespaceUndeclared", cand.RenderedTypes.NamespaceUndeclared,
+		[]string{"rbac.authorization.k8s.io/v1/ClusterRole"})
+	requireStrings(t, "clusterScoped", cand.RenderedTypes.ClusterScoped, nil)
+}
+
+// TestRenderInventory_ATypeCanBeBothNamespacedAndNot covers the shape that looks like a
+// contradiction and is not: two ConfigMaps, one carrying a namespace and one relying on
+// whatever the applier defaults to.
+func TestRenderInventory_ATypeCanBeBothNamespacedAndNot(t *testing.T) {
+	const placed = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: placed\n  namespace: storefront\n"
+	const floating = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: floating\n"
+
+	fsys := fstest.MapFS{
+		"app/placed.yaml":   {Data: []byte(placed)},
+		"app/floating.yaml": {Data: []byte(floating)},
 	}
-	// Sorted by group, then version, then kind — so "apps" precedes
-	// "rbac.authorization.k8s.io" and the order is part of what a consumer can rely on.
-	requireStrings(t, "kinds", kindNames(cand.Kinds), []string{"Deployment", "ClusterRole"})
-	// The ClusterRole is cluster-scoped: it lands in no namespace and must contribute none,
-	// because an empty string in the set would read as a namespace called "".
-	requireStrings(t, "namespaces", cand.Namespaces, []string{"prod"})
+
+	cand := candidateAt(t, scanRepoFS(context.Background(), fsys), "app")
+
+	requireTypesByNamespace(t, cand.RenderedTypes, map[string][]string{
+		"storefront": {"v1/ConfigMap"},
+	})
+	requireStrings(t, "namespaceUndeclared", cand.RenderedTypes.NamespaceUndeclared,
+		[]string{"v1/ConfigMap"})
 }
 
 // TestRenderInventory_PlainFolderReportsItsOwnDocuments covers the folder with no
@@ -90,8 +139,11 @@ func TestRenderInventory_PlainFolderReportsItsOwnDocuments(t *testing.T) {
 
 	cand := candidateAt(t, scanRepoFS(context.Background(), fsys), "app")
 
-	requireStrings(t, "kinds", kindNames(cand.Kinds), []string{"Deployment", "ClusterRole"})
-	requireStrings(t, "namespaces", cand.Namespaces, []string{"written-in-the-file"})
+	requireTypesByNamespace(t, cand.RenderedTypes, map[string][]string{
+		"written-in-the-file": {"apps/v1/Deployment"},
+	})
+	requireStrings(t, "namespaceUndeclared", cand.RenderedTypes.NamespaceUndeclared,
+		[]string{"rbac.authorization.k8s.io/v1/ClusterRole"})
 }
 
 // TestRenderInventory_AbsentWhenTheRootDoesNotBuild says nothing rather than guessing: a
@@ -108,9 +160,8 @@ func TestRenderInventory_AbsentWhenTheRootDoesNotBuild(t *testing.T) {
 	if cand.AcceptedByOperator {
 		t.Fatalf("a root that does not build must be refused, got accepted")
 	}
-	if len(cand.Kinds) != 0 || len(cand.Namespaces) != 0 {
-		t.Errorf("kinds = %+v, namespaces = %+v, want nothing: we cannot know what it renders",
-			cand.Kinds, cand.Namespaces)
+	if len(cand.RenderedTypes.ByNamespace) != 0 || len(cand.RenderedTypes.NamespaceUndeclared) != 0 {
+		t.Errorf("renderedTypes = %+v, want nothing: we cannot know what it renders", cand.RenderedTypes)
 	}
 }
 
@@ -127,14 +178,16 @@ func candidateAt(t *testing.T, rep RepoReport, path string) RepoCandidate {
 	return RepoCandidate{}
 }
 
-// kindNames projects a GVK slice onto its kinds, for the assertions that care about which
-// types are present rather than their full identity.
-func kindNames(kinds []GVK) []string {
-	out := make([]string, 0, len(kinds))
-	for _, k := range kinds {
-		out = append(out, k.Kind)
+// requireTypesByNamespace asserts the exact type-to-namespace map, which is the whole
+// point of the shape: a missing pair and an invented one are both failures.
+func requireTypesByNamespace(t *testing.T, got RenderedTypes, want map[string][]string) {
+	t.Helper()
+	if len(got.ByNamespace) != len(want) {
+		t.Fatalf("byNamespace = %v, want %v", got.ByNamespace, want)
 	}
-	return out
+	for ns, types := range want {
+		requireStrings(t, "byNamespace["+ns+"]", got.ByNamespace[ns], types)
+	}
 }
 
 // requireStrings asserts an exact, ordered match — the sets are sorted, so order is part

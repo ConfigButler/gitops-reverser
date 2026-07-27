@@ -11,16 +11,13 @@
         "editable": 1,
         "nonKrm": 0
       },
-      "kinds": [
-        {
-          "group": "apps",
-          "version": "v1",
-          "kind": "Deployment"
+      "renderedTypes": {
+        "byNamespace": {
+          "podinfo": [
+            "apps/v1/Deployment"
+          ]
         }
-      ],
-      "namespaces": [
-        "podinfo"
-      ]
+      }
     },
     {
       "path": "clusters/prod",
@@ -33,16 +30,13 @@
         "editable": 1,
         "nonKrm": 0
       },
-      "kinds": [
-        {
-          "group": "kustomize.toolkit.fluxcd.io",
-          "version": "v1",
-          "kind": "Kustomization"
+      "renderedTypes": {
+        "byNamespace": {
+          "flux-system": [
+            "kustomize.toolkit.fluxcd.io/v1/Kustomization"
+          ]
         }
-      ],
-      "namespaces": [
-        "flux-system"
-      ]
+      }
     },
     {
       "path": "infra/ingress-nginx",
@@ -55,16 +49,13 @@
         "editable": 1,
         "nonKrm": 0
       },
-      "kinds": [
-        {
-          "group": "apps",
-          "version": "v1",
-          "kind": "Deployment"
+      "renderedTypes": {
+        "byNamespace": {
+          "infra-system": [
+            "apps/v1/Deployment"
+          ]
         }
-      ],
-      "namespaces": [
-        "infra-system"
-      ]
+      }
     }
   ],
   "summary": {

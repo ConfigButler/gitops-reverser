@@ -14,16 +14,13 @@
         "editable": 0,
         "nonKrm": 0
       },
-      "kinds": [
-        {
-          "group": "apps",
-          "version": "v1",
-          "kind": "Deployment"
+      "renderedTypes": {
+        "byNamespace": {
+          "parked-test": [
+            "apps/v1/Deployment"
+          ]
         }
-      ],
-      "namespaces": [
-        "parked-test"
-      ]
+      }
     }
   ],
   "summary": {

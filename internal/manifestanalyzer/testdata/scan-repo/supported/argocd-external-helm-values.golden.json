@@ -11,21 +11,16 @@
         "editable": 2,
         "nonKrm": 0
       },
-      "kinds": [
-        {
-          "group": "argoproj.io",
-          "version": "v1alpha1",
-          "kind": "Application"
+      "renderedTypes": {
+        "byNamespace": {
+          "argocd": [
+            "argoproj.io/v1alpha1/Application"
+          ]
         },
-        {
-          "group": "cert-manager.io",
-          "version": "v1",
-          "kind": "ClusterIssuer"
-        }
-      ],
-      "namespaces": [
-        "argocd"
-      ]
+        "namespaceUndeclared": [
+          "cert-manager.io/v1/ClusterIssuer"
+        ]
+      }
     }
   ],
   "summary": {
