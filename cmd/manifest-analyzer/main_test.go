@@ -15,6 +15,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
+
+	publicanalyzer "github.com/ConfigButler/gitops-reverser/pkg/manifestanalyzer"
 )
 
 const deployYAML = `apiVersion: apps/v1
@@ -128,12 +130,57 @@ func TestRun_ScanJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr=%s", code, errBuf.String())
 	}
-	var parsed map[string]any
+	var parsed struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Status     struct {
+			Accepted  bool `json:"accepted"`
+			Generator struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"generator"`
+			Issues []struct {
+				Kind       string `json:"kind"`
+				Permanence string `json:"permanence"`
+				Actor      string `json:"actor"`
+			} `json:"issues"`
+		} `json:"status"`
+	}
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
 		t.Fatalf("scan JSON invalid: %v\n%s", err, out.String())
 	}
-	if _, ok := parsed["accepted"]; !ok {
-		t.Errorf("scan JSON missing accepted key: %s", out.String())
+	if parsed.APIVersion != publicanalyzer.APIVersion || parsed.Kind != publicanalyzer.KindFolderReport {
+		t.Errorf("scan JSON is not a KRM document: %s", out.String())
+	}
+	if parsed.Status.Accepted || len(parsed.Status.Issues) == 0 {
+		t.Fatalf("the fixture holds a stray values.yaml and must be refused: %s", out.String())
+	}
+	// Every refusal says whether it can stop being one; without it a consumer's only
+	// honest sentence is "this folder cannot be picked".
+	for _, issue := range parsed.Status.Issues {
+		if issue.Permanence == "" {
+			t.Errorf("issue %q reached a consumer unclassified: %s", issue.Kind, out.String())
+		}
+		if issue.Permanence == "fixable" && issue.Actor == "" {
+			t.Errorf("fixable issue %q does not say who can fix it: %s", issue.Kind, out.String())
+		}
+	}
+	if parsed.Status.Generator.Name == "" || parsed.Status.Generator.Version == "" {
+		t.Errorf("scan JSON must say what produced it: %s", out.String())
+	}
+}
+
+// --version answers both pin questions in one exec: which release this binary is, and
+// which contract its documents conform to.
+func TestRun_Version(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"--version"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
+	}
+	for _, want := range []string{publicanalyzer.GeneratorName, publicanalyzer.Version(), publicanalyzer.APIVersion} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("--version output missing %q:\n%s", want, out.String())
+		}
 	}
 }
 
@@ -181,19 +228,21 @@ func TestRun_ScanRepoJSON(t *testing.T) {
 		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
 	}
 	var parsed struct {
-		Candidates []struct {
-			Path   string `json:"path"`
-			Layout string `json:"layout"`
-		} `json:"candidates"`
-		Summary map[string]any `json:"summary"`
+		Status struct {
+			Candidates []struct {
+				Path   string `json:"path"`
+				Layout string `json:"layout"`
+			} `json:"candidates"`
+			Summary map[string]any `json:"summary"`
+		} `json:"status"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
 		t.Fatalf("scan-repo JSON invalid: %v\n%s", err, out.String())
 	}
-	if len(parsed.Candidates) != 2 {
-		t.Fatalf("want 2 candidates, got %d: %s", len(parsed.Candidates), out.String())
+	if len(parsed.Status.Candidates) != 2 {
+		t.Fatalf("want 2 candidates, got %d: %s", len(parsed.Status.Candidates), out.String())
 	}
-	if parsed.Summary == nil {
+	if parsed.Status.Summary == nil {
 		t.Errorf("scan-repo JSON missing summary: %s", out.String())
 	}
 }

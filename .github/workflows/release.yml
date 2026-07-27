@@ -238,6 +238,14 @@ jobs:
             ```
             **Platforms:** linux/amd64, linux/arm64
             **Digest:** `${{ steps.digest.outputs.digest }}`
+            ## Standalone analyzer
+            `manifest-analyzer` answers "which folders in this repository could become
+            GitTargets?" without a cluster. Binaries are attached for linux/amd64,
+            linux/arm64 and darwin/arm64, with a `manifest-analyzer.sha256sums` file:
+            ```bash
+            curl -fsSLO https://github.com/ConfigButler/gitops-reverser/releases/download/${{ needs.release-please.outputs.tag_name }}/manifest-analyzer_linux_amd64
+            curl -fsSL https://github.com/ConfigButler/gitops-reverser/releases/download/${{ needs.release-please.outputs.tag_name }}/manifest-analyzer.sha256sums | sha256sum -c --ignore-missing
+            ```
             ## Verify this release
             Images are signed with cosign (keyless) and carry SLSA build provenance
             and an SPDX SBOM as registry attestations:
@@ -364,6 +372,106 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Build, checksum, sign and attest the manifest-analyzer binary, and attach it to the
+  # draft release. A tool that execs the analyzer to decide which folders it may offer a
+  # tenant is pinning us by binary, and `go install` from source is the one unverifiable
+  # link in a devcontainer that pins every other tool from a release asset.
+  #
+  # Both verification mechanisms ship, because the two consumers asking for this do not
+  # agree on one: `gh attestation verify` is the stronger claim, and a sha256sums file is
+  # what a `curl | sha256sum -c` line in a Dockerfile can consume without a GitHub token.
+  publish-analyzer:
+    name: Publish manifest-analyzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [ci, release-please]
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: write # upload release assets
+      id-token: write # cosign keyless signing + attestation OIDC
+      attestations: write
+    container:
+      image: ${{ needs.ci.outputs.ci-image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
+
+      # linux/amd64 + linux/arm64 cover the devcontainers that consume this; darwin/arm64
+      # covers a developer running the same scan locally. The version is stamped into the
+      # library, not into main, so the string the binary prints is the same one every
+      # report it emits carries.
+      - name: Build the analyzer for every published platform
+        env:
+          VERSION: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/analyzer
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" go build \
+              -trimpath \
+              -ldflags "-s -w -X github.com/ConfigButler/gitops-reverser/pkg/manifestanalyzer.version=${VERSION}" \
+              -o "dist/analyzer/manifest-analyzer_${os}_${arch}" \
+              ./cmd/manifest-analyzer
+          done
+          ls -l dist/analyzer
+
+      - name: Verify the built binary reports the release it was built from
+        env:
+          VERSION: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          printed="$(./dist/analyzer/manifest-analyzer_linux_amd64 --version)"
+          echo "${printed}"
+          echo "${printed}" | grep -qF "${VERSION}" || {
+            echo "the binary does not report ${VERSION}; the ldflags path is broken" >&2
+            exit 1
+          }
+
+      - name: Write the checksums file
+        working-directory: dist/analyzer
+        run: sha256sum manifest-analyzer_* > manifest-analyzer.sha256sums
+
+      - name: Sign the checksums file (cosign keyless)
+        working-directory: dist/analyzer
+        run: |
+          cosign sign-blob --bundle manifest-analyzer.sha256sums.sigstore.json --yes manifest-analyzer.sha256sums
+
+      - name: Attest SLSA provenance for the analyzer binaries
+        id: attest-analyzer
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: dist/analyzer/manifest-analyzer_*
+
+      - name: Rename provenance bundle to the Scorecard-recognized suffix
+        run: cp "${{ steps.attest-analyzer.outputs.bundle-path }}" dist/analyzer/manifest-analyzer.intoto.jsonl
+
+      - name: Upload the analyzer as release assets
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          # Attach to the still-draft release; publish-release publishes it once every
+          # asset is in place (immutable releases reject post-publish uploads).
+          draft: true
+          files: |
+            dist/analyzer/manifest-analyzer_linux_amd64
+            dist/analyzer/manifest-analyzer_linux_arm64
+            dist/analyzer/manifest-analyzer_darwin_arm64
+            dist/analyzer/manifest-analyzer.sha256sums
+            dist/analyzer/manifest-analyzer.sha256sums.sigstore.json
+            dist/analyzer/manifest-analyzer.intoto.jsonl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # Publish the release only after every asset is attached. release-please
   # creates the GitHub release as a draft (see release-please-config.json);
   # GitHub's immutable-releases enforcement freezes a release the moment it is
@@ -375,7 +483,7 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [release-please, publish-manifest, publish-helm]
+    needs: [release-please, publish-manifest, publish-helm, publish-analyzer]
     if: needs.release-please.outputs.release_created == 'true'
     permissions:
       contents: write # publish the draft release (creates the tag)

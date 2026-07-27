@@ -36,16 +36,19 @@ func TestScanRepo_PlainPerEnvironmentFoldersAreCandidates(t *testing.T) {
 	report, err := manifestanalyzer.ScanRepo(context.Background(), fixture(t, "supported", "plain-per-env"))
 	require.NoError(t, err)
 
-	require.Equal(t, manifestanalyzer.SchemaVersion, report.SchemaVersion)
-	require.NotEmpty(t, report.Candidates)
-	for _, cand := range report.Candidates {
+	require.Equal(t, manifestanalyzer.APIVersion, report.APIVersion)
+	require.Equal(t, manifestanalyzer.KindRepoReport, report.Kind)
+	require.Equal(t, manifestanalyzer.ModeScanRepo, report.Spec.Mode)
+	require.Equal(t, manifestanalyzer.GeneratorName, report.Status.Generator.Name)
+	require.NotEmpty(t, report.Status.Candidates)
+	for _, cand := range report.Status.Candidates {
 		require.Equal(t, manifestanalyzer.LayoutPlain, cand.Layout)
 		require.True(t, cand.AcceptedByOperator, "plain KRM folders are the launch layout")
 		require.Empty(t, cand.RefusalReasons)
 		require.False(t, cand.RenderRoot)
 	}
-	require.Equal(t, len(report.Candidates), report.Summary.Accepted)
-	require.Zero(t, report.Summary.Refused)
+	require.Equal(t, len(report.Status.Candidates), report.Status.Summary.Accepted)
+	require.Zero(t, report.Status.Summary.Refused)
 }
 
 // An external-base overlay and a permanent structural refusal are different truths a consumer
@@ -61,7 +64,7 @@ func TestScanRepo_OverlayAdoptedDistinctFromStructural(t *testing.T) {
 		require.NoError(t, err)
 
 		var seen bool
-		for _, cand := range report.Candidates {
+		for _, cand := range report.Status.Candidates {
 			require.Equal(t, manifestanalyzer.LayoutKustomizeOverlay, cand.Layout)
 			require.True(t, cand.AcceptedByOperator, "render-root scoping adopts the external-base overlay")
 			require.Empty(t, cand.RefusalReasons)
@@ -81,13 +84,13 @@ func TestScanRepo_OverlayAdoptedDistinctFromStructural(t *testing.T) {
 			require.NoError(t, err)
 
 			var seen bool
-			for _, cand := range report.Candidates {
+			for _, cand := range report.Status.Candidates {
 				if cand.Layout != manifestanalyzer.LayoutRefusedStructural {
 					continue
 				}
 				seen = true
 				require.False(t, cand.AcceptedByOperator)
-				codes := make([]string, 0, len(cand.RefusalReasons))
+				codes := make([]manifestanalyzer.IssueKind, 0, len(cand.RefusalReasons))
 				for _, reason := range cand.RefusalReasons {
 					codes = append(codes, reason.Code)
 				}
@@ -104,9 +107,9 @@ func TestScanRepo_ReportsOverlapConflicts(t *testing.T) {
 	report, err := manifestanalyzer.ScanRepo(context.Background(), fixture(t, "supported", "overlapping"))
 	require.NoError(t, err)
 
-	require.NotEmpty(t, report.Summary.OverlapConflicts,
+	require.NotEmpty(t, report.Status.Summary.OverlapConflicts,
 		"two nested candidates can never both own a folder; the conflict must surface")
-	for _, conflict := range report.Summary.OverlapConflicts {
+	for _, conflict := range report.Status.Summary.OverlapConflicts {
 		require.NotEmpty(t, conflict.Ancestor)
 		require.NotEmpty(t, conflict.Descendant)
 		require.NotEqual(t, conflict.Ancestor, conflict.Descendant)
@@ -120,8 +123,8 @@ func TestScanRepo_FleetRootIsNeverACandidate(t *testing.T) {
 	report, err := manifestanalyzer.ScanRepo(context.Background(), root)
 	require.NoError(t, err)
 
-	require.True(t, report.Summary.FleetRoot)
-	for _, cand := range report.Candidates {
+	require.True(t, report.Status.Summary.FleetRoot)
+	for _, cand := range report.Status.Candidates {
 		require.NotEqual(t, ".", cand.Path, "a GitTarget points at an app subtree, never the fleet root")
 	}
 }
@@ -143,9 +146,16 @@ func TestRepoReport_WriteJSON_Contract(t *testing.T) {
 
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &raw))
-	require.Equal(t, "v1", raw["schemaVersion"])
-	require.Contains(t, raw, "candidates")
-	require.Contains(t, raw, "summary")
+	require.Equal(t, "manifestanalyzer.configbutler.ai/v1alpha1", raw["apiVersion"])
+	require.Equal(t, "RepoReport", raw["kind"])
+	require.NotContains(t, raw, "schemaVersion", "apiVersion replaces the schemaVersion marker outright")
+
+	status, ok := raw["status"].(map[string]any)
+	require.True(t, ok, "what was found is the status")
+	require.Contains(t, status, "candidates")
+	require.Contains(t, status, "summary")
+	require.Equal(t, map[string]any{"name": "manifest-analyzer", "version": manifestanalyzer.Version()},
+		status["generator"])
 
 	var decoded manifestanalyzer.RepoReport
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &decoded))

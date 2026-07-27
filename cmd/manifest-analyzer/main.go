@@ -24,6 +24,7 @@
 //	                                              deferred)
 //	                                 discovery:   raw Kubernetes API discovery dump
 //	--format text|json     output format (default text)
+//	--version              print the release and the report apiVersion, then exit
 //	--policy report|refuse
 //	                       report: always exit 0 (analysis only)
 //	                       refuse: exit 1 when the folder would be refused
@@ -99,8 +100,10 @@ func runWithDiscoveryClientFactory(
 		"kubeconfig path for --mode discovery (default: standard loading rules)",
 	)
 	contextName := fs.String("context", "", "kubeconfig context for --mode discovery")
+	showVersion := fs.Bool("version", false, "print the release and the report apiVersion, then exit")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: manifest-analyzer [flags] <dir>")
+		fmt.Fprintln(stderr, "       manifest-analyzer --version")
 		fmt.Fprintln(stderr, "       manifest-analyzer --mode scan-repo [flags] <repo-root>")
 		fmt.Fprintln(stderr, "       manifest-analyzer --mode discovery [flags]")
 		fs.PrintDefaults()
@@ -108,6 +111,10 @@ func runWithDiscoveryClientFactory(
 
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
+	}
+	if *showVersion {
+		printVersion(stdout)
+		return exitOK
 	}
 	if !validChoices(*mode, *format, *policy, stderr) {
 		return exitUsage
@@ -126,6 +133,19 @@ func runWithDiscoveryClientFactory(
 		return exitUsage
 	}
 	return runDirMode(*mode, fs.Arg(0), *format, *policy, stdout, stderr)
+}
+
+// printVersion answers both version questions in one exec: which release this binary is,
+// and which contract the documents it prints conform to. A tool that pins us by release
+// and reads our JSON needs both, and a second exec to get the second answer would be an
+// assumption that it ran the same binary.
+//
+// The version is resolved by the library, not by a main-package ldflags variable, so it is
+// the same string the reports themselves carry — including for a `go install ...@vX.Y.Z`
+// build, where no ldflags are applied at all.
+func printVersion(stdout io.Writer) {
+	fmt.Fprintf(stdout, "%s %s\n", publicanalyzer.GeneratorName, publicanalyzer.Version())
+	fmt.Fprintf(stdout, "report apiVersion: %s\n", publicanalyzer.APIVersion)
 }
 
 // validChoices validates the mode/format/policy enum flags, reporting the first bad one
@@ -255,7 +275,7 @@ func runScanFolder(dir, format, policy string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitUsage
 		}
-		return scanExitCode(policy, report.Accepted)
+		return scanExitCode(policy, report.Status.Accepted)
 	}
 
 	scanPolicy := manifestanalyzer.ScanPolicy{
