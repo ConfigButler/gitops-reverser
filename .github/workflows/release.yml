@@ -412,6 +412,13 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    # A container job defaults to `sh`, not the `bash` a runner-hosted job gets, and dash
+    # rejects `set -o pipefail` outright: the build step below died on its own first line
+    # with "Illegal option -o pipefail", before compiling anything. Declaring the shell for
+    # the whole job keeps a later step from silently inheriting dash again.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
