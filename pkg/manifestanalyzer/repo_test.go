@@ -130,6 +130,136 @@ func TestScanRepo_LeafFoldersSurfaceUnderAClusterRootLayout(t *testing.T) {
 	}
 }
 
+// A build reads a folder in three ways — a base directory, a resource file, a patch file —
+// and only the first is a kustomize base. All three are the same fact for a consumer
+// deciding what adopting a folder buys, so all three are edges.
+func TestScanRepo_ReadGraphCoversPatchesNotJustBases(t *testing.T) {
+	t.Parallel()
+
+	report, err := manifestanalyzer.ScanRepo(context.Background(), fixture(t, "supported", "external-patch"))
+	require.NoError(t, err)
+	requireReadGraphConsistent(t, report)
+
+	require.Len(t, report.Status.Candidates, 1)
+	overlay := report.Status.Candidates[0]
+	require.True(t, overlay.AcceptedByOperator)
+	require.Equal(t, []string{"base", "patches"}, overlay.ReadScope,
+		"the folder holding an out-of-subtree patch is read exactly as the base is")
+	require.Equal(t, []manifestanalyzer.ReadEdge{
+		{From: "overlays/test", To: "base"},
+		{From: "overlays/test", To: "patches"},
+	}, report.Status.Summary.ReadEdges)
+}
+
+// The read graph is what makes the report's most confusing accept explainable: a folder
+// accepted with editable 0 renders documents that live somewhere else. Both node classes
+// have to survive into the contract — the directory nobody is offered, and the candidate
+// another folder depends on — or a consumer can draw no edge at all.
+func TestScanRepo_ReadGraphCarriesBothNodeClasses(t *testing.T) {
+	t.Parallel()
+
+	report, err := manifestanalyzer.ScanRepo(context.Background(), fixture(t, "supported", "shared-file-reference"))
+	require.NoError(t, err)
+
+	byPath := map[string]manifestanalyzer.Candidate{}
+	for _, cand := range report.Status.Candidates {
+		byPath[cand.Path] = cand
+	}
+
+	overlay, ok := byPath["overlays/test"]
+	require.True(t, ok)
+	require.True(t, overlay.AcceptedByOperator)
+	require.Zero(t, overlay.Resources.Editable, "the overlay owns none of what it renders")
+	require.Equal(t, []string{"base", "shared"}, overlay.ReadScope,
+		"readScope covers both a base directory and a folder it renders a single file from")
+
+	// "base" holds a kustomization another kustomization references, which is exactly what
+	// disqualifies it as a render root — so it is a node no candidate list mentions, and a
+	// consumer finds it as an edge target absent from the candidates.
+	require.NotContains(t, byPath, "base")
+	require.Contains(t, report.Status.Summary.ReadEdges, manifestanalyzer.ReadEdge{From: "overlays/test", To: "base"})
+
+	// "shared" is the other case: a candidate a consumer may offer, whose documents another
+	// folder already renders. Selecting it is the disruptive choice readBy exists to expose.
+	shared, ok := byPath["shared"]
+	require.True(t, ok)
+	require.True(t, shared.AcceptedByOperator)
+	require.Equal(t, []string{"overlays/test"}, shared.ReadBy)
+
+	require.Equal(t, []manifestanalyzer.ReadEdge{
+		{From: "overlays/test", To: "base"},
+		{From: "overlays/test", To: "shared"},
+	}, report.Status.Summary.ReadEdges)
+}
+
+// readScope, readBy and readEdges are three projections of one relation. A consumer that
+// draws the graph from any of them must get the same picture, so the transpose is checked
+// against the whole corpus rather than one hand-built fixture.
+func TestScanRepo_ReadGraphProjectionsAgree(t *testing.T) {
+	t.Parallel()
+
+	for _, group := range []string{"supported", "unsupported"} {
+		entries, err := os.ReadDir(filepath.Join(corpusRoot, group))
+		require.NoError(t, err)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			t.Run(filepath.Join(group, entry.Name()), func(t *testing.T) {
+				t.Parallel()
+				report, err := manifestanalyzer.ScanRepo(context.Background(), fixture(t, group, entry.Name()))
+				require.NoError(t, err)
+				requireReadGraphConsistent(t, report)
+			})
+		}
+	}
+}
+
+// requireReadGraphConsistent checks the three projections against each other: the edges are
+// exactly the union of the readScopes, every readBy has a matching edge, and every edge
+// runs between two directories a consumer can place — a candidate, or a node it identifies
+// by the edge target being absent from the candidate list.
+func requireReadGraphConsistent(t *testing.T, report manifestanalyzer.RepoReport) {
+	t.Helper()
+
+	fromScope := map[manifestanalyzer.ReadEdge]struct{}{}
+	candidatePaths := map[string]struct{}{}
+	for _, cand := range report.Status.Candidates {
+		candidatePaths[cand.Path] = struct{}{}
+		for _, dir := range cand.ReadScope {
+			fromScope[manifestanalyzer.ReadEdge{From: cand.Path, To: dir}] = struct{}{}
+		}
+	}
+
+	fromEdges := map[manifestanalyzer.ReadEdge]struct{}{}
+	for _, edge := range report.Status.Summary.ReadEdges {
+		fromEdges[edge] = struct{}{}
+		require.Contains(t, candidatePaths, edge.From, "an edge always starts at a candidate")
+	}
+	require.Equal(t, fromScope, fromEdges, "readEdges is exactly the union of the readScopes")
+
+	for _, cand := range report.Status.Candidates {
+		for _, reader := range cand.ReadBy {
+			require.Contains(t, fromEdges, manifestanalyzer.ReadEdge{From: reader, To: cand.Path},
+				"readBy is the transpose of readScope, never an independent claim")
+		}
+	}
+	for edge := range fromEdges {
+		require.NotEmpty(t, readersOf(report.Status.Summary.ReadEdges, edge.To),
+			"a node with no edge into it is not part of the graph")
+	}
+}
+
+func readersOf(edges []manifestanalyzer.ReadEdge, dir string) []string {
+	var out []string
+	for _, edge := range edges {
+		if edge.To == dir {
+			out = append(out, edge.From)
+		}
+	}
+	return out
+}
+
 func TestScanRepo_MissingRootIsAnError(t *testing.T) {
 	t.Parallel()
 	_, err := manifestanalyzer.ScanRepo(context.Background(), filepath.Join(t.TempDir(), "absent"))

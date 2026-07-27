@@ -145,9 +145,19 @@ type RepoCandidate struct {
 	// RenderRoot reports whether the candidate is a kustomize render root (versus a
 	// plain KRM folder).
 	RenderRoot bool `json:"renderRoot"`
-	// ReadScope lists the base directories outside this candidate's own subtree that its
-	// kustomization reads. Empty for plain and self-contained candidates.
+	// ReadScope lists the directories outside this candidate's own subtree whose content
+	// its build renders: base kustomization directories its resources graph reaches, and
+	// the directories holding individual resource files it renders from elsewhere. Empty
+	// for plain and self-contained candidates.
 	ReadScope []string `json:"readScope,omitempty"`
+	// ReadBy is the reverse edge: the candidates whose build reads THIS directory. It is
+	// usually empty, and structurally so — a directory another kustomization references is
+	// never a render root, hence never a candidate — but not always: a plain folder holding
+	// one file some distant kustomization lists in resources: is a candidate that another
+	// folder depends on, and adopting it is the disruptive case a consumer must be able to
+	// see. The rest of these edges end at directories no candidate list mentions; see
+	// [RepoSummary.ReadEdges].
+	ReadBy []string `json:"readBy,omitempty"`
 	// InferredNamespace is the namespace the candidate resolves to: the kustomization's
 	// namespace transformer for a render root, or the single explicit metadata.namespace
 	// for a plain folder. Empty when none is set or the folder is ambiguous.
@@ -172,6 +182,15 @@ type OverlapConflict struct {
 	Descendant string `json:"descendant"`
 }
 
+// ReadEdge is one folder-to-folder read: From's build renders documents that live in To,
+// which is outside From's own subtree. From is always a candidate; To is a candidate only
+// in the file-reference case described on [RepoCandidate.ReadBy], and is otherwise a
+// directory the scan offers to nobody.
+type ReadEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 // RepoSummary is the repo-level roll-up a product uses to describe onboardability.
 type RepoSummary struct {
 	// CandidatesByLayout counts candidates per layout class.
@@ -181,6 +200,17 @@ type RepoSummary struct {
 	Refused  int `json:"refused"`
 	// OverlapConflicts lists every nesting conflict between candidates.
 	OverlapConflicts []OverlapConflict `json:"overlapConflicts,omitempty"`
+	// ReadEdges is the repo's folder dependency graph: one edge per (candidate, directory
+	// it renders from outside its own subtree), sorted. It is the same relation each
+	// candidate's readScope/readBy report, collected in one place so a consumer can draw
+	// the graph without walking the candidates.
+	//
+	// Most edges end at a directory that is NOT a candidate — a folder a kustomization
+	// references is never a render root, so it is offered to nobody. Those nodes are the
+	// edge targets absent from Candidates, and nothing else identifies them: they are not
+	// all kustomize bases, since a referenced resource file or an out-of-subtree patch
+	// makes its folder one too.
+	ReadEdges []ReadEdge `json:"readEdges,omitempty"`
 	// UnsupportedConstructs is the sorted, de-duplicated set of unsupported kustomize
 	// features seen across refused-structural candidates, so a product can say "this repo
 	// uses Helm inflation, which we don't manage".
@@ -236,10 +266,14 @@ func scanRepoFS(ctx context.Context, fsys fs.FS) RepoReport {
 
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Path < candidates[j].Path })
 	detectOverlaps(candidates)
+	edges := buildReadGraph(candidates)
+
+	summary := summarize(candidates, kusts)
+	summary.ReadEdges = edges
 
 	return RepoReport{
 		Candidates: candidates,
-		Summary:    summarize(candidates, kusts),
+		Summary:    summary,
 	}
 }
 
@@ -263,6 +297,10 @@ func classifyRenderRoot(
 	if inv, ok := store.RenderedInventory[rootDir]; ok {
 		c.RenderedTypes = inv
 	}
+	// Every folder this root renders from and does not own — reported for a refused root
+	// too, since "what does it read" is answerable from the resources graph whether or not
+	// the operator would adopt it.
+	c.ReadScope = readDirsOutside(rootDir, kusts)
 	// rendered/editable count only the documents the kustomization graph actually renders
 	// (its resources: entries), never parked YAML a kustomization does not reference.
 	rendered := reachedResourceFilesFrom(rootDir, kusts)
@@ -284,7 +322,6 @@ func classifyRenderRoot(
 		// content in the overlay, an unbuildable base, an unsupported nested kustomization)
 		// surfaces as its own reason rather than a blanket overlay refusal.
 		c.Layout = LayoutKustomizeOverlay
-		c.ReadScope = outsideBases
 		acc := overlayCandidateAcceptance(ctx, rootDir, scan, kusts)
 		c.AcceptedByOperator = acc.Accepted
 		if !acc.Accepted {
@@ -499,6 +536,89 @@ func issuesToReasons(issues []AcceptanceIssue) []RefusalReason {
 		})
 	}
 	return out
+}
+
+// readDirsOutside returns the sorted, MINIMAL set of directories a render root reads that
+// lie outside its own subtree — every folder whose content the root renders yet does not
+// own.
+//
+// It is the directory projection of [renderScopePaths], deliberately and not incidentally:
+// that function already answers "which files does this build load", it is what the scoped
+// acceptance gate renders from, and any second enumeration here would drift from it. A
+// base directory, a `resources: ../shared/deployment.yaml`, and a
+// `patches: [{path: ../../shared/patch.yaml}]` are all the same fact — content this folder
+// renders and does not own — and only one of the three is a kustomize base.
+//
+// Minimal in the same sense as [outOfSubtreeBases]: a directory nested under another in the
+// set is dropped, since reading the parent already reaches it.
+//
+// This is the only relation the read graph is built from — [RepoCandidate.ReadScope],
+// [RepoCandidate.ReadBy] and [RepoSummary.ReadEdges] are three projections of it, so they
+// cannot disagree about which folder reads which.
+func readDirsOutside(rootDir string, kusts map[string]*kustomizationDoc) []string {
+	dirs := map[string]struct{}{}
+	for file := range renderScopePaths(rootDir, kusts) {
+		if dir := slashDir(file); !pathWithin(dir, rootDir) {
+			dirs[dir] = struct{}{}
+		}
+	}
+	if len(dirs) == 0 {
+		return nil // a self-contained root reads nothing outside itself; say so with an absent key
+	}
+	out := minimalDirs(sortedKeysOf(dirs))
+	sort.Strings(out)
+	return out
+}
+
+// buildReadGraph turns the per-candidate read scopes into the repo-level edge list and
+// fills in the reverse direction on each candidate. The edges are the transpose source:
+// ReadBy is derived here rather than recomputed from the kustomization graph, so a folder
+// listed as read by X always has X listing it under readScope.
+func buildReadGraph(candidates []RepoCandidate) []ReadEdge {
+	edges := make([]ReadEdge, 0)
+	readers := map[string][]string{}
+	for _, c := range candidates {
+		for _, dir := range c.ReadScope {
+			edges = append(edges, ReadEdge{From: c.Path, To: dir})
+			readers[dir] = append(readers[dir], c.Path)
+		}
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].From != edges[j].From {
+			return edges[i].From < edges[j].From
+		}
+		return edges[i].To < edges[j].To
+	})
+	for i := range candidates {
+		if from := readers[candidates[i].Path]; len(from) > 0 {
+			sort.Strings(from)
+			candidates[i].ReadBy = from
+		}
+	}
+	return edges
+}
+
+// nonCandidateTargets returns the sorted directories the read edges point at that are not
+// themselves candidates — the other half of the graph's nodes, offered to nobody while
+// several candidates render from them. It is a set difference over the report's own two
+// lists, computed here for the text view; the JSON contract publishes the edges and the
+// candidates and lets a consumer do the same subtraction, rather than shipping an index
+// that could fall out of step with either.
+func nonCandidateTargets(candidates []RepoCandidate, edges []ReadEdge) []string {
+	isCandidate := map[string]struct{}{}
+	for _, c := range candidates {
+		isCandidate[c.Path] = struct{}{}
+	}
+	bases := map[string]struct{}{}
+	for _, e := range edges {
+		if _, ok := isCandidate[e.To]; !ok {
+			bases[e.To] = struct{}{}
+		}
+	}
+	if len(bases) == 0 {
+		return nil
+	}
+	return sortedKeysOf(bases)
 }
 
 // outOfSubtreeBases returns the sorted, MINIMAL base kustomization directories a render
@@ -842,6 +962,18 @@ func sortedKeysOf[V any](m map[string]V) []string {
 	return out
 }
 
+// readersOf returns the candidates that read dir, read off the edge list so the text view
+// and the JSON contract answer from the same place.
+func readersOf(edges []ReadEdge, dir string) []string {
+	out := make([]string, 0, 1)
+	for _, e := range edges {
+		if e.To == dir {
+			out = append(out, e.From)
+		}
+	}
+	return out
+}
+
 // RenderRepoText writes a compact human summary of the repo report: one line per
 // candidate, then the roll-up. It is a convenience view; JSON is the contract.
 func RenderRepoText(w io.Writer, rep RepoReport) {
@@ -864,8 +996,20 @@ func RenderRepoText(w io.Writer, rep RepoReport) {
 		if len(c.ReadScope) > 0 {
 			fmt.Fprintf(w, "      reads: %s\n", strings.Join(c.ReadScope, ", "))
 		}
+		if len(c.ReadBy) > 0 {
+			fmt.Fprintf(w, "      read by: %s\n", strings.Join(c.ReadBy, ", "))
+		}
 		if len(c.OverlapsWith) > 0 {
 			fmt.Fprintf(w, "      overlaps: %s\n", strings.Join(c.OverlapsWith, ", "))
+		}
+	}
+	// The other half of the graph never appears above: candidates render from these folders
+	// and none of them is offered, so a reader who sees only the candidate list cannot tell
+	// that adopting one of those readers buys a folder whose documents live elsewhere.
+	if targets := nonCandidateTargets(rep.Candidates, rep.Summary.ReadEdges); len(targets) > 0 {
+		fmt.Fprintf(w, "read but never offered: %d\n", len(targets))
+		for _, dir := range targets {
+			fmt.Fprintf(w, "  %-40s read by: %s\n", dir, strings.Join(readersOf(rep.Summary.ReadEdges, dir), ", "))
 		}
 	}
 	fmt.Fprintf(w, "summary: accepted=%d refused=%d", rep.Summary.Accepted, rep.Summary.Refused)

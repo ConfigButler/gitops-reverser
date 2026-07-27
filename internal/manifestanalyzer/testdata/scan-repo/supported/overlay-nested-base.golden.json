@@ -29,6 +29,12 @@
       "kustomize-overlay": 1
     },
     "accepted": 1,
-    "refused": 0
+    "refused": 0,
+    "readEdges": [
+      {
+        "from": "overlays/test",
+        "to": "base"
+      }
+    ]
   }
 }

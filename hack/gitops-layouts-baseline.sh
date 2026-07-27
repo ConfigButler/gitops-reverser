@@ -77,6 +77,18 @@ emit_detail() {
   printf 'Reported rc `%s`. Accepted `%s`, refused `%s`.\n' "$rc" "$accepted" "$refused"
   printf 'Unsupported constructs: `%s`.\n\n' "$constructs"
 
+  # The read graph: which folder renders content out of which other folder. A candidate
+  # accepted with editable 0 is only explicable through these edges, and an edge target
+  # marked (not a candidate) is a folder the scan offers to nobody — most of them are.
+  local edges
+  edges=$(jq -r "$MD_CELL"'[.status.candidates[]?.path] as $cands
+                 | (.status.summary.readEdges // [])[]
+                 | "- `\(.from | md)` reads `\(.to | md)`"
+                   + (if (.to as $t | $cands | index($t)) then "" else " (not a candidate)" end)' <<<"$json")
+  if [[ -n "$edges" ]]; then
+    printf 'Read graph:\n\n%s\n\n' "$edges"
+  fi
+
   if [[ "$(jq -r '(.status.candidates // []) | length' <<<"$json")" == "0" ]]; then
     printf '_No candidate folders reported._\n'
     return

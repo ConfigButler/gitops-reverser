@@ -248,7 +248,13 @@ func TestRun_ScanRepoText(t *testing.T) {
 	if code := run([]string{"--mode", "scan-repo", scanRepoFixture(t)}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errBuf.String())
 	}
-	for _, want := range []string{"candidates:", "kustomize-overlay", "accepted=2 refused=0"} {
+	// The base the overlay renders from is in none of those candidate lines — it is a
+	// candidate for nobody — so the text view names it separately or the reader cannot tell
+	// where the overlay's documents live.
+	for _, want := range []string{
+		"candidates:", "kustomize-overlay", "accepted=2 refused=0",
+		"reads: base", "read but never offered: 1", "read by: overlays/test",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("scan-repo text missing %q:\n%s", want, out.String())
 		}

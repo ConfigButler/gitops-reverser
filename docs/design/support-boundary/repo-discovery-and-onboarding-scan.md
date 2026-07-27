@@ -209,9 +209,9 @@ comment — the shipped report is strict JSON.)
 `resources` replaces the earlier `documents: { krm, nonKrm }` sketch with the shipped
 `{ rendered, editable, nonKrm }` split (see [First cut](#first-cut-shipped-2026-07-09) for
 why rendered and editable diverge for overlays). Plus a repo-level summary:
-`candidatesByLayout`, `accepted`/`refused` counts, `overlapConflicts`, and
-`unsupportedConstructs` (so a caller can say "this repo uses Helm inflation in
-`infra/`, which the operator does not manage").
+`candidatesByLayout`, `accepted`/`refused` counts, `overlapConflicts`, `readEdges`, and
+`unsupportedConstructs` (so a caller can say "this repo uses Helm inflation in `infra/`,
+which the operator does not manage").
 
 **Exit codes** reuse the CLI convention (`exitOK=0`, `exitRefused=1`,
 `exitUsage=2`). The eventual design: `--policy report` always exits 0 (pure report);
@@ -268,8 +268,50 @@ free to move.
 in `spec` (`root`, `mode`) and everything found in `status` (`generator`, `candidates`,
 `summary`). The candidate blocks below live under `status.candidates`. Per candidate: `path`,
 `layout`, `acceptedByOperator`, `refusalReasons[]` (`{code, detail, solvable, actor}`),
-`renderRoot`, `readScope[]`, `inferredNamespace`, `resources`, `renderedTypes`,
+`renderRoot`, `readScope[]`, `readBy[]`, `inferredNamespace`, `resources`, `renderedTypes`,
 `overlapsWith[]`.
+
+- **`readScope`, `readBy` and `summary.readEdges` are one relation, three projections** —
+  the repository's folder dependency graph. An edge means *this candidate's build renders
+  documents that live in that directory, which it does not own*. Two of the report's most
+  confusing outcomes are edges, and neither is legible without them. An overlay accepted
+  with `editable: 0` is not a puzzle once `readScope` says where its documents live. And
+  `overlapConflicts` answers "are these two candidates nested?", while the neighbouring
+  question — *is this folder one other folders render from?* — is `readBy`, and it decides
+  whether adopting it is merely wrong or actively disruptive.
+
+  The relation is the directory projection of **`renderScopePaths`**, the same function the
+  scoped acceptance gate renders from, and that is the point: a build reads a folder through
+  a base directory, through a `resources: ../shared/deployment.yaml`, and through a
+  `patches: [{path: ../../shared/patch.yaml}]`, and only the first is a kustomize base. Any
+  second enumeration of "what does this build load" would drift from the one the writer
+  obeys — an external patch was invisible to a first version of this graph for exactly that
+  reason (corpus fixture `supported/external-patch`).
+
+  The edges are **reach, not direct reference**: a root reaching a base through another base
+  gets an edge to each, and a directory nested under one the same root already reads is
+  folded into its parent. They answer "which folders does this build depend on", not "who
+  references whom, in what order".
+
+  The graph's nodes are two classes, which is why `readBy` alone would not have been enough.
+  A folder some kustomization references is never a render root — being referenced is
+  exactly what disqualifies it — so it is a node the candidate list never mentions, and
+  **most edges end at one**. The report does not publish those separately: they are the edge
+  targets absent from `status.candidates`, a set difference a consumer can take without
+  knowing any render rule, and a published index of them would be a second thing to keep
+  true (an earlier cut called them `readOnlyBases`, which was also wrong twice over — a
+  patch directory is neither a base nor read-only in any sense the name implies).
+
+  `readBy` is non-empty in the remaining case: a plain folder holding a file some distant
+  kustomization lists under `resources:` is a candidate another folder genuinely depends on
+  (corpus fixture `supported/shared-file-reference`).
+
+  What this is NOT: the Flux dependency graph. `Kustomization.spec.dependsOn`, `sourceRef`
+  and `HelmRelease.spec.dependsOn` are document semantics, not folder structure, and some of
+  them are not answerable from a repository at all — Flux 2.9's `ArtifactGenerator` assembles
+  an artifact from copy globs, so a `spec.path` may point inside a generated tarball that
+  only resolves against a running cluster. Same boundary as the deleted `fleetRoot`: the scan
+  answers what the tree can answer.
 
 - **`renderedTypes` says what is IN a candidate, not just how much** — which type lands in
   which namespace, as the folder RENDERS. For a render root it is read off the real
@@ -371,7 +413,11 @@ plain-per-env, kustomize-single, base+overlays, HelmRelease document vs. helm in
 unsupported kustomize (incl. `openapi`/`crds`), fleet-root, overlapping, no-krm, and
 regression fixtures for the counting/acceptance edges — an overlay whose base pulls in a
 nested base (deduped `rendered`), an overlay base holding parked YAML (excluded from
-`rendered`), and a plain folder the gate refuses (issues surfaced as `refusalReasons`).
+`rendered`), a plain folder the gate refuses (issues surfaced as `refusalReasons`), and two
+read-graph fixtures: `shared-file-reference` carries both node classes at once (an accepted
+overlay reading a base nobody is offered, plus a file inside an accepted plain candidate —
+the only shape in which `readBy` is non-empty), and `external-patch` pins the edge to a
+folder reached only through a `patches:` entry.
 
 ## Boundaries and non-goals
 
@@ -441,10 +487,12 @@ nested base (deduped `rendered`), an overlay base holding parked YAML (excluded 
    proposes neither (reports only).
 3. **Read-scope depth for overlays the operator refuses today** — how far up the tree to
    follow `../../base` when the operator would still refuse the folder. *First cut:*
-   `readScope` is the **minimal** set of out-of-subtree base directories (a base nested
-   under another reached base is folded into its parent, so the rendered-document count
-   never double-counts a shared nested base). How many levels a caller should *display*
-   remains a presentation choice.
+   `readScope` is the **minimal** set of out-of-subtree directories the build reads (a base
+   nested under another reached base is folded into its parent, so the rendered-document
+   count never double-counts a shared nested base). It covers every build input outside the
+   subtree — base directories, individually referenced resource files, and patch files
+   alike. How many levels a caller should *display* remains a presentation choice. Since the
+   edges are reported repo-wide (`summary.readEdges`) the caller can also walk them itself.
 4. **Library vs. CLI as the integration point** — *settled:* library-first
    (`ScanRepo`), CLI (`--mode scan-repo`) as the thin wrapper + CI gate.
 5. **`overlay-fan-out-unsupported` naming** — *moot: retired.* Render-root scoping shipped and

@@ -75,6 +75,20 @@
       "kustomize-overlay": 3
     },
     "accepted": 3,
-    "refused": 0
+    "refused": 0,
+    "readEdges": [
+      {
+        "from": "overlays/acc",
+        "to": "base"
+      },
+      {
+        "from": "overlays/prod",
+        "to": "base"
+      },
+      {
+        "from": "overlays/test",
+        "to": "base"
+      }
+    ]
   }
 }

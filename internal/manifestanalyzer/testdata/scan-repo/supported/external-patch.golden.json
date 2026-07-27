@@ -6,9 +6,10 @@
       "acceptedByOperator": true,
       "renderRoot": true,
       "readScope": [
-        "base"
+        "base",
+        "patches"
       ],
-      "inferredNamespace": "parked-test",
+      "inferredNamespace": "demo",
       "resources": {
         "rendered": 1,
         "editable": 0,
@@ -16,7 +17,7 @@
       },
       "renderedTypes": {
         "byNamespace": {
-          "parked-test": [
+          "demo": [
             "apps/v1/Deployment"
           ]
         }
@@ -33,6 +34,10 @@
       {
         "from": "overlays/test",
         "to": "base"
+      },
+      {
+        "from": "overlays/test",
+        "to": "patches"
       }
     ]
   }

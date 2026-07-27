@@ -74,6 +74,11 @@ Unsupported constructs: `none`.
 Reported rc `0`. Accepted `6`, refused `0`.
 Unsupported constructs: `none`.
 
+Read graph:
+
+- `apps/production` reads `apps/base/frontend` (not a candidate)
+- `apps/staging` reads `apps/base/frontend` (not a candidate)
+
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
 | `apps/production` | `kustomize-overlay` | true | `production` | 2/0/0 | none |
@@ -134,6 +139,11 @@ Unsupported constructs: `none`.
 Reported rc `0`. Accepted `2`, refused `0`.
 Unsupported constructs: `none`.
 
+Read graph:
+
+- `overlays/production` reads `base` (not a candidate)
+- `overlays/staging` reads `base` (not a candidate)
+
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
 | `overlays/production` | `kustomize-overlay` | true | `frontend-production` | 2/0/0 | none |
@@ -143,6 +153,11 @@ Unsupported constructs: `none`.
 
 Reported rc `0`. Accepted `1`, refused `3`.
 Unsupported constructs: `configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator`.
+
+Read graph:
+
+- `apps/frontend/overlays/production` reads `apps/frontend/base` (not a candidate)
+- `apps/frontend/overlays/staging` reads `apps/frontend/base` (not a candidate)
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -155,6 +170,11 @@ Unsupported constructs: `configMapGenerator, namePrefix, nameSuffix, remote-base
 
 Reported rc `0`. Accepted `3`, refused `2`.
 Unsupported constructs: `namePrefix`.
+
+Read graph:
+
+- `src/frontend/overlays/production` reads `src/frontend/base` (not a candidate)
+- `src/frontend/overlays/staging` reads `src/frontend/base` (not a candidate)
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|

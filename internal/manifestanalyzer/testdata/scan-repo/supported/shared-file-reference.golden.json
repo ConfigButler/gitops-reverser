@@ -1,0 +1,71 @@
+{
+  "candidates": [
+    {
+      "path": "overlays/test",
+      "layout": "kustomize-overlay",
+      "acceptedByOperator": true,
+      "renderRoot": true,
+      "readScope": [
+        "base",
+        "shared"
+      ],
+      "inferredNamespace": "demo",
+      "resources": {
+        "rendered": 2,
+        "editable": 0,
+        "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "demo": [
+            "apps/v1/Deployment",
+            "v1/ConfigMap"
+          ]
+        }
+      }
+    },
+    {
+      "path": "shared",
+      "layout": "plain",
+      "acceptedByOperator": true,
+      "renderRoot": false,
+      "readBy": [
+        "overlays/test"
+      ],
+      "inferredNamespace": "demo",
+      "resources": {
+        "rendered": 2,
+        "editable": 2,
+        "nonKrm": 0
+      },
+      "renderedTypes": {
+        "byNamespace": {
+          "demo": [
+            "v1/ConfigMap"
+          ]
+        },
+        "namespaceUndeclared": [
+          "v1/ConfigMap"
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "candidatesByLayout": {
+      "kustomize-overlay": 1,
+      "plain": 1
+    },
+    "accepted": 2,
+    "refused": 0,
+    "readEdges": [
+      {
+        "from": "overlays/test",
+        "to": "base"
+      },
+      {
+        "from": "overlays/test",
+        "to": "shared"
+      }
+    ]
+  }
+}

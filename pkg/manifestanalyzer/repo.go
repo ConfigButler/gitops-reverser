@@ -106,7 +106,7 @@ type RenderedTypes struct {
 	NamespaceUndeclared []string `json:"namespaceUndeclared,omitempty"`
 }
 
-// Candidate is one folder that could become a GitTarget.// Candidate is one folder that could become a GitTarget.
+// Candidate is one folder that could become a GitTarget.
 type Candidate struct {
 	// Path is slash-separated and relative to the repository root.
 	Path   string `json:"path"`
@@ -116,9 +116,25 @@ type Candidate struct {
 	RefusalReasons     []RefusalReason `json:"refusalReasons,omitempty"`
 	// RenderRoot reports whether the candidate is a kustomize render root.
 	RenderRoot bool `json:"renderRoot"`
-	// ReadScope lists base directories outside this candidate's subtree that its
-	// kustomization reads. Empty for plain and self-contained candidates.
+	// ReadScope lists the directories outside this candidate's subtree whose content its
+	// build renders — base kustomization directories its resources graph reaches, and the
+	// directories holding individual resource files it renders from elsewhere. Empty for
+	// plain and self-contained candidates.
+	//
+	// It is the field that explains the most confusing accept the scan produces: a folder
+	// reported acceptedByOperator with resources.editable 0 is an overlay whose documents
+	// live in a base it does not own. Read with [Candidate.ReadBy] and
+	// [RepoSummary.ReadEdges], it is one direction of the repository's folder graph.
 	ReadScope []string `json:"readScope,omitempty"`
+	// ReadBy names the candidates whose build renders THIS directory's content — the edge
+	// that decides whether adopting a folder is merely wrong or actively disruptive.
+	//
+	// It is usually empty, and structurally so: a directory another kustomization
+	// references is never a render root, so it is never offered as a candidate at all, and
+	// those edges end at a directory no candidate list mentions instead. The exception is a
+	// plain folder holding a file some distant kustomization lists under resources: — a
+	// candidate that another folder genuinely depends on.
+	ReadBy []string `json:"readBy,omitempty"`
 	// InferredNamespace is the namespace the candidate resolves to, when unambiguous.
 	InferredNamespace string         `json:"inferredNamespace,omitempty"`
 	Resources         ResourceCounts `json:"resources"`
@@ -149,12 +165,43 @@ type OverlapConflict struct {
 	Descendant string `json:"descendant"`
 }
 
+// ReadEdge is one folder-to-folder read: From's build renders documents that live in To,
+// a directory outside From's own subtree.
+//
+// The edges come from the same render rules the writer uses — which bases a kustomization
+// actually reaches through resources: and relative paths — so a consumer draws the graph
+// the operator would act on rather than one reconstructed from directory names. From is
+// always a candidate. To is a directory offered to nobody unless it is the file-reference
+// case on [Candidate.ReadBy], in which case it is a candidate too.
+//
+// An edge is REACH, not a direct reference: a root that reaches a base through another
+// base gets one edge to each, not a chain, and a directory nested under another directory
+// the same root reads is folded into its parent (reading the parent already reaches it).
+// So the edges answer "which folders does this build depend on" exactly, and "who
+// references whom, in what order" not at all — that is kustomize's business, and asking it
+// is what produced these edges.
+type ReadEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 // RepoSummary is the repository-level roll-up.
 type RepoSummary struct {
 	CandidatesByLayout map[Layout]int    `json:"candidatesByLayout"`
 	Accepted           int               `json:"accepted"`
 	Refused            int               `json:"refused"`
 	OverlapConflicts   []OverlapConflict `json:"overlapConflicts,omitempty"`
+	// ReadEdges is the repository's folder dependency graph, sorted: one edge per
+	// (candidate, directory it renders from outside its own subtree). It is the same
+	// relation [Candidate.ReadScope] and [Candidate.ReadBy] report per folder, collected so
+	// a consumer can draw the graph without walking the candidate list.
+	//
+	// Most edges end at a directory that is not a candidate: a folder some kustomization
+	// references is never a render root, so it is offered to nobody, and a consumer that
+	// draws only candidates draws no edges at all. Those nodes are exactly the edge targets
+	// absent from [RepoReportStatus.Candidates] — the report does not also publish them as a
+	// list, because a second copy of a set difference is a second thing to keep true.
+	ReadEdges []ReadEdge `json:"readEdges,omitempty"`
 	// UnsupportedConstructs is the sorted, de-duplicated set of unsupported kustomize
 	// features seen across refused candidates, so a tool can say "this repository uses
 	// Helm inflation, which the operator does not manage".
@@ -245,6 +292,9 @@ func repoReportFrom(rep internalanalyzer.RepoReport) RepoReport {
 			Ancestor: conflict.Ancestor, Descendant: conflict.Descendant,
 		})
 	}
+	for _, edge := range rep.Summary.ReadEdges {
+		out.Status.Summary.ReadEdges = append(out.Status.Summary.ReadEdges, ReadEdge{From: edge.From, To: edge.To})
+	}
 	for _, cand := range rep.Candidates {
 		out.Status.Candidates = append(out.Status.Candidates, candidateFrom(cand))
 	}
@@ -258,6 +308,7 @@ func candidateFrom(cand internalanalyzer.RepoCandidate) Candidate {
 		AcceptedByOperator: cand.AcceptedByOperator,
 		RenderRoot:         cand.RenderRoot,
 		ReadScope:          cand.ReadScope,
+		ReadBy:             cand.ReadBy,
 		InferredNamespace:  cand.InferredNamespace,
 		Resources: ResourceCounts{
 			Rendered: cand.Resources.Rendered,
