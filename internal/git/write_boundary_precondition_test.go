@@ -151,12 +151,12 @@ func TestFanInPrecondition_RefusesAmbiguousOverrideWriteThrough(t *testing.T) {
 	issues := refusalIssues(t, err)
 	assert.Contains(t, issueKinds(issues), manifestanalyzer.IssueWriteFanIn,
 		"an ambiguous-override write-through must be refused, not written through")
-	// Not the support boundary: per-render-root scoping generalizes this, so it is a
-	// "not yet" and must not be reported to a user as a redesign.
+	// Nobody can solve this from the repository or the GitTarget: the edit has nowhere safe
+	// to land while two render roots share the file.
 	assertClassified(t, issues)
 	for _, issue := range issues {
 		if issue.Kind == manifestanalyzer.IssueWriteFanIn {
-			assert.Equal(t, manifestanalyzer.SolvabilityNo, issue.Solvability)
+			assert.False(t, issue.Solvable)
 		}
 	}
 

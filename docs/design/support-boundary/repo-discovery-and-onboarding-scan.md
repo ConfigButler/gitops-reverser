@@ -261,15 +261,15 @@ free to move.
 `apiVersion: manifestanalyzer.configbutler.ai/v1alpha1`, `kind: RepoReport`, the scan request
 in `spec` (`root`, `mode`) and everything found in `status` (`generator`, `candidates`,
 `summary`). The candidate blocks below live under `status.candidates`. Per candidate: `path`,
-`layout`, `acceptedByOperator`, `refusalReasons[]` (`{code, detail, solvability, actor}`),
+`layout`, `acceptedByOperator`, `refusalReasons[]` (`{code, detail, solvable, actor}`),
 `renderRoot`, `readScope[]`, `inferredNamespace`, `resources`, `overlapsWith[]`.
 
-- **`solvability` says whether a refusal can be solved** (`yes` or `no`), and `actor`
-  (`repository-author`, `platform-operator`) names who can solve a `yes`. It is set by the
+- **`solvable` says whether anyone can make the candidate acceptable with this release**,
+  and `actor` (`repository-author`, `platform-operator`) names who. It is decided by the
   check that raised the refusal, because the same code answers differently depending on the
-  branch: `unsupported-kustomize` is `yes` for a build file the author broke and `no` for a
-  generator or a remote base. It describes the release you are running and promises nothing
-  about the future; an absent value means say nothing. See
+  branch: `unsupported-kustomize` is solvable for a build file the author broke and not for
+  a generator or a remote base. It describes the release you are running and promises
+  nothing about the future. See
   [analyzer-consumer-contract-asks.md](../analyzer-consumer-contract-asks.md).
 - **`status.generator`** names the build that produced the report, so a document that
   outlives the process that made it still says which release decided its contents.
@@ -291,7 +291,7 @@ in `spec` (`root`, `mode`) and everything found in `status` (`generator`, `candi
 candidate — `Scan` with `WriterAllowlist` (kustomize build directives **plus** the
 operator's `.sops.yaml` bootstrap config), so a folder the writer would adopt is not
 falsely reported refused. A refused plain / self-contained candidate carries the gate's
-issues as `refusalReasons` (`{code, detail, solvability, actor}` — duplicate identity, non-KRM YAML, a foreign
+issues as `refusalReasons` (`{code, detail, solvable, actor}` — duplicate identity, non-KRM YAML, a foreign
 file, an unsupported nested kustomization, …), never a bare `false`. The structural gate
 refuses `openapi`/`crds` alongside `configurations`, matching the
 [support boundary §1](kustomize-support-boundary.md).

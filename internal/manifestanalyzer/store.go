@@ -1006,11 +1006,11 @@ func (s *ManifestStore) resolveMapping(
 	if !known {
 		// Nothing serves this GVK: install the CRD (or widen what the registry may see)
 		// and the same folder is adoptable, so the platform operator can solve it.
-		dm.MappingRefusal = Classification{Solvability: SolvabilityYes, Actor: ActorPlatformOperator}
+		dm.MappingRefusal = Classification{Solvable: true, Actor: ActorPlatformOperator}
 	} else if !record.Followable() {
 		// Served, but ambiguous, denied, or missing a verb. Nobody can solve that from
 		// the repository or the GitTarget.
-		dm.MappingRefusal = Classification{Solvability: SolvabilityNo}
+		dm.MappingRefusal = Classification{Solvable: false}
 	}
 	if known && record.Followable() {
 		dm.Mapping = MappingFollowable

@@ -74,12 +74,12 @@ const ReasonRefusedStructural = "refused-structural"
 type RefusalReason struct {
 	Code   string `json:"code"`
 	Detail string `json:"detail"`
-	// Solvability and Actor carry the refusal's own answer to "can this be solved, and by
-	// whom" — projected verbatim from the acceptance issue that raised it, or set by the
-	// raise site for the reasons that are not issue kinds. Empty means unclassified; say
+	// Solvable and Actor carry the refusal's own answer to "can this be solved, and by
+	// whom" — projected verbatim from the acceptance issue that raised it, or decided by
+	// the raise site for the reasons that are not issue kinds. Empty means unclassified; say
 	// nothing about whether it can be solved.
-	Solvability Solvability `json:"solvability,omitempty"`
-	Actor       Actor       `json:"actor,omitempty"`
+	Solvable bool  `json:"solvable"`
+	Actor    Actor `json:"actor,omitempty"`
 }
 
 // ResourceCounts splits the KRM a candidate covers into what it renders versus what it
@@ -401,7 +401,7 @@ func candidateAcceptance(ctx context.Context, fsys fs.FS, dir string) Acceptance
 	if err != nil {
 		return Acceptance{Issues: []AcceptanceIssue{{
 			Kind: IssueForeignFile, Path: dir, Message: err.Error(),
-			Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
+			Solvable: true, Actor: ActorRepositoryAuthor,
 		}}}
 	}
 	policy := ScanPolicy{Acceptance: AcceptancePolicy{Allowlist: WriterAllowlist()}}
@@ -425,10 +425,10 @@ func issuesToReasons(issues []AcceptanceIssue) []RefusalReason {
 			detail = iss.Path + ": " + iss.Message
 		}
 		out = append(out, RefusalReason{
-			Code:        string(iss.Kind),
-			Detail:      detail,
-			Solvability: iss.Solvability,
-			Actor:       iss.Actor,
+			Code:     string(iss.Kind),
+			Detail:   detail,
+			Solvable: iss.Solvable,
+			Actor:    iss.Actor,
 		})
 	}
 	return out
@@ -538,16 +538,15 @@ func reachedResourceFiles(kusts map[string]*kustomizationDoc) map[string]struct{
 // rule.
 func refusedStructuralReason(doc *kustomizationDoc, content []byte) RefusalReason {
 	reason := RefusalReason{
-		Code:        ReasonRefusedStructural,
-		Detail:      refusedStructuralDetail(doc, content),
-		Solvability: SolvabilityNo,
+		Code:     ReasonRefusedStructural,
+		Detail:   refusedStructuralDetail(doc, content),
+		Solvable: false,
 	}
 	if doc == nil {
 		return reason
 	}
-	if class := classifyKustomizeFeatures(doc.features); class.Solvability != SolvabilityUnknown {
-		reason.Solvability, reason.Actor = class.Solvability, class.Actor
-	}
+	class := classifyKustomizeFeatures(doc.features)
+	reason.Solvable, reason.Actor = class.Solvable, class.Actor
 	return reason
 }
 

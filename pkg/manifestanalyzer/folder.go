@@ -4,7 +4,6 @@ package manifestanalyzer
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"io/fs"
 
@@ -70,35 +69,8 @@ const (
 	IssueUnplaceableEdit IssueKind = "unplaceable-edit"
 )
 
-// Solvability answers one question about a refusal: can it be solved? It is set by the
-// check that raised the refusal, because only that check knows — one code answers
-// differently depending on which branch emitted it, which is why this is a field on the
-// emitted value rather than a table beside the constants.
-//
-// It describes THIS RELEASE and makes no promise about the future. A refusal a later
-// release learns to accept simply reports differently on the next scan, so read this value
-// each time rather than caching a mapping from it.
-//
-// Consumers MUST treat an unrecognised or absent value as [SolvabilityUnknown] and say
-// nothing about whether the refusal can be solved. A code alone cannot tell "fix your
-// YAML" from "this folder cannot be adopted"; that is what this field is for.
-type Solvability string
-
-const (
-	// SolvabilityUnknown is the zero value: not classified. Say nothing.
-	SolvabilityUnknown Solvability = ""
-	// SolvabilityYes means someone can solve it with this release, by changing the
-	// repository or the GitTarget. [Actor] says who.
-	SolvabilityYes Solvability = "yes"
-	// SolvabilityNo means nobody can solve it with this release: the construct is outside
-	// the adoption model, or the support is simply not there. The folder cannot be adopted
-	// as it stands, and no [Actor] is named because there is nobody to name.
-	SolvabilityNo Solvability = "no"
-)
-
-// Actor names who can solve a refusal. It is empty unless [Solvability] is
-// [SolvabilityYes] — naming someone for a refusal they cannot act on is worse than naming
-// nobody.
+// Actor names who can solve a refusal. It is empty unless the refusal is solvable —
+// naming someone for a refusal they cannot act on is worse than naming nobody.
 //
 // It matters because some refusals are solvable ONLY by the person who owns the GitTarget,
 // who is often not the person reading the message: rendering an out-of-scope refusal as
@@ -107,7 +79,8 @@ const (
 type Actor string
 
 const (
-	// ActorUnknown is the zero value: nobody can solve it today, or it was not classified.
+	// ActorUnknown is the zero value: nobody can solve this refusal, or the check did not
+	// say who.
 	ActorUnknown Actor = ""
 	// ActorRepositoryAuthor is the person who owns the files in the repository.
 	ActorRepositoryAuthor Actor = "repository-author"
@@ -127,9 +100,17 @@ type Issue struct {
 	DocumentIndex int `json:"documentIndex"`
 	// Message is a human-readable explanation. It is not a stable string.
 	Message string `json:"message"`
-	// Solvability is empty when the check did not classify itself.
-	Solvability Solvability `json:"solvability,omitempty"`
-	// Actor is empty unless Solvability is [SolvabilityYes].
+	// Solvable says whether anyone can make this folder acceptable with this release. It
+	// is set by the check that raised the issue, because only that check knows: one code
+	// answers differently depending on which branch emitted it, which is why this is a
+	// field on the emitted value rather than a table beside the constants.
+	//
+	// It describes THIS RELEASE and promises nothing about the future, so read it on every
+	// scan rather than caching a mapping from it.
+	Solvable bool `json:"solvable"`
+	// Actor names who can solve it. Empty unless Solvable — a code alone cannot tell "fix
+	// your YAML" from "this folder cannot be adopted", and rendering an out-of-scope
+	// refusal as "fix your repository" to someone who cannot is what this half prevents.
 	Actor Actor `json:"actor,omitempty"`
 }
 
@@ -211,12 +192,24 @@ func ScanFolderFS(ctx context.Context, fsys fs.FS) FolderReport {
 // WriteJSON writes the report as indented JSON — byte-for-byte what
 // `manifest-analyzer --mode scan-folder --format json` prints.
 func (r FolderReport) WriteJSON(w io.Writer) error {
+	return writeJSON(w, r.withNonNilIssues())
+}
+
+// WriteYAML writes the report as YAML — byte-for-byte what
+// `manifest-analyzer --mode scan-folder --format yaml` prints. The report is a KRM
+// document, so this is the serialization it reads best in, and the one a human can commit
+// beside the manifests it describes.
+func (r FolderReport) WriteYAML(w io.Writer) error {
+	return writeYAML(w, r.withNonNilIssues())
+}
+
+// withNonNilIssues returns a copy whose Issues marshals as [] rather than null, so a
+// consumer can iterate it unconditionally.
+func (r FolderReport) withNonNilIssues() FolderReport {
 	if r.Status.Issues == nil {
 		r.Status.Issues = []Issue{}
 	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(r)
+	return r
 }
 
 // folderScanPolicy is the structure-only adoption gate: the default allowlist, no
@@ -248,7 +241,7 @@ func folderReportFrom(acc internalanalyzer.Acceptance) FolderReport {
 			Path:          issue.Path,
 			DocumentIndex: issue.DocumentIndex,
 			Message:       issue.Message,
-			Solvability:   Solvability(issue.Solvability),
+			Solvable:      issue.Solvable,
 			Actor:         Actor(issue.Actor),
 		})
 	}

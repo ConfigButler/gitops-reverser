@@ -147,12 +147,12 @@ type AcceptanceIssue struct {
 	Path          string    `json:"path"`
 	DocumentIndex int       `json:"documentIndex"`
 	Message       string    `json:"message"`
-	// Solvability says whether this refusal can be solved, and Actor names who can solve
-	// it when someone can. Both are set by the check that RAISED the issue, because only
-	// that check knows: several kinds answer differently depending on which branch emitted
-	// them. Empty means unclassified — say nothing about whether it can be solved.
-	Solvability Solvability `json:"solvability,omitempty"`
-	Actor       Actor       `json:"actor,omitempty"`
+	// Solvable says whether anyone can make this folder acceptable with the current
+	// release, and Actor names who. Both are decided by the check that RAISED the issue,
+	// because only that check knows: several kinds answer differently depending on which
+	// branch emitted them. Actor is empty unless Solvable.
+	Solvable bool  `json:"solvable"`
+	Actor    Actor `json:"actor,omitempty"`
 	// Field and Token add structured diagnostics for a render-fidelity refusal. They are empty
 	// for structural acceptance issues, which predate the render-vs-live gate.
 	Field string `json:"field,omitempty"`
@@ -545,21 +545,21 @@ func buildIssues(
 			if duplicates[ref] {
 				issues = append(issues, AcceptanceIssue{
 					Kind: IssueDuplicate, Path: f.Path, DocumentIndex: d.Index,
-					Message:     "duplicate of " + identityRef(d.Identity),
-					Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
+					Message:  "duplicate of " + identityRef(d.Identity),
+					Solvable: true, Actor: ActorRepositoryAuthor,
 				})
 			}
 			switch d.Class {
 			case ClassNonKRM:
 				issues = append(issues, AcceptanceIssue{
 					Kind: IssueNonKRM, Path: f.Path, DocumentIndex: d.Index,
-					Message:     "YAML is not a Kubernetes manifest",
-					Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
+					Message:  "YAML is not a Kubernetes manifest",
+					Solvable: true, Actor: ActorRepositoryAuthor,
 				})
 			case ClassInvalidYAML:
 				issues = append(issues, AcceptanceIssue{
 					Kind: IssueInvalidYAML, Path: f.Path, DocumentIndex: d.Index, Message: invalidMsgs[ref],
-					Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
+					Solvable: true, Actor: ActorRepositoryAuthor,
 				})
 			case ClassNonYAML, ClassEmpty, ClassKRM:
 				// Not acceptance issues: ignored files, empty documents, and valid KRM.

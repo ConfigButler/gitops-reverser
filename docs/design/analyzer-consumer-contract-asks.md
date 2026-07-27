@@ -15,13 +15,13 @@
    asking for version clarity in this same document.
 2. **The three unclassified refusal codes are decided during implementation** (Ask 1). The
    implementing session proposes an answer per *raise site* from the code, and raises each
-   as a review comment on its PR for the maintainer to accept or overturn. They do not ship
-   as `SolvabilityUnknown`, and they do not block the rest of Ask 1.
+   as a review comment on its PR for the maintainer to accept or overturn. They ship
+   decided, and they do not block the rest of Ask 1.
 
-3. **The field is `Solvability`, and it is two-valued** (Ask 1, decided 2026-07-27,
-   overturning the four-value proposal recorded further down this document). It answers
-   one question in words a non-native speaker reads without a glossary: *can this refusal
-   be solved?* `yes` (with an `Actor` naming who) or `no`. See "The shape".
+3. **The field is `Solvable`, a boolean** (Ask 1, decided 2026-07-27, overturning the
+   four-value enum proposed further down this document). It answers one question in words
+   a non-native speaker reads without a glossary: *can this refusal be solved?* `Actor`
+   names who, when someone can. See "The shape".
 
 Each ask is one PR, in the order below — Ask 3 is unblocked, Ask 1 is scaffolding plus
 fourteen settled classifications, Ask 2 carries the breaking change.
@@ -142,19 +142,7 @@ fifteen codes without any of them saying whether they can be solved.
 Additive, and inert for anyone who ignores it:
 
 ```go
-// Solvability answers one question about a refusal: can it be solved? It is set by
-// the check that raised it, because only that check knows. It describes THIS
-// RELEASE and promises nothing about the future. Consumers MUST treat an
-// unrecognised or absent value as SolvabilityUnknown and say nothing.
-type Solvability string
-
-const (
-    SolvabilityUnknown Solvability = ""    // not classified; say nothing
-    SolvabilityYes     Solvability = "yes" // someone can solve it now; Actor says who
-    SolvabilityNo      Solvability = "no"  // nobody can solve it with this release
-)
-
-// Actor names who can solve a refusal. Empty unless Solvability is SolvabilityYes.
+// Actor names who can solve a refusal. Empty unless the refusal is Solvable.
 type Actor string
 
 const (
@@ -164,11 +152,12 @@ const (
 )
 
 type RefusalReason struct {
-    Code   IssueKind `json:"code"`
-    Detail string    `json:"detail"`
-    // Solvability is empty when the check did not classify itself.
-    Solvability Solvability `json:"solvability,omitempty"`
-    // Actor is empty unless Solvability is SolvabilityYes.
+    Code   string `json:"code"`
+    Detail string `json:"detail"`
+    // Solvable says whether anyone can make this folder acceptable with THIS release.
+    // Decided by the check that raised the refusal, because only that check knows.
+    Solvable bool `json:"solvable"`
+    // Actor names who can solve it. Empty unless Solvable.
     Actor Actor `json:"actor,omitempty"`
 }
 ```
@@ -179,29 +168,45 @@ can be solved and, when applicable, by whom.
 `Issue` takes both fields for the same reason: a policy that treats an issue as blocking
 is making this decision already, without the data to make it.
 
-**Two values, decided 2026-07-27.** This document originally argued for four, keeping a
-*not-yet* axis (`pending-upstream`) beside the boundary. That was overturned during
-implementation, for two reasons. It buys the reader nothing: a folder they cannot pick
-today is one they cannot pick today, and the action is identical either way. And it is a
-roadmap promise living in a machine-readable field, which ages into a lie in one direction
-or the other — we either never ship the thing we hinted at, or someone restructures a
-repository because we said "permanent" about something we shipped two releases later. So
-`no` means *nobody can solve this with this release*, never *not ever*, and a refusal a
-later release learns to accept simply reports differently on the next scan, because the
-consumer reads this value rather than a table it cached.
+**A boolean, decided 2026-07-27.** This document originally argued for a four-valued enum,
+keeping a *not-yet* axis (`pending-upstream`) beside the boundary. Two things were
+overturned, in two steps.
 
-What that gives up, stated plainly: the consumer can no longer split "not supported yet"
-from "cannot be synced" on this field alone. The bigger win survives intact — separating
-*solvable today, by this person* from everything else — and that was always the half most
-of their codes needed. `SolvabilityUnknown` still has to exist as the zero value, or an
-unclassified path emits a confident wrong answer instead of silence.
+First the *not-yet* axis. It buys the reader nothing — a folder they cannot pick today is
+one they cannot pick today, and the action is identical either way — while putting a
+roadmap promise in a machine-readable field, which ages into a lie in one direction or the
+other: we either never ship what we hinted at, or someone restructures a repository because
+we said "permanent" about something we shipped two releases later. So the field says
+*nobody can solve this with this release*, never *not ever*, and a refusal a later release
+learns to accept simply reports differently on the next scan, because the consumer reads
+this value rather than a table it cached.
+
+Then the enum itself, in favour of a plain `bool`. The enum's remaining argument was its
+zero value: `""` meant "nobody decided", so a forgotten raise site degraded to silence
+rather than to a confident wrong answer, and a test could detect it. **The boolean gives
+that up, and it is worth stating exactly what is lost:** `false` is both the honest answer
+for most refusals and the value a forgotten raise site produces, so at runtime the two are
+indistinguishable. What still guards it is that the classification table is checked against
+the SOURCE — a new `IssueKind` fails until someone decides what it answers, and every
+unmodelled kustomize construct fails until it appears in the map. That catches the omission
+where it is still visible, at the constant, rather than at the emitted value.
+
+The trade was taken deliberately: a simpler contract for every consumer, in exchange for a
+narrower net. It is also why `solvable` is emitted ALWAYS, never `omitempty` — `false` and
+"absent" must stay distinguishable on the wire even though they are not in Go, so a report
+that predates the field is still readable as "nobody said".
+
+What the two-value shape gives up in the first place: the consumer can no longer split "not
+supported yet" from "cannot be synced" on this field alone. The bigger win survives intact —
+separating *solvable today, by this person* from everything else — and that was always the
+half most of their codes needed.
 
 They also note that adding a field is additive and need not move `SchemaVersion`. Correct,
 and it stays correct under the KRM envelope recommended in Ask 2 — that envelope is a
 separate, deliberate breaking change, and this field should not wait for it.
 
 Ship the actor field. The consumer offered it as optional; it is the cheaper half of the
-same constant, and two of our codes are fixable **only** by the platform operator, whom
+same constant, and two of our codes are solvable **only** by the platform operator, whom
 their wizard does not have on the screen. Without it, `out-of-scope` renders as "fix your
 repository" to someone who cannot.
 
@@ -242,8 +247,8 @@ since that is the sentence the field exists to write.
 
 **How these three get settled — decided.** The implementing session reads each raise site,
 proposes an answer for it, and raises the proposal as a review comment on its own PR for
-the maintainer to accept or overturn. They ship classified, never as `SolvabilityUnknown`,
-and they do not hold up the fourteen above. **All three are settled below**; the reasoning
+the maintainer to accept or overturn. They ship decided, and they do not hold up the
+fourteen above. **All three are settled below**; the reasoning
 is kept so a later change knows what it is overturning.
 
 **`unsupported-kustomize` — classified per construct at the raise site.** This is the case
@@ -251,15 +256,15 @@ that proves the whole ask: one code, both answers. The split is whether a person
 something about it today:
 
 - a build file that does not parse, malformed `images`/`replicas`, a patch path outside the
-  tree, a root kustomize cannot build → `yes`/author. One commit clears it, and no support
+  tree, a root kustomize cannot build → solvable by the author. One commit clears it, and no support
   boundary is in play.
 - generators, components, replacements, transformers, name prefix/suffix, inline and
-  JSON6902 patches, `vars`, `validators` → `no`. Their output cannot be mapped back to a
-  source document at all.
-- remote bases, Helm inflation, `configurations`/`crds`/`openapi` → `no`. This release does
+  JSON6902 patches, `vars`, `validators` → not solvable. Their output cannot be mapped back
+  to a source document at all.
+- remote bases, Helm inflation, `configurations`/`crds`/`openapi` → not solvable. This release does
   not fetch or model them, and neither the author nor the platform operator can change that
   from where they stand. Under the four-value proposal these were `pending-upstream`; the
-  two-value decision folds them into `no`, which claims only what is true today.
+  decision above folds them into "not solvable", which claims only what is true today.
 
 When several constructs are present the **least solvable** one wins: fixing a malformed
 patch does not make a folder adoptable while it also declares a `configMapGenerator`.
@@ -268,23 +273,23 @@ A static per-code map cannot express any of this. The field can, and it is why t
 goes on the emitted reason rather than into a table beside the constants.
 
 **`unresolved-krm` — splits at the raise site.** A kind absent because nothing serves it is
-`yes`/`platform`: install the CRD and the same folder is adoptable. A kind that is served
-but ambiguous, denied by policy, or missing a verb is `no`. One code, two answers, decided
+solvable by the platform operator: install the CRD and the same folder is adoptable. A kind
+that is served but ambiguous, denied by policy, or missing a verb is not solvable. One code, two answers, decided
 where the registry's answer is still in hand rather than at the acceptance gate, which sees
 only the verdict.
 
-**`kustomize-render-refused` → `no`.** It refuses a *write*, not a folder, so "can this
+**`kustomize-render-refused` → not solvable.** It refuses a *write*, not a folder, so "can this
 folder ever be picked" was the wrong question for it. The narrower claim is the true one:
 the oracle refuses a write it cannot vouch for, and neither the repository author nor the
 platform operator can make it vouch.
 
 **One row moved during implementation.** `refused-structural` is classified from the same
-feature set as `unsupported-kustomize` rather than flatly `no`. Implementing the settled row
+feature set as `unsupported-kustomize` rather than flatly not-solvable. Implementing the settled row
 verbatim made the two surfaces disagree about one directory: a render root whose build file
-merely does not parse read `no` through `refused-structural` while the gate called the same
-fault the author's to fix through `unsupported-kustomize`. Two answers about one folder is
-the bug this document is about, so both classify from one place, with `no` whenever the
-constructs are unknown.
+merely does not parse read "not solvable" through `refused-structural` while the gate called
+the same fault the author's to fix through `unsupported-kustomize`. Two answers about one
+folder is the bug this document is about, so both classify from one place, reporting not
+solvable whenever the constructs are unknown.
 
 ### Implementation notes
 
@@ -297,14 +302,14 @@ constructs are unknown.
   releases, which is how we got here.
 - One test per constant is **not sufficient**, and the decision cases above are why:
   `unsupported-kustomize` and `unresolved-krm` classify differently depending on which
-  branch raised them, so a per-constant test passes while a new branch emits
-  `SolvabilityUnknown`. Cover each emission path, not each constant. This is the one place
-  the ask costs more than a constant per site, and skipping it reproduces the original bug
-  one level down.
+  branch raised them, so a per-constant test passes while a new branch reports the wrong
+  answer. Cover each emission path, not each constant. This is the one place the ask costs
+  more than a constant per site, and skipping it reproduces the original bug one level down.
 - Reconcile the internal and public kind sets in the same pass, so the classification test
   covers the codes a consumer can actually receive rather than the subset we export.
-- `SolvabilityUnknown` must stay the zero value so an unclassified path degrades to silence
-  rather than to a confident wrong sentence.
+- `solvable` is emitted always, never `omitempty`: a boolean's zero value is a real answer,
+  so "false" and "absent" must stay distinguishable on the wire even though Go cannot tell
+  them apart.
 
 ### Meanwhile, downstream
 

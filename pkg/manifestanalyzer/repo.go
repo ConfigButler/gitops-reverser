@@ -4,7 +4,6 @@ package manifestanalyzer
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 
 	internalanalyzer "github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -59,10 +58,11 @@ type RefusalReason struct {
 	Code IssueKind `json:"code"`
 	// Detail is human-readable and not a stable string.
 	Detail string `json:"detail"`
-	// Solvability says whether this refusal can ever stop being one. Empty when the check
-	// that raised it did not classify itself; treat that as "say nothing".
-	Solvability Solvability `json:"solvability,omitempty"`
-	// Actor is empty unless Solvability is [SolvabilityYes].
+	// Solvable says whether anyone can make this candidate acceptable with this release.
+	// A report produced before this field shipped carries no `solvable` key at all; read
+	// that as "nobody said", not as false.
+	Solvable bool `json:"solvable"`
+	// Actor names who can solve it. Empty unless Solvable.
 	Actor Actor `json:"actor,omitempty"`
 }
 
@@ -157,12 +157,24 @@ func ScanRepo(ctx context.Context, root string) (RepoReport, error) {
 // WriteJSON writes the report as indented JSON — byte-for-byte what
 // `manifest-analyzer --mode scan-repo --format json` prints.
 func (r RepoReport) WriteJSON(w io.Writer) error {
+	return writeJSON(w, r.withNonNilCandidates())
+}
+
+// WriteYAML writes the report as YAML — byte-for-byte what
+// `manifest-analyzer --mode scan-repo --format yaml` prints. The report is a KRM document,
+// so this is the serialization it reads best in, and the one a human can commit beside the
+// manifests it describes.
+func (r RepoReport) WriteYAML(w io.Writer) error {
+	return writeYAML(w, r.withNonNilCandidates())
+}
+
+// withNonNilCandidates returns a copy whose Candidates marshals as [] rather than null, so
+// a consumer can iterate it unconditionally.
+func (r RepoReport) withNonNilCandidates() RepoReport {
 	if r.Status.Candidates == nil {
 		r.Status.Candidates = []Candidate{}
 	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(r)
+	return r
 }
 
 // repoReportFrom projects the internal discovery report onto the public contract.
@@ -213,10 +225,10 @@ func candidateFrom(cand internalanalyzer.RepoCandidate) Candidate {
 	}
 	for _, reason := range cand.RefusalReasons {
 		out.RefusalReasons = append(out.RefusalReasons, RefusalReason{
-			Code:        IssueKind(reason.Code),
-			Detail:      reason.Detail,
-			Solvability: Solvability(reason.Solvability),
-			Actor:       Actor(reason.Actor),
+			Code:     IssueKind(reason.Code),
+			Detail:   reason.Detail,
+			Solvable: reason.Solvable,
+			Actor:    Actor(reason.Actor),
 		})
 	}
 	return out

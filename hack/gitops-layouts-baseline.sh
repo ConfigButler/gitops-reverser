@@ -44,7 +44,7 @@ emit_summary_row() {
   constructs=$(jq -r "$MD_CELL"'(.status.summary.unsupportedConstructs // []) | join(", ") | md
                       | if . == "" then "-" else . end' <<<"$json")
   signal=$(jq -r "$MD_CELL"'[.status.candidates[]? | select(.acceptedByOperator == false)
-                   | .refusalReasons[]? | "\(.code) [\(.solvability // "unclassified")]: \(.detail)" | md]
+                   | .refusalReasons[]? | "\(.code) [\(if .solvable then "solvable" else "not solvable" end)]: \(.detail)" | md]
                   | if length == 0 then "None"
                     elif length > 4 then (.[0:4] | join("<br>")) + "<br>+\(length - 4) more"
                     else join("<br>") end' <<<"$json")
@@ -89,7 +89,7 @@ emit_detail() {
          | "| `\(.path | md)` | `\(.layout | md)` | \(.acceptedByOperator) | `\(.inferredNamespace // "-" | md)` | "
            + "\(.resources.rendered // 0)/\(.resources.editable // 0)/\(.resources.nonKrm // 0) | "
            + ((.refusalReasons // [])
-              | map("\(.code) [\(.solvability // "unclassified")]: \(.detail)" | md) | join("<br>")
+              | map("\(.code) [\(if .solvable then "solvable" else "not solvable" end)]: \(.detail)" | md) | join("<br>")
               | if . == "" then "none" else . end)
            + " |"' <<<"$json"
 }
@@ -117,9 +117,9 @@ Reading rules:
   input set that lives in a Git-host API.
 - **A missing candidate matters as much as a refusal**: it means the tool did not
   explain that part of the repository at all.
-- Each refusal reason carries in brackets whether it can be solved: `yes` or `no`. A
-  refusal that changes that answer has changed what a user is told to do about it, which
-  is a boundary move like any other and belongs in this diff.
+- Each refusal reason carries in brackets whether anyone can solve it. A refusal that
+  changes that answer has changed what a user is told to do about it, which is a boundary
+  move like any other and belongs in this diff.
 
 ## Summary
 

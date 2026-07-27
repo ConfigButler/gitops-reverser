@@ -24,11 +24,19 @@ import (
 // drifts exactly like the doc comments that caused the original bug: the code space went
 // degenerate when a refusal was retired, and nothing said so. Two things are pinned here:
 //
-//   - every IssueKind constant is classified, discovered from the SOURCE rather than from
-//     a list someone remembers to update, so a new kind fails this test; and
-//   - every EMISSION PATH is classified, because two kinds answer differently depending on
-//     which branch raised them. A per-constant test passes while a new branch quietly
-//     emits SolvabilityUnknown, which reproduces the original bug one level down.
+//   - every IssueKind constant appears in the table below, discovered from the SOURCE
+//     rather than from a list someone remembers to update, so a new kind fails this test
+//     until someone decides what it answers; and
+//   - every EMISSION PATH produces the answer the table claims, because two kinds answer
+//     differently depending on which branch raised them. A per-constant test passes while
+//     a new branch quietly reports the wrong thing, which reproduces the original bug one
+//     level down.
+//
+// Solvable is a bool, so "nobody decided" is indistinguishable from "cannot be solved" at
+// runtime: false is both the honest answer for most refusals and the value a forgotten
+// raise site produces. That is a deliberate trade for a simpler contract, and it is why
+// the table below is checked against the SOURCE — the kind list is the one place the
+// omission is still visible.
 //
 // See docs/design/analyzer-consumer-contract-asks.md (Ask 1).
 
@@ -36,32 +44,32 @@ import (
 // whose answer depends on the branch that raised it lists every branch it can produce, so
 // this file never claims a single answer where the code has two.
 var classificationByKind = map[IssueKind][]Classification{
-	IssueInvalidYAML:            {{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}},
-	IssueDuplicate:              {{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}},
-	IssueImpureManagedFile:      {{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}},
-	IssueMixedFile:              {{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}},
-	IssueIgnoreShadowsManaged:   {{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}},
-	IssueNonKRM:                 {{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}},
-	IssueForeignFile:            {{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}},
-	IssueForeignSymlink:         {{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}},
-	IssueForeignSubmodule:       {{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}},
-	IssueOutOfScope:             {{Solvability: SolvabilityYes, Actor: ActorPlatformOperator}},
-	IssueWriteEscapesScope:      {{Solvability: SolvabilityYes, Actor: ActorPlatformOperator}},
-	IssueRenderDoesNotMatchLive: {{Solvability: SolvabilityYes, Actor: ActorPlatformOperator}},
-	IssueWriteFanIn:             {{Solvability: SolvabilityNo}},
-	IssueUnplaceableEdit:        {{Solvability: SolvabilityNo}},
-	IssueRenderRefused:          {{Solvability: SolvabilityNo}},
+	IssueInvalidYAML:            {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueDuplicate:              {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueImpureManagedFile:      {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueMixedFile:              {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueIgnoreShadowsManaged:   {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueNonKRM:                 {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueForeignFile:            {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueForeignSymlink:         {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueForeignSubmodule:       {{Solvable: true, Actor: ActorRepositoryAuthor}},
+	IssueOutOfScope:             {{Solvable: true, Actor: ActorPlatformOperator}},
+	IssueWriteEscapesScope:      {{Solvable: true, Actor: ActorPlatformOperator}},
+	IssueRenderDoesNotMatchLive: {{Solvable: true, Actor: ActorPlatformOperator}},
+	IssueWriteFanIn:             {{Solvable: false}},
+	IssueUnplaceableEdit:        {{Solvable: false}},
+	IssueRenderRefused:          {{Solvable: false}},
 	// One code, two answers — the case that proves the whole ask. A build file the author
 	// broke is one commit from working; a generator is not solvable at all.
 	IssueUnsupportedKustomize: {
-		{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor},
-		{Solvability: SolvabilityNo},
+		{Solvable: true, Actor: ActorRepositoryAuthor},
+		{Solvable: false},
 	},
 	// A kind nothing serves is one CRD install away; a kind that is served but ambiguous,
 	// denied, or missing a verb is not solvable from either side.
 	IssueUnresolvedKRM: {
-		{Solvability: SolvabilityYes, Actor: ActorPlatformOperator},
-		{Solvability: SolvabilityNo},
+		{Solvable: true, Actor: ActorPlatformOperator},
+		{Solvable: false},
 	},
 }
 
@@ -77,8 +85,9 @@ func TestEveryIssueKindIsClassified(t *testing.T) {
 	for _, kind := range kinds {
 		classes, ok := classificationByKind[IssueKind(kind)]
 		if !ok {
-			t.Errorf("IssueKind %q does not say whether it can be solved: a consumer receiving it can only "+
-				"say \"this folder cannot be picked\". Classify it at its raise site and add it here.", kind)
+			t.Errorf("IssueKind %q is not in the settled table: decide at its raise site whether anyone "+
+				"can solve it, and record the answer here. Left alone it reports \"not solvable\", which "+
+				"is a claim nobody made.", kind)
 			continue
 		}
 		for _, c := range classes {
@@ -87,18 +96,15 @@ func TestEveryIssueKindIsClassified(t *testing.T) {
 	}
 }
 
-// assertCoherent holds the two invariants every classification must satisfy: it answers
-// the question, and it names an actor exactly when someone can act.
+// assertCoherent holds the invariant every classification must satisfy: it names an actor
+// exactly when someone can act.
 func assertCoherent(t *testing.T, what string, c Classification) {
 	t.Helper()
-	if c.Solvability == SolvabilityUnknown {
-		t.Errorf("%q is classified SolvabilityUnknown; refusals ship classified", what)
-	}
-	if c.Solvability == SolvabilityYes && c.Actor == ActorUnknown {
+	if c.Solvable && c.Actor == ActorUnknown {
 		t.Errorf("%q is solvable but names no actor, so it renders as \"fix your repository\" to "+
 			"someone who may not be able to", what)
 	}
-	if c.Solvability != SolvabilityYes && c.Actor != ActorUnknown {
+	if !c.Solvable && c.Actor != ActorUnknown {
 		t.Errorf("%q names an actor for a refusal nobody can solve", what)
 	}
 }
@@ -194,14 +200,14 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			fsys: fstest.MapFS{"broken.yaml": {Data: []byte(brokenYAML)}},
 			want: []wantIssue{{
 				kind:  IssueInvalidYAML,
-				class: Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor},
+				class: Classification{Solvable: true, Actor: ActorRepositoryAuthor},
 			}},
 		},
 		"non-krm yaml": {
 			fsys: fstest.MapFS{"values.yaml": {Data: []byte(plainYAML)}},
 			want: []wantIssue{{
 				kind:  IssueNonKRM,
-				class: Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor},
+				class: Classification{Solvable: true, Actor: ActorRepositoryAuthor},
 			}},
 		},
 		"duplicate identity": {
@@ -211,14 +217,14 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			},
 			want: []wantIssue{{
 				kind:  IssueDuplicate,
-				class: Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor},
+				class: Classification{Solvable: true, Actor: ActorRepositoryAuthor},
 			}},
 		},
 		"impure managed file": {
 			fsys: fstest.MapFS{"mixed.yaml": {Data: []byte(deployYAML + "---\n" + plainYAML)}},
 			want: []wantIssue{{
 				kind:  IssueImpureManagedFile,
-				class: Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor},
+				class: Classification{Solvable: true, Actor: ActorRepositoryAuthor},
 			}},
 		},
 		"managed resource in a build directive": {
@@ -226,7 +232,7 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			policy: AcceptancePolicy{Allowlist: DefaultAllowlist()},
 			want: []wantIssue{{
 				kind:  IssueMixedFile,
-				class: Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor},
+				class: Classification{Solvable: true, Actor: ActorRepositoryAuthor},
 			}},
 		},
 		"foreign file": {
@@ -236,7 +242,7 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			},
 			want: []wantIssue{{
 				kind:  IssueForeignFile,
-				class: Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor},
+				class: Classification{Solvable: true, Actor: ActorRepositoryAuthor},
 			}},
 		},
 		"out of scope": {
@@ -247,7 +253,7 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			},
 			want: []wantIssue{{
 				kind:  IssueOutOfScope,
-				class: Classification{Solvability: SolvabilityYes, Actor: ActorPlatformOperator},
+				class: Classification{Solvable: true, Actor: ActorPlatformOperator},
 			}},
 		},
 		// The two unresolved-krm branches, which is the split the raise site exists to
@@ -258,7 +264,7 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			mapper: typeset.NewSnapshotRegistry(typeset.Snapshot{Generation: 1}),
 			want: []wantIssue{{
 				kind:  IssueUnresolvedKRM,
-				class: Classification{Solvability: SolvabilityYes, Actor: ActorPlatformOperator},
+				class: Classification{Solvable: true, Actor: ActorPlatformOperator},
 			}},
 		},
 		"unresolved krm, kind served but not followable": {
@@ -266,7 +272,7 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			mapper: typeset.NewSnapshotRegistry(sampleClusterSnapshot()),
 			want: []wantIssue{{
 				kind:  IssueUnresolvedKRM,
-				class: Classification{Solvability: SolvabilityNo},
+				class: Classification{Solvable: false},
 			}},
 		},
 		// Both unsupported-kustomize branches, through the real gate.
@@ -278,7 +284,7 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			policy: AcceptancePolicy{Allowlist: DefaultAllowlist()},
 			want: []wantIssue{{
 				kind:  IssueUnsupportedKustomize,
-				class: Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor},
+				class: Classification{Solvable: true, Actor: ActorRepositoryAuthor},
 			}},
 		},
 		"unsupported kustomize, context we do not read": {
@@ -289,7 +295,7 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			policy: AcceptancePolicy{Allowlist: DefaultAllowlist()},
 			want: []wantIssue{{
 				kind:  IssueUnsupportedKustomize,
-				class: Classification{Solvability: SolvabilityNo},
+				class: Classification{Solvable: false},
 			}},
 		},
 		"unsupported kustomize, the support boundary": {
@@ -300,7 +306,7 @@ func TestAcceptanceEmissionPathsAreClassified(t *testing.T) {
 			policy: AcceptancePolicy{Allowlist: DefaultAllowlist()},
 			want: []wantIssue{{
 				kind:  IssueUnsupportedKustomize,
-				class: Classification{Solvability: SolvabilityNo},
+				class: Classification{Solvable: false},
 			}},
 		},
 	}
@@ -327,7 +333,7 @@ func assertIssueClassified(t *testing.T, acc Acceptance, want wantIssue) {
 		if issue.Kind != want.kind {
 			continue
 		}
-		if got := (Classification{Solvability: issue.Solvability, Actor: issue.Actor}); got != want.class {
+		if got := (Classification{Solvable: issue.Solvable, Actor: issue.Actor}); got != want.class {
 			t.Errorf("%s at %s: classification = %+v, want %+v", issue.Kind, issue.Path, got, want.class)
 		}
 		return
@@ -337,7 +343,7 @@ func assertIssueClassified(t *testing.T, acc Acceptance, want wantIssue) {
 
 // TestForeignEntryRefusalsAreClassified covers the symlink and submodule raise sites,
 // which no in-memory filesystem can produce. They are the rule the whole table follows:
-// solvability describes the FOLDER, not the rule. We will never follow a symlink, yet the
+// solvability describes the FOLDER, not the rule: we will never follow a symlink, yet the
 // folder in front of the reader is one `git rm` from being adoptable.
 func TestForeignEntryRefusalsAreClassified(t *testing.T) {
 	store := &ManifestStore{Foreign: []ForeignEntry{
@@ -349,9 +355,9 @@ func TestForeignEntryRefusalsAreClassified(t *testing.T) {
 	if len(issues) != 3 {
 		t.Fatalf("want three foreign refusals, got %+v", issues)
 	}
-	want := Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}
+	want := Classification{Solvable: true, Actor: ActorRepositoryAuthor}
 	for _, issue := range issues {
-		if got := (Classification{Solvability: issue.Solvability, Actor: issue.Actor}); got != want {
+		if got := (Classification{Solvable: issue.Solvable, Actor: issue.Actor}); got != want {
 			t.Errorf("%s at %s: classification = %+v, want %+v", issue.Kind, issue.Path, got, want)
 		}
 	}
@@ -364,8 +370,8 @@ func TestIgnoreShadowsManagedRefusalIsClassified(t *testing.T) {
 	if len(issues) != 1 || issues[0].Kind != IssueIgnoreShadowsManaged {
 		t.Fatalf("want one ignore-shadows-managed refusal, got %+v", issues)
 	}
-	want := Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}
-	if got := (Classification{Solvability: issues[0].Solvability, Actor: issues[0].Actor}); got != want {
+	want := Classification{Solvable: true, Actor: ActorRepositoryAuthor}
+	if got := (Classification{Solvable: issues[0].Solvable, Actor: issues[0].Actor}); got != want {
 		t.Errorf("classification = %+v, want %+v", got, want)
 	}
 }
@@ -385,8 +391,8 @@ func TestEveryUnsupportedKustomizeFeatureIsClassified(t *testing.T) {
 		}
 		key := kustomizationFieldKey(field)
 		if _, ok := classes[key]; !ok {
-			t.Errorf("unmodelled kustomization field %q (%s) does not say whether it can be solved: it "+
-				"would refuse a folder with no answer to \"can this be fixed\".", key, field.Name)
+			t.Errorf("unmodelled kustomization field %q (%s) is unclassified: it would refuse a folder "+
+				"and report \"not solvable\" by default, which is a claim nobody made.", key, field.Name)
 		}
 	}
 	for _, f := range []string{
@@ -394,7 +400,7 @@ func TestEveryUnsupportedKustomizeFeatureIsClassified(t *testing.T) {
 		featurePatchInline, featurePatchJSON6902, featurePatchOutsideTree, featureRenderFailed,
 	} {
 		if _, ok := classes[f]; !ok {
-			t.Errorf("feature %q does not say whether it can be solved", f)
+			t.Errorf("feature %q is missing from the classification map", f)
 		}
 	}
 	for f, c := range classes {
@@ -402,26 +408,29 @@ func TestEveryUnsupportedKustomizeFeatureIsClassified(t *testing.T) {
 	}
 }
 
-// TestClassifyKustomizeFeatures_LeastSolvableWins pins the reduction rule. A folder
-// holding both a typo and a generator is not adoptable once the typo is fixed, so telling
-// its author to go fix something would be a confident wrong sentence.
-func TestClassifyKustomizeFeatures_LeastSolvableWins(t *testing.T) {
-	solvable := Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor}
-	unsolvable := Classification{Solvability: SolvabilityNo}
+// TestClassifyKustomizeFeatures_SolvableOnlyWhenEveryConstructIs pins the reduction rule.
+// A folder holding both a typo and a generator is not adoptable once the typo is fixed, so
+// telling its author to go fix something would be a confident wrong sentence.
+func TestClassifyKustomizeFeatures_SolvableOnlyWhenEveryConstructIs(t *testing.T) {
+	solvable := Classification{Solvable: true, Actor: ActorRepositoryAuthor}
+	unsolvable := Classification{Solvable: false}
 
 	cases := map[string]struct {
 		features []string
 		want     Classification
 	}{
 		"nothing at all":         {nil, Classification{}},
-		"unrecognised only":      {[]string{"someFutureField"}, Classification{}},
+		"unrecognised only":      {[]string{"someFutureField"}, unsolvable},
 		"the author's file":      {[]string{featureUnparseable}, solvable},
 		"context we do not read": {[]string{featureRemoteBase}, unsolvable},
 		"the boundary":           {[]string{"configMapGenerator"}, unsolvable},
 		"solvable and not":       {[]string{featureUnparseable, featureRemoteBase}, unsolvable},
 		"two unsolvable":         {[]string{featureRemoteBase, "vars"}, unsolvable},
-		"solvable and unknown":   {[]string{"someFutureField", featureUnparseable}, solvable},
-		"unsolvable over all":    {[]string{featureUnparseable, featureRemoteBase, "replacements"}, unsolvable},
+		// An unrecognised construct is a construct we cannot vouch for, so the answer is the
+		// conservative one: fixing the typo would not be enough, and saying otherwise sends
+		// the author off to fix something that leaves the folder just as unadoptable.
+		"solvable and unrecognised": {[]string{"someFutureField", featureUnparseable}, unsolvable},
+		"unsolvable over all":       {[]string{featureUnparseable, featureRemoteBase, "replacements"}, unsolvable},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -437,16 +446,16 @@ func TestClassifyKustomizeFeatures_LeastSolvableWins(t *testing.T) {
 // becomes a refusal reason, so a check that classifies itself must arrive intact.
 func TestIssuesToReasons_CarriesClassification(t *testing.T) {
 	reasons := issuesToReasons([]AcceptanceIssue{{
-		Kind:        IssueOutOfScope,
-		Path:        "apps/web/deploy.yaml",
-		Message:     "out of scope",
-		Solvability: SolvabilityYes,
-		Actor:       ActorPlatformOperator,
+		Kind:     IssueOutOfScope,
+		Path:     "apps/web/deploy.yaml",
+		Message:  "out of scope",
+		Solvable: true,
+		Actor:    ActorPlatformOperator,
 	}})
 	if len(reasons) != 1 {
 		t.Fatalf("want one reason, got %+v", reasons)
 	}
-	if reasons[0].Solvability != SolvabilityYes || reasons[0].Actor != ActorPlatformOperator {
+	if reasons[0].Solvable != true || reasons[0].Actor != ActorPlatformOperator {
 		t.Errorf("reason = %+v, want the issue's own classification", reasons[0])
 	}
 }
@@ -477,15 +486,15 @@ func TestRefusedStructuralIsClassified(t *testing.T) {
 	}{
 		"a generator is not solvable": {
 			kustomization: kustHeader + "configMapGenerator:\n  - name: settings\n    literals:\n      - a=b\n",
-			want:          Classification{Solvability: SolvabilityNo},
+			want:          Classification{Solvable: false},
 		},
 		"helm inflation is not solvable": {
 			kustomization: kustHeader + "helmCharts:\n  - name: podinfo\n    repo: https://example.com\n",
-			want:          Classification{Solvability: SolvabilityNo},
+			want:          Classification{Solvable: false},
 		},
 		"an unparseable build file is the author's to solve": {
 			kustomization: "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: [\n",
-			want:          Classification{Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor},
+			want:          Classification{Solvable: true, Actor: ActorRepositoryAuthor},
 		},
 	}
 
@@ -501,7 +510,7 @@ func TestRefusedStructuralIsClassified(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected a refused-structural candidate, got %+v", rep.Candidates)
 			}
-			if got := (Classification{Solvability: reason.Solvability, Actor: reason.Actor}); got != tc.want {
+			if got := (Classification{Solvable: reason.Solvable, Actor: reason.Actor}); got != tc.want {
 				t.Errorf("refused-structural reason = %+v, want %+v", reason, tc.want)
 			}
 		})

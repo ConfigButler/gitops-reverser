@@ -23,7 +23,10 @@
 //	                                              applied (the repo-level refuse gate is
 //	                                              deferred)
 //	                                 discovery:   raw Kubernetes API discovery dump
-//	--format text|json     output format (default text)
+//	--format text|json|yaml
+//	                       output format (default text). yaml is the KRM report modes only
+//	                       (scan-folder, scan-repo): it is the same document as json, in the
+//	                       serialization a human can read and commit
 //	--version              print the release and the report apiVersion, then exit
 //	--policy report|refuse
 //	                       report: always exit 0 (analysis only)
@@ -92,7 +95,7 @@ func runWithDiscoveryClientFactory(
 	fs := flag.NewFlagSet("manifest-analyzer", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	mode := fs.String("mode", "analyze", "what to produce: analyze|scan-folder|scan-repo|discovery")
-	format := fs.String("format", "text", "output format: text|json")
+	format := fs.String("format", "text", "output format: text|json|yaml (yaml: scan-folder/scan-repo only)")
 	policy := fs.String("policy", "report", "adoption policy: report|refuse (scan-repo is report-only)")
 	kubeconfig := fs.String(
 		"kubeconfig",
@@ -152,16 +155,31 @@ func printVersion(stdout io.Writer) {
 // to stderr. Splitting it out of run keeps the top-level dispatch simple.
 func validChoices(mode, format, policy string, stderr io.Writer) bool {
 	switch {
-	case mode != "analyze" && mode != "scan-folder" && mode != "scan-repo" && mode != "discovery":
+	case !knownMode(mode):
 		fmt.Fprintf(stderr, "error: unknown mode %q (want analyze|scan-folder|scan-repo|discovery)\n", mode)
-	case format != "text" && format != "json":
-		fmt.Fprintf(stderr, "error: unknown format %q (want text|json)\n", format)
+	case format != "text" && format != "json" && format != "yaml":
+		fmt.Fprintf(stderr, "error: unknown format %q (want text|json|yaml)\n", format)
+	case format == "yaml" && !reportsKRM(mode):
+		// yaml serializes the KRM report. The other modes render the engine's own
+		// structural report, which is not that document and not a published contract.
+		fmt.Fprintf(stderr, "error: --format yaml is only available for --mode scan-folder or scan-repo\n")
 	case policy != "report" && policy != "refuse":
 		fmt.Fprintf(stderr, "error: unknown policy %q (want report|refuse)\n", policy)
 	default:
 		return true
 	}
 	return false
+}
+
+// knownMode reports whether mode is one the CLI implements.
+func knownMode(mode string) bool {
+	return mode == "analyze" || mode == "scan-folder" || mode == "scan-repo" || mode == "discovery"
+}
+
+// reportsKRM reports whether mode emits the published KRM document (the two scan modes)
+// rather than the engine's own structural report.
+func reportsKRM(mode string) bool {
+	return mode == "scan-folder" || mode == "scan-repo"
 }
 
 // runDirMode dispatches the directory-argument modes (everything but discovery).
@@ -265,13 +283,13 @@ func failedGroupVersions(failed map[schema.GroupVersion]error) map[string]string
 // and the published Go contract are the same document and cannot drift. Text output stays
 // on the internal renderer, which can show the plan the public report deliberately omits.
 func runScanFolder(dir, format, policy string, stdout, stderr io.Writer) int {
-	if format == "json" {
+	if format == "json" || format == "yaml" {
 		report, err := publicanalyzer.ScanFolder(context.Background(), dir)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitUsage
 		}
-		if err := report.WriteJSON(stdout); err != nil {
+		if err := writeReport(stdout, format, report.WriteJSON, report.WriteYAML); err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitUsage
 		}
@@ -291,6 +309,16 @@ func runScanFolder(dir, format, policy string, stdout, stderr io.Writer) int {
 	return scanExitCode(policy, result.Acceptance.Accepted)
 }
 
+// writeReport renders the report in the requested machine-readable format. The two
+// writers are the report's own, so the CLI cannot serialize a document the published Go
+// contract would not.
+func writeReport(stdout io.Writer, format string, writeJSON, writeYAML func(io.Writer) error) error {
+	if format == "yaml" {
+		return writeYAML(stdout)
+	}
+	return writeJSON(stdout)
+}
+
 func scanExitCode(policy string, accepted bool) int {
 	if policy == "refuse" && !accepted {
 		return exitRefused
@@ -304,13 +332,13 @@ func scanExitCode(policy string, accepted bool) int {
 // (exitOK, or exitUsage on an I/O error); the repo-level --policy refuse gate is
 // deferred per the design doc.
 func runScanRepo(root, format string, stdout, stderr io.Writer) int {
-	if format == "json" {
+	if format == "json" || format == "yaml" {
 		report, err := publicanalyzer.ScanRepo(context.Background(), root)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitUsage
 		}
-		if err := report.WriteJSON(stdout); err != nil {
+		if err := writeReport(stdout, format, report.WriteJSON, report.WriteYAML); err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitUsage
 		}

@@ -38,17 +38,14 @@ func issueKinds(issues []manifestanalyzer.AcceptanceIssue) []manifestanalyzer.Is
 	return kinds
 }
 
-// assertClassified holds the two invariants every emitted refusal must satisfy: it says
-// something about the future, and it names an actor exactly when someone can act.
+// assertClassified holds the invariant every emitted refusal must satisfy: it names an
+// actor exactly when someone can act.
 func assertClassified(t *testing.T, issues []manifestanalyzer.AcceptanceIssue) {
 	t.Helper()
 	for _, issue := range issues {
-		assert.NotEqual(t, manifestanalyzer.SolvabilityUnknown, issue.Solvability,
-			"%s reached a consumer unclassified: the only honest sentence left is "+
-				"\"this cannot be written\"", issue.Kind)
-		if issue.Solvability == manifestanalyzer.SolvabilityYes {
+		if issue.Solvable {
 			assert.NotEqual(t, manifestanalyzer.ActorUnknown, issue.Actor,
-				"%s is fixable but does not say by whom", issue.Kind)
+				"%s is solvable but does not say by whom", issue.Kind)
 		} else {
 			assert.Equal(t, manifestanalyzer.ActorUnknown, issue.Actor,
 				"%s names an actor for a refusal nobody can act on", issue.Kind)
@@ -56,25 +53,25 @@ func assertClassified(t *testing.T, issues []manifestanalyzer.AcceptanceIssue) {
 	}
 }
 
-// TestUnplaceableEditRefusalIsPermanent pins the classification of the one refusal that is
-// deliberately never a "not yet": the alternative to refusing is aligning two lists by
-// position, which is measurably wrong rather than merely risky, so no release lifts it.
-func TestUnplaceableEditRefusalIsPermanent(t *testing.T) {
+// TestUnplaceableEditRefusalIsNotSolvable pins the classification of the refusal nobody
+// can act on: the alternative to refusing is aligning two lists by position, which is
+// measurably wrong rather than merely risky.
+func TestUnplaceableEditRefusalIsNotSolvable(t *testing.T) {
 	err := sourceFormRefusal("apps/web/deploy.yaml",
 		manifestedit.Identity{Kind: "Deployment", Name: "web"}, assert.AnError)
 
 	issues := refusalIssues(t, err)
 	require.Len(t, issues, 1)
 	assert.Equal(t, manifestanalyzer.IssueUnplaceableEdit, issues[0].Kind)
-	assert.Equal(t, manifestanalyzer.SolvabilityNo, issues[0].Solvability)
+	assert.False(t, issues[0].Solvable)
 	assertClassified(t, issues)
 }
 
-// TestRenderFidelityRefusalIsFixableByThePlatform pins the other half: a live value that
+// TestRenderFidelityRefusalIsSolvableByThePlatform pins the other half: a live value that
 // diverges from what the folder renders is out-of-band substitution, not a render
 // artifact, so whoever owns the deployment pipeline can reconcile the two — and the
 // repository author, who is the one usually on the screen, cannot.
-func TestRenderFidelityRefusalIsFixableByThePlatform(t *testing.T) {
+func TestRenderFidelityRefusalIsSolvableByThePlatform(t *testing.T) {
 	err := renderFidelityRefusal("apps/web/deploy.yaml",
 		manifestedit.Identity{Kind: "Deployment", Name: "web"},
 		&renderFidelityRefusedError{Divergences: []manifestanalyzer.RenderDivergence{
@@ -84,16 +81,16 @@ func TestRenderFidelityRefusalIsFixableByThePlatform(t *testing.T) {
 	issues := refusalIssues(t, err)
 	require.Len(t, issues, 1)
 	assert.Equal(t, manifestanalyzer.IssueRenderDoesNotMatchLive, issues[0].Kind)
-	assert.Equal(t, manifestanalyzer.SolvabilityYes, issues[0].Solvability)
+	assert.True(t, issues[0].Solvable)
 	assert.Equal(t, manifestanalyzer.ActorPlatformOperator, issues[0].Actor)
 	assertClassified(t, issues)
 }
 
-// TestIgnoreShadowRefusalIsFixableByTheAuthor drives the DYNAMIC half of the
+// TestIgnoreShadowRefusalIsSolvableByTheAuthor drives the DYNAMIC half of the
 // .gittargetignore guard. The parse-time denylist catches only a catastrophic pattern; a
 // narrow one passes the initial scan and can still match a write planned later, and that
 // refusal reaches the same reader with the same question to answer.
-func TestIgnoreShadowRefusalIsFixableByTheAuthor(t *testing.T) {
+func TestIgnoreShadowRefusalIsSolvableByTheAuthor(t *testing.T) {
 	matcher, parseIssues := manifestanalyzer.LoadGitTargetIgnore([]byte("secrets/\n"))
 	require.Empty(t, parseIssues, "a narrow pattern must pass the parse-time denylist")
 
@@ -107,14 +104,14 @@ func TestIgnoreShadowRefusalIsFixableByTheAuthor(t *testing.T) {
 	issues := refusalIssues(t, wb.ignoreShadowPrecondition())
 	require.Len(t, issues, 1)
 	assert.Equal(t, manifestanalyzer.IssueIgnoreShadowsManaged, issues[0].Kind)
-	assert.Equal(t, manifestanalyzer.SolvabilityYes, issues[0].Solvability)
+	assert.True(t, issues[0].Solvable)
 	assert.Equal(t, manifestanalyzer.ActorRepositoryAuthor, issues[0].Actor)
 	assertClassified(t, issues)
 }
 
-// TestPathScopeRefusalIsFixableByThePlatform drives the real L1 precondition: widening
+// TestPathScopeRefusalIsSolvableByThePlatform drives the real L1 precondition: widening
 // spec.path, or re-placing the write, is the GitTarget owner's call and nobody else's.
-func TestPathScopeRefusalIsFixableByThePlatform(t *testing.T) {
+func TestPathScopeRefusalIsSolvableByThePlatform(t *testing.T) {
 	wb := &writeBatch{buffers: map[string]*fileBuffer{
 		"../escape.yaml": {rel: "../escape.yaml", current: []byte("b")},
 	}}
@@ -122,7 +119,7 @@ func TestPathScopeRefusalIsFixableByThePlatform(t *testing.T) {
 	issues := refusalIssues(t, wb.pathScopePrecondition())
 	require.Len(t, issues, 1)
 	assert.Equal(t, manifestanalyzer.IssueWriteEscapesScope, issues[0].Kind)
-	assert.Equal(t, manifestanalyzer.SolvabilityYes, issues[0].Solvability)
+	assert.True(t, issues[0].Solvable)
 	assert.Equal(t, manifestanalyzer.ActorPlatformOperator, issues[0].Actor)
 	assertClassified(t, issues)
 }

@@ -44,15 +44,15 @@ Three things come with the envelope:
   toolchain records for `go install ...@vX.Y.Z`, otherwise the literal `"dev"`.
 - **`manifest-analyzer --version`** prints that release and the report `apiVersion` together, so
   one exec answers both questions.
-- **Every refusal says whether it can be solved.** `solvability` is `yes` or `no`, and `actor`
-  (`repository-author` or `platform-operator`) names who can solve a `yes`. See below.
+- **Every refusal says whether it can be solved.** `solvable` is a boolean, and `actor`
+  (`repository-author` or `platform-operator`) names who can solve it. See below.
 
 ### Refusals say whether they can be solved, and three more codes are published
 
-`Issue` and `RefusalReason` carry `solvability` and `actor`, both omitted when the check did not
-classify itself. They are set by the check that raised the refusal, because only that check knows:
-`unsupported-kustomize` is `yes` for a build file the author broke and `no` for a generator, and no
-per-code table can express that. `solvability` describes the release you are running and makes no
+`Issue` and `RefusalReason` carry `solvable` (always present) and `actor` (set only when
+`solvable`). They are decided by the check that raised the refusal, because only that check knows:
+`unsupported-kustomize` is solvable for a build file the author broke and not for a generator, and
+no per-code table can express that. `solvable` describes the release you are running and makes no
 promise about the future, so read it on every scan rather than caching a mapping from it.
 
 `pkg/manifestanalyzer` also publishes `IssueRenderRefused`, `IssueRenderDoesNotMatchLive` and
@@ -69,7 +69,8 @@ is the acceptance gate's own issue" compile-checked rather than merely stated.
   and so on. Golden fixtures generated from the old shape need regenerating.
 - If you inferred from the code whether a refusal can be solved (for example, treating
   `refused-structural` as hopeless and everything else as "not supported yet"), delete that mapping
-  and read `solvability`. An absent or unrecognized value means *say nothing*.
+  and read `solvable`. A report from a build that predates the field carries no `solvable` key at
+  all; treat that as "nobody said", not as `false`.
 - Record the `status.generator.version` you consumed a report with, if you pin our release
   elsewhere. That is the whole point of the field.
 

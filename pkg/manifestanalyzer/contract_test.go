@@ -111,11 +111,9 @@ func TestScanFolder_RefusalsCarryPermanence(t *testing.T) {
 	require.NotEmpty(t, report.Status.Issues)
 
 	for _, issue := range report.Status.Issues {
-		require.NotEqual(t, manifestanalyzer.SolvabilityUnknown, issue.Solvability,
-			"%s reached a consumer unclassified", issue.Kind)
-		if issue.Solvability == manifestanalyzer.SolvabilityYes {
+		if issue.Solvable {
 			require.NotEqual(t, manifestanalyzer.ActorUnknown, issue.Actor,
-				"%s is fixable but does not say by whom", issue.Kind)
+				"%s is solvable but does not say by whom", issue.Kind)
 		} else {
 			require.Equal(t, manifestanalyzer.ActorUnknown, issue.Actor,
 				"%s names an actor for a refusal nobody can act on", issue.Kind)
@@ -140,4 +138,54 @@ func refusedTree() fstest.MapFS {
 		"notes.txt":          {Data: []byte("scratch\n")},
 		"values.yaml":        {Data: []byte("replicaCount: 2\n")},
 	}
+}
+
+// Every refusal in the whole discovery corpus, not just the handful of trees the
+// emission-path tests build by hand, must name an actor exactly when it is solvable. An
+// actor on an unsolvable refusal sends someone to fix what they cannot; a solvable refusal
+// with no actor renders as "fix your repository" to a reader who may have no power to.
+func TestScanRepo_EveryRefusalNamesAnActorWhenSolvable(t *testing.T) {
+	t.Parallel()
+
+	families, err := os.ReadDir(corpusRoot)
+	require.NoError(t, err)
+
+	var refusals int
+	for _, family := range families {
+		if !family.IsDir() {
+			continue
+		}
+		fixtures, err := os.ReadDir(filepath.Join(corpusRoot, family.Name()))
+		require.NoError(t, err)
+		for _, f := range fixtures {
+			if !f.IsDir() {
+				continue
+			}
+			refusals += assertCorpusFixtureClassified(t, filepath.Join(corpusRoot, family.Name(), f.Name()))
+		}
+	}
+	require.Positive(t, refusals, "the corpus produced no refusals at all; this test proved nothing")
+}
+
+// assertCorpusFixtureClassified scans one corpus fixture and asserts every refusal it
+// reports names an actor exactly when it is solvable. It returns how many it checked.
+func assertCorpusFixtureClassified(t *testing.T, root string) int {
+	t.Helper()
+	report, err := manifestanalyzer.ScanRepo(t.Context(), root)
+	require.NoError(t, err)
+
+	var n int
+	for _, cand := range report.Status.Candidates {
+		for _, reason := range cand.RefusalReasons {
+			n++
+			if reason.Solvable {
+				require.NotEqual(t, manifestanalyzer.ActorUnknown, reason.Actor,
+					"%s: %s at %s is solvable but does not say by whom", root, reason.Code, cand.Path)
+			} else {
+				require.Equal(t, manifestanalyzer.ActorUnknown, reason.Actor,
+					"%s: %s at %s names an actor for a refusal nobody can solve", root, reason.Code, cand.Path)
+			}
+		}
+	}
+	return n
 }

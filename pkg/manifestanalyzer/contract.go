@@ -3,7 +3,11 @@
 package manifestanalyzer
 
 import (
+	"encoding/json"
+	"io"
 	"runtime/debug"
+
+	"sigs.k8s.io/yaml"
 )
 
 // The report envelope. A report is a KRM document — apiVersion, kind, spec, status — and
@@ -129,4 +133,22 @@ func usableVersion(v string) (string, bool) {
 // generator builds the [Generator] every report carries.
 func generator() Generator {
 	return Generator{Name: GeneratorName, Version: Version()}
+}
+
+// writeJSON renders a report as indented JSON, the wire form both report kinds share.
+func writeJSON(w io.Writer, report any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(report)
+}
+
+// writeYAML renders a report as YAML through sigs.k8s.io/yaml, which round-trips via the
+// JSON tags — so the two serializations name every field identically and cannot drift.
+func writeYAML(w io.Writer, report any) error {
+	out, err := yaml.Marshal(report)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(out)
+	return err
 }
