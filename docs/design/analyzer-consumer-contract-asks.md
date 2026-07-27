@@ -296,6 +296,66 @@ these three:
 Until that exists every consumer's version handling is a guess, and they will not all
 guess alike.
 
+### Recommended: make the report a KRM document, and delete the question
+
+The three questions above are ones the Kubernetes API conventions already answer, in a
+document every consumer of a GitOps tool has read. So stop writing our own versioning
+policy and adopt theirs — give the report an `apiVersion` and a `kind`:
+
+```yaml
+apiVersion: manifestanalyzer.configbutler.ai/v1alpha1
+kind: RepoReport
+spec:                       # what was asked for
+  root: /repo
+  mode: scan-repo
+status:                     # what was found
+  analyzerVersion: v0.39.1
+  candidates: [...]
+  summary: {...}
+```
+
+`apiVersion` replaces `schemaVersion` outright. "What does a bump assert" becomes the
+published alpha/beta/GA contract; "should a reader hard-fail on a version it does not know"
+becomes yes, by the same rule every Kubernetes client already follows. We answer three open
+questions by citing a document instead of writing one.
+
+Four further things fall out, none of which the bespoke shape gives us:
+
+- **The `spec`/`status` split is honest here**, which was the surprise. `spec` is the scan
+  request (root, mode, policy) and `status` is the observation. Our own CRDs are built that
+  way, so the report reads like the rest of the product. Today's `root` field floats at the
+  top level marked "Informational" precisely because there is nowhere for a request to go.
+- **YAML becomes the obvious serialization**, which makes `--format yaml` a natural third
+  option: diffable, reviewable, and committable with the tooling the user already runs.
+- **Existing tooling works** — `yq`, `jq`, `kubectl --dry-run` shape assumptions, and
+  apimachinery's `TypeMeta` for anyone who does link us.
+- **It is on-message.** A product whose thesis is that cluster state belongs in Git as KRM
+  should not emit a bespoke JSON envelope to describe it.
+
+### Two things to carve out, and one cost
+
+**No `metadata`.** A KRM document invites `metadata.name`, and a report has no identity — it
+observes a path at an instant. A synthesized name is noise, and worse, it suggests the
+document can be applied. Kpt's own `kind: ResourceList` carries `apiVersion`, `kind`, `items`
+and `results` with no `metadata`, so the envelope-without-metadata shape has precedent.
+
+**Never served, never registered.** No CRD, no group registration, not applyable. State that
+in the type's doc comment, because the shape will make someone try. The related failure is
+mild but worth knowing: a report saved into a watched folder is refused either way — today
+as `foreign-file`, and as a KRM document as `unresolved-krm`, which reads as "we tried to
+manage this and could not" rather than "this is not ours". A marginally worse message, not a
+blocker.
+
+**The cost is one breaking change to the JSON contract**, and our only consumer holds golden
+fixtures generated from it. That argues for doing it **now** and inside Ask 2 rather than
+after: they are asking us for version clarity in this same document, there is exactly one
+consumer to coordinate with, and every later release makes it dearer. It does not disturb
+their mirrored-struct design — if anything `TypeMeta` is one more thing they can mirror.
+
+**It does not replace Ask 2.** `apiVersion` versions the *contract*; `analyzerVersion`
+records the *build*. Items 1, 2 and 4 stand unchanged; only the `SchemaVersion` question
+above dissolves.
+
 ### On the release asset
 
 Their devcontainer pins every tool from a release asset — `task`, `kubectl`, `kustomize`,
