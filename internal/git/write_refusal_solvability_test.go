@@ -43,10 +43,10 @@ func issueKinds(issues []manifestanalyzer.AcceptanceIssue) []manifestanalyzer.Is
 func assertClassified(t *testing.T, issues []manifestanalyzer.AcceptanceIssue) {
 	t.Helper()
 	for _, issue := range issues {
-		assert.NotEqual(t, manifestanalyzer.PermanenceUnknown, issue.Permanence,
+		assert.NotEqual(t, manifestanalyzer.SolvabilityUnknown, issue.Solvability,
 			"%s reached a consumer unclassified: the only honest sentence left is "+
 				"\"this cannot be written\"", issue.Kind)
-		if issue.Permanence == manifestanalyzer.PermanenceFixable {
+		if issue.Solvability == manifestanalyzer.SolvabilityYes {
 			assert.NotEqual(t, manifestanalyzer.ActorUnknown, issue.Actor,
 				"%s is fixable but does not say by whom", issue.Kind)
 		} else {
@@ -66,7 +66,7 @@ func TestUnplaceableEditRefusalIsPermanent(t *testing.T) {
 	issues := refusalIssues(t, err)
 	require.Len(t, issues, 1)
 	assert.Equal(t, manifestanalyzer.IssueUnplaceableEdit, issues[0].Kind)
-	assert.Equal(t, manifestanalyzer.PermanencePermanent, issues[0].Permanence)
+	assert.Equal(t, manifestanalyzer.SolvabilityNo, issues[0].Solvability)
 	assertClassified(t, issues)
 }
 
@@ -84,8 +84,8 @@ func TestRenderFidelityRefusalIsFixableByThePlatform(t *testing.T) {
 	issues := refusalIssues(t, err)
 	require.Len(t, issues, 1)
 	assert.Equal(t, manifestanalyzer.IssueRenderDoesNotMatchLive, issues[0].Kind)
-	assert.Equal(t, manifestanalyzer.PermanenceFixable, issues[0].Permanence)
-	assert.Equal(t, manifestanalyzer.ActorPlatform, issues[0].Actor)
+	assert.Equal(t, manifestanalyzer.SolvabilityYes, issues[0].Solvability)
+	assert.Equal(t, manifestanalyzer.ActorPlatformOperator, issues[0].Actor)
 	assertClassified(t, issues)
 }
 
@@ -107,8 +107,8 @@ func TestIgnoreShadowRefusalIsFixableByTheAuthor(t *testing.T) {
 	issues := refusalIssues(t, wb.ignoreShadowPrecondition())
 	require.Len(t, issues, 1)
 	assert.Equal(t, manifestanalyzer.IssueIgnoreShadowsManaged, issues[0].Kind)
-	assert.Equal(t, manifestanalyzer.PermanenceFixable, issues[0].Permanence)
-	assert.Equal(t, manifestanalyzer.ActorAuthor, issues[0].Actor)
+	assert.Equal(t, manifestanalyzer.SolvabilityYes, issues[0].Solvability)
+	assert.Equal(t, manifestanalyzer.ActorRepositoryAuthor, issues[0].Actor)
 	assertClassified(t, issues)
 }
 
@@ -122,7 +122,7 @@ func TestPathScopeRefusalIsFixableByThePlatform(t *testing.T) {
 	issues := refusalIssues(t, wb.pathScopePrecondition())
 	require.Len(t, issues, 1)
 	assert.Equal(t, manifestanalyzer.IssueWriteEscapesScope, issues[0].Kind)
-	assert.Equal(t, manifestanalyzer.PermanenceFixable, issues[0].Permanence)
-	assert.Equal(t, manifestanalyzer.ActorPlatform, issues[0].Actor)
+	assert.Equal(t, manifestanalyzer.SolvabilityYes, issues[0].Solvability)
+	assert.Equal(t, manifestanalyzer.ActorPlatformOperator, issues[0].Actor)
 	assertClassified(t, issues)
 }

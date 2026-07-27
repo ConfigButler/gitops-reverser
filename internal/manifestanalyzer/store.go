@@ -140,8 +140,8 @@ type RetainedDocument struct {
 	// UnsupportedFeatures names the constructs that made this retention unsupported, as
 	// the user wrote them ("configMapGenerator", "remote-base", "render-failed"). It
 	// carries the parse-time answer to the refusal, which is what lets the acceptance
-	// gate classify the refusal's permanence per construct instead of per code — one code
-	// with three answers is the whole reason the permanence field exists. Sorted; empty
+	// gate decide solvability per construct instead of per code — one code with two very
+	// different answers is the whole reason the solvability field exists. Sorted; empty
 	// when Unsupported is false.
 	UnsupportedFeatures []string
 }
@@ -231,11 +231,11 @@ type DocumentModel struct {
 	// because no API source is wired in.
 	Mapping MappingOutcome
 
-	// MappingRefusal carries the permanence of a MappingNotFollowable outcome, decided
+	// MappingRefusal carries the solvability of a MappingNotFollowable outcome, decided
 	// where the registry answer is still in hand. A GVK the registry has never heard of
 	// is a CRD the platform operator can install; a GVK it knows but will not follow —
-	// ambiguous, unserved, missing a verb — is not something either side clears today.
-	// The acceptance gate sees only the outcome, so the split has to be recorded here.
+	// ambiguous, unserved, missing a verb — is not something either side can solve. The
+	// acceptance gate sees only the outcome, so the split has to be recorded here.
 	MappingRefusal Classification
 
 	// Editable is false for SOPS-encrypted or otherwise non-patchable documents;
@@ -1005,12 +1005,12 @@ func (s *ManifestStore) resolveMapping(
 	record, known := lookup.ByGVK(gvk)
 	if !known {
 		// Nothing serves this GVK: install the CRD (or widen what the registry may see)
-		// and the same folder is adoptable, so this is fixable by the platform operator.
-		dm.MappingRefusal = Classification{Permanence: PermanenceFixable, Actor: ActorPlatform}
+		// and the same folder is adoptable, so the platform operator can solve it.
+		dm.MappingRefusal = Classification{Solvability: SolvabilityYes, Actor: ActorPlatformOperator}
 	} else if !record.Followable() {
-		// Served, but ambiguous, denied, or missing a verb. Nobody clears that from
-		// here; a future release deciding to follow it is the only way out.
-		dm.MappingRefusal = Classification{Permanence: PermanencePending}
+		// Served, but ambiguous, denied, or missing a verb. Nobody can solve that from
+		// the repository or the GitTarget.
+		dm.MappingRefusal = Classification{Solvability: SolvabilityNo}
 	}
 	if known && record.Followable() {
 		dm.Mapping = MappingFollowable

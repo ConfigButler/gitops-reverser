@@ -140,9 +140,9 @@ func TestRun_ScanJSON(t *testing.T) {
 				Version string `json:"version"`
 			} `json:"generator"`
 			Issues []struct {
-				Kind       string `json:"kind"`
-				Permanence string `json:"permanence"`
-				Actor      string `json:"actor"`
+				Kind        string `json:"kind"`
+				Solvability string `json:"solvability"`
+				Actor       string `json:"actor"`
 			} `json:"issues"`
 		} `json:"status"`
 	}
@@ -155,14 +155,14 @@ func TestRun_ScanJSON(t *testing.T) {
 	if parsed.Status.Accepted || len(parsed.Status.Issues) == 0 {
 		t.Fatalf("the fixture holds a stray values.yaml and must be refused: %s", out.String())
 	}
-	// Every refusal says whether it can stop being one; without it a consumer's only
-	// honest sentence is "this folder cannot be picked".
+	// Every refusal says whether it can be solved; without that a consumer's only honest
+	// sentence is "this folder cannot be picked".
 	for _, issue := range parsed.Status.Issues {
-		if issue.Permanence == "" {
+		if issue.Solvability == "" {
 			t.Errorf("issue %q reached a consumer unclassified: %s", issue.Kind, out.String())
 		}
-		if issue.Permanence == "fixable" && issue.Actor == "" {
-			t.Errorf("fixable issue %q does not say who can fix it: %s", issue.Kind, out.String())
+		if issue.Solvability == "yes" && issue.Actor == "" {
+			t.Errorf("solvable issue %q does not say who can solve it: %s", issue.Kind, out.String())
 		}
 	}
 	if parsed.Status.Generator.Name == "" || parsed.Status.Generator.Version == "" {

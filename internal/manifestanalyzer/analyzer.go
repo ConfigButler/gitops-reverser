@@ -147,12 +147,12 @@ type AcceptanceIssue struct {
 	Path          string    `json:"path"`
 	DocumentIndex int       `json:"documentIndex"`
 	Message       string    `json:"message"`
-	// Permanence says whether this refusal can ever stop being one, and Actor names who
-	// can clear it when it is fixable. Both are set by the check that RAISED the issue,
-	// because only that check knows: several kinds classify differently depending on
-	// which branch emitted them. Empty means unclassified — say nothing about the future.
-	Permanence Permanence `json:"permanence,omitempty"`
-	Actor      Actor      `json:"actor,omitempty"`
+	// Solvability says whether this refusal can be solved, and Actor names who can solve
+	// it when someone can. Both are set by the check that RAISED the issue, because only
+	// that check knows: several kinds answer differently depending on which branch emitted
+	// them. Empty means unclassified — say nothing about whether it can be solved.
+	Solvability Solvability `json:"solvability,omitempty"`
+	Actor       Actor       `json:"actor,omitempty"`
 	// Field and Token add structured diagnostics for a render-fidelity refusal. They are empty
 	// for structural acceptance issues, which predate the render-vs-live gate.
 	Field string `json:"field,omitempty"`
@@ -545,21 +545,21 @@ func buildIssues(
 			if duplicates[ref] {
 				issues = append(issues, AcceptanceIssue{
 					Kind: IssueDuplicate, Path: f.Path, DocumentIndex: d.Index,
-					Message:    "duplicate of " + identityRef(d.Identity),
-					Permanence: PermanenceFixable, Actor: ActorAuthor,
+					Message:     "duplicate of " + identityRef(d.Identity),
+					Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
 				})
 			}
 			switch d.Class {
 			case ClassNonKRM:
 				issues = append(issues, AcceptanceIssue{
 					Kind: IssueNonKRM, Path: f.Path, DocumentIndex: d.Index,
-					Message:    "YAML is not a Kubernetes manifest",
-					Permanence: PermanenceFixable, Actor: ActorAuthor,
+					Message:     "YAML is not a Kubernetes manifest",
+					Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
 				})
 			case ClassInvalidYAML:
 				issues = append(issues, AcceptanceIssue{
 					Kind: IssueInvalidYAML, Path: f.Path, DocumentIndex: d.Index, Message: invalidMsgs[ref],
-					Permanence: PermanenceFixable, Actor: ActorAuthor,
+					Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
 				})
 			case ClassNonYAML, ClassEmpty, ClassKRM:
 				// Not acceptance issues: ignored files, empty documents, and valid KRM.

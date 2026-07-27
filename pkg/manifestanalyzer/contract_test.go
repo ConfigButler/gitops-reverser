@@ -111,9 +111,9 @@ func TestScanFolder_RefusalsCarryPermanence(t *testing.T) {
 	require.NotEmpty(t, report.Status.Issues)
 
 	for _, issue := range report.Status.Issues {
-		require.NotEqual(t, manifestanalyzer.PermanenceUnknown, issue.Permanence,
+		require.NotEqual(t, manifestanalyzer.SolvabilityUnknown, issue.Solvability,
 			"%s reached a consumer unclassified", issue.Kind)
-		if issue.Permanence == manifestanalyzer.PermanenceFixable {
+		if issue.Solvability == manifestanalyzer.SolvabilityYes {
 			require.NotEqual(t, manifestanalyzer.ActorUnknown, issue.Actor,
 				"%s is fixable but does not say by whom", issue.Kind)
 		} else {

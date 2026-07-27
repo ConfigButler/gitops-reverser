@@ -319,8 +319,8 @@ func duplicateRefusals(store *ManifestStore) []AcceptanceIssue {
 				Path:          path,
 				DocumentIndex: loser.DocumentIndex,
 				// Two documents claim one identity; the author deletes or renames one.
-				Permanence: PermanenceFixable,
-				Actor:      ActorAuthor,
+				Solvability: SolvabilityYes,
+				Actor:       ActorRepositoryAuthor,
 				Message: fmt.Sprintf("duplicate manifest identity %s at %s#%d; first occurrence at %s#%d",
 					identityRef(dm.ManifestIdentity), path, loser.DocumentIndex,
 					winner.FilePath, winner.DocumentIndex),
@@ -372,7 +372,7 @@ func recordlessRefusal(store *ManifestStore, d manifestedit.Diagnostic) (Accepta
 			Kind: IssueNonKRM, Path: d.Path, DocumentIndex: d.DocumentIndex,
 			Message: "YAML is not a Kubernetes manifest",
 			// Remove it, or name it in .gittargetignore. Either way the author acts.
-			Permanence: PermanenceFixable, Actor: ActorAuthor,
+			Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
 		}, true
 	case manifestedit.ReasonInvalidYAML, manifestedit.ReasonMissingSopsKey:
 		if managed {
@@ -381,7 +381,7 @@ func recordlessRefusal(store *ManifestStore, d manifestedit.Diagnostic) (Accepta
 		return AcceptanceIssue{
 			Kind: IssueInvalidYAML, Path: d.Path, DocumentIndex: d.DocumentIndex, Message: d.Message,
 			// The document does not parse: one broken document away from working.
-			Permanence: PermanenceFixable, Actor: ActorAuthor,
+			Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
 		}, true
 	case manifestedit.ReasonNonEditable, manifestedit.ReasonDuplicateIdentity:
 		// Accompany a managed record (handled by duplicateRefusals / the planner skip);
@@ -399,8 +399,8 @@ func impureIssue(d manifestedit.Diagnostic, what string) AcceptanceIssue {
 		Path:          d.Path,
 		DocumentIndex: d.DocumentIndex,
 		// Split the file: the passenger document moves to one of its own.
-		Permanence: PermanenceFixable,
-		Actor:      ActorAuthor,
+		Solvability: SolvabilityYes,
+		Actor:       ActorRepositoryAuthor,
 		Message: fmt.Sprintf(
 			"a file with managed resources may contain only valid KRM documents; document #%d is %s",
 			d.DocumentIndex, what),
@@ -422,8 +422,8 @@ func mixedFileRefusals(store *ManifestStore) []AcceptanceIssue {
 			Path:          rd.Location.Path,
 			DocumentIndex: rd.Location.DocumentIndex,
 			// Move the kustomization into its own file.
-			Permanence: PermanenceFixable,
-			Actor:      ActorAuthor,
+			Solvability: SolvabilityYes,
+			Actor:       ActorRepositoryAuthor,
 			Message: "managed resource " + identityRef(rd.Identity) +
 				" must not live in the allowlisted build-directive file " + rd.Location.Path,
 		})
@@ -464,7 +464,7 @@ func mappingRefusal(ref RecordRef, dm *DocumentModel, policy AcceptancePolicy) (
 			// widen its scope, and their wizard may not have that person on the screen.
 			return refusal(IssueOutOfScope, ref,
 				"followable kind out of this GitTarget's scope: "+identityRef(dm.ManifestIdentity),
-				Classification{Permanence: PermanenceFixable, Actor: ActorPlatform}), true
+				Classification{Solvability: SolvabilityYes, Actor: ActorPlatformOperator}), true
 		}
 		return AcceptanceIssue{}, false
 	case MappingNotFollowable:
@@ -497,7 +497,7 @@ func refusal(kind IssueKind, ref RecordRef, message string, class Classification
 		Path:          ref.FilePath,
 		DocumentIndex: ref.DocumentIndex,
 		Message:       message,
-		Permanence:    class.Permanence,
+		Solvability:   class.Solvability,
 		Actor:         class.Actor,
 	}
 }

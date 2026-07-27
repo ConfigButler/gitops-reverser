@@ -860,10 +860,10 @@ func sourceFormRefusal(filePath string, id manifestedit.Identity, err error) err
 		Issues: []manifestanalyzer.AcceptanceIssue{{
 			Kind: manifestanalyzer.IssueUnplaceableEdit,
 			Path: filePath,
-			// Permanent, and deliberately so: the alternative to refusing is aligning two
-			// lists by position, which is measurably wrong rather than merely risky (see
-			// the IssueUnplaceableEdit comment). No release lifts this.
-			Permanence: manifestanalyzer.PermanencePermanent,
+			// Not solvable, and deliberately so: the alternative to refusing is aligning
+			// two lists by position, which is measurably wrong rather than merely risky
+			// (see the IssueUnplaceableEdit comment). Nobody can act on it.
+			Solvability: manifestanalyzer.SolvabilityNo,
 			Message: fmt.Sprintf("%s/%s in %s: %v",
 				id.Kind, id.Name, filePath, err),
 		}},
@@ -881,12 +881,12 @@ func renderFidelityRefusal(
 			Kind: manifestanalyzer.IssueRenderDoesNotMatchLive,
 			Path: filePath,
 			// A live value that diverges from what the folder renders is out-of-band
-			// substitution, not a render artifact — whoever owns the deployment pipeline
-			// can reconcile the two.
-			Permanence: manifestanalyzer.PermanenceFixable,
-			Actor:      manifestanalyzer.ActorPlatform,
-			Field:      divergence.Field,
-			Token:      divergence.Token,
+			// substitution, not a render artifact, so whoever owns the deployment
+			// pipeline can reconcile the two.
+			Solvability: manifestanalyzer.SolvabilityYes,
+			Actor:       manifestanalyzer.ActorPlatformOperator,
+			Field:       divergence.Field,
+			Token:       divergence.Token,
 			Message: fmt.Sprintf("%s/%s in %s: rendered token %q at %s does not match live",
 				id.Kind, id.Name, filePath, divergence.Token, divergence.Field),
 		})
@@ -926,11 +926,10 @@ func (wb *writeBatch) renderPrecondition() error {
 				issues = append(issues, manifestanalyzer.AcceptanceIssue{
 					Kind:    manifestanalyzer.IssueRenderRefused,
 					Message: reason,
-					// This refuses a WRITE, not a folder, so "can this folder ever be
-					// picked" is the wrong question for it. Classified permanent on the
-					// narrower claim it does make: the oracle will always refuse a write
-					// it cannot vouch for, and no release changes that.
-					Permanence: manifestanalyzer.PermanencePermanent,
+					// This refuses a WRITE, not a folder. Nobody can solve it from the
+					// repository or the GitTarget: the oracle refuses a write it cannot
+					// vouch for, and neither side can make it vouch.
+					Solvability: manifestanalyzer.SolvabilityNo,
 				})
 			}
 			return &manifestanalyzer.AcceptanceRefusedError{Issues: issues}
@@ -1497,8 +1496,8 @@ func (wb *writeBatch) ignoreShadowPrecondition() error {
 				// again here: a pattern narrow enough to pass the initial scan can still
 				// match a write planned later, and that refusal reaches the same reader.
 				// Narrowing the pattern is the author's to do.
-				Permanence: manifestanalyzer.PermanenceFixable,
-				Actor:      manifestanalyzer.ActorAuthor,
+				Solvability: manifestanalyzer.SolvabilityYes,
+				Actor:       manifestanalyzer.ActorRepositoryAuthor,
 				Message: fmt.Sprintf(
 					"%s pattern %q shadows the managed write path %s; the operator would be blind to its own "+
 						"file. Remove the pattern or move the resource out of its match",
@@ -1532,8 +1531,8 @@ func (wb *writeBatch) pathScopePrecondition() error {
 				Kind: manifestanalyzer.IssueWriteEscapesScope,
 				Path: rel,
 				// Widening spec.path, or re-placing the write, is the GitTarget owner's call.
-				Permanence: manifestanalyzer.PermanenceFixable,
-				Actor:      manifestanalyzer.ActorPlatform,
+				Solvability: manifestanalyzer.SolvabilityYes,
+				Actor:       manifestanalyzer.ActorPlatformOperator,
 				Message: fmt.Sprintf(
 					"planned write path %q escapes the GitTarget write scope: the operator only ever writes "+
 						"inside spec.path (reads may reach shared context such as ../../base, writes never leave it)",
@@ -1585,9 +1584,9 @@ func (wb *writeBatch) fanInPrecondition() error {
 			issues = append(issues, manifestanalyzer.AcceptanceIssue{
 				Kind: manifestanalyzer.IssueWriteFanIn,
 				Path: rel,
-				// Not the boundary: per-render-root scoping generalizes this, so a future
-				// release may accept the same edit. Nobody can clear it today.
-				Permanence: manifestanalyzer.PermanencePending,
+				// Nobody can solve this from the repository or the GitTarget: the edit
+				// has nowhere safe to land while two render roots share the file.
+				Solvability: manifestanalyzer.SolvabilityNo,
 				Message: fmt.Sprintf(
 					"planned write to %q would edit in place a source file that more than one kustomize render "+
 						"root reaches (write-fan-in must be 1); refusing rather than "+

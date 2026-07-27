@@ -70,44 +70,50 @@ const (
 	IssueUnplaceableEdit IssueKind = "unplaceable-edit"
 )
 
-// Permanence says whether a refusal can ever stop being one. It is set by the check that
-// raised the refusal, because only that check knows — several codes classify differently
-// depending on which branch emitted them, which is exactly why this is a field on the
-// emitted value and not a table beside the constants.
+// Solvability answers one question about a refusal: can it be solved? It is set by the
+// check that raised the refusal, because only that check knows — one code answers
+// differently depending on which branch emitted it, which is why this is a field on the
+// emitted value rather than a table beside the constants.
 //
-// Consumers MUST treat an unrecognised or absent value as [PermanenceUnknown] and say
-// nothing about the future. "Not supported yet" is a wait, "cannot be synced" is a
-// redesign, and "fix your YAML" is neither; a code alone cannot tell them apart.
-type Permanence string
+// It describes THIS RELEASE and makes no promise about the future. A refusal a later
+// release learns to accept simply reports differently on the next scan, so read this value
+// each time rather than caching a mapping from it.
+//
+// Consumers MUST treat an unrecognised or absent value as [SolvabilityUnknown] and say
+// nothing about whether the refusal can be solved. A code alone cannot tell "fix your
+// YAML" from "this folder cannot be adopted"; that is what this field is for.
+type Solvability string
 
 const (
-	// PermanenceUnknown is the zero value: not classified. Say nothing.
-	PermanenceUnknown Permanence = ""
-	// PermanenceFixable means changing the repository or the GitTarget clears it today.
-	// [Actor] says who can make that change.
-	PermanenceFixable Permanence = "fixable"
-	// PermanencePending means a future release may accept it. Nobody can clear it today.
-	PermanencePending Permanence = "pending-upstream"
-	// PermanencePermanent is the support boundary: never a "not yet".
-	PermanencePermanent Permanence = "permanent"
+	// SolvabilityUnknown is the zero value: not classified. Say nothing.
+	SolvabilityUnknown Solvability = ""
+	// SolvabilityYes means someone can solve it with this release, by changing the
+	// repository or the GitTarget. [Actor] says who.
+	SolvabilityYes Solvability = "yes"
+	// SolvabilityNo means nobody can solve it with this release: the construct is outside
+	// the adoption model, or the support is simply not there. The folder cannot be adopted
+	// as it stands, and no [Actor] is named because there is nobody to name.
+	SolvabilityNo Solvability = "no"
 )
 
-// Actor names who can act on a fixable refusal. It is empty when the refusal is not
-// fixable, or when nobody can act.
+// Actor names who can solve a refusal. It is empty unless [Solvability] is
+// [SolvabilityYes] — naming someone for a refusal they cannot act on is worse than naming
+// nobody.
 //
-// It matters because some refusals are fixable ONLY by the person who owns the GitTarget,
+// It matters because some refusals are solvable ONLY by the person who owns the GitTarget,
 // who is often not the person reading the message: rendering an out-of-scope refusal as
-// "fix your repository" to a repository author who cannot is worse than saying nothing.
+// "fix your repository" to a repository author who cannot is the failure this half
+// prevents.
 type Actor string
 
 const (
-	// ActorUnknown is the zero value: unclassified, or nobody can act.
+	// ActorUnknown is the zero value: nobody can solve it today, or it was not classified.
 	ActorUnknown Actor = ""
-	// ActorAuthor is the person who owns the files in the repository.
-	ActorAuthor Actor = "repository-author"
-	// ActorPlatform is the person who owns the GitTarget — its scope, its path, and the
-	// CRDs installed in the cluster it mirrors.
-	ActorPlatform Actor = "platform-operator"
+	// ActorRepositoryAuthor is the person who owns the files in the repository.
+	ActorRepositoryAuthor Actor = "repository-author"
+	// ActorPlatformOperator is the person who owns the GitTarget — its scope, its path,
+	// and the CRDs installed in the cluster it mirrors.
+	ActorPlatformOperator Actor = "platform-operator"
 )
 
 // Issue is one reason a folder is not accepted, or one fact a stricter policy may treat
@@ -121,9 +127,9 @@ type Issue struct {
 	DocumentIndex int `json:"documentIndex"`
 	// Message is a human-readable explanation. It is not a stable string.
 	Message string `json:"message"`
-	// Permanence is empty when the check did not classify itself.
-	Permanence Permanence `json:"permanence,omitempty"`
-	// Actor is empty unless Permanence is [PermanenceFixable].
+	// Solvability is empty when the check did not classify itself.
+	Solvability Solvability `json:"solvability,omitempty"`
+	// Actor is empty unless Solvability is [SolvabilityYes].
 	Actor Actor `json:"actor,omitempty"`
 }
 
@@ -242,7 +248,7 @@ func folderReportFrom(acc internalanalyzer.Acceptance) FolderReport {
 			Path:          issue.Path,
 			DocumentIndex: issue.DocumentIndex,
 			Message:       issue.Message,
-			Permanence:    Permanence(issue.Permanence),
+			Solvability:   Solvability(issue.Solvability),
 			Actor:         Actor(issue.Actor),
 		})
 	}

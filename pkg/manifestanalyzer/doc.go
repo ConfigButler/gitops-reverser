@@ -38,14 +38,15 @@
 // produced the report, so a document that outlives the process that made it still says
 // which release decided its contents. `manifest-analyzer --version` prints the same pair.
 //
-// # A refusal says whether it can ever stop being one
+// # A refusal says whether it can be solved
 //
-// [Issue] and [RefusalReason] carry a [Permanence] and, when something can be done about
-// it, an [Actor]. A code alone cannot tell "not supported yet" from "cannot be synced"
-// from "one broken document away from working", and guessing from the code is how a
-// consumer ends up telling a user to wait for a release that will never come, or to go fix
-// something only their platform team can. Treat an absent or unrecognised permanence as
-// [PermanenceUnknown] and say nothing about the future.
+// [Issue] and [RefusalReason] carry a [Solvability] — "yes" or "no" — and, when someone
+// can act, an [Actor]. A code alone cannot tell "one broken document away from working"
+// from "this folder cannot be adopted", and guessing from the code is how a consumer ends
+// up telling a user to go fix something only their platform team can, or nothing at all.
+// The answer describes this release and makes no promise about the future, so read it on
+// every scan rather than caching a mapping from it. Treat an absent or unrecognised value
+// as [SolvabilityUnknown] and say nothing.
 //
 // Everything under internal/ carries no guarantee either, and is not importable from
 // another module. One format from there is nonetheless a contract you may build on: a

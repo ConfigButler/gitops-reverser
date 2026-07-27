@@ -156,7 +156,7 @@ func TestFanInPrecondition_RefusesAmbiguousOverrideWriteThrough(t *testing.T) {
 	assertClassified(t, issues)
 	for _, issue := range issues {
 		if issue.Kind == manifestanalyzer.IssueWriteFanIn {
-			assert.Equal(t, manifestanalyzer.PermanencePending, issue.Permanence)
+			assert.Equal(t, manifestanalyzer.SolvabilityNo, issue.Solvability)
 		}
 	}
 

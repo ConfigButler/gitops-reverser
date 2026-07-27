@@ -27,8 +27,8 @@ const (
 	// refused for a real fault carries that fault's own code, never a forward-looking one.
 	LayoutKustomizeOverlay Layout = "kustomize-overlay"
 	// LayoutRefusedStructural is a render root whose kustomization uses a construct the
-	// writer cannot map back to editable source. This is the permanent support boundary,
-	// never a "not yet".
+	// writer cannot map back to editable source. This is the support boundary; each
+	// refusal it carries says whether anyone can solve it.
 	LayoutRefusedStructural Layout = "refused-structural"
 )
 
@@ -59,10 +59,10 @@ type RefusalReason struct {
 	Code IssueKind `json:"code"`
 	// Detail is human-readable and not a stable string.
 	Detail string `json:"detail"`
-	// Permanence says whether this refusal can ever stop being one. Empty when the check
+	// Solvability says whether this refusal can ever stop being one. Empty when the check
 	// that raised it did not classify itself; treat that as "say nothing".
-	Permanence Permanence `json:"permanence,omitempty"`
-	// Actor is empty unless Permanence is [PermanenceFixable].
+	Solvability Solvability `json:"solvability,omitempty"`
+	// Actor is empty unless Solvability is [SolvabilityYes].
 	Actor Actor `json:"actor,omitempty"`
 }
 
@@ -213,10 +213,10 @@ func candidateFrom(cand internalanalyzer.RepoCandidate) Candidate {
 	}
 	for _, reason := range cand.RefusalReasons {
 		out.RefusalReasons = append(out.RefusalReasons, RefusalReason{
-			Code:       IssueKind(reason.Code),
-			Detail:     reason.Detail,
-			Permanence: Permanence(reason.Permanence),
-			Actor:      Actor(reason.Actor),
+			Code:        IssueKind(reason.Code),
+			Detail:      reason.Detail,
+			Solvability: Solvability(reason.Solvability),
+			Actor:       Actor(reason.Actor),
 		})
 	}
 	return out

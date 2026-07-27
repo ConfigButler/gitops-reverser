@@ -55,11 +55,12 @@ const (
 	// LayoutRefusedStructural is a render root whose kustomization uses a feature the
 	// contextual-namespace writer cannot map back to editable source (helm inflation,
 	// generators, patches, components, name(pre|suf)fix, remote bases, malformed
-	// images/replicas). This is the permanent support boundary, never a "not yet".
+	// images/replicas). This is the support boundary: the folder cannot be adopted as it
+	// stands, and each refusal says whether anyone can solve that.
 	LayoutRefusedStructural Layout = "refused-structural"
 )
 
-// ReasonRefusedStructural is the permanent support boundary: a render root whose kustomization
+// ReasonRefusedStructural is the support boundary: a render root whose kustomization
 // uses a construct the writer cannot map back to editable source. It is the only render-root
 // refusal reason now that external-base overlays are adopted through render-root scoping (the
 // former forward-looking overlay-fan-out-unsupported reason is retired; the public
@@ -73,12 +74,12 @@ const ReasonRefusedStructural = "refused-structural"
 type RefusalReason struct {
 	Code   string `json:"code"`
 	Detail string `json:"detail"`
-	// Permanence and Actor carry the refusal's own answer to "can this folder ever be
-	// picked, and by whom" — projected verbatim from the acceptance issue that raised it,
-	// or set by the raise site for the reasons that are not issue kinds. Empty means
-	// unclassified; say nothing about the future.
-	Permanence Permanence `json:"permanence,omitempty"`
-	Actor      Actor      `json:"actor,omitempty"`
+	// Solvability and Actor carry the refusal's own answer to "can this be solved, and by
+	// whom" — projected verbatim from the acceptance issue that raised it, or set by the
+	// raise site for the reasons that are not issue kinds. Empty means unclassified; say
+	// nothing about whether it can be solved.
+	Solvability Solvability `json:"solvability,omitempty"`
+	Actor       Actor       `json:"actor,omitempty"`
 }
 
 // ResourceCounts splits the KRM a candidate covers into what it renders versus what it
@@ -400,14 +401,14 @@ func candidateAcceptance(ctx context.Context, fsys fs.FS, dir string) Acceptance
 	if err != nil {
 		return Acceptance{Issues: []AcceptanceIssue{{
 			Kind: IssueForeignFile, Path: dir, Message: err.Error(),
-			Permanence: PermanenceFixable, Actor: ActorAuthor,
+			Solvability: SolvabilityYes, Actor: ActorRepositoryAuthor,
 		}}}
 	}
 	policy := ScanPolicy{Acceptance: AcceptancePolicy{Allowlist: WriterAllowlist()}}
 	return Scan(ctx, sub, nil, nil, policy).Acceptance
 }
 
-// issuesToReasons is the projection for the permanence pair as well as the code: it is
+// issuesToReasons is the projection for the solvability pair as well as the code: it is
 // already the single choke point through which every acceptance issue becomes a refusal
 // reason, so a check that classifies itself reaches a consumer without any second table.
 //
@@ -424,10 +425,10 @@ func issuesToReasons(issues []AcceptanceIssue) []RefusalReason {
 			detail = iss.Path + ": " + iss.Message
 		}
 		out = append(out, RefusalReason{
-			Code:       string(iss.Kind),
-			Detail:     detail,
-			Permanence: iss.Permanence,
-			Actor:      iss.Actor,
+			Code:        string(iss.Kind),
+			Detail:      detail,
+			Solvability: iss.Solvability,
+			Actor:       iss.Actor,
 		})
 	}
 	return out
@@ -526,26 +527,26 @@ func reachedResourceFiles(kusts map[string]*kustomizationDoc) map[string]struct{
 // refusedStructuralReason builds the render-root refusal, classified by the constructs
 // that caused it rather than by the code.
 //
-// The code itself reads as the support boundary — it MEANS "the writer cannot map this
-// render root back to editable source" — and permanent is the answer whenever the
-// constructs are unknown. But the same folder is also judged construct by construct when
-// the gate refuses a NESTED kustomization (IssueUnsupportedKustomize), and the two
-// surfaces must not hand a consumer two different answers about one directory: a root
-// refused for helmCharts would read "pending-upstream" through one and "permanent"
-// through the other. Classifying both from the same feature set is what keeps them
-// agreeing, and it follows the rule the whole table follows — classify the folder's
-// prospects, not the rule's.
+// The code itself MEANS "the writer cannot map this render root back to editable source",
+// so "no" is the answer whenever the constructs are unknown. But the same folder is judged
+// construct by construct when the gate refuses a NESTED kustomization
+// (IssueUnsupportedKustomize), and the two surfaces must not hand a consumer two different
+// answers about one directory: a root refused only because its kustomization does not
+// parse is one commit from being adoptable, and saying "no" there would send its author
+// away for nothing. Classifying both from the same feature set is what keeps them
+// agreeing, and it follows the rule the whole table follows — describe the folder, not the
+// rule.
 func refusedStructuralReason(doc *kustomizationDoc, content []byte) RefusalReason {
 	reason := RefusalReason{
-		Code:       ReasonRefusedStructural,
-		Detail:     refusedStructuralDetail(doc, content),
-		Permanence: PermanencePermanent,
+		Code:        ReasonRefusedStructural,
+		Detail:      refusedStructuralDetail(doc, content),
+		Solvability: SolvabilityNo,
 	}
 	if doc == nil {
 		return reason
 	}
-	if class := classifyKustomizeFeatures(doc.features); class.Permanence != PermanenceUnknown {
-		reason.Permanence, reason.Actor = class.Permanence, class.Actor
+	if class := classifyKustomizeFeatures(doc.features); class.Solvability != SolvabilityUnknown {
+		reason.Solvability, reason.Actor = class.Solvability, class.Actor
 	}
 	return reason
 }

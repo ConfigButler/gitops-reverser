@@ -133,6 +133,15 @@ See [Documentation checks](./CONTRIBUTING.md#documentation-checks).
 - Update API documentation if modifying webhook behavior
 - Update API documentation if modifying CRDs
 
+### `docs/UPGRADING.md` is read AFTER the release ships
+
+Nobody reads an upgrade guide before the version exists. Write every entry in the present
+tense, describing the release the reader is upgrading to as something that already is:
+"`schemaVersion` is gone; `apiVersion` replaces it", never "will be removed" or "now
+gains". Do not mark an entry `Unreleased` or `(next minor)` — by the time it is read, both
+are false, and a heading that says "Unreleased" about a change shipped six versions ago is
+worse than no heading. Name what changed, not when it is going to.
+
 ## VALIDATION SEQUENCE
 
 For markdown/docs-only edits, skip this full sequence unless the documentation change depends on or
