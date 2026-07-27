@@ -11,15 +11,14 @@ import (
 	internalanalyzer "github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 )
 
-// SchemaVersion identifies the JSON contract [FolderReport] and [RepoReport] marshal to.
-// It is a marker, not a promise: while the project is pre-1.0 the contract may change
-// under a consumer, with or without a bump. Adding a field never bumps it, so consumers
-// must ignore fields they do not know.
-const SchemaVersion = "v1"
-
 // IssueKind classifies why a folder was not accepted. The values are the operator's own
 // refusal codes. They are the part of an [Issue] worth matching on, and they change less
 // often than the surrounding shape — but pre-1.0 they can still change.
+//
+// The set below is complete: every kind the operator can raise is declared here, including
+// the three that only a live write path emits (they reach a consumer through GitTarget
+// status rather than through [ScanFolder] or [ScanRepo], which are structure-only). A
+// consumer matching on these constants can recognise every code it will ever be handed.
 type IssueKind string
 
 const (
@@ -59,6 +58,56 @@ const (
 	// IssueWriteFanIn marks an in-place edit of a source file that more than one kustomize
 	// render root reaches.
 	IssueWriteFanIn IssueKind = "write-fan-in"
+	// IssueRenderRefused marks a planned write kustomize itself will not vouch for: the
+	// flush was re-rendered with the write applied, and the result was not the live
+	// object. Only a live write raises it; a structure-only scan never can.
+	IssueRenderRefused IssueKind = "kustomize-render-refused"
+	// IssueRenderDoesNotMatchLive marks a rendered ${...} value whose corresponding live
+	// field is absent or different. Only a live write raises it.
+	IssueRenderDoesNotMatchLive IssueKind = "render-does-not-match-live"
+	// IssueUnplaceableEdit marks a live change the writer could not place in any source
+	// document. Only a live write raises it.
+	IssueUnplaceableEdit IssueKind = "unplaceable-edit"
+)
+
+// Permanence says whether a refusal can ever stop being one. It is set by the check that
+// raised the refusal, because only that check knows — several codes classify differently
+// depending on which branch emitted them, which is exactly why this is a field on the
+// emitted value and not a table beside the constants.
+//
+// Consumers MUST treat an unrecognised or absent value as [PermanenceUnknown] and say
+// nothing about the future. "Not supported yet" is a wait, "cannot be synced" is a
+// redesign, and "fix your YAML" is neither; a code alone cannot tell them apart.
+type Permanence string
+
+const (
+	// PermanenceUnknown is the zero value: not classified. Say nothing.
+	PermanenceUnknown Permanence = ""
+	// PermanenceFixable means changing the repository or the GitTarget clears it today.
+	// [Actor] says who can make that change.
+	PermanenceFixable Permanence = "fixable"
+	// PermanencePending means a future release may accept it. Nobody can clear it today.
+	PermanencePending Permanence = "pending-upstream"
+	// PermanencePermanent is the support boundary: never a "not yet".
+	PermanencePermanent Permanence = "permanent"
+)
+
+// Actor names who can act on a fixable refusal. It is empty when the refusal is not
+// fixable, or when nobody can act.
+//
+// It matters because some refusals are fixable ONLY by the person who owns the GitTarget,
+// who is often not the person reading the message: rendering an out-of-scope refusal as
+// "fix your repository" to a repository author who cannot is worse than saying nothing.
+type Actor string
+
+const (
+	// ActorUnknown is the zero value: unclassified, or nobody can act.
+	ActorUnknown Actor = ""
+	// ActorAuthor is the person who owns the files in the repository.
+	ActorAuthor Actor = "repository-author"
+	// ActorPlatform is the person who owns the GitTarget — its scope, its path, and the
+	// CRDs installed in the cluster it mirrors.
+	ActorPlatform Actor = "platform-operator"
 )
 
 // Issue is one reason a folder is not accepted, or one fact a stricter policy may treat
@@ -72,6 +121,10 @@ type Issue struct {
 	DocumentIndex int `json:"documentIndex"`
 	// Message is a human-readable explanation. It is not a stable string.
 	Message string `json:"message"`
+	// Permanence is empty when the check did not classify itself.
+	Permanence Permanence `json:"permanence,omitempty"`
+	// Actor is empty unless Permanence is [PermanenceFixable].
+	Actor Actor `json:"actor,omitempty"`
 }
 
 // Identity names one Kubernetes document as it appears in the file.
@@ -97,12 +150,28 @@ type RetainedDocument struct {
 	Unsupported bool `json:"unsupported,omitempty"`
 }
 
-// FolderReport answers "may this folder become a GitTarget?".
+// FolderReport answers "may this folder become a GitTarget?". It is a KRM document: the
+// scan REQUEST is the spec, what was FOUND is the status. See [TypeMeta] for why the
+// envelope, and why the document is never served or applyable.
 type FolderReport struct {
-	SchemaVersion string `json:"schemaVersion"`
-	// Root is the scanned folder as passed to ScanFolder. Informational; empty for
-	// ScanFolderFS.
+	TypeMeta `json:",inline"`
+
+	Spec   FolderReportSpec   `json:"spec"`
+	Status FolderReportStatus `json:"status"`
+}
+
+// FolderReportSpec is the scan that was asked for.
+type FolderReportSpec struct {
+	// Root is the scanned folder as passed to ScanFolder. Empty for ScanFolderFS.
 	Root string `json:"root,omitempty"`
+	// Mode is always [ModeScanFolder].
+	Mode string `json:"mode"`
+}
+
+// FolderReportStatus is what the scan found.
+type FolderReportStatus struct {
+	// Generator names the build that produced this report. Never empty.
+	Generator Generator `json:"generator"`
 	// Accepted is the gate decision. When false, Issues says why.
 	Accepted bool `json:"accepted"`
 	// Issues is empty when Accepted, and never nil in the marshaled JSON.
@@ -122,7 +191,7 @@ func ScanFolder(ctx context.Context, root string) (FolderReport, error) {
 		return FolderReport{}, err
 	}
 	report := folderReportFrom(result.Acceptance)
-	report.Root = root
+	report.Spec.Root = root
 	return report, nil
 }
 
@@ -136,8 +205,8 @@ func ScanFolderFS(ctx context.Context, fsys fs.FS) FolderReport {
 // WriteJSON writes the report as indented JSON — byte-for-byte what
 // `manifest-analyzer --mode scan-folder --format json` prints.
 func (r FolderReport) WriteJSON(w io.Writer) error {
-	if r.Issues == nil {
-		r.Issues = []Issue{}
+	if r.Status.Issues == nil {
+		r.Status.Issues = []Issue{}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -159,16 +228,22 @@ func folderScanPolicy() internalanalyzer.ScanPolicy {
 // stay still while the internal one moves.
 func folderReportFrom(acc internalanalyzer.Acceptance) FolderReport {
 	report := FolderReport{
-		SchemaVersion: SchemaVersion,
-		Accepted:      acc.Accepted,
-		Issues:        make([]Issue, 0, len(acc.Issues)),
+		TypeMeta: TypeMeta{APIVersion: APIVersion, Kind: KindFolderReport},
+		Spec:     FolderReportSpec{Mode: ModeScanFolder},
+		Status: FolderReportStatus{
+			Generator: generator(),
+			Accepted:  acc.Accepted,
+			Issues:    make([]Issue, 0, len(acc.Issues)),
+		},
 	}
 	for _, issue := range acc.Issues {
-		report.Issues = append(report.Issues, Issue{
+		report.Status.Issues = append(report.Status.Issues, Issue{
 			Kind:          IssueKind(issue.Kind),
 			Path:          issue.Path,
 			DocumentIndex: issue.DocumentIndex,
 			Message:       issue.Message,
+			Permanence:    Permanence(issue.Permanence),
+			Actor:         Actor(issue.Actor),
 		})
 	}
 	for _, rd := range acc.Retained {
@@ -185,7 +260,7 @@ func folderReportFrom(acc internalanalyzer.Acceptance) FolderReport {
 				Name:       rd.Identity.Name,
 			}
 		}
-		report.Retained = append(report.Retained, doc)
+		report.Status.Retained = append(report.Status.Retained, doc)
 	}
 	return report
 }

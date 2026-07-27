@@ -32,7 +32,11 @@ const (
 	LayoutRefusedStructural Layout = "refused-structural"
 )
 
-// Refusal reason codes a candidate may carry.
+// Refusal reason codes that are NOT [IssueKind] values. This block is not the
+// enumeration of what [RefusalReason.Code] can hold — it is the two codes that come from
+// somewhere other than the acceptance gate. Every other code a candidate carries is an
+// [IssueKind], because that is where it came from: the gate raised an issue, and
+// RefusalReason is that issue projected one level up.
 const (
 	// ReasonOverlayFanOutUnsupported was the forward-looking refusal for an external-base
 	// overlay. Render-root scoping shipped, so the scanner now ADOPTS such an overlay and no
@@ -41,16 +45,25 @@ const (
 	// it owns); an overlay refused for a real fault carries that fault's own code.
 	//
 	// Deprecated: no longer emitted; kept for source compatibility.
-	ReasonOverlayFanOutUnsupported = "overlay-fan-out-unsupported"
-	// ReasonRefusedStructural is the permanent support boundary.
-	ReasonRefusedStructural = "refused-structural"
+	ReasonOverlayFanOutUnsupported IssueKind = "overlay-fan-out-unsupported"
+	// ReasonRefusedStructural is the permanent support boundary: a render root whose
+	// kustomization uses a construct the writer cannot map back to editable source.
+	ReasonRefusedStructural IssueKind = "refused-structural"
 )
 
 // RefusalReason is one machine-readable reason a candidate is not accepted.
 type RefusalReason struct {
-	Code string `json:"code"`
+	// Code is an [IssueKind] value, or [ReasonRefusedStructural]. The type makes that
+	// relationship compile-checked rather than merely stated: a candidate's refusal is
+	// the acceptance gate's own issue, projected up.
+	Code IssueKind `json:"code"`
 	// Detail is human-readable and not a stable string.
 	Detail string `json:"detail"`
+	// Permanence says whether this refusal can ever stop being one. Empty when the check
+	// that raised it did not classify itself; treat that as "say nothing".
+	Permanence Permanence `json:"permanence,omitempty"`
+	// Actor is empty unless Permanence is [PermanenceFixable].
+	Actor Actor `json:"actor,omitempty"`
 }
 
 // ResourceCounts splits the KRM a candidate covers into what it renders versus what it
@@ -104,11 +117,28 @@ type RepoSummary struct {
 	UnsupportedConstructs []string `json:"unsupportedConstructs,omitempty"`
 }
 
-// RepoReport answers "which folders in this repository could become GitTargets?".
+// RepoReport answers "which folders in this repository could become GitTargets?". It is a
+// KRM document: the scan REQUEST is the spec, what was FOUND is the status. See
+// [TypeMeta] for why the envelope, and why the document is never served or applyable.
 type RepoReport struct {
-	SchemaVersion string `json:"schemaVersion"`
-	// Root is the scanned repository root as passed to ScanRepo. Informational.
-	Root       string      `json:"root,omitempty"`
+	TypeMeta `json:",inline"`
+
+	Spec   RepoReportSpec   `json:"spec"`
+	Status RepoReportStatus `json:"status"`
+}
+
+// RepoReportSpec is the scan that was asked for.
+type RepoReportSpec struct {
+	// Root is the scanned repository root as passed to ScanRepo.
+	Root string `json:"root,omitempty"`
+	// Mode is always [ModeScanRepo].
+	Mode string `json:"mode"`
+}
+
+// RepoReportStatus is what the scan found.
+type RepoReportStatus struct {
+	// Generator names the build that produced this report. Never empty.
+	Generator  Generator   `json:"generator"`
 	Candidates []Candidate `json:"candidates"`
 	Summary    RepoSummary `json:"summary"`
 }
@@ -127,8 +157,8 @@ func ScanRepo(ctx context.Context, root string) (RepoReport, error) {
 // WriteJSON writes the report as indented JSON — byte-for-byte what
 // `manifest-analyzer --mode scan-repo --format json` prints.
 func (r RepoReport) WriteJSON(w io.Writer) error {
-	if r.Candidates == nil {
-		r.Candidates = []Candidate{}
+	if r.Status.Candidates == nil {
+		r.Status.Candidates = []Candidate{}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -138,27 +168,30 @@ func (r RepoReport) WriteJSON(w io.Writer) error {
 // repoReportFrom projects the internal discovery report onto the public contract.
 func repoReportFrom(rep internalanalyzer.RepoReport) RepoReport {
 	out := RepoReport{
-		SchemaVersion: SchemaVersion,
-		Root:          rep.Root,
-		Candidates:    make([]Candidate, 0, len(rep.Candidates)),
-		Summary: RepoSummary{
-			CandidatesByLayout:    make(map[Layout]int, len(rep.Summary.CandidatesByLayout)),
-			Accepted:              rep.Summary.Accepted,
-			Refused:               rep.Summary.Refused,
-			FleetRoot:             rep.Summary.FleetRoot,
-			UnsupportedConstructs: rep.Summary.UnsupportedConstructs,
+		TypeMeta: TypeMeta{APIVersion: APIVersion, Kind: KindRepoReport},
+		Spec:     RepoReportSpec{Root: rep.Root, Mode: ModeScanRepo},
+		Status: RepoReportStatus{
+			Generator:  generator(),
+			Candidates: make([]Candidate, 0, len(rep.Candidates)),
+			Summary: RepoSummary{
+				CandidatesByLayout:    make(map[Layout]int, len(rep.Summary.CandidatesByLayout)),
+				Accepted:              rep.Summary.Accepted,
+				Refused:               rep.Summary.Refused,
+				FleetRoot:             rep.Summary.FleetRoot,
+				UnsupportedConstructs: rep.Summary.UnsupportedConstructs,
+			},
 		},
 	}
 	for layout, n := range rep.Summary.CandidatesByLayout {
-		out.Summary.CandidatesByLayout[Layout(layout)] = n
+		out.Status.Summary.CandidatesByLayout[Layout(layout)] = n
 	}
 	for _, conflict := range rep.Summary.OverlapConflicts {
-		out.Summary.OverlapConflicts = append(out.Summary.OverlapConflicts, OverlapConflict{
+		out.Status.Summary.OverlapConflicts = append(out.Status.Summary.OverlapConflicts, OverlapConflict{
 			Ancestor: conflict.Ancestor, Descendant: conflict.Descendant,
 		})
 	}
 	for _, cand := range rep.Candidates {
-		out.Candidates = append(out.Candidates, candidateFrom(cand))
+		out.Status.Candidates = append(out.Status.Candidates, candidateFrom(cand))
 	}
 	return out
 }
@@ -179,7 +212,12 @@ func candidateFrom(cand internalanalyzer.RepoCandidate) Candidate {
 		OverlapsWith: cand.OverlapsWith,
 	}
 	for _, reason := range cand.RefusalReasons {
-		out.RefusalReasons = append(out.RefusalReasons, RefusalReason{Code: reason.Code, Detail: reason.Detail})
+		out.RefusalReasons = append(out.RefusalReasons, RefusalReason{
+			Code:       IssueKind(reason.Code),
+			Detail:     reason.Detail,
+			Permanence: Permanence(reason.Permanence),
+			Actor:      Actor(reason.Actor),
+		})
 	}
 	return out
 }
