@@ -73,6 +73,12 @@ const ReasonRefusedStructural = "refused-structural"
 type RefusalReason struct {
 	Code   string `json:"code"`
 	Detail string `json:"detail"`
+	// Permanence and Actor carry the refusal's own answer to "can this folder ever be
+	// picked, and by whom" — projected verbatim from the acceptance issue that raised it,
+	// or set by the raise site for the reasons that are not issue kinds. Empty means
+	// unclassified; say nothing about the future.
+	Permanence Permanence `json:"permanence,omitempty"`
+	Actor      Actor      `json:"actor,omitempty"`
 }
 
 // ResourceCounts splits the KRM a candidate covers into what it renders versus what it
@@ -228,10 +234,7 @@ func classifyRenderRoot(
 	if doc := kusts[rootDir]; doc == nil || doc.unsupported {
 		c.Layout = LayoutRefusedStructural
 		c.AcceptedByOperator = false
-		c.RefusalReasons = []RefusalReason{{
-			Code:   ReasonRefusedStructural,
-			Detail: refusedStructuralDetail(kusts[rootDir], kustContent[rootDir]),
-		}}
+		c.RefusalReasons = []RefusalReason{refusedStructuralReason(kusts[rootDir], kustContent[rootDir])}
 		c.Resources = countResources(store, rootDir, rendered)
 		return c
 	}
@@ -395,12 +398,19 @@ func setContains(set map[string]struct{}, key string) bool {
 func candidateAcceptance(ctx context.Context, fsys fs.FS, dir string) Acceptance {
 	sub, err := fs.Sub(fsys, dir)
 	if err != nil {
-		return Acceptance{Issues: []AcceptanceIssue{{Kind: IssueForeignFile, Path: dir, Message: err.Error()}}}
+		return Acceptance{Issues: []AcceptanceIssue{{
+			Kind: IssueForeignFile, Path: dir, Message: err.Error(),
+			Permanence: PermanenceFixable, Actor: ActorAuthor,
+		}}}
 	}
 	policy := ScanPolicy{Acceptance: AcceptancePolicy{Allowlist: WriterAllowlist()}}
 	return Scan(ctx, sub, nil, nil, policy).Acceptance
 }
 
+// issuesToReasons is the projection for the permanence pair as well as the code: it is
+// already the single choke point through which every acceptance issue becomes a refusal
+// reason, so a check that classifies itself reaches a consumer without any second table.
+//
 // issuesToReasons projects acceptance-gate issues into refusal reasons so a refused plain
 // or self-contained kustomize candidate reports WHY — duplicate identity, non-KRM YAML, a
 // foreign file, a mixed build-directive file, an unsupported nested kustomization — not
@@ -413,7 +423,12 @@ func issuesToReasons(issues []AcceptanceIssue) []RefusalReason {
 		if iss.Path != "" {
 			detail = iss.Path + ": " + iss.Message
 		}
-		out = append(out, RefusalReason{Code: string(iss.Kind), Detail: detail})
+		out = append(out, RefusalReason{
+			Code:       string(iss.Kind),
+			Detail:     detail,
+			Permanence: iss.Permanence,
+			Actor:      iss.Actor,
+		})
 	}
 	return out
 }
@@ -506,6 +521,33 @@ func reachedResourceFiles(kusts map[string]*kustomizationDoc) map[string]struct{
 		}
 	}
 	return out
+}
+
+// refusedStructuralReason builds the render-root refusal, classified by the constructs
+// that caused it rather than by the code.
+//
+// The code itself reads as the support boundary — it MEANS "the writer cannot map this
+// render root back to editable source" — and permanent is the answer whenever the
+// constructs are unknown. But the same folder is also judged construct by construct when
+// the gate refuses a NESTED kustomization (IssueUnsupportedKustomize), and the two
+// surfaces must not hand a consumer two different answers about one directory: a root
+// refused for helmCharts would read "pending-upstream" through one and "permanent"
+// through the other. Classifying both from the same feature set is what keeps them
+// agreeing, and it follows the rule the whole table follows — classify the folder's
+// prospects, not the rule's.
+func refusedStructuralReason(doc *kustomizationDoc, content []byte) RefusalReason {
+	reason := RefusalReason{
+		Code:       ReasonRefusedStructural,
+		Detail:     refusedStructuralDetail(doc, content),
+		Permanence: PermanencePermanent,
+	}
+	if doc == nil {
+		return reason
+	}
+	if class := classifyKustomizeFeatures(doc.features); class.Permanence != PermanenceUnknown {
+		reason.Permanence, reason.Actor = class.Permanence, class.Actor
+	}
+	return reason
 }
 
 // refusedStructuralDetail names the specific unsupported kustomize features so the

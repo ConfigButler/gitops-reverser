@@ -140,6 +140,10 @@ func TestPlanFlush_RefusesAWriteThatDragsASiblingAlong(t *testing.T) {
 		"the refusal must name the object the write would have dragged along")
 	assert.True(t, refused.AllIssuesOfKinds(manifestanalyzer.IssueRenderRefused),
 		"it is a write-boundary refusal, so it surfaces as WriteBoundaryRefused")
+	// The oracle will always refuse a write it cannot vouch for, so this refusal is
+	// permanent on the narrow claim it makes — never a "not supported yet".
+	assertClassified(t, refused.Issues)
+	assert.Equal(t, manifestanalyzer.PermanencePermanent, refused.Issues[0].Permanence)
 
 	assertFileBytes(t, kustPath, sharedEntryKustomizationYAML,
 		"the entry is shared context; editing it would move api too")

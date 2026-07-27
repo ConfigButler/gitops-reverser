@@ -137,6 +137,13 @@ type RetainedDocument struct {
 	// The acceptance gate refuses either (IssueUnsupportedKustomize) rather than writing
 	// into content it cannot safely manage. Only ever set on a whole-file retention.
 	Unsupported bool
+	// UnsupportedFeatures names the constructs that made this retention unsupported, as
+	// the user wrote them ("configMapGenerator", "remote-base", "render-failed"). It
+	// carries the parse-time answer to the refusal, which is what lets the acceptance
+	// gate classify the refusal's permanence per construct instead of per code — one code
+	// with three answers is the whole reason the permanence field exists. Sorted; empty
+	// when Unsupported is false.
+	UnsupportedFeatures []string
 }
 
 // FileModel is one managed file under the scanned root. Its document set and
@@ -223,6 +230,13 @@ type DocumentModel struct {
 	// followability registry. Structure-only analysis is always MappingNoSource
 	// because no API source is wired in.
 	Mapping MappingOutcome
+
+	// MappingRefusal carries the permanence of a MappingNotFollowable outcome, decided
+	// where the registry answer is still in hand. A GVK the registry has never heard of
+	// is a CRD the platform operator can install; a GVK it knows but will not follow —
+	// ambiguous, unserved, missing a verb — is not something either side clears today.
+	// The acceptance gate sees only the outcome, so the split has to be recorded here.
+	MappingRefusal Classification
 
 	// Editable is false for SOPS-encrypted or otherwise non-patchable documents;
 	// Cause carries the structured reason.
@@ -444,10 +458,12 @@ func buildStore(
 			// write-fan-in guard, which needs the render to see the shared file.
 			_, buildFailed := renderFailures[filepathToSlash(f.Path)]
 			doc := kusts[slashDir(f.Path)]
+			unsupported := isKustomizationFile(f.Path) &&
+				((doc != nil && doc.unsupported) || buildFailed)
 			store.Retained = append(store.Retained, RetainedDocument{
-				Location: manifestedit.Location{Path: f.Path},
-				Unsupported: isKustomizationFile(f.Path) &&
-					((doc != nil && doc.unsupported) || buildFailed),
+				Location:            manifestedit.Location{Path: f.Path},
+				Unsupported:         unsupported,
+				UnsupportedFeatures: retainedUnsupportedFeatures(unsupported, doc, buildFailed),
 			})
 		}
 	}
@@ -987,6 +1003,15 @@ func (s *ManifestStore) resolveMapping(
 	}
 
 	record, known := lookup.ByGVK(gvk)
+	if !known {
+		// Nothing serves this GVK: install the CRD (or widen what the registry may see)
+		// and the same folder is adoptable, so this is fixable by the platform operator.
+		dm.MappingRefusal = Classification{Permanence: PermanenceFixable, Actor: ActorPlatform}
+	} else if !record.Followable() {
+		// Served, but ambiguous, denied, or missing a verb. Nobody clears that from
+		// here; a future release deciding to follow it is the only way out.
+		dm.MappingRefusal = Classification{Permanence: PermanencePending}
+	}
 	if known && record.Followable() {
 		dm.Mapping = MappingFollowable
 		namespaced := record.Identity.Scope == typeset.ScopeNamespaced

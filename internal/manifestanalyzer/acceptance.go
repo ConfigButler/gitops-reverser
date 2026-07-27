@@ -280,6 +280,11 @@ func unsupportedKustomizeRefusals(store *ManifestStore) []AcceptanceIssue {
 		if !rd.Unsupported {
 			continue
 		}
+		// One code, three answers: a broken kustomization is the author's to fix, a
+		// remote base is ours to support later, and a generator is the support boundary.
+		// The construct that raised the refusal is the only thing that knows which, so
+		// the classification is computed from the retention's own feature set here rather
+		// than looked up per code.
 		out = append(out, AcceptanceIssue{
 			Kind:          IssueUnsupportedKustomize,
 			Path:          rd.Location.Path,
@@ -290,7 +295,7 @@ func unsupportedKustomizeRefusals(store *ManifestStore) []AcceptanceIssue {
 				"declares malformed images/replicas overrides, or is a render root kustomize cannot build; " +
 				"the operator cannot map it back to editable source documents and will not write into this folder " +
 				"(a kustomize-build-failed diagnostic on this path carries the build error)",
-		})
+		}.classified(classifyKustomizeFeatures(rd.UnsupportedFeatures)))
 	}
 	return out
 }
@@ -313,6 +318,9 @@ func duplicateRefusals(store *ManifestStore) []AcceptanceIssue {
 				Kind:          IssueDuplicate,
 				Path:          path,
 				DocumentIndex: loser.DocumentIndex,
+				// Two documents claim one identity; the author deletes or renames one.
+				Permanence: PermanenceFixable,
+				Actor:      ActorAuthor,
 				Message: fmt.Sprintf("duplicate manifest identity %s at %s#%d; first occurrence at %s#%d",
 					identityRef(dm.ManifestIdentity), path, loser.DocumentIndex,
 					winner.FilePath, winner.DocumentIndex),
@@ -363,6 +371,8 @@ func recordlessRefusal(store *ManifestStore, d manifestedit.Diagnostic) (Accepta
 		return AcceptanceIssue{
 			Kind: IssueNonKRM, Path: d.Path, DocumentIndex: d.DocumentIndex,
 			Message: "YAML is not a Kubernetes manifest",
+			// Remove it, or name it in .gittargetignore. Either way the author acts.
+			Permanence: PermanenceFixable, Actor: ActorAuthor,
 		}, true
 	case manifestedit.ReasonInvalidYAML, manifestedit.ReasonMissingSopsKey:
 		if managed {
@@ -370,6 +380,8 @@ func recordlessRefusal(store *ManifestStore, d manifestedit.Diagnostic) (Accepta
 		}
 		return AcceptanceIssue{
 			Kind: IssueInvalidYAML, Path: d.Path, DocumentIndex: d.DocumentIndex, Message: d.Message,
+			// The document does not parse: one broken document away from working.
+			Permanence: PermanenceFixable, Actor: ActorAuthor,
 		}, true
 	case manifestedit.ReasonNonEditable, manifestedit.ReasonDuplicateIdentity:
 		// Accompany a managed record (handled by duplicateRefusals / the planner skip);
@@ -386,6 +398,9 @@ func impureIssue(d manifestedit.Diagnostic, what string) AcceptanceIssue {
 		Kind:          IssueImpureManagedFile,
 		Path:          d.Path,
 		DocumentIndex: d.DocumentIndex,
+		// Split the file: the passenger document moves to one of its own.
+		Permanence: PermanenceFixable,
+		Actor:      ActorAuthor,
 		Message: fmt.Sprintf(
 			"a file with managed resources may contain only valid KRM documents; document #%d is %s",
 			d.DocumentIndex, what),
@@ -406,6 +421,9 @@ func mixedFileRefusals(store *ManifestStore) []AcceptanceIssue {
 			Kind:          IssueMixedFile,
 			Path:          rd.Location.Path,
 			DocumentIndex: rd.Location.DocumentIndex,
+			// Move the kustomization into its own file.
+			Permanence: PermanenceFixable,
+			Actor:      ActorAuthor,
 			Message: "managed resource " + identityRef(rd.Identity) +
 				" must not live in the allowlisted build-directive file " + rd.Location.Path,
 		})
@@ -442,13 +460,21 @@ func mappingRefusal(ref RecordRef, dm *DocumentModel, policy AcceptancePolicy) (
 	switch dm.Mapping {
 	case MappingFollowable:
 		if outOfScope(dm, policy) {
+			// Right kind, wrong namespace: only the person who owns the GitTarget can
+			// widen its scope, and their wizard may not have that person on the screen.
 			return refusal(IssueOutOfScope, ref,
-				"followable kind out of this GitTarget's scope: "+identityRef(dm.ManifestIdentity)), true
+				"followable kind out of this GitTarget's scope: "+identityRef(dm.ManifestIdentity),
+				Classification{Permanence: PermanenceFixable, Actor: ActorPlatform}), true
 		}
 		return AcceptanceIssue{}, false
 	case MappingNotFollowable:
+		// One code, two answers, and the registry is the only thing that knows which:
+		// a kind the cluster has never heard of is one CRD install away from working,
+		// while a kind that is served but ambiguous, or missing a verb, is not something
+		// anyone can fix from here. resolveMapping records the answer it saw.
 		return refusal(IssueUnresolvedKRM, ref,
-			"KRM "+identityRef(dm.ManifestIdentity)+" is not a followable resource type"), true
+			"KRM "+identityRef(dm.ManifestIdentity)+" is not a followable resource type",
+			dm.MappingRefusal), true
 	case MappingNoSource:
 		// hasAPISource gates this call, so a lone no-source document among followable
 		// ones is not judged on followability grounds.
@@ -463,13 +489,16 @@ func outOfScope(dm *DocumentModel, policy AcceptancePolicy) bool {
 	return policy.InScope != nil && dm.ResourceIdentity != nil && !policy.InScope(*dm.ResourceIdentity)
 }
 
-// refusal builds a per-document refusal at the given reference.
-func refusal(kind IssueKind, ref RecordRef, message string) AcceptanceIssue {
+// refusal builds a per-document refusal at the given reference, carrying the
+// classification its caller decided on.
+func refusal(kind IssueKind, ref RecordRef, message string, class Classification) AcceptanceIssue {
 	return AcceptanceIssue{
 		Kind:          kind,
 		Path:          ref.FilePath,
 		DocumentIndex: ref.DocumentIndex,
 		Message:       message,
+		Permanence:    class.Permanence,
+		Actor:         class.Actor,
 	}
 }
 

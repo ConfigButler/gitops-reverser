@@ -148,8 +148,17 @@ func TestFanInPrecondition_RefusesAmbiguousOverrideWriteThrough(t *testing.T) {
 	w := &BranchWorker{contentWriter: writer, mapper: deploymentMapper()}
 	_, err := w.flushEventsToWorktree(context.Background(), worktree, "",
 		[]Event{overridesDeploymentEvent("ghcr.io/example/podinfo:9.9.9", 3)}, nil, configv1alpha3.PruneOnEvent)
-	assert.Contains(t, refusalIssueKinds(t, err), manifestanalyzer.IssueWriteFanIn,
+	issues := refusalIssues(t, err)
+	assert.Contains(t, issueKinds(issues), manifestanalyzer.IssueWriteFanIn,
 		"an ambiguous-override write-through must be refused, not written through")
+	// Not the support boundary: per-render-root scoping generalizes this, so it is a
+	// "not yet" and must not be reported to a user as a redesign.
+	assertClassified(t, issues)
+	for _, issue := range issues {
+		if issue.Kind == manifestanalyzer.IssueWriteFanIn {
+			assert.Equal(t, manifestanalyzer.PermanencePending, issue.Permanence)
+		}
+	}
 
 	assertFileBytes(t, filepath.Join(root, "base", "deployment.yaml"), diamondDeploymentYAML,
 		"a refused fan-in write must leave the shared source file untouched")

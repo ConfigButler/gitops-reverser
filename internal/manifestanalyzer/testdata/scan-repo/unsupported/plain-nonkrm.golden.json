@@ -7,7 +7,9 @@
       "refusalReasons": [
         {
           "code": "non-krm-yaml",
-          "detail": "values.yaml: YAML is not a Kubernetes manifest"
+          "detail": "values.yaml: YAML is not a Kubernetes manifest",
+          "permanence": "fixable",
+          "actor": "repository-author"
         }
       ],
       "renderRoot": false,
