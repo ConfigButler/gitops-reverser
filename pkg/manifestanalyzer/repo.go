@@ -21,8 +21,10 @@ const (
 	// resources graph stays within its own subtree. Accepted.
 	LayoutKustomizeSingle Layout = "kustomize-single"
 	// LayoutKustomizeOverlay is a render root reaching a base outside its own subtree
-	// (the classic base/ + overlays/{env} shape). Refused today, with a forward-looking
-	// reason: it becomes accepted when render-root scoping ships.
+	// (the classic base/ + overlays/{env} shape). Accepted: render-root scoping shipped,
+	// so the base is read as read-only context and writes stay in the overlay. The
+	// candidate's editable count shows how much of what it renders it can own. An overlay
+	// refused for a real fault carries that fault's own code, never a forward-looking one.
 	LayoutKustomizeOverlay Layout = "kustomize-overlay"
 	// LayoutRefusedStructural is a render root whose kustomization uses a construct the
 	// writer cannot map back to editable source. This is the permanent support boundary,

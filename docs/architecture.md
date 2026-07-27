@@ -530,7 +530,8 @@ team-a-config/                              # GitTarget spec.path
 
 The **built-in default** path is `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml`, namespace
 first, the API group omitted for core resources, no version segment, and a `.sops.yaml` suffix for
-sensitive resources; a cluster-scoped resource uses the literal `cluster/` in place of the namespace.
+sensitive resources; a cluster-scoped resource uses the literal `_cluster/` in place of the namespace
+(an illegal Kubernetes namespace name, so it can never clash with a real one).
 But that default is only the cold-start seed: a new resource first follows its **siblings'** existing
 layout, and a `GitTarget` can declare its own placement policy. Details and the placement policy are in
 [File Placement](#file-placement).
@@ -859,7 +860,7 @@ refreshes that source.
 ### TypeRegistry and followability
 
 - **Source**: [internal/typeset/](../internal/typeset/)
-- **Design**: [design/manifest/version2/type-followability.md](spec/type-followability.md)
+- **Design**: [type-followability.md](spec/type-followability.md)
 
 `internal/typeset` is the single decision surface for "can this type be followed?" Each `TypeRecord`
 carries GVK/GVR identity, scope and preferred version facts, origin classification, subresource facts
@@ -1278,7 +1279,7 @@ Deeper dives live under [docs/design/](design/):
 - [Typeset owns discovery grace](spec/typeset-owns-discovery-grace.md)
 - [Kubernetes API resource catalog](facts/kubernetes-api-resource-catalog.md)
 - [GitTarget status design](spec/status-conditions-guide.md)
-- [GitTarget lifecycle and repo architecture](architecture.md)
+- [The support contract: what we edit, what we refuse, and why](design/support-boundary/support-contract.md)
 - [Git credentials interop](finished/git-credentials-interop.md)
 - [SOPS/age key management](finished/sops-repo-bootstrap-and-key-management-architecture.md)
 - [Commit signing](commit-signing.md)
