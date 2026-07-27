@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.2](https://github.com/ConfigButler/gitops-reverser/compare/v0.39.1...v0.39.2) (2026-07-27)
+
+
+### Documentation
+
+* review the configuration surface, and record three consumer asks against the published contract ([#272](https://github.com/ConfigButler/gitops-reverser/issues/272)) ([1f0b5d1](https://github.com/ConfigButler/gitops-reverser/commit/1f0b5d1f976453dde4cf34c3fb38cf0c795b9415))
+* **types:** make ResourceIdentifier.Key() a stated, tested contract ([#273](https://github.com/ConfigButler/gitops-reverser/issues/273)) ([80989ea](https://github.com/ConfigButler/gitops-reverser/commit/80989ea16cd023bb467e554f31d2c57e96890d00))
+
 ## [0.39.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.39.0...v0.39.1) (2026-07-23)
 
 
