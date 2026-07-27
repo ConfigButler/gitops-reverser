@@ -145,13 +145,19 @@ runs the same adoption gate over the overlay's render scope rather than blanket-
 | `kustomize-single` | One render root; `namespace` + `resources`/`images`/`replicas` | ✅ supported today |
 | `kustomize-overlay` | Base + N overlay roots, one namespace per overlay | ✅ adopted today; the render scope passes the gate and `editable` shows how much the overlay owns (a pure passthrough overlay is adopted yet `editable: 0`). Base-owned fields and new overlay objects stay write-time-planned |
 | `refused-structural` | Helm inflation, generators with hash suffixes, `components`, `namePrefix`/`nameSuffix`, remote bases, `configurations`/`openapi`/`crds` | ⛔ permanent — the support contract |
-| `refused-fleet-root` | `clusters/` + `apps/` + `infra/` cluster-root repo (a `GitTarget` points at an app subtree, never a cluster root) | ⛔ out of scope by design |
+| `refused-fleet-root` | `clusters/` + `apps/` + `infra/` cluster-root repo (a `GitTarget` points at an app subtree, never a cluster root) | ⛔ never shipped as a layout, and the repo-level flag that stood in for it is gone |
 | `refused-out-of-band` | Namespace/transform injected outside the folder (Flux `postBuild`/`targetNamespace`, Argo Application-level overrides) | ⛔ permanent — round-trip cannot hold |
 
 > **Shipped reconciliation (first cut).** Two rows above are *not* per-candidate
-> layouts in practice. `refused-fleet-root` is emitted as a **repo-level** signal
-> (`summary.fleetRoot`), because the cluster root is never itself a candidate — leaf app
-> folders still surface as normal candidates. `refused-out-of-band` is **not detected**:
+> layouts in practice. `refused-fleet-root` shipped as a **repo-level** flag
+> (`summary.fleetRoot`) and has since been **removed**: a cluster root is one because
+> a cluster points at it, which no scan of the repository can see, so the flag was a
+> directory-name guess nothing read. Nothing replaces it — the repo root is not a
+> candidate either way, and leaf app folders surface as normal candidates. The honest
+> form is a per-folder judgement from the documents it holds (a `FluxInstance`, a
+> `flux-system` bootstrap `Kustomization`), designed as `NotAnEditingTarget` in
+> [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md).
+> `refused-out-of-band` is **not detected**:
 > a structure-only folder walk cannot see a transform injected by a Flux `Kustomization`
 > or Argo `Application`. Those CRs are themselves KRM documents in the repo, so detecting
 > out-of-band overrides later means parsing the fleet CRs and cross-referencing the app
@@ -203,7 +209,7 @@ comment — the shipped report is strict JSON.)
 `resources` replaces the earlier `documents: { krm, nonKrm }` sketch with the shipped
 `{ rendered, editable, nonKrm }` split (see [First cut](#first-cut-shipped-2026-07-09) for
 why rendered and editable diverge for overlays). Plus a repo-level summary:
-`candidatesByLayout`, `accepted`/`refused` counts, `overlapConflicts`, `fleetRoot`, and
+`candidatesByLayout`, `accepted`/`refused` counts, `overlapConflicts`, and
 `unsupportedConstructs` (so a caller can say "this repo uses Helm inflation in
 `infra/`, which the operator does not manage").
 
@@ -323,7 +329,7 @@ in `spec` (`root`, `mode`) and everything found in `status` (`generator`, `candi
   editable: 0`) — the overlay renders a base it cannot edit, which makes the overlay gap
   legible at a glance.
 - Repo summary: `candidatesByLayout`, `accepted`, `refused`, `overlapConflicts[]`,
-  `fleetRoot`, `unsupportedConstructs[]`.
+  `unsupportedConstructs[]`.
 - `proposedGitTarget` is **not** emitted yet — CR proposal is deferred.
 
 **Fidelity to the operator.** `acceptedByOperator` runs the live writer's own gate per
@@ -345,9 +351,10 @@ refuses `openapi`/`crds` alongside `configurations`, matching the
   running the same gate the live writer runs over the overlay's **render scope** (the overlay
   subtree plus the exact base files its graph reaches), so the report cannot drift from the
   runtime; the former `overlay-fan-out-unsupported` reason is retired.
-- `refused-fleet-root` ships as a repo-summary flag (`fleetRoot: true`), not a
-  per-candidate layout: the repo root is never itself a candidate, and leaf app folders
-  still surface normally. `refused-out-of-band` is not detected yet — a structure-only
+- `refused-fleet-root` shipped as a repo-summary flag (`fleetRoot: true`) rather than a
+  per-candidate layout, and that flag has since been removed as an unreadable guess (see
+  the note above): the repo root is not a candidate regardless, and leaf app folders
+  surface normally. `refused-out-of-band` is not detected yet — a structure-only
   scan sees no out-of-band namespace/transform signal to refuse on.
 - Namespace inference is purely structural (no cluster): a render root's `namespace:`
   transformer, else the single explicit `metadata.namespace` on a plain folder's

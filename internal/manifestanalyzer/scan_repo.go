@@ -181,10 +181,6 @@ type RepoSummary struct {
 	Refused  int `json:"refused"`
 	// OverlapConflicts lists every nesting conflict between candidates.
 	OverlapConflicts []OverlapConflict `json:"overlapConflicts,omitempty"`
-	// FleetRoot is true when the repo root is a cluster/fleet root (top-level clusters/ +
-	// apps/ + infra/): a GitTarget points at an app subtree, never such a root. The root
-	// is never itself a candidate; leaf folders still surface normally.
-	FleetRoot bool `json:"fleetRoot,omitempty"`
 	// UnsupportedConstructs is the sorted, de-duplicated set of unsupported kustomize
 	// features seen across refused-structural candidates, so a product can say "this repo
 	// uses Helm inflation, which we don't manage".
@@ -243,7 +239,7 @@ func scanRepoFS(ctx context.Context, fsys fs.FS) RepoReport {
 
 	return RepoReport{
 		Candidates: candidates,
-		Summary:    summarize(candidates, fsys, kusts),
+		Summary:    summarize(candidates, kusts),
 	}
 }
 
@@ -776,11 +772,10 @@ func detectOverlaps(candidates []RepoCandidate) {
 	}
 }
 
-// summarize rolls the candidates up into the repo-level summary and adds the fleet-root
-// signal read from the repo's top-level directories. Unsupported constructs are
-// recomputed from each refused-structural candidate's kustomization bytes, so the
+// summarize rolls the candidates up into the repo-level summary. Unsupported constructs
+// are recomputed from each refused-structural candidate's kustomization bytes, so the
 // summary shares one source of truth with the per-candidate detail.
-func summarize(candidates []RepoCandidate, fsys fs.FS, kusts map[string]*kustomizationDoc) RepoSummary {
+func summarize(candidates []RepoCandidate, kusts map[string]*kustomizationDoc) RepoSummary {
 	s := RepoSummary{CandidatesByLayout: map[Layout]int{}}
 	constructs := map[string]struct{}{}
 	for _, c := range candidates {
@@ -810,30 +805,7 @@ func summarize(candidates []RepoCandidate, fsys fs.FS, kusts map[string]*kustomi
 		}
 		return s.OverlapConflicts[i].Descendant < s.OverlapConflicts[j].Descendant
 	})
-	s.FleetRoot = isFleetRoot(fsys)
 	return s
-}
-
-// isFleetRoot reports whether the repo root is a cluster/fleet root: top-level
-// clusters/ + apps/ + infra/ directories. A GitTarget points at an app subtree, never
-// such a root.
-func isFleetRoot(fsys fs.FS) bool {
-	entries, err := fs.ReadDir(fsys, ".")
-	if err != nil {
-		return false
-	}
-	top := map[string]struct{}{}
-	for _, e := range entries {
-		if e.IsDir() {
-			top[e.Name()] = struct{}{}
-		}
-	}
-	for _, want := range []string{"clusters", "apps", "infra"} {
-		if _, ok := top[want]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // kustomizationContentByDir maps each kustomization directory to its raw bytes, so the
@@ -897,9 +869,6 @@ func RenderRepoText(w io.Writer, rep RepoReport) {
 		}
 	}
 	fmt.Fprintf(w, "summary: accepted=%d refused=%d", rep.Summary.Accepted, rep.Summary.Refused)
-	if rep.Summary.FleetRoot {
-		fmt.Fprint(w, " fleet-root=true")
-	}
 	if len(rep.Summary.OverlapConflicts) > 0 {
 		fmt.Fprintf(w, " overlap-conflicts=%d", len(rep.Summary.OverlapConflicts))
 	}

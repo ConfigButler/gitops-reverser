@@ -116,16 +116,17 @@ func TestScanRepo_ReportsOverlapConflicts(t *testing.T) {
 	}
 }
 
-func TestScanRepo_FleetRootIsNeverACandidate(t *testing.T) {
+func TestScanRepo_LeafFoldersSurfaceUnderAClusterRootLayout(t *testing.T) {
 	t.Parallel()
 
 	root := fixture(t, "supported", "fleet-root")
 	report, err := manifestanalyzer.ScanRepo(context.Background(), root)
 	require.NoError(t, err)
 
-	require.True(t, report.Status.Summary.FleetRoot)
+	require.NotEmpty(t, report.Status.Candidates, "the leaf app folders are candidates like any other")
 	for _, cand := range report.Status.Candidates {
-		require.NotEqual(t, ".", cand.Path, "a GitTarget points at an app subtree, never the fleet root")
+		require.NotEqual(t, ".", cand.Path,
+			"a folder holding no documents of its own is not a candidate, whatever its subtrees look like")
 	}
 }
 

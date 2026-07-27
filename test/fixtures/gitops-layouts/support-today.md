@@ -50,7 +50,7 @@ Reading rules:
 ## 1-desired-state/argocd-app-of-apps
 
 Reported rc `0`. Accepted `4`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -62,7 +62,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 1-desired-state/argocd-plain
 
 Reported rc `0`. Accepted `1`, refused `1`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -72,7 +72,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 1-desired-state/flux-monorepo
 
 Reported rc `0`. Accepted `6`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -86,7 +86,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 1-desired-state/repo-per-environment
 
 Reported rc `0`. Accepted `9`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -103,7 +103,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/argocd-external-helm
 
 Reported rc `0`. Accepted `3`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -114,7 +114,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/helm-chart
 
 Reported rc `0`. Accepted `1`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -123,7 +123,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/helm-environment-values
 
 Reported rc `0`. Accepted `1`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -132,7 +132,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/kustomize-overlay-minimal
 
 Reported rc `0`. Accepted `2`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -142,7 +142,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 2-rendered/kustomize-overlays
 
 Reported rc `0`. Accepted `1`, refused `3`.
-Unsupported constructs: `configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator`. Fleet root: `false`.
+Unsupported constructs: `configMapGenerator, namePrefix, nameSuffix, remote-base, secretGenerator`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -154,7 +154,7 @@ Unsupported constructs: `configMapGenerator, namePrefix, nameSuffix, remote-base
 ## 2-rendered/rendered-manifests
 
 Reported rc `0`. Accepted `3`, refused `2`.
-Unsupported constructs: `namePrefix`. Fleet root: `false`.
+Unsupported constructs: `namePrefix`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -167,7 +167,7 @@ Unsupported constructs: `namePrefix`. Fleet root: `false`.
 ## 3-expanded/argocd-applicationset-directories
 
 Reported rc `0`. Accepted `5`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -180,7 +180,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 3-expanded/argocd-applicationset-files
 
 Reported rc `0`. Accepted `0`, refused `1`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -189,7 +189,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 3-expanded/argocd-multicluster-matrix
 
 Reported rc `0`. Accepted `4`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -201,7 +201,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 3-expanded/flux-helmrelease
 
 Reported rc `0`. Accepted `3`, refused `1`.
-Unsupported constructs: `configMapGenerator`. Fleet root: `false`.
+Unsupported constructs: `configMapGenerator`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -213,7 +213,7 @@ Unsupported constructs: `configMapGenerator`. Fleet root: `false`.
 ## 3-expanded/flux-resourceset-inline
 
 Reported rc `0`. Accepted `1`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -222,7 +222,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 3-expanded/flux-resourceset-pull-requests
 
 Reported rc `0`. Accepted `1`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -231,7 +231,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 4-machine-written/flux-image-automation
 
 Reported rc `0`. Accepted `3`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -242,7 +242,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 5-opaque/sops-encrypted
 
 Reported rc `0`. Accepted `3`, refused `0`.
-Unsupported constructs: `none`. Fleet root: `false`.
+Unsupported constructs: `none`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
@@ -253,7 +253,7 @@ Unsupported constructs: `none`. Fleet root: `false`.
 ## 6-hostile/mixed-and-hostile
 
 Reported rc `0`. Accepted `3`, refused `2`.
-Unsupported constructs: `unparseable`. Fleet root: `false`.
+Unsupported constructs: `unparseable`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|

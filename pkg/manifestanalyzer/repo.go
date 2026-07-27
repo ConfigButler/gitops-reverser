@@ -155,9 +155,6 @@ type RepoSummary struct {
 	Accepted           int               `json:"accepted"`
 	Refused            int               `json:"refused"`
 	OverlapConflicts   []OverlapConflict `json:"overlapConflicts,omitempty"`
-	// FleetRoot reports that the repository root is a cluster/fleet root. A GitTarget
-	// points at an app subtree, never at such a root.
-	FleetRoot bool `json:"fleetRoot,omitempty"`
 	// UnsupportedConstructs is the sorted, de-duplicated set of unsupported kustomize
 	// features seen across refused candidates, so a tool can say "this repository uses
 	// Helm inflation, which the operator does not manage".
@@ -236,7 +233,6 @@ func repoReportFrom(rep internalanalyzer.RepoReport) RepoReport {
 				CandidatesByLayout:    make(map[Layout]int, len(rep.Summary.CandidatesByLayout)),
 				Accepted:              rep.Summary.Accepted,
 				Refused:               rep.Summary.Refused,
-				FleetRoot:             rep.Summary.FleetRoot,
 				UnsupportedConstructs: rep.Summary.UnsupportedConstructs,
 			},
 		},

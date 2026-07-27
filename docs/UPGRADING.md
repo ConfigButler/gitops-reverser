@@ -7,6 +7,30 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `summary.fleetRoot` is gone from the analyzer report (breaking JSON change)
+
+`manifest-analyzer --mode scan-repo` no longer emits `status.summary.fleetRoot`, the text
+report no longer prints `fleet-root=true`, and `pkg/manifestanalyzer`'s `RepoSummary` no
+longer has a `FleetRoot` field. A reader that indexed the key gets nothing back; there is no
+replacement key to switch to, and none is needed — the field never changed which folders the
+scan offers.
+
+It was a guess, and not one a better heuristic could rescue. It required top-level
+`clusters/` + `apps/` + `infra/` directories, so it read `false` on the layout Flux's own
+documentation and reference repository use (`infrastructure/`) and `true` on any repository
+that happens to use those three names. The deeper problem is that fleet-rootness is not a
+property of a repository at all: a directory is a cluster entry point because some cluster is
+*pointed at* it — a `FluxInstance.spec.sync.path`, a `flux bootstrap` somebody ran once — and
+a read-only scan of the tree cannot see that. The same repository is zero cluster entry
+points, one, or twelve, depending on who syncs it.
+
+Nothing branched on it, here or downstream, and the repository root is not offered as a
+candidate with or without it. When the question needs answering — *is this folder somebody's
+bootstrap directory rather than their app?* — the answer will come from the documents a
+candidate folder holds (a `FluxInstance`, a `flux-system` bootstrap `Kustomization`), which is
+decidable rather than guessed. See
+[orchestrator-knowledge-boundary.md](design/support-boundary/orchestrator-knowledge-boundary.md).
+
 ## The analyzer report is a KRM document (breaking JSON change)
 
 The two published scan modes (`manifest-analyzer --mode scan-folder|scan-repo --format json`)

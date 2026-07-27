@@ -67,16 +67,15 @@ emit_summary_row() {
 
 emit_detail() {
   local name="$1" rc="$2" json="$3"
-  local accepted refused constructs fleet
+  local accepted refused constructs
   accepted=$(jq -r '.status.summary.accepted // 0' <<<"$json")
   refused=$(jq -r '.status.summary.refused // 0' <<<"$json")
   constructs=$(jq -r "$MD_CELL"'(.status.summary.unsupportedConstructs // []) | join(", ") | md
                       | if . == "" then "none" else . end' <<<"$json")
-  fleet=$(jq -r '.status.summary.fleetRoot // false' <<<"$json")
 
   printf '\n## %s\n\n' "$name"
   printf 'Reported rc `%s`. Accepted `%s`, refused `%s`.\n' "$rc" "$accepted" "$refused"
-  printf 'Unsupported constructs: `%s`. Fleet root: `%s`.\n\n' "$constructs" "$fleet"
+  printf 'Unsupported constructs: `%s`.\n\n' "$constructs"
 
   if [[ "$(jq -r '(.status.candidates // []) | length' <<<"$json")" == "0" ]]; then
     printf '_No candidate folders reported._\n'
