@@ -174,3 +174,33 @@ func TestRepoReport_WriteJSON_EmptyCandidatesIsArray(t *testing.T) {
 	require.NoError(t, report.WriteJSON(&buf))
 	require.Contains(t, buf.String(), `"candidates": []`)
 }
+
+// A tool that provisions from a folder scan has to know two things before it acts, and
+// both are answers only the engine can give: which types must already be served where the
+// folder is applied, and which namespaces its objects land in. Reading the file headers
+// gives a different answer the moment a layout transform is involved — an overlay renders
+// a base it does not contain, into a namespace its files do not mention.
+func TestScanRepo_CandidateReportsWhatItRenders(t *testing.T) {
+	t.Parallel()
+
+	report, err := manifestanalyzer.ScanRepo(context.Background(), fixture(t, "supported", "base-overlays"))
+	require.NoError(t, err)
+	require.NotEmpty(t, report.Status.Candidates)
+
+	for _, cand := range report.Status.Candidates {
+		require.Equal(t, manifestanalyzer.LayoutKustomizeOverlay, cand.Layout)
+
+		// The overlay's own subtree holds nothing but a kustomization; every type it
+		// renders comes from the base outside it.
+		require.Zero(t, cand.Resources.Editable, "a pure passthrough overlay owns no source")
+		require.Contains(t, cand.Kinds,
+			manifestanalyzer.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"})
+		require.Contains(t, cand.Kinds,
+			manifestanalyzer.GroupVersionKind{Group: "", Version: "v1", Kind: "Service"})
+
+		// The namespace is the overlay's transformer applied, which is also what
+		// InferredNamespace names — but Namespaces is the set, and the set is what a
+		// caller has to enumerate.
+		require.Equal(t, []string{cand.InferredNamespace}, cand.Namespaces)
+	}
+}

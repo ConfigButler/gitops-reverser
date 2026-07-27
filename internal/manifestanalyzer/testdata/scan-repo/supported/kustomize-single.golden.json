@@ -10,7 +10,22 @@
         "rendered": 2,
         "editable": 2,
         "nonKrm": 0
-      }
+      },
+      "kinds": [
+        {
+          "group": "",
+          "version": "v1",
+          "kind": "Service"
+        },
+        {
+          "group": "apps",
+          "version": "v1",
+          "kind": "Deployment"
+        }
+      ],
+      "namespaces": [
+        "demo"
+      ]
     }
   ],
   "summary": {

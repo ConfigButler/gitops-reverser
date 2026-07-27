@@ -75,6 +75,14 @@ type ResourceCounts struct {
 	NonKRM   int `json:"nonKrm"`
 }
 
+// GroupVersionKind names one Kubernetes type. Group is empty for core types, so a
+// ConfigMap is {"", "v1", "ConfigMap"}.
+type GroupVersionKind struct {
+	Group   string `json:"group"`
+	Version string `json:"version"`
+	Kind    string `json:"kind"`
+}
+
 // Candidate is one folder that could become a GitTarget.
 type Candidate struct {
 	// Path is slash-separated and relative to the repository root.
@@ -91,6 +99,24 @@ type Candidate struct {
 	// InferredNamespace is the namespace the candidate resolves to, when unambiguous.
 	InferredNamespace string         `json:"inferredNamespace,omitempty"`
 	Resources         ResourceCounts `json:"resources"`
+	// Kinds is every distinct type this folder RENDERS, sorted by group, version, kind.
+	// For a render root it comes off a real kustomize build, so it includes what the
+	// folder pulls from a base outside its own subtree; for a plain folder it is the
+	// documents themselves. Empty when the folder renders nothing, or when it is a render
+	// root kustomize could not build — there is no honest answer in that case.
+	//
+	// It is the set that must already be served wherever this folder is applied. A type
+	// the destination does not serve does not degrade: the apply fails with "no matches
+	// for kind" and waits for the next resync.
+	Kinds []GroupVersionKind `json:"kinds,omitempty"`
+	// Namespaces is every distinct namespace this folder's objects LAND IN, sorted — for a
+	// render root the namespace transformer applied, not what the files happen to say.
+	// Cluster-scoped objects contribute nothing rather than an empty string.
+	//
+	// It is the plural of InferredNamespace and the honest one: a folder can render into
+	// several, and a tool that has to name them (on a GitTarget's allowed source
+	// namespaces, or one WatchRule rule per type and namespace) needs the whole set.
+	Namespaces []string `json:"namespaces,omitempty"`
 	// OverlapsWith lists candidate paths this one nests with. Two overlapping candidates
 	// can never both become GitTargets — a folder has exactly one owner.
 	OverlapsWith []string `json:"overlapsWith,omitempty"`
@@ -222,6 +248,10 @@ func candidateFrom(cand internalanalyzer.RepoCandidate) Candidate {
 			NonKRM:   cand.Resources.NonKRM,
 		},
 		OverlapsWith: cand.OverlapsWith,
+		Namespaces:   cand.Namespaces,
+	}
+	for _, gvk := range cand.Kinds {
+		out.Kinds = append(out.Kinds, GroupVersionKind{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind})
 	}
 	for _, reason := range cand.RefusalReasons {
 		out.RefusalReasons = append(out.RefusalReasons, RefusalReason{

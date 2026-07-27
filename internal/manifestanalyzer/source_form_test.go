@@ -199,7 +199,7 @@ spec:
 
 	var gitRaw map[string]interface{}
 	require.NoError(t, yaml.Unmarshal(contentOf(t, files, sourceDoc), &gitRaw))
-	chains, _ := renderChains(files, parseKustomizations(files))
+	chains, _, _ := renderChains(files, parseKustomizations(files))
 	rendered := chains[chainKey{originPath: sourceDoc, kind: "Deployment", name: "web"}].rendered
 
 	_, _, err := SplitDesiredForOverrides(gitRaw, &unstructured.Unstructured{Object: live}, rendered, "")

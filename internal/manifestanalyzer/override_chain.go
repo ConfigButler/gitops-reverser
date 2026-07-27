@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
@@ -130,6 +132,12 @@ func markReachable(kusts map[string]*kustomizationDoc, dir string, covered map[s
 // root reaches the same document with DIFFERENT chains, which is the fan-in > 1 case
 // we refuse to route through.
 //
+// It also returns what each root RENDERS TO — the distinct types and namespaces of the
+// objects kustomize actually produced — because that is a question only a real build can
+// answer and this is the one place a build already happens. A `namespace:` transformer
+// moves every object it covers, so the types and namespaces a folder declares in its files
+// and the ones it renders to are different sets whenever a layout transform is involved.
+//
 // It also returns, per kustomization path, the roots that FAILED to build. Those
 // must refuse the folder, and it is important to see why a silent skip would be
 // unsafe rather than merely unhelpful: a root that does not build yields no chain,
@@ -142,8 +150,9 @@ func markReachable(kusts map[string]*kustomizationDoc, dir string, covered map[s
 func renderChains(
 	files []manifestedit.FileContent,
 	kusts map[string]*kustomizationDoc,
-) (map[chainKey]*overrideAssignment, map[string]string) {
+) (map[chainKey]*overrideAssignment, map[string]RenderInventory, map[string]string) {
 	out := map[chainKey]*overrideAssignment{}
+	inventory := map[string]RenderInventory{}
 	failed := map[string]string{}
 
 	// One dye plan for the whole scan, so the nonces are stable across roots and a base
@@ -164,6 +173,7 @@ func renderChains(
 		// answer is then no attribution — never a fallback to a second guess.
 		dyed, dyeErr := renderRootWith(files, rootDir, plan.replace)
 		attribution := attributeRoot(rendered, dyed, dyeErr, plan)
+		inventory[rootDir] = inventoryOf(rendered)
 
 		for _, ro := range rendered {
 			if ro.OriginPath == "" {
@@ -177,7 +187,54 @@ func renderChains(
 			record(out, key, chainOf(ro, kusts), attribution[key])
 		}
 	}
-	return out, failed
+	return out, inventory, failed
+}
+
+// inventoryOf reduces one root's rendered objects to the two distinct sets a tool needs
+// before it provisions from a folder: which types must already be served where this is
+// applied, and which namespaces the objects land in.
+//
+// A cluster-scoped object contributes no namespace rather than an empty one — there is no
+// namespace to name, and an empty string in the set would read as one.
+func inventoryOf(rendered []renderedObject) RenderInventory {
+	kinds := map[schema.GroupVersionKind]struct{}{}
+	namespaces := map[string]struct{}{}
+	for _, ro := range rendered {
+		kinds[ro.Object.GroupVersionKind()] = struct{}{}
+		if ns := ro.Object.GetNamespace(); ns != "" {
+			namespaces[ns] = struct{}{}
+		}
+	}
+	return RenderInventory{Kinds: sortedGVKs(kinds), Namespaces: sortedKeysOfSet(namespaces)}
+}
+
+// sortedGVKs renders a GVK set in a stable order, so a report never churns on map
+// iteration.
+func sortedGVKs(set map[schema.GroupVersionKind]struct{}) []GVK {
+	out := make([]GVK, 0, len(set))
+	for gvk := range set {
+		out = append(out, GVK{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Group != out[j].Group {
+			return out[i].Group < out[j].Group
+		}
+		if out[i].Version != out[j].Version {
+			return out[i].Version < out[j].Version
+		}
+		return out[i].Kind < out[j].Kind
+	})
+	return out
+}
+
+// sortedKeysOfSet returns a set's members in sorted order.
+func sortedKeysOfSet(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // chainOf reads the override chain kustomize applied to one object: the images: and

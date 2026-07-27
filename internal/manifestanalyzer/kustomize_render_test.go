@@ -51,7 +51,7 @@ func TestProjection_InSyncCorpusFolderIsANoOp(t *testing.T) {
 				skipped++
 				t.Skipf("not renderable, and refused by the acceptance gate: %v", err)
 			}
-			chains, _ := renderChains(root.files, parseKustomizations(root.files))
+			chains, _, _ := renderChains(root.files, parseKustomizations(root.files))
 
 			for _, ro := range rendered {
 				if ro.OriginPath == "" {

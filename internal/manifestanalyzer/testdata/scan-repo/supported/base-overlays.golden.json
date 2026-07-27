@@ -13,7 +13,22 @@
         "rendered": 2,
         "editable": 0,
         "nonKrm": 0
-      }
+      },
+      "kinds": [
+        {
+          "group": "",
+          "version": "v1",
+          "kind": "Service"
+        },
+        {
+          "group": "apps",
+          "version": "v1",
+          "kind": "Deployment"
+        }
+      ],
+      "namespaces": [
+        "podinfo-acc"
+      ]
     },
     {
       "path": "overlays/prod",
@@ -28,7 +43,22 @@
         "rendered": 2,
         "editable": 0,
         "nonKrm": 0
-      }
+      },
+      "kinds": [
+        {
+          "group": "",
+          "version": "v1",
+          "kind": "Service"
+        },
+        {
+          "group": "apps",
+          "version": "v1",
+          "kind": "Deployment"
+        }
+      ],
+      "namespaces": [
+        "podinfo-prod"
+      ]
     },
     {
       "path": "overlays/test",
@@ -43,7 +73,22 @@
         "rendered": 2,
         "editable": 0,
         "nonKrm": 0
-      }
+      },
+      "kinds": [
+        {
+          "group": "",
+          "version": "v1",
+          "kind": "Service"
+        },
+        {
+          "group": "apps",
+          "version": "v1",
+          "kind": "Deployment"
+        }
+      ],
+      "namespaces": [
+        "podinfo-test"
+      ]
     }
   ],
   "summary": {

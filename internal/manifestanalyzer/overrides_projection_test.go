@@ -35,7 +35,7 @@ func splitFixture(
 	t.Helper()
 	desired := &unstructured.Unstructured{Object: live}
 
-	assignments, failed := renderChains(files, parseKustomizations(files))
+	assignments, _, failed := renderChains(files, parseKustomizations(files))
 	require.Empty(t, failed, "the fixture must be a folder kustomize can build")
 
 	assignment := assignments[chainKey{

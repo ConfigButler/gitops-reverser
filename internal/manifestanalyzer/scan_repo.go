@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
 
@@ -82,6 +84,19 @@ type RefusalReason struct {
 	Actor    Actor `json:"actor,omitempty"`
 }
 
+// RenderInventory is what a render root renders to, reduced to the two distinct sets a
+// tool needs before it provisions from the folder. Both are read off a real kustomize
+// build, so a `namespace:` transformer, a base outside the subtree, and any other layout
+// transform are already applied — these are the objects that reach the cluster, not the
+// ones the files happen to declare.
+type RenderInventory struct {
+	// Kinds is every distinct type the folder renders, sorted.
+	Kinds []GVK
+	// Namespaces is every distinct namespace the folder's objects land in, sorted. A
+	// cluster-scoped object contributes nothing rather than an empty string.
+	Namespaces []string
+}
+
 // ResourceCounts splits the KRM a candidate covers into what it renders versus what it
 // can actually edit. For a plain or self-contained kustomize candidate the two are
 // equal; for an overlay they diverge — rendered counts the documents pulled from the
@@ -125,6 +140,18 @@ type RepoCandidate struct {
 	InferredNamespace string `json:"inferredNamespace,omitempty"`
 	// Resources counts the KRM this candidate covers (rendered vs editable) plus non-KRM.
 	Resources ResourceCounts `json:"resources"`
+	// Kinds is every distinct type this candidate RENDERS, sorted. For a render root it
+	// is read off a real kustomize build, so a base outside the subtree is included and a
+	// layout transform is already applied; for a plain folder it is the documents
+	// themselves. A tool must install these schemas before it points anything at the
+	// folder: a kind the destination does not serve fails the forward apply with "no
+	// matches for kind" rather than degrading.
+	Kinds []GVK `json:"kinds,omitempty"`
+	// Namespaces is every distinct namespace this candidate's objects LAND IN, sorted,
+	// which for a render root is the namespace transformer applied rather than whatever
+	// the files say. Cluster-scoped objects contribute nothing. It is the plural of
+	// InferredNamespace and the honest one: a folder can render into several.
+	Namespaces []string `json:"namespaces,omitempty"`
 	// OverlapsWith lists other candidate paths this one nests with. Two overlapping
 	// candidates can never both be proposed (one-owner-per-folder); the conflict is
 	// reported, not resolved, in this cut.
@@ -228,6 +255,11 @@ func classifyRenderRoot(
 	store *ManifestStore,
 ) RepoCandidate {
 	c := RepoCandidate{Path: rootDir, RenderRoot: true, InferredNamespace: renderRootNamespace(kusts, rootDir, store)}
+	// What the root actually renders to, from the build the scan already ran. A root that
+	// failed to build has none, which is honest: we cannot know what it renders.
+	if inv, ok := store.RenderedInventory[rootDir]; ok {
+		c.Kinds, c.Namespaces = inv.Kinds, inv.Namespaces
+	}
 	// rendered/editable count only the documents the kustomization graph actually renders
 	// (its resources: entries), never parked YAML a kustomization does not reference.
 	rendered := reachedResourceFilesFrom(rootDir, kusts)
@@ -273,6 +305,27 @@ func classifyRenderRoot(
 	return c
 }
 
+// plainFolderInventory is the render inventory of a folder with no kustomization: the
+// documents ARE the render, so the types and namespaces come straight off them. Nothing
+// transforms them on the way to the cluster, which is what makes a plain folder plain.
+func plainFolderInventory(store *ManifestStore, dir string) ([]GVK, []string) {
+	kinds := map[schema.GroupVersionKind]struct{}{}
+	namespaces := map[string]struct{}{}
+	for filePath, fm := range store.FilesByPath {
+		if !pathWithin(filePath, dir) {
+			continue
+		}
+		for _, dm := range fm.Documents {
+			gvk := ParseGVK(dm.ManifestIdentity.APIVersion, dm.ManifestIdentity.Kind)
+			kinds[schema.GroupVersionKind{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind}] = struct{}{}
+			if ns := dm.ManifestIdentity.Namespace; ns != "" {
+				namespaces[ns] = struct{}{}
+			}
+		}
+	}
+	return sortedGVKs(kinds), sortedKeysOfSet(namespaces)
+}
+
 // plainCandidates enumerates plain KRM leaf folders: directories that directly hold a
 // managed KRM document, carry no kustomization, and are not already owned by a
 // kustomization's resources graph (so a base a kustomization renders is not also
@@ -302,11 +355,14 @@ func plainCandidates(
 	out := make([]RepoCandidate, 0, len(dirs))
 	for dir := range dirs {
 		acc := candidateAcceptance(ctx, fsys, dir)
+		kinds, namespaces := plainFolderInventory(store, dir)
 		cand := RepoCandidate{
 			Path:               dir,
 			Layout:             LayoutPlain,
 			AcceptedByOperator: acc.Accepted,
 			InferredNamespace:  singleExplicitNamespace(store, dir),
+			Kinds:              kinds,
+			Namespaces:         namespaces,
 			// A plain folder is applied directory-wise, so it renders its whole subtree
 			// (renderedFiles nil); no kustomization graph scopes it.
 			Resources: countResources(store, dir, nil),

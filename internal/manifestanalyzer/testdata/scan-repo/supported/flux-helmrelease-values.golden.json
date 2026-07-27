@@ -10,7 +10,17 @@
         "rendered": 1,
         "editable": 1,
         "nonKrm": 0
-      }
+      },
+      "kinds": [
+        {
+          "group": "helm.toolkit.fluxcd.io",
+          "version": "v2",
+          "kind": "HelmRelease"
+        }
+      ],
+      "namespaces": [
+        "flux-system"
+      ]
     }
   ],
   "summary": {

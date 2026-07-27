@@ -262,8 +262,26 @@ free to move.
 in `spec` (`root`, `mode`) and everything found in `status` (`generator`, `candidates`,
 `summary`). The candidate blocks below live under `status.candidates`. Per candidate: `path`,
 `layout`, `acceptedByOperator`, `refusalReasons[]` (`{code, detail, solvable, actor}`),
-`renderRoot`, `readScope[]`, `inferredNamespace`, `resources`, `overlapsWith[]`.
+`renderRoot`, `readScope[]`, `inferredNamespace`, `resources`, `kinds[]`, `namespaces[]`,
+`overlapsWith[]`.
 
+- **`kinds[]` and `namespaces[]` say what is IN a candidate, not just how much.** Both are
+  what the folder RENDERS, which is the part only this engine can answer: for a render root
+  they are read off the real kustomize build the scan already runs, so a base outside the
+  subtree is included and a `namespace:` transformer is already applied; for a plain folder
+  the documents are the render. A consumer can scan `apiVersion`/`kind` headers itself, but
+  the moment a layout transform is involved the two answers diverge silently — and in the
+  direction of provisioning something the writer then refuses.
+
+  They gate steps that are not cheap to undo. A type the destination does not serve fails
+  the forward apply with `no matches for kind` and waits for the next resync rather than
+  degrading, so the schema has to be installed before the folder is picked. And naming a
+  GitTarget's allowed source namespaces, or one WatchRule rule per (type, namespace), needs
+  the whole set — `inferredNamespace` is one name, and a folder can render into several.
+
+  A cluster-scoped object contributes no namespace rather than an empty one. A render root
+  kustomize cannot build reports neither: we do not know what it renders, and saying so is
+  better than guessing.
 - **`solvable` says whether anyone can make the candidate acceptable with this release**,
   and `actor` (`repository-author`, `platform-operator`) names who. It is decided by the
   check that raised the refusal, because the same code answers differently depending on the
