@@ -253,7 +253,7 @@ func TestRun_ScanRepoText(t *testing.T) {
 	// where the overlay's documents live.
 	for _, want := range []string{
 		"candidates:", "kustomize-overlay", "accepted=2 refused=0",
-		"reads: base", "read but never offered: 1", "read by: overlays/test",
+		"reads: base", "not a candidate: 1", "read by: overlays/test",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("scan-repo text missing %q:\n%s", want, out.String())

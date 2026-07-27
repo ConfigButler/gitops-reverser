@@ -1007,7 +1007,7 @@ func RenderRepoText(w io.Writer, rep RepoReport) {
 	// and none of them is offered, so a reader who sees only the candidate list cannot tell
 	// that adopting one of those readers buys a folder whose documents live elsewhere.
 	if targets := nonCandidateTargets(rep.Candidates, rep.Summary.ReadEdges); len(targets) > 0 {
-		fmt.Fprintf(w, "read but never offered: %d\n", len(targets))
+		fmt.Fprintf(w, "not a candidate: %d\n", len(targets))
 		for _, dir := range targets {
 			fmt.Fprintf(w, "  %-40s read by: %s\n", dir, strings.Join(readersOf(rep.Summary.ReadEdges, dir), ", "))
 		}
