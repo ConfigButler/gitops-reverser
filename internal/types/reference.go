@@ -36,7 +36,11 @@ func (r ResourceReference) String() string {
 	return fmt.Sprintf("%s/%s", r.Namespace, r.Name)
 }
 
-// Key returns a string key suitable for map lookups.
+// Key returns a string key suitable for map lookups: "namespace/name".
+//
+// Not to be confused with [ResourceIdentifier.Key], which is the fully-qualified
+// "{group}/{version}/{resource}/{namespace}/{name}" identity of a watched object. This one
+// names a GitTarget-like object by reference and carries no group, version or resource.
 func (r ResourceReference) Key() string {
 	return r.String()
 }
