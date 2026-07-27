@@ -315,6 +315,23 @@ jobs:
       - name: Sign the Helm chart (cosign keyless)
         run: cosign sign --yes "${CHART_REGISTRY}/gitops-reverser@${{ steps.chart.outputs.digest }}"
 
+      # Artifact Hub reads the repository metadata (verified-publisher flag,
+      # ownership claim) from a plain OCI artifact stored in the chart
+      # repository under the fixed `artifacthub.io` tag, identified by the
+      # layer media type. `helm push` cannot produce that shape, so oras does
+      # it — see https://artifacthub.io/docs/topics/repositories/helm-charts/.
+      # Re-pushed on every release so the file in Git stays the source of truth.
+      - name: Push Artifact Hub repository metadata
+        working-directory: charts
+        env:
+          ORAS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORAS_USER: ${{ github.actor }}
+        run: |
+          echo "${ORAS_TOKEN}" | oras login "${REGISTRY}" --username "${ORAS_USER}" --password-stdin
+          oras push "${CHART_REGISTRY}/gitops-reverser:artifacthub.io" \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
+
       # The chart is already signed above via its OCI digest, but OpenSSF
       # Scorecard's Signed-Releases check only looks at the GitHub *release
       # assets*, not the OCI registry. Sign and attest BOTH installer files

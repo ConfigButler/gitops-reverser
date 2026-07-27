@@ -1,0 +1,20 @@
+# Artifact Hub repository metadata file.
+#
+# This is NOT part of the Helm chart. It describes the *repository*
+# oci://ghcr.io/configbutler/charts/gitops-reverser to Artifact Hub, and is
+# pushed to that repository under the special `artifacthub.io` tag by the
+# `publish-helm` job in .github/workflows/release.yml. It deliberately lives
+# outside charts/gitops-reverser/ so `helm package` does not bundle it into the
+# chart tarball.
+#
+# Format: https://github.com/artifacthub/hub/blob/master/docs/metadata/artifacthub-repo.yml
+
+# Enables the Verified Publisher badge. Taken from the Artifact Hub control
+# panel for this repository.
+repositoryID: a4a93f29-b67a-4110-bcec-18a4b26fa1a3
+
+# Used to claim repository ownership. The email must match an Artifact Hub
+# account exactly, or the claim is rejected.
+owners:
+  - name: Simon Koudijs
+    email: simonkoudijs@gmail.com
