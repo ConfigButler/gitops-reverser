@@ -322,8 +322,12 @@ It does cost LATENCY, and the number belongs here rather than in a dashboard som
 from. Measured over one e2e run, by tier: a removal that finds its delete evidence resolves in about
 70ms, and one that never does averages about 3.1s before falling back to the last write. Creates and
 updates never consult those tiers. So the cost is not spread across attribution, it is concentrated
-in removals for which no delete fact ever arrives — a graceful pod delete and a status-only removal
-produce no audit event at all, so those spend the grace to end up exactly where they started. The
+in removals for which no delete fact ever arrives, which is most often a type the cluster's AUDIT
+POLICY excludes rather than anything Kubernetes withholds: those spend the grace to end up exactly
+where they started. (An earlier draft of this said a graceful pod delete produces no audit event at
+all. It does — the DELETE request is audited like any other, and under deletion-as-intent that
+request is the fact the join wants. Pods are absent from this repository's own e2e facts because the
+recommended policy drops them as runtime noise.) The
 shard is single-threaded, so the wait also delays whatever is queued behind it, and
 `--author-attribution-grace` is the one lever that bounds both.
 
@@ -606,11 +610,22 @@ no stream reader started and no subscription taken.
 **The fan-in property.** One fact still serves every `GitTarget` that needs it, now through a shared
 index instead of a shared key.
 
-**Facts that never resolve.** A status subresource update and a graceful pod delete produce no audit
-event at all, so no wait and no transport can name their author. They still spend the grace window
-and ship unresolved. That is unchanged, and it is the population that keeps
+**Facts that never resolve.** Some events produce no audit fact at all, so no wait and no transport
+can name their author. They still spend the grace window and ship unresolved. That is unchanged, and
+it is the population that keeps
 [the circuit breaker](../design/attribution-wait-poll-vs-push.md#option-c-circuit-break-a-route-that-has-never-resolved-anything)
-worth building separately.
+worth building separately — see
+[when a removal should stop waiting](../design/attribution-removal-wait-options.md).
+
+**What that population is, corrected.** This record named "a status subresource update and a
+graceful pod delete" and called them structural. They are not: this repository's e2e audit policy
+drops `pods` and every `*/status` as runtime noise, and the mutation-capture lab runs against that
+same cluster, so corpus rows 5 and 7 recorded the POLICY's silence rather than the API server's. A
+`DELETE` request on a pod is audited like any other request, and under the deletion-as-intent rule
+that request is exactly the fact the join wants. The population that can never resolve is therefore
+mostly **the types the cluster's audit policy excludes** — which is configuration, is knowable, and
+is a far better thing to be up against than a wall. Confirming it by measurement, rather than by
+reading the policy, is worth a lab run.
 
 ## Starting up and catching up
 

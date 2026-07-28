@@ -31,7 +31,7 @@ gap (see [Capturing Intent, Not State](../../docs/spec/mutation-capture-lab-desi
 | 4 | No-op apply | `configmap_scenarios_test.go` · `TestNoOpApply` | `configmap/no-op-apply/` | audit, admission — **no** watch (resourceVersion unchanged) |
 | 5 | Status subresource | `workload_scenarios_test.go` · `TestStatusSubresource` | `deployment/status-update/` | watch ×2 — **no** audit, **no** admission |
 | 6 | Scale subresource | `workload_scenarios_test.go` · `TestScaleSubresource` | `deployment/scale-patch/` | watch, audit — **no** admission |
-| 7 | Graceful delete | `workload_scenarios_test.go` · `TestGracefulDelete` | `pod/graceful-delete/` | watch (MODIFIED + DELETED), admission — **no** audit |
+| 7 | Graceful delete | `workload_scenarios_test.go` · `TestGracefulDelete` | `pod/graceful-delete/` | watch (MODIFIED + DELETED), admission — **no** audit ⚠️ |
 | 8 | Finalizer delete | `configmap_scenarios_test.go` · `TestFinalizerDelete` | `configmap/finalizer-delete/` | watch (MODIFIED + DELETED), audit (delete + patch — **no** second delete), admission (DELETE + UPDATE) |
 | 9 | Deletecollection | `configmap_scenarios_test.go` · `TestDeletecollection` | `configmap/deletecollection/` | watch ×N, audit ×1 (name-less), admission ×N (per object) |
 | 10 | Owner-ref cascade | `configmap_scenarios_test.go` · `TestOwnerRefCascade` | `configmap/owner-ref-cascade/` | watch DELETED ×2 (parent + cascaded child), audit ×2 (parent = human, child = `generic-garbage-collector`) |
@@ -48,6 +48,14 @@ transport itself; the driver uses the lab's targeted `/watch-probe` endpoint so
 transport-only events can be scenario-attributed — see the
 [watch-first ingestion architecture](../../docs/finished/watch-first-ingestion-architecture.md)
 design notes.
+
+> ⚠️ **The "no audit" rows record this cluster's audit POLICY, not the API server.** The lab runs
+> against the already-prepared e2e cluster and reuses its policy
+> ([`test/e2e/cluster/audit/policy.yaml`](../e2e/cluster/audit/policy.yaml)), which drops `pods` and
+> every `*/status` at `level: None` as runtime noise. So rows 5 and 7 show what a cluster configured
+> like this one does not tell us — a `DELETE` on a pod is an audited request like any other when the
+> policy asks for it. Read them as "excluded here", not as "unknowable". Re-capturing either row
+> against a policy that includes those types would settle it by measurement.
 
 ## How it integrates: swap the image, reuse the wiring
 

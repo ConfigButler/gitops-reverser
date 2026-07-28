@@ -1130,8 +1130,9 @@ When attribution is enabled, these flags tune the join:
 
   **A removal is the exception, and it is worth budgeting for.** It waits for evidence about the
   DELETION rather than settling for the object's last write, so an object edited by one person and
-  deleted by another is credited to the deleter rather than to the editor. When no delete fact ever
-  arrives (a graceful pod delete and a status-only removal produce no audit event at all), the
+  deleted by another is credited to the deleter rather than to the editor. Sometimes no delete fact
+  ever arrives, most often because the cluster's **audit policy excludes the type** (which is true of
+  every type in the recommended policy's runtime-noise list). In that case the
   removal spends the whole grace before naming the last writer, which is the same answer it would
   have given immediately. Measured across one e2e run, where the grace is 10s, the cost lands on
   exactly that case and nowhere else: a removal that finds its delete evidence resolves in about
@@ -1139,6 +1140,12 @@ When attribution is enabled, these flags tune the join:
   not consult the deletion tiers at all. The watch shard is single-threaded, so the wait also delays
   the events queued behind it on the same `(GitTarget, type, scope)`. Lowering this flag bounds both
   directly.
+
+  **Watching a type your audit policy excludes costs more than attribution.** Every removal on such
+  a type spends the full grace before shipping as the committer, because the fact it is waiting for
+  was never recorded. If a watched type's commits are consistently committer-authored, check the
+  audit policy before anything else: a type in the policy's `level: None` list can never be
+  attributed, and no operator-side setting changes that.
 - `--author-attribution-max-facts-per-type` (default `4096`) and `--author-attribution-max-facts`
   (default `65536`): how many facts the in-memory index holds, per type and in total, evicted
   oldest-first. Per-type is the fair cap: a burst on one noisy type must not evict every other type's

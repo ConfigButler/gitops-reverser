@@ -64,16 +64,29 @@ grace window, they were not introduced by the removal wait, and no option below 
 
 ### What situation 5 actually is
 
-A removal for which Kubernetes emits no usable audit event:
+A removal for which no usable audit event reaches us. The dominant cause is not Kubernetes, it is
+**the cluster's audit policy** — and that is a much better position to be in, because a policy is a
+file someone wrote on purpose.
 
-- a **graceful pod delete**, which produces no audit event at all;
-- a **status-only** change that renders as a removal;
-- a type the cluster's **audit policy does not capture**;
-- a delete whose audit event is **dropped by the accept gate** (a failed request, a dry run);
-- an **audit route that nothing posts to**, which the resolver already warns about separately.
+- **A type the audit policy drops.** This repository's own recommended policy
+  ([`policy.yaml`](../../test/e2e/cluster/audit/policy.yaml)) drops `events`, `endpoints`, `nodes`,
+  `pods`, `bindings`, `componentstatuses` and every `*/status` as runtime noise. Watch any of those
+  and EVERY removal is situation 5, permanently.
+- **An audit route nothing posts to** — the resolver already warns about this one separately.
+- A delete whose audit event the **accept gate** drops: a failed request, a dry run.
+- A **status-only** change that renders as a removal.
 
-None of these can be distinguished from situation 4 by looking at the object. That is the difficulty:
-at the moment of resolution, "the fact is late" and "the fact is never coming" look identical.
+> **A correction, because this document said otherwise and so did two others.** A graceful pod
+> delete was cited as producing "no audit event at all". It does not: the `DELETE` request is
+> audited like any other, and under the deletion-as-intent rule that request is precisely the fact
+> the join wants. Pods are missing from OUR facts because the policy above drops them. The
+> distinction matters — "Kubernetes cannot tell us" is a wall, while "the policy did not ask" is a
+> setting, and a knowable one.
+
+None of these can be distinguished from situation 4 *by looking at the object*. That is the
+difficulty: at the moment of resolution, "the fact is late" and "the fact is never coming" look
+identical. But they are very distinguishable **by looking at history** — a type whose audit policy
+drops it never produces a fact, not once, ever. That is what option F exploits.
 
 ## The options
 
@@ -123,9 +136,9 @@ The deletion-as-intent rule already tells us a `deletionTimestamp` was set, whic
 REQUEST happened, which means an audit event should exist.
 
 - **For**: targets the wait at removals that provably came from a request.
-- **Against**: it does not separate situation 4 from 5 at all. A graceful pod delete also comes from
-  a delete request; it just produces no audit event. The signal is about the object, and the
-  question is about the audit pipeline.
+- **Against**: it does not separate situation 4 from 5 at all. A delete of an audit-excluded type
+  also comes from a delete request; the request simply is not recorded. The signal is about the
+  object, and the question is about the audit pipeline.
 
 ### E. Revert the wait; keep only the tier reordering
 
@@ -137,9 +150,40 @@ still credited correctly, because that tier now outranks the write fact and both
   which, given audit batching, is the common case rather than the corner. It trades a correctness
   property for latency in the one place the product's core claim lives.
 
+### F. A per-(route, type) circuit breaker: stop waiting for a fact that has never once arrived
+
+The resolver already tracks, per audit route, whether attribution has EVER resolved, and warns when
+a route has produced a long run of unresolved events. Extend that to `(route, group/resource)` and
+use it to decide the wait: a type that has never once produced a fact on this route is not going to
+start, so a removal on it should take its fallback immediately.
+
+This is the [circuit breaker](attribution-wait-poll-vs-push.md#option-c-circuit-break-a-route-that-has-never-resolved-anything)
+the earlier record already proposed, applied to the case that turns out to need it.
+
+- **For**: it targets situation 5 exactly, and for the dominant cause — a type the audit policy
+  drops — it is not a heuristic but a fact about the configuration: the type is excluded, so it
+  never publishes, so the counter never moves. The learning is cheap, the mechanism already half
+  exists, and the failure mode is safe in the right direction: a type that HAS produced facts keeps
+  waiting, so situation 4 is untouched. It also makes a real misconfiguration visible — "you are
+  watching a type your audit policy excludes" is exactly the sort of thing an operator wants told.
+- **Against**: it needs a warm-up rule, because "never resolved" is also true of a type that has
+  simply not been written to yet, and getting that wrong would skip the wait for a type that was
+  about to work. It is per process, so it relearns on restart. And it does nothing for the
+  intermittent case, where a type produces facts sometimes — for that, C is still the answer.
+
 ## Recommendation
 
-**C, with A as the fallback if C proves fiddly.** C is the only option that answers the question
+**F first, then C.** They are complementary rather than alternatives: F removes the permanent case
+(a watched type that is never audited) using a signal that is already almost there, and C removes
+the transient case (a fact that would have come by now) using data already in the index. F is the
+bigger win, because the audit-policy exclusion makes situation 5 *permanent* for a whole type rather
+than occasional, and it also surfaces a misconfiguration nobody currently learns about.
+
+If only one ships, take F.
+
+**C, with A as the fallback if C proves fiddly,** was the earlier recommendation here and is now
+second: it prices the transient case well, but it does not notice that a type is structurally
+unauditable, which is where the cost actually concentrates. C is the only option that answers the question
 being asked — "is a fact still coming?" — rather than guessing at it with a timeout, and it removes
 the cost from situation 5 without touching situation 4. It also adds no configuration surface, which
 matters because option B's knob would have to be set from a value the operator holds in the *API
@@ -159,6 +203,8 @@ about 70ms, removals that never do average about 3.1s. What that run does NOT es
 - **the throughput effect.** The shard is single-threaded, so the number that matters to a user is
   commit latency under a burst of removals, not the mean wait per event.
 - **whether the watermark in option C advances often enough** on a quiet route to be worth having.
+- **how often a watched type is one the audit policy excludes.** If that is common, option F is the
+  whole answer; if it is rare, F is a diagnostic and C is the fix.
 
 A before-and-after against the previous behaviour was attempted and discarded rather than reported:
 the two runs' populations differed by more than the change, so the comparison would have been a
