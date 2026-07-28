@@ -318,6 +318,26 @@ or the object's own delete fact — and the fallback is returned when the grace 
 better. Waiting never costs an attribution: the worst case returns exactly what returning early
 would have, one grace window later, which is the case the grace window is for.
 
+It does cost LATENCY, and the number belongs here rather than in a dashboard someone discovers it
+from. Measured over one e2e run, by tier: a removal that finds its delete evidence resolves in about
+70ms, and one that never does averages about 3.1s before falling back to the last write. Creates and
+updates never consult those tiers. So the cost is not spread across attribution, it is concentrated
+in removals for which no delete fact ever arrives — a graceful pod delete and a status-only removal
+produce no audit event at all, so those spend the grace to end up exactly where they started. The
+shard is single-threaded, so the wait also delays whatever is queued behind it, and
+`--author-attribution-grace` is the one lever that bounds both.
+
+**What is deliberately NOT claimed here is a before-and-after.** Comparing a run of this against a
+run of the previous behaviour looked easy and was not: the two runs' populations differed by more
+than the change (one had 203 non-exact resolutions against the other's 59, and the specs added
+alongside this work generate collection deletes that shift the mix by construction), and the
+baseline was never captured per tier. A headline "the mean wait moved from X to Y" out of those two
+runs would have been a workload difference wearing a causal claim's clothes. The per-tier numbers
+above are from a single run and need no comparison to mean something.
+
+Trading the wait back is a product decision about how much commit latency a correct deletion author
+is worth; the alternative on offer is naming an innocent person.
+
 Its parameter list does change, into an `AuthorQuery` carrying the object's namespace and labels
 alongside the route, type, uid and resourceVersion it already took. Those two fields are what the
 collection tier joins on, so without them a body-less `deletecollection` could never reach step 4

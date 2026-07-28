@@ -1126,10 +1126,19 @@ When attribution is enabled, these flags tune the join:
   watch event ships authored by the `attribution-unresolved` sentinel. Note the delivery floor: the
   apiserver's own `--audit-webhook-batch-max-wait` delays every fact by up to that much, so a grace at or
   below it will lose actors systematically. The wait ends the moment the fact arrives, so a generous
-  grace costs latency only when a fact never comes. A REMOVAL waits for evidence about the deletion
-  rather than settling for the object's last write, so an object edited by one person and deleted by
-  another is credited to the deleter; if no delete fact ever arrives, the last writer is named once
-  the grace elapses.
+  grace costs latency only when a fact never comes.
+
+  **A removal is the exception, and it is worth budgeting for.** It waits for evidence about the
+  DELETION rather than settling for the object's last write, so an object edited by one person and
+  deleted by another is credited to the deleter rather than to the editor. When no delete fact ever
+  arrives (a graceful pod delete and a status-only removal produce no audit event at all), the
+  removal spends the whole grace before naming the last writer, which is the same answer it would
+  have given immediately. Measured across one e2e run, where the grace is 10s, the cost lands on
+  exactly that case and nowhere else: a removal that finds its delete evidence resolves in about
+  70ms, while one that never does averages about 3.1s before falling back. Creates and updates do
+  not consult the deletion tiers at all. The watch shard is single-threaded, so the wait also delays
+  the events queued behind it on the same `(GitTarget, type, scope)`. Lowering this flag bounds both
+  directly.
 - `--author-attribution-max-facts-per-type` (default `4096`) and `--author-attribution-max-facts`
   (default `65536`): how many facts the in-memory index holds, per type and in total, evicted
   oldest-first. Per-type is the fair cap: a burst on one noisy type must not evict every other type's
