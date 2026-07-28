@@ -333,6 +333,47 @@ func TestNormalize_NumbersRoundTripAsIntegers(t *testing.T) {
 	}
 }
 
+// TestNormalize_LatencyAnnotationsAreDropped guards the corpus against a diff that means nothing.
+// The API server attaches these only when a request was slow, so their values AND their presence
+// vary run to run; one slow deletecollection is what put them in the tree in the first place.
+func TestNormalize_LatencyAnnotationsAreDropped(t *testing.T) {
+	got := normJSON(t, `{"annotations":{`+
+		`"apiserver.latency.k8s.io/total":"546.977655ms",`+
+		`"apiserver.latency.k8s.io/etcd":"2.67214ms",`+
+		`"authorization.k8s.io/decision":"allow"}}`)
+	want := `{"annotations":{"authorization.k8s.io/decision":"allow"}}`
+	if got[0] != want {
+		t.Errorf("\n got %s\nwant %s", got[0], want)
+	}
+}
+
+// TestNormalize_GeneratedNameIsRewrittenWithoutItsGenerateNameSibling covers the shape that broke
+// Row 18: an AdmissionReview carries the assigned name at request.name, beside kind and namespace
+// rather than inside a metadata map, so the sibling rule cannot see a generateName there. The name
+// is still the same per-run random string, and left alone it churns the corpus on every capture.
+func TestNormalize_GeneratedNameIsRewrittenWithoutItsGenerateNameSibling(t *testing.T) {
+	got := normJSON(t,
+		`{"request":{"name":"cm-gen-x7k2p","object":{"metadata":{"generateName":"cm-gen-","name":"cm-gen-x7k2p"}}}}`)
+	want := `{"request":{"name":"cm-gen-<rand-1>","object":{"metadata":` +
+		`{"generateName":"cm-gen-","name":"cm-gen-<rand-1>"}}}}`
+	if got[0] != want {
+		t.Errorf("\n got %s\nwant %s", got[0], want)
+	}
+}
+
+// TestNormalize_GeneratedNameIsRewrittenInsideARequestURI covers the other embedding: any request
+// that addresses a generated-name object by name carries it in the path.
+func TestNormalize_GeneratedNameIsRewrittenInsideARequestURI(t *testing.T) {
+	got := normJSON(t,
+		`{"requestURI":"/api/v1/namespaces/lab/configmaps/cm-gen-x7k2p",`+
+			`"object":{"metadata":{"generateName":"cm-gen-","name":"cm-gen-x7k2p"}}}`)
+	want := `{"object":{"metadata":{"generateName":"cm-gen-","name":"cm-gen-<rand-1>"}},` +
+		`"requestURI":"/api/v1/namespaces/lab/configmaps/cm-gen-<rand-1>"}`
+	if got[0] != want {
+		t.Errorf("\n got %s\nwant %s", got[0], want)
+	}
+}
+
 func TestSingle(t *testing.T) {
 	v, err := Single(json.RawMessage(`{"metadata":{"uid":"x"}}`))
 	if err != nil {
