@@ -232,15 +232,25 @@ func main() {
 	var (
 		auditRunnable    *auditServerRunnable
 		auditCertWatcher *certwatcher.CertWatcher
-		attributionIndex *queue.AttributionIndex
 	)
 	switch {
 	case cfg.authorAttribution:
-		attributionIndex = redisStore.AttributionIndex(cfg.attributionFactTTL)
+		// The transport is the only thing that differs between the two modes. Everything above it —
+		// the index, the waiter registry, the subscription set, the resolver — has one implementation
+		// and never learns which transport it was handed.
+		transport := buildFactTransport(cfg, redisStore)
+		factIndex := queue.NewFactIndex(queue.FactIndexConfig{
+			TTL:              cfg.attributionFactTTL,
+			MaxFactsPerType:  cfg.attributionMaxFactsPerType,
+			MaxFactsTotal:    cfg.attributionMaxFacts,
+			CollectionWindow: cfg.attributionCollectionWindow,
+			Log:              ctrl.Log.WithName("attribution-index"),
+		})
 
 		auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
 			MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
-			FactRecorder:        attributionIndex,
+			FactPublisher:       transport,
+			CollectionUIDCap:    cfg.attributionCollectionUIDCap,
 			// Empty leaves the bare /audit-webhook endpoint disabled (400); set, it demultiplexes a
 			// shared stream per event by this annotation.
 			AuditRouteAnnotationKey: cfg.auditRouteAnnotationKey,
@@ -252,14 +262,26 @@ func main() {
 		fatalIfErr(initErr, "unable to initialize audit ingress server")
 		fatalIfErr(mgr.Add(auditRunnable), "unable to add audit ingress server runnable")
 
+		// The follower runs for the life of the process, reading whatever the watches are currently
+		// subscribed to. It follows nothing until a watch acquires a stream, and a newly followed
+		// stream is replayed from the TTL horizon, so a watch that starts late still finds a warm index.
+		fatalIfErr(mgr.Add(factFollowerRunnable{index: factIndex, follower: transport}),
+			"unable to add attribution fact follower runnable")
+
+		watchMgr.FactStreams = factIndex.Streams()
 		watchMgr.AuthorResolver = watch.NewAuthorResolver(
-			attributionIndex,
+			factIndex,
 			cfg.attributionGrace,
 			ctrl.Log.WithName("attribution"),
 		)
 		setupLog.Info("author attribution enabled: matched audit facts name the commit author",
-			"redisAddr", cfg.redisAddr, "grace", cfg.attributionGrace.String(),
+			"transport", cfg.attributionTransport, "redisAddr", cfg.redisAddr,
+			"grace", cfg.attributionGrace.String(), "factTTL", cfg.attributionFactTTL.String(),
 			"auditRouteAnnotationKey", cfg.auditRouteAnnotationKey)
+		if cfg.attributionTransport == transportMemory {
+			setupLog.Info("attribution facts travel in process memory: they do not survive a restart, so " +
+				"events in flight across one lose their author, and this mode requires a single replica")
+		}
 		if cfg.auditRouteAnnotationKey == "" {
 			setupLog.Info("audit routes are named: post to /audit-webhook/<audit-route>, where the route is " +
 				"ClusterProvider.spec.attribution.auditRoute and defaults to the provider's own name; " +
@@ -396,12 +418,23 @@ type appConfig struct {
 	redisKeyPrefix              string
 	redisInsecure               bool
 	authorAttribution           bool
+	attributionTransport        string
 	attributionFactTTL          time.Duration
 	attributionGrace            time.Duration
+	attributionMaxFactsPerType  int
+	attributionMaxFacts         int
+	attributionCollectionWindow time.Duration
+	attributionCollectionUIDCap int
 	auditRouteAnnotationKey     string
-	branchBufferMaxBytes        int64
-	sensitiveResources          types.SensitiveResourcePolicy
-	sshHostKeys                 git.SSHHostKeyConfig
+	// replicaCount is how many replicas of this Deployment run. The process cannot observe that
+	// itself, so the chart templates it in from .Values.replicaCount. It exists for exactly one
+	// check: the in-memory fact transport only works when the audit receiver and the resolver are
+	// the same process, and that has to fail loudly rather than degrade into silent attribution
+	// loss.
+	replicaCount         int
+	branchBufferMaxBytes int64
+	sensitiveResources   types.SensitiveResourcePolicy
+	sshHostKeys          git.SSHHostKeyConfig
 	// sourceClusterQPS / sourceClusterBurst bound the rate at which the operator talks to a
 	// source cluster reached through a GitTarget.spec.kubeConfig. A remote is reached over a
 	// network the in-cluster config is not, so it carries client-side throttling by default.
@@ -476,10 +509,11 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Idle timeout for the audit ingress HTTPS server (duration string; default 60s).")
 	fs.StringVar(&cfg.redisAddr, "redis-addr", "valkey:6379",
 		"Redis/Valkey address (host:port). Holds each GitTarget's watch resume cursors (state continuity) "+
-			"and, when author attribution is enabled, the attribution facts. Leave empty to run without "+
-			"Redis: watches cold-replay on restart instead of resuming. Required by "+
-			"--author-attribution=true. --admission-webhook still runs without it, but command-author "+
-			"capture is a no-op: CommitRequests claim no actor.")
+			"and, with --author-attribution-transport=redis, the attribution fact streams. Leave empty to "+
+			"run without Redis: watches cold-replay on restart instead of resuming, and attribution needs "+
+			"--author-attribution-transport=memory. Required by --author-attribution-transport=redis when "+
+			"attribution is on. --admission-webhook still runs without it, but command-author capture is a "+
+			"no-op: CommitRequests claim no actor.")
 	fs.BoolVar(&cfg.authorAttribution, "author-attribution", true,
 		"Name the real actor (human or service account) who caused each change as the Git commit author, "+
 			"resolved from matching audit facts; this runs the audit webhook ingress (default true). When "+
@@ -502,9 +536,37 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Connect to Redis over plain TCP instead of TLS (default false; TLS). Redis carries each "+
 			"GitTarget's watch cursors and, when attribution is on, the audit facts — prefer TLS. Set "+
 			"this only for a trusted in-cluster Redis/Valkey that does not serve TLS.")
+	fs.StringVar(&cfg.attributionTransport, "author-attribution-transport", transportRedis,
+		"Where attribution facts travel between the audit receiver and the watch side: \"redis\" (default) "+
+			"appends to Redis streams, \"memory\" to an in-process ring. Redis is the production choice and "+
+			"the only one that survives a restart or reaches a second replica; memory is for the single-pod "+
+			"install where running a Valkey StatefulSet to name commit authors is out of proportion, and it "+
+			"is refused with more than one replica. With \"memory\", --redis-addr may be empty.")
 	fs.DurationVar(&cfg.attributionFactTTL, "author-attribution-ttl", queue.DefaultAttributionFactTTL,
-		"How long an attribution fact is retained waiting for the matching watch event to join it "+
-			"(duration string; default 10m).")
+		"How long an attribution fact is retained waiting for the matching watch event to join it. It "+
+			"bounds stream retention and the in-memory index together, and doubles as the replay horizon a "+
+			"restart warms the index from (duration string; default 10m).")
+	fs.IntVar(&cfg.attributionMaxFactsPerType, "author-attribution-max-facts-per-type",
+		queue.DefaultFactIndexMaxFactsPerType,
+		"Cap on the attribution facts held in memory for one (audit route, group/resource), evicted "+
+			"oldest-first (default 4096). It is the fair cap: a burst on one noisy type must not evict every "+
+			"other type's facts. Evictions are counted on attribution_fact_index_evictions_total{reason}.")
+	fs.IntVar(&cfg.attributionMaxFacts, "author-attribution-max-facts", queue.DefaultFactIndexMaxFactsTotal,
+		"Cap on the attribution facts held in memory across every type (default 65536), so the pod's "+
+			"memory is bounded by a number that does not scale with how many types happen to be watched. "+
+			"Overflow evicts from the type holding the most.")
+	fs.DurationVar(&cfg.attributionCollectionWindow, "author-attribution-collection-window",
+		queue.DefaultFactCollectionWindow,
+		"How long after a deletecollection a removal in its scope may still be credited to it (duration "+
+			"string; default 30s). It only has to cover audit batching plus clock skew: the removal is "+
+			"attributed at delete-REQUEST time, so finalizers do not stretch it. Longer widens the risk of "+
+			"crediting an unrelated delete to the collection's actor.")
+	fs.IntVar(&cfg.attributionCollectionUIDCap, "author-attribution-collection-uid-cap",
+		queue.DefaultCollectionUIDCap,
+		"How many object uids a deletecollection fact may carry before the set is dropped and the join "+
+			"falls back to scope matching (default 10000). The fallback is already correct, so this only "+
+			"decides how often the precise path is taken; drops are counted on "+
+			"attribution_collection_degraded_total{reason}.")
 	fs.DurationVar(&cfg.attributionGrace, "author-attribution-grace", watch.DefaultAttributionGraceWindow,
 		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
 			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+
@@ -517,6 +579,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"provider's own name). An event carrying no annotation is rejected (counted and logged) rather "+
 			"than credited to a fallback. Empty (the default) leaves the bare endpoint disabled, and every "+
 			"producer must post to /audit-webhook/<audit-route>.")
+	fs.IntVar(&cfg.replicaCount, "replica-count", 1,
+		"How many replicas of this Deployment run (default 1). The process cannot see this itself, so "+
+			"the chart passes it in; it exists to refuse --author-attribution-transport=memory with more "+
+			"than one replica, where the audit receiver and the resolver are no longer the same process.")
 	branchBufferMaxSizeStr := os.Getenv("BRANCH_BUFFER_MAX_SIZE")
 	if branchBufferMaxSizeStr == "" {
 		branchBufferMaxSizeStr = defaultBranchBufferMaxSizeStr
@@ -613,6 +679,15 @@ func bindServerCertFlags(
 		fmt.Sprintf("The name of the %s key file.", component))
 }
 
+// transportRedis and transportMemory are the two values --author-attribution-transport accepts.
+// The choice is explicit rather than inferred from an empty --redis-addr: an empty address means
+// attribution is off today, and quietly making it mean "attribution over an in-memory transport"
+// would change existing installs by inference.
+const (
+	transportRedis  = "redis"
+	transportMemory = "memory"
+)
+
 func validateAuditConfig(cfg appConfig) error {
 	if cfg.attributionGrace < 0 {
 		return fmt.Errorf("author-attribution-grace must be >= 0, got %s", cfg.attributionGrace)
@@ -623,6 +698,9 @@ func validateAuditConfig(cfg appConfig) error {
 	if cfg.redisDB < 0 {
 		return fmt.Errorf("redis-db must be >= 0, got %d", cfg.redisDB)
 	}
+	if err := validateAttributionTransport(cfg); err != nil {
+		return err
+	}
 	// The annotation key only has a receiver to configure when the audit ingress is running at all;
 	// silently ignoring it would look like annotation routing was enabled when nothing serves it.
 	if cfg.auditRouteAnnotationKey != "" && !cfg.authorAttribution {
@@ -631,11 +709,20 @@ func validateAuditConfig(cfg appConfig) error {
 				"without it there is no audit ingress to route")
 	}
 	if strings.TrimSpace(cfg.redisAddr) == "" {
-		if cfg.authorAttribution {
-			return errors.New("redis-addr is required when author-attribution is enabled")
+		// Attribution no longer implies Redis. It needs a fact transport, and the in-memory one is a
+		// supported configuration rather than a rejected one — which is the whole reason the transport
+		// is selectable. Redis stays required for the transport that uses it, and for the admission
+		// webhook's command-author capture, which has no in-memory counterpart.
+		if cfg.authorAttribution && cfg.attributionTransport == transportRedis {
+			return errors.New(
+				"redis-addr is required when author-attribution is enabled with " +
+					"author-attribution-transport=redis; set an address, or select " +
+					"author-attribution-transport=memory to run attribution in-process on a single replica")
 		}
-		// Configured-author mode with no Redis: watches cold-replay on restart, attribution is off.
-		return nil
+		if !cfg.authorAttribution {
+			// Configured-author mode with no Redis: watches cold-replay on restart, attribution is off.
+			return nil
+		}
 	}
 	if !cfg.authorAttribution {
 		// Configured-author mode with Redis configured: the audit ingress server is not started, so its
@@ -659,6 +746,49 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	if !cfg.auditInsecure && strings.TrimSpace(cfg.auditClientCAPath) == "" {
 		return errors.New("audit-client-ca-path is required when audit TLS is enabled")
+	}
+	return nil
+}
+
+// validateAttributionTransport checks the transport selection and the caps that configure the index
+// behind it. The replica gate is the one that matters: the in-memory transport only works when the
+// audit receiver and the resolver are the same process, so under more than one replica an audit POST
+// answered by pod A leaves pod B's watch with no fact at all. That must fail loudly at startup
+// rather than degrade into commits silently authored "attribution unresolved".
+func validateAttributionTransport(cfg appConfig) error {
+	switch cfg.attributionTransport {
+	case transportRedis, transportMemory:
+	default:
+		return fmt.Errorf("author-attribution-transport must be %q or %q, got %q",
+			transportRedis, transportMemory, cfg.attributionTransport)
+	}
+	if !cfg.authorAttribution {
+		return nil
+	}
+	if cfg.attributionTransport == transportMemory && cfg.replicaCount > 1 {
+		return fmt.Errorf(
+			"author-attribution-transport=memory requires a single replica, got replica-count=%d: the "+
+				"in-memory transport only carries facts within one process, so an audit event answered by "+
+				"one replica can never name the author for a watch running on another. Use "+
+				"author-attribution-transport=redis for more than one replica", cfg.replicaCount)
+	}
+	if cfg.attributionMaxFactsPerType <= 0 {
+		return fmt.Errorf("author-attribution-max-facts-per-type must be > 0, got %d", cfg.attributionMaxFactsPerType)
+	}
+	if cfg.attributionMaxFacts <= 0 {
+		return fmt.Errorf("author-attribution-max-facts must be > 0, got %d", cfg.attributionMaxFacts)
+	}
+	if cfg.attributionMaxFacts < cfg.attributionMaxFactsPerType {
+		return fmt.Errorf(
+			"author-attribution-max-facts (%d) must be >= author-attribution-max-facts-per-type (%d); "+
+				"a total cap below the per-type cap makes the per-type cap unreachable",
+			cfg.attributionMaxFacts, cfg.attributionMaxFactsPerType)
+	}
+	if cfg.attributionCollectionWindow <= 0 {
+		return fmt.Errorf("author-attribution-collection-window must be > 0, got %s", cfg.attributionCollectionWindow)
+	}
+	if cfg.attributionCollectionUIDCap <= 0 {
+		return fmt.Errorf("author-attribution-collection-uid-cap must be > 0, got %d", cfg.attributionCollectionUIDCap)
 	}
 	return nil
 }
@@ -733,6 +863,32 @@ func buildMetricsServerOptions(
 	}
 
 	return opts, metricsCertWatcher
+}
+
+// buildFactTransport builds the selected attribution fact transport. Both sides of the seam come
+// from one object: the audit receiver publishes into it and the index follows it, which is exactly
+// the property the in-memory mode depends on and the reason it is refused with a second replica.
+//
+// The Redis branch cannot be reached with a nil store: validateAuditConfig rejects an empty
+// --redis-addr with attribution on and the Redis transport selected.
+func buildFactTransport(cfg appConfig, redisStore *queue.RedisStore) queue.FactTransport {
+	if cfg.attributionTransport == transportMemory {
+		return queue.NewMemoryFactStream(queue.MemoryFactStreamConfig{TTL: cfg.attributionFactTTL})
+	}
+	return redisStore.FactStream(queue.RedisFactStreamConfig{TTL: cfg.attributionFactTTL})
+}
+
+// factFollowerRunnable runs the fact index's follow loop under the manager, so it starts with the
+// process and stops with it. The loop returns only when the context ends: a transport failure is
+// retried, because a follower that gave up would leave attribution silently dead for the life of
+// the process.
+type factFollowerRunnable struct {
+	index    *queue.FactIndex
+	follower queue.FactFollower
+}
+
+func (r factFollowerRunnable) Start(ctx context.Context) error {
+	return r.index.Run(ctx, r.follower)
 }
 
 type auditServerRunnable struct {

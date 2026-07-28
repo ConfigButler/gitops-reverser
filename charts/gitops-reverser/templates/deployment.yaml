@@ -80,9 +80,15 @@ spec:
             {{- if not .Values.queue.redis.tls.enabled }}
             - --redis-insecure
             {{- end }}
+            - --replica-count={{ .Values.replicaCount }}
             - --author-attribution={{ .Values.attribution.enabled }}
+            - --author-attribution-transport={{ .Values.attribution.transport }}
             - --author-attribution-ttl={{ .Values.attribution.ttl }}
             - --author-attribution-grace={{ .Values.attribution.grace }}
+            - --author-attribution-max-facts-per-type={{ .Values.attribution.maxFactsPerType }}
+            - --author-attribution-max-facts={{ .Values.attribution.maxFacts }}
+            - --author-attribution-collection-window={{ .Values.attribution.collectionWindow }}
+            - --author-attribution-collection-uid-cap={{ .Values.attribution.collectionUIDCap }}
             {{- if .Values.attribution.auditRouteAnnotationKey }}
             - --author-attribution-audit-route-annotation-key={{ .Values.attribution.auditRouteAnnotationKey }}
             {{- end }}

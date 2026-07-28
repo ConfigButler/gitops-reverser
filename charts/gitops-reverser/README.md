@@ -186,7 +186,7 @@ nodeSelector:
 | `quickstart.gitProvider.secretRef.name` | Existing Secret name used by the starter `GitProvider` | `git-creds` |
 | `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget`; set `.` only to deliberately target the repo root | `live-cluster` |
 | `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
-| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty runs `configured-author` with cold-replay on restart. Set it for warm-restart cursors and for the admission webhook to actually record CommitRequest authors (admission runs as a no-op without it); **required** only when `attribution.enabled=true` | `""` |
+| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty means cold-replay on restart. Set it for warm-restart cursors and for the admission webhook to actually record CommitRequest authors (admission runs as a no-op without it); **required** when `attribution.enabled=true` unless `attribution.transport=memory` | `""` |
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password (only used when `queue.redis.addr` is set) | `""` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
@@ -194,8 +194,13 @@ nodeSelector:
 | `queue.redis.keyPrefix` | Root of every key this release writes (watch cursors, attribution facts, command author records). Give each reverser its own prefix to share one Redis/Valkey between more reversers than `db` can separate. Changing it orphans the previous prefix's keys: cursors cold-replay once, which is safe. Allowed: `[A-Za-z0-9]`, `-`, `_`, `.`, `:` | `gitops-reverser` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
 | `attribution.enabled` | Run audit ingress and name mirrored-resource commit authors from matching kube-apiserver audit facts | `false` |
-| `attribution.ttl` | How long an attribution fact is retained waiting for the matching watch event to join it | `10m` |
+| `attribution.transport` | Where attribution facts travel between the audit receiver and the watch side. `redis` appends them to Redis streams and needs `queue.redis.addr`; `memory` keeps them in an in-process ring, which needs no Redis but loses facts on a restart and is **refused at startup with `replicaCount > 1`** | `redis` |
+| `attribution.ttl` | How long an attribution fact is retained waiting for the matching watch event to join it. Bounds stream retention and the in-memory index together, and is the horizon a restart replays from | `10m` |
 | `attribution.grace` | Bounded per-event wait for a matching audit fact before a watch event ships as the committer | `3s` |
+| `attribution.maxFactsPerType` | Cap on the facts held in memory for one (audit route, type), evicted oldest-first, so a burst on one noisy type cannot evict every other type's facts | `4096` |
+| `attribution.maxFacts` | Cap on the facts held in memory across every type. Must be at least `maxFactsPerType`; overflow evicts from the type holding the most | `65536` |
+| `attribution.collectionWindow` | How long after a `deletecollection` a removal in its scope may still be credited to it. It only has to cover audit batching plus clock skew, since the removal is attributed at delete-request time | `30s` |
+| `attribution.collectionUIDCap` | How many object UIDs a `deletecollection` fact carries before the set is dropped and the join falls back to scope matching, which is already correct | `10000` |
 | `attribution.auditRouteAnnotationKey` | Audit-event annotation naming the **audit route** each event belongs to. Empty keeps audit routes named (`/audit-webhook/<audit-route>`). Set it only for a control plane emitting **one shared audit stream** for several logical clusters: it enables the bare `/audit-webhook`, which reads the route per event. A `ClusterProvider` joins a route via `spec.attribution.auditRoute` (default: its own name). An event with no annotation is rejected (counted and logged) and never credited to a fallback | `""` |
 | `clusterProvider.createDefault` | Render and own a `ClusterProvider` named `default` — the source cluster a `GitTarget` mirrors from when it omits `spec.clusterProviderRef`. The **operator never creates one**, so without this you commit the object yourself. Chart-owned: turning it off makes Helm delete the provider it created, and a `GitTarget` referencing a missing provider is held unready (`ClusterProviderNotFound`). The `quickstart` values never create one | `true` |
 | `clusterProvider.default.kubeConfig.secretRef.name` | Secret (release namespace) holding a kubeconfig for the rendered `default` provider. Empty means the operator's **own in-cluster** cluster; a name points `default` at a **remote** cluster instead — the name is a convention, not a claim about which cluster it is | `""` |
@@ -245,8 +250,8 @@ Audit routes are **named**, including
 `attribution.auditRouteAnnotationKey` is set, which turns it into the shared-stream endpoint that
 resolves each event's source cluster from that annotation. The operator extracts a minimal attribution
 fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID, status, timestamps)
-into the Redis attribution index
-(populated only when audit attribution is enabled). When a Redis endpoint is configured it also stores
+and appends it to the per-type fact log the watch side follows
+(written only when audit attribution is enabled). When a Redis endpoint is configured it also stores
 each GitTarget's watch resume cursors, so reconnects resume a normal watch from the last processed
 resourceVersion when the apiserver can still serve that history. Object state itself comes from
 Kubernetes **watch**, not from audit; audit only names the commit author.

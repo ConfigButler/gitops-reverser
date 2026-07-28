@@ -275,6 +275,30 @@
         "enabled": { "type": "boolean" },
         "ttl": { "$ref": "#/$defs/duration" },
         "grace": { "$ref": "#/$defs/duration" },
+        "transport": {
+          "type": "string",
+          "enum": ["redis", "memory"],
+          "description": "Where attribution facts travel between the audit receiver and the watch side. 'redis' (default) appends them to Redis streams and requires queue.redis.addr; 'memory' keeps them in an in-process ring, which needs no Redis but does not survive a restart and is refused at startup with replicaCount > 1."
+        },
+        "maxFactsPerType": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cap on the facts held in memory for one (audit route, group/resource), evicted oldest-first, so a burst on one noisy type cannot evict every other type's facts."
+        },
+        "maxFacts": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cap on the facts held in memory across every type. Must be at least maxFactsPerType; overflow evicts from the type holding the most."
+        },
+        "collectionWindow": {
+          "$ref": "#/$defs/duration",
+          "description": "How long after a deletecollection a removal in its scope may still be credited to it. It only has to cover audit batching plus clock skew, since the removal is attributed at delete-request time."
+        },
+        "collectionUIDCap": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many object uids a deletecollection fact carries before the set is dropped and the join falls back to scope matching, which is already correct."
+        },
         "auditRouteAnnotationKey": {
           "type": "string",
           "description": "Audit-event annotation naming the audit route each event belongs to. A ClusterProvider joins a route through spec.attribution.auditRoute, which defaults to its own name. Empty (default) keeps audit routes named (/audit-webhook/<audit-route>); set it only for one shared audit stream carrying several logical clusters, which enables the bare /audit-webhook endpoint."
