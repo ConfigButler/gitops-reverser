@@ -214,15 +214,26 @@ func (i *FactIndex) Await(ctx context.Context, query FactQuery, grace time.Durat
 // Lookup reads the index once, trying the tiers strongest-first:
 //
 //  1. the exact (uid, rv) fact, the only exact-capable join;
-//  2. the last-writer-wins fact for that uid, for a removal whose rv never matches;
-//  3. a collection fact whose uid set contains this object;
+//  2. a collection fact whose uid set contains this object;
+//  3. the last-writer-wins fact for that uid, for a removal whose rv never matches;
 //  4. a collection fact whose scope, selector, and window cover it;
 //  5. the rv-only escape hatch.
 //
-// Precedence is the correctness argument for the collection tiers. A scope match is the weakest
-// evidence here and can name the wrong human, so it is only ever reached when nothing more specific
-// applies: an unrelated delete by another actor during the same window is claimed by its own fact
-// at tier 2 and never reaches tier 4.
+// Precedence is the correctness argument for the collection tiers, and the two of them sit on
+// OPPOSITE sides of the latest tier on purpose.
+//
+// Uid membership outranks it because the two tiers answer different questions. The latest tier says
+// who last WROTE an object; a removal asks who DELETED it. For a single-object delete those coincide,
+// because the delete files its own fact under that uid — but a collection delete files one fact about
+// the collection, so the uid's latest entry is left holding whoever happened to write the object last.
+// Ranking it above the collection's uid set credited a removal to the previous editor and never
+// reached the actor who actually ran the delete, which is the one thing the deleted expander did get
+// right: it overwrote that entry per object. Uid membership is the API server stating that THIS
+// request deleted THIS object, so nothing weaker may answer ahead of it.
+//
+// Scope matching stays below, because it is the weakest evidence here and can name the wrong human:
+// an unrelated delete by another actor during the same window is claimed by its own fact at tier 3
+// and never reaches tier 4.
 func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 	now := time.Now()
 	cutoff := now.Add(-i.ttl)
@@ -240,13 +251,7 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 		}
 	}
 	if !query.ExactCapable {
-		if query.UID != "" {
-			if fact, found := facts.lookupLatest(query.UID, cutoff); found {
-				return AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, true)}
-			}
-		}
-		resolution := facts.matchCollection(query, now, cutoff, i.collectionWindow)
-		if resolution.Result != AttributionAbsent {
+		if resolution := i.lookupRemoval(facts, query, now, cutoff); resolution.Result != AttributionAbsent {
 			return resolution
 		}
 	}
@@ -254,6 +259,29 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 		if fact, found := facts.lookupRV(query.ResourceVersion, cutoff); found {
 			return AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, true)}
 		}
+	}
+	return AuthorResolution{Result: AttributionAbsent}
+}
+
+// lookupRemoval reads the tiers only a removal may consult, in the order they rank: the uid set of
+// a collection that named this object, then the object's own last-writer fact, then a collection
+// whose scope covers it. See Lookup for why uid membership and scope matching sit on opposite sides
+// of the latest tier.
+func (i *FactIndex) lookupRemoval(
+	facts *scopeFacts,
+	query FactQuery,
+	now, cutoff time.Time,
+) AuthorResolution {
+	if query.UID != "" {
+		if fact, found := facts.matchCollectionUID(query, cutoff); found {
+			return AuthorResolution{Fact: fact, Result: AttributionCollectionUID}
+		}
+		if fact, found := facts.lookupLatest(query.UID, cutoff); found {
+			return AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, true)}
+		}
+	}
+	if fact, found := facts.matchCollectionScope(query, now, cutoff, i.collectionWindow); found {
+		return AuthorResolution{Fact: fact, Result: AttributionCollectionScope}
 	}
 	return AuthorResolution{Result: AttributionAbsent}
 }

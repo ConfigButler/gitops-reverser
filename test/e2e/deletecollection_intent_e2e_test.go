@@ -203,6 +203,32 @@ var _ = Describe("DeleteCollection intent & attribution", Label("manager"), Orde
 		Expect(removeConfigMapFinalizers(cleanupBot, testNs, name)).To(Succeed())
 	})
 
+	// The other specs create and delete as the SAME actor, so a removal credited to the last writer
+	// instead of the deleter produces the same name and passes. This one separates them: the cleanup
+	// bot writes the objects, alice deletes the collection, and only the deleter may be credited.
+	// Getting that wrong is not a cosmetic error — it names an innocent person as the author of a
+	// deletion they did not perform.
+	It("credits the collection deleter, not whoever last edited the objects", func() {
+		label := fmt.Sprintf("dctest-deleter-%d", GinkgoRandomSeed())
+		first := label + "-a"
+		second := label + "-b"
+
+		By("creating the configmaps as alice, then having a DIFFERENT identity edit them last")
+		Expect(createLabeledConfigMap(alice, testNs, first, label, nil, "tier", "doomed")).To(Succeed())
+		Expect(createLabeledConfigMap(alice, testNs, second, label, nil, "tier", "doomed")).To(Succeed())
+		for _, n := range []string{first, second} {
+			waitForFilePresent(repo, configMapRepoPath(testNs, n))
+			Expect(annotateConfigMap(cleanupBot, testNs, n, "touched-by", "cleanup-bot")).To(Succeed())
+		}
+
+		By("deleting the collection as alice")
+		Expect(deleteConfigMapCollection(alice, testNs, "dctest="+label)).To(Succeed())
+
+		By("asserting the removals are authored by alice, the deleter — never by the last editor")
+		waitForFileDeletedByActor(repo, configMapRepoPath(testNs, first))
+		waitForFileDeletedByActor(repo, configMapRepoPath(testNs, second))
+	})
+
 	It("scopes a label-selector collection delete to matching objects and leaves siblings", func() {
 		label := fmt.Sprintf("dctest-selector-%d", GinkgoRandomSeed())
 		matchA := label + "-match-a"
@@ -294,6 +320,18 @@ func deleteConfigMapCollection(client *kubernetes.Clientset, ns, labelSelector s
 		metav1.DeleteOptions{},
 		metav1.ListOptions{LabelSelector: labelSelector},
 	)
+}
+
+// annotateConfigMap writes a trivial change as the given identity, so that identity becomes the
+// object's LAST WRITER without being the one who later deletes it.
+func annotateConfigMap(client *kubernetes.Clientset, ns, name, key, value string) error {
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, key, value)
+	_, err := client.CoreV1().ConfigMaps(ns).Patch(
+		context.Background(), name, k8stypes.MergePatchType, []byte(patch), metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("annotate configmap %s: %w", name, err)
+	}
+	return nil
 }
 
 func removeConfigMapFinalizers(client *kubernetes.Clientset, ns, name string) error {

@@ -199,28 +199,43 @@ func (s *scopeFacts) lookupRV(rv string, cutoff time.Time) (AuthorFact, bool) {
 	return liveFact(s.rvOnly[rv], cutoff)
 }
 
-// matchCollection resolves a removal against the collection tier, in the two passes the design
-// orders: uid membership first, because either the API server said it deleted this object or it did
-// not, and scope matching second, because it accepts a bounded risk of naming the wrong human and
-// so must only ever be reached when nothing more precise applies.
-func (s *scopeFacts) matchCollection(q FactQuery, now, cutoff time.Time, window time.Duration) AuthorResolution {
+// matchCollectionUID resolves a removal against a collection fact that NAMED this object: the API
+// server returned the set it deleted, and this uid was in it. There is no over-attribution risk in
+// that — either the object was in the set or it was not — which is why it outranks the latest tier.
+//
+// It carries no window check, deliberately. The uid set is a statement about this exact object
+// rather than about a span of time, so the fact's own TTL is the only bound it needs; a window would
+// only discard evidence that cannot be wrong.
+func (s *scopeFacts) matchCollectionUID(q FactQuery, cutoff time.Time) (AuthorFact, bool) {
 	for i := len(s.collections) - 1; i >= 0; i-- {
 		entry := s.collections[i]
 		if !entry.covers(q, cutoff) || entry.uids == nil {
 			continue
 		}
 		if _, ok := entry.uids[q.UID]; ok {
-			return AuthorResolution{Fact: entry.fact, Result: AttributionCollectionUID}
+			return entry.fact, true
 		}
 	}
+	return AuthorFact{}, false
+}
+
+// matchCollectionScope resolves a removal against a collection fact by scope alone: same type and
+// namespace, the request's selector accepting this object's labels, within the collection window.
+// It is the weakest evidence the join has and the only tier that can name the wrong human, so it
+// runs last — after the object's own facts have all missed.
+func (s *scopeFacts) matchCollectionScope(
+	q FactQuery,
+	now, cutoff time.Time,
+	window time.Duration,
+) (AuthorFact, bool) {
 	for i := len(s.collections) - 1; i >= 0; i-- {
 		entry := s.collections[i]
 		if !entry.covers(q, cutoff) || !entry.inWindow(now, window) || !entry.selects(q.Labels) {
 			continue
 		}
-		return AuthorResolution{Fact: entry.fact, Result: AttributionCollectionScope}
+		return entry.fact, true
 	}
-	return AuthorResolution{Result: AttributionAbsent}
+	return AuthorFact{}, false
 }
 
 // sweep drops every entry inserted before the cutoff and reports how many went. It also compacts

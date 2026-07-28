@@ -388,17 +388,50 @@ func TestFactIndex_CollectionScopeMatchStopsAtTheWindow(t *testing.T) {
 	harness.absent(objectQuery("prod-eu-1", "uid-9", "9", false))
 }
 
-func TestFactIndex_CollectionIsWeakerThanAnObjectsOwnFact(t *testing.T) {
+// A collection fact that named no uids is evidence about a SCOPE, so it must not outrank an
+// object's own fact. This is the precedence that keeps scope matching safe: an unrelated delete by
+// another actor during the same window is claimed by its own fact and never reaches the scope tier.
+func TestFactIndex_CollectionScopeIsWeakerThanAnObjectsOwnFact(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{})
 	key := factIndexTestStream("prod-eu-1")
 	harness.publish(key, aliceCollectionFact(""), objectFact("bob", "101"))
 	harness.waitForFacts(3)
 
-	// Precedence is the correctness argument: an unrelated delete by another actor during the same
-	// window is claimed by its own fact and never reaches the scope tier.
 	resolution := harness.resolve(objectQuery("prod-eu-1", "uid-1", "999", false))
 	require.Equal(t, AttributionWeak, resolution.Result)
 	require.Equal(t, "bob", resolution.Fact.Author)
+}
+
+// TestFactIndex_CollectionUIDOutranksAStaleWriteFact is the other side of that precedence, and it
+// is the one the tiers originally got wrong.
+//
+// The latest tier says who last WROTE an object; a removal asks who DELETED it. For a single-object
+// delete the two coincide, because the delete files its own fact under that uid. A COLLECTION delete
+// files one fact about the collection instead, so the uid's latest entry is left holding whoever
+// edited the object last — and ranking it above the collection's uid set credited every removal to
+// the previous editor, never reaching the actor who ran the delete. That is the one thing the
+// deleted expander got right, by overwriting that entry per object.
+//
+// The e2e specs could not catch it: they create and delete as the same actor, so the wrong answer
+// and the right answer are the same name.
+func TestFactIndex_CollectionUIDOutranksAStaleWriteFact(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	key := factIndexTestStream("prod-eu-1")
+
+	// Bob edits the object; alice then deletes the collection that covers it, and the API server
+	// returns the set, so the fact names this uid.
+	harness.publish(key, objectFact("bob", "101"), aliceCollectionFact("", factIndexTestUID))
+	harness.waitForFacts(3)
+
+	resolution := harness.resolve(objectQuery("prod-eu-1", factIndexTestUID, "999", false))
+	require.Equal(t, AttributionCollectionUID, resolution.Result)
+	require.Equal(t, "alice", resolution.Fact.Author,
+		"the removal was caused by alice's collection delete, not by bob's earlier update")
+
+	// A create/update on the same object is NOT a removal, so it keeps resolving to its own writer:
+	// the collection tiers are only ever consulted for an event whose rv cannot match.
+	write := harness.resolve(objectQuery("prod-eu-1", factIndexTestUID, "101", true))
+	require.Equal(t, "bob", write.Fact.Author)
 }
 
 func TestFactIndex_UnjoinableFactIsNotStored(t *testing.T) {
