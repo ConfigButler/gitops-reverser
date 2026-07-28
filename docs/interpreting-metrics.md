@@ -155,11 +155,15 @@ sum by (group, version, resource) (rate(gitopsreverser_resync_sweep_deletes_tota
 
 ## Audit attribution (optional)
 
-Audit runs **only when Redis is configured**. The kube-apiserver POSTs audit `EventList`
-payloads to `/audit-webhook`; the handler applies an intrinsic accept gate and, for an accepted
-event, writes a minimal attribution fact to the Redis index. There is **no body join and no
-second source** — watch, not audit, carries the object body — so the only audit metrics are the
-request boundary and the per-event census. Background:
+Audit runs when `--author-attribution` is on. The kube-apiserver POSTs audit `EventList` payloads to
+`/audit-webhook`; the handler applies an intrinsic accept gate and appends the accepted events'
+facts to a per-type fact log — **one append per type per request**, not one per event. The watch side
+follows that log into a bounded, TTL'd in-memory index and joins against it. There is **no body join
+and no second source** — watch, not audit, carries the object body — so the only audit metrics are
+the request boundary and the per-event census.
+
+The log is Redis Streams by default and an in-process ring with
+`--author-attribution-transport=memory`, which is why attribution no longer implies Redis. Background:
 [architecture.md → Optional Attribution](architecture.md#optional-attribution).
 
 | Metric | Type | Labels |
@@ -172,6 +176,9 @@ request boundary and the per-event census. Background:
 | `attribution_resolution_wait_seconds` | histogram | `result` |
 | `attribution_fact_events_total` | counter | `op` |
 | `attribution_fact_index_size` | gauge | — |
+| `attribution_fact_index_evictions_total` | counter | `reason` |
+| `attribution_fact_stream_gaps_total` | counter | `stream` |
+| `attribution_collection_degraded_total` | counter | `reason` |
 
 **EventList request boundary.** `audit_eventlists_total` and `audit_eventlist_duration_seconds`
 count requests at `/audit-webhook`; `audit_eventlist_events_total` counts the decoded event items
@@ -184,9 +191,9 @@ selector):
 
 | `category` | Live `outcome` values | Meaning |
 | --- | --- | --- |
-| `stored` | `queued` | Accepted; an attribution fact was written to the index. |
+| `stored` | `queued` | Accepted; the event's facts reached the fact log. |
 | `dropped` | `nil_event`, `stage`, `read_only_or_unknown_verb`, `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource` | Correctly rejected at the accept gate — not an error. |
-| `error` | `write_error` | The fact store rejected the write. The one category that should stay zero. |
+| `error` | `write_error` | The transport rejected the append, so nothing from that batch reached the log and the API server is asked to retry the delivery. The one category that should stay zero. |
 
 The full enum lives in [`internal/audit/outcome/outcome.go`](../internal/audit/outcome/outcome.go)
 — it is the source of truth.
@@ -253,19 +260,29 @@ histogram_quantile(0.95,
 actor (human or service account) rather than producing an explicit unresolved author:
 
 ```promql
-sum(rate(gitopsreverser_attribution_resolutions_total{result=~"exact_.*|weak"}[5m]))
+sum(rate(gitopsreverser_attribution_resolutions_total{result!="absent"}[5m]))
 /
 sum(rate(gitopsreverser_attribution_resolutions_total[5m]))
 ```
 
-`result` is bounded:
+`result` is bounded, and it is ordered: it names which tier of evidence produced the author, from
+strongest to weakest.
 
 | `result` | Meaning |
 | --- | --- |
 | `exact_user` | Exact UID+resourceVersion match for a human user. |
 | `exact_serviceaccount` | Exact UID+resourceVersion match for a named service account. |
-| `weak` | Non-exact match, such as UID-only or RV-only. |
+| `weak` | Non-exact match: the UID-latest tier a removal uses, or the RV-only escape hatch. |
+| `collection_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. |
+| `collection_scope` | A removal matched to a `deletecollection` by scope alone — same type and namespace, the request's selector accepting the object's labels, within the collection window. The weakest evidence the join has, and the only one that can name the wrong actor, which is why it is reached only when every more specific tier missed. |
 | `absent` | No usable fact matched before the grace window elapsed. The resulting live commit is authored as `unknown (attribution unresolved)`. |
+
+> **`exact_deletecollection_item` is gone.** It was the expander's label, and the expander was
+> deleted along with the fact keyspace. `collection_uid` is its closest equivalent; `collection_scope`
+> is new capability rather than a rename, and covers collection deletes that used to resolve to
+> nothing at all. Dashboards selecting `result=~"exact_.*|weak"` for match coverage should select
+> `result!="absent"` instead, or they will read the collection tiers as misses. See
+> [`attribution-fact-stream.md`](finished/attribution-fact-stream.md).
 
 **Is the grace window paying for itself?** Misses waiting near the configured grace window mean the
 operator is delaying commits without finding facts:
@@ -276,9 +293,9 @@ histogram_quantile(0.95,
     rate(gitopsreverser_attribution_resolution_wait_seconds_bucket{result="absent"}[5m])))
 ```
 
-**Is the Redis fact index healthy?** Facts should be written and later matched; a high rate of
-`op="written"` alongside `result="absent"` points at a timing, key, or source-identity mismatch
-between audit and watch:
+**Is the fact index healthy?** Facts should be written and later matched; a high rate of
+`op="written"` alongside `result="absent"` points at a timing, type, or audit-route mismatch between
+audit and watch:
 
 ```promql
 sum by (op) (rate(gitopsreverser_attribution_fact_events_total[5m]))
@@ -287,6 +304,42 @@ sum by (op) (rate(gitopsreverser_attribution_fact_events_total[5m]))
 ```promql
 gitopsreverser_attribution_fact_index_size
 ```
+
+**Is the index dropping facts under load?** The index is bounded per type and in total, and an
+attribution lost to a full index has to look different from one that was never published. Any
+sustained rate here means a burst is outrunning the caps, and
+`--author-attribution-max-facts-per-type` / `--author-attribution-max-facts` are the levers:
+
+```promql
+sum by (reason) (rate(gitopsreverser_attribution_fact_index_evictions_total[5m]))
+```
+
+`reason` is `per_type` (one type is hotter than its share) or `total` (the whole index is under
+pressure, and eviction falls on the type holding the most).
+
+**Is a follower losing facts?** A trim gap means the fact log was trimmed past this process's
+position: the facts in the gap are gone for good, and the commits that needed them are authored
+unresolved. It is the one loss the transport can see, which is why the transport is a log with
+positions rather than fire-and-forget publish and subscribe. This should be **zero**:
+
+```promql
+sum by (stream) (rate(gitopsreverser_attribution_fact_stream_gaps_total[5m]))
+```
+
+**How often does a collection delete fall back to scope matching?** A `deletecollection` fact
+carries the UIDs the API server named, when it sent them, and joins by membership. When it cannot,
+the join falls back to `collection_scope`, which is correct but weaker — so the fallback is counted
+rather than inferred:
+
+```promql
+sum by (reason) (rate(gitopsreverser_attribution_collection_degraded_total[5m]))
+```
+
+`reason` is `uid_cap` (the set was larger than `--author-attribution-collection-uid-cap`) or
+`no_uids` (the API server sent a body with no usable UIDs). A body-less response — a truncated,
+aggregated, or metadata-only `deletecollection` — produces no fact-level degradation event at all,
+because there was never a set to drop; it simply resolves through the scope tier. A production
+cluster running `--audit-webhook-truncate-enabled` is the one most likely to be in that case.
 
 ---
 

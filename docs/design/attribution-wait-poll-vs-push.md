@@ -2,7 +2,7 @@
 
 > **design**: superseded. Index: [`../INDEX.md`](../INDEX.md)
 >
-> **The decision was taken in [`attribution-fact-stream.md`](attribution-fact-stream.md)**, which
+> **The decision was taken in [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md)**, which
 > replaces the fact keyspace with a per-type Redis stream and an in-memory index. This record is
 > kept as the reasoning trail: the six options, what each costs, and the measurements that ruled
 > most of them out. Read it for why, then read the other one for what.
@@ -39,7 +39,7 @@ without it. A watch event carries the object, the operation, and the resource id
 produces a correct commit whether or not anyone ever names an author.
 [`RedisStore`](../../internal/queue/redis_store.go#L45) holds the resume cursors and is a hard
 dependency in every mode;
-[`AttributionIndex`](../../internal/queue/attribution_index.go#L112) is built on the same connection
+`AttributionIndex` is built on the same connection
 only when the operator asks for author attribution, and it
 [knows nothing about cursors](../../internal/queue/redis_store.go#L79). Turning attribution off is
 expressed by leaving `Manager.AuthorResolver` nil, at which point
@@ -50,7 +50,7 @@ is optional in the strong sense, and the cost of not using it is zero.
 
 **One fact serves every watcher that needs it.** A fact key is
 `route:<route>:<group/resource>:object:<uid>:<rv>`
-([`factKeyExact`](../../internal/queue/attribution_index.go#L454)). Notice what is absent from it:
+(`factKeyExact`). Notice what is absent from it:
 the `GitTarget`, the `WatchRule`, the branch, the folder. The key names the *write that happened in
 Kubernetes*, and it says nothing about which consumer is interested. So when five `GitTarget`s
 mirror the same `Deployment` into five repositories, the API server posts one audit event,
@@ -194,7 +194,7 @@ and from real installs.
 expires.
 
 Each iteration is not one Redis round trip.
-[`LookupAuthorResolution`](../../internal/queue/attribution_index.go#L382) tries up to three keys:
+`LookupAuthorResolution` tries up to three keys:
 the immutable exact key, the `:last` pointer for removals, and the type-scoped rv-only hatch. So a
 single event that never resolves costs roughly 20 wakeups and 40 to 60 `GET`s, and an event whose
 fact lands mid-grace pays an average of 75ms of pure poll-interval latency on top of however long
@@ -319,7 +319,7 @@ lab's per-scenario report to size it, which is one concrete reason to build the 
 
 Turn the wait from a poll into a push, driven by the code that receives the audit events.
 
-1. [`writeFactKeys`](../../internal/queue/attribution_index.go#L201) pipelines a `PUBLISH` of each
+1. `writeFactKeys` pipelines a `PUBLISH` of each
    written key onto a per-route channel alongside its `SET`. Pipelined, so the write side pays no
    extra round trip. See [where to publish from](#where-to-publish-from) for the better placement.
 2. The resolver process holds one long-lived subscription per audit route. Routes are bounded by
@@ -379,7 +379,7 @@ late-join, and a late-join is precisely what a TTL'd key in Redis serves.
 #### Carry the fact, not a pointer to it
 
 The step above publishes the *key* and has the woken resolver `GET` it. Publishing the
-[`AuthorFact`](../../internal/queue/attribution_index.go#L90) itself is better, and it is barely
+`AuthorFact` itself is better, and it is barely
 more work.
 
 - **The woken resolver needs no Redis read at all.** The message carries the author, display name,
@@ -403,10 +403,10 @@ count, which is the number to watch if this is built.
 
 Two placements, and the receiver is the better one.
 
-[`writeFactKeys`](../../internal/queue/attribution_index.go#L201) knows exactly which keys it wrote,
+`writeFactKeys` knows exactly which keys it wrote,
 which makes it the obvious home for a notify-only publish. But it sees one fact at a time, so a
 `deletecollection` expanding into N facts
-([`storeDeleteCollectionFacts`](../../internal/queue/attribution_index.go#L283)) becomes N publishes.
+(`storeDeleteCollectionFacts`) becomes N publishes.
 
 The receiver sees the whole batch. One audit POST carries an `EventList` of up to
 `--audit-webhook-batch-max-size` events, decoded once in
@@ -417,7 +417,7 @@ publish instead of 400. The batching that causes the delay is the same batching 
 notification cheap.
 
 The constraint on that placement is that the receiver must publish only what
-[`RecordFact`](../../internal/queue/attribution_index.go#L132) stored. That function drops
+`RecordFact` stored. That function drops
 events with no `objectRef`, no resolvable name, or no user, and expands a `deletecollection` into
 per-item facts. Publishing the raw `EventList` would notify waiters about facts that do not exist
 and cannot name anyone. So `RecordFact` needs to return what it wrote, and the receiver accumulates

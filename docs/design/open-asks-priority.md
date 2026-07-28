@@ -13,7 +13,7 @@
 > what was asked.
 >
 > One of the queue's entries is already specified rather than merely wanted:
-> [`attribution-fact-stream.md`](attribution-fact-stream.md) picks and details the replacement for
+> [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) picks and details the replacement for
 > the attribution keyspace. It is ranked here like everything else, and it changes how the
 > highest-priority consumer ask should be built. See
 > [attribution facts as a stream](#attribution-facts-as-a-stream-tier-2-and-it-answers-15s-hard-part).
@@ -37,7 +37,7 @@ Four tests, applied in order. They are what produced the queue in
 
 Test 3 is why this document exists rather than a straight re-ranking of the asks, and it lands
 on sibling inference. It has a second instance, arrived at independently:
-[`attribution-fact-stream.md`](attribution-fact-stream.md) deletes the fact keyspace and the
+[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) deletes the fact keyspace and the
 `deletecollection` expander rather than optimizing either, and ends up with less code doing more.
 Two of these in one quarter is a pattern worth naming: the parts of this system that hurt are the
 parts that reconstruct something from state they do not own.
@@ -146,7 +146,7 @@ they need a `byType` line at the moment it matters rather than by noticing a fil
 | 22 | `ReasonRefusedStructural` doc says "permanent"; refusal-detail stem; `Actor` reachability | gitops-api | **0** |
 | 15 | A declared `auditRoute` with zero facts must say so | gitops-api | **1** |
 | n/a | Delete sibling inference (answers #10) | this doc | **1** |
-| n/a | Attribution facts become a stream; the keyspace and the expander are deleted | [`attribution-fact-stream.md`](attribution-fact-stream.md) | **2** |
+| n/a | Attribution facts become a stream; the keyspace and the expander are deleted | [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) | **2** |
 | F6 | `spec.suspend`, `spec.interval`, `requestedAt` | maintainer review | **2** |
 | 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** |
@@ -214,14 +214,14 @@ defer #15 until the transport changes, because the stream design makes the signa
 to produce. The right move is the opposite: ship the condition now, and define it in terms that
 both transports can answer, which is "how many facts has this route contributed, and when was the
 last one". Today that is a counter incremented where
-[`RecordFact`](../../internal/queue/attribution_index.go) writes; after the change it is the same
+`RecordFact` writes; after the change it is the same
 counter incremented where the receiver appends. The condition never learns which transport it has,
 which is the same seam rule the stream design argues for one level down.
 
 Where `auditRoute` came from is [`attribution-fact-identity.md`](attribution-fact-identity.md).
 The related open question about *how the watch waits* is no longer open in the way it was: the six
 options in [`attribution-wait-poll-vs-push.md`](attribution-wait-poll-vs-push.md) are superseded by
-[`attribution-fact-stream.md`](attribution-fact-stream.md), which picks one and specifies it.
+[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md), which picks one and specifies it.
 
 **The inference deletion** sits in this tier for the reason argued above: repo state changing
 operator behavior invisibly is the same class of defect as an audit route that silently resolves
@@ -234,7 +234,7 @@ one coordinated bump; doing them one at a time costs six.
 
 #### Attribution facts as a stream: Tier 2, and it answers #15's hard part
 
-[`attribution-fact-stream.md`](attribution-fact-stream.md) is the only item in this queue that
+[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) is the only item in this queue that
 arrives already specified, and it is the largest. It is in Tier 2 rather than Tier 1 for an honest
 reason: today's keyspace is *slow*, not *wrong*. The poll loop runs to completion on essentially
 every attributable event, which is waste, and waste does not outrank a silent misconfiguration.

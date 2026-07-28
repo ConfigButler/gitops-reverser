@@ -2,22 +2,26 @@
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: **IMPLEMENTED** — 2026-06-28 (rev. 2: deletion-as-intent reframe). The render rule (§2), the
-> expander (§5), the `exact_deletecollection_item` reason code (§8), unit tests (§9.1), and the four e2e
-> specs (§9.2) have all landed and pass `task lint`/`task test`/`task test-e2e`.
+> Status: **PARTLY SUPERSEDED.** The render rule (§2) is current behaviour and still binds — it is
+> what makes the collection window short enough to be safe. The **expander (§5) and its
+> `exact_deletecollection_item` reason code (§8) are DELETED**, replaced by one collection fact that
+> every removal in its scope joins; §5, §6 and §8 have been rewritten to say what took their place,
+> and [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) is the record that
+> argues it.
 > Scope: two complementary pieces — (1) a render-layer rule that treats `deletionTimestamp` as **logical
-> absence** and removes the file at delete-request time, and (2) the **DeleteCollection attribution expander**
-> that lets a name-less collection delete be attributed per object. State correctness for collection deletes is
+> absence** and removes the file at delete-request time, and (2) attribution for a name-less collection
+> delete. State correctness for collection deletes is
 > already solved by construction in watch-first (one watch event per object); this doc adds the *intent
 > semantics* and the *attribution*.
 > Related:
+> [attribution facts as a stream](../finished/attribution-fact-stream.md),
 > [watch-first ingestion architecture](../finished/watch-first-ingestion-architecture.md),
 > watch-first merge readiness §4,
 > [superseded `deletecollection` nudge plan](deletecollection-attribution-expander.md),
 > [watch event ordering & attribution grace](../facts/watch-event-ordering-and-attribution-grace.md),
 > [`internal/watch/target_watch.go`](../../internal/watch/target_watch.go),
 > [`internal/sanitize/sanitize.go`](../../internal/sanitize/sanitize.go),
-> [`internal/queue/attribution_index.go`](../../internal/queue/attribution_index.go),
+> [`internal/queue/fact_index.go`](../../internal/queue/fact_index.go),
 > [`internal/webhook/audit_handler.go`](../../internal/webhook/audit_handler.go).
 
 ## 1. The question, and the reframe
@@ -143,61 +147,34 @@ variants are skipped when no RV is supplied, which is precisely right since the 
 - **State is solved by construction** — N watch events, mark-and-sweep backstop
   (merge-readiness §4).
 - **A name-less event stores nothing today.** `RecordFact` early-returns when `identity.Name == ""`
-  ([attribution_index.go:216](../../internal/queue/attribution_index.go#L216)), so a `deletecollection` writes
+  (attribution_index.go:216), so a `deletecollection` writes
   **zero** facts now — the expander is purely **additive**.
 - **Single deletes already attribute** (including finalizer ones, now improved). A single `kubectl delete foo`
   has a name, so `RecordFact` already writes its uid-only fact; with §2's intent rule, the finalizer single-delete
   is now removed and attributed at intent time too — for free, no expander needed. The expander exists **only**
   for the name-less collection case.
 - **The conservative resolver fails closed** — multiple authors on one key → no usable attribution fact → the
-  explicit unresolved author ([storeFactKey](../../internal/queue/attribution_index.go#L403)). Governing rule:
+  explicit unresolved author (storeFactKey). Governing rule:
   **a wrong author is worse than no author.**
 - **The grace window** absorbs a watch event that arrives before its audit fact
   ([author_resolver.go:40](../../internal/watch/author_resolver.go#L40)).
 
-## 5. The expander — body-present per-UID fan-out
+## 5. RETIRED — the expander is deleted
 
-**Trigger.** An accepted, mutating audit event with `verb == deletecollection` whose response body parses as a
-list of objects (typed `…List`, generic `v1.List`, or items array) — the common case for etcd-backed core types
-and CRDs captured at `level: RequestResponse`.
+**This section described the per-UID fan-out expander, which no longer exists.** It was deleted with
+the switch to the attribution fact stream; see
+[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md), which argues at length why
+rebuilding N per-object facts from one request was the wrong shape.
 
-**Action.** For **every** item in the body — including finalizer-pending ones — write **one uid-only fact** keyed
-on the item's own `(group, resource, namespace, name, uid)`, carrying the audit event's actor
-(`resolveUserInfo`), `auditID`, `stageTimestamp`, and `Verb: "deletecollection"`. Use the *item's* namespace/name,
-never the collection URL's coarse/empty ones. No skipping: a finalizer item is removed-as-intent (§2) and
-attributed to the actor exactly like any other item.
+What replaces it, in one line: a `deletecollection` is published as **one fact describing the
+collection** — actor, type, namespace, the selector the request URI expressed, the stage timestamp,
+and the set of uids the API server named when it sent a body — and every removal in that scope joins
+it. The join tries uid membership first, then scope.
 
-**Why it's honest.** Each fact names a specific UID the API server confirmed this actor issued a collection delete
-against. No guessing (contrast §6). It rides the existing lookup, grace window, conflict-collapse, and TTL — the
-only new write is one key per body item.
-
-**Shape variance — parse defensively.** List-with-items → expand. `Status` / hollow / unparseable / absent body →
-no items → no-op, degrade to §6. Never assume a body.
-
-### 5.1 Where the code goes
-
-A sibling to `RecordFact`, called from the same accept point
-([audit_handler.go:258](../../internal/webhook/audit_handler.go#L258)):
-
-```go
-// RecordDeleteCollectionFacts expands a deletecollection response body into one
-// uid-only attribution fact per listed object, joined by UID against the per-object
-// removal event. A no-op when the verb is not deletecollection or the body is
-// absent/hollow/unparseable. Writes ONLY the uid-only key (no RV is supplied, so
-// factKeyVariants yields just that variant).
-func (a *AttributionIndex) RecordDeleteCollectionFacts(ctx context.Context, event auditv1.Event) error
-```
-
-`RecordFact` is unchanged (it already no-ops on the name-less collection event). The handler calls both; for a
-`deletecollection`, only the expander does work. The single-object fast path is never branched.
-
-### 5.2 Reason code
-
-When a removal event matches an expander fact, `attributionResultForMatch`
-([attribution_index.go:332](../../internal/queue/attribution_index.go#L332)) today returns `weak` (uid-only). Add
-`AttributionExactDeleteCollectionItem` and return it when `fact.Verb == "deletecollection"`, so collection-member
-attributions are distinct from generic weak matches in metrics — realizing the `exact-deletecollection-item`
-reason code that merge-readiness §3.5 lists as unused.
+The rest of this document still binds. **§2, the deletion-as-intent render rule, is untouched**, and
+it is what keeps the collection window short: the removal is attributed at delete-REQUEST time, when
+`deletionTimestamp` is set, so finalizers do not stretch it. §3's argument that a collection member
+must join by UID rather than RV also still holds, and is why the uid tier sits above the scope tier.
 
 ## 6. The hard case — hollow / empty body (aggregated & metadata-only)
 
@@ -217,9 +194,25 @@ objects**. The owner's trap: *in a few seconds you could see more than one `dele
   plumbing to carry a scope-cause into the commit-window builder. A deliberate fast-follow.
 - **Option C — commit as the explicit unresolved author, document the limit.** v1.
 
-**v1: Option C.** The hard case is a narrow intersection (aggregated/hollow body ∧ supports `deletecollection` ∧
-watched ∧ attributed-author mode), and the failure is *degraded attribution*, not wrong state or a guessed author — which
-is the correct conservative outcome. **Ship §2 + §5 now; Option B is the named fast-follow; Option A is rejected.**
+**RESOLVED, and not by Option C.** The hollow-body case was shipped as **scope matching**, which is
+Option A bounded until it is safe rather than rejected outright. Three things bound the
+over-attribution the rejection was about, and the third is the one that changes the verdict:
+
+- **Namespace and selector narrow the scope.** The selector is the *intent the actor stated*, read
+  off the request URI, and it is present even when the body is not. An empty selector matches
+  everything of the type in the namespace, which is exactly what `--all` means.
+- **Precedence keeps anything with its own fact out.** The scope tier is the weakest evidence the
+  join has, so it is reached only when every more specific tier missed. The unrelated
+  `kubectl delete configmap x` in the same window is claimed by its OWN fact and never reaches it.
+- **The window is short**, because of §2. Under deletion-as-intent the removal happens at
+  delete-request time, so the window only has to cover audit batching plus clock skew — 30s by
+  default, against a fact TTL of ten minutes. That is what makes the scope match safe, and it is not
+  something the original framing, where attribution chased the eventual removal, could have offered.
+
+The result is the reverse of the old degradation: the aggregated and metadata-only cases that used
+to ship committer-authored now resolve, and a production cluster with
+`--audit-webhook-truncate-enabled` — the one MOST likely to send no body for a large collection
+delete — is the one that gains most. Option B (`Co-authored-by`) is no longer needed for this case.
 
 ## 7. Recommendation at a glance
 
@@ -227,22 +220,32 @@ is the correct conservative outcome. **Ship §2 + §5 now; Option B is the named
 |---|---|---|
 | Any delete (single or collection member) | **Remove file at intent time; never commit `deletionTimestamp`** (§2) | Git is intent; reversible invariant; manifests stay re-appliable. |
 | Finalizer object | **Removed immediately, attributed to the delete-requester**; finalizer cleanup is runtime no-op in Git | Reframe dissolves the old delay/conflict; controllers still finalize in-cluster. |
-| Collection delete, body present | **Per-UID expander (§5)** credits the actor on each removal | API server states "these exact objects, by this user." |
-| Collection delete, hollow body | **Explicit unresolved author (Option C, §6)** | Narrow; degraded attribution beats a wrong author. |
+| Collection delete, body present | **One collection fact**, joined by **uid membership** (`collection_uid`) | API server states "these exact objects, by this user." |
+| Collection delete, hollow body | **The same collection fact**, joined by **scope** — type, namespace, selector, window (`collection_scope`) | Bounded by precedence and a short window (§6); resolves what used to degrade. |
 | Stuck `Terminating` | **Operational status/metric** (§2.5), file already absent | Don't pollute intent with runtime state. |
 
 ## 8. Observability & diagnostics
 
-- **`AttributionExactDeleteCollectionItem`** flows onto `AttributionResolutionsTotal{result=…}` via
-  `recordAttributionResolution` ([author_resolver.go:169](../../internal/watch/author_resolver.go#L169)) — a
-  dashboard can show collection-member precise attributions vs. unresolved outcomes.
-- **Expander write counter** (`op="deletecollection_expanded"`) on `AttributionFactEventsTotal` via the existing
-  `recordFactEvent` hook ([attribution_index.go:433](../../internal/queue/attribution_index.go#L433)).
-- **Stuck-finalizer / terminating diagnostics** (§2.5): surface long-`Terminating` watched objects whose files we
-  already removed, so logical absence never hides a stuck deletion. Optional **secondary diagnostic
-  attribution**: record *who* cleared the finalizer (the finalizer-clearing actor) as a diagnostic signal — a
-  metric label or debug log — **never** as the Git author (that stays the delete-requester, and the event is a
-  no-op commit anyway). v1 may ship the metric and defer the richer reporting.
+**The `exact_deletecollection_item` result label is gone**, and so is the expander's
+`op="deletecollection_expanded"` write counter. Two labels replace the one, because the match is now
+two-tiered and the tiers carry different confidence:
+
+- **`collection_uid`** — the removal's uid was in the set the API server said it deleted. No
+  over-attribution risk at all.
+- **`collection_scope`** — matched by namespace, selector, and window alone. Weaker evidence, and
+  the reason the window is short.
+
+Both flow onto `AttributionResolutionsTotal{result=…}`, so a dashboard can now separate *precise*
+collection credit from *scoped* collection credit rather than seeing one bucket.
+`attribution_collection_degraded_total{reason}` counts a collection fact published WITHOUT its uid
+set, which is what turns the second tier from an inference into a measurement. See
+[`interpreting-metrics.md`](../interpreting-metrics.md).
+
+**Stuck-finalizer / terminating diagnostics** (§2.5) are unchanged: surface long-`Terminating`
+watched objects whose files we already removed, so logical absence never hides a stuck deletion.
+Optional **secondary diagnostic attribution**: record *who* cleared the finalizer as a diagnostic
+signal — a metric label or debug log — **never** as the Git author (that stays the delete-requester,
+and the event is a no-op commit anyway).
 
 ## 9. Tests
 
@@ -255,15 +258,20 @@ is the correct conservative outcome. **Ship §2 + §5 now; Option B is the named
 3. A second Delete for an already-absent path diffs to **no-op** (covers finalizer-clear + eventual `DELETED`
    folding to nothing; assert no commit). May reuse existing writer no-op tests.
 
-`internal/queue` (expander, §5):
+`internal/queue` and `internal/watch` (the collection fact and its join, §5–§6):
 
-1. A list body with three items → three uid-only facts, each crediting the actor; **no** exact/rv-only keys.
-2. A finalizer-pending item (`deletionTimestamp` + finalizers) **also** gets a fact crediting the actor (it is
-   *not* skipped).
-3. A hollow / `Status` / unparseable / absent body → **no facts**, no error (degrade to §6).
-4. A partial list writes facts only for items present (watch + sweep backstop the rest).
-5. Join shape: a removal event with the item's UID and a *different* RV resolves to the actor via the uid-only
-   key (proves §3) and surfaces as `exact_deletecollection_item`.
+1. A collection delete publishes **one** fact carrying the actor, the namespace, the selector from the
+   request URI, and the uid set — never one fact per object.
+2. A list body larger than the uid cap drops the set and counts
+   `attribution_collection_degraded_total{reason="uid_cap"}`; the fact still publishes.
+3. A hollow / `Status` / unparseable / absent body still publishes a fact — with no uid set. This is the
+   case the expander produced nothing at all for.
+4. Join shape, uid tier: a removal whose uid is in the set resolves to the actor as `collection_uid`,
+   even though its RV never matches (proves §3).
+5. Join shape, scope tier: a removal with no uid set to consult resolves as `collection_scope` when the
+   namespace, selector and window cover it — and does NOT resolve when the selector rejects its labels,
+   when it is in another namespace, or when the window has passed.
+6. Precedence: an object with its own fact never reaches either collection tier.
 
 ### 9.2 E2E — implemented
 
@@ -287,8 +295,8 @@ these survive), never a global drop count, so they run against a reused cluster.
 
 3. **`removes a single finalizer object at intent time too (the rule is not collection-specific)`.** A single
    named `Delete` of a finalizer-guarded configmap, as the actor: file removed at intent, authored by the actor,
-   object still `Terminating`; clearing the finalizer yields no further Git change. (Single deletes are attributed
-   by the existing `RecordFact`, not the expander — proving §2 is a general render rule.)
+   object still `Terminating`; clearing the finalizer yields no further Git change. (A single delete is
+   attributed by its own per-object fact, never by a collection one — proving §2 is a general render rule.)
 
 4. **`scopes a label-selector collection delete to matching objects and leaves siblings`.** Two matching + one
    non-matching sibling; a label-selector collection delete removes only the matching files (authored by the
@@ -299,14 +307,13 @@ these survive), never a global drop count, so they run against a reused cluster.
 - **§2 render rule:** `routeLiveTargetWatchEvent` reclassifies a `deletionTimestamp`-bearing event to Delete; no
   manifest ever carries `deletionTimestamp`/`deletionGracePeriodSeconds` (already true via sanitize); later
   finalizer/`DELETED` events fold to no-ops. Unit §9.1.1–9.1.3.
-- **§5 expander:** additive (`RecordFact` unchanged); writes only the uid-only key per body item; finalizer items
-  attributed (not skipped); defensive parsing; `AttributionExactDeleteCollectionItem` + expander counter wired.
-  Unit §9.1.4–9.1.8.
+- **§5 collection fact:** one fact per collection request, carrying scope, selector and (when the body
+  allowed it) the uid set; finalizer items attributed like any other, since §2 removes them at intent;
+  defensive parsing; `collection_uid` and `collection_scope` result labels wired. Unit §9.1.4–9.1.9.
 - **E2E §9.2.1–9.2.4** implemented, convergence-asserted; the finalizer showcase (§9.2.2) proves removal-at-intent
   with a *different* finalizer-clearing identity.
-- **Hard case:** Option C documented in README/chart ("actor named when the API server returns the deleted set;
-  aggregated/hollow-body collection deletes are recorded as committer"); Option B noted as fast-follow; Option A
-  rejected so it isn't re-proposed.
+- **Hard case:** resolved by scope matching (§6), bounded by namespace, selector, precedence and a short
+  window. Option B (`Co-authored-by`) is no longer needed for it.
 - **Reversibility honored:** main tree = resources intended to exist; richer `.deletions/` style records left as
   future enrichment, invariant intact.
 - Full validation per AGENTS.md: `task fmt → generate → manifests → vet → lint → test → test-e2e` (e2e sequential).

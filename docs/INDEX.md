@@ -65,14 +65,13 @@ says what we support and refuse** — and then its
 kustomize field taxonomy, the write boundary, the orchestrator/expansion line, and
 how secrets are handled.
 
-Fifteen other open items:
+Fourteen other open items:
 
 | Doc | Open question |
 |---|---|
 | [`open-asks-priority.md`](design/open-asks-priority.md) | three backlogs are open at once — the gitops-api consumer asks, the maintainer review's unbuilt block (F6, F9, F10), and the config-surface proposal (B1–B6) — and they overlap. Merges them into one ordered queue under four stated tests, and makes one design call against what was asked: **delete Option C sibling inference** rather than ship an off-switch for it, because it lets a human's edit to the repository change the operator's behaviour with nothing in status recording the move, its central guard has already failed once by cascading, and the explainability its own spec made mandatory was never built. That answers the namespace-leak ask by removal, and means `spec.placement.mode` is never built. Open: whether the removal ships with an Event on the first fall-back to canonical |
 | [`docs-linting.md`](design/docs-linting.md) | how to mechanize [`style-guide.md`](style-guide.md) with markdownlint-cli2 and Vale. Both are wired into `task lint`, gated on the files [`.docs-lint-scope`](../.docs-lint-scope) lists rather than the whole tree: 102 of 174 files fail markdownlint and 148 of 174 fail Vale, so the two backlogs need different gates. Open: how the scope list grows to cover the tree, the `MD013` limit, and whether `AGENTS.md` and the chart READMEs are in scope |
 | [`attribution-fact-identity.md`](design/attribution-fact-identity.md) | several `ClusterProvider`s may name one physical cluster, but a kube-apiserver posts audit to one route, so only one of those names is ever fed and every other one authors `unknown (attribution unresolved)`. Proposes a declared `spec.attribution.auditRoute` that partitions the facts instead of `metadata.name`, so several providers can share one cluster's facts while cloned clusters stay separate, ingestion loses its last Kubernetes read, and a misrouted provider becomes loud. Renames the key infix and the annotation-key flag to the same word |
-| [`attribution-fact-stream.md`](design/attribution-fact-stream.md) | the chosen replacement for the attribution keyspace: the audit receiver appends one batched entry per type to a per-`(route, group/resource)` Redis **stream**, every process follows only the types it watches, and the facts live in one bounded, TTL'd in-memory index per process. Deletes the per-key `SET`/`GET` lookup and the poll loop; keeps the blocking grace window, commit order, and the one-fact-serves-every-GitTarget property. Argues against plain publish and subscribe (silent, undetectable loss on every restart, reconnect, and new watch, once the keys are gone) and against a per-GitTarget index. Also deletes the `deletecollection` expander: one collection fact that every removal in its (type, namespace, selector, window) scope joins, ranked below every per-object fact, which removes the response-body parsing and starts resolving the aggregated-API and metadata-only cases that degrade to committer today. Chosen partly to unblock HA: audit POST and watch shard land on different replicas by construction, and a resumable stream survives the rollouts an HA install spends its life in. Open: cap granularity, entry size, and whether a replica warms its index before taking over a watch |
 | [`attribution-wait-poll-vs-push.md`](design/attribution-wait-poll-vs-push.md) | **superseded by the above, kept as the reasoning trail.** a watch event needs its author before it can be routed, and the audit fact naming that author may not have arrived yet, so `ResolveAuthor` polls Redis every 150ms for up to three seconds on the watch shard's own goroutine. Separates the wait (forced: two unordered deliveries out of one kube-apiserver, and the commit window groups by author) from the poll (a choice). Answers which of the two fires first: the watch, nearly always, because audit delivery is batched by the apiserver while the watch is streamed, so the first lookup is a near-guaranteed miss and the loop runs to completion on every attributable event. Six options priced against that, from shifting the first check to the delivery floor and a circuit breaker for an audit route that has never resolved anything, through a Redis publish and subscribe, to the reassembly-buffer design that stops blocking the watch shard. Open: whether the wait population is dominated by resolved-late (favors publish and subscribe) or never-resolved (favors the buffer), plus a proposed per-scenario timing report from the mutation-capture lab |
 | [`watch-and-catalog-architecture.md`](design/watch-and-catalog-architecture.md) | the target three-layer watch model — **needs a human call before building** |
 | [`metrics-observability-plan.md`](design/metrics-observability-plan.md) | the watch-stage metrics do not exist yet |
@@ -102,11 +101,22 @@ Five more ideas sit beside them.
 
 ## History — [`finished/`](finished/)
 
-Twenty-one shipped plans and closed investigations. **Nothing here binds.** Read one
+Twenty-two shipped plans and closed investigations. **Nothing here binds.** Read one
 only when you want to know *why* something is the way it is; the answer to *what it
 is* always lives in `spec/`.
 
 The newest is
+[`attribution-fact-stream.md`](finished/attribution-fact-stream.md): why attribution facts stopped
+being a keyspace the watch side polls and became a per-type log it follows into a bounded in-memory
+index. It deleted the `SET`/`GET` fact keys, the 150ms poll loop, and the `deletecollection`
+expander, replacing the expander with one collection fact that every removal in its scope joins by
+uid membership or by scope. That last part is a capability gain rather than a like-for-like swap: a
+collection delete the API server sent no response body for used to lose its author entirely.
+`exact_deletecollection_item` is replaced by `collection_uid` and `collection_scope`, and
+`--author-attribution-transport=memory` runs attribution with no Redis on a single replica. Shipped
+as #283, #284, #286 and the switch-over.
+
+Before it,
 [`analyzer-consumer-contract-asks.md`](finished/analyzer-consumer-contract-asks.md): why a
 refusal carries whether it can be solved and by whom, why the analyzer's report is a KRM
 document that names the build that produced it, and why `ResourceIdentifier.Key()` is a

@@ -273,7 +273,7 @@ rows → dashboard panels → alerts, validated per [AGENTS.md](../../AGENTS.md)
    `attribution_fact_events_total`, `attribution_fact_index_size`, the intentional
    `commits_total{author_kind}` label-contract change, and `resync_sweep_deletes_total`. Recording sites:
    [author_resolver.go](../../internal/watch/author_resolver.go),
-   [attribution_index.go](../../internal/queue/attribution_index.go),
+   attribution_index.go,
    [branch_worker.go](../../internal/git/branch_worker.go), and
    [resync_flush.go](../../internal/git/resync_flush.go). Ship dashboard Row 0 + Row 1. *This alone gives
    serious, demoable audit metrics.*

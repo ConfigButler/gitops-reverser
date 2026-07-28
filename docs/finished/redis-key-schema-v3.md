@@ -21,7 +21,7 @@
 > fallback the `rv:` key would be dead. `rv:` is type-scoped and per-write, so consulting it does not
 > reintroduce the stale-LWW hazard `:last` would.
 > Related:
-> [`internal/queue/attribution_index.go`](../../internal/queue/attribution_index.go),
+> `internal/queue/attribution_index.go`,
 > [`internal/queue/redis_store.go`](../../internal/queue/redis_store.go),
 > [`internal/watch/author_resolver.go`](../../internal/watch/author_resolver.go),
 > [CommitRequest authorship from admission](../spec/commitrequest-admission-authorship.md),
@@ -45,7 +45,7 @@ the retired `poc/redis-copy` line. Those are not live Redis owners in this branc
 not assign them new keys.
 
 The audit author family writes **up to three keys per audit event**, strongest first
-([`factKeyVariants`](../../internal/queue/attribution_index.go#L429)):
+(`factKeyVariants`):
 
 - `e` — **exact**: `(group, resource, ns, name, uid, rv)` — only when both uid *and* rv are known.
 - `u` — **uid-only**: `(group, resource, ns, name, uid)` — only when uid is known.
@@ -149,7 +149,7 @@ func groupResourceKey(group, resource string) string {
 ```
 
 Group/resource and a UUID never contain `:` or `/`, so the per-field escaping
-([`joinKeyFields`](../../internal/queue/attribution_index.go#L524)) that v2 needed for RBAC names like
+(`joinKeyFields`) that v2 needed for RBAC names like
 `system:node-proxier` in the *name* field is no longer load-bearing for attribution (the name is a value
 now). RVs are numeric in practice; treat them as opaque and reject/escape a stray delimiter defensively.
 
@@ -171,7 +171,7 @@ A given `(uid, rv)` had **exactly one writer** — that RV exists *because* of t
 `object:<uid>:<rv>` is **written once and never contended**. That dissolves the machinery v2 needed:
 
 - **v2:** the shared `u` (uid-only) key is written by every author of the object, so a second, different
-  author collapses it to a `{conflict:true}` marker ([`storeFactKey`](../../internal/queue/attribution_index.go#L457)),
+  author collapses it to a `{conflict:true}` marker (`storeFactKey`),
   and only the `e` (exact) key rescues precise per-write credit.
 - **v3:** each write owns its own immutable `:<rv>` key, so there is **nothing to conflict**. The
   resolver rule becomes **"exact for exact-capable events; `:last` only for known RV-mismatch events."**
@@ -245,7 +245,7 @@ disappears because `:seen` tombstones are gone (§4.2). Net dashboard change: dr
 
 ## 7. deletecollection stops being a special case at the key layer
 
-[`RecordDeleteCollectionFacts`](../../internal/queue/attribution_index.go#L205) exists to write "only the
+`RecordDeleteCollectionFacts` exists to write "only the
 uid-only variant" because the body RV is dead. In v3 that is simply "write `object:<uid>:last`" — the
 same key any RV-mismatch event uses. The only deletecollection-specific thing left is the **reason code**,
 now driven by `fact.verb` in the value, not by which key variant matched.

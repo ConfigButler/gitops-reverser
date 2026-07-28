@@ -605,7 +605,7 @@ per-mutation change log.
 ## Optional attribution
 
 - **Handler / fact extractor**: [internal/webhook/audit_handler.go](../internal/webhook/audit_handler.go)
-- **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
+- **Attribution index**: internal/queue/attribution_index.go
 - **Resolver (grace window join)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
 
 Attribution runs only when `--author-attribution=true`; Redis is then its required state store. A normal
