@@ -232,7 +232,11 @@ func TestAggregatedAPIDeletecollection(t *testing.T) {
 	ctx := context.Background()
 	s := h.newScenario(ctx, t, "aggregated-api-deletecollection")
 
-	names := []string{"fl-dc-a", "fl-dc-b"}
+	// Three, not two. The finding is an asymmetry — N object removals against ONE name-less audit
+	// event with no response body — and two of something reads as a pair, which is the one count
+	// that could still be mistaken for a coincidence. Three makes the fan-out unmistakable in the
+	// corpus: three watch DELETEDs, three admissions, one audit record naming none of them.
+	names := []string{"fl-dc-a", "fl-dc-b", "fl-dc-c"}
 	for _, name := range names {
 		flunder := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "wardle.example.com/v1alpha1",
@@ -274,7 +278,7 @@ func TestAggregatedAPIDeletecollection(t *testing.T) {
 	watches := 0
 	for i := range records {
 		r := &records[i]
-		if r.Source == mutationlab.SourceWatch && r.Summary.WatchType == "DELETED" && r.Key.Resource == "flunders" {
+		if r.Source == mutationlab.SourceWatch && r.Summary.WatchType == "DELETED" && isFlunder(r) {
 			watches++
 		}
 	}
@@ -316,7 +320,7 @@ func flunderRecordNamed(
 		if watchType != "" && r.Summary.WatchType != watchType {
 			continue
 		}
-		if r.Key.Resource != "flunders" {
+		if !isFlunder(r) {
 			continue
 		}
 		if name != "" && r.Key.Name != name {
@@ -325,4 +329,13 @@ func flunderRecordNamed(
 		return r
 	}
 	return nil
+}
+
+// isFlunder says whether a record is about a flunder, and it cannot key on the resource alone:
+// only audit and admission records carry a plural `resource`, because only they are built from a
+// request. A watch record's key comes from the object's GroupVersionKind, so its `resource` is
+// always empty — filtering on it drops exactly the watch events these scenarios are measuring.
+func isFlunder(r *mutationlab.Record) bool {
+	return r.Key.Resource == flunderGVR.Resource ||
+		(r.Key.Group == flunderGVR.Group && r.Key.Version == flunderGVR.Version)
 }
