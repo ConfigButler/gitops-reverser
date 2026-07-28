@@ -1126,7 +1126,10 @@ When attribution is enabled, these flags tune the join:
   watch event ships authored by the `attribution-unresolved` sentinel. Note the delivery floor: the
   apiserver's own `--audit-webhook-batch-max-wait` delays every fact by up to that much, so a grace at or
   below it will lose actors systematically. The wait ends the moment the fact arrives, so a generous
-  grace costs latency only when a fact never comes.
+  grace costs latency only when a fact never comes. A REMOVAL waits for evidence about the deletion
+  rather than settling for the object's last write, so an object edited by one person and deleted by
+  another is credited to the deleter; if no delete fact ever arrives, the last writer is named once
+  the grace elapses.
 - `--author-attribution-max-facts-per-type` (default `4096`) and `--author-attribution-max-facts`
   (default `65536`): how many facts the in-memory index holds, per type and in total, evicted
   oldest-first. Per-type is the fair cap: a burst on one noisy type must not evict every other type's

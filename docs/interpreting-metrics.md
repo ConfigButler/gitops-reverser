@@ -273,7 +273,7 @@ strongest to weakest.
 | `exact_user` | Exact UID+resourceVersion match for a human user. |
 | `exact_serviceaccount` | Exact UID+resourceVersion match for a named service account. |
 | `weak` | Non-exact match: the UID-latest tier a removal uses, or the RV-only escape hatch. |
-| `collection_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. |
+| `collection_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. It outranks `weak`, because `weak` names whoever last *wrote* an object while a removal asks who *deleted* it. |
 | `collection_scope` | A removal matched to a `deletecollection` by scope alone — same type and namespace, the request's selector accepting the object's labels, within the collection window. The weakest evidence the join has, and the only one that can name the wrong actor, which is why it is reached only when every more specific tier missed. |
 | `absent` | No usable fact matched before the grace window elapsed. The resulting live commit is authored as `unknown (attribution unresolved)`. |
 

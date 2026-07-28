@@ -298,12 +298,25 @@ behavior. Only the middle changes:
 1. Register a waiter for this event's candidate keys.
 2. Check the in-memory index.
 3. If absent, block on the waiter, `ctx.Done()`, or the grace deadline.
-4. On a hit, return exactly as today, including the
-   [outcome classification](../../internal/watch/author_resolver.go#L198) that distinguishes
+4. On a hit, return with the
+   [outcome classification](../../internal/watch/author_resolver.go) that distinguishes
    not-attempted from unresolved.
 
 Step 1 must precede step 2. Registering after the check loses a fact applied in the gap between
 them, which is the same race the poll loop currently papers over by looking again.
+
+**A hit does not always end the wait, and assuming it did was a bug this record shipped with.**
+Ordering the tiers only decides between facts that are both PRESENT. The watch event reliably beats
+the audit batch carrying its delete — that is the entire reason the grace window exists — so when a
+removal is resolved, the only fact in the index is often the object's last write. Returning on it
+answered "who deleted this" with "who last edited it" every time someone else had touched the object
+first, and no ordering could have helped, because the right fact had not been delivered yet.
+
+So a per-object match on a REMOVAL is held as a fallback rather than returned, unless the fact is
+itself about a deletion. The wait continues for evidence about the removal — either collection tier,
+or the object's own delete fact — and the fallback is returned when the grace expires with nothing
+better. Waiting never costs an attribution: the worst case returns exactly what returning early
+would have, one grace window later, which is the case the grace window is for.
 
 Its parameter list does change, into an `AuthorQuery` carrying the object's namespace and labels
 alongside the route, type, uid and resourceVersion it already took. Those two fields are what the
@@ -349,16 +362,26 @@ was given. Then a removal joins it by **scope** instead of by identity.
 For a removal event, the resolver tries in order:
 
 1. the exact `(group/resource, uid, rv)` fact,
-2. the `latest` fact for that uid,
-3. a **collection** fact whose scope matches and whose **uid set contains this object**, when the
-   collection carried a usable response body,
+2. a **collection** fact whose **uid set contains this object**, when the collection carried a
+   usable response body,
+3. the `latest` fact for that uid,
 4. a **collection** fact whose group/resource and namespace match the object, whose selector matches
    the object's labels, and whose stage timestamp is within the collection window,
 5. the rv-only hatch.
 
-Precedence is the correctness argument. A collection fact is the weakest evidence in the table, so
-it only ever names an author when nothing more specific does. An unrelated delete by another actor
-during the same window is claimed by its own fact at step 2 and never reaches step 4.
+**The two collection tiers sit on opposite sides of `latest`, and this record originally had both
+below it.** That was wrong, and the implementation corrected it. The `latest` tier answers "who last
+WROTE this object"; a removal asks "who DELETED it". For a single-object delete the two coincide,
+because the delete files its own fact under that uid and overwrites what was there. A collection
+delete files one fact about the collection, so the uid's `latest` entry is left holding whoever
+edited the object last — and ranking it above the collection's uid set credited every removal to the
+previous editor while the uid set went unread. It is the one thing the expander got right, by
+overwriting that entry per object. Uid membership is the API server stating that THIS request
+deleted THIS object, so nothing weaker may answer ahead of it.
+
+Scope matching stays below `latest`, because it is the weakest evidence here and the only tier that
+can name the wrong human. An unrelated delete by another actor during the same window is claimed by
+its own fact at step 3 and never reaches step 4.
 
 Steps 3 and 4 are the same fact matched two ways, and the split is the subject of
 [the next section](#should-the-response-body-travel-with-the-fact). Step 4 alone is already more
