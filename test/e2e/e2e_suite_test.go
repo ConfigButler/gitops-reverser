@@ -258,14 +258,21 @@ func configuredAuthorModeEnabled() bool {
 	return configuredAuthorModeFromArgs(out)
 }
 
-// configuredAuthorModeFromArgs is the pure decision, mirroring the mode switch in
-// cmd/main.go: attribution runs only when author attribution is on AND Redis is configured;
-// anything else is configured-author mode. Both flags default to ENABLED in cmd/main.go
-// (`--author-attribution` defaults true, `--redis-addr` defaults to "valkey:6379"), so an
-// absent flag means attribution, and only an explicit opt-out turns it off.
+// configuredAuthorModeFromArgs is the pure decision, mirroring the mode switch in cmd/main.go:
+// attribution runs when author attribution is on AND it has a fact transport. Anything else is
+// configured-author mode. Every flag defaults to ENABLED in cmd/main.go (`--author-attribution`
+// defaults true, `--redis-addr` to "valkey:6379", the transport to redis), so an absent flag means
+// attribution and only an explicit opt-out turns it off.
+//
+// "Has a transport" is the part that stopped meaning "has Redis". The in-memory transport needs no
+// Redis at all, so an empty --redis-addr with --author-attribution-transport=memory is attribution
+// running normally. Reading it as configured-author SKIPPED every attribution spec and reported a
+// green run that had asserted nothing about attribution — the failure mode this probe exists to
+// prevent, turned on the probe itself.
 func configuredAuthorModeFromArgs(args string) bool {
 	attribution := true
 	redisAddr := "valkey:6379"
+	transport := "redis"
 	for _, arg := range strings.Fields(strings.NewReplacer(`"`, " ", `[`, " ", `]`, " ", `,`, " ").Replace(args)) {
 		switch {
 		case arg == "--author-attribution":
@@ -282,9 +289,11 @@ func configuredAuthorModeFromArgs(args string) bool {
 			}
 		case strings.HasPrefix(arg, "--redis-addr="):
 			redisAddr = strings.TrimPrefix(arg, "--redis-addr=")
+		case strings.HasPrefix(arg, "--author-attribution-transport="):
+			transport = strings.TrimPrefix(arg, "--author-attribution-transport=")
 		}
 	}
-	return !attribution || redisAddr == ""
+	return !attribution || (redisAddr == "" && transport != "memory")
 }
 
 var _ = AfterEach(func() {

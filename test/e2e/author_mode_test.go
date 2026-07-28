@@ -40,6 +40,16 @@ func TestConfiguredAuthorModeFromArgs_AllScenarios(t *testing.T) {
 		{"upper false", `["--author-attribution=FALSE","--redis-addr="]`, true},
 		{"numeric true is not an opt-out", `["--author-attribution=1"]`, false},
 		{"capitalised true is not an opt-out", `["--author-attribution=True"]`, false},
+
+		// Attribution needs a fact TRANSPORT, which stopped meaning Redis. The in-memory transport
+		// runs it with no Redis at all, so reading an empty --redis-addr as configured-author would
+		// skip every attribution spec and report a green run that asserted nothing about the mode
+		// it was supposed to be exercising.
+		{"memory transport needs no redis", `["--redis-addr=","--author-attribution-transport=memory"]`, false},
+		{"redis transport with no redis is still configured-author",
+			`["--redis-addr=","--author-attribution-transport=redis"]`, true},
+		{"attribution off beats any transport",
+			`["--author-attribution=false","--author-attribution-transport=memory"]`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := configuredAuthorModeFromArgs(tc.args); got != tc.want {
