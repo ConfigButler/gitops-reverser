@@ -2,11 +2,12 @@
 
 What this branch's loose ends turned out to be, and which of them are measured rather than reasoned.
 Five findings: one lab defect that hid every other measurement, three results about how an audit event
-identifies its object that the corpus now carries, and one open product race the e2e suite was failing
-to report.
+identifies its object that the corpus now carries, and one product race that the e2e suite was
+failing to report and that is now root-caused and fixed.
 
 The three identity results are measurements, captured by the mutation lab against the e2e cluster and
-committed to the corpus. The window race is reproduced but not root-caused.
+committed to the corpus. The race was measured from the resolver's own histogram against a live
+cluster. Everything here is evidence rather than inference, except where it says otherwise.
 
 ## 1. The lab was serving the wrong audit route, so nothing was audited
 
@@ -114,10 +115,10 @@ the control for the two aggregated rows: it asserts that the `objectRef` carries
 response body does, so the recovery is evidence in the tree rather than a claim in a paragraph. Put
 the three rows side by side and the discriminator is visible without reading any code.
 
-## 5. Open: a CommitRequest can miss the window of the write it follows
+## 5. The CommitRequest that missed its window: root-caused
 
-The e2e spec `finalizes a CommitRequest created with metadata.generateName` fails in CI, in the full
-local suite, and in an isolated local run. It is not a flake.
+The e2e spec `finalizes a CommitRequest created with metadata.generateName` failed in CI, in the full
+local suite, and in an isolated local run. It was not a flake, and it is now fixed at its cause.
 
 ```mermaid
 sequenceDiagram
@@ -139,14 +140,80 @@ sequenceDiagram
     C->>W: Opening commit window
 ```
 
-Both runs show the same two-second miss, so it is not load. Two earlier Deployments against the same
-GitTarget opened their windows within a couple of seconds; the third does not open one for about ten,
-and the request's grace expires at eight.
+Both runs showed the same two-second miss, so it was not load. Two earlier Deployments against the
+same GitTarget opened their windows within a couple of seconds; the third did not open one for about
+ten, and the request's grace expired at eight.
 
-Not yet established: whether this is new on this branch. The shape is consistent with making the
-write path wait for attribution evidence before it can act, and audit latency is ruled out: the
-cluster runs `--audit-webhook-batch-max-wait=1s`. Confirming it needs a run against a pre-branch
-commit.
+### What it was
+
+Measured, on the branch, from the resolver's own histogram after one run of the commit-request specs:
+
+| result | resolutions | total wait | mean |
+|---|---|---|---|
+| `exact_user` | 6 | 1.06s | 0.18s |
+| `weak` | 3 | **20.18s** | **6.73s** |
+
+Three removals spent twenty seconds between them. The e2e cluster runs
+`--author-attribution-grace=10s`, so each was waiting out most of a full grace, and `weak` is
+precisely the tier that holds a removal matched to a WRITE fact.
+
+That wait is not free, and this is the part that turns a slow resolution into a stalled pipeline.
+`streamLiveTargetWatchEvents` processes one shard's events on a single goroutine, and `attachAuthor`
+blocks it: a removal that waits out its grace is **head-of-line blocking** for every later event of
+that type. Three of them ahead of a create is ten seconds before the create is even looked at, and
+the commit window cannot open until it is. The CommitRequest's own grace expires first, and it
+reports `NoWindowInGrace` about a window that had not been allowed to exist yet.
+
+The two-second miss in the diagram is not a tuning problem between two graces. It is where the
+serialized waits happened to land.
+
+### Why the removals were waiting at all
+
+A removal holds a per-object write fact as a fallback and keeps waiting for evidence about the
+deletion, which is correct and deliberate. The question is why that evidence never arrived, when the
+delete IS audited and the audit batch interval is one second.
+
+Because the delete fact was there, and the lookup could not reach it.
+
+Whether a delete fact carries a uid depends on what the API server answers the request with, and it
+answers differently for different deletes. Both shapes are in the corpus:
+
+- `configmap/finalizer-delete/audit.delete.yaml`: `responseObject` is the **ConfigMap**, so the uid
+  is recoverable and the fact is filed under the uid tier, where a removal finds it at once.
+- `configmap/owner-ref-cascade/audit.delete.cm-parent.yaml`: `responseObject` is a **`Status`**.
+  There is no uid in it and none in the `objectRef`, so the fact's only key is its name. A
+  `kubectl delete deployment` is this shape.
+
+Before the name tier existed, such a fact was published and dropped as unjoinable, so the removal
+had no delete evidence at all and waited out the grace. That is the original bug, and it is as old as
+the audit event's shape rather than as old as any commit here.
+
+Adding the name tier stored the fact but did not make it reachable, which is a defect in that change
+rather than in the design. `Lookup` returns as soon as the removal ladder yields anything, and the
+uid tier yields the object's last WRITE fact, so the name-keyed DELETE fact below was never
+consulted. The caller then held the write fact and waited the full grace for evidence that was
+already in the index.
+
+The fix is an ordering rule, and it is the one the removal path already states elsewhere: a fact
+about the DELETION outranks a fact about a write, whichever key each is filed under. `lookupRemoval`
+now returns the object's own delete fact when the uid tier has one, then consults the name tier for a
+delete fact, and only then falls back to the write fact it was holding. A name-keyed WRITE still does
+not jump the queue; only removal verbs do.
+
+### The same measurement, after
+
+| result | before: n / total / mean | after: n / total / mean |
+|---|---|---|
+| `exact_user` | 6 / 1.06s / 0.18s | 6 / 0.74s / 0.12s |
+| `name` | none reached | 2 / 0.60s / 0.30s |
+| `weak` | 3 / 20.18s / **6.73s** | 2 / 0.28s / **0.14s** |
+| **total wait** | **21.24s** | **1.63s** |
+
+The spec passes, and the histogram says it passes for the diagnosed reason rather than by timing luck.
+Two resolutions now land on the `name` tier: those are the delete facts that were being stored and
+never read. The removals that still resolve `weak` no longer wait for them, because the lookup
+reaches the delete evidence before it settles for a write fact, and the shard is no longer blocked
+behind a grace that had nothing to wait for.
 
 ### The assertion that hid it
 
@@ -207,12 +274,39 @@ it stops paying for evidence that cannot arrive.
 
 ### For the window race
 
-The assertion fix is landed and is not itself a fix for the race. The remaining question is which of
-these is true:
+The measurement answered the question this section used to pose. Neither option was right: the window
+was not slow to open and the CommitRequest's grace was not too short. The write's event had not been
+processed yet, because three removals ahead of it were each waiting out a ten-second grace for
+evidence the index already held.
 
-1. The window legitimately takes ten seconds to open and the CommitRequest's grace is too
-   short, in which case the grace is the thing to change.
-2. The window is waiting on attribution evidence it should not need to open, in which case the write
-   path is the thing to change.
+That is fixed at its cause, in the lookup ordering. What remains open is the structural half.
 
-These are distinguishable by measurement, and the same pre-branch run settles both.
+**The head-of-line block is still there.** Any removal that must wait out its grace (a type the
+audit policy excludes, a delete whose fact never arrives) still stalls every later event on its shard
+for up to ten seconds. This fix removes the largest population that was hitting it, and
+does not change the fact that a blocking resolve on a serial goroutine can do this at all.
+
+Two directions, and they are the same two the wait-versus-poll record already frames:
+
+1. **Bound the removal's extra wait separately from the grace.** Once a fallback is in hand, the
+   fact stream for that scope is demonstrably live; what is outstanding is only whether a delete fact
+   also lands, which is an audit-batch interval rather than a full grace. Small change, needs a
+   number chosen with evidence.
+2. **Stop blocking the shard.** Resolve attribution off the event loop and reassemble in order. This
+   is the real answer and the larger one; it also fixes every other cause of a slow resolve.
+
+Worth noting for whoever picks this up: the e2e default of `--author-attribution-grace=10s` makes the
+blocking three times worse than the product default of 3s. That is a test-environment choice
+amplifying a product behavior, not a product setting anyone runs.
+
+### A note on the pre-branch probe
+
+A run against the merge-base (`7ece7310`) was attempted to establish whether the race was new on this
+branch, and it did not produce an answer: its bring-up failed before any spec ran, with the manager
+rejecting the API server's audit client certificate (`tls: bad certificate`) so the audit pipeline
+never warmed up. That is a worktree/cluster-provisioning problem rather than a product difference:
+both trees post to the same named audit route and both serve it.
+
+The comparison turned out not to be needed. The cause is measured directly on the branch, and the
+delete-fact shape that triggers it is a property of the Kubernetes audit event rather than of any
+commit here.
