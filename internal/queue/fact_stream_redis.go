@@ -125,7 +125,7 @@ func (s *RedisFactStream) FollowFacts(keys []FactStreamKey, horizon time.Duratio
 // after the domain so one route's streams share a single glob prefix.
 func (s *RedisFactStream) streamKey(key FactStreamKey) string {
 	return resolveKeyPrefix(s.keyPrefix) + factStreamKeySuffix + routeKeyInfix +
-		escapeKeyField(key.AuditRoute) + ":" + key.GroupResource
+		escapeKeyField(key.AuditRoute) + ":" + key.groupResource()
 }
 
 // trimIfDue drops entries past the retention horizon with XTRIM MINID, at most once per stream per

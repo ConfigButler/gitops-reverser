@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // Defaults for the attribution fact transport. They are shared by both implementations so a
@@ -53,16 +55,32 @@ const streamIDSeparator = "-"
 // FactStreamKey identifies one attribution fact stream: the audit route the facts arrived under,
 // and the group/resource they are about. The route is part of the identity for the same reason it
 // is part of the v1 fact keys — a fact from cluster A must never name the author of an object
-// watched on cluster B. GroupResource is the API-path form groupResourceKey renders: "configmaps"
-// for the core group, "apps/deployments" otherwise.
+// watched on cluster B.
+//
+// GroupResource is the typed identity rather than a rendered string. The rendering matters: the
+// stream name embeds the API-path form groupResourceKey produces ("configmaps",
+// "apps/deployments"), and schema.GroupResource.String() produces the reversed dotted form
+// ("deployments.apps"), so a caller that rendered its own key would publish to a stream nobody
+// follows and get no compile error for it. Holding the type and rendering at the transport boundary
+// makes that mistake unrepresentable.
 type FactStreamKey struct {
 	AuditRoute    string
-	GroupResource string
+	GroupResource schema.GroupResource
+}
+
+// FactStreamKeyFor builds the key for one audit route and group/resource.
+func FactStreamKeyFor(auditRoute string, gr schema.GroupResource) FactStreamKey {
+	return FactStreamKey{AuditRoute: auditRoute, GroupResource: gr}
 }
 
 // String renders the key for logs and metrics as "<route>/<group-resource>".
 func (k FactStreamKey) String() string {
-	return k.AuditRoute + "/" + k.GroupResource
+	return k.AuditRoute + "/" + k.groupResource()
+}
+
+// groupResource renders the type the way every key and stream name spells it.
+func (k FactStreamKey) groupResource() string {
+	return groupResourceKey(k.GroupResource.Group, k.GroupResource.Resource)
 }
 
 // FactEntry is one appended batch of facts, as it comes back to a follower. ID is the
@@ -272,7 +290,7 @@ func (f *followSet) targets() []followTarget {
 		if c := strings.Compare(a.Key.AuditRoute, b.Key.AuditRoute); c != 0 {
 			return c
 		}
-		return strings.Compare(a.Key.GroupResource, b.Key.GroupResource)
+		return strings.Compare(a.Key.groupResource(), b.Key.groupResource())
 	})
 	return targets
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // The attribution fact transport has two implementations and ONE test suite. They are the same
@@ -108,8 +109,8 @@ func runFactStreamConformance(
 	}
 }
 
-func factStreamTestKey(groupResource string) FactStreamKey {
-	return FactStreamKey{AuditRoute: "prod-eu-1", GroupResource: groupResource}
+func factStreamTestKey(group, resource string) FactStreamKey {
+	return FactStreamKeyFor("prod-eu-1", schema.GroupResource{Group: group, Resource: resource})
 }
 
 // authorFacts builds one batch naming the given authors.
@@ -169,7 +170,7 @@ func expectNoFactEntries(t *testing.T, sub FactSubscription) {
 func TestFactStreamConformance_AppendsAreFollowedInOrder(t *testing.T) {
 	runFactStreamConformance(t, defaultFactStreamParams(), func(t *testing.T, transport FactTransport) {
 		ctx := t.Context()
-		key := factStreamTestKey("configmaps")
+		key := factStreamTestKey("", "configmaps")
 		sub := transport.FollowFacts([]FactStreamKey{key}, factStreamTestHorizon)
 
 		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("alice")))
@@ -191,7 +192,7 @@ func TestFactStreamConformance_AppendsAreFollowedInOrder(t *testing.T) {
 func TestFactStreamConformance_EmptyBatchIsNotAppended(t *testing.T) {
 	runFactStreamConformance(t, defaultFactStreamParams(), func(t *testing.T, transport FactTransport) {
 		ctx := t.Context()
-		key := factStreamTestKey("configmaps")
+		key := factStreamTestKey("", "configmaps")
 		sub := transport.FollowFacts([]FactStreamKey{key}, factStreamTestHorizon)
 
 		require.NoError(t, transport.PublishFacts(ctx, key, nil))
@@ -202,7 +203,7 @@ func TestFactStreamConformance_EmptyBatchIsNotAppended(t *testing.T) {
 func TestFactStreamConformance_LateFollowerReplaysFromHorizon(t *testing.T) {
 	runFactStreamConformance(t, defaultFactStreamParams(), func(t *testing.T, transport FactTransport) {
 		ctx := t.Context()
-		key := factStreamTestKey("apps/deployments")
+		key := factStreamTestKey("apps", "deployments")
 
 		// Everything a restart, a reconnect, or a brand new watch would have missed.
 		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("alice")))
@@ -222,7 +223,7 @@ func TestFactStreamConformance_RetentionTrimDropsAgedEntries(t *testing.T) {
 	params.TTL = factStreamTestTTL
 	runFactStreamConformance(t, params, func(t *testing.T, transport FactTransport) {
 		ctx := t.Context()
-		key := factStreamTestKey("configmaps")
+		key := factStreamTestKey("", "configmaps")
 
 		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("aged-out")))
 		time.Sleep(factStreamTestAgeWait)
@@ -240,7 +241,7 @@ func TestFactStreamConformance_EntryCapEvictsOldestFirst(t *testing.T) {
 	params.MaxLen = 1
 	runFactStreamConformance(t, params, func(t *testing.T, transport FactTransport) {
 		ctx := t.Context()
-		key := factStreamTestKey("configmaps")
+		key := factStreamTestKey("", "configmaps")
 
 		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("evicted")))
 		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("kept")))
@@ -258,7 +259,7 @@ func TestFactStreamConformance_ReportsTrimGapWhenFollowerIsTrimmedPast(t *testin
 	params.ReadCount = 1
 	runFactStreamConformance(t, params, func(t *testing.T, transport FactTransport) {
 		ctx := t.Context()
-		key := factStreamTestKey("configmaps")
+		key := factStreamTestKey("", "configmaps")
 
 		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("first")))
 		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("missed")))
@@ -285,7 +286,7 @@ func TestFactStreamConformance_CaughtUpFollowerReportsNoTrimGap(t *testing.T) {
 	params.TTL = factStreamTestTTL
 	runFactStreamConformance(t, params, func(t *testing.T, transport FactTransport) {
 		ctx := t.Context()
-		key := factStreamTestKey("configmaps")
+		key := factStreamTestKey("", "configmaps")
 		sub := transport.FollowFacts([]FactStreamKey{key}, factStreamTestHorizon)
 
 		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("read")))
@@ -309,8 +310,8 @@ func TestFactStreamConformance_CaughtUpFollowerReportsNoTrimGap(t *testing.T) {
 func TestFactStreamConformance_FollowedSetChangesAtRuntime(t *testing.T) {
 	runFactStreamConformance(t, defaultFactStreamParams(), func(t *testing.T, transport FactTransport) {
 		ctx := t.Context()
-		watched := factStreamTestKey("configmaps")
-		unwatched := factStreamTestKey("secrets")
+		watched := factStreamTestKey("", "configmaps")
+		unwatched := factStreamTestKey("", "secrets")
 
 		require.NoError(t, transport.PublishFacts(ctx, watched, authorFacts("alice")))
 		require.NoError(t, transport.PublishFacts(ctx, unwatched, authorFacts("bob")))
@@ -337,7 +338,7 @@ func TestFactStreamConformance_ConcurrentFollowersEachReceiveEveryEntry(t *testi
 	const followers, batches = 3, 5
 	runFactStreamConformance(t, defaultFactStreamParams(), func(t *testing.T, transport FactTransport) {
 		ctx := t.Context()
-		key := factStreamTestKey("configmaps")
+		key := factStreamTestKey("", "configmaps")
 
 		// Fan-out, not work sharing: no consumer groups, so every follower needs every entry.
 		subs := make([]FactSubscription, 0, followers)
@@ -374,6 +375,28 @@ func TestFactStreamConformance_ConcurrentFollowersEachReceiveEveryEntry(t *testi
 	})
 }
 
+func TestFactStreamConformance_StreamsAreKeyedByRouteAndType(t *testing.T) {
+	runFactStreamConformance(t, defaultFactStreamParams(), func(t *testing.T, transport FactTransport) {
+		ctx := t.Context()
+		core := schema.GroupResource{Resource: "configmaps"}
+		followed := FactStreamKeyFor("prod-eu-1", core)
+		// Another cluster posting under its own route, and a CRD that happens to share the
+		// resource name. Neither may reach a follower of the first: a fact from cluster A naming
+		// the author of an object watched on cluster B is the failure the route dimension exists
+		// to prevent, and the group is what keeps two "configmaps" apart.
+		otherRoute := FactStreamKeyFor("prod-us-1", core)
+		otherGroup := FactStreamKeyFor("prod-eu-1", schema.GroupResource{Group: "example.com", Resource: "configmaps"})
+
+		sub := transport.FollowFacts([]FactStreamKey{followed}, factStreamTestHorizon)
+		require.NoError(t, transport.PublishFacts(ctx, otherRoute, authorFacts("other-cluster")))
+		require.NoError(t, transport.PublishFacts(ctx, otherGroup, authorFacts("other-group")))
+		require.NoError(t, transport.PublishFacts(ctx, followed, authorFacts("mine")))
+
+		require.Equal(t, []string{"mine"}, factAuthors(drainFactEntries(t, sub, 1)))
+		expectNoFactEntries(t, sub)
+	})
+}
+
 func TestFactStreamConformance_EmptyFollowedSetWaitsAndDeliversNothing(t *testing.T) {
 	runFactStreamConformance(t, defaultFactStreamParams(), func(t *testing.T, transport FactTransport) {
 		// A process with no watches follows nothing, and must idle rather than spin.
@@ -390,7 +413,7 @@ func TestFactStreamConformance_EmptyFollowedSetWaitsAndDeliversNothing(t *testin
 
 func TestFactStreamConformance_EndedContextIsReported(t *testing.T) {
 	runFactStreamConformance(t, defaultFactStreamParams(), func(t *testing.T, transport FactTransport) {
-		key := factStreamTestKey("configmaps")
+		key := factStreamTestKey("", "configmaps")
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
@@ -414,7 +437,7 @@ func TestFactStreamConformance_ZeroConfigIsUsable(t *testing.T) {
 	}
 	for name, transport := range transports {
 		t.Run(name, func(t *testing.T) {
-			key := factStreamTestKey("configmaps")
+			key := factStreamTestKey("", "configmaps")
 			require.NoError(t, transport.PublishFacts(t.Context(), key, authorFacts("alice")))
 			sub := transport.FollowFacts([]FactStreamKey{key}, factStreamTestHorizon)
 			require.Equal(t, []string{"alice"}, factAuthors(drainFactEntries(t, sub, 1)))
@@ -423,7 +446,7 @@ func TestFactStreamConformance_ZeroConfigIsUsable(t *testing.T) {
 }
 
 func TestFactStreamKey_StringNamesRouteAndType(t *testing.T) {
-	require.Equal(t, "prod-eu-1/apps/deployments", factStreamTestKey("apps/deployments").String())
+	require.Equal(t, "prod-eu-1/apps/deployments", factStreamTestKey("apps", "deployments").String())
 }
 
 // drainUntilFactStreamGap reads until a trim gap is reported, returning it with everything
