@@ -108,6 +108,14 @@ var (
 	AttributionResolutionWaitSeconds metric.Float64Histogram
 	// AttributionFactIndexSize gauges attribution fact keys currently held in Redis.
 	AttributionFactIndexSize metric.Int64Gauge
+	// AttributionFactIndexEvictionsTotal counts facts dropped from the in-memory fact index because
+	// it was full, labelled by bounded reason (per_type/total). An attribution lost to a full index
+	// has to look different from one that was never published, or a burst is silently absorbed.
+	AttributionFactIndexEvictionsTotal metric.Int64Counter
+	// AttributionFactStreamGapsTotal counts occasions a fact stream was trimmed past this process's
+	// follower, labelled by stream. Every gap is facts lost for good, and it is the one loss a log
+	// transport can see at all.
+	AttributionFactStreamGapsTotal metric.Int64Counter
 
 	// APICatalogResources gauges the count of served top-level resources in the catalog,
 	// split by the default-watch-policy allowed/excluded state.
@@ -224,6 +232,8 @@ func registerCounters() error {
 		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
 		{"gitopsreverser_attribution_resolutions_total", &AttributionResolutionsTotal},
 		{"gitopsreverser_attribution_fact_events_total", &AttributionFactEventsTotal},
+		{"gitopsreverser_attribution_fact_index_evictions_total", &AttributionFactIndexEvictionsTotal},
+		{"gitopsreverser_attribution_fact_stream_gaps_total", &AttributionFactStreamGapsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
