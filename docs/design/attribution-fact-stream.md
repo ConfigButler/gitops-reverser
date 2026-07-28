@@ -162,6 +162,20 @@ body at the receiver and dropped past a size cap. It already carries the namespa
 timestamp that the collection join reads, and it stops needing the per-item name and namespace the
 expander used to fill in.
 
+#### A retried audit POST may append twice, and that is safe
+
+The API server retries a webhook delivery it did not get an acknowledgement for, so the same batch
+can be appended more than once, under a fresh stream ID each time. No deduplication is needed for
+that, because a fact is **keyed data rather than a position in a sequence**: the second copy carries
+the same author under the same `(uid, rv)`, the `latest` map is last-writer-wins over identical
+content, and a waiter woken twice resolves to the same name. The duplicate costs one entry's worth
+of retention and nothing else.
+
+This is the property the [transport seam](#the-transport-seam-and-running-without-redis) is built
+on, and it is what separates this from the high-water-mark ordering the deleted per-type stream
+layer needed. It also means the design does not depend on `XADD`'s idempotency options, which would
+put a floor under the Redis and Valkey versions this operator supports in exchange for nothing.
+
 ### Trimming is the TTL
 
 Each `XADD` carries `MAXLEN ~ <cap>` so a hot type cannot grow without bound, and a periodic `XTRIM
@@ -192,14 +206,26 @@ Entries are applied in stream order into four structures:
 
 | Structure | Key | Serves |
 |---|---|---|
-| exact | `(group/resource, uid, rv)` | `ADDED` and `MODIFIED`, the only exact-capable join |
-| latest | `(group/resource, uid)` | single-object removals, whose rv never matches; last write wins |
-| rv-only | `(group/resource, rv)` | the escape hatch for a fact with an rv but no uid |
-| collection | `(group/resource, namespace)`, time-bounded, with an optional uid set | removals caused by a `deletecollection` |
+| exact | `(route, group/resource, uid, rv)` | `ADDED` and `MODIFIED`, the only exact-capable join |
+| latest | `(route, group/resource, uid)` | single-object removals, whose rv never matches; last write wins |
+| rv-only | `(route, group/resource, rv)` | the escape hatch for a fact with an rv but no uid |
+| collection | `(route, group/resource, namespace)`, time-bounded, with an optional uid set | removals caused by a `deletecollection` |
 
 The first three mirror the key shapes the lookup already knows, so the join policy in
 [`LookupAuthorResolution`](../../internal/queue/attribution_index.go#L382) survives unchanged. The
 fourth is new and is described in [the next section](#collection-deletes-are-one-fact).
+
+**The route leads every key, and it has to.** The index is one per process while the streams are one
+per `(route, group/resource)`, so an index keyed on the type alone would pool two clusters' facts in
+one map and hand a watch event on cluster B an author from cluster A. The rv-only hatch is where
+that bites hardest, because a resourceVersion is opaque and not unique across clusters, and the
+collection tier is where it bites most quietly, because a namespace name says nothing about which
+cluster it is in. The v1 fact keys already carry the route for this reason
+([`attribution-fact-identity.md`](attribution-fact-identity.md)), and the same dimension has to
+travel through the waiter candidate keys and the collection scope match, not only the four maps
+above. A test that stores identical `(group/resource, uid, rv)` facts under two routes and resolves
+each from its own is the one that proves it, and it belongs with the index rather than the
+transport: the transport already partitions by route because the stream name does.
 
 Stream order matters for exactly one of these. The `latest` map is last-writer-wins, so entries have
 to be applied in the order they were appended. A single stream is ordered, and a uid belongs to one
@@ -485,9 +511,13 @@ worth building separately.
 
 ## Starting up and catching up
 
-On start, and on any reconnect, the reader begins from `MINID = now - factTTL` rather than from
-`$`. The index is populated with the whole retention window before the first watch event needs it,
-which is what makes a restart cost nothing.
+On start, and on any reconnect, the reader begins from the retention horizon rather than from `$`.
+`XREAD` takes one concrete position per stream, so the horizon is rendered as the stream ID
+`<now - factTTL in unix milliseconds>-0`: stream IDs are millisecond timestamps, so a point in time
+is directly a position, and the read resumes from the entry after it. (`MINID` is an `XTRIM` strategy and
+never appears in a read; the trim that enforces the same horizon is described in
+[trimming is the TTL](#trimming-is-the-ttl).) The index is populated with the whole retention window
+before the first watch event needs it, which is what makes a restart cost nothing.
 
 The last-seen ID per stream lives in memory only. It does not need to be durable: a process that
 lost it also lost its watch connections and its in-memory index, so it is starting from the horizon
@@ -611,6 +641,14 @@ cold-replays on restart, which is correct and only more expensive.
 So Redis is a hard requirement for **attribution and the admission webhook**, and for nothing else.
 Making attribution work without it is one seam, not a project.
 
+That requirement narrows once the transport is selectable, and the startup validation has to narrow
+with it or the in-memory mode is unreachable: an empty `--redis-addr` becomes an error only when the
+**Redis** transport is selected, or when the admission webhook is enabled, and the combination of
+the in-memory transport with an empty address becomes a supported configuration rather than a
+rejected one. The flag, the validation in [`cmd/main.go`](../../cmd/main.go), and
+[`configuration.md`](../configuration.md) move together in that change, because a flag whose
+validation and documentation disagree is how a mode ends up unreachable in the first place.
+
 One correction belongs with that work: the doc comment on
 [`RedisStore`](../../internal/queue/redis_store.go#L45) calls it "a hard dependency in every mode",
 which the validation above contradicts.
@@ -687,13 +725,45 @@ histogram is how the improvement gets measured.
 
 ## Rollout
 
-The fact schema is ephemeral by construction. Facts carry a TTL measured in minutes, nothing reads
-them after that, and no user data is stored in them. So there is no migration to write: the new
-version stops writing keys and starts appending to streams, and the old keys expire on their own
-within `--author-attribution-ttl` of the upgrade.
+The fact schema is ephemeral by construction. Facts carry a TTL measured in minutes and nothing
+reads them after that, so there is no migration to write: the new version stops writing keys and
+starts appending to streams, and the old keys expire on their own within `--author-attribution-ttl`
+of the upgrade.
 
 The one visible effect is that events in flight across the restart lose their author, which is
 already true of any restart today.
+
+### What a fact holds about a person
+
+A fact names an actor, so it carries personal data and should be described as such: the username,
+and the display name and email when the API server supplied them, alongside the object identity,
+verb, and stage timestamp. That is the same content the v1 fact keys hold today, taken from the
+audit event's `user` field, and moving it from a key to a stream entry changes where it lives rather
+than what it is.
+
+Retention moves the same way. A fact is held for `--author-attribution-ttl` (ten minutes by default)
+in the Redis stream and, once read, in the process's in-memory index, and the trim and the TTL sweep
+drop it after that. Nothing writes it to Git: the commit carries the author's
+name and email as commit metadata, which is what the actor already published by making the change.
+Access is whoever can read the Redis keyspace and the pod's memory, which is why the keyspace is
+namespaced per install ([`--redis-key-prefix`](../configuration.md)) and why an install that
+declines to store any of it can leave attribution off and commit as the configured author.
+
+### A rolling upgrade is one process, not two formats
+
+Old writers produce keys and new writers produce streams, and neither reads the other, so an install
+running both at once would lose attribution for whatever the wrong half handled. It cannot run both
+at once: the chart rejects `replicaCount > 1`
+([`validate-replica-count.yaml`](../../charts/gitops-reverser/templates/validate-replica-count.yaml)),
+so a single process is replaced by a single process, and the window is one pod restart in which
+in-flight events lose their author: the same cost as any restart today, bounded by the
+[TTL-horizon replay](#starting-up-and-catching-up) to the events in flight at that moment.
+
+Under the [HA topology](#what-this-buys-for-high-availability), where replicas overlap during a
+rollout, that stops being true and a mixed-version window becomes real. The answer belongs with the
+ownership work rather than here, and it is cheap when it arrives: a new writer can append to the
+stream and write the v1 keys for one release, so an old reader keeps resolving. Taking that on now
+would build a compatibility path for a topology the chart refuses to start.
 
 ## Open questions
 
