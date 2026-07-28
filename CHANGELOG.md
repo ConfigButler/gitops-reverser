@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.40.0...v0.40.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **release:** give the analyzer job the bash it was written for ([#279](https://github.com/ConfigButler/gitops-reverser/issues/279)) ([8bb4490](https://github.com/ConfigButler/gitops-reverser/commit/8bb4490addf8b1a34e49f1a4e6184aa5cf888a0d))
+
+
+### Documentation
+
+* **release:** write down the orphaned-anchor recovery ([#282](https://github.com/ConfigButler/gitops-reverser/issues/282)) ([63c347e](https://github.com/ConfigButler/gitops-reverser/commit/63c347ec77d90161682b364b01e4ae827a74de66))
+
 ## [0.40.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.39.2...v0.40.0) (2026-07-27)
 
 
