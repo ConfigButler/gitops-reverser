@@ -361,21 +361,53 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 }
 
 // lookupRemoval reads the tiers only a removal may consult, in the order they rank: the uid set of
-// a collection that named this object, then the object's own last-writer fact, then a collection
-// whose scope covers it. See Lookup for why uid membership and scope matching sit on opposite sides
-// of the latest tier.
+// a collection that named this object, the object's own delete fact (by uid, then by name), its
+// last-writer fact, and finally a collection whose scope covers it. See Lookup for why uid
+// membership and scope matching sit on opposite sides of the latest tier.
+//
+// The ordering rule inside it is the one the whole removal path turns on: a fact about the DELETION
+// outranks a fact about a write, whichever key each happens to be filed under. A write fact answers
+// "who last edited this", which is not the question a removal asks.
 func (i *FactIndex) lookupRemoval(
 	facts *scopeFacts,
 	query FactQuery,
 	now, cutoff time.Time,
 ) AuthorResolution {
+	var writeFallback AuthorResolution
+	haveWriteFallback := false
 	if query.UID != "" {
 		if fact, found := facts.matchCollectionUID(query, cutoff); found {
 			return AuthorResolution{Fact: fact, Result: AttributionCollectionUID}
 		}
 		if fact, found := facts.lookupLatest(query.UID, cutoff); found {
-			return AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, true)}
+			resolution := AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, true)}
+			// The object's own delete fact: the strongest thing a removal can hope for below uid
+			// membership, so it ends the search here.
+			if isRemovalVerb(fact.Verb) {
+				return resolution
+			}
+			// A WRITE fact says who last edited the object, not who deleted it. Hold it and keep
+			// looking for evidence about the deletion rather than answering with it.
+			writeFallback, haveWriteFallback = resolution, true
 		}
+	}
+	// The object's own delete fact again, this time keyed by NAME, which is the only key it has when
+	// the API server answered the delete with a Status rather than the object: there is then no uid
+	// to recover from the body (measured in corpus configmap/owner-ref-cascade, where the parent's
+	// delete returns Status, against configmap/finalizer-delete, where it returns the ConfigMap).
+	//
+	// It has to be reachable HERE, above the write fallback, or it is not reachable at all for a
+	// removal: returning the uid tier's write fact ends the lookup, and the caller then holds that
+	// fact and waits out the whole grace for delete evidence that was sitting in this tier the entire
+	// time. That wait is not free — it blocks the watch shard's serial goroutine, so every later
+	// event for the type waits behind it.
+	if query.Name != "" {
+		if fact, found := facts.lookupName(query.Namespace, query.Name, cutoff); found && isRemovalVerb(fact.Verb) {
+			return AuthorResolution{Fact: fact, Result: AttributionName}
+		}
+	}
+	if haveWriteFallback {
+		return writeFallback
 	}
 	if fact, found := facts.matchCollectionScope(query, now, cutoff, i.collectionWindow); found {
 		return AuthorResolution{Fact: fact, Result: AttributionCollectionScope}

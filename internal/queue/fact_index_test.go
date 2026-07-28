@@ -518,6 +518,54 @@ func TestFactIndex_NameTierResolvesAnAggregatedRemovalToItsDeleter(t *testing.T)
 	require.Equal(t, "alice", removal.Fact.Author)
 }
 
+func TestFactIndex_ARemovalReachesItsDeleteFactKeyedByName(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	// The shape a built-in delete produces when the API server answers it with a Status rather than
+	// the object: there is no uid in the body to recover, so the delete fact is keyed by name alone
+	// (corpus configmap/owner-ref-cascade). The object also has an ordinary write fact, keyed by uid.
+	harness.publish(factIndexTestStream("prod-eu-1"),
+		objectFact("last-editor", "101"),
+		aggregatedFact("the-deleter", "cm-parent", "delete"),
+	)
+	harness.waitForFacts(3)
+
+	// The removal must reach the delete fact. Answering with the uid tier's write fact would both
+	// name the wrong actor and, worse, keep the caller waiting out the whole grace for evidence that
+	// is already here — blocking the watch shard for every later event of this type.
+	removal := harness.resolve(namedQuery(factIndexTestUID, "999", "cm-parent", false))
+	require.Equal(t, AttributionName, removal.Result)
+	require.Equal(t, "the-deleter", removal.Fact.Author)
+}
+
+func TestFactIndex_ANameKeyedWriteDoesNotOutrankTheObjectsOwnUIDFact(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	// Only a fact about the DELETION may jump ahead of the uid tier. A name-keyed WRITE is not that,
+	// and must not displace the object's own uid-keyed evidence.
+	harness.publish(factIndexTestStream("prod-eu-1"),
+		objectFact("uid-tier", "101"),
+		aggregatedFact("name-tier-write", "cm-parent", "update"),
+	)
+	harness.waitForFacts(3)
+
+	removal := harness.resolve(namedQuery(factIndexTestUID, "999", "cm-parent", false))
+	require.Equal(t, "uid-tier", removal.Fact.Author)
+}
+
+func TestFactIndex_ARemovalStillPrefersItsOwnUIDKeyedDeleteFact(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	uidDelete := objectFact("uid-deleter", "102")
+	uidDelete.Verb = "delete"
+	harness.publish(factIndexTestStream("prod-eu-1"),
+		uidDelete,
+		aggregatedFact("name-deleter", "cm-parent", "delete"),
+	)
+	harness.waitForFacts(3)
+
+	// Both are about the deletion; the uid-keyed one identifies the object exactly, so it wins.
+	removal := harness.resolve(namedQuery(factIndexTestUID, "999", "cm-parent", false))
+	require.Equal(t, "uid-deleter", removal.Fact.Author)
+}
+
 func TestFactIndex_NameFactWakesAWaiterThatArrivedFirst(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{})
 	key := factIndexTestStream("prod-eu-1")
