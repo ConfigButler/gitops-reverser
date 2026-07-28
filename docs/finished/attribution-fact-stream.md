@@ -698,14 +698,20 @@ rejects that when author attribution or the admission webhook is enabled
 [`lookupTargetWatchCursor`](../../internal/watch/target_watch.go#L956) returns a miss and the watch
 cold-replays on restart, which is correct and only more expensive.
 
-So Redis is a hard requirement for **attribution and the admission webhook**, and for nothing else.
-Making attribution work without it is one seam, not a project.
+So Redis is a hard requirement for **attribution**, and for nothing else. Making attribution work
+without it is one seam, not a project.
 
-That requirement narrows once the transport is selectable, and the startup validation has to narrow
-with it or the in-memory mode is unreachable: an empty `--redis-addr` becomes an error only when the
-**Redis** transport is selected, or when the admission webhook is enabled, and the combination of
-the in-memory transport with an empty address becomes a supported configuration rather than a
-rejected one. The flag, the validation in [`cmd/main.go`](../../cmd/main.go), and
+**A correction to that sentence, which this record got wrong.** It claimed the admission webhook
+required Redis too. It does not, and deliberately so: the webhook is `failurePolicy: Ignore` and the
+controller is the real gate, so without Redis it simply no-ops command-author capture and
+`CommitRequest`s claim no actor. That is a supported, degraded mode rather than a usage error, it
+pre-dates this design, and a test pins it. Turning it into a startup error to match this record
+would have broken a shape installs already run. The record is what changed.
+
+The remaining requirement narrows once the transport is selectable, and the startup validation has
+to narrow with it or the in-memory mode is unreachable: an empty `--redis-addr` becomes an error
+only when the **Redis** transport is selected, and the combination of the in-memory transport with
+an empty address becomes a supported configuration rather than a rejected one. The flag, the validation in [`cmd/main.go`](../../cmd/main.go), and
 [`configuration.md`](../configuration.md) move together in that change, because a flag whose
 validation and documentation disagree is how a mode ends up unreachable in the first place.
 

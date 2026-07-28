@@ -271,6 +271,7 @@ func (sub *memFactSubscription) collect() FactDelivery {
 			delivery.Gaps = append(delivery.Gaps, gap)
 		}
 		if len(entries) == 0 {
+			sub.follow.caughtUp(target.Key)
 			continue
 		}
 		for _, entry := range entries {

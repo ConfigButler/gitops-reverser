@@ -511,3 +511,33 @@ func TestFactIndex_FollowerPicksUpATypeWhenAWatchStartsCoveringIt(t *testing.T) 
 	defer release()
 	require.Equal(t, "alice", harness.resolve(objectQuery("prod-eu-1", "uid-1", "101", true)).Fact.Author)
 }
+
+// TestFactIndex_AFactAgesFromWhenItWasAppended pins the TTL against the delivery path.
+//
+// The follower replays the whole retention window on start, so an entry appended nine minutes ago
+// is read now. Stamping it with the READ time would hand it a second full TTL, and a process that
+// restarted every nine minutes would keep facts alive forever — the horizon would bound nothing.
+// The same applies to a follower that fell behind, and to any transport that hands back an entry
+// its own retention should have dropped.
+func TestFactIndex_AFactAgesFromWhenItWasAppended(t *testing.T) {
+	index := NewFactIndex(FactIndexConfig{TTL: time.Minute})
+	key := factIndexTestStream("prod-eu-1")
+
+	// An entry whose position says it was appended two minutes ago, delivered now.
+	stale := FactEntry{
+		Key:   key,
+		ID:    streamIDAt(time.Now().Add(-2 * time.Minute)),
+		Facts: []AuthorFact{objectFact("alice", "101")},
+	}
+	index.Apply(t.Context(), stale)
+
+	require.Equal(t, AttributionAbsent,
+		index.Lookup(objectQuery("prod-eu-1", factIndexTestUID, "101", true)).Result,
+		"a fact older than the TTL must not become joinable just because it was read late")
+
+	// The same entry appended now is joinable, so the check is on age and not on the ID's shape.
+	fresh := FactEntry{Key: key, ID: streamIDAt(time.Now()), Facts: []AuthorFact{objectFact("alice", "101")}}
+	index.Apply(t.Context(), fresh)
+	require.Equal(t, "alice",
+		index.Lookup(objectQuery("prod-eu-1", factIndexTestUID, "101", true)).Fact.Author)
+}

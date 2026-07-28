@@ -465,3 +465,42 @@ func drainUntilFactStreamGap(t *testing.T, sub FactSubscription) (FactStreamGap,
 		}
 	}
 }
+
+// TestFactStreamConformance_ExactlyFullReadDoesNotReportAPhantomGap pins the trim-gap precondition
+// against a FALSE positive, which is the other half of the test above.
+//
+// "Behind" is inferred from a read filling its entry budget, because a read that fills it exactly is
+// indistinguishable from one that left more waiting. That inference is fine; leaving it set
+// afterwards is not. A follower that fills the budget exactly and then finds nothing more is caught
+// up — and if the mark survived, ordinary retention ageing out the entries it had ALREADY read
+// would surface as a data-loss report and a scary log line for a follower that never lost anything.
+func TestFactStreamConformance_ExactlyFullReadDoesNotReportAPhantomGap(t *testing.T) {
+	params := defaultFactStreamParams()
+	params.TTL = factStreamTestTTL
+	// One entry per read, and exactly one entry to read: the budget is filled precisely.
+	params.ReadCount = 1
+	runFactStreamConformance(t, params, func(t *testing.T, transport FactTransport) {
+		ctx := t.Context()
+		key := factStreamTestKey("", "configmaps")
+
+		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("only")))
+		sub := transport.FollowFacts([]FactStreamKey{key}, factStreamTestHorizon)
+		require.Equal(t, []string{"only"}, factAuthors(drainFactEntries(t, sub, 1)))
+
+		// It asks again and is given nothing: it has read everything there is.
+		empty, err := sub.Next(ctx)
+		require.NoError(t, err)
+		require.Empty(t, empty.Entries)
+		require.Empty(t, empty.Gaps)
+
+		// Retention now ages out the entry it already read, and a new one arrives behind it. That is
+		// ordinary retention, not loss: this follower missed nothing.
+		time.Sleep(factStreamTestAgeWait)
+		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("next")))
+
+		delivery, err := sub.Next(ctx)
+		require.NoError(t, err)
+		require.Empty(t, delivery.Gaps,
+			"a follower that read everything there was must never be reported as trimmed past")
+	})
+}

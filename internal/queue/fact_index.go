@@ -4,6 +4,7 @@ package queue
 
 import (
 	"context"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -166,12 +167,40 @@ func NewFactIndex(cfg FactIndexConfig) *FactIndex {
 // Apply stores one delivered entry's facts and wakes whoever was waiting for them. Facts are
 // applied in the order they were delivered, which is what makes the latest tier last-writer-wins
 // mean the last fact APPENDED rather than whichever goroutine reached the map first.
+// A fact ages from when it was APPENDED, not from when this process happened to read it. The two
+// differ by more than a hair in the case that matters most: the follower replays the whole retention
+// window on start, so stamping those entries with the read time would hand every one of them a
+// second full TTL and let a restart resurrect facts the horizon had already retired. A follower that
+// falls behind, or a transport that hands back an entry its own retention should have dropped, lands
+// in the same place. Reading the append time off the entry's position makes the TTL mean the same
+// thing on both transports and on every delivery path, which is what SweepInterval bounding memory
+// rather than correctness depends on.
 func (i *FactIndex) Apply(ctx context.Context, entry FactEntry) {
 	scope := factScope{route: entry.Key.AuditRoute, groupResource: entry.Key.groupResource()}
-	now := time.Now()
+	at := entryAppendTime(entry.ID, time.Now())
 	for _, fact := range entry.Facts {
-		i.waiters.wake(i.store(ctx, scope, fact, now))
+		i.waiters.wake(i.store(ctx, scope, fact, at))
 	}
+}
+
+// entryAppendTime reads the append time out of a transport position. Stream IDs are millisecond
+// timestamps in both implementations, so a position IS a time and needs no side channel.
+//
+// It falls back to now for a position it cannot read, and clamps a future one: a fact must never
+// age SLOWER than the clock because a transport handed back a malformed or skewed ID, which is the
+// one direction that would extend a fact's life beyond its TTL rather than shorten it.
+func entryAppendTime(id string, now time.Time) time.Time {
+	millis, _ := parseStreamID(id)
+	// A position past the int64 millisecond range is not a time this code can read, and neither is
+	// zero. Both fall back to now, which ages the fact from this moment rather than from never.
+	if millis == 0 || millis > math.MaxInt64 {
+		return now
+	}
+	at := time.UnixMilli(int64(millis))
+	if at.After(now) {
+		return now
+	}
+	return at
 }
 
 // Await resolves a watch event, waiting up to grace for a fact that has not been delivered yet. It

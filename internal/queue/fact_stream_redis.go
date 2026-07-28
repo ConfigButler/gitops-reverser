@@ -204,6 +204,12 @@ func (sub *redisFactSubscription) Next(ctx context.Context) (FactDelivery, error
 		Block:   sub.stream.block,
 	}).Result()
 	if errors.Is(err, redis.Nil) {
+		// The whole block period elapsed with nothing on any followed stream, so every one of them
+		// is caught up — including any the last read left marked behind for having exactly filled
+		// its entry budget.
+		for _, target := range targets {
+			sub.follow.caughtUp(target.Key)
+		}
 		return FactDelivery{Gaps: gaps}, nil
 	}
 	if err != nil {
@@ -222,6 +228,20 @@ func (sub *redisFactSubscription) collect(
 	res []redis.XStream,
 	byStreamKey map[string]FactStreamKey,
 ) []FactEntry {
+	// XREAD returns only the streams that had something, so every followed stream missing from the
+	// result was asked and gave nothing: it is caught up, whatever the last read left marked.
+	delivered := make(map[FactStreamKey]struct{}, len(res))
+	for i := range res {
+		if key, ok := byStreamKey[res[i].Stream]; ok && len(res[i].Messages) > 0 {
+			delivered[key] = struct{}{}
+		}
+	}
+	for _, key := range byStreamKey {
+		if _, ok := delivered[key]; !ok {
+			sub.follow.caughtUp(key)
+		}
+	}
+
 	var entries []FactEntry
 	for i := range res {
 		key, ok := byStreamKey[res[i].Stream]

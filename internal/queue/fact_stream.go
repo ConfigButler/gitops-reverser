@@ -311,6 +311,23 @@ func (f *followSet) advance(key FactStreamKey, cursor string, behind bool) {
 	}
 }
 
+// caughtUp clears one stream's behind mark without moving its cursor. A follower that asked a
+// stream for entries and was given none has, by definition, read everything there is.
+//
+// It exists because behind is otherwise STICKY: it is set when a read fills its entry budget, and a
+// read that fills the budget exactly is indistinguishable from one that left more waiting. Without
+// this the mark survives every later empty read, so a caught-up follower stays flagged until the
+// next non-empty one — and if ordinary retention ages out the entries it already read in the
+// meantime, trim-gap detection reports a data loss that never happened. The precondition is meant
+// to mean "was actually behind", so it has to be cleared by the evidence that it is not.
+func (f *followSet) caughtUp(key FactStreamKey) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if state, ok := f.states[key]; ok {
+		state.behind = false
+	}
+}
+
 // noteGap records a trim gap and reports whether it is new. The same gap is reported once, not on
 // every pass until the follower catches up past it.
 func (f *followSet) noteGap(key FactStreamKey, firstSurviving string) bool {
