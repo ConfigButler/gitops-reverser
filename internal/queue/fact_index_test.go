@@ -438,6 +438,7 @@ func TestFactIndex_UnjoinableFactIsNotStored(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{})
 	key := factIndexTestStream("prod-eu-1")
 	harness.publish(key,
+		// No uid, no resourceVersion and no name: nothing about it identifies an object.
 		AuthorFact{Author: "nobody", Verb: "update"},
 		objectFact("alice", "101"),
 	)
@@ -445,6 +446,100 @@ func TestFactIndex_UnjoinableFactIsNotStored(t *testing.T) {
 
 	// Two entries for the joinable fact, none for the one no query could ever reach.
 	require.Equal(t, 2, harness.index.Len())
+}
+
+// aggregatedFact is the shape an aggregated-API write produces: the API server proxied the request
+// and never decoded the response, so the objectRef carries the name from the URL path and neither a
+// uid nor a resourceVersion. Measured in corpus flunder/aggregated-api-delete.
+func aggregatedFact(author, name, verb string) AuthorFact {
+	return AuthorFact{Namespace: "team-a", Name: name, Author: author, Verb: verb}
+}
+
+// namedQuery is a watch event that knows its own name, which every watch event does.
+func namedQuery(uid, rv, name string, exactCapable bool) FactQuery {
+	query := objectQuery("prod-eu-1", uid, rv, exactCapable)
+	query.Name = name
+	return query
+}
+
+func TestFactIndex_NameTierJoinsAFactCarryingNoUIDOrResourceVersion(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	harness.publish(factIndexTestStream("prod-eu-1"), aggregatedFact("alice", "fl-1", "update"))
+
+	// The watch event carries the full object, so it has a uid and an rv the fact does not. Every
+	// stronger tier therefore misses, and the name is the only thing the two sides share.
+	resolution := harness.resolve(namedQuery("uid-9", "77", "fl-1", true))
+	require.Equal(t, AttributionName, resolution.Result)
+	require.Equal(t, "alice", resolution.Fact.Author)
+
+	// A different object of the same type in the same namespace is not covered by it.
+	harness.absent(namedQuery("uid-8", "78", "fl-2", true))
+}
+
+func TestFactIndex_NameTierIsScopedToItsNamespace(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	other := aggregatedFact("bob", "fl-1", "update")
+	other.Namespace = "team-b"
+	harness.publish(factIndexTestStream("prod-eu-1"), other)
+	harness.waitForFacts(1)
+
+	// Same type, same route, same name, different namespace: a name is unique only within one.
+	harness.absent(namedQuery("uid-9", "77", "fl-1", true))
+}
+
+func TestFactIndex_NameTierRanksBelowEveryStrongerTier(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	// A name-only fact and a uid-bearing one about the same object. The uid tiers must win: a name is
+	// reused after a delete and recreate, so it is the weakest per-object evidence there is.
+	harness.publish(factIndexTestStream("prod-eu-1"),
+		aggregatedFact("name-tier", "fl-1", "update"),
+		objectFact("uid-tier", "101"),
+	)
+	harness.waitForFacts(3)
+
+	exact := harness.resolve(namedQuery(factIndexTestUID, "101", "fl-1", true))
+	require.Equal(t, AttributionExactUser, exact.Result)
+	require.Equal(t, "uid-tier", exact.Fact.Author)
+
+	// And the latest tier, which a removal consults, also outranks it.
+	removal := harness.resolve(namedQuery(factIndexTestUID, "999", "fl-1", false))
+	require.Equal(t, "uid-tier", removal.Fact.Author)
+}
+
+func TestFactIndex_NameTierResolvesAnAggregatedRemovalToItsDeleter(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	// The whole point of restoring the name: an aggregated single delete is audited with a name and
+	// nothing else, so before this tier it was published and then dropped, and the removal shipped
+	// committer-authored however ran it.
+	harness.publish(factIndexTestStream("prod-eu-1"), aggregatedFact("alice", "fl-del", "delete"))
+
+	removal := harness.resolve(namedQuery("uid-9", "999", "fl-del", false))
+	require.Equal(t, AttributionName, removal.Result)
+	require.Equal(t, "alice", removal.Fact.Author)
+}
+
+func TestFactIndex_NameFactWakesAWaiterThatArrivedFirst(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	key := factIndexTestStream("prod-eu-1")
+	harness.index.Streams().Acquire(key)
+
+	// The watch beats the audit event, which is the ordinary case. The waiter must be registered
+	// under the name tier too, or the query sleeps out its whole grace beside a fact that would match.
+	resolved := make(chan AuthorResolution, 1)
+	go func() {
+		resolved <- harness.resolve(namedQuery("uid-9", "77", "fl-late", true))
+	}()
+
+	require.NoError(t, harness.transport.PublishFacts(t.Context(), key,
+		[]AuthorFact{aggregatedFact("alice", "fl-late", "update")}))
+
+	select {
+	case resolution := <-resolved:
+		require.Equal(t, AttributionName, resolution.Result)
+		require.Equal(t, "alice", resolution.Fact.Author)
+	case <-time.After(factIndexTestGrace * 2):
+		t.Fatal("a name-tier fact never woke the waiting query")
+	}
 }
 
 func TestFactIndex_TrimGapIsCountedAndNamed(t *testing.T) {

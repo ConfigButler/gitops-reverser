@@ -57,6 +57,10 @@ type AuthorQuery struct {
 	// deletecollection whose scope covered it.
 	Namespace string
 	Labels    map[string]string
+	// Name serves the name tier only, the floor for a fact carrying neither a uid nor a
+	// resourceVersion — an aggregated-API write, whose audit objectRef holds the name and nothing
+	// else. The watch event always carries it, so supplying it costs nothing when no fact needs it.
+	Name string
 	// ExactCapable is true for ADDED and MODIFIED, whose resourceVersion is the one the write
 	// produced. A removal's is not, so it consults the weaker tiers the exact-capable events skip.
 	ExactCapable bool
@@ -71,6 +75,7 @@ func (q AuthorQuery) factQuery() queue.FactQuery {
 		ResourceVersion: q.ResourceVersion,
 		Namespace:       q.Namespace,
 		Labels:          q.Labels,
+		Name:            q.Name,
 		ExactCapable:    q.ExactCapable,
 	}
 }

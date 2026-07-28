@@ -62,6 +62,16 @@ const (
 	// contains this object. There is no over-attribution risk in it: either the API server said it
 	// deleted this object, or it did not.
 	AttributionCollectionUID AttributionResult = "collection_uid"
+	// AttributionName is a match on (namespace, name) for a fact that carries neither a uid nor a
+	// resourceVersion. It is the tier of last resort for a type whose audit event cannot express
+	// object identity: the kube-apiserver proxies an aggregated-API request and never decodes the
+	// response, so the objectRef carries the name from the URL path and nothing else, and there is no
+	// body to backfill from. Measured in corpus flunder/aggregated-api-delete.
+	//
+	// It ranks below every other per-object tier because a name is REUSED after a delete and
+	// recreate where a uid is not, so it can name the author of a previous object that held this
+	// name. The TTL is what bounds that: the wrong answer requires the recreate to happen inside it.
+	AttributionName AttributionResult = "name"
 	// AttributionCollectionScope is a removal matched to a deletecollection fact by scope alone —
 	// same type and namespace, selector accepting the object's labels, within the collection window.
 	// It is the weakest evidence the join has, which is why it is reached only when every more
@@ -83,15 +93,25 @@ const (
 //
 //   - the group/resource, which is the STREAM'S OWN NAME — the index takes the scope from the
 //     entry's key, never from the fact, so carrying it duplicated the routing on every entry;
-//   - the object's name and subresource, which no tier joins on and nothing logs. The join is by
-//     uid, resourceVersion, or scope.
+//   - the subresource, which no tier joins on and nothing logs.
 //
 // isServiceAccount went the same way, for a different reason: it is not evidence, it is a prefix
 // check on Author that the reader can do for itself.
+//
+// Name was removed with the subresource, on the same observation — no tier read it — and is back,
+// because that observation was true of the code and false of the domain. An aggregated-API write is
+// audited with no uid and no resourceVersion, and the name from the URL path is the ONLY identity it
+// carries, so a fact without it could not be joined at all for that whole population. "No code reads
+// it" and "nothing could ever read it" are different claims, and only the second justifies dropping a
+// field.
 type AuthorFact struct {
 	Namespace string `json:"namespace,omitempty"`
 	UID       string `json:"uid,omitempty"`
-	Author    string `json:"author"`
+	// Name is the object's name, and it feeds one tier only: the (namespace, name) join a fact with
+	// no uid and no resourceVersion is otherwise unreachable through. A collection fact clears it,
+	// because a collection request names no object.
+	Name   string `json:"name,omitempty"`
+	Author string `json:"author"`
 	// DisplayName and Email are the actor's, when the API server supplied them. They are the only
 	// fields here that are not identity or evidence: they exist because a commit author is a name
 	// and an email, and re-deriving them at commit time would need a second lookup.
@@ -182,6 +202,7 @@ func AuthorFactFromEvent(
 	fact := AuthorFact{
 		Namespace:       identity.Namespace,
 		UID:             string(identity.UID),
+		Name:            identity.Name,
 		Author:          user.Username,
 		DisplayName:     user.DisplayName,
 		Email:           user.Email,
@@ -208,6 +229,7 @@ func AuthorFactFromEvent(
 // hand rather than in a receiver rebuilding N from one.
 func describeCollection(ctx context.Context, fact *AuthorFact, event auditv1.Event, uidCap int) {
 	fact.UID = ""
+	fact.Name = ""
 	fact.ResourceVersion = ""
 	fact.LabelSelector = labelSelectorFromRequestURI(event.RequestURI)
 	fact.UIDs = collectionUIDs(ctx, event, uidCap)

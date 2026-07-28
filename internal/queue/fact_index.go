@@ -86,6 +86,9 @@ type FactQuery struct {
 	// deletecollection whose scope covered it.
 	Namespace string
 	Labels    map[string]string
+	// Name serves the name tier only, the floor reached when a fact carries neither a uid nor a
+	// resourceVersion. The watch side always knows it; only the audit side can be missing it.
+	Name string
 	// ExactCapable is true for ADDED and MODIFIED, whose resourceVersion is the one the write
 	// produced. A removal's is not, so it consults the weaker tiers the exact-capable events skip.
 	ExactCapable bool
@@ -283,7 +286,8 @@ func (q FactQuery) awaitsBetterEvidence(resolution AuthorResolution) bool {
 	switch resolution.Result {
 	case AttributionCollectionUID, AttributionCollectionScope:
 		return false
-	case AttributionExactUser, AttributionExactServiceAccount, AttributionWeak, AttributionAbsent:
+	case AttributionExactUser, AttributionExactServiceAccount, AttributionWeak,
+		AttributionName, AttributionAbsent:
 	}
 	return !isRemovalVerb(resolution.Fact.Verb)
 }
@@ -299,7 +303,13 @@ func isRemovalVerb(verb string) bool {
 //  2. a collection fact whose uid set contains this object;
 //  3. the last-writer-wins fact for that uid, for a removal whose rv never matches;
 //  4. a collection fact whose scope, selector, and window cover it;
-//  5. the rv-only escape hatch.
+//  5. the rv-only escape hatch;
+//  6. the (namespace, name) floor.
+//
+// The name tier is last because it is the weakest per-object evidence here: a name is reused after a
+// delete and recreate, so it can name the author of a previous object that held it, where a uid
+// cannot and an rv identifies one specific write. Nothing that carries a uid or an rv ever reaches
+// it, so ranking it last costs the stronger tiers nothing and only picks up what they cannot express.
 //
 // Precedence is the correctness argument for the collection tiers, and the two of them sit on
 // OPPOSITE sides of the latest tier on purpose.
@@ -340,6 +350,11 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 	if query.ResourceVersion != "" {
 		if fact, found := facts.lookupRV(query.ResourceVersion, cutoff); found {
 			return AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, true)}
+		}
+	}
+	if query.Name != "" {
+		if fact, found := facts.lookupName(query.Namespace, query.Name, cutoff); found {
+			return AuthorResolution{Fact: fact, Result: AttributionName}
 		}
 	}
 	return AuthorResolution{Result: AttributionAbsent}
@@ -473,9 +488,21 @@ func (i *FactIndex) file(facts *scopeFacts, scope factScope, fact AuthorFact, no
 	case fact.ResourceVersion != "":
 		facts.putRV(fact.ResourceVersion, &indexedFact{fact: fact, at: now, seq: i.nextSeq()})
 		return []factWaiterKey{{scope: scope, kind: factKindRV, value: fact.ResourceVersion}}
+	case fact.Name != "":
+		// The floor: no uid and no resourceVersion, so only the name can reach it. This is the
+		// aggregated-API write — the API server proxied the request and never decoded the response,
+		// so the objectRef holds the name from the URL path and nothing else. Such a fact used to be
+		// published and then dropped here as unjoinable, which is why an aggregated update or single
+		// delete shipped committer-authored no matter who ran it.
+		facts.putName(fact.Namespace, fact.Name, &indexedFact{fact: fact, at: now, seq: i.nextSeq()})
+		return []factWaiterKey{{
+			scope: scope, kind: factKindName, value: nameWaiterValue(fact.Namespace, fact.Name),
+		}}
 	default:
-		// A fact with neither a uid nor a resourceVersion can never be joined. The publish side does
-		// not produce one; storing it anyway would only fill the index with entries no query reaches.
+		// A fact with no uid, no resourceVersion and no name can never be joined: nothing about it
+		// identifies an object. An aggregated CREATE is the case that lands here, because the API
+		// server assigns the name and the objectRef carries none — though the publish side rejects it
+		// at the name gate before it reaches this far.
 		return nil
 	}
 }
@@ -583,6 +610,11 @@ func (q FactQuery) waiterKeys() []factWaiterKey {
 	if q.ResourceVersion != "" {
 		keys = append(keys, factWaiterKey{scope: scope, kind: factKindRV, value: q.ResourceVersion})
 	}
+	if q.Name != "" {
+		keys = append(keys, factWaiterKey{
+			scope: scope, kind: factKindName, value: nameWaiterValue(q.Namespace, q.Name),
+		})
+	}
 	return keys
 }
 
@@ -590,6 +622,12 @@ func (q FactQuery) waiterKeys() []factWaiterKey {
 // byte neither half can contain.
 func exactWaiterValue(uid, rv string) string {
 	return uid + "\x00" + rv
+}
+
+// nameWaiterValue renders the name tier's (namespace, name) pair as one waiter value, on the same
+// separator and for the same reason.
+func nameWaiterValue(namespace, name string) string {
+	return namespace + "\x00" + name
 }
 
 // recordSize publishes how much the index holds. It is sampled on the sweep rather than on every

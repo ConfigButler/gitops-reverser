@@ -807,6 +807,7 @@ func (m *Manager) attachAuthor(
 		ResourceVersion: u.GetResourceVersion(),
 		Namespace:       u.GetNamespace(),
 		Labels:          u.GetLabels(),
+		Name:            u.GetName(),
 		ExactCapable:    exactCapable,
 	})
 	// Stamp the outcome even when no actor was named: an unresolved attribution is a fact the
