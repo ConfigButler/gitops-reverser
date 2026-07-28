@@ -88,6 +88,37 @@ difficulty: at the moment of resolution, "the fact is late" and "the fact is nev
 identical. But they are very distinguishable **by looking at history** — a type whose audit policy
 drops it never produces a fact, not once, ever. That is what option F exploits.
 
+### Aggregated types are a special case, and worse than row 8 suggests
+
+Row 8 says an aggregated-API write never resolves. Tracing it through the code, the reason is
+sharper than "the body is empty", and it changes what could be done about it.
+
+The kube-apiserver proxies an aggregated request and never sees the object, so the audit event's
+`objectRef` carries **no name, no uid and no resourceVersion** — confirmed in corpus row 15 and in
+the captured `deletecollection` recordings. What each verb then does:
+
+| Verb on an aggregated type | `objectRef` carries | What happens to the fact |
+|---|---|---|
+| create | nothing: no name, uid or rv | **No fact is published at all.** `AuthorFactFromEvent` rejects it at the "no resolvable name" gate |
+| update / patch | the NAME, from the URL path | A fact is published and then **dropped by the index**: with no uid and no rv it can never be joined, so it is not stored |
+| single delete | the NAME, from the URL path | Same: published, then dropped as unjoinable |
+| deletecollection | namespace and selector | **Works.** A collection fact joins by SCOPE, which needs no uid |
+
+So the observation that creates and updates "measure" while deletes do not is half right and the
+truth is less flattering: for an aggregated type, only the COLLECTION delete is attributable at all.
+Everything else either produces no fact or produces one that is discarded on arrival.
+
+**There is a tier that would fix two of those rows.** An update or a single delete carries the
+object's NAME, and the watch event carries name and namespace too. A
+`(route, group/resource, namespace, name)` tier would join them. It is weaker than uid — a name is
+reused after a delete-and-recreate, where a uid is not — so it belongs below the uid tiers and
+plausibly below `latest`, with the same care the scope tier gets.
+
+Worth recording honestly: the fact's `name` field was REMOVED from the wire during this work, on the
+correct observation that no tier read it. That was true, and it is exactly the field this tier would
+need back. "No code reads it" and "nothing could ever read it" are different claims, and the second
+one is the one that justifies deleting a field.
+
 ## The options
 
 ### A. Keep the full grace (status quo)

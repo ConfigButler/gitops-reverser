@@ -136,3 +136,193 @@ func flunderReference(r *mutationlab.Record) string {
 	}
 	return env.Object.Spec.Reference
 }
+
+// TestAggregatedAPIDelete is the delete half of Row 15, and it exists because the create half
+// raised a question it could not answer: an aggregated-API write is audited with an EMPTY body, so
+// what does an aggregated-API DELETE look like — is it audited at all, does its objectRef carry a
+// uid, and does the watch DELETED carry the object?
+//
+// The answer decides whether a removal of an aggregated type can be attributed to its deleter at
+// all. The join needs either a uid on the fact (which the exact and latest tiers key on) or a
+// collection fact covering it. If a proxied delete is audited with no uid, per-object attribution
+// for aggregated types is structurally impossible and only the collection tiers can ever work.
+func TestAggregatedAPIDelete(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "aggregated-api-delete")
+
+	flunder := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "wardle.example.com/v1alpha1",
+		"kind":       "Flunder",
+		"metadata": map[string]any{
+			"name":      "fl-del",
+			"namespace": s.ns,
+			"labels":    map[string]any{scenarioLabel: s.id},
+		},
+		"spec": map[string]any{"referenceType": "Flunder", "reference": "doomed"},
+	}}
+	if _, err := h.dyn.Resource(flunderGVR).Namespace(s.ns).Create(ctx, flunder, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create flunder: %v", err)
+	}
+	// The create's own records are setup, not the finding. Union the namespace because an
+	// aggregated audit event carries no object label to attribute by.
+	h.drain(t, s.id, drainSpec{
+		minCount: 1, settle: 3 * time.Second, timeout: 90 * time.Second, alsoNamespace: s.ns,
+		until: func(rs []mutationlab.Record) bool {
+			return flunderRecordNamed(rs, mutationlab.SourceWatch, "ADDED", "fl-del") != nil
+		},
+	})
+	h.clearRecords(t)
+
+	if err := h.dyn.Resource(flunderGVR).Namespace(s.ns).
+		Delete(ctx, "fl-del", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete flunder: %v", err)
+	}
+
+	records := h.drain(t, s.id, drainSpec{
+		minCount: 1, settle: 5 * time.Second, timeout: 90 * time.Second, alsoNamespace: s.ns,
+		until: func(rs []mutationlab.Record) bool {
+			return flunderRecordNamed(rs, mutationlab.SourceWatch, "DELETED", "fl-del") != nil
+		},
+	})
+
+	deleted := flunderRecordNamed(records, mutationlab.SourceWatch, "DELETED", "fl-del")
+	audit := flunderRecordNamed(records, mutationlab.SourceAudit, "", "fl-del")
+	if deleted == nil {
+		t.Fatal("no watch DELETED for the flunder; the aggregated-API watch did not carry the removal")
+	}
+
+	// THE FINDING, whichever way it goes. A delete that is audited WITH a uid can be attributed
+	// per object; audited WITHOUT one can only ever be reached by the collection tiers; not
+	// audited at all can never be attributed, exactly like a type the policy excludes.
+	switch {
+	case audit == nil:
+		t.Logf("FINDING: an aggregated-API delete produced NO audit record at all. Per-object "+
+			"attribution of %s removals is impossible; every one ships committer-authored.",
+			flunderGVR.Resource)
+	case audit.Key.UID == "":
+		t.Logf("FINDING: the aggregated-API delete IS audited (verb=%q) but its objectRef carries "+
+			"no uid, so the exact and latest tiers can never match it. Only a collection fact can "+
+			"attribute an aggregated removal.", audit.Summary.Operation)
+	default:
+		t.Logf("FINDING: the aggregated-API delete is audited with uid %q, so per-object "+
+			"attribution works for aggregated types after all.", audit.Key.UID)
+	}
+	t.Logf("watch DELETED carries object=%v; audit present=%v", deleted.Summary.HasObject, audit != nil)
+
+	commit := []mutationlab.Record{*deleted}
+	if audit != nil {
+		commit = append([]mutationlab.Record{*audit}, commit...)
+	}
+	h.syncCorpus(t, "flunder/aggregated-api-delete", commit)
+}
+
+// TestAggregatedAPIDeletecollection is the case the whole collection-fact design turns on for
+// aggregated types, and the one a hand-written fixture cannot settle.
+//
+// The kube-apiserver PROXIES the request to the extension server and never decodes the response it
+// streamed back, so the expectation is an audited deletecollection with NO response body: no uid
+// set, and therefore a join that can only proceed by SCOPE — type, namespace, selector, window.
+// That is exactly the case the deleted response-body expander produced nothing for.
+//
+// If the body IS present, the join upgrades itself to uid membership and the scope tier is not
+// needed here. Either result is worth having in the corpus; the point is to stop inferring it.
+func TestAggregatedAPIDeletecollection(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "aggregated-api-deletecollection")
+
+	names := []string{"fl-dc-a", "fl-dc-b"}
+	for _, name := range names {
+		flunder := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "wardle.example.com/v1alpha1",
+			"kind":       "Flunder",
+			"metadata": map[string]any{
+				"name":      name,
+				"namespace": s.ns,
+				"labels":    map[string]any{scenarioLabel: s.id},
+			},
+			"spec": map[string]any{"referenceType": "Flunder", "reference": "doomed"},
+		}}
+		if _, err := h.dyn.Resource(flunderGVR).Namespace(s.ns).
+			Create(ctx, flunder, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+	h.drain(t, s.id, drainSpec{
+		minCount: len(names), settle: 3 * time.Second, timeout: 90 * time.Second, alsoNamespace: s.ns,
+		until: func(rs []mutationlab.Record) bool {
+			return flunderRecordNamed(rs, mutationlab.SourceWatch, "ADDED", names[len(names)-1]) != nil
+		},
+	})
+	h.clearRecords(t)
+
+	selector := metav1.ListOptions{LabelSelector: scenarioLabel + "=" + s.id}
+	if err := h.dyn.Resource(flunderGVR).Namespace(s.ns).
+		DeleteCollection(ctx, metav1.DeleteOptions{}, selector); err != nil {
+		t.Fatalf("deletecollection flunders: %v", err)
+	}
+
+	records := h.drain(t, s.id, drainSpec{
+		minCount: len(names), settle: 5 * time.Second, timeout: 90 * time.Second, alsoNamespace: s.ns,
+		until: func(rs []mutationlab.Record) bool {
+			return flunderRecordNamed(rs, mutationlab.SourceWatch, "DELETED", names[len(names)-1]) != nil
+		},
+	})
+
+	// The asymmetry the collection fact exists for: N watch removals against ONE audit event.
+	watches := 0
+	for i := range records {
+		r := &records[i]
+		if r.Source == mutationlab.SourceWatch && r.Summary.WatchType == "DELETED" && r.Key.Resource == "flunders" {
+			watches++
+		}
+	}
+	if watches != len(names) {
+		t.Errorf("aggregated deletecollection produced %d watch DELETEDs; want %d (per-object fan-out)",
+			watches, len(names))
+	}
+
+	audit := flunderRecordNamed(records, mutationlab.SourceAudit, "", "")
+	switch {
+	case audit == nil:
+		t.Log("FINDING: an aggregated deletecollection produced NO audit record. Nothing can " +
+			"attribute these removals; every one ships committer-authored.")
+	case !audit.Summary.HasResponseObject:
+		t.Log("FINDING: the aggregated deletecollection IS audited with NO response body, so the " +
+			"fact carries no uid set and the join must fall back to SCOPE matching. This is the " +
+			"case the deleted response-body expander produced nothing at all for.")
+	default:
+		t.Log("FINDING: the aggregated deletecollection returned a response body, so the fact " +
+			"carries the uid set and the join resolves by uid membership.")
+	}
+	t.Logf("%d watch DELETEDs against %d audit record(s)", watches, countSource(records, mutationlab.SourceAudit))
+
+	h.syncCorpus(t, "flunder/aggregated-api-deletecollection", records)
+}
+
+// flunderRecordNamed is flunderRecord with an optional name filter, so a scenario that creates more
+// than one flunder can pick out the one it means. An empty name matches any flunder record.
+func flunderRecordNamed(
+	records []mutationlab.Record,
+	src mutationlab.Source,
+	watchType, name string,
+) *mutationlab.Record {
+	for i := range records {
+		r := &records[i]
+		if r.Source != src {
+			continue
+		}
+		if watchType != "" && r.Summary.WatchType != watchType {
+			continue
+		}
+		if r.Key.Resource != "flunders" {
+			continue
+		}
+		if name != "" && r.Key.Name != name {
+			continue
+		}
+		return r
+	}
+	return nil
+}

@@ -165,12 +165,24 @@ func gracefulPod(s scenario, name string) *corev1.Pod {
 // disappear (watch DELETED). A non-graceful delete would skip straight to
 // DELETED, so the lingering MODIFIED is the behavior under test.
 //
-// Pods are dropped from the audit policy entirely, so there is no audit record;
-// pods are top-level, so the DELETE does reach the validating webhook. The corpus
-// keeps the two semantically load-bearing watch moments (the deletion-pending
-// MODIFIED and the terminal DELETED) plus the admission DELETE; the intermediate
-// kubelet status writes during termination are timing-dependent, so they are
-// asserted as a law over the full drain rather than committed as flaky moments.
+// Pods are dropped from THIS CLUSTER'S AUDIT POLICY entirely, so there is no audit record; pods are
+// top-level, so the DELETE does reach the validating webhook. The corpus keeps the two semantically
+// load-bearing watch moments (the deletion-pending MODIFIED and the terminal DELETED) plus the
+// admission DELETE; the intermediate kubelet status writes during termination are timing-dependent,
+// so they are asserted as a law over the full drain rather than committed as flaky moments.
+//
+// **Read the audit silence as a POLICY, not as a property of Kubernetes.** A DELETE on a pod is an
+// audited request like any other; this row shows zero audit records because
+// test/e2e/cluster/audit/policy.yaml lists pods at level: None as runtime noise. Design records
+// have twice generalised this row into "a graceful pod delete produces no audit event at all" and
+// built arguments on it, so the distinction is worth stating where the measurement is taken. What
+// this row actually demonstrates is the shape of an AUDIT-EXCLUDED type, which is the population
+// that costs the attribution resolver its whole grace window on every removal
+// (docs/design/attribution-removal-wait-options.md).
+//
+// The audited equivalent of this two-step removal is TestFinalizerDelete: a configmap held by a
+// finalizer takes the same deletionTimestamp-then-DELETED path and IS audited, so that is the row
+// to read for what a graceful removal looks like when the policy asks for it.
 func TestGracefulDelete(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

@@ -31,7 +31,7 @@ gap (see [Capturing Intent, Not State](../../docs/spec/mutation-capture-lab-desi
 | 4 | No-op apply | `configmap_scenarios_test.go` · `TestNoOpApply` | `configmap/no-op-apply/` | audit, admission — **no** watch (resourceVersion unchanged) |
 | 5 | Status subresource | `workload_scenarios_test.go` · `TestStatusSubresource` | `deployment/status-update/` | watch ×2 — **no** audit, **no** admission |
 | 6 | Scale subresource | `workload_scenarios_test.go` · `TestScaleSubresource` | `deployment/scale-patch/` | watch, audit — **no** admission |
-| 7 | Graceful delete | `workload_scenarios_test.go` · `TestGracefulDelete` | `pod/graceful-delete/` | watch (MODIFIED + DELETED), admission — **no** audit ⚠️ |
+| 7 | Graceful delete (audit-EXCLUDED type) | `workload_scenarios_test.go` · `TestGracefulDelete` | `pod/graceful-delete/` | watch (MODIFIED + DELETED), admission — **no** audit ⚠️ |
 | 8 | Finalizer delete | `configmap_scenarios_test.go` · `TestFinalizerDelete` | `configmap/finalizer-delete/` | watch (MODIFIED + DELETED), audit (delete + patch — **no** second delete), admission (DELETE + UPDATE) |
 | 9 | Deletecollection | `configmap_scenarios_test.go` · `TestDeletecollection` | `configmap/deletecollection/` | watch ×N, audit ×1 (name-less), admission ×N (per object) |
 | 10 | Owner-ref cascade | `configmap_scenarios_test.go` · `TestOwnerRefCascade` | `configmap/owner-ref-cascade/` | watch DELETED ×2 (parent + cascaded child), audit ×2 (parent = human, child = `generic-garbage-collector`) |
