@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package webhook
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
+)
+
+// factAppend is one PublishFacts call: one stream, one entry, however many facts the request
+// produced for it.
+type factAppend struct {
+	key   queue.FactStreamKey
+	facts []queue.AuthorFact
+}
+
+// fakeFactPublisher records every append, so a test can count them. The count is the point: an
+// apiserver batch over three types must become three appends, not one per event.
+type fakeFactPublisher struct {
+	mu      sync.Mutex
+	err     error
+	appends []factAppend
+}
+
+func (p *fakeFactPublisher) PublishFacts(_ context.Context, key queue.FactStreamKey, facts []queue.AuthorFact) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err != nil {
+		return p.err
+	}
+	p.appends = append(p.appends, factAppend{key: key, facts: facts})
+	return nil
+}
+
+func (p *fakeFactPublisher) recorded() []factAppend {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]factAppend(nil), p.appends...)
+}
+
+func newPublishingHandler(t *testing.T, publisher *fakeFactPublisher) *AuditHandler {
+	t.Helper()
+	handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: publisher})
+	require.NoError(t, err)
+	return handler
+}
+
+// writeEventVersion is the version every type in these tests is served at.
+const writeEventVersion = "v1"
+
+// writeEvent is one accepted write to a named object of a given type.
+func writeEvent(auditID, group, resource, name, user string) string {
+	version := writeEventVersion
+	apiVersion := version
+	if group != "" {
+		apiVersion = group + "/" + version
+	}
+	return `{"kind":"Event","level":"RequestResponse","auditID":"` + auditID + `",` +
+		`"stage":"ResponseComplete","verb":"update","user":{"username":"` + user + `"},` +
+		`"requestURI":"/apis/` + group + `/` + version + `/namespaces/team-a/` + resource + `/` + name + `",` +
+		`"objectRef":{"apiGroup":"` + group + `","resource":"` + resource + `","namespace":"team-a",` +
+		`"name":"` + name + `","apiVersion":"` + apiVersion + `","uid":"uid-` + name + `"},` +
+		`"responseStatus":{"code":200},` +
+		`"responseObject":{"apiVersion":"` + apiVersion + `","metadata":{"name":"` + name + `",` +
+		`"namespace":"team-a","uid":"uid-` + name + `","resourceVersion":"101"}}}`
+}
+
+func TestAuditHandler_OneRequestOverThreeTypesBecomesThreeAppends(t *testing.T) {
+	publisher := &fakeFactPublisher{}
+	handler := newPublishingHandler(t, publisher)
+
+	// Two writes per type, interleaved exactly as the API server batches them.
+	body := eventListBody(
+		writeEvent("a", "apps", "deployments", "web", "alice"),
+		writeEvent("b", "", "configmaps", "config", "bob"),
+		writeEvent("c", "apps", "deployments", "api", "alice"),
+		writeEvent("d", "", "secrets", "creds", "carol"),
+		writeEvent("e", "", "configmaps", "other", "bob"),
+	)
+	require.Equal(t, http.StatusOK, serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body).Code)
+
+	appends := publisher.recorded()
+	require.Len(t, appends, 3, "five events over three types must append once per type, not once per event")
+
+	require.Equal(t, queue.FactStreamKeyFor("prod-eu-1",
+		schema.GroupResource{Group: "apps", Resource: "deployments"}), appends[0].key)
+	require.Equal(t, []string{"web", "api"}, factNames(appends[0].facts),
+		"a group keeps the order its events arrived in")
+	require.Equal(t, queue.FactStreamKeyFor("prod-eu-1", schema.GroupResource{Resource: "configmaps"}), appends[1].key)
+	require.Equal(t, []string{"config", "other"}, factNames(appends[1].facts))
+	require.Equal(t, queue.FactStreamKeyFor("prod-eu-1", schema.GroupResource{Resource: "secrets"}), appends[2].key)
+	require.Equal(t, []string{"creds"}, factNames(appends[2].facts))
+
+	require.Equal(t, "alice", appends[0].facts[0].Author)
+	require.Equal(t, "101", appends[0].facts[0].ResourceVersion)
+	require.Equal(t, "uid-web", appends[0].facts[0].UID)
+}
+
+func TestAuditHandler_EventsThatCanNameNobodyPublishNothing(t *testing.T) {
+	publisher := &fakeFactPublisher{}
+	handler := newPublishingHandler(t, publisher)
+
+	// No objectRef: nothing to key a fact on. No user: nobody to name. Both pass the intrinsic
+	// accept gate, so it is the fact reduction that has to reject them — a waiter woken by a fact
+	// that can name nobody has been woken for nothing.
+	noObjectRef := `{"kind":"Event","level":"Metadata","auditID":"no-ref","stage":"ResponseComplete",` +
+		`"verb":"create","user":{"username":"alice"},"responseStatus":{"code":201}}`
+	noUser := `{"kind":"Event","level":"RequestResponse","auditID":"no-user","stage":"ResponseComplete",` +
+		`"verb":"update","user":{},"objectRef":{"resource":"configmaps","namespace":"team-a","name":"cm",` +
+		`"apiVersion":"v1","uid":"uid-cm"},"responseStatus":{"code":200}}`
+
+	require.Equal(t, http.StatusOK,
+		serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", eventListBody(noObjectRef, noUser)).Code)
+	require.Empty(t, publisher.recorded())
+}
+
+func TestAuditHandler_NameLessDeleteCollectionPublishesOneFactWithItsSelector(t *testing.T) {
+	publisher := &fakeFactPublisher{}
+	handler := newPublishingHandler(t, publisher)
+
+	// One name-less audit event for N deleted objects. It used to be expanded into one fact per
+	// object out of the response body; it is now one fact describing the collection, which every
+	// removal in its scope joins.
+	deleteCollection := `{"kind":"Event","level":"RequestResponse","auditID":"dc-1",` +
+		`"stage":"ResponseComplete","verb":"deletecollection","user":{"username":"alice"},` +
+		`"requestURI":"/api/v1/namespaces/team-a/configmaps?labelSelector=app%3Dweb",` +
+		`"objectRef":{"resource":"configmaps","namespace":"team-a","apiVersion":"v1"},` +
+		`"responseStatus":{"code":200},` +
+		`"responseObject":{"apiVersion":"v1","kind":"ConfigMapList","items":[` +
+		`{"metadata":{"name":"one","namespace":"team-a","uid":"uid-1"}},` +
+		`{"metadata":{"name":"two","namespace":"team-a","uid":"uid-2"}}]}}`
+
+	require.Equal(t, http.StatusOK,
+		serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", eventListBody(deleteCollection)).Code)
+
+	appends := publisher.recorded()
+	require.Len(t, appends, 1)
+	require.Len(t, appends[0].facts, 1, "a collection delete is ONE fact, not one per deleted object")
+
+	fact := appends[0].facts[0]
+	require.Equal(t, "alice", fact.Author)
+	require.Equal(t, "deletecollection", fact.Verb)
+	require.Equal(t, "team-a", fact.Namespace)
+	require.Equal(t, "app=web", fact.LabelSelector, "the selector is the intent the actor expressed")
+	require.Equal(t, []string{"uid-1", "uid-2"}, fact.UIDs, "a body that was there upgrades the join to uid membership")
+	require.Empty(t, fact.Name, "a collection request names no object")
+}
+
+func TestAuditHandler_PublishFailureIsRetryable(t *testing.T) {
+	publisher := &fakeFactPublisher{err: errors.New("transport down")}
+	handler := newPublishingHandler(t, publisher)
+
+	body := eventListBody(writeEvent("a", "apps", "deployments", "web", "alice"))
+	// A 500 is how the API server is told to deliver the batch again. Appending it twice is safe: a
+	// fact is keyed data, so the second copy resolves to the same author.
+	require.Equal(t, http.StatusInternalServerError,
+		serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body).Code)
+}
+
+func TestAuditHandler_NoPublisherPublishesNothing(t *testing.T) {
+	recorder := &fakeFactRecorder{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	require.NoError(t, err)
+
+	// Configured-author mode, and every install that has not wired the stream: the keys are still
+	// written and nothing else happens.
+	body := eventListBody(writeEvent("a", "apps", "deployments", "web", "alice"))
+	require.Equal(t, http.StatusOK, serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body).Code)
+	require.Equal(t, 1, recorder.len())
+}
+
+// factNames flattens a batch to the object names it is about.
+func factNames(facts []queue.AuthorFact) []string {
+	names := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		names = append(names, fact.Name)
+	}
+	return names
+}
