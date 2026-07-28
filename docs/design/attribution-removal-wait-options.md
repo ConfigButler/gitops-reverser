@@ -94,8 +94,10 @@ Row 8 says an aggregated-API write never resolves. Tracing it through the code, 
 sharper than "the body is empty", and it changes what could be done about it.
 
 The kube-apiserver proxies an aggregated request and never sees the object, so the audit event's
-`objectRef` carries **no name, no uid and no resourceVersion** — confirmed in corpus row 15 and in
-the captured `deletecollection` recordings. What each verb then does:
+`objectRef` carries **no uid and no resourceVersion**, and no name either unless the request URL
+supplies one. This is measured, not inferred: corpus `flunder/aggregated-api-write` for the create,
+`flunder/aggregated-api-delete` for the single delete, and
+`flunder/aggregated-api-deletecollection` for the collection. What each verb then does:
 
 | Verb on an aggregated type | `objectRef` carries | What happens to the fact |
 |---|---|---|
