@@ -12,14 +12,63 @@ import (
 // dwarfs the key it namespaces.
 const maxKeyPrefixLength = 128
 
+// DefaultKeyPrefix is the root namespace every Redis key (cursors, fact streams, and command
+// author records alike) carries when --redis-key-prefix is not set. It is also the value every
+// release before the flag existed used, so the default is a no-op upgrade.
+const DefaultKeyPrefix = "gitops-reverser"
+
+// routeKeyInfix carries the AUDIT ROUTE dimension so a fact from cluster A never joins a watch
+// event from cluster B — the rv-only hatch especially, since RV is not globally unique. The route
+// is what the audit events arrived under, NOT the ClusterProvider's name: an API server has one
+// webhook backend and posts under one route, so several providers naming one cluster all declare
+// that route and share its facts (ClusterProvider.AuditRoute()). It is spelled "route" rather than
+// "auditRoute" because the key already says audit one segment earlier, and it sits directly after
+// the domain suffix so one route's streams share a single glob prefix.
+const routeKeyInfix = "route:"
+
+// groupResourceKey renders a GroupResource as an API-path-style segment: "configmaps" for the core
+// group, "apps/deployments" otherwise. Publish side, follow side, and the index share it so the
+// name never drifts. "/" never appears in a group or resource name, so the form stays unambiguously
+// splittable — unlike schema.GroupResource.String()'s reversed dot form ("deployments.apps"), whose
+// dot also collides with dotted group names.
+func groupResourceKey(group, resource string) string {
+	if group == "" {
+		return resource
+	}
+	return group + "/" + resource
+}
+
+// escapeKeyField neutralizes the ":" delimiter and the "%" escape character within a single key
+// field. Group/resource and a UUID never contain either, so this is defensive for the uid and route
+// fields against a stray delimiter; everything else passes through unchanged for readability. Keys
+// are only ever matched exactly, never parsed back, so escaping is one-way.
+func escapeKeyField(s string) string {
+	if !strings.ContainsAny(s, "%:") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := range len(s) {
+		switch s[i] {
+		case '%':
+			b.WriteString("%25")
+		case ':':
+			b.WriteString("%3A")
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
 // ValidateKeyPrefix checks a --redis-key-prefix value and returns its normalized form.
 //
 // Two independent constraints shape the allowed character set:
 //
-//   - The attribution telemetry gauge SCANs "<prefix>:author:v1:audit:*". Redis glob
-//     metacharacters (*, ?, [, ], \) in the prefix would silently make that pattern match
-//     the wrong keyspace, so they are rejected rather than escaped — a prefix is an
-//     operator-chosen identifier, not user data.
+//   - A prefix names a keyspace an operator inspects and, on a bad day, deletes by glob. Redis
+//     glob metacharacters (*, ?, [, ], \) in it would make "<prefix>:*" match more than this
+//     install's keys, so they are rejected rather than escaped — a prefix is an operator-chosen
+//     identifier, not user data.
 //   - Key fields (uid, resourceVersion, namespace) are ':'-delimited and %-escaped by
 //     escapeKeyField. '%' in the prefix would make an escaped key ambiguous with an
 //     unescaped one, so it is rejected too.

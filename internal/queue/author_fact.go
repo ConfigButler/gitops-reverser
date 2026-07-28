@@ -4,18 +4,29 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
+
+// DefaultAttributionFactTTL is how long an attribution fact stays joinable while it waits for the
+// matching watch event. It bounds the stream's retention horizon and the in-memory index together,
+// and it doubles as the follower's replay horizon, so a restart warms the index with exactly the
+// window that is still usable. After it elapses a miss is simply "absent": there is no tombstone,
+// so an aged-out fact is indistinguishable from one that never arrived.
+// Configurable via --author-attribution-ttl.
+const DefaultAttributionFactTTL = 10 * time.Minute
 
 // DefaultCollectionUIDCap is how many uids a collection fact may carry before the set is dropped
 // and the join falls back to scope matching.
@@ -31,6 +42,87 @@ const DefaultCollectionUIDCap = 10000
 // labelSelectorQueryParam is where a collection request states which objects it meant.
 const labelSelectorQueryParam = "labelSelector"
 
+// serviceAccountUserPrefix is how the API server spells a service account in an audit event's user.
+const serviceAccountUserPrefix = "system:serviceaccount:"
+
+// AttributionResult is the bounded resolver outcome recorded for each watch event. The set is the
+// join's tier table, so a reading of attribution_resolutions_total{result} says which evidence
+// named the author, not merely that one was named.
+type AttributionResult string
+
+const (
+	// AttributionExactUser is an exact UID+resourceVersion match for a human user.
+	AttributionExactUser AttributionResult = "exact_user"
+	// AttributionExactServiceAccount is an exact UID+resourceVersion match for a named service account.
+	AttributionExactServiceAccount AttributionResult = "exact_serviceaccount"
+	// AttributionWeak is a non-exact match: the uid-latest tier or the rv-only escape hatch, used by
+	// known RV-mismatch events and no-UID facts respectively.
+	AttributionWeak AttributionResult = "weak"
+	// AttributionCollectionUID is a removal matched to a deletecollection fact whose uid set
+	// contains this object. There is no over-attribution risk in it: either the API server said it
+	// deleted this object, or it did not.
+	AttributionCollectionUID AttributionResult = "collection_uid"
+	// AttributionCollectionScope is a removal matched to a deletecollection fact by scope alone —
+	// same type and namespace, selector accepting the object's labels, within the collection window.
+	// It is the weakest evidence the join has, which is why it is reached only when every more
+	// specific tier missed. It is also the tier that resolves what the deleted expander gave up on:
+	// a collection delete the API server sent no response body for.
+	AttributionCollectionScope AttributionResult = "collection_scope"
+	// AttributionAbsent means no usable author fact matched before the grace elapsed.
+	AttributionAbsent AttributionResult = "absent"
+)
+
+// AuthorFact is the minimal attribution fact published per accepted, mutating audit event and read
+// back by the watch-event resolver. It names an author candidate and carries the evidence needed to
+// decide confidence; it is never object state. The object identity travels in the value rather than
+// in a key, so the fact is self-describing wherever the transport puts it.
+type AuthorFact struct {
+	GroupResource    string `json:"groupResource,omitempty"`
+	Namespace        string `json:"namespace,omitempty"`
+	Name             string `json:"name,omitempty"`
+	UID              string `json:"uid,omitempty"`
+	Author           string `json:"author"`
+	DisplayName      string `json:"displayName,omitempty"`
+	Email            string `json:"email,omitempty"`
+	Verb             string `json:"verb,omitempty"`
+	Subresource      string `json:"subresource,omitempty"`
+	AuditID          string `json:"auditID,omitempty"`
+	ResourceVersion  string `json:"resourceVersion,omitempty"`
+	StageTimestamp   string `json:"stageTimestamp,omitempty"`
+	IsServiceAccount bool   `json:"isServiceAccount,omitempty"`
+
+	// LabelSelector is the selector the request URI expressed, carried on a COLLECTION fact only.
+	// It is the intent the actor stated, and evaluating it against the object a watch event carries
+	// is a better test of membership than reading back a list the API server may not have sent.
+	// Empty means the collection covered everything of its type in its namespace, which is what
+	// --all means.
+	LabelSelector string `json:"labelSelector,omitempty"`
+	// UIDs is the set of objects a collection delete covered, reduced from the response body at the
+	// receiver, on a COLLECTION fact only. It is absent when the API server sent no body — a
+	// truncated, aggregated, or metadata-only response — and when the set was larger than the cap,
+	// in which case the join falls back to scope matching, which is already correct.
+	UIDs []string `json:"uids,omitempty"`
+}
+
+// AuthorResolution is the structured result of an attribution lookup.
+type AuthorResolution struct {
+	Fact   AuthorFact
+	Result AttributionResult
+}
+
+// attributionResultForFact classifies a match on one of the three per-object tiers. weak marks a
+// non-exact match (the uid-latest tier or the rv-only hatch). The collection tiers do not come
+// through here: they carry no per-object evidence to grade, so matchCollection names its own result.
+func attributionResultForFact(fact AuthorFact, weak bool) AttributionResult {
+	if weak {
+		return AttributionWeak
+	}
+	if fact.IsServiceAccount {
+		return AttributionExactServiceAccount
+	}
+	return AttributionExactUser
+}
+
 // AuthorFactFromEvent reduces one accepted, mutating audit event to the fact the stream carries,
 // reporting false when the event can never name an author. Only facts that WOULD have been stored
 // may be published: an event with no objectRef or no user produces nothing, or waiters are woken by
@@ -43,7 +135,11 @@ const labelSelectorQueryParam = "labelSelector"
 //
 // The caller has already applied the intrinsic accept gate: reads, failures, dry runs, and
 // non-ResponseComplete stages never reach here.
-func AuthorFactFromEvent(ctx context.Context, event auditv1.Event) (AuthorFact, schema.GroupResource, bool) {
+func AuthorFactFromEvent(
+	ctx context.Context,
+	event auditv1.Event,
+	uidCap int,
+) (AuthorFact, schema.GroupResource, bool) {
 	if event.ObjectRef == nil || event.ObjectRef.Resource == "" {
 		return AuthorFact{}, schema.GroupResource{}, false
 	}
@@ -78,7 +174,7 @@ func AuthorFactFromEvent(ctx context.Context, event auditv1.Event) (AuthorFact, 
 		fact.StageTimestamp = event.StageTimestamp.UTC().Format(time.RFC3339Nano)
 	}
 	if collection {
-		describeCollection(ctx, &fact, event)
+		describeCollection(ctx, &fact, event, uidCap)
 	}
 	return fact, groupResource, true
 }
@@ -91,12 +187,12 @@ func AuthorFactFromEvent(ctx context.Context, event auditv1.Event) (AuthorFact, 
 // asymmetry the expander used to fight: audit reports the ONE request that was made, the watch
 // reports each of the N objects that changed, and the join belongs at the point where both are in
 // hand rather than in a receiver rebuilding N from one.
-func describeCollection(ctx context.Context, fact *AuthorFact, event auditv1.Event) {
+func describeCollection(ctx context.Context, fact *AuthorFact, event auditv1.Event, uidCap int) {
 	fact.Name = ""
 	fact.UID = ""
 	fact.ResourceVersion = ""
 	fact.LabelSelector = labelSelectorFromRequestURI(event.RequestURI)
-	fact.UIDs = collectionUIDs(ctx, event)
+	fact.UIDs = collectionUIDs(ctx, event, uidCap)
 }
 
 // labelSelectorFromRequestURI reads the selector a collection request expressed. It is better
@@ -120,12 +216,15 @@ func labelSelectorFromRequestURI(requestURI string) string {
 // absent, hollow, or larger than the cap — all of which degrade the join to scope matching, which
 // is the floor that must work on its own. Crossing the cap is COUNTED, so "we fell back to scope"
 // is visible rather than inferred.
-func collectionUIDs(ctx context.Context, event auditv1.Event) []string {
+func collectionUIDs(ctx context.Context, event auditv1.Event, uidCap int) []string {
+	if uidCap <= 0 {
+		uidCap = DefaultCollectionUIDCap
+	}
 	items := deleteCollectionItems(event.ResponseObject)
 	if len(items) == 0 {
 		return nil
 	}
-	if len(items) > DefaultCollectionUIDCap {
+	if len(items) > uidCap {
 		recordCollectionDegraded(ctx, "uid_cap")
 		return nil
 	}
@@ -140,6 +239,79 @@ func collectionUIDs(ctx context.Context, event auditv1.Event) []string {
 		return nil
 	}
 	return uids
+}
+
+// deleteCollectionItem is the per-object identity read from a deletecollection response list. It is
+// all that survives of the deleted expander, and it survives for one job: reducing the body to the
+// uid SET the fact carries. Nothing rebuilds N per-object facts from one request any more.
+type deleteCollectionItem struct {
+	UID types.UID
+}
+
+// deleteCollectionItems parses the per-object identities from a deletecollection response body. It
+// accepts any list-shaped body (a typed "…List", a v1.List, or anything carrying an "items" array)
+// and returns nil for a Status, hollow, or unparseable body — the join then falls back to scope
+// matching, which is the floor that must work on its own.
+func deleteCollectionItems(obj *runtime.Unknown) []deleteCollectionItem {
+	if obj == nil || len(obj.Raw) == 0 {
+		return nil
+	}
+	var envelope struct {
+		Items []struct {
+			Metadata struct {
+				UID types.UID `json:"uid"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(obj.Raw, &envelope); err != nil {
+		return nil
+	}
+	items := make([]deleteCollectionItem, 0, len(envelope.Items))
+	for _, it := range envelope.Items {
+		items = append(items, deleteCollectionItem{UID: it.Metadata.UID})
+	}
+	return items
+}
+
+// resourceVersionFromEvent returns the event's ResourceVersion when one is available, or "" when it
+// is not (deletes, collection verbs, shallow bodies). The post-write RV lives in the response
+// object's metadata.resourceVersion; requestObject.resourceVersion is the pre-write RV on
+// update-style requests, so it is intentionally ignored. objectRef.resourceVersion is usually the
+// empty precondition RV on writes, so it is only the last resort.
+func resourceVersionFromEvent(event auditv1.Event) string {
+	if rv := rvFromRawObject(event.ResponseObject); rv != "" {
+		return rv
+	}
+	if event.ObjectRef != nil {
+		return event.ObjectRef.ResourceVersion
+	}
+	return ""
+}
+
+func rvFromRawObject(obj *runtime.Unknown) string {
+	if obj == nil || len(obj.Raw) == 0 {
+		return ""
+	}
+	var probe struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(obj.Raw, &probe); err != nil {
+		return ""
+	}
+	return probe.Metadata.ResourceVersion
+}
+
+// RecordFactsWritten counts facts appended to the fact log. It is called by the publish side, once
+// per append rather than once per entry, so the counter measures facts rather than audit batches
+// and stays comparable with the matched op on the other side of the join.
+func RecordFactsWritten(ctx context.Context, count int) {
+	if telemetry.AttributionFactEventsTotal == nil || count <= 0 {
+		return
+	}
+	telemetry.AttributionFactEventsTotal.Add(ctx, int64(count),
+		metric.WithAttributes(attribute.String("op", factOpWritten)))
 }
 
 // recordCollectionDegraded counts one collection fact that lost its uid set, under the bounded

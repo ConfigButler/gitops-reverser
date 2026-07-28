@@ -105,8 +105,8 @@ func TestExtractGVR_CoreGroupRendersLeadingSlash(t *testing.T) {
 // for an impersonated mutation, so the identity rule above is proven end-to-end rather than only at
 // the helper.
 func TestAuditHandler_ImpersonatedEventIsRecordedUnderTheImpersonatedUser(t *testing.T) {
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	const impersonated = `{"kind":"Event","level":"RequestResponse","auditID":"imp-1",` +
@@ -120,6 +120,6 @@ func TestAuditHandler_ImpersonatedEventIsRecordedUnderTheImpersonatedUser(t *tes
 	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(impersonated))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, 1, recorder.len())
-	assert.Equal(t, "alice", effectiveAuditUsername(recorder.events[0]),
+	assert.Equal(t, "alice", recorder.facts[0].Author,
 		"the impersonated actor is the author, not the account permitted to impersonate")
 }

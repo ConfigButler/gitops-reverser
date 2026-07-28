@@ -24,6 +24,7 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -298,6 +299,14 @@ func (m *Manager) runTargetWatch(
 	key targetWatchKey,
 	ops OperationSet,
 ) {
+	// Follow this type's attribution facts for exactly as long as this watch runs. The release is
+	// idempotent, so calling it here and on any error path below cannot unfollow a type another
+	// watch still needs. Acquiring before the first session opens is deliberate: the follower reads
+	// a newly followed stream from the TTL horizon, so the index is warm with the whole retention
+	// window before the first event of this watch needs an author.
+	releaseFacts := m.followFactsForWatch(gitDest, key)
+	defer releaseFacts()
+
 	// A target-watch declaration defines the fidelity epoch. Its first session must replay even
 	// when a durable cursor exists: a replacement can add a sibling scope, and resuming an unchanged
 	// scope would otherwise leave that scope pending in the new epoch forever. Later reconnects may
@@ -318,6 +327,21 @@ func (m *Manager) runTargetWatch(
 			return
 		}
 	}
+}
+
+// followFactsForWatch takes one reference on the attribution fact stream for the (audit route,
+// group/resource) this watch covers, and returns the release for it. It is a no-op returning a
+// no-op in configured-author mode, where no follower runs and no subscription is meaningful.
+//
+// The route rather than the cluster id is what the stream is keyed on, for the same reason the join
+// is: an API server posts audit under ONE route, so several ClusterProviders naming one cluster all
+// declare that route and share its facts.
+func (m *Manager) followFactsForWatch(gitDest types.ResourceReference, key targetWatchKey) func() {
+	if m.FactStreams == nil {
+		return func() {}
+	}
+	route := m.auditRouteForCluster(m.clusterIDForGitTarget(gitDest))
+	return m.FactStreams.Acquire(queue.FactStreamKeyFor(route, key.GVR.GroupResource()))
 }
 
 func (m *Manager) targetWatchReplayAndStream(
@@ -771,9 +795,20 @@ func (m *Manager) attachAuthor(
 	// that same route and joins the same facts. Keying the read on the provider name instead was
 	// the bug this indirection exists to prevent, and a fact from cluster A still cannot name the
 	// author of an object watched on cluster B, because their routes differ.
-	userInfo, outcome := m.AuthorResolver.ResolveAuthor(
-		ctx, m.auditRouteForCluster(event.SourceCluster), gvr, u.GetUID(), u.GetResourceVersion(), exactCapable,
-	)
+	//
+	// Namespace and labels ride along for the collection tier: a removal caused by a
+	// deletecollection the API server sent no response body for is joined by SCOPE — same type and
+	// namespace, the request's selector accepting these labels, within the collection window — which
+	// is the case the deleted expander gave up on entirely.
+	userInfo, outcome := m.AuthorResolver.ResolveAuthor(ctx, AuthorQuery{
+		AuditRoute:      m.auditRouteForCluster(event.SourceCluster),
+		GVR:             gvr,
+		UID:             u.GetUID(),
+		ResourceVersion: u.GetResourceVersion(),
+		Namespace:       u.GetNamespace(),
+		Labels:          u.GetLabels(),
+		ExactCapable:    exactCapable,
+	})
 	// Stamp the outcome even when no actor was named: an unresolved attribution is a fact the
 	// writer, the author_kind metric, and CommitRequest matching all need. Leaving it at the
 	// zero value would say "attribution was never attempted", which is exactly the conflation

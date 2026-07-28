@@ -64,6 +64,14 @@ const (
 	evictionReasonTotal   = "total"
 )
 
+// factOpWritten and factOpMatched are the bounded ops on the fact lifecycle counter: one fact
+// appended to the log, and one joined by a watch event. Read together they say how much of what is
+// published is ever used — the ratio that decides whether a type is worth following at all.
+const (
+	factOpWritten = "written"
+	factOpMatched = "matched"
+)
+
 // FactQuery is one watch event's identity, as the join reads it. It is everything the index needs
 // to try all five tiers, so a caller assembles it once rather than threading five arguments.
 type FactQuery struct {
@@ -179,6 +187,7 @@ func (i *FactIndex) Await(ctx context.Context, query FactQuery, grace time.Durat
 	defer i.waiters.unregister(waiter)
 
 	if resolution := i.Lookup(query); resolution.Result != AttributionAbsent {
+		recordFactEvent(ctx, factOpMatched)
 		return resolution
 	}
 	if grace <= 0 {
@@ -195,6 +204,7 @@ func (i *FactIndex) Await(ctx context.Context, query FactQuery, grace time.Durat
 			return AuthorResolution{Result: AttributionAbsent}
 		case <-waiter.ch:
 			if resolution := i.Lookup(query); resolution.Result != AttributionAbsent {
+				recordFactEvent(ctx, factOpMatched)
 				return resolution
 			}
 		}
@@ -276,6 +286,7 @@ func (i *FactIndex) Run(ctx context.Context, follower FactFollower) error {
 		if now := time.Now(); now.Sub(lastSweep) >= i.sweepInterval {
 			i.Sweep(now)
 			lastSweep = now
+			i.recordSize(ctx)
 		}
 	}
 }
@@ -469,6 +480,24 @@ func (q FactQuery) waiterKeys() []factWaiterKey {
 // byte neither half can contain.
 func exactWaiterValue(uid, rv string) string {
 	return uid + "\x00" + rv
+}
+
+// recordSize publishes how much the index holds. It is sampled on the sweep rather than on every
+// applied fact: the number is a memory reading, and the sweep is when it has just changed most.
+// The v1 gauge cost a Redis SCAN of the whole fact keyspace to produce this; it is now a field read.
+func (i *FactIndex) recordSize(ctx context.Context) {
+	if telemetry.AttributionFactIndexSize == nil {
+		return
+	}
+	telemetry.AttributionFactIndexSize.Record(ctx, int64(i.Len()))
+}
+
+// recordFactEvent counts one fact lifecycle event under its bounded op.
+func recordFactEvent(ctx context.Context, op string) {
+	if telemetry.AttributionFactEventsTotal == nil {
+		return
+	}
+	telemetry.AttributionFactEventsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("op", op)))
 }
 
 // recordFactIndexEviction counts one evicted entry under its bounded reason.

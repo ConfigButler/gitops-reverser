@@ -18,26 +18,50 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
-// fakeLookup returns fact/ok after `hitAfter` calls; calls counts invocations and
-// lastExactCapable records the event-kind flag of the most recent lookup.
+// fakeLookup stands in for the fact index. The resolver makes exactly ONE call now — the waiting
+// belongs to the index, which is the only thing that knows when a fact arrives — so lateness is
+// modelled as a delay before the resolution is returned rather than as a number of retries.
 type fakeLookup struct {
-	resolution       queue.AuthorResolution
-	hitAfter         int
-	calls            int
-	lastExactCapable bool
-	lastProvider     string
+	resolution queue.AuthorResolution
+	// availableAfter is how long the fact takes to arrive. Longer than the grace it is handed means
+	// it never arrives in time, which is what the index reports as absent.
+	availableAfter time.Duration
+	calls          int
+	lastQuery      queue.FactQuery
+	lastGrace      time.Duration
 }
 
-func (f *fakeLookup) LookupAuthorResolution(
-	_ context.Context, providerName string, _ schema.GroupVersionResource, _ k8stypes.UID, _ string, exactCapable bool,
+func (f *fakeLookup) Await(
+	ctx context.Context,
+	query queue.FactQuery,
+	grace time.Duration,
 ) queue.AuthorResolution {
 	f.calls++
-	f.lastExactCapable = exactCapable
-	f.lastProvider = providerName
-	if f.calls >= f.hitAfter {
-		return f.resolution
+	f.lastQuery = query
+	f.lastGrace = grace
+	if f.availableAfter > grace {
+		return queue.AuthorResolution{Result: queue.AttributionAbsent}
 	}
-	return queue.AuthorResolution{Result: queue.AttributionAbsent}
+	if f.availableAfter > 0 {
+		select {
+		case <-ctx.Done():
+			return queue.AuthorResolution{Result: queue.AttributionAbsent}
+		case <-time.After(f.availableAfter):
+		}
+	}
+	return f.resolution
+}
+
+// resolverQuery is the ordinary object-write query these tests drive the resolver with.
+func resolverQuery(route, uid, rv string, exactCapable bool) AuthorQuery {
+	return AuthorQuery{
+		AuditRoute:      route,
+		GVR:             resolverGVR,
+		UID:             k8stypes.UID(uid),
+		ResourceVersion: rv,
+		Namespace:       "team-a",
+		ExactCapable:    exactCapable,
+	}
 }
 
 var resolverGVR = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
@@ -48,16 +72,15 @@ func TestAuthorResolver_HumanHit(t *testing.T) {
 			Fact:   queue.AuthorFact{Author: "alice", Email: "a@x.io"},
 			Result: queue.AttributionExactUser,
 		},
-		hitAfter: 1,
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	ui, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 	require.Equal(t, git.AttributionResolved, outcome)
 	assert.Equal(t, "alice", ui.Username)
 	assert.Equal(t, "a@x.io", ui.Email)
 	assert.Equal(t, 1, lookup.calls)
-	assert.True(t, lookup.lastExactCapable, "an ADDED/MODIFIED event is exact-capable")
+	assert.True(t, lookup.lastQuery.ExactCapable, "an ADDED/MODIFIED event is exact-capable")
 }
 
 func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
@@ -72,11 +95,10 @@ func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 			Fact:   queue.AuthorFact{Author: sa, IsServiceAccount: true},
 			Result: queue.AttributionExactServiceAccount,
 		},
-		hitAfter: 1,
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	ui, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 	require.Equal(t, git.AttributionResolved, outcome,
 		"a matched service account is named, not collapsed to the committer")
 	assert.Equal(t, sa, ui.Username)
@@ -93,13 +115,13 @@ func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 }
 
 func TestAuthorResolver_MissExpiresToUnresolved(t *testing.T) {
-	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}, hitAfter: 1000}
+	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}}
 	r := NewAuthorResolver(lookup, 0, logr.Discard())
 
 	// A zero grace does a single lookup and, on a miss, reports UNRESOLVED — attribution ran
 	// and did not name anyone. It is deliberately not NotAttempted, which would claim
 	// attribution was never switched on. There is no miss-marker write-back.
-	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	ui, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 	assert.Equal(t, git.AttributionUnresolved, outcome)
 	assert.Empty(t, ui.Username, "an unresolved attribution names nobody")
 	assert.Equal(t, 1, lookup.calls)
@@ -111,13 +133,12 @@ func TestAuthorResolver_DeleteEventIsNotExactCapable(t *testing.T) {
 			Fact:   queue.AuthorFact{Author: "alice"},
 			Result: queue.AttributionWeak,
 		},
-		hitAfter: 1,
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	_, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "999", false)
+	_, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "999", false))
 	require.Equal(t, git.AttributionResolved, outcome)
-	assert.False(t, lookup.lastExactCapable, "a removal event may consult the /last pointer")
+	assert.False(t, lookup.lastQuery.ExactCapable, "a removal event may consult the weaker tiers")
 }
 
 func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
@@ -126,14 +147,14 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 			Fact:   queue.AuthorFact{Author: "bob"},
 			Result: queue.AttributionExactUser,
 		},
-		hitAfter: 3,
+		availableAfter: 50 * time.Millisecond,
 	}
 	r := NewAuthorResolver(lookup, 2*time.Second, logr.Discard())
 
-	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	ui, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 	require.Equal(t, git.AttributionResolved, outcome)
 	assert.Equal(t, "bob", ui.Username)
-	assert.GreaterOrEqual(t, lookup.calls, 3)
+	assert.Equal(t, 1, lookup.calls, "the resolver asks once and the index does the waiting")
 }
 
 // A nil lookup is configured-author mode: attribution was never switched on, so the outcome
@@ -142,7 +163,7 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 func TestAuthorResolver_NilLookupIsNotAttempted(t *testing.T) {
 	r := NewAuthorResolver(nil, DefaultAttributionGraceWindow, logr.Discard())
 
-	ui, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	ui, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 
 	assert.Equal(t, git.AttributionNotAttempted, outcome,
 		"attribution that was never enabled has not failed — the committer legitimately authors")
@@ -157,11 +178,10 @@ func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
 			Fact:   queue.AuthorFact{Author: ""},
 			Result: queue.AttributionExactUser,
 		},
-		hitAfter: 1,
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
 
-	_, outcome := r.ResolveAuthor(context.Background(), "prod-eu-1", resolverGVR, "uid-1", "101", true)
+	_, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 
 	assert.Equal(t, git.AttributionUnresolved, outcome)
 }
@@ -175,15 +195,14 @@ func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
 // unnoticed until an explicit unresolved-author placeholder made it visible in Git.
 func TestAuthorResolver_WarnsOnceForARouteThatNeverResolves(t *testing.T) {
 	// hitAfter is beyond any call this test makes, so every lookup misses.
-	lookup := &fakeLookup{hitAfter: 1 << 30}
+	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}}
 	resolver := NewAuthorResolver(lookup, 0, logr.Discard())
 	concrete, ok := resolver.(*attributionResolver)
 	require.True(t, ok)
 
 	const route = "srcns-delegating"
 	for range attributionUnresolvedWarnThreshold {
-		_, outcome := resolver.ResolveAuthor(
-			context.Background(), route, resolverGVR, "uid-1", "101", true)
+		_, outcome := resolver.ResolveAuthor(context.Background(), resolverQuery(route, "uid-1", "101", true))
 		require.Equal(t, git.AttributionUnresolved, outcome)
 	}
 
@@ -199,6 +218,6 @@ func TestAuthorResolver_WarnsOnceForARouteThatNeverResolves(t *testing.T) {
 		},
 	}
 	healthy := NewAuthorResolver(other, 0, logr.Discard())
-	_, outcome := healthy.ResolveAuthor(context.Background(), "default", resolverGVR, "uid-2", "1", true)
+	_, outcome := healthy.ResolveAuthor(context.Background(), resolverQuery("default", "uid-2", "1", true))
 	assert.Equal(t, git.AttributionResolved, outcome)
 }

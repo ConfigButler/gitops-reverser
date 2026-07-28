@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -166,8 +167,8 @@ func TestAuditHandler_PublishFailureIsRetryable(t *testing.T) {
 }
 
 func TestAuditHandler_NoPublisherPublishesNothing(t *testing.T) {
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: recorder})
 	require.NoError(t, err)
 
 	// Configured-author mode, and every install that has not wired the stream: the keys are still
@@ -184,4 +185,57 @@ func factNames(facts []queue.AuthorFact) []string {
 		names = append(names, fact.Name)
 	}
 	return names
+}
+
+// annotatedWriteEvent is one accepted write carrying the audit-route annotation the shared,
+// annotation-routed endpoint reads its route from.
+func annotatedWriteEvent(auditID, name, user, route string) string {
+	event := writeEvent(auditID, "", "configmaps", name, user)
+	return event[:len(event)-1] + `,"annotations":{"` + clusterAnnotation + `":"` + route + `"}}`
+}
+
+// TestAuditHandler_OneBatchFansOutToOneStreamPerRoute is route isolation at the ingress, where it
+// first has to hold. A shared audit stream may carry several logical clusters in ONE batch, and two
+// clusters routinely hold objects of the same type — so facts that differ only by route must land
+// on different streams. Pooling them would let a fact from cluster A name the author of an object
+// watched on cluster B, which is the failure the route dimension exists to prevent and which no
+// amount of correctness further down the join could undo.
+func TestAuditHandler_OneBatchFansOutToOneStreamPerRoute(t *testing.T) {
+	publisher := &fakeFactPublisher{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		FactPublisher:           publisher,
+		AuditRouteAnnotationKey: clusterAnnotation,
+	})
+	require.NoError(t, err)
+
+	body := eventListBody(
+		annotatedWriteEvent("a", "config", "alice", "prod-eu-1"),
+		annotatedWriteEvent("b", "config", "mallory", "prod-us-1"),
+		annotatedWriteEvent("c", "other", "alice", "prod-eu-1"),
+	)
+	require.Equal(t, http.StatusOK, serveBody(t, handler, http.MethodPost, "/audit-webhook", body).Code)
+
+	appends := publisher.recorded()
+	require.Len(t, appends, 2, "the same type on two routes is two streams, not one")
+
+	byRoute := map[string][]queue.AuthorFact{}
+	for _, append := range appends {
+		require.Equal(t, schema.GroupResource{Resource: "configmaps"}, append.key.GroupResource)
+		byRoute[append.key.AuditRoute] = append.facts
+	}
+
+	require.Len(t, byRoute["prod-eu-1"], 2)
+	assert.Equal(t, []string{"alice", "alice"}, factAuthors(byRoute["prod-eu-1"]))
+	require.Len(t, byRoute["prod-us-1"], 1)
+	assert.Equal(t, []string{"mallory"}, factAuthors(byRoute["prod-us-1"]),
+		"the other cluster's actor stays on the other cluster's stream")
+}
+
+// factAuthors names each fact's actor, in the order the batch carried them.
+func factAuthors(facts []queue.AuthorFact) []string {
+	authors := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		authors = append(authors, fact.Author)
+	}
+	return authors
 }

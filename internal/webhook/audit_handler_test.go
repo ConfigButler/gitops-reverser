@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
@@ -34,58 +35,60 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// fakeFactRecorder is an in-memory AuditFactRecorder. It appends every accepted
-// event and can be told to fail with an injectable error.
-type fakeFactRecorder struct {
-	mu        sync.Mutex
-	err       error
-	events    []auditv1.Event
-	providers []string
+// fakeFactSink is an in-memory AuditFactPublisher. It records every fact one request appended,
+// with the audit route its stream was keyed on, and can be told to fail with an injectable error.
+type fakeFactSink struct {
+	mu     sync.Mutex
+	err    error
+	facts  []queue.AuthorFact
+	routes []string
 }
 
-func (r *fakeFactRecorder) RecordFact(_ context.Context, providerName string, event auditv1.Event) error {
+func (r *fakeFactSink) PublishFacts(_ context.Context, key queue.FactStreamKey, facts []queue.AuthorFact) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.err != nil {
 		return r.err
 	}
-	r.events = append(r.events, event)
-	r.providers = append(r.providers, providerName)
+	for _, fact := range facts {
+		r.facts = append(r.facts, fact)
+		r.routes = append(r.routes, key.AuditRoute)
+	}
 	return nil
 }
 
-// lastProvider returns the provider name threaded into the most recent RecordFact call.
-func (r *fakeFactRecorder) lastProvider() string {
+// lastProvider returns the audit route the most recently appended fact was filed under.
+func (r *fakeFactSink) lastProvider() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.providers) == 0 {
+	if len(r.routes) == 0 {
 		return ""
 	}
-	return r.providers[len(r.providers)-1]
+	return r.routes[len(r.routes)-1]
 }
 
-// recordedProviders returns the provider name threaded into each RecordFact call, in order — the
+// recordedProviders returns the audit route each appended fact was filed under, in order — the
 // fan-out a single annotation-routed batch produced.
-func (r *fakeFactRecorder) recordedProviders() []string {
+func (r *fakeFactSink) recordedProviders() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.providers...)
+	return append([]string(nil), r.routes...)
 }
 
-func (r *fakeFactRecorder) auditIDs() []string {
+func (r *fakeFactSink) auditIDs() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	ids := make([]string, 0, len(r.events))
-	for _, event := range r.events {
-		ids = append(ids, string(event.AuditID))
+	ids := make([]string, 0, len(r.facts))
+	for _, fact := range r.facts {
+		ids = append(ids, fact.AuditID)
 	}
 	return ids
 }
 
-func (r *fakeFactRecorder) len() int {
+func (r *fakeFactSink) len() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.events)
+	return len(r.facts)
 }
 
 // eventListBody wraps zero or more event JSON fragments into an EventList body.
@@ -140,8 +143,8 @@ const acceptedCreateEvent = `{"kind":"Event","level":"RequestResponse","auditID"
 // TestAuditHandler_NamedDefaultRouteThreadsItsProvider checks that /audit-webhook/default is an
 // ordinary named route: it records its facts under the "default" ClusterProvider name.
 func TestAuditHandler_NamedDefaultRouteThreadsItsProvider(t *testing.T) {
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` + acceptedCreateEvent + `]}`
@@ -159,8 +162,8 @@ func TestAuditHandler_NamedRouting(t *testing.T) {
 	body := eventListBody(acceptedCreateEvent)
 
 	t.Run("a named route records under its own name", func(t *testing.T) {
-		recorder := &fakeFactRecorder{}
-		handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+		recorder := &fakeFactSink{}
+		handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: recorder})
 		require.NoError(t, err)
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body)
 		require.Equal(t, http.StatusOK, w.Code)
@@ -168,8 +171,8 @@ func TestAuditHandler_NamedRouting(t *testing.T) {
 	})
 
 	t.Run("a route no ClusterProvider declares is stored, not refused", func(t *testing.T) {
-		recorder := &fakeFactRecorder{}
-		handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+		recorder := &fakeFactSink{}
+		handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: recorder})
 		require.NoError(t, err)
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/not-declared-yet", body)
 		require.Equal(t, http.StatusOK, w.Code,
@@ -179,8 +182,8 @@ func TestAuditHandler_NamedRouting(t *testing.T) {
 	})
 
 	t.Run("default is an ordinary route", func(t *testing.T) {
-		recorder := &fakeFactRecorder{}
-		handler, err := NewAuditHandler(AuditHandlerConfig{FactRecorder: recorder})
+		recorder := &fakeFactSink{}
+		handler, err := NewAuditHandler(AuditHandlerConfig{FactPublisher: recorder})
 		require.NoError(t, err)
 		w := serveBody(t, handler, http.MethodPost, defaultRoute, body)
 		require.Equal(t, http.StatusOK, w.Code)
@@ -188,8 +191,8 @@ func TestAuditHandler_NamedRouting(t *testing.T) {
 	})
 
 	t.Run("bare endpoint is 400 while no annotation key is configured", func(t *testing.T) {
-		recorder := &fakeFactRecorder{}
-		handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+		recorder := &fakeFactSink{}
+		handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 		require.NoError(t, err)
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook", body)
 		assert.Equal(t, http.StatusBadRequest, w.Code,
@@ -223,10 +226,10 @@ func annotatedEvent(auditID string, annotations map[string]string) string {
 // routes, and an event that names none is rejected by itself, never credited to a fallback, while
 // the rest of the batch still lands. A route no ClusterProvider has declared is NOT a rejection.
 func TestAuditHandler_AnnotationRouting(t *testing.T) {
-	newHandler := func(t *testing.T, recorder *fakeFactRecorder) *AuditHandler {
+	newHandler := func(t *testing.T, recorder *fakeFactSink) *AuditHandler {
 		t.Helper()
 		handler, err := NewAuditHandler(AuditHandlerConfig{
-			FactRecorder:            recorder,
+			FactPublisher:           recorder,
 			AuditRouteAnnotationKey: clusterAnnotation,
 		})
 		require.NoError(t, err)
@@ -234,7 +237,7 @@ func TestAuditHandler_AnnotationRouting(t *testing.T) {
 	}
 
 	t.Run("one batch fans out to several source clusters", func(t *testing.T) {
-		recorder := &fakeFactRecorder{}
+		recorder := &fakeFactSink{}
 		handler := newHandler(t, recorder)
 
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(
@@ -256,7 +259,7 @@ func TestAuditHandler_AnnotationRouting(t *testing.T) {
 			{"a different key", map[string]string{"other.io/cluster": "prod-eu-1"}},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
-				recorder := &fakeFactRecorder{}
+				recorder := &fakeFactSink{}
 				handler := newHandler(t, recorder)
 
 				w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(
@@ -273,7 +276,7 @@ func TestAuditHandler_AnnotationRouting(t *testing.T) {
 	})
 
 	t.Run("a route no ClusterProvider declares is stored like any other", func(t *testing.T) {
-		recorder := &fakeFactRecorder{}
+		recorder := &fakeFactSink{}
 		handler := newHandler(t, recorder)
 
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook", eventListBody(
@@ -285,7 +288,7 @@ func TestAuditHandler_AnnotationRouting(t *testing.T) {
 	})
 
 	t.Run("named routes ignore the annotation", func(t *testing.T) {
-		recorder := &fakeFactRecorder{}
+		recorder := &fakeFactSink{}
 		handler := newHandler(t, recorder)
 
 		w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-us-1", eventListBody(
@@ -399,8 +402,8 @@ func TestAuditHandler_DecodeErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+			recorder := &fakeFactSink{}
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 			require.NoError(t, err)
 
 			w := serveBody(t, handler, http.MethodPost, defaultRoute, tt.body)
@@ -411,8 +414,8 @@ func TestAuditHandler_DecodeErrors(t *testing.T) {
 }
 
 func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{MaxRequestBodyBytes: 32, FactRecorder: recorder}))
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{MaxRequestBodyBytes: 32, FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent))
@@ -422,8 +425,8 @@ func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
 }
 
 func TestAuditHandler_EmptyEventListRecordsNothing(t *testing.T) {
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody())
@@ -434,8 +437,8 @@ func TestAuditHandler_EmptyEventListRecordsNothing(t *testing.T) {
 // TestAuditHandler_AcceptedEventRecordsFact is the happy path: a canonical
 // mutating event reaches the FactRecorder and the request returns 200.
 func TestAuditHandler_AcceptedEventRecordsFact(t *testing.T) {
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent))
@@ -456,8 +459,8 @@ func TestAuditHandler_NilRecorderAcceptsWithoutRecording(t *testing.T) {
 // TestAuditHandler_RecordsEveryAcceptedEventInBatch confirms the handler walks
 // the whole list, recording each accepted event in order.
 func TestAuditHandler_RecordsEveryAcceptedEventInBatch(t *testing.T) {
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	second := `{"kind":"Event","auditID":"update-1","stage":"ResponseComplete","verb":"update",` +
@@ -474,8 +477,8 @@ func TestAuditHandler_RecordsEveryAcceptedEventInBatch(t *testing.T) {
 // TestAuditHandler_RecordFactErrorFailsRequest pins the retry contract: a
 // fact-store failure surfaces as 500 so the API server redelivers.
 func TestAuditHandler_RecordFactErrorFailsRequest(t *testing.T) {
-	recorder := &fakeFactRecorder{err: errors.New("fact store down")}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{err: errors.New("fact store down")}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent))
@@ -563,8 +566,8 @@ func TestAuditHandler_RejectedEventsAreDropped(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+			recorder := &fakeFactSink{}
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 			require.NoError(t, err)
 
 			w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(tt.event))
@@ -586,7 +589,9 @@ func TestAuditHandler_AcceptedEdgeCases(t *testing.T) {
 		{
 			name: "scale subresource forwards",
 			event: `{"kind":"Event","auditID":"scale-1","stage":"ResponseComplete","verb":"patch",` +
-				`"objectRef":{"resource":"deployments","apiGroup":"apps","apiVersion":"apps/v1","subresource":"scale"},` +
+				`"user":{"username":"alice"},` +
+				`"objectRef":{"resource":"deployments","apiGroup":"apps","apiVersion":"apps/v1",` +
+				`"name":"web","subresource":"scale"},` +
 				`"responseStatus":{"code":200},` +
 				`"responseObject":{"kind":"Scale","metadata":{"resourceVersion":"5"}}}`,
 			auditID: "scale-1",
@@ -594,6 +599,7 @@ func TestAuditHandler_AcceptedEdgeCases(t *testing.T) {
 		{
 			name: "bodyless delete is accepted",
 			event: `{"kind":"Event","auditID":"delete-1","stage":"ResponseComplete","verb":"delete",` +
+				`"user":{"username":"alice"},` +
 				`"objectRef":{"resource":"configmaps","apiVersion":"v1","name":"cm"},` +
 				`"responseStatus":{"code":200}}`,
 			auditID: "delete-1",
@@ -601,7 +607,8 @@ func TestAuditHandler_AcceptedEdgeCases(t *testing.T) {
 		{
 			name: "missing response status is accepted",
 			event: `{"kind":"Event","auditID":"nostatus-1","stage":"ResponseComplete","verb":"create",` +
-				`"objectRef":{"resource":"configmaps","apiVersion":"v1"},` +
+				`"user":{"username":"alice"},` +
+				`"objectRef":{"resource":"configmaps","apiVersion":"v1","name":"cm"},` +
 				`"responseObject":{"metadata":{"resourceVersion":"5"}}}`,
 			auditID: "nostatus-1",
 		},
@@ -609,8 +616,8 @@ func TestAuditHandler_AcceptedEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+			recorder := &fakeFactSink{}
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 			require.NoError(t, err)
 
 			w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(tt.event))
@@ -620,12 +627,13 @@ func TestAuditHandler_AcceptedEdgeCases(t *testing.T) {
 	}
 }
 
-// TestAuditHandler_BatchStopsOnFirstRecordError confirms a fact-store failure on
-// an earlier event short-circuits the batch: later events are not recorded and
-// the whole request is 500.
+// TestAuditHandler_BatchStopsOnFirstRecordError confirms a transport failure fails the whole
+// request: nothing from the batch reaches the fact log and the API server gets a 500, so it
+// retries the delivery. A retried batch appends the same facts under fresh stream IDs, which is
+// safe because a fact is keyed data rather than a position in a sequence.
 func TestAuditHandler_BatchStopsOnFirstRecordError(t *testing.T) {
-	recorder := &fakeFactRecorder{err: errors.New("fact store down")}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{err: errors.New("fact store down")}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	second := `{"kind":"Event","auditID":"update-1","stage":"ResponseComplete","verb":"update",` +
@@ -639,24 +647,23 @@ func TestAuditHandler_BatchStopsOnFirstRecordError(t *testing.T) {
 
 // TestAuditHandler_ForwardsRealScaleSubresourceRecording drives the captured
 // `kubectl scale deployment` recording through the full path and asserts the
-// deployments/scale event reaches the FactRecorder with verb/resource/subresource
+// deployments/scale event reaches the fact log with verb/resource/subresource
 // intact rather than being dropped.
 func TestAuditHandler_ForwardsRealScaleSubresourceRecording(t *testing.T) {
 	recording, err := os.ReadFile("testdata/audit-events/deployment-scale-subresource.json")
 	require.NoError(t, err, "the captured scale recording must be readable")
 
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(string(recording)))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, 1, recorder.len(), "the real deployments/scale recording must be recorded")
 
-	got := recorder.events[0]
-	require.NotNil(t, got.ObjectRef)
-	assert.Equal(t, "deployments", got.ObjectRef.Resource)
-	assert.Equal(t, "scale", got.ObjectRef.Subresource)
+	got := recorder.facts[0]
+	assert.Equal(t, "apps/deployments", got.GroupResource, "the scale target keeps the deployment's type")
+	assert.Equal(t, "scale", got.Subresource)
 	assert.Equal(t, "patch", got.Verb)
 }
 
@@ -673,8 +680,8 @@ func TestAuditHandler_FixtureDryRunAndUnchangedRVDropped(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+			recorder := &fakeFactSink{}
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 			require.NoError(t, err)
 
 			w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListFixtureBody(t, tt.fixture))
@@ -707,8 +714,8 @@ func TestAuditHandler_FixturePersistedAndCreateRecorded(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recorder := &fakeFactRecorder{}
-			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+			recorder := &fakeFactSink{}
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 			require.NoError(t, err)
 
 			w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListFixtureBody(t, tt.fixture))

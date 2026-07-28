@@ -6,14 +6,46 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	authnv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
+
+// mutationEvent builds an apps/deployments event for team-a/web authored by username,
+// whose objectRef + responseObject carry uid and resourceVersion rv.
+func mutationEvent(verb, uid, rv, username string) auditv1.Event {
+	const namespace, name = "team-a", "web"
+	body := fmt.Sprintf(`{"apiVersion":"apps/v1","kind":"Deployment",`+
+		`"metadata":{"name":%q,"namespace":%q,"uid":%q,"resourceVersion":%q}}`, name, namespace, uid, rv)
+	return auditv1.Event{
+		AuditID:        "audit-1",
+		Verb:           verb,
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.Now()},
+		User:           authnv1.UserInfo{Username: username},
+		ObjectRef: &auditv1.ObjectReference{
+			APIGroup:   "apps",
+			APIVersion: "v1",
+			Resource:   "deployments",
+			Namespace:  namespace,
+			Name:       name,
+			UID:        k8stypes.UID(uid),
+		},
+		ResponseObject: &runtime.Unknown{Raw: []byte(body)},
+	}
+}
+
+func appsDeploymentGVR() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+}
 
 // collectionDeleteEvent is one name-less collection delete over count objects.
 func collectionDeleteEvent(selector string, count int) auditv1.Event {
@@ -41,7 +73,7 @@ func collectionDeleteEvent(selector string, count int) auditv1.Event {
 }
 
 func TestAuthorFactFromEvent_CollectionCarriesScopeSelectorAndUIDs(t *testing.T) {
-	fact, groupResource, ok := AuthorFactFromEvent(t.Context(), collectionDeleteEvent("app%3Dweb", 2))
+	fact, groupResource, ok := AuthorFactFromEvent(t.Context(), collectionDeleteEvent("app%3Dweb", 2), 0)
 	require.True(t, ok, "a name-less deletecollection is the case that DOES produce a fact")
 	require.Equal(t, "configmaps", groupResource.Resource)
 	require.Equal(t, "team-a", fact.Namespace)
@@ -55,7 +87,7 @@ func TestAuthorFactFromEvent_UIDSetIsDroppedPastTheCapAndCounted(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	fact, _, ok := AuthorFactFromEvent(t.Context(), collectionDeleteEvent("", DefaultCollectionUIDCap+1))
+	fact, _, ok := AuthorFactFromEvent(t.Context(), collectionDeleteEvent("", DefaultCollectionUIDCap+1), 0)
 	require.True(t, ok)
 	// The fact degrades to scope matching, which is already correct — and says so in the metrics,
 	// so "we fell back to scope" is visible rather than inferred.
@@ -74,7 +106,7 @@ func TestAuthorFactFromEvent_BodylessCollectionStillProducesAFact(t *testing.T) 
 
 	// The shape a production cluster with --audit-webhook-truncate-enabled actually sends, and the
 	// one the old expander gave up on entirely.
-	fact, _, ok := AuthorFactFromEvent(t.Context(), event)
+	fact, _, ok := AuthorFactFromEvent(t.Context(), event, 0)
 	require.True(t, ok)
 	require.Nil(t, fact.UIDs)
 	require.Equal(t, "alice", fact.Author)
@@ -98,14 +130,14 @@ func TestAuthorFactFromEvent_EventsThatCanNameNobody(t *testing.T) {
 	}
 	for name, event := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, _, ok := AuthorFactFromEvent(t.Context(), event)
+			_, _, ok := AuthorFactFromEvent(t.Context(), event, 0)
 			require.False(t, ok)
 		})
 	}
 }
 
 func TestAuthorFactFromEvent_ObjectWriteCarriesTheIdentityTheJoinNeeds(t *testing.T) {
-	fact, groupResource, ok := AuthorFactFromEvent(t.Context(), mutationEvent("update", "uid-1", "101", "alice"))
+	fact, groupResource, ok := AuthorFactFromEvent(t.Context(), mutationEvent("update", "uid-1", "101", "alice"), 0)
 	require.True(t, ok)
 	require.Equal(t, "apps", groupResource.Group)
 	require.Equal(t, "deployments", groupResource.Resource)

@@ -101,12 +101,15 @@ var (
 	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes,
 	// labelled by {result, group, version, resource}.
 	AttributionResolutionsTotal metric.Int64Counter
-	// AttributionFactEventsTotal counts attribution fact lifecycle events in Redis,
-	// labelled by bounded op (written/matched/expired_unmatched/late).
+	// AttributionFactEventsTotal counts attribution fact lifecycle events, labelled by bounded op:
+	// "written" is one fact appended to the fact log, "matched" is one joined by a watch event.
+	// Together they say how much of what is published is ever used.
 	AttributionFactEventsTotal metric.Int64Counter
 	// AttributionResolutionWaitSeconds records resolver wait time by final result.
 	AttributionResolutionWaitSeconds metric.Float64Histogram
-	// AttributionFactIndexSize gauges attribution fact keys currently held in Redis.
+	// AttributionFactIndexSize gauges the entries the in-memory fact index currently holds across
+	// every scope and match structure. Read against the eviction counter it says whether the caps
+	// are binding.
 	AttributionFactIndexSize metric.Int64Gauge
 	// AttributionFactIndexEvictionsTotal counts facts dropped from the in-memory fact index because
 	// it was full, labelled by bounded reason (per_type/total). An attribution lost to a full index

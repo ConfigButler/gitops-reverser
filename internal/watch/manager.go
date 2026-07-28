@@ -26,6 +26,7 @@ import (
 
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -65,6 +66,13 @@ type Manager struct {
 	// joining the audit attribution index (RV/UID match, bounded grace window). Nil
 	// is configured-author mode (no audit/Redis): every event commits as the committer.
 	AuthorResolver AuthorResolver
+	// FactStreams is the process-wide subscription set the attribution fact follower reads. Each
+	// running target watch holds one reference on the (audit route, group/resource) it covers, so
+	// the process follows a type while at least one watch needs it and stops following it when the
+	// last one goes away — which is the whole point of the per-type fan-out: facts for a type nobody
+	// watches are appended and never received. Nil is configured-author mode: no follower runs, so
+	// no subscription is taken.
+	FactStreams *queue.FactStreamSet
 	// WatchCursorStore optionally persists per-watch resourceVersion cursors so
 	// reconnects can resume without replaying the full type snapshot.
 	WatchCursorStore CursorStore

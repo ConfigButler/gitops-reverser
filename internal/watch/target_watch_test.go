@@ -210,7 +210,6 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 					Fact:   queue.AuthorFact{Author: "alice", Email: "alice@example.com"},
 					Result: queue.AttributionExactUser,
 				},
-				hitAfter: 1,
 			},
 			time.Second, logr.Discard(),
 		),
@@ -842,4 +841,55 @@ func (f *fakeWatchCursorStore) lastLookedUpUID() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lookedUpUID
+}
+
+// TestFollowFactsForWatch_ReferenceCountsPerTypeAndRoute proves the fan-out is driven by the
+// watches themselves. A type is followed while at least one watch covers it and unfollowed when the
+// last one goes away, so facts for a type nobody watches are appended to a stream and never
+// received — which is the only reason publishing per type is cheaper than publishing everything.
+//
+// The reference count is the part that has to be right. Several WatchRules and several GitTargets
+// routinely cover one type; a plain set would unfollow on the first watch to stop and silently kill
+// attribution for the ones still running.
+func TestFollowFactsForWatch_ReferenceCountsPerTypeAndRoute(t *testing.T) {
+	manager := &Manager{FactStreams: queue.NewFactStreamSet()}
+	gitDest := types.NewResourceReference("target", "default")
+	other := types.NewResourceReference("second-target", "default")
+
+	releaseFirst := manager.followFactsForWatch(gitDest, targetWatchKey{GVR: configmapsGVR, Namespace: "apps"})
+	require.Equal(t, 1, manager.FactStreams.Len())
+
+	// A second watch on the SAME type in another namespace, and a second GitTarget on the same
+	// type, both share one stream: a fact names a write that happened, not a consumer interested
+	// in it.
+	releaseSecond := manager.followFactsForWatch(gitDest, targetWatchKey{GVR: configmapsGVR, Namespace: "ops"})
+	releaseThird := manager.followFactsForWatch(other, targetWatchKey{GVR: configmapsGVR})
+	assert.Equal(t, 1, manager.FactStreams.Len(), "one type is one stream, however many watches cover it")
+
+	// A different type is a different stream.
+	releaseDeployments := manager.followFactsForWatch(gitDest, targetWatchKey{GVR: resolverGVR})
+	assert.Equal(t, 2, manager.FactStreams.Len())
+
+	releaseFirst()
+	releaseFirst() // idempotent: a watch torn down on both an error path and its deferred cleanup
+	assert.Equal(t, 2, manager.FactStreams.Len(), "the type stays followed while another watch needs it")
+
+	releaseSecond()
+	releaseThird()
+	assert.Equal(t, 1, manager.FactStreams.Len(), "the last watch on a type unfollows it")
+
+	releaseDeployments()
+	assert.Zero(t, manager.FactStreams.Len())
+}
+
+// Configured-author mode has no follower and no index, so a watch takes no subscription. The nil
+// check is what keeps attribution optional rather than merely disabled.
+func TestFollowFactsForWatch_IsANoOpWithoutAttribution(t *testing.T) {
+	manager := &Manager{}
+	release := manager.followFactsForWatch(
+		types.NewResourceReference("target", "default"),
+		targetWatchKey{GVR: configmapsGVR},
+	)
+	require.NotNil(t, release, "the release must be safe to defer even with attribution off")
+	release()
 }

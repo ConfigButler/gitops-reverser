@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
@@ -22,13 +23,10 @@ import (
 // "attribution is enabled but nothing matched within the grace".
 type absentLookup struct{}
 
-func (absentLookup) LookupAuthorResolution(
+func (absentLookup) Await(
 	_ context.Context,
-	_ string,
-	_ schema.GroupVersionResource,
-	_ k8stypes.UID,
-	_ string,
-	_ bool,
+	_ queue.FactQuery,
+	_ time.Duration,
 ) queue.AuthorResolution {
 	return queue.AuthorResolution{Result: queue.AttributionAbsent}
 }
@@ -47,11 +45,13 @@ func windowOutcomeAttributionMissed(t *testing.T) git.AttributionOutcome {
 	t.Helper()
 	_, outcome := watch.NewAuthorResolver(absentLookup{}, 0, logr.Discard()).ResolveAuthor(
 		context.Background(),
-		"default",
-		schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
-		k8stypes.UID("uid-1"),
-		"101",
-		true,
+		watch.AuthorQuery{
+			AuditRoute:      "default",
+			GVR:             schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+			UID:             k8stypes.UID("uid-1"),
+			ResourceVersion: "101",
+			ExactCapable:    true,
+		},
 	)
 	return outcome
 }
