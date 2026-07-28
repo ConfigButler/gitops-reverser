@@ -42,6 +42,10 @@ type fakeFactSink struct {
 	err    error
 	facts  []queue.AuthorFact
 	routes []string
+	// types records the group/resource each fact was filed under. It lives on the STREAM KEY now
+	// rather than in the fact, so this is where a test asserting "the right type was published"
+	// has to look.
+	types []string
 }
 
 func (r *fakeFactSink) PublishFacts(_ context.Context, key queue.FactStreamKey, facts []queue.AuthorFact) error {
@@ -53,6 +57,7 @@ func (r *fakeFactSink) PublishFacts(_ context.Context, key queue.FactStreamKey, 
 	for _, fact := range facts {
 		r.facts = append(r.facts, fact)
 		r.routes = append(r.routes, key.AuditRoute)
+		r.types = append(r.types, key.GroupResource.String())
 	}
 	return nil
 }
@@ -661,10 +666,9 @@ func TestAuditHandler_ForwardsRealScaleSubresourceRecording(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, 1, recorder.len(), "the real deployments/scale recording must be recorded")
 
-	got := recorder.facts[0]
-	assert.Equal(t, "apps/deployments", got.GroupResource, "the scale target keeps the deployment's type")
-	assert.Equal(t, "scale", got.Subresource)
-	assert.Equal(t, "patch", got.Verb)
+	// The type is the stream's identity, so it is asserted on the key rather than on the fact.
+	assert.Equal(t, "deployments.apps", recorder.types[0], "the scale target keeps the deployment's type")
+	assert.Equal(t, "patch", recorder.facts[0].Verb, "a /scale patch is published as the patch it is")
 }
 
 // TestAuditHandler_FixtureDryRunAndUnchangedRVDropped drives the real captured

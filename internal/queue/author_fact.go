@@ -73,23 +73,38 @@ const (
 )
 
 // AuthorFact is the minimal attribution fact published per accepted, mutating audit event and read
-// back by the watch-event resolver. It names an author candidate and carries the evidence needed to
-// decide confidence; it is never object state. The object identity travels in the value rather than
-// in a key, so the fact is self-describing wherever the transport puts it.
+// back by the watch-event resolver. It names an author candidate and carries the evidence the join
+// needs to decide confidence; it is never object state.
+//
+// Every field here is either read by the join or printed when a fact is investigated. That is a
+// deliberate bar, because a fact is not stored once: it is broadcast to every process following its
+// type, held for the whole TTL, and replayed into memory on every restart, so a field nothing reads
+// is paid for on all three. Three fields were removed for failing it:
+//
+//   - the group/resource, which is the STREAM'S OWN NAME — the index takes the scope from the
+//     entry's key, never from the fact, so carrying it duplicated the routing on every entry;
+//   - the object's name and subresource, which no tier joins on and nothing logs. The join is by
+//     uid, resourceVersion, or scope.
+//
+// isServiceAccount went the same way, for a different reason: it is not evidence, it is a prefix
+// check on Author that the reader can do for itself.
 type AuthorFact struct {
-	GroupResource    string `json:"groupResource,omitempty"`
-	Namespace        string `json:"namespace,omitempty"`
-	Name             string `json:"name,omitempty"`
-	UID              string `json:"uid,omitempty"`
-	Author           string `json:"author"`
-	DisplayName      string `json:"displayName,omitempty"`
-	Email            string `json:"email,omitempty"`
-	Verb             string `json:"verb,omitempty"`
-	Subresource      string `json:"subresource,omitempty"`
-	AuditID          string `json:"auditID,omitempty"`
-	ResourceVersion  string `json:"resourceVersion,omitempty"`
-	StageTimestamp   string `json:"stageTimestamp,omitempty"`
-	IsServiceAccount bool   `json:"isServiceAccount,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	UID       string `json:"uid,omitempty"`
+	Author    string `json:"author"`
+	// DisplayName and Email are the actor's, when the API server supplied them. They are the only
+	// fields here that are not identity or evidence: they exist because a commit author is a name
+	// and an email, and re-deriving them at commit time would need a second lookup.
+	DisplayName string `json:"displayName,omitempty"`
+	Email       string `json:"email,omitempty"`
+	Verb        string `json:"verb,omitempty"`
+	// AuditID is the one field the join never reads and is kept anyway. It is what ties a commit
+	// authored by the wrong person back to the audit event that named them, which is the single
+	// question a mis-attribution investigation asks and the one thing nothing else in the system
+	// can answer.
+	AuditID         string `json:"auditID,omitempty"`
+	ResourceVersion string `json:"resourceVersion,omitempty"`
+	StageTimestamp  string `json:"stageTimestamp,omitempty"`
 
 	// LabelSelector is the selector the request URI expressed, carried on a COLLECTION fact only.
 	// It is the intent the actor stated, and evaluating it against the object a watch event carries
@@ -117,10 +132,18 @@ func attributionResultForFact(fact AuthorFact, weak bool) AttributionResult {
 	if weak {
 		return AttributionWeak
 	}
-	if fact.IsServiceAccount {
+	if fact.isServiceAccount() {
 		return AttributionExactServiceAccount
 	}
 	return AttributionExactUser
+}
+
+// isServiceAccount reports whether the actor is a service account rather than a human. It is
+// derived rather than carried: the API server spells a service account one way and only one way, so
+// a stored bool would be the same check, denormalized onto every fact and able to disagree with the
+// name beside it.
+func (f AuthorFact) isServiceAccount() bool {
+	return strings.HasPrefix(f.Author, serviceAccountUserPrefix)
 }
 
 // AuthorFactFromEvent reduces one accepted, mutating audit event to the fact the stream carries,
@@ -157,18 +180,14 @@ func AuthorFactFromEvent(
 
 	groupResource := schema.GroupResource{Group: event.ObjectRef.APIGroup, Resource: event.ObjectRef.Resource}
 	fact := AuthorFact{
-		GroupResource:    groupResourceKey(groupResource.Group, groupResource.Resource),
-		Namespace:        identity.Namespace,
-		Name:             identity.Name,
-		UID:              string(identity.UID),
-		Author:           user.Username,
-		DisplayName:      user.DisplayName,
-		Email:            user.Email,
-		Verb:             event.Verb,
-		Subresource:      event.ObjectRef.Subresource,
-		AuditID:          string(event.AuditID),
-		ResourceVersion:  resourceVersionFromEvent(event),
-		IsServiceAccount: strings.HasPrefix(user.Username, serviceAccountUserPrefix),
+		Namespace:       identity.Namespace,
+		UID:             string(identity.UID),
+		Author:          user.Username,
+		DisplayName:     user.DisplayName,
+		Email:           user.Email,
+		Verb:            event.Verb,
+		AuditID:         string(event.AuditID),
+		ResourceVersion: resourceVersionFromEvent(event),
 	}
 	if !event.StageTimestamp.IsZero() {
 		fact.StageTimestamp = event.StageTimestamp.UTC().Format(time.RFC3339Nano)
@@ -188,7 +207,6 @@ func AuthorFactFromEvent(
 // reports each of the N objects that changed, and the join belongs at the point where both are in
 // hand rather than in a receiver rebuilding N from one.
 func describeCollection(ctx context.Context, fact *AuthorFact, event auditv1.Event, uidCap int) {
-	fact.Name = ""
 	fact.UID = ""
 	fact.ResourceVersion = ""
 	fact.LabelSelector = labelSelectorFromRequestURI(event.RequestURI)

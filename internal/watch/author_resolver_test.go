@@ -92,7 +92,7 @@ func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 	sa := "system:serviceaccount:flux-system:kustomize-controller"
 	lookup := &fakeLookup{
 		resolution: queue.AuthorResolution{
-			Fact:   queue.AuthorFact{Author: sa, IsServiceAccount: true},
+			Fact:   queue.AuthorFact{Author: sa},
 			Result: queue.AttributionExactServiceAccount,
 		},
 	}

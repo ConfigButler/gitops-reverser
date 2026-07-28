@@ -101,9 +101,7 @@ const factIndexTestUID = "uid-1"
 // objectFact is one ordinary write's fact.
 func objectFact(author, rv string) AuthorFact {
 	return AuthorFact{
-		GroupResource:   "apps/deployments",
 		Namespace:       "team-a",
-		Name:            "web",
 		UID:             factIndexTestUID,
 		ResourceVersion: rv,
 		Author:          author,
@@ -115,7 +113,6 @@ func objectFact(author, rv string) AuthorFact {
 // uids the API server said it covered.
 func aliceCollectionFact(selector string, uids ...string) AuthorFact {
 	return AuthorFact{
-		GroupResource:  "apps/deployments",
 		Namespace:      "team-a",
 		Author:         "alice",
 		Verb:           "deletecollection",
@@ -166,7 +163,7 @@ func TestFactIndex_RouteIsolatesOtherwiseIdenticalFacts(t *testing.T) {
 	harness.publish(factIndexTestStream("prod-eu-1"), objectFact("alice", "101"))
 	harness.publish(factIndexTestStream("prod-us-1"), objectFact("bob", "101"))
 	// And the rv-only hatch, which is where it bites hardest because it carries no uid at all.
-	rvOnly := AuthorFact{GroupResource: "apps/deployments", Namespace: "team-a", ResourceVersion: "202", Verb: "update"}
+	rvOnly := AuthorFact{Namespace: "team-a", ResourceVersion: "202", Verb: "update"}
 	euOnly, usOnly := rvOnly, rvOnly
 	euOnly.Author, usOnly.Author = "eu-rv", "us-rv"
 	harness.publish(factIndexTestStream("prod-eu-1"), euOnly)
@@ -218,7 +215,7 @@ func TestFactIndex_PerTypeCapEvictsOldestFirstAndCountsIt(t *testing.T) {
 	// rv-only facts occupy one entry each, so the cap counts what the test publishes.
 	harness := newFactIndexHarness(t, FactIndexConfig{MaxFactsPerType: 2})
 	rvFact := func(author, rv string) AuthorFact {
-		return AuthorFact{GroupResource: "apps/deployments", ResourceVersion: rv, Author: author, Verb: "update"}
+		return AuthorFact{ResourceVersion: rv, Author: author, Verb: "update"}
 	}
 	key := factIndexTestStream("prod-eu-1")
 	harness.publish(key, rvFact("first", "1"), rvFact("second", "2"), rvFact("third", "3"))
@@ -227,7 +224,7 @@ func TestFactIndex_PerTypeCapEvictsOldestFirstAndCountsIt(t *testing.T) {
 	other := FactStreamKeyFor("prod-eu-1", schema.GroupResource{Resource: "configmaps"})
 	harness.publish(
 		other,
-		AuthorFact{GroupResource: "configmaps", ResourceVersion: "9", Author: "quiet", Verb: "update"},
+		AuthorFact{ResourceVersion: "9", Author: "quiet", Verb: "update"},
 	)
 
 	quiet := FactQuery{AuditRoute: "prod-eu-1", GroupResource: schema.GroupResource{Resource: "configmaps"},
@@ -251,14 +248,14 @@ func TestFactIndex_TotalCapEvictsFromTheLargestType(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{MaxFactsTotal: 2})
 	busy := factIndexTestStream("prod-eu-1")
 	harness.publish(busy,
-		AuthorFact{GroupResource: "apps/deployments", ResourceVersion: "1", Author: "first", Verb: "update"},
-		AuthorFact{GroupResource: "apps/deployments", ResourceVersion: "2", Author: "second", Verb: "update"},
+		AuthorFact{ResourceVersion: "1", Author: "first", Verb: "update"},
+		AuthorFact{ResourceVersion: "2", Author: "second", Verb: "update"},
 	)
 	require.Equal(t, "second", harness.resolve(objectQuery("prod-eu-1", "", "2", true)).Fact.Author)
 
 	quiet := FactStreamKeyFor("prod-eu-1", schema.GroupResource{Resource: "configmaps"})
 	harness.publish(quiet,
-		AuthorFact{GroupResource: "configmaps", ResourceVersion: "9", Author: "quiet", Verb: "update"})
+		AuthorFact{ResourceVersion: "9", Author: "quiet", Verb: "update"})
 
 	// The overflow falls on the type holding the most, so the pressure lands where it came from.
 	quietQuery := FactQuery{AuditRoute: "prod-eu-1", GroupResource: schema.GroupResource{Resource: "configmaps"},
@@ -408,7 +405,7 @@ func TestFactIndex_UnjoinableFactIsNotStored(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{})
 	key := factIndexTestStream("prod-eu-1")
 	harness.publish(key,
-		AuthorFact{GroupResource: "apps/deployments", Author: "nobody", Verb: "update"},
+		AuthorFact{Author: "nobody", Verb: "update"},
 		objectFact("alice", "101"),
 	)
 	require.Equal(t, "alice", harness.resolve(objectQuery("prod-eu-1", "uid-1", "101", true)).Fact.Author)

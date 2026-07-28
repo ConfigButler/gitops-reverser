@@ -144,6 +144,9 @@ var _ = Describe("Aggregated API deletecollection attribution", Label("aggregate
 // collectionResolutionCounts snapshots the two collection tiers so the spec can report which one
 // the aggregated collection delete actually took.
 func collectionResolutionCounts() map[string]float64 {
+	// Without this the queries below fail on a nil client and the tier goes unreported, which is a
+	// silent hole rather than a failure: the spec asserts the author, so it passes either way.
+	ensurePrometheusClient()
 	counts := map[string]float64{}
 	for _, tier := range []string{"collection_uid", "collection_scope"} {
 		n, err := queryPrometheus(fmt.Sprintf(

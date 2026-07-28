@@ -108,7 +108,19 @@ func (s *RedisFactStream) PublishFacts(ctx context.Context, key FactStreamKey, f
 		args.MaxLen = s.maxLen
 		args.Approx = true
 	}
-	if err := s.client.XAdd(ctx, args).Err(); err != nil {
+	// EXPIRE rides along with every append, so a stream whose type stops being written to deletes
+	// ITSELF one TTL later. Without it the keyspace only ever grows: MINID trimming is amortized
+	// onto the publish path, so a stream that goes quiet is never trimmed again and keeps its last
+	// entries for the life of the Redis instance. A namespace-scoped type that is garbage-collected
+	// once and never written again — the shape a torn-down namespace produces — would otherwise
+	// leave an immortal key behind for every (route, type) pair that ever saw one write.
+	//
+	// The deadline is refreshed by every append, so a busy stream never expires, and it matches the
+	// retention horizon, so the key dies exactly when its newest entry would have aged out anyway.
+	pipe := s.client.Pipeline()
+	pipe.XAdd(ctx, args)
+	pipe.Expire(ctx, streamKey, s.ttl)
+	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("append facts to %q: %w", streamKey, err)
 	}
 	s.trimIfDue(ctx, streamKey)

@@ -93,12 +93,12 @@ func TestAuditHandler_OneRequestOverThreeTypesBecomesThreeAppends(t *testing.T) 
 
 	require.Equal(t, queue.FactStreamKeyFor("prod-eu-1",
 		schema.GroupResource{Group: "apps", Resource: "deployments"}), appends[0].key)
-	require.Equal(t, []string{"web", "api"}, factNames(appends[0].facts),
+	require.Equal(t, []string{"uid-web", "uid-api"}, factUIDs(appends[0].facts),
 		"a group keeps the order its events arrived in")
 	require.Equal(t, queue.FactStreamKeyFor("prod-eu-1", schema.GroupResource{Resource: "configmaps"}), appends[1].key)
-	require.Equal(t, []string{"config", "other"}, factNames(appends[1].facts))
+	require.Equal(t, []string{"uid-config", "uid-other"}, factUIDs(appends[1].facts))
 	require.Equal(t, queue.FactStreamKeyFor("prod-eu-1", schema.GroupResource{Resource: "secrets"}), appends[2].key)
-	require.Equal(t, []string{"creds"}, factNames(appends[2].facts))
+	require.Equal(t, []string{"uid-creds"}, factUIDs(appends[2].facts))
 
 	require.Equal(t, "alice", appends[0].facts[0].Author)
 	require.Equal(t, "101", appends[0].facts[0].ResourceVersion)
@@ -152,7 +152,7 @@ func TestAuditHandler_NameLessDeleteCollectionPublishesOneFactWithItsSelector(t 
 	require.Equal(t, "team-a", fact.Namespace)
 	require.Equal(t, "app=web", fact.LabelSelector, "the selector is the intent the actor expressed")
 	require.Equal(t, []string{"uid-1", "uid-2"}, fact.UIDs, "a body that was there upgrades the join to uid membership")
-	require.Empty(t, fact.Name, "a collection request names no object")
+	require.Empty(t, fact.UID, "a collection request names no object")
 }
 
 func TestAuditHandler_PublishFailureIsRetryable(t *testing.T) {
@@ -178,11 +178,12 @@ func TestAuditHandler_NoPublisherPublishesNothing(t *testing.T) {
 	require.Equal(t, 1, recorder.len())
 }
 
-// factNames flattens a batch to the object names it is about.
-func factNames(facts []queue.AuthorFact) []string {
+// factUIDs flattens a batch to the object uids it is about. The uid is what identifies an object in
+// a fact now — the name was dropped from the wire, because no join tier reads it.
+func factUIDs(facts []queue.AuthorFact) []string {
 	names := make([]string, 0, len(facts))
 	for _, fact := range facts {
-		names = append(names, fact.Name)
+		names = append(names, fact.UID)
 	}
 	return names
 }

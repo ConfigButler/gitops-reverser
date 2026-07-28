@@ -47,7 +47,6 @@ func applyFact(index *queue.FactIndex, fact queue.AuthorFact) {
 // set the API server said it deleted, and nil is the body-less case.
 func collectionFact(selector string, uids []string) queue.AuthorFact {
 	return queue.AuthorFact{
-		GroupResource:  "configmaps",
 		Namespace:      "team-a",
 		Author:         "alice",
 		Email:          "alice@example.com",
@@ -146,8 +145,7 @@ func TestAuthorResolver_RouteIsolatesOtherwiseIdenticalFacts(t *testing.T) {
 	resolver, index := newIndexResolver(t, 0)
 	index.Apply(context.Background(), queue.FactEntry{
 		Key: queue.FactStreamKeyFor("prod-us-1", configmapsResolverGVR.GroupResource()),
-		Facts: []queue.AuthorFact{{
-			GroupResource: "configmaps", Namespace: "team-a", UID: "uid-1",
+		Facts: []queue.AuthorFact{{Namespace: "team-a", UID: "uid-1",
 			ResourceVersion: "101", Author: "carol", Verb: "update",
 		}},
 	})
@@ -175,8 +173,7 @@ func TestAuthorResolver_WaitsForAFactDeliveredDuringTheGrace(t *testing.T) {
 
 	go func() {
 		time.Sleep(30 * time.Millisecond)
-		applyFact(index, queue.AuthorFact{
-			GroupResource: "configmaps", Namespace: "team-a", UID: "uid-1",
+		applyFact(index, queue.AuthorFact{Namespace: "team-a", UID: "uid-1",
 			ResourceVersion: "101", Author: "bob", Verb: "update",
 		})
 	}()

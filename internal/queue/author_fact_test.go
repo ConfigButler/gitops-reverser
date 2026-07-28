@@ -79,8 +79,7 @@ func TestAuthorFactFromEvent_CollectionCarriesScopeSelectorAndUIDs(t *testing.T)
 	require.Equal(t, "team-a", fact.Namespace)
 	require.Equal(t, "app=web", fact.LabelSelector)
 	require.Equal(t, []string{"uid-0", "uid-1"}, fact.UIDs)
-	require.Empty(t, fact.Name)
-	require.Empty(t, fact.UID)
+	require.Empty(t, fact.UID, "a collection request names no object")
 }
 
 func TestAuthorFactFromEvent_UIDSetIsDroppedPastTheCapAndCounted(t *testing.T) {
@@ -141,7 +140,6 @@ func TestAuthorFactFromEvent_ObjectWriteCarriesTheIdentityTheJoinNeeds(t *testin
 	require.True(t, ok)
 	require.Equal(t, "apps", groupResource.Group)
 	require.Equal(t, "deployments", groupResource.Resource)
-	require.Equal(t, "apps/deployments", fact.GroupResource)
 	require.Equal(t, "uid-1", fact.UID)
 	require.Equal(t, "101", fact.ResourceVersion)
 	require.Equal(t, "alice", fact.Author)

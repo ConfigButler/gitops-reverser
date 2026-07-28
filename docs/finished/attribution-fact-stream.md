@@ -797,14 +797,24 @@ already true of any restart today.
 ### What a fact holds about a person
 
 A fact names an actor, so it carries personal data and should be described as such: the username,
-and the display name and email when the API server supplied them, alongside the object identity,
-verb, and stage timestamp. That is the same content the v1 fact keys hold today, taken from the
-audit event's `user` field, and moving it from a key to a stream entry changes where it lives rather
-than what it is.
+and the display name and email when the API server supplied them, alongside the object's namespace
+and uid, the verb, and the stage timestamp. That is taken from the audit event's `user` field, and
+moving it from a key to a stream entry changed where it lives rather than what it is.
+
+It carries **less** than the v1 keys did. The switch-over dropped the object's name and subresource
+and the group/resource from the wire, because no join tier reads them — the type is the stream's own
+name, and the join is by uid, resourceVersion, or scope. `isServiceAccount` went too, being a prefix
+check on the username rather than evidence. A fact is broadcast to every process following its type,
+held for the whole TTL, and replayed into memory on every restart, so a field nothing reads is paid
+for three times; on a real collection-delete fact the removals cut the entry by about a quarter. The
+one field kept without being read is `auditID`, which is what ties a commit authored by the wrong
+person back to the audit event that named them.
 
 Retention moves the same way. A fact is held for `--author-attribution-ttl` (ten minutes by default)
 in the Redis stream and, once read, in the process's in-memory index, and the trim and the TTL sweep
-drop it after that. Nothing writes it to Git: the commit carries the author's
+drop it after that. The stream KEY carries the same deadline, refreshed by every append, so a type
+that stops being written to takes its stream with it instead of leaving an immortal key behind; the
+in-memory transport forgets an idle ring on the same horizon. Nothing writes it to Git: the commit carries the author's
 name and email as commit metadata, which is what the actor already published by making the change.
 Access is whoever can read the Redis keyspace and the pod's memory, which is why the keyspace is
 namespaced per install ([`--redis-key-prefix`](../configuration.md)) and why an install that
