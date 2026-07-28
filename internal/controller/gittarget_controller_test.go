@@ -1119,6 +1119,11 @@ var _ = Describe("GitTarget Controller Security", func() {
 			// GitTarget when its age-key Secret disappears. The wait must therefore exceed a full
 			// RequeueStreamSettleInterval — with the shared 10s `timeout` it equalled one, so a
 			// deletion landing just after a reconcile lost the race by milliseconds.
+			//
+			// Two intervals, not one: the previous budget covered exactly two ticks with no slack, so
+			// a CI runner busy enough to delay one of them by a second failed the spec on timing
+			// alone. Eventually returns as soon as the Secret is back, so the extra room is free on
+			// every run that was going to pass anyway.
 			Eventually(func(g Gomega) {
 				var recreated corev1.Secret
 				err := k8sClient.Get(ctx, secretKey, &recreated)
@@ -1127,7 +1132,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				g.Expect(ageKeyName).NotTo(BeEmpty())
 				g.Expect(string(ageKeyValue)).To(ContainSubstring("AGE-SECRET-KEY-"))
 				g.Expect(recreated.Annotations).To(HaveKey(encryptionSecretRecipientAnnoKey))
-			}, RequeueStreamSettleInterval+timeout, interval).Should(Succeed())
+			}, 2*RequeueStreamSettleInterval+timeout, interval).Should(Succeed())
 
 			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())

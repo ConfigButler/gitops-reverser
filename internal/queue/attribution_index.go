@@ -78,6 +78,15 @@ const (
 	// RV and never matches the removal event's RV). The reason is driven by the value's
 	// verb, not by which key matched.
 	AttributionExactDeleteCollectionItem AttributionResult = "exact_deletecollection_item"
+	// AttributionCollectionUID is a removal matched to a deletecollection fact whose uid set
+	// contains this object. There is no over-attribution risk in it: either the API server said it
+	// deleted this object, or it did not.
+	AttributionCollectionUID AttributionResult = "collection_uid"
+	// AttributionCollectionScope is a removal matched to a deletecollection fact by scope alone —
+	// same type and namespace, selector accepting the object's labels, within the collection window.
+	// It is the weakest evidence the join has, which is why it is reached only when every more
+	// specific tier missed.
+	AttributionCollectionScope AttributionResult = "collection_scope"
 	// AttributionAbsent means no usable author fact matched before the grace elapsed.
 	AttributionAbsent AttributionResult = "absent"
 )
@@ -101,6 +110,18 @@ type AuthorFact struct {
 	ResourceVersion  string `json:"resourceVersion,omitempty"`
 	StageTimestamp   string `json:"stageTimestamp,omitempty"`
 	IsServiceAccount bool   `json:"isServiceAccount,omitempty"`
+
+	// LabelSelector is the selector the request URI expressed, carried on a COLLECTION fact only.
+	// It is the intent the actor stated, and evaluating it against the object a watch event carries
+	// is a better test of membership than reading back a list the API server may not have sent.
+	// Empty means the collection covered everything of its type in its namespace, which is what
+	// --all means.
+	LabelSelector string `json:"labelSelector,omitempty"`
+	// UIDs is the set of objects a collection delete covered, reduced from the response body at the
+	// receiver, on a COLLECTION fact only. It is absent when the API server sent no body — a
+	// truncated, aggregated, or metadata-only response — and when the set was larger than the cap,
+	// in which case the join falls back to scope matching, which is already correct.
+	UIDs []string `json:"uids,omitempty"`
 }
 
 // AuthorResolution is the structured result of an attribution lookup.
