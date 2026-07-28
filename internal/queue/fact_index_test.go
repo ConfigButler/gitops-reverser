@@ -541,3 +541,50 @@ func TestFactIndex_AFactAgesFromWhenItWasAppended(t *testing.T) {
 	require.Equal(t, "alice",
 		index.Lookup(objectQuery("prod-eu-1", factIndexTestUID, "101", true)).Fact.Author)
 }
+
+// TestFactIndex_OneFactServesEveryGitTargetWaitingForIt is the fan-in property, which is the reason
+// there is one index per process rather than one per GitTarget.
+//
+// Two GitTargets mirroring the same object each run their own watch shard, so each gets its own
+// watch event and resolves independently — but the fact naming the author is about a write that
+// happened in Kubernetes, not about who is interested in it. Both therefore resolve from the SAME
+// stored fact. Nothing is consumed and nothing competes: waking is a broadcast over the set of
+// waiters on a key, so there is no "winner" and no second copy.
+func TestFactIndex_OneFactServesEveryGitTargetWaitingForIt(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	key := factIndexTestStream("prod-eu-1")
+	query := objectQuery("prod-eu-1", factIndexTestUID, "101", true)
+
+	// Both shards ask before the fact exists, so both park on the waiter registry.
+	const consumers = 2
+	results := make(chan AuthorResolution, consumers)
+	for range consumers {
+		go func() {
+			results <- harness.index.Await(t.Context(), query, 5*time.Second)
+		}()
+	}
+	require.Eventually(t, func() bool { return harness.index.waiters.len() > 0 },
+		2*time.Second, 5*time.Millisecond, "both resolvers must be registered before the fact lands")
+
+	// ONE fact is published, once.
+	harness.publish(key, objectFact("alice", "101"))
+
+	for range consumers {
+		select {
+		case resolution := <-results:
+			require.Equal(t, "alice", resolution.Fact.Author)
+			require.Equal(t, AttributionExactUser, resolution.Result)
+		case <-time.After(10 * time.Second):
+			t.Fatal("a waiter was never woken: waking must reach every resolver on the key, not one")
+		}
+	}
+
+	// The index holds that one fact, not one per consumer, and every waiter is gone.
+	require.Equal(t, 2, harness.index.Len(), "one write is one exact entry plus one latest entry")
+	require.Zero(t, harness.index.waiters.len(), "a resolver must leave nothing registered behind")
+
+	// A third shard arriving after the fact is already stored takes the fast path instead: it
+	// registers, finds it on the immediate check, and never blocks.
+	late := harness.index.Await(t.Context(), query, 0)
+	require.Equal(t, "alice", late.Fact.Author)
+}
