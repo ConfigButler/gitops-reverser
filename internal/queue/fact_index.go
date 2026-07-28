@@ -211,16 +211,29 @@ func entryAppendTime(id string, now time.Time) time.Time {
 // BEFORE the index is read, so a fact applied in the gap between the two signals a waiter that is
 // already listening. Checking first and registering after loses exactly that fact — the race the
 // poll loop used to paper over by looking again.
+//
+// A match does not always end the wait. For a REMOVAL, the strongest fact present early is often
+// the object's last WRITE, which says who edited it and nothing about who deleted it — and the
+// watch event reliably beats the audit batch that carries the delete, which is the entire reason
+// the grace window exists. Returning on that first match answered "who deleted this" with "who last
+// edited it", every time an object was touched by someone else before being removed. Such a match
+// is held as a FALLBACK instead: the wait continues for evidence about the deletion itself, and the
+// fallback is returned only when the grace expires without any arriving. Attribution is never lost
+// by waiting — the worst case returns exactly what returning early would have.
 func (i *FactIndex) Await(ctx context.Context, query FactQuery, grace time.Duration) AuthorResolution {
 	waiter := i.waiters.register(query.waiterKeys())
 	defer i.waiters.unregister(waiter)
 
+	fallback := AuthorResolution{Result: AttributionAbsent}
 	if resolution := i.Lookup(query); resolution.Result != AttributionAbsent {
-		recordFactEvent(ctx, factOpMatched)
-		return resolution
+		if !query.awaitsBetterEvidence(resolution) {
+			recordFactEvent(ctx, factOpMatched)
+			return resolution
+		}
+		fallback = resolution
 	}
 	if grace <= 0 {
-		return AuthorResolution{Result: AttributionAbsent}
+		return i.settle(ctx, fallback)
 	}
 
 	timer := time.NewTimer(grace)
@@ -228,16 +241,56 @@ func (i *FactIndex) Await(ctx context.Context, query FactQuery, grace time.Durat
 	for {
 		select {
 		case <-ctx.Done():
-			return AuthorResolution{Result: AttributionAbsent}
+			return i.settle(ctx, fallback)
 		case <-timer.C:
-			return AuthorResolution{Result: AttributionAbsent}
+			return i.settle(ctx, fallback)
 		case <-waiter.ch:
-			if resolution := i.Lookup(query); resolution.Result != AttributionAbsent {
+			resolution := i.Lookup(query)
+			if resolution.Result == AttributionAbsent {
+				continue
+			}
+			if !query.awaitsBetterEvidence(resolution) {
 				recordFactEvent(ctx, factOpMatched)
 				return resolution
 			}
+			fallback = resolution
 		}
 	}
+}
+
+// settle returns the fallback a removal was holding, counting it as the match it is. Waiting is
+// never allowed to turn an attribution into an absence: a removal whose only evidence is the last
+// write still names that writer once nothing better has arrived.
+func (i *FactIndex) settle(ctx context.Context, fallback AuthorResolution) AuthorResolution {
+	if fallback.Result != AttributionAbsent {
+		recordFactEvent(ctx, factOpMatched)
+	}
+	return fallback
+}
+
+// awaitsBetterEvidence reports whether a match should be held as a fallback rather than returned.
+//
+// It is true for exactly one shape: a REMOVAL matched to a fact that is not about a removal. The
+// per-object tiers are last-writer-wins, so for a collection member — whose delete files one fact
+// about the collection rather than one per object — they hold whoever edited it last. Both
+// collection tiers are about the deletion itself and end the wait, as does a per-object fact whose
+// own verb is a delete: that is the object's own removal fact, which is the strongest thing a
+// removal can hope for.
+func (q FactQuery) awaitsBetterEvidence(resolution AuthorResolution) bool {
+	if q.ExactCapable || resolution.Result == AttributionAbsent {
+		return false
+	}
+	switch resolution.Result {
+	case AttributionCollectionUID, AttributionCollectionScope:
+		return false
+	case AttributionExactUser, AttributionExactServiceAccount, AttributionWeak, AttributionAbsent:
+	}
+	return !isRemovalVerb(resolution.Fact.Verb)
+}
+
+// isRemovalVerb reports whether a fact describes a deletion rather than a write.
+func isRemovalVerb(verb string) bool {
+	return strings.EqualFold(verb, "delete") || strings.EqualFold(verb, deleteCollectionVerb)
 }
 
 // Lookup reads the index once, trying the tiers strongest-first:

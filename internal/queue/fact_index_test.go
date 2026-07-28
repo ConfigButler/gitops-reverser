@@ -588,3 +588,79 @@ func TestFactIndex_OneFactServesEveryGitTargetWaitingForIt(t *testing.T) {
 	late := harness.index.Await(t.Context(), query, 0)
 	require.Equal(t, "alice", late.Fact.Author)
 }
+
+// TestFactIndex_ARemovalWaitsForEvidenceAboutTheDeletion is the race the collection-precedence fix
+// alone did not close, and the one that made an e2e spec pass at one process and fail at four.
+//
+// Precedence only decides between facts that are BOTH present. The watch event reliably arrives
+// before the audit batch carrying its delete — that is the entire reason the grace window exists —
+// so at the moment a removal is resolved, the only fact present is often the object's last WRITE.
+// Returning on it answered "who deleted this" with "who last edited it", and no ordering of the
+// tiers could have helped, because the right fact had not been delivered yet.
+func TestFactIndex_ARemovalWaitsForEvidenceAboutTheDeletion(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	key := factIndexTestStream("prod-eu-1")
+
+	// Bob edits the object. That is the only fact in the index when the removal is resolved.
+	harness.publish(key, objectFact("bob", "101"))
+	harness.waitForFacts(2)
+
+	// Alice's collection delete is still in flight, and lands while the resolver waits.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		harness.publish(key, aliceCollectionFact("", factIndexTestUID))
+	}()
+
+	resolution := harness.index.Await(t.Context(),
+		removalFactQuery("prod-eu-1", factIndexTestUID), 5*time.Second)
+	require.Equal(t, AttributionCollectionUID, resolution.Result)
+	require.Equal(t, "alice", resolution.Fact.Author,
+		"a removal must wait for evidence about the deletion, not settle for the last edit")
+}
+
+// Waiting must never cost an attribution. When nothing better arrives, the write fact that was held
+// back is returned exactly as it would have been returned immediately — the only difference is the
+// wait, and a removal that spends its grace is the case the grace window is for.
+func TestFactIndex_ARemovalStillNamesTheLastWriterWhenNothingBetterArrives(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	harness.publish(factIndexTestStream("prod-eu-1"), objectFact("bob", "101"))
+	harness.waitForFacts(2)
+
+	start := time.Now()
+	resolution := harness.index.Await(t.Context(),
+		removalFactQuery("prod-eu-1", factIndexTestUID), 150*time.Millisecond)
+
+	require.Equal(t, AttributionWeak, resolution.Result)
+	require.Equal(t, "bob", resolution.Fact.Author, "waiting must not turn a match into an absence")
+	require.GreaterOrEqual(t, time.Since(start), 150*time.Millisecond,
+		"the fallback is only taken once the grace has actually elapsed")
+}
+
+// An object's OWN delete fact is the strongest evidence a removal can have, so it ends the wait
+// immediately rather than holding out for a collection fact that may never come.
+func TestFactIndex_ARemovalsOwnDeleteFactEndsTheWaitAtOnce(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	deleteFact := objectFact("carol", "")
+	deleteFact.Verb = "delete"
+	harness.publish(factIndexTestStream("prod-eu-1"), deleteFact)
+	harness.waitForFacts(1)
+
+	start := time.Now()
+	resolution := harness.index.Await(t.Context(),
+		removalFactQuery("prod-eu-1", factIndexTestUID), 5*time.Second)
+
+	require.Equal(t, "carol", resolution.Fact.Author)
+	require.Less(t, time.Since(start), 2*time.Second, "a delete fact must not be held as a fallback")
+}
+
+// removalFactQuery is a DELETE watch event: its resourceVersion is never the one a write produced.
+func removalFactQuery(route, uid string) FactQuery {
+	return FactQuery{
+		AuditRoute:      route,
+		GroupResource:   deploymentsGroupResource(),
+		UID:             uid,
+		ResourceVersion: "999",
+		Namespace:       "team-a",
+		ExactCapable:    false,
+	}
+}
