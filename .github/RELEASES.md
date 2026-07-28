@@ -217,6 +217,48 @@ git push origin main
 
 **Solution:** Edit Release PR version or close it and retrigger.
 
+### Release PR Contains the Entire History
+
+**Symptom:** the release PR proposes an unexpectedly large bump and a changelog that
+re-announces releases that already shipped. The Release Please job log names the cause:
+
+```text
+✔ No latest release found for path: ., component: , but a previous version (0.40.0)
+  was specified in the manifest.
+```
+
+**Cause:** release-please anchors on published GitHub Releases and falls back to git
+tags. `release-please-config.json` sets `draft: true`, which the publish jobs need so
+they can attach assets before immutable releases freeze the release. So a publish job
+that fails leaves the release as a **draft**, and a draft is skipped by the release
+search *and* creates no tag. `.release-please-manifest.json` still names the version,
+leaving release-please with a version it cannot anchor, so it collects every commit in
+the repository.
+
+Do not merge that PR: it burns a version number on a changelog of already-released work.
+
+**Solution:** supply the missing anchor. A bare lightweight tag is enough: release-please
+falls back to tags, so no GitHub Release is required.
+
+```bash
+# The SHA is the "chore(main): release X.Y.Z" merge commit for the stranded version.
+git tag vX.Y.Z <release-commit-sha>
+git push origin vX.Y.Z
+
+# Close the oversized PR and drop its branch so a fresh one is generated, not amended.
+gh pr close <pr-number> --delete-branch
+
+# Re-run the Release Please job, then confirm the new PR is the expected patch bump.
+gh run rerun <run-id> --job <job-id>
+```
+
+Then resolve the stranded draft. Delete it with `gh release delete vX.Y.Z --yes` (which
+leaves the tag in place) when the assets it is missing should ship in the next release.
+Publishing it instead freezes a release whose own notes link to assets it does not carry.
+
+`last-release-sha` does not rescue this: release-please reads it only as a top-level key,
+and this repo's copy sits under `packages["."]`, where it is ignored.
+
 ### Docker Build Failed
 
 **Check:**
