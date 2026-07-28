@@ -113,8 +113,7 @@ expander, replacing the expander with one collection fact that every removal in 
 uid membership or by scope. That last part is a capability gain rather than a like-for-like swap: a
 collection delete the API server sent no response body for used to lose its author entirely.
 `exact_deletecollection_item` is replaced by `collection_uid` and `collection_scope`, and
-`--author-attribution-transport=memory` runs attribution with no Redis on a single replica. Shipped
-as #283, #284, #286 and the switch-over.
+`--author-attribution-transport=memory` runs attribution with no Redis on a single replica. Shipped as #283, #284, #286 and #287.
 
 Before it,
 [`analyzer-consumer-contract-asks.md`](finished/analyzer-consumer-contract-asks.md): why a

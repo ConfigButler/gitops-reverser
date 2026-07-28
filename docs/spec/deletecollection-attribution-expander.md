@@ -17,7 +17,6 @@
 > [attribution facts as a stream](../finished/attribution-fact-stream.md),
 > [watch-first ingestion architecture](../finished/watch-first-ingestion-architecture.md),
 > watch-first merge readiness §4,
-> [superseded `deletecollection` nudge plan](deletecollection-attribution-expander.md),
 > [watch event ordering & attribution grace](../facts/watch-event-ordering-and-attribution-grace.md),
 > [`internal/watch/target_watch.go`](../../internal/watch/target_watch.go),
 > [`internal/sanitize/sanitize.go`](../../internal/sanitize/sanitize.go),
@@ -146,15 +145,17 @@ variants are skipped when no RV is supplied, which is precisely right since the 
 
 - **State is solved by construction** — N watch events, mark-and-sweep backstop
   (merge-readiness §4).
-- **A name-less event stores nothing today.** `RecordFact` early-returns when `identity.Name == ""`
-  (attribution_index.go:216), so a `deletecollection` writes
-  **zero** facts now — the expander is purely **additive**.
-- **Single deletes already attribute** (including finalizer ones, now improved). A single `kubectl delete foo`
-  has a name, so `RecordFact` already writes its uid-only fact; with §2's intent rule, the finalizer single-delete
-  is now removed and attributed at intent time too — for free, no expander needed. The expander exists **only**
-  for the name-less collection case.
-- **The conservative resolver fails closed** — multiple authors on one key → no usable attribution fact → the
-  explicit unresolved author (storeFactKey). Governing rule:
+- **A name-less event produces ONE fact about the collection.** *(This bullet described the opposite
+  when the expander existed: a name-less event stored nothing, and the expander was purely additive.
+  The name check is now "no name AND not a collection verb", so the collection request is exactly the
+  case that produces a fact.)*
+- **Single deletes attribute through their own fact** (including finalizer ones). A single
+  `kubectl delete foo` has a name, so it files a per-object fact under its uid; with §2's intent rule
+  the finalizer single-delete is removed and attributed at intent time too. Collection facts exist
+  **only** for the name-less collection case, and a removal reaches them only when no per-object fact
+  about the deletion applies.
+- **The conservative resolver fails closed** — no usable attribution fact → the explicit unresolved
+  author. Governing rule:
   **a wrong author is worse than no author.**
 - **The grace window** absorbs a watch event that arrives before its audit fact
   ([author_resolver.go:40](../../internal/watch/author_resolver.go#L40)).

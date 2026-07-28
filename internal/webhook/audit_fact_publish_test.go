@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // factAppend is one PublishFacts call: one stream, one entry, however many facts the request
@@ -27,9 +28,13 @@ type factAppend struct {
 // fakeFactPublisher records every append, so a test can count them. The count is the point: an
 // apiserver batch over three types must become three appends, not one per event.
 type fakeFactPublisher struct {
-	mu      sync.Mutex
-	err     error
-	appends []factAppend
+	mu  sync.Mutex
+	err error
+	// failAfter makes the publisher start failing once it has appended this many batches, so a test
+	// can drive a PARTIAL publication: the shape that decides whether an earlier stream's events are
+	// reported as lost. Zero means it never fails on its own.
+	failAfter int
+	appends   []factAppend
 }
 
 func (p *fakeFactPublisher) PublishFacts(_ context.Context, key queue.FactStreamKey, facts []queue.AuthorFact) error {
@@ -37,6 +42,9 @@ func (p *fakeFactPublisher) PublishFacts(_ context.Context, key queue.FactStream
 	defer p.mu.Unlock()
 	if p.err != nil {
 		return p.err
+	}
+	if p.failAfter > 0 && len(p.appends) >= p.failAfter {
+		return errors.New("transport down")
 	}
 	p.appends = append(p.appends, factAppend{key: key, facts: facts})
 	return nil
@@ -312,4 +320,46 @@ func TestAuditHandler_CapturedAggregatedCollectionDeletesPickTheirTier(t *testin
 				"a body that was there upgrades the join to uid membership")
 		})
 	}
+}
+
+// TestAuditHandler_PartialPublishOnlyFailsTheBatchesThatDidNotLand pins what a transport failure
+// mid-request means for the per-event outcome census.
+//
+// Publication is per stream and sequential, so a failure is not all-or-nothing: the batches before
+// the failing one HAVE appended, and their facts are in the log whatever happens next. Reporting
+// those events as write_error would claim a loss that did not occur, and write_error is the one
+// outcome an operator is meant to treat as a real problem.
+//
+// The request still fails, so the API server retries the whole batch and the landed facts are
+// appended again — safe precisely because a fact is keyed data rather than a position in a sequence.
+func TestAuditHandler_PartialPublishOnlyFailsTheBatchesThatDidNotLand(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	// Two types, so the request produces two stream batches; the publisher fails on the second.
+	publisher := &fakeFactPublisher{failAfter: 1}
+	handler := newPublishingHandler(t, publisher)
+
+	body := eventListBody(
+		writeEvent("a", "apps", "deployments", "web", "alice"),
+		writeEvent("b", "", "configmaps", "config", "bob"),
+	)
+	w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body)
+	require.Equal(t, http.StatusInternalServerError, w.Code, "the request must fail so delivery is retried")
+
+	appends := publisher.recorded()
+	require.Len(t, appends, 1, "the first batch landed before the second failed")
+	require.Equal(t, "uid-web", appends[0].facts[0].UID)
+
+	queued, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
+		"outcome": "queued", "category": "stored", "resource": "deployments", "verb": "update",
+	})
+	require.True(t, ok)
+	assert.Equal(t, int64(1), queued, "the event whose stream appended is queued, not lost")
+
+	failed, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
+		"outcome": "write_error", "category": "error", "resource": "configmaps", "verb": "update",
+	})
+	require.True(t, ok)
+	assert.Equal(t, int64(1), failed, "only the event whose stream did not append is a write error")
 }

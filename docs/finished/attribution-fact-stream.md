@@ -53,7 +53,7 @@ left half on each path.
 | The design | merged, [#283](https://github.com/ConfigButler/gitops-reverser/pull/283) | this record |
 | The transport seam | merged, [#284](https://github.com/ConfigButler/gitops-reverser/pull/284) | `FactPublisher` / `FactFollower`, the Redis-stream and in-memory implementations, one conformance suite over both |
 | The index and the publish side | merged, [#286](https://github.com/ConfigButler/gitops-reverser/pull/286) | the four match structures, the subscription set, the waiter registry, the follower loop, and `audit_handler.go` appending one entry per type per request |
-| The switch-over | merged | the resolver waits on the index, the v1 keys and the collection expander are deleted, `cmd/main.go` selects the transport |
+| The switch-over | merged, [#287](https://github.com/ConfigButler/gitops-reverser/pull/287) | the resolver waits on the index, the v1 keys and the collection expander are deleted, `cmd/main.go` selects the transport |
 
 Six things the code decided that this record only pointed at:
 

@@ -287,6 +287,13 @@ func (h *AuditHandler) decodeEventList(r *http.Request) (*auditv1.EventList, err
 // Each accepted event's terminal outcome is recorded AFTER the append, not before it, so an event
 // is counted queued only once its fact is actually in the log. Recording it up front would leave
 // audit_events_total{outcome="write_error"} unreachable and claim delivery for a batch that failed.
+//
+// Publication is per stream and sequential, so a failure is NOT all-or-nothing: the batches before
+// the failing one have appended, and their facts are in the log whatever happens next. Counting
+// those events as write_error would claim a loss that did not occur. Only the events whose own
+// batch did not land are counted as failures. The API server retries the whole request, so the
+// batches that did land are appended again — which is safe precisely because a fact is keyed data
+// rather than a position in a sequence.
 func (h *AuditHandler) processEvents(ctx context.Context, route auditRoute, events []auditv1.Event) error {
 	batches := newFactStreamBatches()
 	accepted := make([]acceptedFact, 0, len(events))
@@ -298,34 +305,50 @@ func (h *AuditHandler) processEvents(ctx context.Context, route auditRoute, even
 		accepted = append(accepted, result)
 		batches.add(result)
 	}
-	if err := h.publishFactBatches(ctx, batches); err != nil {
-		h.recordAcceptedOutcomes(ctx, accepted, outcome.WriteError)
+	appended, err := h.publishFactBatches(ctx, batches)
+	h.recordAcceptedOutcomes(ctx, accepted, appended)
+	if err != nil {
 		return err
 	}
-	h.recordAcceptedOutcomes(ctx, accepted, outcome.Queued)
-	h.logAcceptedFacts(accepted)
+	h.logPublishedFacts(accepted)
 	return nil
 }
 
-// recordAcceptedOutcomes stamps one terminal outcome on every event that passed the accept gate.
-func (h *AuditHandler) recordAcceptedOutcomes(ctx context.Context, accepted []acceptedFact, result outcome.Outcome) {
+// recordAcceptedOutcomes stamps one terminal outcome on every event that passed the accept gate,
+// deciding each from whether its OWN stream appended.
+//
+// An event that produced no fact is queued rather than failed: it was accepted and carried as far
+// as it can go, and no append was ever owed for it.
+func (h *AuditHandler) recordAcceptedOutcomes(
+	ctx context.Context,
+	accepted []acceptedFact,
+	appended map[queue.FactStreamKey]struct{},
+) {
 	for i := range accepted {
+		result := outcome.Queued
+		if _, landed := appended[accepted[i].key]; accepted[i].ok && !landed {
+			result = outcome.WriteError
+		}
 		outcome.Record(ctx, accepted[i].event, result)
 	}
 }
 
-// logAcceptedFacts says, once per process and then only at verbosity, which facts were published.
-func (h *AuditHandler) logAcceptedFacts(accepted []acceptedFact) {
-	if len(accepted) == 0 {
-		return
-	}
+// logPublishedFacts says, once per process and then only at verbosity, which facts were published.
+//
+// It skips an accepted event that produced no fact. Nothing was appended for it, so calling it
+// published would be a line that is simply untrue — and in configured-author mode, where no
+// publisher is wired at all, every event is that case.
+func (h *AuditHandler) logPublishedFacts(accepted []acceptedFact) {
 	log := logf.Log.WithName("audit-handler")
-	h.firsts.factPublished.Do(func() {
-		log.Info("Published first audit attribution fact",
-			"auditID", accepted[0].event.AuditID, "verb", accepted[0].event.Verb)
-	})
 	for i := range accepted {
+		if !accepted[i].ok {
+			continue
+		}
 		event := accepted[i].event
+		h.firsts.factPublished.Do(func() {
+			log.Info("Published first audit attribution fact",
+				"auditID", event.AuditID, "verb", event.Verb)
+		})
 		log.V(1).Info("Published audit attribution fact",
 			"gvr", extractGVR(event), "verb", event.Verb, "auditID", event.AuditID,
 			"user", effectiveAuditUsername(*event))
@@ -387,18 +410,23 @@ func (h *AuditHandler) factForStream(ctx context.Context, auditRoute string, eve
 // server retries the delivery; a retried batch appends the same facts again under fresh stream IDs,
 // which is safe because a fact is keyed data rather than a position in a sequence — the duplicate
 // resolves to the same author and costs one entry's worth of retention.
-func (h *AuditHandler) publishFactBatches(ctx context.Context, batches *factStreamBatches) error {
+func (h *AuditHandler) publishFactBatches(
+	ctx context.Context,
+	batches *factStreamBatches,
+) (map[queue.FactStreamKey]struct{}, error) {
+	appended := make(map[queue.FactStreamKey]struct{}, len(batches.order))
 	if h.config.FactPublisher == nil {
-		return nil
+		return appended, nil
 	}
 	for _, key := range batches.order {
 		facts := batches.facts[key]
 		if err := h.config.FactPublisher.PublishFacts(ctx, key, facts); err != nil {
-			return fmt.Errorf("publish attribution facts for %s: %w", key, err)
+			return appended, fmt.Errorf("publish attribution facts for %s: %w", key, err)
 		}
 		queue.RecordFactsWritten(ctx, len(facts))
+		appended[key] = struct{}{}
 	}
-	return nil
+	return appended, nil
 }
 
 // acceptedFact is one event's contribution to the request's appends. accepted and ok are NOT the

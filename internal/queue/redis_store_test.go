@@ -104,12 +104,6 @@ func TestNewRedisStore_RequiresAddr(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestAttributionIndex_SharedAuditRouteJoinsAcrossProviders is the reported bug at the keyspace
-// layer. An API server has one audit webhook backend and posts under ONE route, so a fact recorded
-// on that route must be readable by every ClusterProvider that declares it, whatever those
-// providers are named. Before the route existed, each provider read under its own name and only the
-// routed one ever matched.
-
 func TestEscapeKeyField(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"web", "web"},

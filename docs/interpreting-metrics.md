@@ -193,7 +193,7 @@ selector):
 | --- | --- | --- |
 | `stored` | `queued` | Accepted; the event's facts reached the fact log. |
 | `dropped` | `nil_event`, `stage`, `read_only_or_unknown_verb`, `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource` | Correctly rejected at the accept gate — not an error. |
-| `error` | `write_error` | The transport rejected the append, so nothing from that batch reached the log and the API server is asked to retry the delivery. The one category that should stay zero. |
+| `error` | `write_error` | The transport rejected the append for THIS event's stream, so its fact did not reach the log. Publication is per stream, so a request that fails partway still counts the events whose own stream appended as `queued`; the whole request is failed so the API server retries it, and the landed facts are simply appended again. The one category that should stay zero. |
 
 The full enum lives in [`internal/audit/outcome/outcome.go`](../internal/audit/outcome/outcome.go)
 — it is the source of truth.
