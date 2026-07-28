@@ -60,6 +60,79 @@ func TestCreateSucceeds(t *testing.T) {
 	h.syncCorpus(t, "configmap/create-succeeds", records)
 }
 
+// TestGenerateNameCreate captures Row 18, and it exists to settle by measurement a claim that was
+// only ever reasoning: that an empty `objectRef.name` is survivable as long as the event carries a
+// BODY to recover the name from.
+//
+// Two very different populations produce an audit event whose objectRef has no name. A create with
+// metadata.generateName has none because the API server assigns the name after the request is
+// written; an aggregated-API write has none because the API server proxied the request and never saw
+// the object. It would be reasonable to expect both to fail the same way. They do not, and the
+// discriminator is the body rather than the name: `IdentityFromAuditEvent` backfills the missing name
+// and uid from the response object, which a generateName create has and an aggregated write does not
+// (corpus flunder/aggregated-api-write, where the body is empty).
+//
+// So this row is the CONTROL for the aggregated rows. It asserts the recovery material is actually
+// present rather than assuming it, and the corpus then carries both halves side by side.
+func TestGenerateNameCreate(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s := h.newScenario(ctx, t, "generate-name-create")
+
+	meta := s.meta("")
+	meta.GenerateName = "cm-gen-"
+	created, err := h.kube.CoreV1().ConfigMaps(s.ns).Create(ctx,
+		&corev1.ConfigMap{ObjectMeta: meta, Data: map[string]string{"key": "value"}}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create configmap with generateName: %v", err)
+	}
+	if created.Name == "" {
+		t.Fatal("the API server returned no assigned name")
+	}
+
+	records := h.drain(t, s.id, drainSpec{minCount: 3, settle: 2 * time.Second, timeout: 60 * time.Second})
+
+	var audit *mutationlab.Record
+	for i := range records {
+		if records[i].Source == mutationlab.SourceAudit {
+			audit = &records[i]
+			break
+		}
+	}
+	if audit == nil {
+		t.Fatal("no audit event for the generateName create")
+	}
+
+	// THE RESULT, in two halves. The objectRef cannot name the object, and the body can — which is
+	// exactly the asymmetry that makes this population joinable where the aggregated one is not.
+	if auditObjectRefName(audit) != "" {
+		t.Errorf("expected the audit objectRef to carry no name for a generateName create, got %q",
+			auditObjectRefName(audit))
+	}
+	if !audit.Summary.HasResponseObject {
+		t.Error("the generateName create's audit event carried no response object, so the assigned " +
+			"name and uid could not be recovered; this is the aggregated failure mode on an ordinary type")
+	}
+	t.Logf("Row 18: assigned name=%q; audit objectRef name=%q; hasRequestObject=%v hasResponseObject=%v",
+		created.Name, auditObjectRefName(audit), audit.Summary.HasRequestObject, audit.Summary.HasResponseObject)
+
+	h.syncCorpus(t, "configmap/generate-name-create", records)
+}
+
+// auditObjectRefName reads objectRef.name off a raw audit event, the field that is empty for both a
+// generateName create and an aggregated-API write.
+func auditObjectRefName(r *mutationlab.Record) string {
+	var event struct {
+		ObjectRef struct {
+			Name string `json:"name"`
+		} `json:"objectRef"`
+	}
+	if err := json.Unmarshal(r.Raw, &event); err != nil {
+		return ""
+	}
+	return event.ObjectRef.Name
+}
+
 // TestUpdate captures Row 2: an Update (PUT) after a create. The create is set up
 // and cleared, so the corpus is just the update moment — admission UPDATE, audit
 // update, watch MODIFIED — with the verb that differs by request shape.

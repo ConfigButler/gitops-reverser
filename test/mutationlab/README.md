@@ -40,11 +40,20 @@ gap (see [Capturing Intent, Not State](../../docs/spec/mutation-capture-lab-desi
 | 13 | Optimistic-concurrency conflict | `configmap_scenarios_test.go` · `TestOptimisticConcurrencyConflict` | `configmap/conflict-update/` | audit ×1 (`update`, code 409) — **no** watch / **no** admission (rejected at storage, before admission) |
 | 14 | Multi-version CRD conversion | `crd_conversion_test.go` · `TestCRDConversion` | `widget/crd-conversion/` | watch (v2), audit (v1), admission (v1), conversion ×2 (both directions) |
 | 15 | Aggregated API write | `aggregated_api_test.go` · `TestAggregatedAPIWrite` | `flunder/aggregated-api-write/` | watch (full object), audit (empty body); admission is observed but not committed |
+| 15a | Aggregated API delete | `aggregated_api_test.go` · `TestAggregatedAPIDelete` | `flunder/aggregated-api-delete/` | watch DELETED (full object), audit (`delete`, `objectRef` has the NAME from the URL but **no uid**) |
+| 15b | Aggregated API deletecollection | `aggregated_api_test.go` · `TestAggregatedAPIDeletecollection` | `flunder/aggregated-api-deletecollection/` | watch ×N, audit ×1 (name-less, selector in `requestURI`, **no response body**), admission ×N (per object) |
 | 16 | Watch resync (`410 Gone`) | `watch_transport_test.go` · `TestWatchExpiredResourceVersion` | `configmap/watch-resync/` | watch ERROR (`Status` 410); driver verifies relist recovery |
+| 18 | `generateName` create | `configmap_scenarios_test.go` · `TestGenerateNameCreate` | `configmap/generate-name-create/` | watch, audit (`objectRef` has **no name**, response body **does**), admission — the control for rows 15a/15b |
 | 17 | Bookmark | `watch_transport_test.go` · `TestWatchBookmark` | `configmap/watch-bookmark/` | watch BOOKMARK with resourceVersion |
 
-All seventeen catalogued scenarios are now captured. Rows 16 and 17 test the watch
-transport itself; the driver uses the lab's targeted `/watch-probe` endpoint so
+All seventeen catalogued scenarios are now captured. Rows 15a and 15b are not catalog
+rows: they extend row 15 to the removal verbs, because the create alone could not say
+whether a proxied delete carries a uid (it does not) or whether a proxied
+`deletecollection` returns a response body (it does not). Row 18 is their control: a
+`generateName` create has an equally name-less `objectRef` and joins perfectly well,
+because it carries a response body to recover the name from, which is what makes the
+BODY rather than the name the thing the aggregated rows are actually missing. Rows 16
+and 17 test the watch transport itself; the driver uses the lab's targeted `/watch-probe` endpoint so
 transport-only events can be scenario-attributed — see the
 [watch-first ingestion architecture](../../docs/finished/watch-first-ingestion-architecture.md)
 design notes.
@@ -64,6 +73,14 @@ The lab serves the **same** webhook URLs as the product —
 making a cluster capture with the lab is just swapping the controller image: no
 new audit policy, webhook config, or certificates. `task lab-e2e` does this on the
 already-prepared e2e cluster, then drives the scenarios serially.
+
+Reusing the wiring means reusing whatever the cluster's audit kubeconfig points at, and
+this one names its route: it posts to `/audit-webhook/default`, the "default"
+ClusterProvider, because the bare path is the product's shared annotation-routed
+endpoint. The lab therefore serves the whole `/audit-webhook/` subtree and records what
+arrives whichever source it was addressed to. Serving only the exact bare path 404s every
+event the cluster sends — which reads as a lab that captures watches and admission but
+never a single audit record, in every scenario at once.
 
 Row 15 (aggregated API write) is what settled the body-enrichment question: the
 official audit event for an aggregated-API write carries an empty body, yet the
