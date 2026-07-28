@@ -221,6 +221,14 @@ var _ = Describe("DeleteCollection intent & attribution", Label("manager"), Orde
 			Expect(annotateConfigMap(cleanupBot, testNs, n, "touched-by", "cleanup-bot")).To(Succeed())
 		}
 
+		// Waiting for the edit to be COMMITTED, rather than merely requested, is what keeps this
+		// spec honest. The premise is that the cleanup bot is the last writer when the collection is
+		// deleted; if the delete raced ahead of the edit, alice would still be the last writer and
+		// the assertion below would pass without ever exercising the case it exists for.
+		By("waiting until the cleanup bot is demonstrably the last writer of each object")
+		waitForFileAuthoredBy(repo, configMapRepoPath(testNs, first), dcIntentEditorAuthor)
+		waitForFileAuthoredBy(repo, configMapRepoPath(testNs, second), dcIntentEditorAuthor)
+
 		By("deleting the collection as alice")
 		Expect(deleteConfigMapCollection(alice, testNs, "dctest="+label)).To(Succeed())
 
@@ -265,6 +273,9 @@ var _ = Describe("DeleteCollection intent & attribution", Label("manager"), Orde
 const (
 	dcIntentBasePath    = "e2e/deletecollection-intent-test"
 	dcIntentActorAuthor = "Alice Liddell <alice@configbutler.ai>"
+	// dcIntentEditorAuthor is the identity that edits objects WITHOUT deleting them, so a removal
+	// credited to the last writer names it and is caught.
+	dcIntentEditorAuthor = "Cleanup Bot <cleanup@configbutler.ai>"
 )
 
 // impersonatedConfigMapClient builds a clientset that impersonates asUser and carries
@@ -372,6 +383,20 @@ func waitForFilePresent(repo *RepoArtifacts, repoPath string) {
 		pullLatestRepoState(g, repo.CheckoutDir)
 		_, err := os.Stat(filepath.Join(repo.CheckoutDir, repoPath))
 		g.Expect(err).NotTo(HaveOccurred(), "file %s should be present in Git", repoPath)
+	}, 2*time.Minute, 3*time.Second).Should(Succeed())
+}
+
+// waitForFileAuthoredBy asserts the file is present and its last commit carries the given author.
+// It is how a spec proves who the CURRENT last writer is before changing that.
+func waitForFileAuthoredBy(repo *RepoArtifacts, repoPath, author string) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		pullLatestRepoState(g, repo.CheckoutDir)
+		_, statErr := os.Stat(filepath.Join(repo.CheckoutDir, repoPath))
+		g.Expect(statErr).NotTo(HaveOccurred(), "file %s should be present in Git", repoPath)
+		got, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%an <%ae>", "--", repoPath)
+		g.Expect(logErr).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(got)).To(Equal(author))
 	}, 2*time.Minute, 3*time.Second).Should(Succeed())
 }
 
