@@ -106,17 +106,11 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		By("creating a CommitRequest to finalize the open window now")
 		applyCommitRequest(testNs, commitRequestName, gitTargetName, message)
 
-		By("waiting for the CommitRequest to become Ready (committed and pushed)")
+		By("waiting for the CommitRequest to commit and push")
 		var reportedSHA string
 		Eventually(func(g Gomega) {
-			g.Expect(commitRequestCondition(g, testNs, commitRequestName, "Ready")).To(Equal("True"),
-				"CommitRequest should finalize the window and become Ready\n%s",
+			reportedSHA = expectCommitRequestCommitted(g, testNs, commitRequestName,
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
-			g.Expect(commitRequestCondition(g, testNs, commitRequestName, "Pushed")).To(Equal("True"),
-				"a committed CommitRequest must report Pushed=True")
-
-			reportedSHA = commitRequestField(g, testNs, commitRequestName, "{.status.sha}")
-			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
 
 			branch := commitRequestField(g, testNs, commitRequestName, "{.status.branch}")
 			g.Expect(branch).To(Equal("main"))
@@ -188,8 +182,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		By("creating a CommitRequest and confirming the branch then advances with the held edit")
 		applyCommitRequest(testNs, commitRequestName, gitTargetName, message)
 		Eventually(func(g Gomega) {
-			g.Expect(commitRequestCondition(g, testNs, commitRequestName, "Ready")).To(Equal("True"),
-				"CommitRequest should finalize the open window")
+			expectCommitRequestCommitted(g, testNs, commitRequestName,
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 			g.Expect(remoteBranchHead(g, repo.CheckoutDir)).NotTo(Equal(baseSHA),
 				"finalizing must advance main past the previously-established HEAD")
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
@@ -231,15 +225,10 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		By("creating a CommitRequest with metadata.generateName")
 		generatedName := applyCommitRequestWithGenerateName(testNs, commitRequestPrefix, gitTargetName, message)
 
-		By("waiting for the generated-name CommitRequest to become Ready")
-		var reportedSHA string
+		By("waiting for the generated-name CommitRequest to commit")
 		Eventually(func(g Gomega) {
-			g.Expect(commitRequestCondition(g, testNs, generatedName, "Ready")).To(Equal("True"),
-				"a CommitRequest created via generateName must become Ready\n%s",
+			expectCommitRequestCommitted(g, testNs, generatedName,
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
-
-			reportedSHA = commitRequestField(g, testNs, generatedName, "{.status.sha}")
-			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
 		By("verifying the commit landed in Git with the explicit message")
@@ -362,15 +351,11 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		_, err := kubectlRunWithStdin(testNs, bundle.String(), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred(), "failed to apply the CommitRequest+Deployments bundle")
 
-		By("waiting for the bundle's CommitRequest to become Ready")
+		By("waiting for the bundle's CommitRequest to commit the collected window")
 		var reportedSHA string
 		Eventually(func(g Gomega) {
-			g.Expect(commitRequestCondition(g, testNs, commitRequestName, "Ready")).To(Equal("True"),
-				"the bundle's CommitRequest should finalize the collected window and become Ready\n%s",
+			reportedSHA = expectCommitRequestCommitted(g, testNs, commitRequestName,
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
-
-			reportedSHA = commitRequestField(g, testNs, commitRequestName, "{.status.sha}")
-			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
 
 			branch := commitRequestField(g, testNs, commitRequestName, "{.status.branch}")
 			g.Expect(branch).To(Equal("main"))
@@ -518,4 +503,80 @@ func commitRequestField(g Gomega, namespace, name, jsonPath string) string {
 func commitRequestCondition(g Gomega, namespace, name, conditionType string) string {
 	return commitRequestField(g, namespace, name,
 		fmt.Sprintf(`{.status.conditions[?(@.type=="%s")].status}`, conditionType))
+}
+
+// commitRequestReasonCommitted is the one Ready reason that means a commit actually happened.
+// It mirrors crReasonCommitted in internal/controller/commitrequest_finalize.go.
+const commitRequestReasonCommitted = "Committed"
+
+// commitRequestOutcome is the terminal shape of a CommitRequest: not just whether it finished,
+// but WHICH ending it reached.
+//
+// Ready=True alone cannot answer that, and reading it as "it committed" is how this suite went
+// blind. A benign rejection — no window collected in the grace, a foreign author's window, a
+// change already present on the remote — is deliberately Ready=True with Pushed=False and an
+// empty status.sha, so that kstatus reads Current rather than Failed (see rejectCommitRequest).
+// A spec asserting Ready=True therefore PASSES on a request that committed nothing, then fails
+// seconds later on the empty sha with "<string>: not to be empty" and no reason attached.
+type commitRequestOutcome struct {
+	Ready   string
+	Reason  string
+	Message string
+	Stalled string
+	Pushed  string
+	SHA     string
+	Branch  string
+}
+
+// String renders the outcome as the diagnostic the bare-sha assertion never produced.
+func (o commitRequestOutcome) String() string {
+	return fmt.Sprintf(
+		"CommitRequest status: Ready=%s (reason=%q) Stalled=%s Pushed=%s sha=%q branch=%q\n  message: %s",
+		o.Ready, o.Reason, o.Stalled, o.Pushed, o.SHA, o.Branch, o.Message)
+}
+
+// isTerminal reports whether the controller has stopped working on this request: Ready=True
+// (committed or benignly rejected) or Stalled=True (failed). It mirrors commitRequestIsTerminal
+// in the controller, and it is what makes an early give-up safe.
+func (o commitRequestOutcome) isTerminal() bool {
+	return o.Ready == "True" || o.Stalled == "True"
+}
+
+// readCommitRequestOutcome reads the whole terminal picture in one API call, so every field in a
+// failure report is from the same observation rather than five reads a poll apart.
+func readCommitRequestOutcome(g Gomega, namespace, name string) commitRequestOutcome {
+	const readyPath = `{.status.conditions[?(@.type=="Ready")]`
+	return commitRequestOutcome{
+		Ready:   commitRequestField(g, namespace, name, readyPath+`.status}`),
+		Reason:  commitRequestField(g, namespace, name, readyPath+`.reason}`),
+		Message: commitRequestField(g, namespace, name, readyPath+`.message}`),
+		Stalled: commitRequestCondition(g, namespace, name, "Stalled"),
+		Pushed:  commitRequestCondition(g, namespace, name, "Pushed"),
+		SHA:     commitRequestField(g, namespace, name, "{.status.sha}"),
+		Branch:  commitRequestField(g, namespace, name, "{.status.branch}"),
+	}
+}
+
+// expectCommitRequestCommitted asserts the request reached the COMMITTED ending, and returns the
+// SHA it reported.
+//
+// It gives up early on any other terminal ending rather than polling to the timeout. A terminal
+// outcome is final — the controller will not revisit it — so continuing to re-read it cannot
+// change the result; it only delays the report and buries the reason. Failing at the moment the
+// ending is known means the message names it: "NoWindowInGrace" instead of an empty string.
+func expectCommitRequestCommitted(g Gomega, namespace, name, diagnostics string) string {
+	outcome := readCommitRequestOutcome(g, namespace, name)
+	if outcome.isTerminal() && outcome.Reason != commitRequestReasonCommitted {
+		StopTrying(fmt.Sprintf(
+			"the CommitRequest reached a terminal outcome that is not a commit, so waiting longer "+
+				"cannot help.\n%s\n%s", outcome, diagnostics)).Now()
+	}
+
+	g.Expect(outcome.Ready).To(Equal("True"), "CommitRequest is not Ready yet\n%s\n%s", outcome, diagnostics)
+	g.Expect(outcome.Reason).To(Equal(commitRequestReasonCommitted),
+		"Ready=True must mean a commit, not a benign rejection\n%s\n%s", outcome, diagnostics)
+	g.Expect(outcome.Pushed).To(Equal("True"),
+		"a committed CommitRequest must report Pushed=True\n%s", outcome)
+	g.Expect(outcome.SHA).NotTo(BeEmpty(), "a committed CommitRequest must report status.sha\n%s", outcome)
+	return outcome.SHA
 }
