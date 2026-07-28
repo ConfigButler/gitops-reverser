@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"sync"
 	"testing"
 
@@ -239,4 +240,76 @@ func factAuthors(facts []queue.AuthorFact) []string {
 		authors = append(authors, fact.Author)
 	}
 	return authors
+}
+
+// TestAuditHandler_CapturedAggregatedCollectionDeletesPickTheirTier drives the REAL captured audit
+// events for a deletecollection on an aggregated type, and asserts which join tier each shape
+// leaves reachable. They are recordings from a live apiserver rather than fixtures written to fit
+// the code, which is what makes them worth asserting against: the question they answer — does a
+// proxied collection delete carry the set it deleted? — is a fact about Kubernetes, not about us.
+//
+// The answer decides everything downstream. A fact carrying uids joins by MEMBERSHIP, which cannot
+// name the wrong actor. A fact without them falls back to SCOPE, which can, and is bounded by the
+// namespace, the selector, and a short window instead. The deleted expander had no second tier, so
+// every one of the body-less shapes below produced nothing at all and shipped committer-authored.
+func TestAuditHandler_CapturedAggregatedCollectionDeletesPickTheirTier(t *testing.T) {
+	tests := map[string]struct {
+		fixture  string
+		wantUIDs []string
+	}{
+		// The official aggregation layer PROXIES the request and never decodes the response it
+		// streamed back, so it audits the request with no body. This is the production shape, and
+		// the one the scope tier exists for.
+		"official apiserver sends no body": {
+			fixture: "testdata/audit-events/audit-deletecollection-official-raw-hollow.json",
+		},
+		"official apiserver, namespace teardown": {
+			fixture: "testdata/audit-events/audit-deletecollection-official-teardown-hollow.json",
+		},
+		// A body-supplying proxy in front of the extension server DOES return the deleted set, and
+		// then the join upgrades itself: the uids travel with the fact and membership decides.
+		"body-supplying proxy returns the deleted set": {
+			fixture: "testdata/audit-events/audit-deletecollection-proxy-raw-listbody.json",
+			wantUIDs: []string{
+				"e1b076ff-f430-4b82-ad7b-c170c4095fe3",
+				"5ce03312-bab3-4e72-af37-e0ff893a7b76",
+			},
+		},
+		// Not every body is a list: a DeleteOptions echo carries no items, so it degrades to scope
+		// exactly as an absent body does. Parsing has to tell those apart without failing.
+		"proxy echoing DeleteOptions carries no items": {
+			fixture: "testdata/audit-events/audit-deletecollection-proxy-teardown-deleteoptions.json",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			body, err := os.ReadFile(tc.fixture)
+			require.NoError(t, err, "the captured recording must be readable")
+
+			publisher := &fakeFactPublisher{}
+			handler := newPublishingHandler(t, publisher)
+			w := serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", string(body))
+			require.Equal(t, http.StatusOK, w.Code)
+
+			appends := publisher.recorded()
+			require.Len(t, appends, 1, "a collection delete is ONE fact about the collection")
+			require.Len(t, appends[0].facts, 1)
+			fact := appends[0].facts[0]
+
+			require.Equal(t, "deletecollection", fact.Verb)
+			require.Equal(t, schema.GroupResource{Group: "wardle.example.com", Resource: "flunders"},
+				appends[0].key.GroupResource, "the type is the stream's identity")
+			require.NotEmpty(t, fact.Namespace, "the scope tier joins on the namespace, so it must survive")
+			require.NotEmpty(t, fact.Author)
+
+			if tc.wantUIDs == nil {
+				require.Empty(t, fact.UIDs,
+					"no usable body means no uid set, and the join falls back to scope matching")
+				return
+			}
+			require.Equal(t, tc.wantUIDs, fact.UIDs,
+				"a body that was there upgrades the join to uid membership")
+		})
+	}
 }
