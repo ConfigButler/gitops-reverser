@@ -46,18 +46,27 @@ const labelSelectorQueryParam = "labelSelector"
 const serviceAccountUserPrefix = "system:serviceaccount:"
 
 // AttributionResult is the bounded resolver outcome recorded for each watch event. The set is the
-// join's tier table, so a reading of attribution_resolutions_total{result} says which evidence
-// named the author, not merely that one was named.
+// join's tier table, so a reading of attribution_resolutions_total{tier} says which evidence named
+// the author, not merely that one was named. It is the source of truth for that label: a lookup
+// that could not say which tier answered is the thing the tier label exists to fix, so the split
+// lives in the enum rather than at the metric boundary.
+//
+// WHO was named is a separate question and a separate label — see ActorKind. The two used to be
+// crammed into one value (exact_user against exact_serviceaccount), which made counting exact
+// resolutions a sum of two series and made the actor kind unaskable of every other tier.
 type AttributionResult string
 
 const (
-	// AttributionExactUser is an exact UID+resourceVersion match for a human user.
-	AttributionExactUser AttributionResult = "exact_user"
-	// AttributionExactServiceAccount is an exact UID+resourceVersion match for a named service account.
-	AttributionExactServiceAccount AttributionResult = "exact_serviceaccount"
-	// AttributionWeak is a non-exact match: the uid-latest tier or the rv-only escape hatch, used by
-	// known RV-mismatch events and no-UID facts respectively.
-	AttributionWeak AttributionResult = "weak"
+	// AttributionExact is an exact UID+resourceVersion match: this actor produced this exact version.
+	AttributionExact AttributionResult = "exact"
+	// AttributionLatest is the uid-latest tier — the object's own last write or its own delete fact,
+	// keyed by uid alone. It is the tier the removal path turns on: a match here that describes a
+	// WRITE is held as a fallback while the wait continues for evidence about the deletion.
+	AttributionLatest AttributionResult = "latest"
+	// AttributionResourceVersion is the rv-only escape hatch: a fact that carried a resourceVersion
+	// and no uid, matched on that version alone. It and AttributionLatest were one value ("weak")
+	// and are different evidence, which is why they are now two.
+	AttributionResourceVersion AttributionResult = "resource_version"
 	// AttributionCollectionUID is a removal matched to a deletecollection fact whose uid set
 	// contains this object. There is no over-attribution risk in it: either the API server said it
 	// deleted this object, or it did not.
@@ -95,8 +104,8 @@ const (
 //     entry's key, never from the fact, so carrying it duplicated the routing on every entry;
 //   - the subresource, which no tier joins on and nothing logs.
 //
-// isServiceAccount went the same way, for a different reason: it is not evidence, it is a prefix
-// check on Author that the reader can do for itself.
+// A stored is-service-account bool went the same way, for a different reason: it is not evidence,
+// it is a prefix check on Author that the reader can do for itself (see ActorKind).
 //
 // Name was removed with the subresource, on the same observation — no tier read it — and is back,
 // because that observation was true of the code and false of the domain. An aggregated-API write is
@@ -145,25 +154,40 @@ type AuthorResolution struct {
 	Result AttributionResult
 }
 
-// attributionResultForFact classifies a match on one of the three per-object tiers. weak marks a
-// non-exact match (the uid-latest tier or the rv-only hatch). The collection tiers do not come
-// through here: they carry no per-object evidence to grade, so matchCollection names its own result.
-func attributionResultForFact(fact AuthorFact, weak bool) AttributionResult {
-	if weak {
-		return AttributionWeak
+// ActorKind is the bounded kind of actor a resolution named. It is the same vocabulary
+// commits_total{author_kind} uses, so the two metrics stop disagreeing about the shape of one
+// distinction, and it is orthogonal to the tier: every tier can name either kind of actor, or none.
+type ActorKind string
+
+const (
+	// ActorKindUser is a human (or any non-service-account subject) named by the matched fact.
+	ActorKindUser ActorKind = "user"
+	// ActorKindServiceAccount is a named service account.
+	ActorKindServiceAccount ActorKind = "serviceaccount"
+	// ActorKindNone is no actor at all: nothing matched, or the fact that matched carried no author.
+	ActorKindNone ActorKind = "none"
+)
+
+// ActorKind classifies the actor a fact names. It is derived rather than carried: the API server
+// spells a service account one way and only one way, so a stored kind would be the same check,
+// denormalized onto every fact and able to disagree with the name beside it.
+func (f AuthorFact) ActorKind() ActorKind {
+	switch {
+	case f.Author == "":
+		return ActorKindNone
+	case strings.HasPrefix(f.Author, serviceAccountUserPrefix):
+		return ActorKindServiceAccount
+	default:
+		return ActorKindUser
 	}
-	if fact.isServiceAccount() {
-		return AttributionExactServiceAccount
-	}
-	return AttributionExactUser
 }
 
-// isServiceAccount reports whether the actor is a service account rather than a human. It is
-// derived rather than carried: the API server spells a service account one way and only one way, so
-// a stored bool would be the same check, denormalized onto every fact and able to disagree with the
-// name beside it.
-func (f AuthorFact) isServiceAccount() bool {
-	return strings.HasPrefix(f.Author, serviceAccountUserPrefix)
+// ActorKind classifies the actor this resolution named, which is none when no fact matched.
+func (r AuthorResolution) ActorKind() ActorKind {
+	if r.Result == AttributionAbsent {
+		return ActorKindNone
+	}
+	return r.Fact.ActorKind()
 }
 
 // AuthorFactFromEvent reduces one accepted, mutating audit event to the fact the stream carries,
@@ -265,7 +289,7 @@ func collectionUIDs(ctx context.Context, event auditv1.Event, uidCap int) []stri
 		return nil
 	}
 	if len(items) > uidCap {
-		recordCollectionDegraded(ctx, "uid_cap")
+		recordCollectionWithoutUIDSet(ctx, "uid_cap")
 		return nil
 	}
 	uids := make([]string, 0, len(items))
@@ -275,7 +299,7 @@ func collectionUIDs(ctx context.Context, event auditv1.Event, uidCap int) []stri
 		}
 	}
 	if len(uids) == 0 {
-		recordCollectionDegraded(ctx, "no_uids")
+		recordCollectionWithoutUIDSet(ctx, "no_uids")
 		return nil
 	}
 	return uids
@@ -347,19 +371,19 @@ func rvFromRawObject(obj *runtime.Unknown) string {
 // per append rather than once per entry, so the counter measures facts rather than audit batches
 // and stays comparable with the matched op on the other side of the join.
 func RecordFactsWritten(ctx context.Context, count int) {
-	if telemetry.AttributionFactEventsTotal == nil || count <= 0 {
+	if telemetry.AttributionFactsTotal == nil || count <= 0 {
 		return
 	}
-	telemetry.AttributionFactEventsTotal.Add(ctx, int64(count),
+	telemetry.AttributionFactsTotal.Add(ctx, int64(count),
 		metric.WithAttributes(attribute.String("op", factOpWritten)))
 }
 
-// recordCollectionDegraded counts one collection fact that lost its uid set, under the bounded
+// recordCollectionWithoutUIDSet counts one collection fact that lost its uid set, under the bounded
 // reason it lost it.
-func recordCollectionDegraded(ctx context.Context, reason string) {
-	if telemetry.AttributionCollectionDegradedTotal == nil {
+func recordCollectionWithoutUIDSet(ctx context.Context, reason string) {
+	if telemetry.AttributionCollectionWithoutUIDSetTotal == nil {
 		return
 	}
-	telemetry.AttributionCollectionDegradedTotal.Add(ctx, 1,
+	telemetry.AttributionCollectionWithoutUIDSetTotal.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("reason", reason)))
 }

@@ -1,6 +1,6 @@
 # Interpreting GitOps Reverser Metrics
 
-> Last updated: June 2026 — reconciled to the live instrument set in
+> Last updated: July 2026 — reconciled to the live instrument set in
 > [`internal/telemetry/exporter.go`](../internal/telemetry/exporter.go).
 
 This is the operator's field guide to the metrics GitOps Reverser exports. It explains how to
@@ -172,13 +172,13 @@ The log is Redis Streams by default and an in-process ring with
 | `audit_eventlist_events_total` | counter | `outcome` |
 | `audit_eventlist_duration_seconds` | histogram | `outcome` |
 | `audit_events_total` | counter | `outcome`, `category`, `group`, `version`, `resource`, `verb` |
-| `attribution_resolutions_total` | counter | `result`, `group`, `version`, `resource` |
-| `attribution_resolution_wait_seconds` | histogram | `result` |
-| `attribution_fact_events_total` | counter | `op` |
-| `attribution_fact_index_size` | gauge | — |
+| `attribution_resolutions_total` | counter | `tier`, `actor_kind`, `group`, `version`, `resource` |
+| `attribution_resolution_wait_seconds` | histogram | `tier`, `event_kind`, `group`, `version`, `resource` |
+| `attribution_facts_total` | counter | `op` |
+| `attribution_fact_index_entries` | gauge | — |
 | `attribution_fact_index_evictions_total` | counter | `reason` |
 | `attribution_fact_stream_gaps_total` | counter | `stream` |
-| `attribution_collection_degraded_total` | counter | `reason` |
+| `attribution_collection_without_uidset_total` | counter | `reason` |
 
 **EventList request boundary.** `audit_eventlists_total` and `audit_eventlist_duration_seconds`
 count requests at `/audit-webhook`; `audit_eventlist_events_total` counts the decoded event items
@@ -260,49 +260,69 @@ histogram_quantile(0.95,
 actor (human or service account) rather than producing an explicit unresolved author:
 
 ```promql
-sum(rate(gitopsreverser_attribution_resolutions_total{result!="absent"}[5m]))
+sum(rate(gitopsreverser_attribution_resolutions_total{tier!="absent"}[5m]))
 /
 sum(rate(gitopsreverser_attribution_resolutions_total[5m]))
 ```
 
-`result` is bounded, and it is ordered: it names which tier of evidence produced the author, from
-strongest to weakest.
+Coverage is `tier!="absent"` and nothing narrower. `tier=~"exact.*"` reads the collection and name
+tiers as misses, which they are not — they named an actor.
 
-| `result` | Meaning |
+The two labels answer two different questions. **`tier`** names which evidence produced the author,
+and it is ordered, strongest first. **`actor_kind`** names who that evidence named, in the same
+vocabulary `commits_total{author_kind}` uses.
+
+| `tier` | Meaning |
 | --- | --- |
-| `exact_user` | Exact UID+resourceVersion match for a human user. |
-| `exact_serviceaccount` | Exact UID+resourceVersion match for a named service account. |
-| `weak` | Non-exact match: the UID-latest tier a removal uses, or the RV-only escape hatch. |
-| `collection_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. It outranks `weak`, because `weak` names whoever last *wrote* an object while a removal asks who *deleted* it. |
+| `exact` | Exact UID+resourceVersion match: this actor produced this exact version. |
+| `collection_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. It outranks `latest`, because `latest` names whoever last *wrote* an object while a removal asks who *deleted* it. |
+| `latest` | The UID-latest tier: the object's own last fact, keyed by UID alone. A removal consults it, and a match here describing a *write* is held as a fallback while the wait continues for evidence about the deletion. |
+| `name` | A match on `(namespace, name)` for a fact carrying neither a UID nor a resourceVersion — the usual shape of an aggregated API's audit event, and of a delete the API server answered with a `Status`. |
 | `collection_scope` | A removal matched to a `deletecollection` by scope alone — same type and namespace, the request's selector accepting the object's labels, within the collection window. The weakest evidence the join has, and the only one that can name the wrong actor, which is why it is reached only when every more specific tier missed. |
+| `resource_version` | The RV-only escape hatch: a fact that carried a resourceVersion and no UID, matched on that version alone. |
 | `absent` | No usable fact matched before the grace window elapsed. The resulting live commit is authored as `unknown (attribution unresolved)`. |
 
-> **`exact_deletecollection_item` is gone.** It was the expander's label, and the expander was
-> deleted along with the fact keyspace. `collection_uid` is its closest equivalent; `collection_scope`
-> is new capability rather than a rename, and covers collection deletes that used to resolve to
-> nothing at all. Dashboards selecting `result=~"exact_.*|weak"` for match coverage should select
-> `result!="absent"` instead, or they will read the collection tiers as misses. See
+| `actor_kind` | Meaning |
+| --- | --- |
+| `user` | A human (or any non-service-account subject). |
+| `serviceaccount` | A named service account — a controller, an operator, a CI identity. |
+| `none` | Nobody was named: nothing matched, or the fact that matched carried no author. |
+
+**Evidence quality, independently of coverage.** A shift from `exact` toward `collection_scope` or
+`name` is a quality regression even while coverage holds flat, so it is worth its own panel:
+
+```promql
+sum by (tier) (rate(gitopsreverser_attribution_resolutions_total[5m]))
+```
+
+> **`result` is gone**, and so are `exact_user`, `exact_serviceaccount`, and `weak`. See
+> [`UPGRADING.md`](UPGRADING.md) for the old-to-new mapping. `exact_deletecollection_item` went
+> earlier, with the expander and the fact keyspace; `collection_uid` is its closest equivalent and
+> `collection_scope` is new capability rather than a rename. See
 > [`attribution-fact-stream.md`](finished/attribution-fact-stream.md).
 
-**Is the grace window paying for itself?** Misses waiting near the configured grace window mean the
-operator is delaying commits without finding facts:
+**Is the grace window paying for itself?** `event_kind` is `write` or `removal`, and the split is
+the point: a removal holds a fallback and keeps waiting for evidence about the deletion, a write
+does not. The removal wait is the number `--author-attribution-grace` is tuned from, and a p95
+approaching the configured grace means removals are sitting out the whole window:
 
 ```promql
 histogram_quantile(0.95,
-  sum by (le) (
-    rate(gitopsreverser_attribution_resolution_wait_seconds_bucket{result="absent"}[5m])))
+  sum by (le, tier) (
+    rate(gitopsreverser_attribution_resolution_wait_seconds_bucket{event_kind="removal"}[5m])))
 ```
 
 **Is the fact index healthy?** Facts should be written and later matched; a high rate of
-`op="written"` alongside `result="absent"` points at a timing, type, or audit-route mismatch between
-audit and watch:
+`op="written"` alongside `tier="absent"` points at a timing, type, or audit-route mismatch between
+audit and watch. The two ops are **not subtractable**: `written` counts every type, `matched` only
+the streams this process follows, and a restart re-files the whole retention window.
 
 ```promql
-sum by (op) (rate(gitopsreverser_attribution_fact_events_total[5m]))
+sum by (op) (rate(gitopsreverser_attribution_facts_total[5m]))
 ```
 
 ```promql
-gitopsreverser_attribution_fact_index_size
+gitopsreverser_attribution_fact_index_entries
 ```
 
 **Is the index dropping facts under load?** The index is bounded per type and in total, and an
@@ -332,7 +352,7 @@ the join falls back to `collection_scope`, which is correct but weaker — so th
 rather than inferred:
 
 ```promql
-sum by (reason) (rate(gitopsreverser_attribution_collection_degraded_total[5m]))
+sum by (reason) (rate(gitopsreverser_attribution_collection_without_uidset_total[5m]))
 ```
 
 `reason` is `uid_cap` (the set was larger than `--author-attribution-collection-uid-cap`) or
@@ -444,9 +464,21 @@ them — with a reference dashboard and an audit/attribution deep-dive — is
 - **Watch ingestion** — per-type watch events received, reconnects/restarts, `sendInitialEvents`
   replays, `410 Gone` rebuilds, and cursor-resume vs full-replay. Watch is the object-state source,
   yet it has almost no direct coverage today; this is the biggest gap.
+- **Shard processing delay** — how long an event waits between arriving on its watch shard and being
+  picked up. The wait histogram above times each resolution in isolation; it cannot see the delay a
+  slow resolution imposes on the events queued behind it on the same single-threaded shard, which is
+  a failure mode that has already broken a test.
+- **Fact-pipeline loss paths** — an undecodable fact-stream entry is skipped with no log and no
+  metric, and a wedged fact follower is silent, so attribution can degrade cluster-wide with a rising
+  `absent` rate as the only symptom.
 - **Git push health** — push latency and conflict-retry counts. The instruments for these were
   removed because nothing recorded them; re-add them **with** a recording site when the need is
   real, not before.
+
+The attribution relabel that used to be listed here has **shipped**: `tier` plus `actor_kind`, and
+`event_kind` on the wait histogram, all documented above.
+Nothing consumes these metrics yet, so the break is taken deliberately in one release rather than
+twice; it will carry an [`UPGRADING.md`](UPGRADING.md) table of old name → new name.
 
 ---
 

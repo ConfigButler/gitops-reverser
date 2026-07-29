@@ -150,7 +150,7 @@ func collectionResolutionCounts() map[string]float64 {
 	counts := map[string]float64{}
 	for _, tier := range []string{"collection_uid", "collection_scope"} {
 		n, err := queryPrometheus(fmt.Sprintf(
-			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{result=%q}[2h])) or vector(0)`, tier))
+			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{tier=%q}[2h])) or vector(0)`, tier))
 		if err != nil {
 			return map[string]float64{}
 		}

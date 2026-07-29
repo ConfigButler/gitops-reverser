@@ -286,7 +286,7 @@ func (q FactQuery) awaitsBetterEvidence(resolution AuthorResolution) bool {
 	switch resolution.Result {
 	case AttributionCollectionUID, AttributionCollectionScope:
 		return false
-	case AttributionExactUser, AttributionExactServiceAccount, AttributionWeak,
+	case AttributionExact, AttributionLatest, AttributionResourceVersion,
 		AttributionName, AttributionAbsent:
 	}
 	return !isRemovalVerb(resolution.Fact.Verb)
@@ -339,7 +339,7 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 
 	if query.UID != "" && query.ResourceVersion != "" {
 		if fact, found := facts.lookupExact(query.UID, query.ResourceVersion, cutoff); found {
-			return AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, false)}
+			return AuthorResolution{Fact: fact, Result: AttributionExact}
 		}
 	}
 	if !query.ExactCapable {
@@ -349,7 +349,7 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 	}
 	if query.ResourceVersion != "" {
 		if fact, found := facts.lookupRV(query.ResourceVersion, cutoff); found {
-			return AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, true)}
+			return AuthorResolution{Fact: fact, Result: AttributionResourceVersion}
 		}
 	}
 	if query.Name != "" {
@@ -380,7 +380,7 @@ func (i *FactIndex) lookupRemoval(
 			return AuthorResolution{Fact: fact, Result: AttributionCollectionUID}
 		}
 		if fact, found := facts.lookupLatest(query.UID, cutoff); found {
-			resolution := AuthorResolution{Fact: fact, Result: attributionResultForFact(fact, true)}
+			resolution := AuthorResolution{Fact: fact, Result: AttributionLatest}
 			// The object's own delete fact: the strongest thing a removal can hope for below uid
 			// membership, so it ends the search here.
 			if isRemovalVerb(fact.Verb) {
@@ -666,18 +666,18 @@ func nameWaiterValue(namespace, name string) string {
 // applied fact: the number is a memory reading, and the sweep is when it has just changed most.
 // The v1 gauge cost a Redis SCAN of the whole fact keyspace to produce this; it is now a field read.
 func (i *FactIndex) recordSize(ctx context.Context) {
-	if telemetry.AttributionFactIndexSize == nil {
+	if telemetry.AttributionFactIndexEntries == nil {
 		return
 	}
-	telemetry.AttributionFactIndexSize.Record(ctx, int64(i.Len()))
+	telemetry.AttributionFactIndexEntries.Record(ctx, int64(i.Len()))
 }
 
 // recordFactEvent counts one fact lifecycle event under its bounded op.
 func recordFactEvent(ctx context.Context, op string) {
-	if telemetry.AttributionFactEventsTotal == nil {
+	if telemetry.AttributionFactsTotal == nil {
 		return
 	}
-	telemetry.AttributionFactEventsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("op", op)))
+	telemetry.AttributionFactsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("op", op)))
 }
 
 // recordFactIndexEviction counts one evicted entry under its bounded reason.

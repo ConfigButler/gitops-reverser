@@ -195,7 +195,7 @@ func (r *attributionResolver) ResolveAuthor(
 	// production expresses that mode with a nil Manager.AuthorResolver, so this branch is
 	// unreachable there (cmd/main.go always passes a non-nil index).
 	if r.lookup == nil {
-		recordAttributionResolution(ctx, query.GVR, queue.AttributionAbsent, time.Since(start))
+		recordAttributionResolution(ctx, query, queue.AttributionAbsent, queue.ActorKindNone, time.Since(start))
 		return git.UserInfo{}, git.AttributionNotAttempted
 	}
 	// One call, not a loop. The whole wait — register the waiter, read the index, block on the
@@ -205,11 +205,11 @@ func (r *attributionResolver) ResolveAuthor(
 	resolution := r.lookup.Await(ctx, query.factQuery(), r.grace)
 	if resolution.Result != queue.AttributionAbsent {
 		ui, outcome, result := r.userInfoForResolution(resolution)
-		recordAttributionResolution(ctx, query.GVR, result, time.Since(start))
+		recordAttributionResolution(ctx, query, result, resolution.ActorKind(), time.Since(start))
 		r.health.observe(query.AuditRoute, outcome == git.AttributionResolved)
 		return ui, outcome
 	}
-	recordAttributionResolution(ctx, query.GVR, queue.AttributionAbsent, time.Since(start))
+	recordAttributionResolution(ctx, query, queue.AttributionAbsent, queue.ActorKindNone, time.Since(start))
 	r.warnIfRouteNeverResolves(query.AuditRoute, query.GVR)
 	return git.UserInfo{}, git.AttributionUnresolved
 }
@@ -233,24 +233,52 @@ func (r *attributionResolver) userInfoForResolution(
 	}, git.AttributionResolved, result
 }
 
+// attributionEventKindWrite and attributionEventKindRemoval are the bounded event kinds on the wait
+// histogram. They come from ExactCapable, which is the same split the wait design turns on: a
+// removal holds a fallback and keeps waiting for evidence about the deletion, a write does not. An
+// absent write and an absent removal used to be one series, and the removal wait is the number
+// anyone tuning --author-attribution-grace actually needs.
+const (
+	attributionEventKindWrite   = "write"
+	attributionEventKindRemoval = "removal"
+)
+
+// recordAttributionResolution counts one resolution and times it.
+//
+// The two instruments carry DIFFERENT label sets on purpose. actor_kind is a property of the answer
+// and belongs on the census; event_kind is a property of the question and only changes what the
+// wait means. Putting both on both would multiply a histogram that already carries the type triple
+// by six for no reading anyone would make.
 func recordAttributionResolution(
 	ctx context.Context,
-	gvr schema.GroupVersionResource,
-	result queue.AttributionResult,
+	query AuthorQuery,
+	tier queue.AttributionResult,
+	actorKind queue.ActorKind,
 	wait time.Duration,
 ) {
-	attrs := metric.WithAttributes(
-		attribute.String("result", string(result)),
+	gvr := query.GVR
+	typeAttrs := []attribute.KeyValue{
+		attribute.String("tier", string(tier)),
 		attribute.String("group", gvr.Group),
 		attribute.String("version", gvr.Version),
 		attribute.String("resource", gvr.Resource),
-	)
+	}
 	if telemetry.AttributionResolutionsTotal != nil {
-		telemetry.AttributionResolutionsTotal.Add(ctx, 1, attrs)
+		telemetry.AttributionResolutionsTotal.Add(ctx, 1, metric.WithAttributes(
+			append(typeAttrs, attribute.String("actor_kind", string(actorKind)))...))
 	}
 	if telemetry.AttributionResolutionWaitSeconds != nil {
-		telemetry.AttributionResolutionWaitSeconds.Record(ctx, wait.Seconds(), attrs)
+		telemetry.AttributionResolutionWaitSeconds.Record(ctx, wait.Seconds(), metric.WithAttributes(
+			append(typeAttrs, attribute.String("event_kind", attributionEventKind(query)))...))
 	}
+}
+
+// attributionEventKind names whether the query was about a write or a removal.
+func attributionEventKind(query AuthorQuery) string {
+	if query.ExactCapable {
+		return attributionEventKindWrite
+	}
+	return attributionEventKindRemoval
 }
 
 // warnIfRouteNeverResolves says, once per audit route, that a route has produced a run of

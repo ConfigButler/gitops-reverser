@@ -70,7 +70,7 @@ func TestAuthorResolver_HumanHit(t *testing.T) {
 	lookup := &fakeLookup{
 		resolution: queue.AuthorResolution{
 			Fact:   queue.AuthorFact{Author: "alice", Email: "a@x.io"},
-			Result: queue.AttributionExactUser,
+			Result: queue.AttributionExact,
 		},
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
@@ -87,13 +87,15 @@ func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	// A matched service account is always named by its own username — never collapsed
-	// to the committer — and the resolution is recorded as exact_serviceaccount.
+	// A matched service account is always named by its own username — never collapsed to the
+	// committer — and the tier and the actor kind are recorded as two separate labels. They used to
+	// be one value, exact_serviceaccount, which made "how many exact resolutions" a sum of two
+	// series and made the actor kind unaskable of any other tier.
 	sa := "system:serviceaccount:flux-system:kustomize-controller"
 	lookup := &fakeLookup{
 		resolution: queue.AuthorResolution{
 			Fact:   queue.AuthorFact{Author: sa},
-			Result: queue.AttributionExactServiceAccount,
+			Result: queue.AttributionExact,
 		},
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
@@ -104,14 +106,98 @@ func TestAuthorResolver_ServiceAccountIsNamed(t *testing.T) {
 	assert.Equal(t, sa, ui.Username)
 
 	count, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_resolutions_total",
-		map[string]string{"result": string(queue.AttributionExactServiceAccount)})
+		map[string]string{
+			"tier":       string(queue.AttributionExact),
+			"actor_kind": string(queue.ActorKindServiceAccount),
+			"resource":   "deployments",
+		})
 	require.True(t, ok)
 	assert.Equal(t, int64(1), count)
 
+	// The wait histogram carries the tier and the KIND OF EVENT instead of the actor: an ADDED or
+	// MODIFIED event is a write, and a write does not hold a fallback and keep waiting.
 	waitCount, ok := telemetry.CollectHistogramCount(reader, "gitopsreverser_attribution_resolution_wait_seconds",
-		map[string]string{"result": string(queue.AttributionExactServiceAccount)})
+		map[string]string{
+			"tier":       string(queue.AttributionExact),
+			"event_kind": attributionEventKindWrite,
+		})
 	require.True(t, ok)
 	assert.Equal(t, uint64(1), waitCount)
+}
+
+// TestAuthorResolver_UserAndServiceAccountShareOneTier proves the split does what it was for: one
+// tier series, two actor kinds under it.
+func TestAuthorResolver_UserAndServiceAccountShareOneTier(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	for _, author := range []string{"alice", "system:serviceaccount:flux-system:kustomize-controller"} {
+		lookup := &fakeLookup{
+			resolution: queue.AuthorResolution{
+				Fact:   queue.AuthorFact{Author: author},
+				Result: queue.AttributionExact,
+			},
+		}
+		r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
+		_, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
+		require.Equal(t, git.AttributionResolved, outcome)
+	}
+
+	tierTotal, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_resolutions_total",
+		map[string]string{"tier": string(queue.AttributionExact)})
+	require.True(t, ok)
+	assert.Equal(t, int64(2), tierTotal, "counting one tier is one selector, not a sum of two series")
+
+	for kind, want := range map[queue.ActorKind]int64{
+		queue.ActorKindUser:           1,
+		queue.ActorKindServiceAccount: 1,
+		// Neither resolution was a miss, so nothing was named "none" — the third value is asserted
+		// absent rather than left unstated.
+		queue.ActorKindNone: 0,
+	} {
+		got, found := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_resolutions_total",
+			map[string]string{"tier": string(queue.AttributionExact), "actor_kind": string(kind)})
+		require.Equal(t, want > 0, found, "actor kind %q", kind)
+		assert.Equal(t, want, got, "actor kind %q", kind)
+	}
+}
+
+// TestAuthorResolver_RemovalWaitIsItsOwnSeries covers the distinction --author-attribution-grace is
+// tuned from: an absent write and an absent removal used to land in one histogram series, and only
+// the removal sits out the whole grace window.
+func TestAuthorResolver_RemovalWaitIsItsOwnSeries(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	lookup := &fakeLookup{resolution: queue.AuthorResolution{Result: queue.AttributionAbsent}}
+	r := NewAuthorResolver(lookup, 0, logr.Discard())
+
+	_, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "999", false))
+	require.Equal(t, git.AttributionUnresolved, outcome)
+
+	removals, ok := telemetry.CollectHistogramCount(reader, "gitopsreverser_attribution_resolution_wait_seconds",
+		map[string]string{
+			"tier":       string(queue.AttributionAbsent),
+			"event_kind": attributionEventKindRemoval,
+		})
+	require.True(t, ok)
+	assert.Equal(t, uint64(1), removals)
+
+	_, writes := telemetry.CollectHistogramCount(reader, "gitopsreverser_attribution_resolution_wait_seconds",
+		map[string]string{
+			"tier":       string(queue.AttributionAbsent),
+			"event_kind": attributionEventKindWrite,
+		})
+	assert.False(t, writes, "a removal's wait must not be counted as a write's")
+
+	// An unmatched resolution names nobody, and says so rather than leaving the label off.
+	absent, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_resolutions_total",
+		map[string]string{
+			"tier":       string(queue.AttributionAbsent),
+			"actor_kind": string(queue.ActorKindNone),
+		})
+	require.True(t, ok)
+	assert.Equal(t, int64(1), absent)
 }
 
 func TestAuthorResolver_MissExpiresToUnresolved(t *testing.T) {
@@ -131,7 +217,7 @@ func TestAuthorResolver_DeleteEventIsNotExactCapable(t *testing.T) {
 	lookup := &fakeLookup{
 		resolution: queue.AuthorResolution{
 			Fact:   queue.AuthorFact{Author: "alice"},
-			Result: queue.AttributionWeak,
+			Result: queue.AttributionLatest,
 		},
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
@@ -145,7 +231,7 @@ func TestAuthorResolver_WaitsThroughGraceWindowForLateFact(t *testing.T) {
 	lookup := &fakeLookup{
 		resolution: queue.AuthorResolution{
 			Fact:   queue.AuthorFact{Author: "bob"},
-			Result: queue.AttributionExactUser,
+			Result: queue.AttributionExact,
 		},
 		availableAfter: 50 * time.Millisecond,
 	}
@@ -176,7 +262,7 @@ func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
 	lookup := &fakeLookup{
 		resolution: queue.AuthorResolution{
 			Fact:   queue.AuthorFact{Author: ""},
-			Result: queue.AttributionExactUser,
+			Result: queue.AttributionExact,
 		},
 	}
 	r := NewAuthorResolver(lookup, DefaultAttributionGraceWindow, logr.Discard())
@@ -214,7 +300,7 @@ func TestAuthorResolver_WarnsOnceForARouteThatNeverResolves(t *testing.T) {
 	other := &fakeLookup{
 		resolution: queue.AuthorResolution{
 			Fact:   queue.AuthorFact{Author: "alice"},
-			Result: queue.AttributionExactUser,
+			Result: queue.AttributionExact,
 		},
 	}
 	healthy := NewAuthorResolver(other, 0, logr.Discard())

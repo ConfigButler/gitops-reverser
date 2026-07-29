@@ -93,7 +93,8 @@ func TestAuthorFactFromEvent_UIDSetIsDroppedPastTheCapAndCounted(t *testing.T) {
 	require.Nil(t, fact.UIDs)
 	require.Empty(t, fact.LabelSelector)
 
-	degraded, found := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_collection_degraded_total",
+	degraded, found := telemetry.CollectInt64Sum(reader,
+		"gitopsreverser_attribution_collection_without_uidset_total",
 		map[string]string{"reason": "uid_cap"})
 	require.True(t, found)
 	require.Equal(t, int64(1), degraded)

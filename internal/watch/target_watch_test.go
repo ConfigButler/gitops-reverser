@@ -208,7 +208,7 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 			&fakeLookup{
 				resolution: queue.AuthorResolution{
 					Fact:   queue.AuthorFact{Author: "alice", Email: "alice@example.com"},
-					Result: queue.AttributionExactUser,
+					Result: queue.AttributionExact,
 				},
 			},
 			time.Second, logr.Discard(),

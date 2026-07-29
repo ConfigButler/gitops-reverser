@@ -7,6 +7,51 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## 0.41.0 — the attribution metrics are relabelled and partly renamed (breaking for queries)
+
+The `result` label is **gone** from `gitopsreverser_attribution_resolutions_total` and
+`gitopsreverser_attribution_resolution_wait_seconds`. It crammed two orthogonal questions into one
+value — which evidence answered, and who it named — and hid a third, so it is replaced by two labels
+on the counter and a different second label on the histogram. Four metric families are renamed in the
+same change, while the surface is moving.
+
+Nothing else in the pipeline changes: the same events resolve to the same authors, and the same
+commits are written. Only the names a query selects on change.
+
+| Old | New |
+| --- | --- |
+| `attribution_resolutions_total{result}` | `attribution_resolutions_total{tier, actor_kind}` |
+| `attribution_resolution_wait_seconds{result}` | `attribution_resolution_wait_seconds{tier, event_kind}` |
+| `attribution_fact_events_total{op}` | `attribution_facts_total{op}` |
+| `attribution_fact_index_size` | `attribution_fact_index_entries` |
+| `attribution_collection_degraded_total{reason}` | `attribution_collection_without_uidset_total{reason}` |
+
+`attribution_fact_index_evictions_total{reason}` and `attribution_fact_stream_gaps_total{stream}`
+are unchanged.
+
+The values move too. `tier` carries what `result` said about evidence, and `weak` splits in two,
+because it covered two different kinds of it:
+
+| Old `result` | New |
+| --- | --- |
+| `exact_user` | `tier="exact"`, `actor_kind="user"` |
+| `exact_serviceaccount` | `tier="exact"`, `actor_kind="serviceaccount"` |
+| `weak` (a UID-latest match) | `tier="latest"` |
+| `weak` (the RV-only escape hatch) | `tier="resource_version"` |
+| `collection_uid`, `collection_scope`, `name`, `absent` | `tier=` the same value |
+
+`actor_kind` is `user`, `serviceaccount`, or `none`, the vocabulary
+`gitopsreverser_commits_total{author_kind}` already uses, and it is available on **every** tier
+rather than on the exact one alone. `event_kind` on the wait histogram is `write` or `removal`: a
+removal holds a fallback and keeps waiting for evidence about the deletion where a write does not,
+so `{event_kind="removal"}` is the distribution `--author-attribution-grace` is tuned from.
+
+**Rewrite match coverage as `tier!="absent"`.** A query kept as `result=~"exact_.*"` — or ported to
+`tier=~"exact.*"` — reads the collection and name tiers as misses, and those tiers named an actor.
+
+Every one of these is documented in
+[interpreting-metrics.md](interpreting-metrics.md#audit-attribution-optional).
+
 ## `summary.fleetRoot` is gone from the analyzer report (breaking JSON change)
 
 `manifest-analyzer --mode scan-repo` no longer emits `status.summary.fleetRoot`, the text

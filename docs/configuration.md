@@ -1157,7 +1157,7 @@ When attribution is enabled, these flags tune the join:
 - `--author-attribution-collection-uid-cap` (default `10000`): how many object UIDs a `deletecollection`
   fact carries before the set is dropped and the join falls back to scope matching. The fallback is
   already correct, so this only decides how often the precise path is taken; drops are counted on
-  `attribution_collection_degraded_total{reason}`.
+  `attribution_collection_without_uidset_total{reason}`.
 
 A matched actor is always named by its own username, humans and service accounts alike (e.g.
 `system:serviceaccount:flux-system:kustomize-controller`); there is no option to collapse service

@@ -140,7 +140,7 @@ func TestFactIndex_JoinPolicyDependsOnTheEventKind(t *testing.T) {
 
 	// ADDED / MODIFIED present the resourceVersion the write produced, so they join exactly.
 	exact := harness.resolve(objectQuery("prod-eu-1", "uid-1", "101", true))
-	require.Equal(t, AttributionExactUser, exact.Result)
+	require.Equal(t, AttributionExact, exact.Result)
 	require.Equal(t, "alice", exact.Fact.Author)
 
 	harness.waitForFacts(2)
@@ -151,7 +151,7 @@ func TestFactIndex_JoinPolicyDependsOnTheEventKind(t *testing.T) {
 
 	// A removal's rv never matches the write's, so it is the event kind that consults latest.
 	removal := harness.resolve(objectQuery("prod-eu-1", "uid-1", "999", false))
-	require.Equal(t, AttributionWeak, removal.Result)
+	require.Equal(t, AttributionLatest, removal.Result)
 	require.Equal(t, "alice", removal.Fact.Author)
 }
 
@@ -398,7 +398,7 @@ func TestFactIndex_CollectionScopeIsWeakerThanAnObjectsOwnFact(t *testing.T) {
 	harness.waitForFacts(3)
 
 	resolution := harness.resolve(objectQuery("prod-eu-1", "uid-1", "999", false))
-	require.Equal(t, AttributionWeak, resolution.Result)
+	require.Equal(t, AttributionLatest, resolution.Result)
 	require.Equal(t, "bob", resolution.Fact.Author)
 }
 
@@ -498,7 +498,7 @@ func TestFactIndex_NameTierRanksBelowEveryStrongerTier(t *testing.T) {
 	harness.waitForFacts(3)
 
 	exact := harness.resolve(namedQuery(factIndexTestUID, "101", "fl-1", true))
-	require.Equal(t, AttributionExactUser, exact.Result)
+	require.Equal(t, AttributionExact, exact.Result)
 	require.Equal(t, "uid-tier", exact.Fact.Author)
 
 	// And the latest tier, which a removal consults, also outranks it.
@@ -716,7 +716,7 @@ func TestFactIndex_OneFactServesEveryGitTargetWaitingForIt(t *testing.T) {
 		select {
 		case resolution := <-results:
 			require.Equal(t, "alice", resolution.Fact.Author)
-			require.Equal(t, AttributionExactUser, resolution.Result)
+			require.Equal(t, AttributionExact, resolution.Result)
 		case <-time.After(10 * time.Second):
 			t.Fatal("a waiter was never woken: waking must reach every resolver on the key, not one")
 		}
@@ -773,7 +773,7 @@ func TestFactIndex_ARemovalStillNamesTheLastWriterWhenNothingBetterArrives(t *te
 	resolution := harness.index.Await(t.Context(),
 		removalFactQuery("prod-eu-1", factIndexTestUID), 150*time.Millisecond)
 
-	require.Equal(t, AttributionWeak, resolution.Result)
+	require.Equal(t, AttributionLatest, resolution.Result)
 	require.Equal(t, "bob", resolution.Fact.Author, "waiting must not turn a match into an absence")
 	require.GreaterOrEqual(t, time.Since(start), 150*time.Millisecond,
 		"the fallback is only taken once the grace has actually elapsed")
@@ -807,3 +807,41 @@ func removalFactQuery(route, uid string) FactQuery {
 		ExactCapable:    false,
 	}
 }
+
+// TestFactIndex_LatestAndResourceVersionAreDistinctTiers pins the split the metric surface turns
+// on. Both used to report "weak", and they are different evidence: the uid tier is the OBJECT's own
+// last write, while the rv-only hatch is a fact that carried a resourceVersion and no uid at all.
+// The removal path turns on the first specifically, so a reader that cannot tell them apart cannot
+// tell a held fallback from an unidentified match.
+func TestFactIndex_LatestAndResourceVersionAreDistinctTiers(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	key := factIndexTestStream("prod-eu-1")
+	rvOnly := AuthorFact{Namespace: "team-a", ResourceVersion: "202", Author: "rv-actor", Verb: "update"}
+	harness.publish(key, objectFact("alice", "101"), rvOnly)
+	harness.waitForFacts(3)
+
+	// A removal joins the object's own uid: the latest tier.
+	removal := harness.resolve(objectQuery("prod-eu-1", factIndexTestUID, "999", false))
+	require.Equal(t, AttributionLatest, removal.Result)
+	require.Equal(t, "alice", removal.Fact.Author)
+
+	// A fact with no uid is reachable only through the resourceVersion it carried.
+	hatch := harness.resolve(objectQuery("prod-eu-1", "", "202", true))
+	require.Equal(t, AttributionResourceVersion, hatch.Result)
+	require.Equal(t, "rv-actor", hatch.Fact.Author)
+}
+
+// TestFactIndex_ActorKindIsDerivedFromTheAuthor covers the second half of the label split: the tier
+// says which evidence answered, the actor kind says who it named, and every tier can name either.
+func TestFactIndex_ActorKindIsDerivedFromTheAuthor(t *testing.T) {
+	require.Equal(t, ActorKindUser, AuthorFact{Author: "alice"}.ActorKind())
+	require.Equal(t, ActorKindServiceAccount,
+		AuthorFact{Author: "system:serviceaccount:flux-system:kustomize-controller"}.ActorKind())
+	require.Equal(t, ActorKindNone, AuthorFact{}.ActorKind())
+
+	// A resolution that matched nothing names nobody, whatever fact it is carrying.
+	require.Equal(t, ActorKindNone, AuthorResolution{Result: AttributionAbsent}.ActorKind())
+	require.Equal(t, ActorKindUser,
+		AuthorResolution{Result: AttributionName, Fact: AuthorFact{Author: "alice"}}.ActorKind())
+}
+

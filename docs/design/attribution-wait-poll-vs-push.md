@@ -126,7 +126,7 @@ Two measurements exist in the repository today, and they agree.
 
 **The e2e suite reports the wait distribution on every run.**
 [`reportAttributionStats`](../../test/e2e/e2e_suite_test.go) queries
-`gitopsreverser_attribution_resolutions_total` by `result` and prints the
+`gitopsreverser_attribution_resolutions_total` by `tier` and prints the
 `gitopsreverser_attribution_resolution_wait_seconds` histogram, split into resolved and absent
 because the two populations answer different questions. It also prints how many resolutions
 succeeded only because e2e widens the grace past the three-second default, which is a direct

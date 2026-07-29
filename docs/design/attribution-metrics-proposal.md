@@ -1,5 +1,10 @@
 # Proposal: the attribution metric surface
 
+> **design**: the attribution half is **built**. `watch_event_queue_seconds` is not: it moved to
+> Phase 2 as a pipeline-wide metric. The Phase 1 surface below is now Phase 1 of
+> [`metrics-observability-plan.md`](metrics-observability-plan.md), the canonical plan; this document
+> is the reasoning trail behind it. Index: [`../INDEX.md`](../INDEX.md)
+
 Revised after review. An earlier draft proposed thirteen new metric families at once and four of them
 would have produced misleading diagnoses. The corrections are spelled out in
 [what the first draft got wrong](#what-the-first-draft-got-wrong), because two of the mistakes are
@@ -22,7 +27,7 @@ consumes these metrics yet, which will not stay true.
 
 That argument covers the renames. It does not cover new metric families, which is why they are phased.
 
-## Phase 1: the set to build now
+## Phase 1: the set built first
 
 | Change | Kind | Why it is in the first release |
 |---|---|---|
@@ -269,28 +274,42 @@ unchanged and stay as they are.
 
 ## Reconciling with the canonical plan
 
-[`metrics-observability-plan.md`](metrics-observability-plan.md) declares itself the single canonical
-metrics plan and supersedes per-feature metric notes. Its attribution taxonomy and this proposal
-cannot both be right, and its version is already inconsistent with the code:
+**Done.** [`metrics-observability-plan.md`](metrics-observability-plan.md) declares itself the single
+canonical metrics plan, and its attribution taxonomy and this proposal could not both be right. Its
+version had drifted from the code when the fact-stream work landed:
 
-| It specifies | The code has |
+| It specified | The code has |
 |---|---|
 | `result` includes `conflict` and `expired` | neither value exists |
 | `attribution_fact_events_total{op}` includes `expired_unmatched` and `late` | neither op exists |
 | `attribution_fact_index_size` is "facts parked in **Redis**" | the index has been in process memory since the fact-stream work |
 
-So this is not a choice between two live designs. The canonical plan drifted when the fact-stream
-work landed, and this proposal has to update it rather than sit beside it.
+So this was never a choice between two live designs. The canonical plan has now absorbed the Phase 1
+surface below as its attribution stage (§4.4 and §5 there), records the drift above as a correction,
+and links back here as the reasoning trail. A taxonomy that lives in two places diverges again, and
+the canonical plan is the one people are told to read; this document keeps the argument, not the
+inventory.
 
-**Proposed:** the attribution rows in the canonical plan's inventory are replaced by the Phase 1
-surface here, and this document is linked from there as the reasoning trail. A taxonomy that lives in
-two places will diverge again, and the canonical plan is the one people are told to read.
+Two things the canonical plan took from here and generalized, because they are not attribution's
+alone:
+
+- **`watch_event_queue_seconds`** became the processing-delay stage of the whole pipeline rather than
+  an attribution metric. It measures head-of-line blocking on a watch shard, which attribution
+  happens to be the loudest current cause of.
+- **"every silent drop gets a counter"** became a numbered principle there. It is the rule this
+  document broke first and then repaired: the decode-error gap below is what a stated principle would
+  have caught.
 
 ## What to write down
 
 An [`UPGRADING.md`](../UPGRADING.md) entry with a table of old label and metric names against new
 ones, so a query can be rewritten mechanically. It should state that `result` is gone rather than
 only describing what replaces it.
+
+The break itself needs no defense beyond being written down. **Nothing consumes these metrics yet**:
+no dashboard ships, no alert rules ship, and no user has been told to build against these names. The
+migration costs one entry today and a consumer migration after the first published dashboard, which
+is the whole reason the surface is corrected in the same release that broke `result` anyway.
 
 Worth fixing while in that file: its current attribution entry is headed
 `## Unreleased — … (next minor; …)`, which [`AGENTS.md`](../../AGENTS.md) forbids, because by the

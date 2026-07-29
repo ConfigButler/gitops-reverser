@@ -83,24 +83,24 @@ flowchart TD
     C -->|no| Z[absent: committer-authored]
     C -->|yes| D{uid and rv,<br/>and exact-capable?}
 
-    D -->|match| E[exact_user / exact_serviceaccount]
+    D -->|match| E[exact]
     D -->|no match| F{is this a removal?}
 
     F -->|yes| G{uid in a collection's<br/>uid set?}
     G -->|yes| H[collection_uid]
     G -->|no| I{latest uid<br/>is a DELETE fact?}
-    I -->|yes| J[weak: the object's own delete]
+    I -->|yes| J[latest: the object's own delete]
     I -->|no, it is a write| K[hold it as a fallback]
     K --> L{name tier holds<br/>a DELETE fact?}
     L -->|yes| M[name]
     L -->|no| N{fallback held?}
-    N -->|yes| O[weak: last writer]
+    N -->|yes| O[latest: last writer]
     N -->|no| P{collection covers<br/>this scope + selector?}
     P -->|yes| Q[collection_scope]
     P -->|no| R
 
     F -->|no| R{rv-only hatch?}
-    R -->|match| S[weak]
+    R -->|match| S[resource_version]
     R -->|no match| T{name tier?}
     T -->|match| U[name]
     T -->|no match| Z
@@ -118,17 +118,20 @@ flowchart TD
 
 ### The tiers, strongest first
 
-| Tier | Key | Result | What it asserts |
+| Tier | Key | `tier` label | What it asserts |
 |---|---|---|---|
-| exact | uid + rv | `exact_user` / `exact_serviceaccount` | this actor produced this exact version |
+| exact | uid + rv | `exact` | this actor produced this exact version |
 | collection uid | uid in a collection's set | `collection_uid` | the API server said this request deleted this object |
-| latest, delete | uid | `weak` | this object's own delete fact |
+| latest, delete | uid | `latest` | this object's own delete fact |
 | name, delete | namespace + name | `name` | this object's own delete fact, when it has no uid |
-| latest, write | uid | `weak` | who last wrote it; a fallback for a removal |
+| latest, write | uid | `latest` | who last wrote it; a fallback for a removal |
 | collection scope | namespace + selector + window | `collection_scope` | a collection request covering it was made |
-| rv-only | rv | `weak` | a fact with an rv but no uid |
+| rv-only | rv | `resource_version` | a fact with an rv but no uid |
 | name | namespace + name | `name` | the only key an aggregated write has |
 | absent | none | `absent` | committer-authored |
+
+Who the evidence named is the separate `actor_kind` label (`user` / `serviceaccount` / `none`), so
+every row above can be asked about either kind of actor.
 
 ### Two rules that are easy to miss
 
@@ -254,29 +257,33 @@ Every metric on this path, and the question each answers.
 
 | Metric | Labels | Answers |
 |---|---|---|
-| `gitopsreverser_attribution_resolutions_total` | `result`, `group`, `version`, `resource` | which evidence named the author, per type |
-| `gitopsreverser_attribution_resolution_wait_seconds` | same | how long the join waited, by outcome |
-| `gitopsreverser_attribution_fact_events_total` | `op` = `written` / `matched` | how much of what is published is ever used |
-| `gitopsreverser_attribution_fact_index_size` | none | entries held across every scope |
+| `gitopsreverser_attribution_resolutions_total` | `tier`, `actor_kind`, `group`, `version`, `resource` | which evidence named the author and who it named, per type |
+| `gitopsreverser_attribution_resolution_wait_seconds` | `tier`, `event_kind`, `group`, `version`, `resource` | how long the join waited, by tier and by write/removal |
+| `gitopsreverser_attribution_facts_total` | `op` = `written` / `matched` | how much of what is published is ever used |
+| `gitopsreverser_attribution_fact_index_entries` | none | entries held across every scope |
 | `gitopsreverser_attribution_fact_index_evictions_total` | `reason` = `per_type` / `total` | whether the caps are binding |
-| `gitopsreverser_attribution_collection_degraded_total` | `reason` = `uid_cap` / `no_uids` | how often the precise collection join was unavailable |
+| `gitopsreverser_attribution_collection_without_uidset_total` | `reason` = `uid_cap` / `no_uids` | how often the precise collection join was unavailable |
 | `gitopsreverser_attribution_fact_stream_gaps_total` | `stream` | facts lost for good to a trim |
 | `gitopsreverser_commits_total` | …, `author_kind` | what reached Git |
 
-The wait histogram is the one that earns its keep. Splitting wait time BY RESULT is what turned the
-window race from a mystery into a measurement: `weak` at a 6.7s mean against `exact_user` at 0.18s
-said immediately that removals were sitting out their grace, which no aggregate mean would have shown.
+The wait histogram is the one that earns its keep. Splitting wait time BY TIER is what turned the
+window race from a mystery into a measurement: the uid-latest tier at a 6.7s mean against the exact
+tier at 0.18s said immediately that removals were sitting out their grace, which no aggregate mean
+would have shown. `event_kind` now makes that reading direct rather than inferred: the measurement
+that found the race had to deduce "these were latest matches held as fallbacks" from the shape of a
+distribution, because no label could say it.
 
 ### What is not visible, and one gap that mattered
 
-**A fact published and filed under nothing is invisible.** When `file` matches no case it returns no
-keys, and `Apply` records nothing. So `written` minus `matched` conflates two very different
-populations: facts nobody happened to need, and facts that could never have been joined by anyone.
+**`written` minus `matched` is not delivery loss, and never was.** `written` counts every fact
+appended for every type; `matched` counts only facts joined on streams THIS process follows, and a
+restart re-files the whole retention window. Two counters over different populations do not subtract.
 
-That is not hypothetical. It is exactly the population behind the window race: name-only delete facts
-were being published and silently discarded, and no counter moved. A `dropped` op on the lifecycle
-counter, with the reason, would have made that visible from a dashboard instead of from a corpus
-reading. It is the observability gap worth closing first.
+The population that motivated the subtraction (name-only delete facts published and silently
+discarded) no longer exists: the name tier files them, so `file` returning no keys is now
+unreachable behind the publish gate, and a counter on that branch would be a flat zero that reads as
+health. What the loss paths need is measuring where delivery happens, which is what the
+[metrics plan](metrics-observability-plan.md) adds next.
 
 **Head-of-line blocking is not measured.** The wait histogram times each resolution in isolation. It
 does not measure the delay a slow resolution imposes on the events queued behind it on the same
@@ -287,33 +294,35 @@ when it reaches the branch worker, would name it directly.
 is only discoverable by reading the index. Given that this ratio is the aggregated-API story, it is
 worth a counter.
 
-## The `exact_user` / `exact_serviceaccount` split is a modeling wart
+## The `exact_user` / `exact_serviceaccount` split was a modeling wart, now **fixed**
 
-It is, and the inconsistency is real rather than cosmetic. `result` should name the TIER: `weak`,
-`name`, `collection_uid`, `collection_scope`, `absent` all do. `exact` is the only one that also
-encodes WHO the actor was, which crams two orthogonal dimensions into one label.
+`result` is gone; `tier` and `actor_kind` replace it, `weak` split into `latest` and
+`resource_version`, and the wait histogram gained `event_kind`. The reasoning is kept below because
+it is the argument for the shape, and the migration is in
+[`UPGRADING.md`](../UPGRADING.md#0410--the-attribution-metrics-are-relabelled-and-partly-renamed-breaking-for-queries).
 
-Two consequences follow directly:
+The inconsistency was real rather than cosmetic. `result` should have named the TIER: `weak`,
+`name`, `collection_uid`, `collection_scope`, `absent` all did. `exact` was the only one that also
+encoded WHO the actor was, which crammed two orthogonal dimensions into one label.
 
-- counting exact resolutions means summing two series, and any new actor kind would multiply them
-  again;
-- the actor kind can only be asked of the exact tier. There is no way to ask how many `name`-tier or
-  `collection_uid` resolutions named a service account, because that dimension does not exist there.
+Two consequences followed directly:
 
-The decisive argument is that the codebase already models it correctly one metric over:
+- counting exact resolutions meant summing two series, and any new actor kind would have multiplied
+  them again;
+- the actor kind could only be asked of the exact tier. There was no way to ask how many `name`-tier
+  or `collection_uid` resolutions named a service account, because that dimension did not exist
+  there.
+
+The decisive argument was that the codebase already modeled it correctly one metric over:
 `gitopsreverser_commits_total` carries `author_kind` as its own label, with `user`, `serviceaccount`,
-`committer` and `unresolved` as values. So the two metrics disagree about the shape of the same
+`committer` and `unresolved` as values. So the two metrics disagreed about the shape of the same
 distinction.
 
-**Recommended shape:** `result` becomes tier-only (`exact`, `weak`, `name`, `collection_uid`,
-`collection_scope`, `absent`) and gains a sibling `actor_kind` label matching `commits_total`. The
-change is cheap in code: `isServiceAccount()` is already derived from the author string at read
-time, so nothing new is stored or plumbed.
-
-**But it is a breaking metric change**, and that is why it is written down here rather than folded
-into this work. Anything querying `result="exact_user"` stops matching. It deserves its own change
-with an [`UPGRADING.md`](../UPGRADING.md) entry, done deliberately, rather than arriving as a
-side effect of an attribution fix.
+The shipped shape is that one: `tier` names the evidence, `actor_kind` matches `commits_total` and is
+available on every tier. It was cheap in code, as predicted: the actor kind is derived from the
+author string at read time, so nothing new is stored or plumbed. It was still a **breaking metric
+change**, taken deliberately in one release with the other label work rather than as a side effect of
+an attribution fix.
 
 ## Why it is split into two halves at all
 

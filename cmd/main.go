@@ -566,7 +566,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"How many object uids a deletecollection fact may carry before the set is dropped and the join "+
 			"falls back to scope matching (default 10000). The fallback is already correct, so this only "+
 			"decides how often the precise path is taken; drops are counted on "+
-			"attribution_collection_degraded_total{reason}.")
+			"attribution_collection_without_uidset_total{reason}.")
 	fs.DurationVar(&cfg.attributionGrace, "author-attribution-grace", watch.DefaultAttributionGraceWindow,
 		"Bounded per-event wait for a matching audit fact to arrive before a watch event ships as the "+
 			"configured committer (duration string; default 3s). Larger values raise attribution hit-rate "+

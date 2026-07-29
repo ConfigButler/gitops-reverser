@@ -98,28 +98,36 @@ var (
 	// AuditEventListDurationSeconds records how long the webhook takes to answer an
 	// EventList request, labelled by outcome.
 	AuditEventListDurationSeconds metric.Float64Histogram
-	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes,
-	// labelled by {result, group, version, resource}.
+	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes, labelled by
+	// {tier, actor_kind, group, version, resource}. tier names WHICH evidence answered
+	// (exact/latest/resource_version/name/collection_uid/collection_scope/absent) and actor_kind
+	// names WHO it named (user/serviceaccount/none) — two orthogonal questions, so they are two
+	// labels. Match coverage is tier!="absent"; anything narrower reads the collection and name
+	// tiers as misses.
 	AttributionResolutionsTotal metric.Int64Counter
-	// AttributionFactEventsTotal counts attribution fact lifecycle events, labelled by bounded op:
+	// AttributionFactsTotal counts attribution fact lifecycle events, labelled by bounded op:
 	// "written" is one fact appended to the fact log, "matched" is one joined by a watch event.
-	// Together they say how much of what is published is ever used.
-	AttributionFactEventsTotal metric.Int64Counter
-	// AttributionResolutionWaitSeconds records resolver wait time by final result.
+	// Together they say how much of what is published is ever used. They are NOT subtractable:
+	// written counts every type, matched only the streams this process follows.
+	AttributionFactsTotal metric.Int64Counter
+	// AttributionResolutionWaitSeconds records resolver wait time by {tier, event_kind, group,
+	// version, resource}. event_kind is write or removal, and the split is load-bearing: a removal
+	// holds a fallback and keeps waiting where a write does not, so the removal wait is the number
+	// --author-attribution-grace is tuned from.
 	AttributionResolutionWaitSeconds metric.Float64Histogram
-	// AttributionFactIndexSize gauges the entries the in-memory fact index currently holds across
+	// AttributionFactIndexEntries gauges the entries the in-memory fact index currently holds across
 	// every scope and match structure. Read against the eviction counter it says whether the caps
 	// are binding.
-	AttributionFactIndexSize metric.Int64Gauge
+	AttributionFactIndexEntries metric.Int64Gauge
 	// AttributionFactIndexEvictionsTotal counts facts dropped from the in-memory fact index because
 	// it was full, labelled by bounded reason (per_type/total). An attribution lost to a full index
 	// has to look different from one that was never published, or a burst is silently absorbed.
 	AttributionFactIndexEvictionsTotal metric.Int64Counter
-	// AttributionCollectionDegradedTotal counts collection facts published without the uid set the
-	// precise join would have used, labelled by bounded reason (uid_cap/no_uids). The scope fallback
-	// is already correct, so this says how often the precise path was available — not that anything
-	// broke.
-	AttributionCollectionDegradedTotal metric.Int64Counter
+	// AttributionCollectionWithoutUIDSetTotal counts collection facts published without the uid set
+	// the precise join would have used, labelled by bounded reason (uid_cap/no_uids). The scope
+	// fallback is already correct, so this says how often the precise path was available — not that
+	// anything broke.
+	AttributionCollectionWithoutUIDSetTotal metric.Int64Counter
 	// AttributionFactStreamGapsTotal counts occasions a fact stream was trimmed past this process's
 	// follower, labelled by stream. Every gap is facts lost for good, and it is the one loss a log
 	// transport can see at all.
@@ -239,10 +247,13 @@ func registerCounters() error {
 		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
 		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
 		{"gitopsreverser_attribution_resolutions_total", &AttributionResolutionsTotal},
-		{"gitopsreverser_attribution_fact_events_total", &AttributionFactEventsTotal},
+		{"gitopsreverser_attribution_facts_total", &AttributionFactsTotal},
 		{"gitopsreverser_attribution_fact_index_evictions_total", &AttributionFactIndexEvictionsTotal},
 		{"gitopsreverser_attribution_fact_stream_gaps_total", &AttributionFactStreamGapsTotal},
-		{"gitopsreverser_attribution_collection_degraded_total", &AttributionCollectionDegradedTotal},
+		{
+			"gitopsreverser_attribution_collection_without_uidset_total",
+			&AttributionCollectionWithoutUIDSetTotal,
+		},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
@@ -304,7 +315,7 @@ func registerGauges() error {
 		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
 		{"gitopsreverser_watched_types", &WatchedTypes},
 		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
-		{"gitopsreverser_attribution_fact_index_size", &AttributionFactIndexSize},
+		{"gitopsreverser_attribution_fact_index_entries", &AttributionFactIndexEntries},
 	}
 	for _, s := range gauges {
 		v, err := otelMeter.Int64Gauge(s.name)
