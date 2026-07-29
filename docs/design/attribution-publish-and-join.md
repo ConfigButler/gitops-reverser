@@ -60,15 +60,14 @@ The fact keeps every field it recovered, but it is FILED under one branch only. 
 the strongest key present, and the first matching case wins: a fact with a uid is not also filed
 under its name or its resourceVersion, even though it has them.
 
-That is deliberate, and the argument is reachability. The watch side always carries the object's uid,
-name and resourceVersion, so it always asks the strongest tier its event supports. A weaker duplicate
-entry for a fact that already has a stronger key could therefore never be the thing that answers a
-query. It would be an entry no lookup reaches, paid for in memory on every replica following the
-type, held for the whole TTL, and replayed on every restart.
+The reason is memory. A watch event always knows its object's uid, so it always asks a uid tier
+first, and a uid-keyed fact always answers there. A second copy of that same fact under its name
+would never be the one read. Storing it anyway costs the entry on every replica following the type,
+for the whole TTL, and again on every restart replay, and buys nothing.
 
 The one branch that files twice is the uid case, and only when it also has a resourceVersion: `exact`
 serves creates and updates, `latest` serves removals, and the two answer different questions about
-the same object. That is a fact serving two tiers, not a fact hedging.
+the same object: one fact serving two tiers.
 
 So the rule is: keep every field, file under exactly the keys a query could reach you by.
 
@@ -150,15 +149,60 @@ The two halves are racing, and the watch side reliably wins. The API server batc
 needs an author its fact is usually still inside the batch window. The first lookup is a
 near-guaranteed miss. That is the whole reason a grace window exists.
 
-So `Await` does three things in order:
+So the resolver does not ask repeatedly. It arms a signal, looks once, and then sleeps until either a
+fact that could match it arrives or the grace runs out.
 
-1. register a waiter for every tier this query could resolve through, BEFORE reading the index;
-2. read the index;
-3. if nothing matched, block on the waiter, the context, or the grace deadline.
+```mermaid
+sequenceDiagram
+    participant W as watch shard
+    participant R as waiter registry
+    participant I as index
+    participant F as fact follower
+
+    W->>R: register(waiterKeys): one entry per tier this query could match
+    Note over W,R: registered BEFORE the read, so a fact<br/>landing in the gap still wakes it
+    W->>I: Lookup
+    I-->>W: absent
+    W->>W: select { waiter.ch | ctx.Done | timer.C }
+
+    F->>I: apply fact, file under its keys
+    I->>R: wake(keys the fact filled)
+    R-->>W: signal
+    W->>I: Lookup again
+    I-->>W: resolved
+    Note over W: defer unregister, whatever the outcome
+```
 
 Registering first is what closes the race the old 150ms poll loop papered over by looking again: a
-fact delivered between steps 1 and 2 wakes a waiter that is already listening. There is no Redis call
-on this path. The fast case is a map read; the waiting case is a channel receive.
+fact delivered between the register and the read wakes a waiter that is already listening. There is
+no Redis call on this path. The fast case is a map read; the waiting case is a channel receive.
+
+### The Go mechanics, because they carry the guarantees
+
+The registry is `map[factWaiterKey]map[*factWaiter]struct{}`: candidate key to the set of resolvers
+blocked on it. That shape is the fan-out. One resolver registers under SEVERAL keys, one per tier its
+event could resolve through, and one applied fact wakes every resolver registered under any of the
+keys that fact filled. It is a many-to-many join done through an index rather than a broadcast, so a
+fact never touches a resolver it could not have answered.
+
+Four details do real work:
+
+- **`chan struct{}` with buffer 1.** The signal carries no payload, because the payload is the index
+  itself: the woken resolver re-reads it. Buffering one means a signal sent while the resolver is
+  mid-recheck is still there when it comes back around, so it is not lost.
+- **Non-blocking send.** `wake` does `select { case ch <- struct{}{}: default: }`, so the goroutine
+  applying facts is never slowed by a resolver that has not looked yet, and a second signal on an
+  already-signaled waiter is dropped. One pending wake-up is enough, because the resolver
+  re-reads everything rather than consuming a queue of events. It also makes the send safe to do
+  while holding the registry lock, since it cannot block.
+- **`select` on three cases.** The resolver waits on the waiter, `ctx.Done()`, and the grace timer
+  together, so shutdown and the deadline are not special paths.
+- **`defer unregister`.** Registration is undone on every exit, including the ones that return early.
+  The registry exposes a `len()` purely so a test can assert a resolver left nothing behind.
+
+The loop around the `select` matters too: a wake-up is a hint, not an answer. The resolver re-runs the
+whole lookup, and if what arrived was not good enough (a write fact when it needs delete evidence)
+it keeps waiting rather than treating the signal as a result.
 
 ### A removal waits for evidence about the deletion
 
