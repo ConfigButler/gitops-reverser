@@ -155,10 +155,14 @@ type GitTargetSpec struct {
 // path identity-complete, never append or co-mingle), not a second placement
 // namespace the user has to configure. A user routes Secrets the same way they
 // route anything else — by naming their type in ByType. When a resource's type
-// has no ByType entry and no Default, placement falls back to following the layout
-// already established by sibling resources in the repository, and finally to the
-// canonical, versionless {namespaceOrCluster}/{group}/{resource}/{name}.yaml path
-// when there is nothing to follow. Because that fallback omits the API version,
+// has no ByType entry and no Default, the new document goes beside the folder's
+// kustomization when the whole folder is governed by exactly one supported
+// kustomization (so the file is reachable from a render root instead of being
+// written where kustomize would never build it), and otherwise at the built-in
+// canonical, versionless {namespaceOrCluster}/{group}/{resource}/{name}.yaml path.
+// Nothing infers a destination from where the repository keeps other resources of
+// the same type: a layout this operator cannot derive from one root is declared
+// here or it is canonical. Because the canonical path omits the API version,
 // objects that differ only by version share a file; a target that watches several
 // versions of the same group/resource and wants them separated must use a
 // ByType/Default template that includes {version}.
@@ -173,8 +177,9 @@ type GitTargetPlacementSpec struct {
 	ByType map[string]string `json:"byType,omitempty"`
 
 	// Default is the path template used for a new resource whose type has no ByType
-	// entry. Omitted, it falls through to sibling-layout inference and then the
-	// built-in canonical path. A bundling default (one that is not identity-complete,
+	// entry. Omitted, it falls through to the folder's one supported kustomization
+	// root, if it has exactly one, and then to the built-in canonical path.
+	// A bundling default (one that is not identity-complete,
 	// such as "all.yaml") is only valid when a sensitive resource can never reach it
 	// — give every sensitive type an explicit identity-complete ByType entry.
 	// +optional

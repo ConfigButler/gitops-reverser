@@ -213,7 +213,8 @@ func resolvePlacementPolicy(spec *v1alpha3.GitTargetPlacementSpec) *manifestanal
 // the live-write path (resync resolves target.Placement directly, so the two paths
 // would diverge). GitTarget paths never overlap, so at most one target can match; a
 // base with no matching target (e.g. an event whose target metadata could not be
-// resolved) gets no declared policy, falling through to sibling inference.
+// resolved) gets no declared policy, falling through to the kustomize root and then the
+// canonical path.
 func placementPolicyForBase(
 	targets map[pendingTargetKey]ResolvedTargetMetadata,
 	base string,

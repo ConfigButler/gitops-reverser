@@ -63,7 +63,12 @@ func TestPlacement_DeclaredPolicy_NewFile(t *testing.T) {
 	assert.Contains(t, string(got), "color: blue")
 }
 
-func TestPlacement_SiblingInference_BesideExistingFile(t *testing.T) {
+// The write path's half of the Option C deletion: an existing document of the same type
+// in the same namespace no longer attracts the new file. The folder here has no
+// kustomization, so there is no structural root either, and the resource lands at the
+// canonical path — where a human can see it, and where one `placement.byType` line moves
+// it if the repository wants it in the overlay.
+func TestPlacement_ExistingSiblingFile_DoesNotAttractTheNewFile(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
 	seedPlacedManifest(t, worktree, "overlays/test/configmap-existing.yaml",
@@ -72,19 +77,28 @@ func TestPlacement_SiblingInference_BesideExistingFile(t *testing.T) {
 	changed := applyEventsWithPolicy(t, worktree, nil, newConfigMapEvent("cache", "podinfo-test"))
 	require.True(t, changed)
 
-	got, err := os.ReadFile(filepath.Join(root, "overlays/test/cache.yaml"))
-	require.NoError(t, err, "the new file should land beside its sibling, not at the canonical path")
+	got, err := os.ReadFile(filepath.Join(root, "podinfo-test/configmaps/cache.yaml"))
+	require.NoError(t, err, "the new file must land at the canonical path")
 	assert.Contains(t, string(got), "name: cache")
+
+	_, statErr := os.Stat(filepath.Join(root, "overlays/test/cache.yaml"))
+	assert.True(t, os.IsNotExist(statErr), "the sibling's directory must not be inferred as the destination")
 }
 
-func TestPlacement_BundleAppend_ExistingMultiDocFile(t *testing.T) {
+// Appending to a bundle is still supported — it is now reached by DECLARING the bundle
+// rather than by the writer noticing one. The append machinery itself (splice one
+// document, leave every other byte alone) is unchanged, and this is what pins it.
+func TestPlacement_DeclaredBundle_AppendsToExistingMultiDocFile(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	seeded := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n  namespace: app\ndata:\n  k: v\n" +
 		"---\n" +
 		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\n  namespace: app\ndata:\n  k: v\n"
 	full := seedPlacedManifest(t, worktree, "all.yaml", seeded)
+	policy := &manifestanalyzer.PlacementPolicy{
+		ByType: map[string]string{"v1/configmaps": "all.yaml"},
+	}
 
-	changed := applyEventsWithPolicy(t, worktree, nil, newConfigMapEvent("cache", "app"))
+	changed := applyEventsWithPolicy(t, worktree, policy, newConfigMapEvent("cache", "app"))
 	require.True(t, changed)
 
 	got, err := os.ReadFile(full)
@@ -96,12 +110,12 @@ func TestPlacement_BundleAppend_ExistingMultiDocFile(t *testing.T) {
 		"exactly one document must be added, not a replace")
 }
 
-// A new resource whose siblings are in a kustomize-namespace-inferred bundle
-// must not write metadata.namespace into that bundle — otherwise an incidental
-// resource sharing the namespace (e.g. a cluster-injected ConfigMap watched by
-// too broad a WatchRule) would break the "no namespace: in this file"
-// convention every other document in the bundle already follows.
-func TestPlacement_BundleAppend_OmitsNamespaceInKustomizeContext(t *testing.T) {
+// A declared destination inside a kustomize context must not write metadata.namespace:
+// the kustomization's namespace: transformer supplies it, and repeating it would break the
+// "no namespace: in this file" convention every other document in the bundle follows. The
+// obligation used to come from reading the siblings' bytes; it now comes from the
+// governing kustomization, which is the thing that actually decides the rendered namespace.
+func TestPlacement_DeclaredBundle_OmitsNamespaceInKustomizeContext(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	kustYAML := "namespace: app\nresources:\n  - all.yaml\n"
 	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml", kustYAML)
@@ -109,8 +123,11 @@ func TestPlacement_BundleAppend_OmitsNamespaceInKustomizeContext(t *testing.T) {
 		"---\n" +
 		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\ndata:\n  k: v\n"
 	full := seedPlacedManifest(t, worktree, "overlays/test/all.yaml", seeded)
+	policy := &manifestanalyzer.PlacementPolicy{
+		ByType: map[string]string{"v1/configmaps": "overlays/test/all.yaml"},
+	}
 
-	changed := applyEventsWithPolicy(t, worktree, nil, newConfigMapEvent("cache", "app"))
+	changed := applyEventsWithPolicy(t, worktree, policy, newConfigMapEvent("cache", "app"))
 	require.True(t, changed)
 
 	got, err := os.ReadFile(full)

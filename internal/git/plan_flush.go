@@ -122,7 +122,7 @@ type writeBatch struct {
 	putToKustomize bool
 	// policy is the GitTarget's declared new-file placement policy, consulted
 	// only for a resource with no existing document. nil means no declared policy —
-	// placement falls through to sibling inference and then the canonical path.
+	// placement falls through to the folder's one kustomize root and then the canonical path.
 	policy *manifestanalyzer.PlacementPolicy
 	// pruneMode is the GitTarget's effective spec.prune.mode, gating the EXPLICIT delete
 	// path only (applyDelete). The inferred mark-and-sweep is gated a layer up, in the
@@ -332,7 +332,7 @@ func wroteBytes(o upsertOutcome) bool {
 }
 
 // createNew resolves the placement of a resource with no existing document —
-// declared policy (Option B), sibling inference (Option C), or the canonical
+// declared policy (Option B), the folder's one kustomize root, or the canonical
 // fallback — per docs/spec/gittarget-new-file-placement-rules.md,
 // adds the kustomize resources: entry the placement may require, and writes the new
 // document: a brand-new file, or an additional document appended to an existing

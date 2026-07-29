@@ -308,8 +308,9 @@ spec:
                   default:
                     description: |-
                       Default is the path template used for a new resource whose type has no ByType
-                      entry. Omitted, it falls through to sibling-layout inference and then the
-                      built-in canonical path. A bundling default (one that is not identity-complete,
+                      entry. Omitted, it falls through to the folder's one supported kustomization
+                      root, if it has exactly one, and then to the built-in canonical path.
+                      A bundling default (one that is not identity-complete,
                       such as "all.yaml") is only valid when a sensitive resource can never reach it
                       — give every sensitive type an explicit identity-complete ByType entry.
                     type: string
