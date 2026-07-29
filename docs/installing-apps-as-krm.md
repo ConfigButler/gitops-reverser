@@ -153,9 +153,9 @@ full `GitProvider` / `GitTarget` / `WatchRule` model.
 
 ## Where the document lands in Git
 
-A brand-new document follows the layout your folder already uses (sibling
-inference), or the `GitTarget`'s declared placement policy. Absent any existing
-convention, the cold-start default path is:
+A brand-new document goes where the `GitTarget`'s declared placement policy says, or
+beside the folder's `kustomization.yaml` when the folder has exactly one. Otherwise the
+built-in path is:
 
 ```text
 {GitTarget path}/{namespace}/{group}/{resource}/{name}.yaml

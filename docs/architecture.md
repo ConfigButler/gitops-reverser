@@ -538,8 +538,8 @@ The **built-in default** path is `{spec.path}/{namespace}/{group}/{resource}/{na
 first, the API group omitted for core resources, no version segment, and a `.sops.yaml` suffix for
 sensitive resources; a cluster-scoped resource uses the literal `_cluster/` in place of the namespace
 (an illegal Kubernetes namespace name, so it can never clash with a real one).
-But that default is only the cold-start seed: a new resource first follows its **siblings'** existing
-layout, and a `GitTarget` can declare its own placement policy. Details and the placement policy are in
+That default is what a new resource gets unless something more specific applies: a `GitTarget`'s own
+declared placement policy, or a folder that kustomize builds from a single root. Details are in
 [File Placement](#file-placement).
 
 ***
@@ -1111,7 +1111,7 @@ hydrates only touched files into buffers for the commit, and flushes only change
 - **Upserts:** if a managed document for the resource already exists, patch it in place (preserving
   siblings in a multi document file); if it is sensitive, encrypt the whole document again at its existing
   path; if no document exists, place a new file per [File Placement](#file-placement) (declared policy,
-  then sibling inference, then the canonical default).
+  then the folder's one kustomize root, then the canonical default).
 - **Kustomize override edit-through:** a live value produced by a well-formed `images:` or `replicas:`
   entry in the document's kustomization chain is written back to that entry (comment-preserving, only
   fields the entry already declares); the source manifest keeps its bytes. Anything the inversion cannot
@@ -1135,21 +1135,27 @@ placed never moves a file already in Git. A new resource is placed by the first 
 1. **Declared policy (`spec.placement`).** A `GitTarget` can declare a `byType` map (exact
    `[group/]version/resource` → path template) plus a `default` template, rendered from a small
    brace-variable path language (`{namespace}`, `{group}`, `{resource}`, `{name}`, …).
-2. **Sibling inference.** With no matching declared template, the new resource follows the layout its
-   siblings already use: appended to the bundle its type shares, or placed one-per-file beside them.
-   so pointing a target at an existing folder continues that folder's convention. When the whole
-   subtree is governed by one supported kustomization and the type is brand new, the file lands beside
-   that kustomization and gets a `resources:` entry.
-3. **Canonical fallback.** With nothing to follow (an empty repo, a brand-new type), the built-in default
+2. **The folder's one kustomize root.** When the whole writable subtree is governed by exactly one
+   supported `kustomization.yaml`, the file lands beside it and gets a `resources:` entry in the same
+   commit. This step is a structural fact rather than a reading of the folder's conventions: the
+   canonical path below is a tree a `resources:` graph cannot reach, so a file written there would never
+   be rendered. Two supported kustomizations is ambiguous and declines.
+3. **Canonical fallback.** Otherwise the built-in default
    `{spec.path}/{namespace}/{group}/{resource}/{name}.yaml`: namespace-first, group omitted for core, no
-   version, `_cluster/` for cluster-scoped, `.sops.yaml` for sensitive, so a fresh target is deterministic
-   and self-propagating.
+   version, `_cluster/` for cluster-scoped, `.sops.yaml` for sensitive.
+
+**The layout of the folder's other documents is not an input.** An earlier release followed it (sibling
+inference), which made a human's edit to the repository change where the operator wrote next, with no
+Kubernetes object changing and nothing in status recording the move. It was removed; a layout the ladder
+cannot derive is declared in `spec.placement`, and
+`gitopsreverser_placements_total{source="canonical"}` names the target and type that needs the line.
 
 Sensitivity is a write-safety classifier, not a placement input: whatever path is chosen, a sensitive
 resource is written encrypted, is never appended to an existing file, and is never co-mingled with a
 plaintext document. When those guarantees cannot be honoured (e.g. a bundling `default` would route a
-sensitive resource into a shared file), the resource is **skipped fail-safe** (logged per-resource and
-counted in the resync summary as `placementSkipped`) rather than written unsafely.
+sensitive resource into a shared file), the resource is **refused fail-safe** rather than written
+unsafely: logged per-resource, counted in the resync summary as `placementSkipped`, and counted by
+`gitopsreverser_placement_refusals_total{reason}`.
 
 ### Bootstrap, encryption, and signing
 

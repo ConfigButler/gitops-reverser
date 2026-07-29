@@ -79,6 +79,9 @@ signals. Background: [architecture.md → Git Write Architecture](architecture.m
 | `git_operations_total` | counter | — | Events that produced Git work in a flush. |
 | `objects_written_total` | counter | — | Objects that resulted in a file write in a flush. |
 | `resync_sweep_deletes_total` | counter | `group`, `version`, `resource` | Managed documents deleted by mark-and-sweep resyncs. Steady-state watch deletes do not increment this. |
+| `placements_total` | counter | `source`, `disposition`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new document written at a resolved path. `source` is `declared` / `kustomize_root` / `canonical`; `disposition` is `new_file` / `appended`. |
+| `placement_refusals_total` | counter | `reason`, `gittarget_namespace`, `gittarget_name`, `group`, `version`, `resource` | One per new resource the writer declined to place. Every increment is a resource **absent** from the mirror. |
+| `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_namespace`, `gittarget_name` | The `resources:` entry a newly placed file needs: `added`, `no_change`, `failed`. |
 | `branch_worker_queue_depth` | gauge | `provider_namespace`, `provider_name`, `branch` | Pending + in-flight + committed-but-unpushed work; reads 0 only when the worker has fully drained. |
 | `target_reconcile_completed_total` | counter | `gittarget_namespace`, `gittarget_name`, `trigger` | One increment per completed watch-recovery pass (streaming-snapshot resync applied, or cursor-backed resume). |
 | `resync_background_failures_total` | counter | `gittarget_namespace`, `gittarget_name` | Rule-change resyncs whose apply failed/timed out **after** enqueue (otherwise only logged). |
@@ -150,6 +153,71 @@ the cluster and a scoped/full resync applies. This is not the steady-state delet
 ```promql
 sum by (group, version, resource) (rate(gitopsreverser_resync_sweep_deletes_total[1h]))
 ```
+
+### New-file placement
+
+Placement runs **only** for a resource with no document in Git yet; everything already written is
+edited in place, forever. So these counters are sparse by nature — a busy target can go a day without
+one — and a zero rate is the steady state, not a broken exporter.
+
+`source` answers "why did it land there?", which is the question a folder cannot answer:
+
+| `source` | Means | Needs attention? |
+| --- | --- | --- |
+| `declared` | a `spec.placement.byType` or `.default` template matched | no — this is what you asked for |
+| `kustomize_root` | the folder is governed by exactly one supported kustomization, so the file went beside it and joined its `resources:` list | no — the folder's own structure decided |
+| `canonical` | nothing else applied, so the built-in `{namespace}/{group}/{resource}/{name}.yaml` path was used | **maybe** — see below |
+
+**Which types are falling back, and in which target?** Each series is a candidate for one
+`placement.byType` line. This is the signal that replaced sibling inference: the operator no longer
+guesses a hand-authored layout from the folder, so this is how you learn a layout needs declaring:
+
+```promql
+sum by (gittarget_namespace, gittarget_name, group, version, resource) (
+  increase(gitopsreverser_placements_total{source="canonical"}[24h]))
+```
+
+Canonical is not an error. For a target whose repository the operator bootstrapped, it is the whole
+layout and always will be. It is worth acting on when the folder has a convention the operator was not
+told about — the file lands somewhere tidy but not where the rest of that type lives.
+
+**Is a bundling policy actually bundling?** `disposition="appended"` proves documents are joining an
+existing file rather than each getting their own. It should only ever appear with
+`source="declared"`; the fallbacks never append:
+
+```promql
+sum by (source, disposition) (increase(gitopsreverser_placements_total[24h]))
+```
+
+**Are we failing to mirror resources?** Every refusal is a resource that is **not** in Git. The write
+is retried on the next event or resync, so a sustained rate is a policy to fix rather than a blip:
+
+```promql
+sum by (reason, gittarget_namespace, gittarget_name, resource) (
+  increase(gitopsreverser_placement_refusals_total[1h]))
+```
+
+| `reason` | What to fix |
+| --- | --- |
+| `invalid_path` | a declared template that renders outside `spec.path` or without a YAML suffix |
+| `sensitive_append` | a template that is not identity-complete, so two Secrets collide on one path |
+| `plaintext_onto_encrypted` | a template routing a plaintext resource at a file holding SOPS data |
+| `mixed_sensitivity_new_file` | a bundling `default` catching both a sensitive and a plaintext resource |
+| `multi_document_target` | the resolved file holds a document the writer cannot account for, so it will not overwrite it |
+| `unclassified` | a refusal shape newer than this table — report it |
+
+**The one that looks fine in the folder.** A new file whose `resources:` entry could not be added is
+committed and never built by kustomize: it is in Git, it looks mirrored, and nothing applies it. Should
+be zero:
+
+```promql
+sum by (gittarget_namespace, gittarget_name) (
+  increase(gitopsreverser_placement_kustomization_entries_total{outcome="failed"}[1h]))
+```
+
+Placement counters carry `gittarget_*` label keys rather than bare `namespace`/`name` for the
+pod-scrape reason described above, and they deliberately carry **no path or resource-name label** — both
+are unbounded, and both are in the log line at the write site.
 
 ---
 

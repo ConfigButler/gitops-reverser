@@ -101,6 +101,7 @@ to it is [interpreting-metrics.md](../interpreting-metrics.md).
 | Audit ingress | `audit_eventlists_total`, `_eventlist_events_total`, `_eventlist_duration_seconds`, `audit_events_total{outcome,category,group,version,resource,verb}` | ✅ good |
 | Attribution publish & join | `attribution_resolutions_total{tier,actor_kind,…}`, `attribution_resolution_wait_seconds{tier,event_kind,…}`, `attribution_facts_total{op}`, `attribution_fact_index_entries`, `_index_evictions_total{reason}`, `_stream_gaps_total{stream}`, `_stream_decode_errors_total{transport}`, `_fact_follower_errors_total{transport}`, `_fact_follower_last_success_timestamp_seconds`, `_collection_without_uidset_total{reason}`, `attribution_transport_info{transport}` | ✅ good (Phase 1 shipped) |
 | Git write | `commits_total{provider_*,branch,author_kind}`, `git_operations_total`, `objects_written_total`, `prune_retained_documents_total`, `branch_worker_queue_depth`, `resync_sweep_deletes_total` | 🟡 no push latency / conflict |
+| New-file placement | `placements_total{source,disposition,gittarget_*,group,version,resource}`, `placement_refusals_total{reason,…}`, `placement_kustomization_entries_total{outcome,gittarget_*}` | ✅ good — shipped with the Option C deletion |
 | Control plane / reconcile | `target_reconcile_completed_total`, `resync_background_failures_total`, `watched_types` | ✅ good |
 | Secret encryption | `secret_encryption_{attempts,success,failures,cache_hits,marker_skips}_total` | ✅ good |
 
@@ -185,6 +186,15 @@ records the metric at the smallest honest boundary.
 |---|---|---|---|
 | `git_push_duration_seconds` | histogram | `provider_*`, `branch` | push latency (re-added with a recording site and doc row) |
 | `git_push_conflicts_total` | counter | `provider_*`, `branch` | non-fast-forward → fetch/reset/replay retries ([PushAtomic](../../internal/git/git_atomic_push.go) detects a moved remote; [BranchWorker](../../internal/git/branch_worker.go) fetches, rebuilds, and retries) |
+| `placements_total` | counter | `source`, `disposition`, `gittarget_*`, `group`, `version`, `resource` | ✅ shipped — "why did this file land here?", and which (target, type) needs a `placement.byType` line (`source="canonical"`) |
+| `placement_refusals_total` | counter | `reason`, `gittarget_*`, `group`, `version`, `resource` | ✅ shipped — which resources are **not** in the mirror, and why. Replaces a log line plus `ResyncStats.PlacementSkipped` |
+| `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_*` | ✅ shipped — `failed` is a file committed outside every render: in Git, looks mirrored, applied by nothing |
+
+**Note on `placements_total`, since this plan argued the other way.** An earlier revision of the
+priority queue said to argue *against* leading with a `placement_fell_back_total`, because "it happened
+somewhere" is not actionable. That objection was to the **labels**, not to the counter: with the
+GitTarget and the type key on it, one series reads directly as the `byType` line that is missing. The
+per-resource detail (path, name) deliberately stays in the log line.
 
 ### 4.6 Catalog, reconcile, secrets
 

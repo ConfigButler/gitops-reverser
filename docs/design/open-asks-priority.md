@@ -54,7 +54,13 @@ do not own.
 
 ---
 
-## The one real design call: delete sibling inference, do not switch it off
+## The one real design call: delete sibling inference, do not switch it off — SHIPPED
+
+> **Built.** `resolveInferred` through `allSameDir` are gone, the kustomize-root fallback stayed, and no
+> enum was added. What building it added to the argument below is recorded in
+> [what the deletion taught](#what-the-deletion-taught). The spec's Option C sections are retained as
+> history in [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md),
+> and the behaviour change has a [`docs/UPGRADING.md`](../UPGRADING.md) entry.
 
 The config-surface proposal's **B3** offers `spec.placement.mode: Infer|Declared|Strict`: an
 enum that lets a user turn inference off. This document argues the opposite: **remove Option C's
@@ -170,9 +176,44 @@ and the word *Event* meant a real `corev1.Event` through
 **The shape that follows is a split, not one of the three.** An **Event on the GitTarget** for
 timeliness, over the existing refusal seam plus an enqueue; and **`status.layout` (B2)** for
 durability, because "what the operator understood about this folder" is where someone looks a day
-later. The log line stays. A Prometheus counter is the one to argue *against* leading with:
-`placement_fell_back_total` says it happened somewhere, not which type in which target, which is the
-only actionable part.
+later. The log line stays.
+
+**What shipped, and where this paragraph was wrong.** A Prometheus counter was the one this document
+argued *against* leading with, on the grounds that `placement_fell_back_total` says it happened
+somewhere and not which type in which target. That objection was to the **labels**, and it does not
+survive them being fixed: `placements_total{source, disposition, gittarget_namespace, gittarget_name,
+group, version, resource}` names the target and the exact `byType` key, so one series **is** the line
+that is missing. It shipped with two companions the argument had not asked for and should have —
+`placement_refusals_total{reason}`, because a resource the writer *declined* to place had no
+countable trace at all, and `placement_kustomization_entries_total{outcome}`, whose `failed` value is
+a file committed outside every render. The Event and `status.layout` are still the right split for
+timeliness and durability, and neither is built; what is no longer true is that there was nothing
+actionable in a metric.
+
+### What the deletion taught
+
+Three things came out of building it that the argument above did not contain.
+
+- **Deleting the inference exposed a second implementation of a rule, not just the rule.** "Omit
+  `metadata.namespace`, the build context supplies it" was read off a *sibling's bytes*, so it only
+  ever fired for an inferred placement. A **declared** path into the same kustomize directory wrote a
+  `namespace:` line every other document in that folder omits. The obligation belongs to the
+  kustomization that governs the destination, not to whatever document happened to be next door, and
+  moving it there fixed the declared path for free.
+- **And that rule was missing its safety half.** The old kustomize-root fallback asked only whether a
+  `namespace:` transformer was *set*, never whether it named the resource's own namespace. Omitting
+  the namespace hands it to kustomize, so a transformer naming a different namespace rendered the
+  document as a different object: the mirror claimed to hold a resource it did not. It now writes the
+  namespace explicitly in that case and lets the render oracle report a folder that cannot express
+  the object. This was reachable before the deletion and is one of the things the deletion's own
+  test table found.
+- **The write path had no identity to label with, and that is why it had no metrics.** `LocateNew`
+  runs on the branch worker with no reconcile context, which this document already noted about the
+  Event. The same fact is why the placement counters did not exist: there was no GitTarget on the
+  batch to name. It is one field, taken from the events on the live path and from the resolved
+  metadata on the resync path — deliberately both, because which of the two created a file is not
+  something the operator chose, and a fall-back visible for one and invisible for the other would be
+  worse than neither.
 
 ---
 
@@ -182,7 +223,6 @@ only actionable part.
 |---|---|---|---|
 | 15 | A declared `auditRoute` with zero facts must say so, and a route losing them with it | gitops-api | **1** |
 | n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** |
-| n/a | Delete sibling inference (answers #10) | this doc | **1** |
 | F6 | `spec.suspend`, `spec.interval`, `requestedAt` | maintainer review | **2** |
 | 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** |
@@ -195,7 +235,7 @@ only actionable part.
 | B6 | The `default` ClusterProvider not-found message | config surface | **3** |
 | n/a | An aggregated create carries no name and no body: accept it, or stop waiting for it | [`attribution-branch-findings.md`](attribution-branch-findings.md) | **3** |
 | n/a | Entry-size ceiling and per-type stream count under a few hundred watched types | [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) | **3** |
-| 10 | Namespace-aware sibling inference *as asked* | gitops-api | **declined** |
+| 10 | Namespace-aware sibling inference *as asked* | gitops-api | **declined — answered by the deletion, SHIPPED** |
 | B3 | `spec.placement.mode` enum | config surface | **declined** |
 
 ### Already shipped, and struck from the queue
@@ -351,9 +391,11 @@ What is explicitly *not* measured yet, and should be before either lands: how co
 never-resolved population is outside the e2e suite, and whether a quiet route's watermark advances
 often enough to be worth having. The one number we do have came from a single run.
 
-**The inference deletion** sits in this tier for the reason argued above: repo state changing
-operator behavior invisibly is the same class of defect as an audit route that silently resolves
-nothing.
+**The inference deletion — SHIPPED.** It sat in this tier for the reason argued above: repo state
+changing operator behavior invisibly is the same class of defect as an audit route that silently
+resolves nothing. What replaced it is a declaration plus
+`placements_total{source="canonical"}` per (GitTarget, type), so the same class of defect now has a
+query. `#10` and `B3` are answered by it and stay declined.
 
 ### Tier 2: the breaking wave, all at once, while `v1alpha3`
 
@@ -498,12 +540,14 @@ defects.
 ## What this commits us to
 
 1. A `feat(api)!` sequence for Tier 2, landed together, with one `docs/UPGRADING.md` entry.
-2. A behavior change (inference removal) that needs its own UPGRADING entry and a decision on the
-   fall-back-to-canonical Event.
-3. Rewriting Option C's sections in
-   [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md). That
-   document binds the code, so the ladder cannot be deleted from one and left in the other. The
-   kustomize-root fallback keeps its section; P1–P10 become history rather than live risks.
+2. ~~A behavior change (inference removal) that needs its own UPGRADING entry and a decision on the
+   fall-back-to-canonical Event.~~ **Done for the removal and the entry**; the Event is still
+   undecided, and the metric now carries the actionable part in the meantime.
+3. ~~Rewriting Option C's sections in
+   [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md).~~
+   **Done**: the ladder is documented as three steps, the kustomize-root fallback keeps its section
+   and gained the namespace-match rule, and P1–P10 are annotated one by one with which are retired by
+   the deletion and which (P7, P9, P10) are facts about the code that remains.
 4. Telling the gitops-api team which two of their asks we are answering differently, before they
    build against the shapes they proposed — and that **#23 is fixed**, that the fix has a name
    (`delete_sticky` on `attribution_resolutions_total{tier}`) they can assert on, and that the
