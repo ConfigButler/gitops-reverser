@@ -306,10 +306,9 @@ vocabulary `commits_total{author_kind}` uses.
 
 `actor_kind="none"` and `tier="absent"` go together, and that is an invariant rather than a
 coincidence: an audit event whose user cannot be resolved never becomes a fact at all (it is counted
-`no_attribution_fact` above), so every fact that reaches the index names someone. This is why
-coverage can be read off the tier alone. A `{tier!="absent", actor_kind="none"}` series is not a
-low-quality attribution — it means something published a fact this operator could not have
-published, and it is worth investigating rather than counting.
+`no_attribution_fact` above), and a fact that names nobody is refused when the follower reads it
+(counted as a stream decode error below). Every fact that reaches the index therefore names someone,
+which is why coverage can be read off the tier alone.
 
 **Evidence quality, independently of coverage.** A shift from `exact` toward `collection_scope` or
 `name` is a quality regression even while coverage holds flat, so it is worth its own panel:
@@ -369,11 +368,16 @@ positions rather than fire-and-forget publish and subscribe. This should be **ze
 sum by (stream) (rate(gitopsreverser_attribution_fact_stream_gaps_total[5m]))
 ```
 
-**Is a follower silently skipping facts?** An entry the follower cannot decode is skipped and its
+**Is a follower silently skipping facts?** An entry the follower refuses is skipped and its
 position passed — which is right, since it can never decode and stalling on it would cost every
 later fact on that stream — so the facts it carried are gone. This is the loss path with **no other
 symptom**: unlike a trim gap it is not detectable after the fact, and unlike a publish failure the
-API server does not retry it. Any non-zero rate means a schema or version mismatch on the stream:
+API server does not retry it.
+
+Two things are refused: a payload that is not valid JSON, and one that is JSON but breaks the fact
+contract by naming nobody (`author` must be present and non-empty — a fact exists to name somebody).
+Either way the log line names the stream and the entry. Any non-zero rate means something is writing
+entries this operator would not write — a version skew, another producer, or a hand-edited stream:
 
 ```promql
 sum by (transport) (rate(gitopsreverser_attribution_fact_stream_decode_errors_total[5m]))

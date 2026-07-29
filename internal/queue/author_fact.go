@@ -5,6 +5,8 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -113,13 +115,16 @@ const (
 // carries, so a fact without it could not be joined at all for that whole population. "No code reads
 // it" and "nothing could ever read it" are different claims, and only the second justifies dropping a
 // field.
-type AuthorFact struct {
+type AuthorFact struct { //nolint:recvcheck // UnmarshalJSON must take a pointer; every other method only reads.
 	Namespace string `json:"namespace,omitempty"`
 	UID       string `json:"uid,omitempty"`
 	// Name is the object's name, and it feeds one tier only: the (namespace, name) join a fact with
 	// no uid and no resourceVersion is otherwise unreachable through. A collection fact clears it,
 	// because a collection request names no object.
-	Name   string `json:"name,omitempty"`
+	Name string `json:"name,omitempty"`
+	// Author is the actor's username, and it is the ONE required field on the wire: a fact exists to
+	// name somebody, so a fact that names nobody is not a weak fact, it is not a fact. It is never
+	// empty and never null — see UnmarshalJSON, which refuses an entry carrying one.
 	Author string `json:"author"`
 	// DisplayName and Email are the actor's, when the API server supplied them. They are the only
 	// fields here that are not identity or evidence: they exist because a commit author is a name
@@ -146,6 +151,39 @@ type AuthorFact struct {
 	// truncated, aggregated, or metadata-only response — and when the set was larger than the cap,
 	// in which case the join falls back to scope matching, which is already correct.
 	UIDs []string `json:"uids,omitempty"`
+}
+
+// errFactWithoutAuthor is what an entry violating the fact contract decodes to.
+var errFactWithoutAuthor = errors.New("attribution fact carries no author")
+
+// UnmarshalJSON decodes a fact and refuses one that names nobody, which is the whole wire contract:
+// `author` must be present, a string, and non-empty. Missing, `null`, and `""` are the same
+// violation and are all refused.
+//
+// Go cannot express "a string of at least one character" as a type — every type has a zero value
+// that is constructible without going through any constructor, and `encoding/json` writes exported
+// fields straight past one anyway — so the constraint lives at the only boundary that can hold it:
+// the point where a fact written by somebody else enters this process.
+//
+// The refusal is deliberately at ENTRY granularity, not per fact. This operator's publish gate
+// cannot produce an authorless fact (AuthorFactFromEvent refuses an event whose user is
+// unresolvable, and counts it as no_attribution_fact), so an entry carrying one was written by
+// something else: a different version, a different producer, or a hand-written entry. That is a
+// protocol violation rather than a low-quality fact, and it is better counted and logged loudly —
+// it lands on attribution_fact_stream_decode_errors_total with the stream and entry id — than
+// half-absorbed by silently dropping one fact out of a batch.
+func (f *AuthorFact) UnmarshalJSON(raw []byte) error {
+	// wire has AuthorFact's fields and tags but none of its methods, so decoding it does not recurse.
+	type wire AuthorFact
+	var decoded wire
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	if decoded.Author == "" {
+		return fmt.Errorf("%w (auditID %q, verb %q)", errFactWithoutAuthor, decoded.AuditID, decoded.Verb)
+	}
+	*f = AuthorFact(decoded)
+	return nil
 }
 
 // AuthorResolution is the structured result of an attribution lookup.

@@ -3,6 +3,7 @@
 package queue
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -148,4 +149,36 @@ func TestAuthorFactFromEvent_ObjectWriteCarriesTheIdentityTheJoinNeeds(t *testin
 	// An ordinary write is about one object, so it carries no collection fields.
 	require.Empty(t, fact.LabelSelector)
 	require.Nil(t, fact.UIDs)
+}
+
+// TestAuthorFact_UnmarshalRefusesAFactThatNamesNobody pins the wire contract. A fact exists to name
+// somebody, so `author` is the one required field, and missing, null, and empty are one violation
+// rather than three. Go cannot state that as a type — every type has a constructible zero value, and
+// encoding/json writes exported fields past any constructor — so the boundary holds it instead.
+func TestAuthorFact_UnmarshalRefusesAFactThatNamesNobody(t *testing.T) {
+	refused := map[string]string{
+		"author missing": `{"uid":"uid-1","verb":"update"}`,
+		"author null":    `{"uid":"uid-1","author":null,"verb":"update"}`,
+		"author empty":   `{"uid":"uid-1","author":"","verb":"update"}`,
+	}
+	for name, payload := range refused {
+		t.Run(name, func(t *testing.T) {
+			var fact AuthorFact
+			err := json.Unmarshal([]byte(payload), &fact)
+			require.ErrorIs(t, err, errFactWithoutAuthor)
+		})
+	}
+
+	// A named actor decodes intact, fields and all — the check refuses a fact, it does not filter one.
+	var fact AuthorFact
+	require.NoError(t, json.Unmarshal(
+		[]byte(`{"uid":"uid-1","author":"alice","email":"a@x.io","verb":"update","uids":["a","b"]}`), &fact))
+	require.Equal(t, "alice", fact.Author)
+	require.Equal(t, "a@x.io", fact.Email)
+	require.Equal(t, []string{"a", "b"}, fact.UIDs)
+
+	// A batch is refused as a whole when any fact in it violates the contract: the entry is the unit
+	// the transport can skip, and a partially-absorbed batch would hide the violation.
+	_, err := decodeFactBatch([]byte(`[{"author":"alice"},{"author":""}]`))
+	require.ErrorIs(t, err, errFactWithoutAuthor)
 }

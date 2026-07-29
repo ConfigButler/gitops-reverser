@@ -49,6 +49,14 @@ Two gates drop an event entirely: no resource, and no resolvable name on a non-c
 collection request is exempt from the name gate because it names no object by nature, and that is
 the one place the verb changes which gate applies.
 
+A third gate is the fact's whole reason to exist: **no resolvable user, no fact**. It is the one
+field the wire contract requires, and the read side enforces it too. `AuthorFact.UnmarshalJSON`
+refuses an entry naming nobody, which lands on
+`gitopsreverser_attribution_fact_stream_decode_errors_total` rather than being half-absorbed. So a
+fact in the index always names an actor, and the metrics can read attribution coverage off the tier
+alone. The event that produced no fact is not lost either: it is counted `no_attribution_fact` on
+`audit_events_total`, where its type and verb are still in hand.
+
 The body backfill is why the name gate is survivable. `objectRef` alone often lacks the name or the
 uid; `IdentityFromAuditEvent` fills what is missing from the request or response object, preferring
 the request object for a delete and the response object otherwise. What the event carries in its body

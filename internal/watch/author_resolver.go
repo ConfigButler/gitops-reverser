@@ -218,6 +218,12 @@ func (r *attributionResolver) ResolveAuthor(
 // actor — human or service account — is always named by its own username; a fact
 // that carries no author is UNRESOLVED, not not-attempted: attribution ran, found a
 // fact, and still could not name anyone.
+//
+// Both ends now make that branch unreachable rather than merely unlikely — the publish gate refuses
+// an event whose user cannot be resolved, and the fact's own UnmarshalJSON refuses an entry that
+// names nobody — so it survives for the zero-value paths and to keep the metric honest if a fact
+// ever reaches here without an author: it is recorded with its tier and actor_kind="none", never as
+// a named actor.
 func (r *attributionResolver) userInfoForResolution(
 	resolution queue.AuthorResolution,
 ) (git.UserInfo, git.AttributionOutcome, queue.AttributionResult) {
