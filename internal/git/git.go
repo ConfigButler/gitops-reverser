@@ -66,6 +66,10 @@ func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("Checking repository connectivity and metadata", "url", repoURL)
 
+	if IsADOURL(repoURL) {
+		return systemGitCheckRepo(ctx, repoURL, auth)
+	}
+
 	// Use remote.List() for lightweight connectivity check
 	remote := git.NewRemote(nil, &config.RemoteConfig{
 		Name: "origin",

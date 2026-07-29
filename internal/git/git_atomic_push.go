@@ -205,6 +205,12 @@ func PushAtomic(
 		return errors.New("rootBranch is not a branch")
 	}
 
+	if remote, err := repo.Remote("origin"); err == nil {
+		if urls := remote.Config().URLs; len(urls) > 0 && IsADOURL(urls[0]) {
+			return systemGitPushAtomic(ctx, repo, rootHash, rootBranch, auth)
+		}
+	}
+
 	logger := log.FromContext(ctx)
 
 	session, err := getPushSession(ctx, repo, auth)

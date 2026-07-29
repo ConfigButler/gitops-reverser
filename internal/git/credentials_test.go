@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	gogithttp "github.com/go-git/go-git/v5/plumbing/transport/http"
-	gogitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gossh "golang.org/x/crypto/ssh"
@@ -24,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	sshpkg "github.com/ConfigButler/gitops-reverser/internal/ssh"
 )
 
 func credTestSSHKey(t *testing.T) ([]byte, string) {
@@ -61,7 +61,7 @@ func TestAuthFromSecretData_SSHKeyDialects(t *testing.T) {
 			auth, err := AuthFromSecretData(
 				context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 			require.NoError(t, err)
-			assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+			assert.IsType(t, &sshpkg.KeyAuth{}, auth)
 		})
 	}
 }
@@ -78,7 +78,7 @@ func TestAuthFromSecretData_PasswordIsSSHPassphraseWhenKeyPresent(t *testing.T) 
 	}}
 	auth, err := AuthFromSecretData(context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 	require.NoError(t, err)
-	assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+	assert.IsType(t, &sshpkg.KeyAuth{}, auth)
 }
 
 func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
@@ -155,7 +155,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
 		auth, err := AuthFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.IsType(t, &sshpkg.KeyAuth{}, auth)
 	})
 
 	t.Run("knownHostsRef ConfigMap (Argo ssh_known_hosts key)", func(t *testing.T) {
@@ -169,7 +169,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
 		auth, err := AuthFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.IsType(t, &sshpkg.KeyAuth{}, auth)
 	})
 
 	t.Run("knownHostsRef Secret", func(t *testing.T) {
@@ -187,7 +187,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
 		auth, err := AuthFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.IsType(t, &sshpkg.KeyAuth{}, auth)
 	})
 
 	t.Run("knownHostsRef missing object is an error", func(t *testing.T) {
@@ -210,7 +210,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 		hostKeys := SSHHostKeyConfig{ControllerNamespace: "ns", DefaultKnownHostsConfigMap: "cluster-hosts"}
 		auth, err := AuthFromSecretData(context.Background(), c, &configv1alpha3.GitProvider{}, secret, hostKeys)
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.IsType(t, &sshpkg.KeyAuth{}, auth)
 	})
 
 	t.Run("absent install-level default falls through to fail-closed", func(t *testing.T) {
@@ -237,7 +237,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 			context.Background(), c, &configv1alpha3.GitProvider{}, secret,
 			SSHHostKeyConfig{AllowMissingKnownHosts: true})
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.IsType(t, &sshpkg.KeyAuth{}, auth)
 	})
 }
 

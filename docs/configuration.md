@@ -92,6 +92,29 @@ spec:
     - main
 ```
 
+### Azure DevOps repositories
+
+Azure DevOps (`dev.azure.com`, `*.visualstudio.com`, `ssh.dev.azure.com`) is supported.
+Use **HTTPS with a Personal Access Token** as the recommended credential. ADO PATs must be
+sent as HTTP Basic auth with an empty username and the PAT as the password:
+
+```yaml
+spec:
+  url: https://dev.azure.com/<org>/<project>/_git/<repo>
+  secretRef:
+    name: ado-creds   # Secret with keys: username (empty string) and password (your PAT)
+```
+
+Microsoft Entra ID (OAuth) access tokens use the `bearerToken` Secret key instead.
+SSH is also supported using the `ssh.dev.azure.com` URL format with standard `ssh-privatekey` and `known_hosts` credentials.
+
+> **Implementation note:** go-git v5 does not implement the `multi_ack` capability that ADO
+> requires (ADO rejects requests without it with HTTP 400). The operator automatically routes
+> ADO URLs through the system `git` binary instead. This is transparent — no configuration
+> change is needed — but requires `git` to be present in the container image. The published
+> image includes it. This fallback will be removed once go-git v6 ships with full `multi_ack`
+> support (tracked in go-git PR #1204).
+
 ### `GitProvider.spec.secretRef`: the credentials Secret
 
 The referenced Secret holds the Git credentials. The examples use the **Kubernetes-native** keys,

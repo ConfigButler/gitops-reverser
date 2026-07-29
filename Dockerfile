@@ -49,6 +49,33 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -ldflags "-X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT} -X main.gitDirty=${GIT_DIRTY} -X main.buildDate=${BUILD_DATE}" \
     -o manager ./cmd
 
+# Bundle git and all its shared-library deps (musl libc, openssl, curl, etc.) so that
+# the final distroless image can shell out to git for Azure DevOps repositories (which
+# require multi_ack capability that go-git v5 does not implement).
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS git-bundle
+RUN set -eux; \
+    apk add --no-cache git openssh-client; \
+    mkdir -p /bundle/bin /bundle/lib /bundle/usr/lib /bundle/usr/libexec; \
+    cp -L /usr/bin/git /bundle/bin/; \
+    cp -L /usr/bin/ssh /bundle/bin/; \
+    cp -rL /usr/libexec/git-core /bundle/usr/libexec/; \
+    cp -L /lib/ld-musl*.so* /bundle/lib/; \
+    for f in /usr/bin/git \
+             /usr/bin/ssh \
+             /usr/libexec/git-core/git-remote-http \
+             /usr/libexec/git-core/git-remote-https; do \
+        [ -f "$f" ] || continue; \
+        ldd "$f" 2>/dev/null \
+            | awk '/ => /{ print $3 }' \
+            | while read -r so; do \
+                [ -f "$so" ] || continue; \
+                case "$so" in \
+                    /lib/*)     cp -Ln "$so" /bundle/lib/     2>/dev/null || true ;; \
+                    /usr/lib/*) cp -Ln "$so" /bundle/usr/lib/ 2>/dev/null || true ;; \
+                esac; \
+            done; \
+    done
+
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS sops-downloader
 ARG TARGETARCH
 # Keep current: the CI image-scan gate fails on fixable CRITICALs in this
@@ -69,6 +96,15 @@ FROM gcr.io/distroless/static:debug@sha256:e741251ccc55dd6cec4a99ff21c0766df3189
 WORKDIR /
 COPY --from=builder /workspaces/manager .
 COPY --from=sops-downloader /usr/local/bin/sops /usr/local/bin/sops
+# git, ssh, and their musl-linked deps for the ADO system-git fallback.
+# busybox provides /bin/sh so git can invoke GIT_SSH_COMMAND via shell parsing.
+# Alpine's busybox is musl-linked and needs only the libs already copied below.
+COPY --from=git-bundle /bin/busybox                 /bin/sh
+COPY --from=git-bundle /bundle/bin/git              /usr/bin/git
+COPY --from=git-bundle /bundle/bin/ssh              /usr/bin/ssh
+COPY --from=git-bundle /bundle/usr/libexec/git-core /usr/libexec/git-core
+COPY --from=git-bundle /bundle/lib/                 /lib/
+COPY --from=git-bundle /bundle/usr/lib/             /usr/lib/
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

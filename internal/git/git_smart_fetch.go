@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -31,6 +32,10 @@ func SmartFetch(
 	remote, err := repo.Remote(remoteName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get remote %s: %w", remoteName, err)
+	}
+
+	if urls := remote.Config().URLs; len(urls) > 0 && IsADOURL(urls[0]) {
+		return systemGitSmartFetch(ctx, repo, target, auth)
 	}
 
 	// 1. Audit: List refs
@@ -65,9 +70,9 @@ func SmartFetch(
 			RemoteName: remoteName,
 			Auth:       auth,
 			RefSpecs:   refSpecs,
-			Depth:      1,
 			Force:      true,
 			Prune:      true,
+			Progress:   io.Discard,
 		})
 		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return "", fmt.Errorf("smart fetch failed: %w", err)
