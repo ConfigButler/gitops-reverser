@@ -28,8 +28,8 @@ const (
 // targetedConfigMapEvent is newConfigMapEvent plus the GitTarget identity the live path
 // carries on every event. The identity is what makes the placement counters actionable —
 // "which target needs a byType line" — so the tests drive the real path with it set.
-func targetedConfigMapEvent(name, namespace string) Event {
-	event := newConfigMapEvent(name, namespace)
+func targetedConfigMapEvent() Event {
+	event := newConfigMapEvent("cache", "app")
 	event.GitTargetName = metricsTestGitTargetName
 	event.GitTargetNamespace = metricsTestGitTargetNamespace
 	return event
@@ -89,7 +89,7 @@ func TestPlacementMetrics_CanonicalFallbackNamesTargetAndType(t *testing.T) {
 	seedPlacedManifest(t, worktree, "overlays/test/configmap-existing.yaml",
 		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: existing\n  namespace: app\ndata:\n  k: v\n")
 
-	flushWithPolicy(t, worktree, nil, targetedConfigMapEvent("cache", "app"))
+	flushWithPolicy(t, worktree, nil, targetedConfigMapEvent())
 
 	got, ok := telemetry.CollectInt64Sum(reader, placementsMetric, placementLabels("configmaps", map[string]string{
 		"source":      "canonical",
@@ -110,7 +110,7 @@ func TestPlacementMetrics_DeclaredPlacementIsCountedAsDeclared(t *testing.T) {
 		ByType: map[string]string{"v1/configmaps": "{namespace}/{name}.yaml"},
 	}
 
-	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent("cache", "app"))
+	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent())
 
 	got, ok := telemetry.CollectInt64Sum(reader, placementsMetric, placementLabels("configmaps", map[string]string{
 		"source":      "declared",
@@ -131,7 +131,7 @@ func TestPlacementMetrics_DeclaredBundleRecordsAppendedDisposition(t *testing.T)
 		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n  namespace: app\ndata:\n  k: v\n")
 	policy := &manifestanalyzer.PlacementPolicy{ByType: map[string]string{"v1/configmaps": "all.yaml"}}
 
-	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent("cache", "app"))
+	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent())
 
 	got, ok := telemetry.CollectInt64Sum(reader, placementsMetric, placementLabels("configmaps", map[string]string{
 		"source":      "declared",
@@ -155,7 +155,7 @@ func TestPlacementMetrics_KustomizeRootSourceAndEntryAdded(t *testing.T) {
 	seedPlacedManifest(t, worktree, "overlays/test/deployment.yaml",
 		"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: app\n")
 
-	flushWithPolicy(t, worktree, nil, targetedConfigMapEvent("cache", "app"))
+	flushWithPolicy(t, worktree, nil, targetedConfigMapEvent())
 
 	got, ok := telemetry.CollectInt64Sum(reader, placementsMetric, placementLabels("configmaps", map[string]string{
 		"source":      "kustomize_root",
@@ -183,7 +183,7 @@ func TestPlacementMetrics_KustomizationEntryFailureIsCounted(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml", "namespace: app\n")
 
-	flushWithPolicy(t, worktree, nil, targetedConfigMapEvent("cache", "app"))
+	flushWithPolicy(t, worktree, nil, targetedConfigMapEvent())
 
 	failed, ok := telemetry.CollectInt64Sum(reader, kustomizationEntriesMetric, map[string]string{
 		"gittarget_namespace": metricsTestGitTargetNamespace,
@@ -230,7 +230,7 @@ func TestPlacementMetrics_EscapingTemplateCountsAnInvalidPathRefusal(t *testing.
 	worktree := newWorktreeForTest(t)
 	policy := &manifestanalyzer.PlacementPolicy{Default: "../../outside.yaml"}
 
-	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent("cache", "app"))
+	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent())
 
 	refusals, ok := telemetry.CollectInt64Sum(reader, placementRefusalsMetric,
 		placementLabels("configmaps", map[string]string{"reason": "invalid_path"}))
@@ -256,7 +256,7 @@ func TestPlacementMetrics_MixedSensitivityNewFileCountsARefusal(t *testing.T) {
 		context.Background(),
 		worktree,
 		"",
-		[]Event{targetedConfigMapEvent("cache", "app"), targetedSecretEvent("api-token", "app")},
+		[]Event{targetedConfigMapEvent(), targetedSecretEvent("api-token", "app")},
 		policy,
 		v1alpha3.PruneOnEvent,
 	)
