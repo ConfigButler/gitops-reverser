@@ -264,6 +264,10 @@ Every metric on this path, and the question each answers.
 | `gitopsreverser_attribution_fact_index_evictions_total` | `reason` = `per_type` / `total` | whether the caps are binding |
 | `gitopsreverser_attribution_collection_without_uidset_total` | `reason` = `uid_cap` / `no_uids` | how often the precise collection join was unavailable |
 | `gitopsreverser_attribution_fact_stream_gaps_total` | `stream` | facts lost for good to a trim |
+| `gitopsreverser_attribution_fact_stream_decode_errors_total` | `transport` | entries skipped because they could not be decoded |
+| `gitopsreverser_attribution_fact_follower_errors_total` | `transport` | follower reads that failed and were retried |
+| `gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds` | none | whether the follower is reading at all |
+| `gitopsreverser_attribution_transport_info` | `transport` | which contract the metrics above are read under |
 | `gitopsreverser_commits_total` | …, `author_kind` | what reached Git |
 
 The wait histogram is the one that earns its keep. Splitting wait time BY TIER is what turned the
@@ -282,8 +286,8 @@ restart re-files the whole retention window. Two counters over different populat
 The population that motivated the subtraction (name-only delete facts published and silently
 discarded) no longer exists: the name tier files them, so `file` returning no keys is now
 unreachable behind the publish gate, and a counter on that branch would be a flat zero that reads as
-health. What the loss paths need is measuring where delivery happens, which is what the
-[metrics plan](metrics-observability-plan.md) adds next.
+health. What the loss paths needed was measuring where delivery happens: the stream
+decode-error counter and the follower's last-success timestamp, both of which now ship.
 
 **Head-of-line blocking is not measured.** The wait histogram times each resolution in isolation. It
 does not measure the delay a slow resolution imposes on the events queued behind it on the same

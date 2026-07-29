@@ -178,7 +178,11 @@ The log is Redis Streams by default and an in-process ring with
 | `attribution_fact_index_entries` | gauge | — |
 | `attribution_fact_index_evictions_total` | counter | `reason` |
 | `attribution_fact_stream_gaps_total` | counter | `stream` |
+| `attribution_fact_stream_decode_errors_total` | counter | `transport` |
+| `attribution_fact_follower_errors_total` | counter | `transport` |
+| `attribution_fact_follower_last_success_timestamp_seconds` | gauge | — |
 | `attribution_collection_without_uidset_total` | counter | `reason` |
+| `attribution_transport_info` | gauge (always 1) | `transport` |
 
 **EventList request boundary.** `audit_eventlists_total` and `audit_eventlist_duration_seconds`
 count requests at `/audit-webhook`; `audit_eventlist_events_total` counts the decoded event items
@@ -192,11 +196,23 @@ selector):
 | `category` | Live `outcome` values | Meaning |
 | --- | --- | --- |
 | `stored` | `queued` | Accepted; the event's facts reached the fact log. |
-| `dropped` | `nil_event`, `stage`, `read_only_or_unknown_verb`, `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource` | Correctly rejected at the accept gate — not an error. |
+| `dropped` | `nil_event`, `stage`, `read_only_or_unknown_verb`, `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource`, `no_attribution_fact` | Correctly rejected at the accept gate, or accepted and unable to name an author — not an error. |
 | `error` | `write_error` | The transport rejected the append for THIS event's stream, so its fact did not reach the log. Publication is per stream, so a request that fails partway still counts the events whose own stream appended as `queued`; the whole request is failed so the API server retries it, and the landed facts are simply appended again. The one category that should stay zero. |
 
 The full enum lives in [`internal/audit/outcome/outcome.go`](../internal/audit/outcome/outcome.go)
 — it is the source of truth.
+
+**`no_attribution_fact` is the one to read carefully.** The event was accepted and could name no
+author, so nothing was appended for it and no watch event can ever join it. The usual cause is an
+aggregated API: the kube-apiserver proxies the request and never decodes the response, so a CREATE's
+`objectRef` carries no name at all. It is `dropped` rather than `error` because nothing failed, and
+this is the only place it can be counted — the event never becomes a fact, so no fact-side counter
+sees it. A rising share for a type you expect to attribute means commits for that type will be
+authored unresolved:
+
+```promql
+sum by (group, resource) (rate(gitopsreverser_audit_events_total{outcome="no_attribution_fact"}[5m]))
+```
 
 **Is audit attribution alive?** Any positive rate means events are flowing:
 
@@ -346,6 +362,40 @@ positions rather than fire-and-forget publish and subscribe. This should be **ze
 sum by (stream) (rate(gitopsreverser_attribution_fact_stream_gaps_total[5m]))
 ```
 
+**Is a follower silently skipping facts?** An entry the follower cannot decode is skipped and its
+position passed — which is right, since it can never decode and stalling on it would cost every
+later fact on that stream — so the facts it carried are gone. This is the loss path with **no other
+symptom**: unlike a trim gap it is not detectable after the fact, and unlike a publish failure the
+API server does not retry it. Any non-zero rate means a schema or version mismatch on the stream:
+
+```promql
+sum by (transport) (rate(gitopsreverser_attribution_fact_stream_decode_errors_total[5m]))
+```
+
+**Is the fact follower alive?** The follower retries a transport failure with a backoff rather than
+returning, so a wedged one degrades attribution to committer-authored across the board with a rising
+unresolved rate as the only symptom. The timestamp matters more than the counter: it is the only
+thing that separates "erroring occasionally while making progress" from "has read nothing in ten
+minutes", and only the second is an outage. Read it as seconds since the last successful read
+(idle rounds count as reads, so a quiet cluster reads as healthy):
+
+```promql
+time() - gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds
+```
+
+```promql
+sum by (transport) (rate(gitopsreverser_attribution_fact_follower_errors_total[5m]))
+```
+
+**Which transport is in force?** `gitopsreverser_attribution_transport_info` is an info gauge whose
+value is always 1, labelled `redis` or `memory`. It is a legend rather than a threshold, and it
+changes how every metric above reads: a burst of unresolved commits after a restart is *expected*
+under the in-process transport, which drops every fact with the process, and a *bug* under Redis.
+
+```promql
+gitopsreverser_attribution_transport_info
+```
+
 **How often does a collection delete fall back to scope matching?** A `deletecollection` fact
 carries the UIDs the API server named, when it sent them, and joins by membership. When it cannot,
 the join falls back to `collection_scope`, which is correct but weaker — so the fallback is counted
@@ -447,6 +497,8 @@ rate(gitopsreverser_secret_encryption_attempts_total[5m])
 | --- | --- |
 | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | Attribution fact-store writes are failing — check Redis. |
 | `rate(gitopsreverser_audit_eventlists_total{outcome="decode_error"}[10m]) > 0` | A sender is posting non-EventList payloads to `/audit-webhook`. |
+| `rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | A schema or version mismatch on the fact stream; facts are being skipped and lost. |
+| `time() - gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds > 600` | The fact follower is wedged; attribution is degrading to committer-authored cluster-wide. |
 | `rate(gitopsreverser_resync_background_failures_total[15m]) > 0` sustained | Background resyncs are not committing; the folder relies on steady-state events to catch up. |
 | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | Part of the API surface is hidden behind a broken APIService. |
 | `rate(gitopsreverser_secret_encryption_failures_total[10m]) > 0` | Secret writes are being rejected by the encryption path. |
@@ -468,15 +520,16 @@ them — with a reference dashboard and an audit/attribution deep-dive — is
   picked up. The wait histogram above times each resolution in isolation; it cannot see the delay a
   slow resolution imposes on the events queued behind it on the same single-threaded shard, which is
   a failure mode that has already broken a test.
-- **Fact-pipeline loss paths** — an undecodable fact-stream entry is skipped with no log and no
-  metric, and a wedged fact follower is silent, so attribution can degrade cluster-wide with a rising
-  `absent` rate as the only symptom.
+- **Relevance filter** — how many watch events are filtered before Git, and why. The filter
+  decisions are scattered along the watch-to-Git path today, so there is no one honest boundary to
+  count at yet.
 - **Git push health** — push latency and conflict-retry counts. The instruments for these were
   removed because nothing recorded them; re-add them **with** a recording site when the need is
   real, not before.
 
-The attribution relabel that used to be listed here has **shipped**: `tier` plus `actor_kind`, and
-`event_kind` on the wait histogram, all documented above.
+The attribution relabel and the fact-pipeline loss paths that used to be listed here have **shipped**
+— `tier` plus `actor_kind`, `event_kind` on the wait histogram, the stream decode-error counter, and
+follower health are all documented above.
 Nothing consumes these metrics yet, so the break is taken deliberately in one release rather than
 twice; it will carry an [`UPGRADING.md`](UPGRADING.md) table of old name → new name.
 

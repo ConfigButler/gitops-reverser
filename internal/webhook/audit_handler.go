@@ -315,22 +315,32 @@ func (h *AuditHandler) processEvents(ctx context.Context, route auditRoute, even
 }
 
 // recordAcceptedOutcomes stamps one terminal outcome on every event that passed the accept gate,
-// deciding each from whether its OWN stream appended.
+// deciding each from whether it produced a fact at all and then from whether its OWN stream
+// appended.
 //
-// An event that produced no fact is queued rather than failed: it was accepted and carried as far
-// as it can go, and no append was ever owed for it.
+// An event that produced no fact is not a failure — nothing was owed for it — but it is not queued
+// either. It used to be counted queued, which claimed an append that never happened and hid the
+// whole population that can never be attributed behind the busiest value on the counter. This is
+// the only place it can be counted: no fact exists, so no fact-side counter can ever see it.
 func (h *AuditHandler) recordAcceptedOutcomes(
 	ctx context.Context,
 	accepted []acceptedFact,
 	appended map[queue.FactStreamKey]struct{},
 ) {
 	for i := range accepted {
-		result := outcome.Queued
-		if _, landed := appended[accepted[i].key]; accepted[i].ok && !landed {
-			result = outcome.WriteError
-		}
-		outcome.Record(ctx, accepted[i].event, result)
+		outcome.Record(ctx, accepted[i].event, acceptedOutcome(accepted[i], appended))
 	}
+}
+
+// acceptedOutcome is one accepted event's terminal outcome.
+func acceptedOutcome(accepted acceptedFact, appended map[queue.FactStreamKey]struct{}) outcome.Outcome {
+	if !accepted.ok {
+		return outcome.NoAttributionFact
+	}
+	if _, landed := appended[accepted.key]; !landed {
+		return outcome.WriteError
+	}
+	return outcome.Queued
 }
 
 // logPublishedFacts says, once per process and then only at verbosity, which facts were published.

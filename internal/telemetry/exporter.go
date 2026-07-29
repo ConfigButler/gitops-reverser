@@ -132,6 +132,25 @@ var (
 	// follower, labelled by stream. Every gap is facts lost for good, and it is the one loss a log
 	// transport can see at all.
 	AttributionFactStreamGapsTotal metric.Int64Counter
+	// AttributionFactStreamDecodeErrorsTotal counts fact-stream entries the follower could not
+	// decode, labelled by transport. Such an entry is skipped and its position passed, so the facts
+	// it carried are lost — and unlike a trim gap the loss leaves no other trace, which is why this
+	// is the loss path that most needed a counter.
+	AttributionFactStreamDecodeErrorsTotal metric.Int64Counter
+	// AttributionFactFollowerErrorsTotal counts fact-follower read failures, labelled by transport.
+	// The follower retries with a backoff rather than returning, so the errors are otherwise only a
+	// log line.
+	AttributionFactFollowerErrorsTotal metric.Int64Counter
+	// AttributionFactFollowerLastSuccessTimestampSeconds gauges the Unix time of the follower's last
+	// successful read, idle rounds included. It matters more than the error counter: only it
+	// separates "erroring occasionally while making progress" from "has read nothing in ten
+	// minutes", and only the second is an outage. Read it as time() - <gauge>.
+	AttributionFactFollowerLastSuccessTimestampSeconds metric.Int64Gauge
+	// AttributionTransportInfo is an info gauge, always 1, labelled by the fact transport in force
+	// (redis/memory). It is interpretive metadata rather than a signal: a burst of unresolved
+	// commits after a restart is EXPECTED under the in-process transport, which drops every fact
+	// with the process, and a bug under Redis.
+	AttributionTransportInfo metric.Int64Gauge
 
 	// APICatalogResources gauges the count of served top-level resources in the catalog,
 	// split by the default-watch-policy allowed/excluded state.
@@ -254,6 +273,11 @@ func registerCounters() error {
 			"gitopsreverser_attribution_collection_without_uidset_total",
 			&AttributionCollectionWithoutUIDSetTotal,
 		},
+		{
+			"gitopsreverser_attribution_fact_stream_decode_errors_total",
+			&AttributionFactStreamDecodeErrorsTotal,
+		},
+		{"gitopsreverser_attribution_fact_follower_errors_total", &AttributionFactFollowerErrorsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
@@ -316,6 +340,11 @@ func registerGauges() error {
 		{"gitopsreverser_watched_types", &WatchedTypes},
 		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
 		{"gitopsreverser_attribution_fact_index_entries", &AttributionFactIndexEntries},
+		{
+			"gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds",
+			&AttributionFactFollowerLastSuccessTimestampSeconds,
+		},
+		{"gitopsreverser_attribution_transport_info", &AttributionTransportInfo},
 	}
 	for _, s := range gauges {
 		v, err := otelMeter.Int64Gauge(s.name)

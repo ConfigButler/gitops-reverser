@@ -33,7 +33,10 @@ func TestOutcomeCategory(t *testing.T) {
 		OlderThanHighWater:       Dropped,
 		NonNumericRV:             Dropped,
 		MissingClusterAnnotation: Dropped,
-		WriteError:               Error,
+		// Accepted, and no fact was owed for it: dropped, never error, so the e2e invariant that
+		// gates on category="error" being zero is untouched by a type audit cannot identify.
+		NoAttributionFact: Dropped,
+		WriteError:        Error,
 	}
 	for o, want := range cases {
 		assert.Equalf(t, want, o.Category(), "category of %s", o)

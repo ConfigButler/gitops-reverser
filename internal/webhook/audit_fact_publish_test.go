@@ -363,3 +363,58 @@ func TestAuditHandler_PartialPublishOnlyFailsTheBatchesThatDidNotLand(t *testing
 	require.True(t, ok)
 	assert.Equal(t, int64(1), failed, "only the event whose stream did not append is a write error")
 }
+
+// aggregatedCreateEvent is the shape an aggregated API's CREATE is audited with: the kube-apiserver
+// proxies the request and never decodes the response, so the objectRef carries no name — the API
+// server assigned it — and there is no body to backfill from.
+func aggregatedCreateEvent(auditID, user string) string {
+	return `{"kind":"Event","level":"Metadata","auditID":"` + auditID + `",` +
+		`"stage":"ResponseComplete","verb":"create","user":{"username":"` + user + `"},` +
+		`"requestURI":"/apis/wardle.example.com/v1alpha1/namespaces/team-a/flunders",` +
+		`"objectRef":{"apiGroup":"wardle.example.com","resource":"flunders","namespace":"team-a",` +
+		`"apiVersion":"wardle.example.com/v1alpha1"},` +
+		`"responseStatus":{"code":201}}`
+}
+
+// TestAuditHandler_AnEventThatProducesNoFactIsCountedAsSuchPins the population that used to be
+// invisible. An accepted event that can never name an author — here an aggregated-API create, whose
+// objectRef carries no name at all — produces no fact, so nothing is appended for it and no watch
+// event can ever join it.
+//
+// It used to be counted `queued`, which claimed an append that was never owed and buried the whole
+// population under the busiest value on the counter. It is Dropped rather than Error because
+// nothing failed, which also keeps the e2e invariant on category="error" intact.
+func TestAuditHandler_AnEventThatProducesNoFactIsCountedAsSuch(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	publisher := &fakeFactPublisher{}
+	handler := newPublishingHandler(t, publisher)
+
+	body := eventListBody(
+		aggregatedCreateEvent("a", "alice"),
+		writeEvent("b", "", "configmaps", "config", "bob"),
+	)
+	require.Equal(t, http.StatusOK, serveBody(t, handler, http.MethodPost, "/audit-webhook/prod-eu-1", body).Code)
+
+	appends := publisher.recorded()
+	require.Len(t, appends, 1, "only the joinable event produces a fact")
+	require.Equal(t, "configmaps", appends[0].key.GroupResource.Resource)
+
+	noFact, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
+		"outcome": "no_attribution_fact", "category": "dropped", "resource": "flunders", "verb": "create",
+	})
+	require.True(t, ok, "the event that produced no fact must be counted where the decision is made")
+	assert.Equal(t, int64(1), noFact)
+
+	// The event beside it is unaffected: it appended, so it is queued.
+	queued, ok := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{
+		"outcome": "queued", "category": "stored", "resource": "configmaps",
+	})
+	require.True(t, ok)
+	assert.Equal(t, int64(1), queued)
+
+	// The invariant the e2e suite gates on is untouched: nothing here is an error.
+	_, anyError := telemetry.CollectInt64Sum(reader, auditEventsMetric, map[string]string{"category": "error"})
+	assert.False(t, anyError, "an event that owes no append has not failed")
+}

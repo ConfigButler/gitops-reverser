@@ -84,6 +84,17 @@ const (
 	// that carries no source-cluster annotation, so it names no ClusterProvider. Never credited to a
 	// fallback; a rising rate means a producer is not stamping the annotation.
 	MissingClusterAnnotation Outcome = "missing_cluster_annotation"
+	// NoAttributionFact — the event passed the accept gate and produced no attribution fact, so
+	// nothing was appended for it and no watch event can ever join it. It names an author nobody
+	// can look up: no user, or no resolvable object name on a non-collection verb — the shape an
+	// aggregated-API create has, since the API server assigns the name and the objectRef carries
+	// none.
+	//
+	// It is Dropped rather than Error: nothing failed, and the events are exactly the population
+	// that was previously counted queued (which claimed an append that was never owed), so this
+	// population was invisible. The handler is the only place it can be counted at all — the event
+	// is rejected before publication, so no fact-side counter ever sees it.
+	NoAttributionFact Outcome = "no_attribution_fact"
 
 	// WriteError — a redis/enqueue failure; the event never reached the log.
 	WriteError Outcome = "write_error"
@@ -100,7 +111,7 @@ func (o Outcome) Category() Category {
 	case NotNeeded, NilEvent, Stage, ReadOnlyOrUnknownVerb, FailedRequest, DryRun,
 		UnchangedResourceVersion, MalformedAdditional, NonScaleSubresource,
 		ShallowDropped, RVLessEmptyHighWater, OlderThanHighWater, NonNumericRV,
-		MissingClusterAnnotation:
+		MissingClusterAnnotation, NoAttributionFact:
 		return Dropped
 	case WriteError:
 		return Error

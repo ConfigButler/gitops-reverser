@@ -109,7 +109,7 @@ func assertNoAnomalousAuditOutcomes() {
 	// the full per-event records in Redis for deeper inspection.
 	for _, oc := range []string{
 		"queued", "older_than_high_water", "non_numeric_rv", "rvless_empty_highwater",
-		"not_needed", "shallow_dropped", "write_error",
+		"not_needed", "shallow_dropped", "no_attribution_fact", "write_error",
 	} {
 		n, qErr := queryPrometheus(fmt.Sprintf(
 			`sum(max_over_time(gitopsreverser_audit_events_total{outcome=%q}[2h])) or vector(0)`, oc))

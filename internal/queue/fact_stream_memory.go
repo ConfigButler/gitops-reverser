@@ -128,6 +128,11 @@ func (m *MemoryFactStream) FollowFacts(keys []FactStreamKey, horizon time.Durati
 	return &memFactSubscription{stream: m, follow: newFollowSet(keys, horizon)}
 }
 
+// TransportKind names this transport for the metric labels.
+func (m *MemoryFactStream) TransportKind() FactTransportKind {
+	return FactTransportMemory
+}
+
 // wakeup returns the channel closed by the next publish.
 func (m *MemoryFactStream) wakeup() <-chan struct{} {
 	m.mu.Lock()
@@ -240,7 +245,7 @@ func (sub *memFactSubscription) Next(ctx context.Context) (FactDelivery, error) 
 		// Take the wake-up channel BEFORE reading, so a publish that lands between the read and
 		// the wait is not missed: it closes the channel this iteration already holds.
 		signal := sub.stream.wakeup()
-		delivery := sub.collect()
+		delivery := sub.collect(ctx)
 		if len(delivery.Entries) > 0 || len(delivery.Gaps) > 0 {
 			return delivery, nil
 		}
@@ -262,7 +267,7 @@ func (sub *memFactSubscription) Next(ctx context.Context) (FactDelivery, error) 
 }
 
 // collect reads every followed ring once, advancing the cursors it delivered.
-func (sub *memFactSubscription) collect() FactDelivery {
+func (sub *memFactSubscription) collect(ctx context.Context) FactDelivery {
 	targets := sub.follow.targets()
 	var delivery FactDelivery
 	for _, target := range targets {
@@ -277,6 +282,7 @@ func (sub *memFactSubscription) collect() FactDelivery {
 		for _, entry := range entries {
 			facts, err := decodeFactBatch(entry.raw)
 			if err != nil {
+				recordFactStreamDecodeError(ctx, sub.stream.TransportKind(), target.Key, entry.id, err)
 				continue
 			}
 			delivery.Entries = append(delivery.Entries, FactEntry{Key: target.Key, ID: entry.id, Facts: facts})

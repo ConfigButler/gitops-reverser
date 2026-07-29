@@ -132,6 +132,11 @@ func (s *RedisFactStream) FollowFacts(keys []FactStreamKey, horizon time.Duratio
 	return &redisFactSubscription{stream: s, follow: newFollowSet(keys, horizon)}
 }
 
+// TransportKind names this transport for the metric labels.
+func (s *RedisFactStream) TransportKind() FactTransportKind {
+	return FactTransportRedis
+}
+
 // streamKey renders one stream's Redis key, e.g.
 // "gitops-reverser:author:v2:audit:route:prod-eu-1:apps/deployments". The route sits directly
 // after the domain so one route's streams share a single glob prefix.
@@ -218,13 +223,15 @@ func (sub *redisFactSubscription) Next(ctx context.Context) (FactDelivery, error
 		sub.follow.forgetGaps(gaps)
 		return FactDelivery{}, fmt.Errorf("read fact streams: %w", err)
 	}
-	return FactDelivery{Entries: sub.collect(res, byStreamKey), Gaps: gaps}, nil
+	return FactDelivery{Entries: sub.collect(ctx, res, byStreamKey), Gaps: gaps}, nil
 }
 
 // collect turns one XREAD result into entries and advances the cursors it delivered. An entry
 // whose payload does not decode is skipped rather than retried: it can never decode, and stalling
-// the follower on it would cost every later fact on that stream.
+// the follower on it would cost every later fact on that stream. It is counted and logged, because
+// skipping it loses its facts and leaves no other trace.
 func (sub *redisFactSubscription) collect(
+	ctx context.Context,
 	res []redis.XStream,
 	byStreamKey map[string]FactStreamKey,
 ) []FactEntry {
@@ -255,6 +262,7 @@ func (sub *redisFactSubscription) collect(
 		for j := range messages {
 			facts, err := factsFromMessage(messages[j])
 			if err != nil {
+				recordFactStreamDecodeError(ctx, sub.stream.TransportKind(), key, messages[j].ID, err)
 				continue
 			}
 			entries = append(entries, FactEntry{Key: key, ID: messages[j].ID, Facts: facts})

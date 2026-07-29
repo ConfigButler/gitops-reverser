@@ -419,6 +419,8 @@ func (i *FactIndex) lookupRemoval(
 // what it lost. It returns only when the context ends: a transport failure is retried, because a
 // follower that gave up would leave attribution silently dead for the life of the process.
 func (i *FactIndex) Run(ctx context.Context, follower FactFollower) error {
+	transport := follower.TransportKind()
+	recordTransportInfo(ctx, transport)
 	subscription := follower.FollowFacts(i.streams.Keys(), i.ttl)
 	i.streams.Observe(subscription.SetStreams)
 	defer i.streams.Observe(nil)
@@ -430,12 +432,17 @@ func (i *FactIndex) Run(ctx context.Context, follower FactFollower) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			recordFollowerError(ctx, transport)
 			i.log.Error(err, "attribution fact follower failed; retrying")
 			if waitErr := waitBlock(ctx, factFollowErrorBackoff); waitErr != nil {
 				return nil
 			}
 			continue
 		}
+		// An idle round counts as success: the question the gauge answers is whether the follower is
+		// READING, and a block period that elapsed with nothing on any stream is a healthy read. Only
+		// advancing it on a non-empty delivery would make a quiet cluster look like a wedged follower.
+		recordFollowerSuccess(ctx)
 		for _, entry := range delivery.Entries {
 			i.Apply(ctx, entry)
 		}
@@ -678,6 +685,38 @@ func recordFactEvent(ctx context.Context, op string) {
 		return
 	}
 	telemetry.AttributionFactsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("op", op)))
+}
+
+// recordTransportInfo publishes which transport is carrying the facts, as an info gauge whose value
+// is always 1. It is recorded from the follower rather than from the wiring because this is the one
+// goroutine that runs for the life of the process and holds the transport.
+func recordTransportInfo(ctx context.Context, transport FactTransportKind) {
+	if telemetry.AttributionTransportInfo == nil {
+		return
+	}
+	telemetry.AttributionTransportInfo.Record(ctx, 1,
+		metric.WithAttributes(attribute.String("transport", string(transport))))
+}
+
+// recordFollowerError counts one failed follower read. The follower retries rather than returning,
+// so without this the failures are a log line and nothing else.
+func recordFollowerError(ctx context.Context, transport FactTransportKind) {
+	if telemetry.AttributionFactFollowerErrorsTotal == nil {
+		return
+	}
+	telemetry.AttributionFactFollowerErrorsTotal.Add(ctx, 1,
+		metric.WithAttributes(attribute.String("transport", string(transport))))
+}
+
+// recordFollowerSuccess stamps the time of the last successful read. It matters more than the error
+// counter beside it: a counter says errors are happening, and only this separates "erroring
+// occasionally while making progress" from "has read nothing in ten minutes" — the second of which
+// is attribution degrading to committer-authored cluster-wide.
+func recordFollowerSuccess(ctx context.Context) {
+	if telemetry.AttributionFactFollowerLastSuccessTimestampSeconds == nil {
+		return
+	}
+	telemetry.AttributionFactFollowerLastSuccessTimestampSeconds.Record(ctx, time.Now().Unix())
 }
 
 // recordFactIndexEviction counts one evicted entry under its bounded reason.

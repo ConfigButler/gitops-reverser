@@ -1271,9 +1271,10 @@ follows those stages:
 
 - **Audit ingress.** `gitopsreverser_audit_events_total{outcome,category,group,version,resource,verb}`
   gives one terminal outcome per audit event (`queued`, `stage`, `read_only_or_unknown_verb`,
-  `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource`, `write_error`),
-  and `gitopsreverser_audit_eventlists_total` / `_eventlist_events_total` /
-  `_eventlist_duration_seconds` `{outcome}` cover the `/audit-webhook` request boundary.
+  `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource`,
+  `no_attribution_fact`, `write_error`), and `gitopsreverser_audit_eventlists_total` /
+  `_eventlist_events_total` / `_eventlist_duration_seconds` `{outcome}` cover the `/audit-webhook`
+  request boundary.
 - **Attribution join.**
   `gitopsreverser_attribution_resolutions_total{tier,actor_kind,group,version,resource}` says which
   tier of evidence named the author and who it named, per type;
@@ -1283,7 +1284,11 @@ follows those stages:
   read through. Match coverage is `tier!="absent"`.
 - **Fact pipeline.** `_attribution_facts_total{op}` (`written`/`matched`, not subtractable),
   `_attribution_fact_index_entries`, `_attribution_fact_index_evictions_total{reason}`,
-  `_attribution_fact_stream_gaps_total{stream}` (facts lost for good to a trim; should be zero), and
+  `_attribution_fact_stream_gaps_total{stream}` (facts lost for good to a trim; should be zero),
+  `_attribution_fact_stream_decode_errors_total{transport}` (an entry skipped because it could not be
+  decoded: the loss path with no other symptom), `_attribution_fact_follower_errors_total{transport}`
+  with `_attribution_fact_follower_last_success_timestamp_seconds` (a wedged follower degrades
+  attribution cluster-wide), `_attribution_transport_info{transport}`, and
   `_attribution_collection_without_uidset_total{reason}`.
 - **Git write and reconcile.** `gitopsreverser_commits_total{provider_*,branch,author_kind}` is the
   bottom line: `unresolved` means attribution ran and could not name an actor. Alongside it,
@@ -1295,9 +1300,8 @@ follows those stages:
 **Watch ingestion itself is not instrumented.** Per-type event volume, restarts and `410` rebuilds,
 replay cost, recovery mode, and the delay between an event arriving on a shard and being processed are
 all designed in the [metrics observability plan](design/metrics-observability-plan.md) and **not yet
-emitted**, and neither are the attribution loss paths, chiefly an undecodable fact-stream entry.
-The attribution label taxonomy from that plan has shipped; the migration for the break is in
-[UPGRADING.md](UPGRADING.md).
+emitted**. The attribution half of that plan (the label taxonomy and the silent loss paths) has
+shipped; the migration for the label break is in [UPGRADING.md](UPGRADING.md).
 See [Operational Boundaries](#operational-boundaries).
 
 ***

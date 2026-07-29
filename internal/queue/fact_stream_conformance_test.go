@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // The attribution fact transport has two implementations and ONE test suite. They are the same
@@ -56,10 +59,14 @@ func defaultFactStreamParams() factStreamParams {
 	}
 }
 
-// factStreamImplementation names one transport and builds it for one case.
+// factStreamImplementation names one transport and builds it for one case. appendUndecodable
+// writes an entry no follower can decode, which is the only thing a transport's own internals are
+// needed for here: a malformed entry cannot be produced through PublishFacts, and skipping one is
+// the loss path with no other symptom.
 type factStreamImplementation struct {
-	name  string
-	build func(t *testing.T, params factStreamParams) FactTransport
+	name              string
+	build             func(t *testing.T, params factStreamParams) FactTransport
+	appendUndecodable func(t *testing.T, transport FactTransport, key FactStreamKey)
 }
 
 func factStreamImplementations() []factStreamImplementation {
@@ -79,6 +86,15 @@ func factStreamImplementations() []factStreamImplementation {
 					ReadCount:    params.ReadCount,
 				})
 			},
+			appendUndecodable: func(t *testing.T, transport FactTransport, key FactStreamKey) {
+				t.Helper()
+				stream, ok := transport.(*RedisFactStream)
+				require.True(t, ok)
+				require.NoError(t, stream.client.XAdd(t.Context(), &redis.XAddArgs{
+					Stream: stream.streamKey(key),
+					Values: map[string]any{factStreamEntryField: "{not json"},
+				}).Err())
+			},
 		},
 		{
 			name: "memory",
@@ -90,6 +106,16 @@ func factStreamImplementations() []factStreamImplementation {
 					Block:     factStreamTestBlock,
 					ReadCount: params.ReadCount,
 				})
+			},
+			appendUndecodable: func(t *testing.T, transport FactTransport, key FactStreamKey) {
+				t.Helper()
+				stream, ok := transport.(*MemoryFactStream)
+				require.True(t, ok)
+				stream.mu.Lock()
+				defer stream.mu.Unlock()
+				ring, ok := stream.streams[key]
+				require.True(t, ok, "publish something before corrupting the ring")
+				ring.append([]byte("{not json"), time.Now())
 			},
 		},
 	}
@@ -187,6 +213,41 @@ func TestFactStreamConformance_AppendsAreFollowedInOrder(t *testing.T) {
 		require.Negative(t, compareStreamIDs(entries[0].ID, entries[1].ID))
 		require.Negative(t, compareStreamIDs(entries[1].ID, entries[2].ID))
 	})
+}
+
+// TestFactStreamConformance_AnUndecodableEntryIsSkippedAndCounted pins the loss path that had no
+// symptom at all. An entry that cannot be decoded is skipped and its position passed — which is
+// right, since it can never decode and stalling on it would cost every later fact on the stream —
+// so the facts it carried are simply gone. Unlike a trim gap that is not detectable after the fact,
+// and unlike a publish failure the API server does not retry it, which is why the counter IS the
+// symptom.
+func TestFactStreamConformance_AnUndecodableEntryIsSkippedAndCounted(t *testing.T) {
+	for _, impl := range factStreamImplementations() {
+		t.Run(impl.name, func(t *testing.T) {
+			reader, err := telemetry.InitTestExporter()
+			require.NoError(t, err)
+
+			transport := impl.build(t, defaultFactStreamParams())
+			ctx := t.Context()
+			key := factStreamTestKey("", "configmaps")
+			sub := transport.FollowFacts([]FactStreamKey{key}, factStreamTestHorizon)
+
+			require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("alice")))
+			impl.appendUndecodable(t, transport, key)
+			require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("bob")))
+
+			// The follower reads past the bad entry rather than stalling on it, so the fact appended
+			// after it still arrives.
+			entries := drainFactEntries(t, sub, 2)
+			require.Equal(t, []string{"alice", "bob"}, factAuthors(entries))
+
+			decodeErrors, found := telemetry.CollectInt64Sum(reader,
+				"gitopsreverser_attribution_fact_stream_decode_errors_total",
+				map[string]string{"transport": string(transport.TransportKind())})
+			require.True(t, found, "a skipped entry must be counted; it has no other symptom")
+			require.Equal(t, int64(1), decodeErrors)
+		})
+	}
 }
 
 func TestFactStreamConformance_EmptyBatchIsNotAppended(t *testing.T) {

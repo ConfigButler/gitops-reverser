@@ -3,6 +3,9 @@
 package queue
 
 import (
+	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -845,3 +848,88 @@ func TestFactIndex_ActorKindIsDerivedFromTheAuthor(t *testing.T) {
 		AuthorResolution{Result: AttributionName, Fact: AuthorFact{Author: "alice"}}.ActorKind())
 }
 
+// erroringFollower fails every read, which is the shape of a wedged follower: Run does not give up
+// on a transport error, so without a counter and a timestamp the failure is a log line and a slowly
+// rising unresolved rate with nothing pointing at the cause.
+type erroringFollower struct {
+	kind FactTransportKind
+	// failures counts the reads that have failed, so a test can wait for the retry loop to turn.
+	failures atomic.Int64
+}
+
+func (f *erroringFollower) FollowFacts([]FactStreamKey, time.Duration) FactSubscription {
+	return f
+}
+
+func (f *erroringFollower) TransportKind() FactTransportKind { return f.kind }
+
+func (f *erroringFollower) SetStreams([]FactStreamKey) {}
+
+func (f *erroringFollower) Next(ctx context.Context) (FactDelivery, error) {
+	if err := ctx.Err(); err != nil {
+		return FactDelivery{}, err
+	}
+	f.failures.Add(1)
+	return FactDelivery{}, errors.New("transport is wedged")
+}
+
+func TestFactIndex_FollowerErrorsAreCountedAndTheTransportIsNamed(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	index := NewFactIndex(FactIndexConfig{})
+	follower := &erroringFollower{kind: FactTransportRedis}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		defer close(done)
+		runErr = index.Run(ctx, follower)
+	}()
+	require.Eventually(t, func() bool { return follower.failures.Load() >= 1 },
+		5*time.Second, 10*time.Millisecond)
+	cancel()
+	<-done
+	require.NoError(t, runErr, "a transport error is retried, never returned")
+
+	errorCount, found := telemetry.CollectInt64Sum(reader,
+		"gitopsreverser_attribution_fact_follower_errors_total",
+		map[string]string{"transport": string(FactTransportRedis)})
+	require.True(t, found)
+	require.Positive(t, errorCount)
+
+	// The info gauge is recorded by the follower, so it is in force for exactly as long as the
+	// process is reading facts, and it says which contract the other metrics are read under.
+	info, found := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_transport_info",
+		map[string]string{"transport": string(FactTransportRedis)})
+	require.True(t, found)
+	require.Equal(t, int64(1), info)
+
+	// A follower that has only ever errored has never succeeded, so the liveness gauge must not
+	// claim it has: this is the difference between "erroring while progressing" and an outage.
+	_, succeeded := telemetry.CollectInt64Sum(reader,
+		"gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds", nil)
+	require.False(t, succeeded)
+}
+
+// A successful read stamps the liveness gauge, idle rounds included: the question it answers is
+// whether the follower is READING, and a quiet cluster must not look like a wedged follower.
+func TestFactIndex_FollowerSuccessStampsTheLivenessGauge(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	before := time.Now().Unix()
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	harness.publish(factIndexTestStream("prod-eu-1"), objectFact("alice", "101"))
+	harness.waitForFacts(2)
+
+	stamp, found := telemetry.CollectInt64Sum(reader,
+		"gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds", nil)
+	require.True(t, found)
+	require.GreaterOrEqual(t, stamp, before)
+
+	info, found := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_transport_info",
+		map[string]string{"transport": string(FactTransportMemory)})
+	require.True(t, found)
+	require.Equal(t, int64(1), info)
+}

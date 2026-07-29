@@ -49,6 +49,15 @@ so `{event_kind="removal"}` is the distribution `--author-attribution-grace` is 
 **Rewrite match coverage as `tier!="absent"`.** A query kept as `result=~"exact_.*"` — or ported to
 `tier=~"exact.*"` — reads the collection and name tiers as misses, and those tiers named an actor.
 
+Three signals are new in the same release, so a query is worth writing against them at the same
+time: `attribution_fact_stream_decode_errors_total{transport}` (an entry the follower could not
+decode is skipped and its facts lost — the one loss path with no other symptom),
+`attribution_fact_follower_errors_total{transport}` with
+`attribution_fact_follower_last_success_timestamp_seconds`, and `attribution_transport_info`.
+`gitopsreverser_audit_events_total` also gains a `no_attribution_fact` outcome in the `dropped`
+category, for an accepted event that produces no fact — a population previously counted `queued`.
+The `category="error"` invariant is unaffected.
+
 Every one of these is documented in
 [interpreting-metrics.md](interpreting-metrics.md#audit-attribution-optional).
 
