@@ -251,7 +251,9 @@ var _ = Describe(
 				g.Expect(nestedBody).NotTo(ContainSubstring("namespace:"))
 
 				kustomizationBody := readRepoFile(g, kustomizationFullPath)
-				g.Expect(kustomizationBody).To(Equal(readRepoFile(g, renderedKustomization)))
+				expectKustomizationOnlyGainedResourceEntries(
+					g, readRepoFile(g, renderedKustomization), kustomizationBody,
+				)
 
 				for _, name := range []string{bundleConfigMapName, nestedConfigMapName} {
 					canonicalPath := filepath.Join(repo.CheckoutDir, gitPath, testNs, "configmaps", name+".yaml")
@@ -265,6 +267,49 @@ var _ = Describe(
 		})
 	},
 )
+
+// expectKustomizationOnlyGainedResourceEntries asserts that the committed kustomization still
+// holds every line the human wrote, in order, and that anything added to it is a `resources:`
+// entry.
+//
+// It replaces a byte-equality assertion, which is no longer the right question. This namespace
+// holds a ConfigMap nobody in the test created — the cluster's own `kube-root-ca.crt` — and the
+// WatchRule selects every ConfigMap, so the operator has a watched resource with no document in
+// Git. Placement gives it a file beside this folder's one kustomization and registers it, which
+// is the documented kustomize-root behaviour (and what the new-file-placement spec asserts
+// directly). Before sibling inference was deleted, that resource was appended to the existing
+// bundle instead, and the bundle was already listed — so the build file happened to stay
+// byte-identical. Byte equality was therefore pinning a side effect of inference, not the
+// property this spec is about: a hand-authored build file must not be reordered, reformatted, or
+// have anything taken out of it.
+func expectKustomizationOnlyGainedResourceEntries(g Gomega, original, committed string) {
+	GinkgoHelper()
+
+	committedLines := strings.Split(committed, "\n")
+	next := 0
+	for _, want := range strings.Split(original, "\n") {
+		found := false
+		for ; next < len(committedLines); next++ {
+			if committedLines[next] == want {
+				next++
+				found = true
+				break
+			}
+			g.Expect(committedLines[next]).To(MatchRegexp(`^\s+- \S+\.ya?ml$`),
+				"the committed kustomization gained a line that is not a resources: entry: %q",
+				committedLines[next])
+		}
+		g.Expect(found).To(BeTrue(),
+			"the committed kustomization lost (or reordered) a line the fixture wrote: %q\n%s", want, committed)
+	}
+	for ; next < len(committedLines); next++ {
+		if committedLines[next] == "" {
+			continue
+		}
+		g.Expect(committedLines[next]).To(MatchRegexp(`^\s+- \S+\.ya?ml$`),
+			"trailing line is not a resources: entry: %q", committedLines[next])
+	}
+}
 
 // seedCommentIntoRepoFile inserts a YAML comment under the data block of the
 // committed manifest and pushes it to main, authenticating the local checkout's

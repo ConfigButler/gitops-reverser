@@ -40,6 +40,13 @@ spec:
 A declared template does everything inference did and says so on the page. A **kustomize** folder needs
 no declaration: step 2 already places new files where that folder builds them.
 
+**One shape worth expecting.** In a folder that kustomize builds, a bundle file is no longer extended
+by default. A new resource gets a file of its own beside the `kustomization.yaml` and an entry added to
+its `resources:` list, so the build file changes where it previously did not (the bundle was already
+listed, so extending it needed no entry). Both outcomes mirror the resource and both render; the new
+one keeps a resource the operator placed out of a file a human curated, and it is undone by declaring
+the bundle in `byType`.
+
 **How to tell whether it affects you**, before or after upgrading — every placement is counted, by
 GitTarget and by type:
 
