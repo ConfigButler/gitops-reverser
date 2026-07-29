@@ -149,9 +149,9 @@ answered.
 | Replay from the TTL horizon makes a restart cost nothing | none | `attribution_fact_index_replay_seconds`, `attribution_fact_index_replayed_total` |
 | A process follows only the types it watches; "does the per-type stream count stay reasonable?" (open question) | none | four metrics, [designed below](#designing-the-stream-count-metrics-properly) |
 | "Nothing bounds one entry's size today" (open question) | none | `attribution_fact_entry_facts` |
-| Entries age out by TTL; eviction is the loss case | evictions only | `attribution_fact_index_expired_total` |
-| The shard blocks while a resolver waits | none | `attribution_resolvers_waiting` |
-| The transport is selectable, memory or Redis | none | `attribution_transport_info{transport}` |
+| Entries age out by TTL; eviction is the loss case | evictions only | `attribution_fact_index_expired_total`, [designed below](#the-three-cheap-ones-designed) |
+| The shard blocks while a resolver waits | none | `attribution_resolvers_waiting`, [designed below](#the-three-cheap-ones-designed) |
+| The transport is selectable, memory or Redis | none | `attribution_transport_info{transport}`, [designed below](#the-three-cheap-ones-designed) |
 
 Already covered, listed so nobody adds it twice: a failed `XADD` propagates out of the audit handler
 and is counted as `audit_eventlist_*{outcome="write_error"}`, so publish failure is visible. It is
@@ -293,20 +293,74 @@ small decision with a visible effect". The effect is only visible with a metric:
 took, and how many facts it loaded. Without one, the decision is guesswork now and unverifiable
 afterward.
 
-### The cheap ones
+### The three cheap ones, designed
 
-**TTL expiry versus eviction.** Evictions are counted because they are loss. Ordinary TTL ageing is
-not counted at all, so there is no way to see whether the TTL or the cap is the binding constraint.
-`Sweep` already returns the number it dropped and the caller discards it, so this is a one-line
-change.
+| Metric | Type | Labels | Placement |
+|---|---|---|---|
+| `attribution_fact_index_expired_total` | counter | none | the sweep call site |
+| `attribution_resolvers_waiting` | gauge | none | `factWaiterRegistry`, on register and unregister |
+| `attribution_transport_info` | gauge, always 1 | `transport` | transport selection in `cmd/main.go` |
 
-**Resolvers waiting.** `factWaiterRegistry` already has a `len()`, written so a test can prove
-nothing leaks. Exporting it as a gauge gives a live read on how many resolvers are blocked right now,
-which is the head-of-line pressure the queue histogram measures after the fact.
+#### TTL expiry versus eviction
 
-**Transport in use.** Nothing in the metrics says whether an install runs the Redis or the in-memory
-transport, and the two have different failure modes: the in-memory one loses every fact on restart by
-design. An info gauge is the usual shape and costs nothing.
+Two different things shrink the index and only one of them is loss. Eviction means the cap was hit
+and a fact was dropped before anything could join it. Expiry means a fact reached the end of its TTL
+having done its job, or having never been needed. Today only the first is counted, so the index size
+gauge falls and nothing says which happened.
+
+The pairing is what makes it useful, and it answers a question that comes up whenever either number
+is tuned: **which constraint is binding?**
+
+| Shape | Reading |
+|---|---|
+| expiries dominate, evictions near zero | the TTL is the binding constraint; the caps have headroom |
+| evictions climbing | the cap is binding and facts are dying before their TTL, which is real loss |
+| both near zero on a busy install | the index is not turning over; suspect a stalled follower |
+
+**Placement is one line.** `Sweep` already returns the number it dropped, and the caller at the
+sweep interval discards it. No new bookkeeping, no new lock, and it is exact rather than sampled.
+
+#### Resolvers waiting
+
+**A correction to an earlier claim in this document:** I wrote that `factWaiterRegistry.len()` could
+be exported directly. It cannot, and the difference matters. `len()` returns the number of candidate
+KEYS that currently have a waiter, and one resolver registers under several keys, one per tier its
+query could resolve through. So `len()` over-counts blocked resolvers by roughly the tier fan-out,
+and by a factor that varies with which tiers each query supports. Exported as "resolvers waiting" it
+would be wrong in a way nobody would catch, because it moves in the right direction.
+
+What is wanted is the count of live waiters: incremented in `register`, decremented in `unregister`,
+both of which already take the registry lock, so it adds no contention. Still cheap, but not the
+existing function.
+
+**What it says.** A resolver blocked is not by itself a problem. The whole design expects the fact to
+be late, which is why a grace exists. The number to watch is the SUSTAINED level against the number
+of active watch shards, because a shard resolving is a shard not processing anything else. As the
+gauge approaches the shard count, every shard is blocked and the pipeline has stopped.
+
+It is the live counterpart to `watch_event_queue_seconds`, which reports the same pressure after the
+fact. One alerts, the other explains.
+
+Left unlabelled on purpose. The queue histogram already carries `group`, `version` and `resource`, so
+the type responsible is identifiable there, and a per-type gauge would add series for a number whose
+value is in the aggregate.
+
+#### Transport in use
+
+An info gauge, the usual shape: the value is always 1 and the information is in the label,
+`transport="redis"` or `transport="memory"`.
+
+It earns its place because the two transports have different failure modes, and the same symptom
+means different things under each:
+
+- the in-memory transport loses every fact on restart by design, so a burst of unresolved commits
+  after a pod restart is expected there and a bug under Redis;
+- it is only valid with a single replica, so it is a configuration whose validity depends on
+  something the metric surface cannot otherwise see;
+- an install that intended Redis and is running in memory has no other signal saying so.
+
+Anyone reading these metrics without that label is interpreting the rest of them without knowing
+which contract is in force.
 
 ## Questions this surface can answer that today's cannot
 
