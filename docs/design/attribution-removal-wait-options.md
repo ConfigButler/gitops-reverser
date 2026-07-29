@@ -49,8 +49,8 @@ delete fact, or a collection fact covering it.
 | # | Situation | Today | Cost |
 |---|---|---|---|
 | 1 | Removal; the object's own delete fact is already in the index | returns at once, `weak` | none |
-| 2 | Removal; a collection fact naming its uid is present | returns at once, `collection_uid` | none — measured at ~70ms |
-| 3 | Removal; a collection fact covers its scope | returns at once, `collection_scope` | none |
+| 2 | Removal; a collection fact naming its uid is present | returns at once, `collection_uid_delete` | none — measured at ~70ms |
+| 3 | Removal; a collection fact covers its scope | returns at once, `collection_scope_delete` | none |
 | 4 | Removal; only a stale WRITE fact is present, and the delete fact arrives during the grace | waits, then returns the deleter | the audit delivery lag, ~1s. **This is the case the fix exists for** |
 | 5 | Removal; only a stale WRITE fact is present, and no delete fact ever arrives | waits the FULL grace, then returns the last writer | the whole grace, for an answer available at t=0. **This is the entire cost** |
 | 6 | Removal; nothing in the index at all | waits the full grace, then `absent` | unchanged by the fix — this is what the grace has always done |
@@ -104,7 +104,7 @@ supplies one. This is measured, not inferred: corpus `flunder/aggregated-api-wri
 | create | nothing: no name, uid or rv | **No fact is published at all.** `AuthorFactFromEvent` rejects it at the "no resolvable name" gate | unchanged, and now COUNTED as `no_attribution_fact` on `audit_events_total` |
 | update / patch | the NAME, from the URL path | A fact was published and then **dropped by the index**: with no uid and no rv it could never be joined | **resolves**, on the name tier |
 | single delete | the NAME, from the URL path | Same: published, then dropped as unjoinable | **resolves**, on the name tier |
-| deletecollection | namespace and selector | **Works.** A collection fact joins by SCOPE, which needs no uid | unchanged, and now two-tiered (`collection_uid` / `collection_scope`) |
+| deletecollection | namespace and selector | **Works.** A collection fact joins by SCOPE, which needs no uid | unchanged, and now two-tiered (`collection_uid_delete` / `collection_scope_delete`) |
 
 So the observation that creates and updates "measure" while deletes do not was half right, and the
 truth was less flattering: for an aggregated type, only the COLLECTION delete was attributable at
@@ -179,7 +179,7 @@ REQUEST happened, which means an audit event should exist.
 Removals return on the first match again. Collection deletes whose response body carried uids are
 still credited correctly, because that tier now outranks the write fact and both are present at once.
 
-- **For**: no latency cost at all; keeps the measured `collection_uid` win.
+- **For**: no latency cost at all; keeps the measured `collection_uid_delete` win.
 - **Against**: puts back the mis-attribution for every removal whose delete fact is merely late —
   which, given audit batching, is the common case rather than the corner. It trades a correctness
   property for latency in the one place the product's core claim lives.

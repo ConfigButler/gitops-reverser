@@ -6,7 +6,7 @@
 > (`configmap/deletion-intent-actor`) and pinned by a corpus-driven unit test
 > ([fact_index_corpus_test.go](../../internal/queue/fact_index_corpus_test.go)); that test now pins
 > the fix. Shipped: the sticky uid-keyed removal slot, its consultation ahead of the exact tier for a
-> removal, the count-based horizon, and the `removal` tier on
+> removal, the count-based horizon, and the `sticky_delete` tier on
 > `attribution_resolutions_total{tier}`. The measurement and the reasoning below are kept as
 > written — they are why the shape is what it is.
 
@@ -231,7 +231,7 @@ window before the name tier is consulted.
 The metrics that shipped in the attribution surface make this observable without a repro:
 
 - The evidence mix moves. A finalized deletion that resolves today at `tier="exact"` should resolve
-  at the removal tier instead:
+  at `tier="sticky_delete"` instead:
   `sum by (tier) (rate(gitopsreverser_attribution_resolutions_total[5m]))`.
 - `commits_total{author_kind}` shifts from `serviceaccount` toward `user` for the affected types —
   the bottom line the report is actually about.

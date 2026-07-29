@@ -148,7 +148,7 @@ func collectionResolutionCounts() map[string]float64 {
 	// silent hole rather than a failure: the spec asserts the author, so it passes either way.
 	ensurePrometheusClient()
 	counts := map[string]float64{}
-	for _, tier := range []string{"collection_uid", "collection_scope"} {
+	for _, tier := range []string{"collection_uid_delete", "collection_scope_delete"} {
 		n, err := queryPrometheus(fmt.Sprintf(
 			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{tier=%q}[2h])) or vector(0)`, tier))
 		if err != nil {
@@ -167,18 +167,18 @@ func reportCollectionTier(before map[string]float64) {
 		return
 	}
 	after := collectionResolutionCounts()
-	uid := after["collection_uid"] - before["collection_uid"]
-	scope := after["collection_scope"] - before["collection_scope"]
+	uid := after["collection_uid_delete"] - before["collection_uid_delete"]
+	scope := after["collection_scope_delete"] - before["collection_scope_delete"]
 	switch {
 	case scope > 0 && uid == 0:
 		_, _ = fmt.Fprintf(GinkgoWriter,
-			"\nℹ️  aggregated deletecollection resolved by SCOPE (+%.0f collection_scope): the proxied "+
+			"\nℹ️  aggregated deletecollection resolved by SCOPE (+%.0f collection_scope_delete): the proxied "+
 				"request carried no response body, which is exactly the case the deleted expander "+
 				"produced nothing for.\n", scope)
 	case uid > 0:
 		_, _ = fmt.Fprintf(GinkgoWriter,
-			"\nℹ️  aggregated deletecollection resolved by UID membership (+%.0f collection_uid, "+
-				"+%.0f collection_scope): this API server DID return the deleted set for a proxied "+
+			"\nℹ️  aggregated deletecollection resolved by UID membership (+%.0f collection_uid_delete, "+
+				"+%.0f collection_scope_delete): this API server DID return the deleted set for a proxied "+
 				"collection delete.\n", uid, scope)
 	default:
 		_, _ = fmt.Fprintf(GinkgoWriter,

@@ -49,7 +49,7 @@ No `uid`. No `resourceVersion`. No `responseObject` to recover either from. Mean
 Corpus `flunder/aggregated-api-deletecollection/`. One audit record, name-less, with the selector
 visible only in the `requestURI`, and no response body: the collection fact therefore carries no uid
 set and the join can only proceed by scope. This is precisely the case the deleted response-body expander
-produced nothing at all for, and it is the case `collection_scope` exists to serve.
+produced nothing at all for, and it is the case `collection_scope_delete` exists to serve.
 
 The scenario deletes three flunders to make the asymmetry unmistakable: three watch `DELETED` events
 and three admission records against one audit record that names none of them.
@@ -68,7 +68,7 @@ flowchart TD
 
     F -->|neither: name only| H[name tier<br/>namespace + name]
     G --> I[exact tier: uid + rv<br/>latest tier: uid]
-    E --> J[collection_uid if a uid set arrived<br/>collection_scope otherwise]
+    E --> J[collection_uid_delete if a uid set arrived<br/>collection_scope_delete otherwise]
 
     C --> K[Committer-authored]
     H --> L[Attributed to the actor]

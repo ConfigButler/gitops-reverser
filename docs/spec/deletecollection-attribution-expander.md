@@ -221,8 +221,8 @@ delete — is the one that gains most. Option B (`Co-authored-by`) is no longer 
 |---|---|---|
 | Any delete (single or collection member) | **Remove file at intent time; never commit `deletionTimestamp`** (§2) | Git is intent; reversible invariant; manifests stay re-appliable. |
 | Finalizer object | **Removed immediately, attributed to the delete-requester**; finalizer cleanup is runtime no-op in Git | Reframe dissolves the old delay/conflict; controllers still finalize in-cluster. |
-| Collection delete, body present | **One collection fact**, joined by **uid membership** (`collection_uid`) | API server states "these exact objects, by this user." |
-| Collection delete, hollow body | **The same collection fact**, joined by **scope** — type, namespace, selector, window (`collection_scope`) | Bounded by precedence and a short window (§6); resolves what used to degrade. |
+| Collection delete, body present | **One collection fact**, joined by **uid membership** (`collection_uid_delete`) | API server states "these exact objects, by this user." |
+| Collection delete, hollow body | **The same collection fact**, joined by **scope** — type, namespace, selector, window (`collection_scope_delete`) | Bounded by precedence and a short window (§6); resolves what used to degrade. |
 | Stuck `Terminating` | **Operational status/metric** (§2.5), file already absent | Don't pollute intent with runtime state. |
 
 ## 8. Observability & diagnostics
@@ -231,9 +231,9 @@ delete — is the one that gains most. Option B (`Co-authored-by`) is no longer 
 `op="deletecollection_expanded"` write counter. Two labels replace the one, because the match is now
 two-tiered and the tiers carry different confidence:
 
-- **`collection_uid`** — the removal's uid was in the set the API server said it deleted. No
+- **`collection_uid_delete`** — the removal's uid was in the set the API server said it deleted. No
   over-attribution risk at all.
-- **`collection_scope`** — matched by namespace, selector, and window alone. Weaker evidence, and
+- **`collection_scope_delete`** — matched by namespace, selector, and window alone. Weaker evidence, and
   the reason the window is short.
 
 Both flow onto `AttributionResolutionsTotal{result=…}`, so a dashboard can now separate *precise*
@@ -267,9 +267,9 @@ and the event is a no-op commit anyway).
    `attribution_collection_degraded_total{reason="uid_cap"}`; the fact still publishes.
 3. A hollow / `Status` / unparseable / absent body still publishes a fact — with no uid set. This is the
    case the expander produced nothing at all for.
-4. Join shape, uid tier: a removal whose uid is in the set resolves to the actor as `collection_uid`,
+4. Join shape, uid tier: a removal whose uid is in the set resolves to the actor as `collection_uid_delete`,
    even though its RV never matches (proves §3).
-5. Join shape, scope tier: a removal with no uid set to consult resolves as `collection_scope` when the
+5. Join shape, scope tier: a removal with no uid set to consult resolves as `collection_scope_delete` when the
    namespace, selector and window cover it — and does NOT resolve when the selector rejects its labels,
    when it is in another namespace, or when the window has passed.
 6. Precedence: an object with its own fact never reaches either collection tier.
@@ -310,7 +310,7 @@ these survive), never a global drop count, so they run against a reused cluster.
   finalizer/`DELETED` events fold to no-ops. Unit §9.1.1–9.1.3.
 - **§5 collection fact:** one fact per collection request, carrying scope, selector and (when the body
   allowed it) the uid set; finalizer items attributed like any other, since §2 removes them at intent;
-  defensive parsing; `collection_uid` and `collection_scope` result labels wired. Unit §9.1.4–9.1.9.
+  defensive parsing; `collection_uid_delete` and `collection_scope_delete` result labels wired. Unit §9.1.4–9.1.9.
 - **E2E §9.2.1–9.2.4** implemented, convergence-asserted; the finalizer showcase (§9.2.2) proves removal-at-intent
   with a *different* finalizer-clearing identity.
 - **Hard case:** resolved by scope matching (§6), bounded by namespace, selector, precedence and a short

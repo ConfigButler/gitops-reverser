@@ -286,7 +286,7 @@ func (q FactQuery) awaitsBetterEvidence(resolution AuthorResolution) bool {
 		return false
 	}
 	switch resolution.Result {
-	case AttributionRemoval, AttributionCollectionUID, AttributionCollectionScope:
+	case AttributionStickyDelete, AttributionCollectionUID, AttributionCollectionScope:
 		return false
 	case AttributionExact, AttributionLatest, AttributionResourceVersion,
 		AttributionName, AttributionAbsent:
@@ -383,7 +383,7 @@ func stickyRemoval(facts *scopeFacts, query FactQuery) AuthorResolution {
 		return AuthorResolution{Result: AttributionAbsent}
 	}
 	if fact, found := facts.lookupRemovalPointer(query.UID); found {
-		return AuthorResolution{Fact: fact, Result: AttributionRemoval}
+		return AuthorResolution{Fact: fact, Result: AttributionStickyDelete}
 	}
 	return AuthorResolution{Result: AttributionAbsent}
 }

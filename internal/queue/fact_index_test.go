@@ -825,7 +825,7 @@ func TestFactIndex_TheRemovalPointerOutlivesTheTTL(t *testing.T) {
 		harness.index.Lookup(objectQuery("prod-eu-1", factIndexTestUID, "101", true)).Result)
 
 	resolution := harness.index.Lookup(removalFactQuery(factIndexTestUID))
-	require.Equal(t, AttributionRemoval, resolution.Result,
+	require.Equal(t, AttributionStickyDelete, resolution.Result,
 		"a removal still reaches the pointer once every TTL-bounded tier has expired")
 	require.Equal(t, "alice", resolution.Fact.Author)
 	require.Equal(t, 1, harness.index.Len(), "and the pointer is what the index is still holding")
@@ -870,7 +870,7 @@ func TestFactIndex_ARecreatedNameDoesNotInheritThePreviousDeleter(t *testing.T) 
 
 	// The first object's pointer is untouched by any of that: it is a statement about a uid.
 	previous := harness.index.Lookup(removalFactQuery("uid-old"))
-	require.Equal(t, AttributionRemoval, previous.Result)
+	require.Equal(t, AttributionStickyDelete, previous.Result)
 	require.Equal(t, "alice", previous.Fact.Author)
 }
 

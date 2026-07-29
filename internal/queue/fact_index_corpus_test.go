@@ -115,7 +115,7 @@ func TestFactIndex_FinalizerRemovalNamesTheDeleter(t *testing.T) {
 		resolution := harness.resolve(removal)
 		require.Equal(t, deleteFact.Author, resolution.Fact.Author,
 			"with only the deletion filed, the removal names the actor who requested it")
-		require.Equal(t, AttributionRemoval, resolution.Result,
+		require.Equal(t, AttributionStickyDelete, resolution.Result,
 			"and it names them from the removal pointer, which the delete fact filled")
 	})
 
@@ -137,7 +137,7 @@ func TestFactIndex_FinalizerRemovalNamesTheDeleter(t *testing.T) {
 			"a fact about a WRITE must not replace the fact about the DELETION")
 		require.NotEqual(t, patchFact.Author, resolution.Fact.Author,
 			"the cleanup controller is not who asked for the deletion")
-		require.Equal(t, AttributionRemoval, resolution.Result,
+		require.Equal(t, AttributionStickyDelete, resolution.Result,
 			"and the tier says which evidence answered: the removal pointer, not the colliding "+
 				"(uid, resourceVersion) the finalizer patch shares with it")
 	})

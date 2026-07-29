@@ -171,11 +171,13 @@ func reportAttributionStats() {
 	_, _ = fmt.Fprintf(GinkgoWriter, "\n📊 author attribution — %.0f resolutions this run\n", total)
 
 	var absent float64
-	// The tiers, strongest first. collection_uid and collection_scope replaced the expander's
-	// exact_deletecollection_item: the collection match is two-tiered now, and the second tier
-	// resolves what used to degrade to committer-authored, so they are worth reading apart.
+	// The tiers, strongest first. The three that end in _delete are the ones that answer with a fact
+	// about the DELETION: the sticky pointer, and the two collection tiers that replaced the
+	// expander's exact_deletecollection_item, which are worth reading apart because the second
+	// resolves what used to degrade to committer-authored.
 	for _, tier := range []string{
-		"exact", "collection_uid", "latest", "name", "collection_scope", "resource_version", "absent",
+		"sticky_delete", "exact", "collection_uid_delete", "latest", "name",
+		"collection_scope_delete", "resource_version", "absent",
 	} {
 		n, qErr := queryPrometheus(fmt.Sprintf(
 			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{tier=%q}[2h])) or vector(0)`, tier))
