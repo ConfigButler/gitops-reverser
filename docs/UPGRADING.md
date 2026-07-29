@@ -7,6 +7,38 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## 0.41.0 — attribution facts travel on a selectable transport, and Redis is no longer implied
+
+Attribution stopped meaning Redis. The audit receiver appends its facts to a per-type **stream**,
+the watch side follows the streams for the types it watches into a bounded in-process index, and
+which stream implementation carries them is a choice:
+
+| `attribution.transport` (`--author-attribution-transport`) | Store | When |
+|---|---|---|
+| `redis` — the default, and the previous behaviour | Redis streams, per type | any install; the only one that survives a restart |
+| `memory` | an in-process ring | a single-replica install with no Valkey; every fact is lost on restart, by design |
+
+**A default upgrade needs no action.** `redis` is the default, `queue.redis.addr` keeps its meaning,
+and the same events resolve to the same authors.
+
+Two things to know if you look closely:
+
+- **Facts in flight across the upgrade lose their author.** The v1 fact keyspace is gone, and the
+  streams are a new keyspace rather than a migration of it, so a fact written by the old version is
+  not read by the new one. A watch event whose fact was written moments before the restart resolves
+  `absent` and its commit is authored `unknown (attribution unresolved)`. The window is one fact TTL
+  at most, and mirroring is unaffected — attribution changes the author, never the state.
+- **`attribution.transport=memory` requires `queue.redis.addr` to be empty-able, and a single
+  replica.** The chart refuses `redis` without an address at render time, and the binary refuses
+  `memory` with `--replica-count` above 1 at startup, because the audit receiver and the resolver
+  must be one process for in-process facts to be visible at all. Redis is still required for the
+  admission webhook's command-author capture, which has no in-process counterpart.
+
+New tuning knobs, all with behaviour-preserving defaults: `attribution.maxFactsPerType` (4096),
+`attribution.maxFacts` (65536), `attribution.collectionWindow` (30s), `attribution.collectionUIDCap`
+(10000). They bound the in-process index and the collection join; see
+[configuration.md](configuration.md).
+
 ## 0.41.0 — the attribution metrics are relabelled and partly renamed (breaking for queries)
 
 The `result` label is **gone** from `gitopsreverser_attribution_resolutions_total` and
@@ -49,11 +81,21 @@ so `{event_kind="removal"}` is the distribution `--author-attribution-grace` is 
 **Rewrite match coverage as `tier!="absent"`.** A query kept as `result=~"exact_.*"` — or ported to
 `tier=~"exact.*"` — reads the collection and name tiers as misses, and those tiers named an actor.
 
-Three signals are new in the same release, so a query is worth writing against them at the same
-time: `attribution_fact_stream_decode_errors_total{transport}` (an entry the follower could not
-decode is skipped and its facts lost — the one loss path with no other symptom),
-`attribution_fact_follower_errors_total{transport}` with
-`attribution_fact_follower_last_success_timestamp_seconds`, and `attribution_transport_info`.
+Four signals are new in the same release, so a query is worth writing against them at the same time:
+
+- `attribution_fact_stream_decode_errors_total{transport}` — an entry the follower refuses is
+  skipped and its facts lost, and this is the one loss path with no other symptom. It covers both a
+  payload that is not JSON and one that breaks the fact contract by naming nobody (`author` is
+  required and non-empty).
+- `attribution_fact_follower_errors_total{transport}` and
+  `attribution_fact_follower_last_success_timestamp_seconds`. Alert on **both** arms of the
+  timestamp: it is not published until the follower's first successful read, so
+  `time() - <gauge>` returns no series for a follower wedged since startup rather than a large
+  number. The expression that covers that case is in the field guide.
+- `attribution_transport_info{transport}` — an info gauge, always 1, naming the transport in force.
+  It is a legend rather than a threshold: a burst of unresolved commits after a restart is expected
+  under `memory` and a bug under `redis`.
+
 `gitopsreverser_audit_events_total` also gains a `no_attribution_fact` outcome in the `dropped`
 category, for an accepted event that produces no fact — a population previously counted `queued`.
 The `category="error"` invariant is unaffected.

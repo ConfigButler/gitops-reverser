@@ -153,6 +153,10 @@ Measured, on the branch, from the resolver's own histogram after one run of the 
 | `exact_user` | 6 | 1.06s | 0.18s |
 | `weak` | 3 | **20.18s** | **6.73s** |
 
+(These are the label values of the day. `result` has since become `tier` plus `actor_kind`, so
+`exact_user` reads `tier="exact", actor_kind="user"`, and `weak` splits: what was measured here is
+the uid tier, now `tier="latest"`. The measurement stands; only the names moved.)
+
 Three removals spent twenty seconds between them. The e2e cluster runs
 `--author-attribution-grace=10s`, so each was waiting out most of a full grace, and `weak` is
 precisely the tier that holds a removal matched to a WRITE fact.
@@ -276,8 +280,8 @@ it stops paying for evidence that cannot arrive.
 
 The measurement answered the question this section used to pose. Neither option was right: the window
 was not slow to open and the CommitRequest's grace was not too short. The write's event had not been
-processed yet, because three removals ahead of it were each waiting out a ten-second grace for
-evidence the index already held.
+processed yet, because three removals ahead of it were sitting out most of a ten-second grace each
+(20.2s between them, measured) for evidence the index already held.
 
 That is fixed at its cause, in the lookup ordering. What remains open is the structural half.
 

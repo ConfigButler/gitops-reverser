@@ -99,27 +99,28 @@ supplies one. This is measured, not inferred: corpus `flunder/aggregated-api-wri
 `flunder/aggregated-api-delete` for the single delete, and
 `flunder/aggregated-api-deletecollection` for the collection. What each verb then does:
 
-| Verb on an aggregated type | `objectRef` carries | What happens to the fact |
-|---|---|---|
-| create | nothing: no name, uid or rv | **No fact is published at all.** `AuthorFactFromEvent` rejects it at the "no resolvable name" gate |
-| update / patch | the NAME, from the URL path | A fact is published and then **dropped by the index**: with no uid and no rv it can never be joined, so it is not stored |
-| single delete | the NAME, from the URL path | Same: published, then dropped as unjoinable |
-| deletecollection | namespace and selector | **Works.** A collection fact joins by SCOPE, which needs no uid |
+| Verb on an aggregated type | `objectRef` carries | What happened to the fact | Now |
+|---|---|---|---|
+| create | nothing: no name, uid or rv | **No fact is published at all.** `AuthorFactFromEvent` rejects it at the "no resolvable name" gate | unchanged, and now COUNTED as `no_attribution_fact` on `audit_events_total` |
+| update / patch | the NAME, from the URL path | A fact was published and then **dropped by the index**: with no uid and no rv it could never be joined | **resolves**, on the name tier |
+| single delete | the NAME, from the URL path | Same: published, then dropped as unjoinable | **resolves**, on the name tier |
+| deletecollection | namespace and selector | **Works.** A collection fact joins by SCOPE, which needs no uid | unchanged, and now two-tiered (`collection_uid` / `collection_scope`) |
 
-So the observation that creates and updates "measure" while deletes do not is half right and the
-truth is less flattering: for an aggregated type, only the COLLECTION delete is attributable at all.
-Everything else either produces no fact or produces one that is discarded on arrival.
+So the observation that creates and updates "measure" while deletes do not was half right, and the
+truth was less flattering: for an aggregated type, only the COLLECTION delete was attributable at
+all. Everything else either produced no fact or produced one that was discarded on arrival.
 
-**There is a tier that would fix two of those rows.** An update or a single delete carries the
-object's NAME, and the watch event carries name and namespace too. A
-`(route, group/resource, namespace, name)` tier would join them. It is weaker than uid — a name is
-reused after a delete-and-recreate, where a uid is not — so it belongs below the uid tiers and
-plausibly below `latest`, with the same care the scope tier gets.
+**The tier that fixes two of those rows has shipped.** An update or a single delete carries the
+object's NAME, and the watch event carries name and namespace too, so a
+`(route, group/resource, namespace, name)` tier joins them. It is weaker than uid — a name is reused
+after a delete-and-recreate, where a uid is not — so it sits below every other per-object tier, with
+the same care the scope tier gets. It is `tier="name"` on `attribution_resolutions_total`, and
+`fact_index.go` documents where it ranks and why.
 
 Worth recording honestly: the fact's `name` field was REMOVED from the wire during this work, on the
-correct observation that no tier read it. That was true, and it is exactly the field this tier would
-need back. "No code reads it" and "nothing could ever read it" are different claims, and the second
-one is the one that justifies deleting a field.
+correct observation that no tier read it. That was true, and it is exactly the field this tier
+needed back — it was restored to build it. "No code reads it" and "nothing could ever read it" are
+different claims, and only the second one justifies deleting a field.
 
 ## The options
 
