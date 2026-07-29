@@ -290,6 +290,7 @@ vocabulary `commits_total{author_kind}` uses.
 
 | `tier` | Meaning |
 | --- | --- |
+| `removal` | The sticky removal pointer: a fact whose own verb is a delete, filed by UID into a slot no later *write* fact may overwrite. Only a removal consults it, and it is asked before `exact`, because a removal's resourceVersion is the one the deletion stamped — the version a finalizer patch's own fact carries too. It is the only tier the fact TTL does not bound: a UID is unique across space and time, so the statement can never be superseded. |
 | `exact` | Exact UID+resourceVersion match: this actor produced this exact version. |
 | `collection_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. It outranks `latest`, because `latest` names whoever last *wrote* an object while a removal asks who *deleted* it. |
 | `latest` | The UID-latest tier: the object's own last fact, keyed by UID alone. A removal consults it, and a match here describing a *write* is held as a fallback while the wait continues for evidence about the deletion. |
@@ -358,6 +359,12 @@ sum by (reason) (rate(gitopsreverser_attribution_fact_index_evictions_total[5m])
 
 `reason` is `per_type` (one type is hotter than its share) or `total` (the whole index is under
 pressure, and eviction falls on the type holding the most).
+
+This counter is also the removal pointer's only horizon. Every other entry in the index expires on
+the fact TTL; a removal pointer is bounded by these caps instead, so a cluster that deletes rarely
+keeps its removals for a very long time at no cost, and a busy one keeps the most recent — which are
+the ones a replay is likeliest to need. A sustained eviction rate on a type that deletes heavily is
+the signal that its pointers are being reclaimed before a replay can use them.
 
 **Is a follower losing facts?** A trim gap means the fact log was trimmed past this process's
 position: the facts in the gap are gone for good, and the commits that needed them are authored

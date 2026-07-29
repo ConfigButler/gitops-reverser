@@ -72,6 +72,15 @@ because it covered two different kinds of it:
 | `weak` (the RV-only escape hatch) | `tier="resource_version"` |
 | `collection_uid`, `collection_scope`, `name`, `absent` | `tier=` the same value |
 
+`tier` also carries one value `result` never had: **`removal`**, the sticky removal pointer. A
+finalized deletion — a human deletes, a controller clears the finalizer — used to resolve at
+`tier="exact"` and name the controller, because the finalizer patch's fact carries the
+resourceVersion the *deletion* stamped and overwrote the deleter's under the same key. It now
+resolves at `tier="removal"` and names the human, so a dashboard sees `exact` shift toward `removal`
+for types that carry finalizers, and `commits_total{author_kind}` shift from `serviceaccount` toward
+`user`. A query that enumerates tiers explicitly needs `removal` added; `tier!="absent"` covers it
+already.
+
 `actor_kind` is `user`, `serviceaccount`, or `none`, the vocabulary
 `gitopsreverser_commits_total{author_kind}` already uses, and it is available on **every** tier
 rather than on the exact one alone. `event_kind` on the wait histogram is `write` or `removal`: a

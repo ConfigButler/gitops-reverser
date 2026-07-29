@@ -166,11 +166,11 @@ records the metric at the smallest honest boundary.
 |---|---|---|---|
 | `audit_events_total` | counter | `outcome`, `category`, `group`, `version`, `resource`, `verb` | ✅ shipped — `no_attribution_fact` added in the `dropped` category |
 | `audit_eventlists_total` / `_eventlist_events_total` / `_eventlist_duration_seconds` | counter/hist | `outcome` | live, unchanged |
-| `attribution_resolutions_total` | counter | **`tier`**, **`actor_kind`**, `group`, `version`, `resource` | ✅ shipped — `result` is gone |
+| `attribution_resolutions_total` | counter | **`tier`**, **`actor_kind`**, `group`, `version`, `resource` | ✅ shipped — `result` is gone; `tier` gained `removal` |
 | `attribution_resolution_wait_seconds` | histogram | **`tier`**, **`event_kind`**, `group`, `version`, `resource` | ✅ shipped — relabelled and split by write/removal |
 | `attribution_facts_total` | counter | `op` (`written`/`matched`) | ✅ shipped — renamed from `attribution_fact_events_total` |
 | `attribution_fact_index_entries` | gauge | — | ✅ shipped — renamed from `attribution_fact_index_size` |
-| `attribution_fact_index_evictions_total` | counter | `reason` (`per_type`/`total`) | live, unchanged |
+| `attribution_fact_index_evictions_total` | counter | `reason` (`per_type`/`total`) | live, unchanged — and now the removal pointer's only horizon |
 | `attribution_fact_stream_gaps_total` | counter | `stream` | live, unchanged |
 | `attribution_collection_without_uidset_total` | counter | `reason` (`uid_cap`/`no_uids`) | ✅ shipped — renamed from `attribution_collection_degraded_total` |
 | `attribution_fact_stream_decode_errors_total` | counter | `transport` | ✅ shipped — the one loss path that had no symptom at all |

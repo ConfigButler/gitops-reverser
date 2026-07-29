@@ -1,11 +1,14 @@
 # A finalized deletion is attributed to the cleanup controller, not to the deleter
 
-> **design** — open, not built. Index: [`../INDEX.md`](../INDEX.md)
+> **design** — built. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Status: PROPOSAL. The defect is reproduced from a mutation-lab capture
+> Status: BUILT. The defect was reproduced from a mutation-lab capture
 > (`configmap/deletion-intent-actor`) and pinned by a corpus-driven unit test
-> ([fact_index_corpus_test.go](../../internal/queue/fact_index_corpus_test.go)). The fix is
-> designed here and deliberately not implemented in the same change as the reproduction.
+> ([fact_index_corpus_test.go](../../internal/queue/fact_index_corpus_test.go)); that test now pins
+> the fix. Shipped: the sticky uid-keyed removal slot, its consultation ahead of the exact tier for a
+> removal, the count-based horizon, and the `removal` tier on
+> `attribution_resolutions_total{tier}`. The measurement and the reasoning below are kept as
+> written — they are why the shape is what it is.
 
 A human deletes an object that carries a finalizer. A controller clears the finalizer. The commit
 that removes the file from Git is authored by **the controller**, and the human who asked for the
@@ -145,9 +148,9 @@ The ordering change is what makes it reachable.
 
 ### What it costs
 
-- **One more entry per deleted object**, for one TTL. The index is capped per type and in total, so
-  the cost is bounded by construction and shows up on
-  `attribution_fact_index_evictions_total` if it ever binds.
+- **One more entry per deleted object**, held until the caps reclaim it rather than until the TTL
+  does. The index is capped per type and in total, so the cost is bounded by construction and shows
+  up on `attribution_fact_index_evictions_total` if it ever binds.
 - **A deliberate asymmetry**: the removal slot is the only structure in the index that a later fact
   may not overwrite. That deserves the comment it will get — the reason is that "who deleted this"
   is a question a later write cannot answer, which is not true of any other tier.
@@ -186,6 +189,32 @@ with every later event queued behind it. That is the head-of-line cost
 outlives the TTL turns that full-grace wait into an immediate hit, so a cluster carrying objects
 stuck `Terminating` stops paying a grace per replayed event.
 
+### Why not simply refuse to overwrite the exact entry
+
+The narrower move is to make the exact tier **write-once**: `(uid, rv)` asserts "this actor produced
+this exact version", and the finalizer patch did not produce that version — it returned it. Keeping
+the first fact filed under a key would name the deleter here without touching the read ladder at all,
+which is a real attraction.
+
+It is not enough, for two reasons.
+
+**It makes correctness depend on arrival order.** First-writer-wins is still a race, only decided
+earlier: it gives the right answer exactly when the deleter's fact is filed first. Within one audit
+batch it is, but a fact's arrival order is not guaranteed in general — an HA control plane audits the
+`delete` on one API server and the finalizer `patch` on another, and those two audit batches are
+independent. "A write may never displace a deletion" needs no ordering assumption, because the
+patch's fact can never enter the slot no matter when it lands.
+
+**It does nothing for the replay case.** The exact tier is TTL-bounded and has to stay that way — it
+holds one entry per write, not one per delete — so the [second trigger](#the-second-trigger-a-hung-finalizer-plus-a-restart)
+and the [head-of-line payoff](#the-payoff-that-is-not-correctness) both need a structure whose
+horizon is a count. That structure is the removal slot, and once it exists, the ordering change is
+the cheap half.
+
+The narrower move remains worth making on its own merits — a mutating request that returns a
+resourceVersion it did not produce should not claim that version's exact key, and a no-op patch does
+exactly that today. It is a separate change with a separate argument, and it is not this one.
+
 ### The alternative, and why it is second
 
 **File every delete fact under the name tier as well**, so it survives the uid tiers being
@@ -210,13 +239,13 @@ The metrics that shipped in the attribution surface make this observable without
   grace each:
   `histogram_quantile(0.95, sum by (le) (rate(gitopsreverser_attribution_resolution_wait_seconds_bucket{event_kind="removal"}[5m])))`.
 - The corpus test inverts: the "both facts applied" case names the human, and the assertion that
-  currently pins the defect becomes the assertion that pins the fix.
+  pinned the defect is now the assertion that pins the fix.
 
 ## Reproducing it
 
 ```bash
 task lab-corpus-update    # captures configmap/deletion-intent-actor (three holds, two actors)
-go test ./internal/queue/ -run TestFactIndex_FinalizerRemovalTakesTheDeletersKey -v
+go test ./internal/queue/ -run TestFactIndex_FinalizerRemovalNamesTheDeleter -v
 ```
 
 The hold is tunable — `LAB_FINALIZER_HOLD=0s` makes the controller win every time, a hold longer
