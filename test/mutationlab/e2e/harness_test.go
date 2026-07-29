@@ -19,7 +19,10 @@ import (
 	"testing"
 	"time"
 
+	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -68,6 +71,136 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{kube: kube, dyn: dyn, apiURL: apiURL}
 	h.ensureCaptureLive(t)
 	return h
+}
+
+// asActor returns a Kubernetes client that acts as username, through impersonation.
+//
+// Impersonation is how a scenario gets more than one identity out of one kubeconfig, and it is
+// not a shortcut around the thing being measured: the API server records an impersonated request
+// with the impersonator in `user` and the impersonated subject in `impersonatedUser`, and the
+// product reads the second in preference to the first (resolveUserInfo). So a fact published from
+// such an event names the actor this scenario meant, which is the whole point of driving one
+// object with two of them.
+func (h *harness) asActor(t *testing.T, username string, groups ...string) kubernetes.Interface {
+	t.Helper()
+	cfg, err := restConfig()
+	if err != nil {
+		t.Fatalf("kube config for actor %q: %v", username, err)
+	}
+	cfg.Impersonate = rest.ImpersonationConfig{UserName: username, Groups: groups}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		t.Fatalf("kube client for actor %q: %v", username, err)
+	}
+	return client
+}
+
+// labActorNamespace is where scenario ServiceAccount actors live. It is FIXED rather than the
+// scenario's ephemeral namespace, because a ServiceAccount's username embeds its namespace
+// (system:serviceaccount:<ns>:<name>) and the normalizer folds namespaces only where they appear as
+// a namespace FIELD, not inside a username string. An actor in the scenario namespace would
+// therefore write a fresh run id into the corpus on every capture. It is also the more faithful
+// arrangement: a cleanup controller runs in its own namespace, not in the tenant's.
+const labActorNamespace = "lab-actors"
+
+// asServiceAccount returns a client authenticated as a ServiceAccount in labActorNamespace, granted
+// ConfigMap writes in grantNS.
+//
+// This is the one actor a scenario cannot fake with impersonation and should not want to: the
+// reported mis-attribution names a real controller identity, and that spelling
+// (system:serviceaccount:…) is what the product's actor-kind check keys on. A token makes the API
+// server write that name into the audit event itself, with no impersonation indirection between the
+// request and the record.
+func (h *harness) asServiceAccount(
+	ctx context.Context,
+	t *testing.T,
+	grantNS, name string,
+) kubernetes.Interface {
+	t.Helper()
+	h.ensureNamespace(ctx, t, labActorNamespace)
+
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: labActorNamespace}}
+	if _, err := h.kube.CoreV1().ServiceAccounts(labActorNamespace).Create(
+		ctx, sa, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create ServiceAccount %s/%s: %v", labActorNamespace, name, err)
+	}
+	h.allowConfigMapWrites(ctx, t, grantNS, name, rbacv1.Subject{
+		Kind: rbacv1.ServiceAccountKind, Name: name, Namespace: labActorNamespace,
+	})
+
+	// No audiences: an empty request asks for the API server's own default audience, which is the
+	// only one it will accept back. Naming one explicitly (even the usual
+	// https://kubernetes.default.svc) mints a token this cluster authenticates as nobody, and the
+	// scenario then fails with a bare Unauthorized that looks like an RBAC problem and is not one.
+	token, err := h.kube.CoreV1().ServiceAccounts(labActorNamespace).CreateToken(
+		ctx, name, &authnv1.TokenRequest{}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("request token for %s/%s: %v", labActorNamespace, name, err)
+	}
+
+	cfg, err := restConfig()
+	if err != nil {
+		t.Fatalf("kube config for ServiceAccount %s/%s: %v", labActorNamespace, name, err)
+	}
+	// The token replaces every other credential the kubeconfig carries; leaving a client
+	// certificate in place would authenticate as its subject and silently ignore the token.
+	cfg.BearerToken = token.Status.Token
+	cfg.BearerTokenFile = ""
+	cfg.CertData, cfg.KeyData, cfg.CertFile, cfg.KeyFile = nil, nil, "", ""
+	cfg.Username, cfg.Password = "", ""
+	cfg.Impersonate = rest.ImpersonationConfig{}
+
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		t.Fatalf("kube client for ServiceAccount %s/%s: %v", labActorNamespace, name, err)
+	}
+	return client
+}
+
+// ensureNamespace creates ns if it is absent and leaves it in place. Unlike the scenario namespace
+// it is not torn down: it holds actor identities shared across scenarios, and the driver is serial.
+func (h *harness) ensureNamespace(ctx context.Context, t *testing.T, ns string) {
+	t.Helper()
+	obj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}
+	if _, err := h.kube.CoreV1().Namespaces().Create(ctx, obj, metav1.CreateOptions{}); err != nil &&
+		!apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create namespace %s: %v", ns, err)
+	}
+}
+
+// allowConfigMapWrites binds one subject to a namespace Role covering the verbs a scenario actor
+// needs on ConfigMaps. Every non-admin actor needs it, impersonated humans included: impersonation
+// authenticates as somebody else, it does not authorize as them, so an impersonated user with no
+// RoleBinding is refused exactly like any other unprivileged subject.
+//
+// It is deliberately namespace-scoped and ConfigMap-only. The scenario is about who the API server
+// records, and a broader grant would only widen what a mistake in the driver could reach.
+func (h *harness) allowConfigMapWrites(
+	ctx context.Context,
+	t *testing.T,
+	ns, roleName string,
+	subject rbacv1.Subject,
+) {
+	t.Helper()
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: ns},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"configmaps"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		}},
+	}
+	if _, err := h.kube.RbacV1().Roles(ns).Create(ctx, role, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create Role %s/%s: %v", ns, roleName, err)
+	}
+	binding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: ns},
+		Subjects:   []rbacv1.Subject{subject},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: roleName},
+	}
+	if _, err := h.kube.RbacV1().RoleBindings(ns).Create(ctx, binding, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create RoleBinding %s/%s: %v", ns, roleName, err)
+	}
 }
 
 func restConfig() (*rest.Config, error) {
