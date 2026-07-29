@@ -180,7 +180,6 @@ only actionable part.
 
 | # | Ask | Source | Tier |
 |---|---|---|---|
-| 22 | `ReasonRefusedStructural` doc says "permanent"; refusal-detail stem; `Actor` reachability | gitops-api | **0** |
 | 15 | A declared `auditRoute` with zero facts must say so, and a route losing them with it | gitops-api | **1** |
 | n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** |
 | n/a | Delete sibling inference (answers #10) | this doc | **1** |
@@ -191,7 +190,6 @@ only actionable part.
 | 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **2** |
 | F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** |
 | n/a | The blocking resolve is head-of-line on the shard goroutine | [`attribution-branch-findings.md`](attribution-branch-findings.md) | **2** |
-| 11 | One encoder for `[CREATE]` and `[UPDATE]` bodies | gitops-api | **3** |
 | B2 | `GitTarget.status.layout` | config surface | **3** |
 | F9 | The `scope: Namespaced` status-write envtest | maintainer review | **3** |
 | B6 | The `default` ClusterProvider not-found message | config surface | **3** |
@@ -236,6 +234,20 @@ change what the *remaining* entries should be.
   [`attribution-metrics-proposal.md`](attribution-metrics-proposal.md), migration in
   [`UPGRADING.md`](../UPGRADING.md).
 
+- **#22 — the analyzer contract's three false sentences**, all three fixed:
+  `ReasonRefusedStructural` no longer calls itself permanent and points at `Solvable`; the refusal
+  detail derives its stem from the same classification that sets `Solvable`, so a solvable refusal
+  is described as a fault that can be fixed rather than as an unsupported feature (the corpus
+  baseline moved on exactly the one refusal that was lying, and on nothing else); and `Actor`
+  states which scans can report which values, pinned by a corpus test. The nested-kustomization
+  message shares the new stem, which also replaced a catch-all listing every construct it might
+  have been with the constructs it actually found.
+- **#11 — one encoder.** `internal/yamlstyle` now owns the single style everything committed to
+  Git is written in, and a source-scanning test refuses a second encoder in the write path. The
+  create path had been rendering sequences at the parent key's column (JSON→YAML) while an
+  in-place edit rendered them two columns deeper (yaml.v3), so the first update after a create
+  rewrote every list line in the file.
+
 **What that changes for the entries above.** #15 gets cheaper and gains a second half (a route that
 is *losing* facts is the same user-visible failure as one that never had any, so it is the same
 condition, not a second surface). And two new Tier 1/2 entries exist that did not before, because the
@@ -243,11 +255,12 @@ stream made the cost of waiting measurable for the first time: a removal that no
 ever arrive for spends the whole grace to return the answer it already had at t=0, measured at ~3.1s
 against ~70ms when evidence is present, and it does that on the shard's own goroutine.
 
-### Tier 0: correct what is false, this week
+### Tier 0: correct what is false — SHIPPED
 
-**#22 is three separate things and all three claims check out against `main` today.** They are
-worth doing immediately because each one is a sentence and each one is currently misleading a
-consumer that reads our source as the contract.
+**#22 was three separate things and all three claims checked out against `main`.** They were worth
+doing immediately because each one was a sentence and each one was misleading a consumer that reads
+our source as the contract. What each one turned into is below; the queue table no longer carries
+them.
 
 - **The doc comment.** `ReasonRefusedStructural` is documented as "the permanent support
   boundary" in [`pkg/manifestanalyzer/repo.go`](../../pkg/manifestanalyzer/repo.go), while
@@ -265,13 +278,18 @@ consumer that reads our source as the contract.
   branch; the better shape is to derive the stem from the same classification that sets
   `Solvable`, so the two cannot drift the way the doc comment did. One function, two stems, one
   input.
-- **The `Actor` question, answered: yes, it is structural.** `AcceptancePolicy.InScope` is
-  assigned in exactly two places in the tree, both tests. `folderScanPolicy` leaves it nil and
-  `ScanRepo` never sets it, and `mappingRefusal`'s `IssueOutOfScope` is gated on it being
-  non-nil, so neither `ScanFolder` nor `ScanRepo` can emit `ActorPlatformOperator`. A consumer's
-  platform-operator branch is dead code today. The right fix is not only the doc line they asked
-  for: `Actor`'s doc should state which scan kinds can produce which values, so the guarantee is
-  written where it is read rather than reconstructed from a nil check three files away.
+- **The `Actor` question, answered: yes, it is structural — and their trace found one of the two
+  gates.** The conclusion holds, the reasoning was half of it. `IssueOutOfScope` is gated on
+  `AcceptancePolicy.InScope`, which is assigned in exactly two places in the tree, both tests. But
+  `ActorPlatformOperator` has a second acceptance raise site they did not reach:
+  `IssueUnresolvedKRM` carries it when the type registry has never heard of the GVK
+  (`resolveMapping` in [`store.go`](../../internal/manifestanalyzer/store.go)), and that one is
+  gated on something else entirely — a not-ready registry resolves every document to
+  `MappingNoSource`, so `MappingNotFollowable` never happens on a structure-only path.
+  **Cluster-awareness is the real gate, not `InScope`**, which is a better answer than the one
+  asked for: it says *why* the branch is unreachable, and it is what makes the guarantee safe to
+  state. The doc line lands on `Actor` in both the internal and the exported copy, and a test over
+  the layout corpus pins that no structure-only scan names the platform operator.
 
 ### Tier 1: silent wrongness
 
@@ -411,15 +429,31 @@ It rides the wave because it is in the wave, not because it is urgent.
 
 ### Tier 3: legibility
 
-**#11: one encoder, and we should not accept the "cosmetic" label.** The consumer filed this as
-cosmetic. For a product whose entire output is a Git diff, a create that renders list items at
-2-space indent and an update that renders them at 4 means every install rewrites all 19
-`repositories` lines to carry one changed field. That does not make the diff ugly; it makes it
-*unreadable*, which defeats the mirror. The two paths reach different encoders: `contract.go`
-and `render.go` go through JSON→YAML, `manifestedit/patch.go` uses `yaml.v3` with its own indent,
-which is the shape that produces it. Unverified since v0.35.0, so step one is a test that pins
-create and update output byte-for-byte against each other; the fix follows from wherever that
-fails.
+**#11: one encoder — SHIPPED, and the "cosmetic" label was wrong.** The consumer filed this as
+cosmetic. For a product whose entire output is a Git diff, a create rendering list items at one
+indentation and an update at another means every install rewrites all 19 `repositories` lines to
+carry one changed field. That does not make the diff ugly; it makes it *unreadable*, which defeats
+the mirror.
+
+It was built the way this entry said to: a test pinning create and update byte-for-byte first, then
+the fix wherever it failed. Three things that came out of doing it —
+
+- **The direction was forced.** yaml.v3 always indents a sequence under its mapping key, so the
+  create style (dashes at the key's own column, which is what a JSON→YAML round-trip emits) cannot
+  be produced by the encoder that edits documents in place. Create moved to yaml.v3, not the
+  reverse. It is also the style every already-updated file in a repository is in.
+- **The fix is a package, not a constant.** Sharing an indent width would have left two encoders
+  one refactor from diverging again, silently, because both produce valid YAML and nothing fails.
+  `internal/yamlstyle` is the only place the write path constructs an encoder, and a test walking
+  the source refuses another.
+- **One behaviour difference had to be absorbed.** yaml.v3 panics with a bare string on a value it
+  cannot marshal, and that panic escapes the library's own recover, where the JSON path returned an
+  error. The shared encoder contains it, because a write path that returns an error retries and a
+  write path that panics takes the process down.
+
+The other `sigs.k8s.io/yaml` uses stay: they parse, or they serialize Go structs through their JSON
+tags (the analyzer report, the in-memory kustomization copies handed to kustomize), and none of those
+bytes reach a mirror. One style authority for Git output, not one library for the tree.
 
 **B2: `status.layout`.** Highest value per line of code in the config-surface doc, and more so
 after the inference deletion. `ambiguousDocuments` in particular is a correctness-relevant
