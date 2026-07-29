@@ -288,13 +288,25 @@ The two labels answer two different questions. **`tier`** names which evidence p
 and it is ordered, strongest first. **`actor_kind`** names who that evidence named, in the same
 vocabulary `commits_total{author_kind}` uses.
 
+Three values are named for the **verb that produced the fact** and how it matched:
+`delete_sticky`, `deletecollection_body_uid`, `deletecollection_scope`. Those are the tiers only a
+removal can reach, and naming the source is deliberate: it says where the evidence came from rather
+than what it proves. Two of the three are statements about *this object*; `deletecollection_scope` is
+a statement about a request whose scope covered it, and can name the wrong actor. So
+`tier=~"delete.*"` reads as "resolved on deletion-specific evidence", never as a guarantee that the
+actor named asked for this object's removal.
+
+`latest` and `name` can hold a delete fact too, and are deliberately *not* named for one: either can
+equally hold a write, and a value that could mean either must not claim a verb.
+
 | `tier` | Meaning |
 | --- | --- |
+| `delete_sticky` | The sticky removal pointer: a fact whose own verb is a delete, filed by UID into a slot no later *write* fact may overwrite. Only a removal consults it, and it is asked before `exact`, because a removal's resourceVersion is the one the deletion stamped — the version a finalizer patch's own fact carries too. It is the only tier the fact TTL does not bound: a UID is unique across space and time, so the statement can never be superseded. |
 | `exact` | Exact UID+resourceVersion match: this actor produced this exact version. |
-| `collection_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. It outranks `latest`, because `latest` names whoever last *wrote* an object while a removal asks who *deleted* it. |
+| `deletecollection_body_uid` | A removal whose UID was in the set the API server said a `deletecollection` deleted. No over-attribution risk: either the object was in that set or it was not. It outranks `latest`, because `latest` names whoever last *wrote* an object while a removal asks who *deleted* it. |
 | `latest` | The UID-latest tier: the object's own last fact, keyed by UID alone. A removal consults it, and a match here describing a *write* is held as a fallback while the wait continues for evidence about the deletion. |
 | `name` | A match on `(namespace, name)` for a fact carrying neither a UID nor a resourceVersion — the usual shape of an aggregated API's audit event, and of a delete the API server answered with a `Status`. |
-| `collection_scope` | A removal matched to a `deletecollection` by scope alone — same type and namespace, the request's selector accepting the object's labels, within the collection window. The weakest evidence the join has, and the only one that can name the wrong actor, which is why it is reached only when every more specific tier missed. |
+| `deletecollection_scope` | A removal matched to a `deletecollection` by scope alone — same type and namespace, the request's selector accepting the object's labels, within the collection window. The weakest evidence the join has, and the only one that can name the wrong actor, which is why it is reached only when every more specific tier missed. |
 | `resource_version` | The RV-only escape hatch: a fact that carried a resourceVersion and no UID, matched on that version alone. |
 | `absent` | No usable fact matched before the grace window elapsed. The resulting live commit is authored as `unknown (attribution unresolved)`. |
 
@@ -310,7 +322,7 @@ coincidence: an audit event whose user cannot be resolved never becomes a fact a
 (counted as a stream decode error below). Every fact that reaches the index therefore names someone,
 which is why coverage can be read off the tier alone.
 
-**Evidence quality, independently of coverage.** A shift from `exact` toward `collection_scope` or
+**Evidence quality, independently of coverage.** A shift from `exact` toward `deletecollection_scope` or
 `name` is a quality regression even while coverage holds flat, so it is worth its own panel:
 
 ```promql
@@ -319,8 +331,8 @@ sum by (tier) (rate(gitopsreverser_attribution_resolutions_total[5m]))
 
 > **`result` is gone**, and so are `exact_user`, `exact_serviceaccount`, and `weak`. See
 > [`UPGRADING.md`](UPGRADING.md) for the old-to-new mapping. `exact_deletecollection_item` went
-> earlier, with the expander and the fact keyspace; `collection_uid` is its closest equivalent and
-> `collection_scope` is new capability rather than a rename. See
+> earlier, with the expander and the fact keyspace; `deletecollection_body_uid` is its closest equivalent and
+> `deletecollection_scope` is new capability rather than a rename. See
 > [`attribution-fact-stream.md`](finished/attribution-fact-stream.md).
 
 **Is the grace window paying for itself?** `event_kind` is `write` or `removal`, and the split is
@@ -358,6 +370,12 @@ sum by (reason) (rate(gitopsreverser_attribution_fact_index_evictions_total[5m])
 
 `reason` is `per_type` (one type is hotter than its share) or `total` (the whole index is under
 pressure, and eviction falls on the type holding the most).
+
+This counter is also the removal pointer's only horizon. Every other entry in the index expires on
+the fact TTL; a removal pointer is bounded by these caps instead, so a cluster that deletes rarely
+keeps its removals for a very long time at no cost, and a busy one keeps the most recent — which are
+the ones a replay is likeliest to need. A sustained eviction rate on a type that deletes heavily is
+the signal that its pointers are being reclaimed before a replay can use them.
 
 **Is a follower losing facts?** A trim gap means the fact log was trimmed past this process's
 position: the facts in the gap are gone for good, and the commits that needed them are authored
@@ -424,7 +442,7 @@ gitopsreverser_attribution_transport_info
 
 **How often does a collection delete fall back to scope matching?** A `deletecollection` fact
 carries the UIDs the API server named, when it sent them, and joins by membership. When it cannot,
-the join falls back to `collection_scope`, which is correct but weaker — so the fallback is counted
+the join falls back to `deletecollection_scope`, which is correct but weaker — so the fallback is counted
 rather than inferred:
 
 ```promql

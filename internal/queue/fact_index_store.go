@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// factKind names one of the five match structures a fact can land in. The set is closed: a fact
+// factKind names one of the six match structures a fact can land in. The set is closed: a fact
 // that fits none of them is not stored, because a fact nothing can ever join is only memory.
 type factKind uint8
 
@@ -17,6 +17,9 @@ const (
 	factKindExact factKind = iota
 	// factKindLatest is (uid), last-writer-wins, serving removals whose rv never matches.
 	factKindLatest
+	// factKindRemoval is (uid), the sticky removal pointer: the fact that this object was DELETED and
+	// by whom. It is the one structure a later fact may not overwrite — see putRemoval.
+	factKindRemoval
 	// factKindRV is (rv), the escape hatch for a fact with an rv but no uid.
 	factKindRV
 	// factKindName is (namespace, name), the floor for a fact with neither a uid nor an rv. Only an
@@ -136,13 +139,16 @@ type factRef struct {
 	seq       uint64
 }
 
-// scopeFacts is one (route, group/resource)'s four match structures, its oldest-first insertion
+// scopeFacts is one (route, group/resource)'s match structures, its oldest-first insertion
 // order, and its entry count. Bounding per scope rather than globally is what keeps a burst on one
 // noisy type — a deletecollection over ten thousand objects, a large rollout — from evicting every
 // other type's facts.
 type scopeFacts struct {
-	exact       map[exactFactKey]*indexedFact
-	latest      map[string]*indexedFact
+	exact  map[exactFactKey]*indexedFact
+	latest map[string]*indexedFact
+	// removals is the sticky removal pointer, keyed by uid: "this object was deleted, and this actor
+	// asked for it". It is deliberately NOT swept by the TTL — see putRemoval and sweep.
+	removals    map[string]*indexedFact
 	rvOnly      map[string]*indexedFact
 	byName      map[nameFactKey]*indexedFact
 	collections []*indexedCollection
@@ -154,10 +160,11 @@ type scopeFacts struct {
 
 func newScopeFacts() *scopeFacts {
 	return &scopeFacts{
-		exact:  map[exactFactKey]*indexedFact{},
-		latest: map[string]*indexedFact{},
-		rvOnly: map[string]*indexedFact{},
-		byName: map[nameFactKey]*indexedFact{},
+		exact:    map[exactFactKey]*indexedFact{},
+		latest:   map[string]*indexedFact{},
+		removals: map[string]*indexedFact{},
+		rvOnly:   map[string]*indexedFact{},
+		byName:   map[nameFactKey]*indexedFact{},
 	}
 }
 
@@ -180,6 +187,27 @@ func (s *scopeFacts) putLatest(uid string, entry *indexedFact) {
 	}
 	s.latest[uid] = entry
 	s.order = append(s.order, factRef{kind: factKindLatest, uid: uid, seq: entry.seq})
+}
+
+// putRemoval stores the sticky removal pointer for an object: the fact that it was DELETED, and by
+// whom. Only a fact whose own verb is a removal is ever filed here, which is what makes the slot
+// sticky — a later WRITE fact fills the ordinary tiers and cannot reach this one.
+//
+// That stickiness is the fix for a measured defect, and it is the reason the slot has to exist at
+// all rather than the ranking being adjusted. A human's `delete` on a finalized object and the
+// controller's `patch` that clears the finalizer both return a body carrying the resourceVersion the
+// DELETION stamped, so both facts are filed under the same (uid, rv) and the same uid. Every other
+// structure here is last-writer-wins, so the deleter's fact is not outranked by the controller's —
+// it is replaced, and no tier ordering can recover what is no longer stored. See
+// docs/design/attribution-deletion-intent-actor.md.
+//
+// A later removal fact may replace it, because that is a statement about the same question.
+func (s *scopeFacts) putRemoval(uid string, entry *indexedFact) {
+	if _, ok := s.removals[uid]; !ok {
+		s.count++
+	}
+	s.removals[uid] = entry
+	s.order = append(s.order, factRef{kind: factKindRemoval, uid: uid, seq: entry.seq})
 }
 
 // putRV stores the rv-only escape hatch.
@@ -220,6 +248,25 @@ func (s *scopeFacts) lookupExact(uid, rv string, cutoff time.Time) (AuthorFact, 
 // lookupLatest reads the last-writer-wins tier.
 func (s *scopeFacts) lookupLatest(uid string, cutoff time.Time) (AuthorFact, bool) {
 	return liveFact(s.latest[uid], cutoff)
+}
+
+// lookupRemovalPointer reads the sticky removal pointer. It takes NO cutoff, and it is the only lookup here
+// that does not: the pointer's horizon is a count rather than a clock.
+//
+// Every other structure must expire for correctness — `exact` and `latest` can be superseded by a
+// later write, and a NAME is reused after a delete and recreate, which is exactly why the name tier
+// ranks last and why the TTL has to keep bounding it. A uid-keyed removal statement has neither
+// failure mode, because a uid is unique across space and time: "uid X was deleted, and this actor
+// asked for it" can never be superseded, since that object can never be written, deleted, or
+// recreated under the same uid again. Holding it longer is therefore never less accurate, only more
+// expensive, so it is bounded the way memory is bounded — by the per-type and total caps, evicted
+// oldest-first under pressure and counted on attribution_fact_index_evictions_total.
+func (s *scopeFacts) lookupRemovalPointer(uid string) (AuthorFact, bool) {
+	entry, ok := s.removals[uid]
+	if !ok {
+		return AuthorFact{}, false
+	}
+	return entry.fact, true
 }
 
 // lookupRV reads the rv-only escape hatch.
@@ -299,6 +346,11 @@ func (s *scopeFacts) sweep(cutoff time.Time) int {
 			removed++
 		}
 	}
+	// s.removals is not swept. Its horizon is the caps rather than the clock, for the reason
+	// lookupRemovalPointer gives: a uid-keyed removal statement can never be superseded. One
+	// consequence is worth naming — a scope that has held a deletion never goes empty, so the index
+	// keeps the (route, group/resource) entry alive until eviction reclaims it. That is bounded by
+	// construction, and it is the same bound the rest of the index already lives under.
 	kept := s.collections[:0]
 	for _, entry := range s.collections {
 		if entry.at.Before(cutoff) {
@@ -343,6 +395,8 @@ func (s *scopeFacts) remove(ref factRef) bool {
 		return removeKeyed(s.exact, exactFactKey{uid: ref.uid, rv: ref.rv}, ref.seq)
 	case factKindLatest:
 		return removeKeyed(s.latest, ref.uid, ref.seq)
+	case factKindRemoval:
+		return removeKeyed(s.removals, ref.uid, ref.seq)
 	case factKindRV:
 		return removeKeyed(s.rvOnly, ref.rv, ref.seq)
 	case factKindName:
@@ -377,8 +431,26 @@ func (s *scopeFacts) removeCollection(seq uint64) bool {
 
 // compact drops eviction references whose entries are gone, so the order does not grow with every
 // swept entry.
+//
+// It reallocates rather than reusing the backing array when the array has grown far past what
+// survives, and that is not a micro-optimization. A put REPLACING an entry appends a reference and
+// leaves the old one behind — the reference is what makes replacement safe, since the sequence check
+// is how a stale reference is told from a live one — so an object rewritten a thousand times inside
+// one sweep interval leaves a thousand references and ONE entry. The dead references go here either
+// way; the peak capacity would not, because `s.order[:0]` keeps the array. That memory is the kind
+// worth giving back: `count` never counted it, so neither the per-type cap nor
+// attribution_fact_index_entries can see it.
 func (s *scopeFacts) compact() {
+	live := 0
+	for _, ref := range s.order {
+		if s.live(ref) {
+			live++
+		}
+	}
 	kept := s.order[:0]
+	if cap(s.order) > 2*live+orderCapacitySlack {
+		kept = make([]factRef, 0, live)
+	}
 	for _, ref := range s.order {
 		if s.live(ref) {
 			kept = append(kept, ref)
@@ -387,6 +459,11 @@ func (s *scopeFacts) compact() {
 	s.order = kept
 }
 
+// orderCapacitySlack is how much spare capacity the eviction order may keep before compaction hands
+// it back. It exists so an ordinary scope, whose order grows and shrinks by a handful of entries per
+// sweep, keeps reusing one small array instead of reallocating on every pass.
+const orderCapacitySlack = 64
+
 // live reports whether a reference still names the entry it was taken for.
 func (s *scopeFacts) live(ref factRef) bool {
 	switch ref.kind {
@@ -394,6 +471,8 @@ func (s *scopeFacts) live(ref factRef) bool {
 		return liveKeyed(s.exact, exactFactKey{uid: ref.uid, rv: ref.rv}, ref.seq)
 	case factKindLatest:
 		return liveKeyed(s.latest, ref.uid, ref.seq)
+	case factKindRemoval:
+		return liveKeyed(s.removals, ref.uid, ref.seq)
 	case factKindRV:
 		return liveKeyed(s.rvOnly, ref.rv, ref.seq)
 	case factKindName:

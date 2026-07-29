@@ -70,7 +70,25 @@ because it covered two different kinds of it:
 | `exact_serviceaccount` | `tier="exact"`, `actor_kind="serviceaccount"` |
 | `weak` (a UID-latest match) | `tier="latest"` |
 | `weak` (the RV-only escape hatch) | `tier="resource_version"` |
-| `collection_uid`, `collection_scope`, `name`, `absent` | `tier=` the same value |
+| `collection_uid` | `tier="deletecollection_body_uid"` |
+| `collection_scope` | `tier="deletecollection_scope"` |
+| `name`, `absent` | `tier=` the same value |
+
+The two collection values are renamed for the **verb that produced the fact** and how it matched, the
+convention the three removal-only tiers now share: `delete_sticky`, `deletecollection_body_uid`,
+`deletecollection_scope`. `body` is in the second because the uid set comes from the response body,
+which is the part the API server may not send; when it does not, the same fact resolves at
+`deletecollection_scope` instead. `latest` and `name` keep their names, because either can hold a
+delete fact or a write and so cannot claim a verb.
+
+`delete_sticky` is a value `result` never had at all, and it comes with a behaviour change. A
+finalized deletion — a human deletes, a controller clears the finalizer — is attributed to the human
+and resolves at `tier="delete_sticky"`. Before this release it named the controller and was counted
+on the exact path (`result="exact_user"` or `result="exact_serviceaccount"`), because the finalizer
+patch's fact carries the resourceVersion the *deletion* stamped and overwrote the deleter's under
+the same key. A dashboard therefore sees the exact path shift toward `delete_sticky` for types that
+carry finalizers, and `commits_total{author_kind}` shift from `serviceaccount` toward `user`. A query
+that enumerates tiers explicitly needs the three new values; `tier!="absent"` covers them already.
 
 `actor_kind` is `user`, `serviceaccount`, or `none`, the vocabulary
 `gitopsreverser_commits_total{author_kind}` already uses, and it is available on **every** tier

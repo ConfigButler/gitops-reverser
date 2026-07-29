@@ -43,8 +43,18 @@ gap (see [Capturing Intent, Not State](../../docs/spec/mutation-capture-lab-desi
 | 15a | Aggregated API delete | `aggregated_api_test.go` · `TestAggregatedAPIDelete` | `flunder/aggregated-api-delete/` | watch DELETED (full object), audit (`delete`, `objectRef` has the NAME from the URL but **no uid**) |
 | 15b | Aggregated API deletecollection | `aggregated_api_test.go` · `TestAggregatedAPIDeletecollection` | `flunder/aggregated-api-deletecollection/` | watch ×N, audit ×1 (name-less, selector in `requestURI`, **no response body**), admission ×N (per object) |
 | 16 | Watch resync (`410 Gone`) | `watch_transport_test.go` · `TestWatchExpiredResourceVersion` | `configmap/watch-resync/` | watch ERROR (`Status` 410); driver verifies relist recovery |
+| 8a | Finalizer delete, two actors + tunable hold | `deletion_intent_actor_test.go` · `TestDeletionIntentActorRace` | `configmap/deletion-intent-actor/` | watch (MODIFIED + DELETED), audit (`delete` by the human + `patch` by a ServiceAccount) — both audit response bodies carry the **same** resourceVersion |
 | 18 | `generateName` create | `configmap_scenarios_test.go` · `TestGenerateNameCreate` | `configmap/generate-name-create/` | watch, audit (`objectRef` has **no name**, response body **does**), admission — the control for rows 15a/15b |
 | 17 | Bookmark | `watch_transport_test.go` · `TestWatchBookmark` | `configmap/watch-bookmark/` | watch BOOKMARK with resourceVersion |
+
+Row 8a is not a catalog row: it extends row 8 to the case the catalog could not express, because
+row 8 drives both phases with one identity. A finalized deletion in production has TWO actors — a
+human asks, a controller cleans up — and the row exists to measure what that does to attribution.
+The finding is in the last column: the human's `delete` and the controller's finalizer `patch` both
+return a body, and both bodies carry the resourceVersion the DELETION stamped, so the two facts they
+produce collide on one key. `LAB_FINALIZER_HOLD` tunes the gap between the phases, which is what
+decides whether both land in one audit batch. See
+[attribution-deletion-intent-actor.md](../../docs/design/attribution-deletion-intent-actor.md).
 
 All seventeen catalogued scenarios are now captured. Rows 15a and 15b are not catalog
 rows: they extend row 15 to the removal verbs, because the create alone could not say

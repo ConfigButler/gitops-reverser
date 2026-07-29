@@ -73,9 +73,10 @@ first, and a uid-keyed fact always answers there. A second copy of that same fac
 would never be the one read. Storing it anyway costs the entry on every replica following the type,
 for the whole TTL, and again on every restart replay, and buys nothing.
 
-The one branch that files twice is the uid case, and only when it also has a resourceVersion: `exact`
-serves creates and updates, `latest` serves removals, and the two answer different questions about
-the same object: one fact serving two tiers.
+The one branch that files more than once is the uid case: `exact` (when the fact also has a
+resourceVersion) serves creates and updates, `latest` serves removals, and the two answer different
+questions about the same object. A fact whose own verb is a **removal** takes a third structure, the
+sticky removal pointer, which answers a question no later fact can: who asked for the deletion.
 
 So the rule is: keep every field, file under exactly the keys a query could reach you by.
 
@@ -89,13 +90,15 @@ flowchart TD
     A[Watch event] --> B[scope = audit route + group/resource]
     B --> C{scope known?}
     C -->|no| Z[absent: committer-authored]
-    C -->|yes| D{uid and rv,<br/>and exact-capable?}
+    C -->|yes| AA{a removal, and a sticky<br/>removal pointer for its uid?}
+    AA -->|yes| AB[delete_sticky]
+    AA -->|no| D{a fact under<br/>this uid and rv?}
 
     D -->|match| E[exact]
     D -->|no match| F{is this a removal?}
 
     F -->|yes| G{uid in a collection's<br/>uid set?}
-    G -->|yes| H[collection_uid]
+    G -->|yes| H[deletecollection_body_uid]
     G -->|no| I{latest uid<br/>is a DELETE fact?}
     I -->|yes| J[latest: the object's own delete]
     I -->|no, it is a write| K[hold it as a fallback]
@@ -104,7 +107,7 @@ flowchart TD
     L -->|no| N{fallback held?}
     N -->|yes| O[latest: last writer]
     N -->|no| P{collection covers<br/>this scope + selector?}
-    P -->|yes| Q[collection_scope]
+    P -->|yes| Q[deletecollection_scope]
     P -->|no| R
 
     F -->|no| R{rv-only hatch?}
@@ -114,6 +117,7 @@ flowchart TD
     T -->|no match| Z
 
     style Z fill:#7f1d1d,color:#fff
+    style AB fill:#14532d,color:#fff
     style E fill:#14532d,color:#fff
     style H fill:#14532d,color:#fff
     style J fill:#14532d,color:#fff
@@ -128,12 +132,13 @@ flowchart TD
 
 | Tier | Key | `tier` label | What it asserts |
 |---|---|---|---|
+| delete, sticky | uid (a delete fact, sticky) | `delete_sticky` | who asked for this object's deletion |
 | exact | uid + rv | `exact` | this actor produced this exact version |
-| collection uid | uid in a collection's set | `collection_uid` | the API server said this request deleted this object |
+| collection uid | uid in a collection's set | `deletecollection_body_uid` | the API server said this request deleted this object |
 | latest, delete | uid | `latest` | this object's own delete fact |
 | name, delete | namespace + name | `name` | this object's own delete fact, when it has no uid |
 | latest, write | uid | `latest` | who last wrote it; a fallback for a removal |
-| collection scope | namespace + selector + window | `collection_scope` | a collection request covering it was made |
+| collection scope | namespace + selector + window | `deletecollection_scope` | a collection request covering it was made |
 | rv-only | rv | `resource_version` | a fact with an rv but no uid |
 | name | namespace + name | `name` | the only key an aggregated write has |
 | absent | none | `absent` | committer-authored |
@@ -141,7 +146,17 @@ flowchart TD
 Who the evidence named is the separate `actor_kind` label (`user` / `serviceaccount` / `none`), so
 every row above can be asked about either kind of actor.
 
-### Two rules that are easy to miss
+### Three rules that are easy to miss
+
+**A fact about a DELETION may not be replaced by a fact about a WRITE.** Every ordinary structure
+here is last-writer-wins, and a finalizer patch's fact carries the resourceVersion the DELETION
+stamped, so it lands under the deleter's exact key and the deleter's uid key alike. A removal fact
+therefore also takes a **sticky removal pointer**, keyed by uid, that only another removal fact may
+fill, and a removal consults that pointer before the exact tier. It is the one structure the TTL does
+not bound: a uid is unique across space and time, so the statement can never be superseded, and its
+horizon is the index's caps instead. It is strictly uid-keyed, because the same stickiness on the
+name tier would be a defect: a name is reused after a delete and recreate. See
+[attribution-deletion-intent-actor.md](attribution-deletion-intent-actor.md).
 
 **A removal never returns on a write fact without looking further.** The per-object tiers are
 last-writer-wins, so for a removal they hold whoever last EDITED the object, which is not who deleted
@@ -152,6 +167,11 @@ wait immediately.
 **An exact-capable event may not fall through to the removal tiers.** A create or update presents the
 resourceVersion its own write produced. If the exact tier misses, the `latest` pointer may name an
 older, different author, so the lookup skips straight to the rv hatch and the name tier.
+
+The gate is one-directional, and only one of the two tiers above is gated. The exact tier is tried
+for *any* query carrying a uid and a resourceVersion, a removal included. A removal that misses
+the sticky pointer can therefore still resolve at `exact`, which is exactly what it did before the
+pointer existed. What an exact-capable event may not do is the reverse: reach the tiers below.
 
 ## The wait, and what changed about it
 
@@ -314,7 +334,7 @@ it is the argument for the shape, and the migration is in
 [`UPGRADING.md`](../UPGRADING.md#0410--the-attribution-metrics-are-relabelled-and-partly-renamed-breaking-for-queries).
 
 The inconsistency was real rather than cosmetic. `result` should have named the TIER: `weak`,
-`name`, `collection_uid`, `collection_scope`, `absent` all did. `exact` was the only one that also
+`name`, `deletecollection_body_uid`, `deletecollection_scope`, `absent` all did. `exact` was the only one that also
 encoded WHO the actor was, which crammed two orthogonal dimensions into one label.
 
 Two consequences followed directly:
@@ -322,7 +342,7 @@ Two consequences followed directly:
 - counting exact resolutions meant summing two series, and any new actor kind would have multiplied
   them again;
 - the actor kind could only be asked of the exact tier. There was no way to ask how many `name`-tier
-  or `collection_uid` resolutions named a service account, because that dimension did not exist
+  or `deletecollection_body_uid` resolutions named a service account, because that dimension did not exist
   there.
 
 The decisive argument was that the codebase already modeled it correctly one metric over:

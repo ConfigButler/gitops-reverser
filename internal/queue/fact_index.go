@@ -274,6 +274,8 @@ func (i *FactIndex) settle(ctx context.Context, fallback AuthorResolution) Autho
 // awaitsBetterEvidence reports whether a match should be held as a fallback rather than returned.
 //
 // It is true for exactly one shape: a REMOVAL matched to a fact that is not about a removal. The
+// sticky removal pointer is about the deletion by construction — only a removal fact is ever filed
+// there — so a match on it ends the wait at once. The
 // per-object tiers are last-writer-wins, so for a collection member — whose delete files one fact
 // about the collection rather than one per object — they hold whoever edited it last. Both
 // collection tiers are about the deletion itself and end the wait, as does a per-object fact whose
@@ -284,7 +286,7 @@ func (q FactQuery) awaitsBetterEvidence(resolution AuthorResolution) bool {
 		return false
 	}
 	switch resolution.Result {
-	case AttributionCollectionUID, AttributionCollectionScope:
+	case AttributionDeleteSticky, AttributionDeleteCollectionBodyUID, AttributionDeleteCollectionScope:
 		return false
 	case AttributionExact, AttributionLatest, AttributionResourceVersion,
 		AttributionName, AttributionAbsent:
@@ -299,12 +301,13 @@ func isRemovalVerb(verb string) bool {
 
 // Lookup reads the index once, trying the tiers strongest-first:
 //
-//  1. the exact (uid, rv) fact, the only exact-capable join;
-//  2. a collection fact whose uid set contains this object;
-//  3. the last-writer-wins fact for that uid, for a removal whose rv never matches;
-//  4. a collection fact whose scope, selector, and window cover it;
-//  5. the rv-only escape hatch;
-//  6. the (namespace, name) floor.
+//  1. the sticky removal pointer for that uid, for a removal only;
+//  2. the exact (uid, rv) fact, the only exact-capable join;
+//  3. a collection fact whose uid set contains this object;
+//  4. the last-writer-wins fact for that uid, for a removal whose rv never matches;
+//  5. a collection fact whose scope, selector, and window cover it;
+//  6. the rv-only escape hatch;
+//  7. the (namespace, name) floor.
 //
 // The name tier is last because it is the weakest per-object evidence here: a name is reused after a
 // delete and recreate, so it can name the author of a previous object that held it, where a uid
@@ -337,6 +340,18 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 		return AuthorResolution{Result: AttributionAbsent}
 	}
 
+	// The removal pointer is consulted BEFORE the exact tier, and only for an event that is not
+	// exact-capable. That ordering is half of the fix and useless without the other half: the slot is
+	// what preserves the deleter's fact, and being asked first is what makes it reachable. A removal's
+	// own resourceVersion is the one the DELETION stamped, so the exact tier can hold a fact about the
+	// finalizer patch that carries the very same version — a stronger-looking answer to a question it
+	// is not about. An exact-capable event never reaches here, so a create or update still resolves at
+	// the exact tier exactly as before.
+	if !query.ExactCapable {
+		if resolution := stickyRemoval(facts, query); resolution.Result != AttributionAbsent {
+			return resolution
+		}
+	}
 	if query.UID != "" && query.ResourceVersion != "" {
 		if fact, found := facts.lookupExact(query.UID, query.ResourceVersion, cutoff); found {
 			return AuthorResolution{Fact: fact, Result: AttributionExact}
@@ -360,6 +375,19 @@ func (i *FactIndex) Lookup(query FactQuery) AuthorResolution {
 	return AuthorResolution{Result: AttributionAbsent}
 }
 
+// stickyRemoval reads the head of the removal ladder: the uid-keyed slot holding the fact that this
+// object was DELETED, which no later fact about a write may overwrite. It is the one tier consulted
+// before the exact tier, and only for an event that is not exact-capable.
+func stickyRemoval(facts *scopeFacts, query FactQuery) AuthorResolution {
+	if query.UID == "" {
+		return AuthorResolution{Result: AttributionAbsent}
+	}
+	if fact, found := facts.lookupRemovalPointer(query.UID); found {
+		return AuthorResolution{Fact: fact, Result: AttributionDeleteSticky}
+	}
+	return AuthorResolution{Result: AttributionAbsent}
+}
+
 // lookupRemoval reads the tiers only a removal may consult, in the order they rank: the uid set of
 // a collection that named this object, the object's own delete fact (by uid, then by name), its
 // last-writer fact, and finally a collection whose scope covers it. See Lookup for why uid
@@ -377,7 +405,7 @@ func (i *FactIndex) lookupRemoval(
 	haveWriteFallback := false
 	if query.UID != "" {
 		if fact, found := facts.matchCollectionUID(query, cutoff); found {
-			return AuthorResolution{Fact: fact, Result: AttributionCollectionUID}
+			return AuthorResolution{Fact: fact, Result: AttributionDeleteCollectionBodyUID}
 		}
 		if fact, found := facts.lookupLatest(query.UID, cutoff); found {
 			resolution := AuthorResolution{Fact: fact, Result: AttributionLatest}
@@ -410,7 +438,7 @@ func (i *FactIndex) lookupRemoval(
 		return writeFallback
 	}
 	if fact, found := facts.matchCollectionScope(query, now, cutoff, i.collectionWindow); found {
-		return AuthorResolution{Fact: fact, Result: AttributionCollectionScope}
+		return AuthorResolution{Fact: fact, Result: AttributionDeleteCollectionScope}
 	}
 	return AuthorResolution{Result: AttributionAbsent}
 }
@@ -523,6 +551,15 @@ func (i *FactIndex) file(facts *scopeFacts, scope factScope, fact AuthorFact, no
 			)
 		}
 		facts.putLatest(fact.UID, &indexedFact{fact: fact, at: now, seq: i.nextSeq()})
+		if isRemovalVerb(fact.Verb) {
+			// A fact about a DELETION also takes the sticky removal slot, which a later fact about a
+			// WRITE may not overwrite. The ordinary filing above still happens: the slot answers the
+			// removal question, and the tiers keep answering the ones they always did.
+			//
+			// It needs no waiter key of its own, because a fact reaching here always fills the latest
+			// tier too, and a removal query already waits on that key.
+			facts.putRemoval(fact.UID, &indexedFact{fact: fact, at: now, seq: i.nextSeq()})
+		}
 		return append(keys, factWaiterKey{scope: scope, kind: factKindLatest, value: fact.UID})
 	case fact.ResourceVersion != "":
 		facts.putRV(fact.ResourceVersion, &indexedFact{fact: fact, at: now, seq: i.nextSeq()})

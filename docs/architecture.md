@@ -717,21 +717,30 @@ same `user`/`serviceaccount`/`none` vocabulary `commits_total{author_kind}` uses
 
 | Tier | Key | What it asserts |
 |---|---|---|
+| `delete_sticky` | uid (a delete fact, sticky) | who asked for this object's deletion |
 | `exact` | uid + rv | this actor produced this exact version |
-| `collection_uid` | uid in a collection fact's set | the API server said this request deleted this object |
+| `deletecollection_body_uid` | uid in a collection fact's set | the API server said this request deleted this object |
 | `latest` | uid (the object's own delete fact) | who removed it |
 | `name` | namespace + name | the same, for a fact with no uid (an aggregated API's usual shape) |
 | `latest` | uid (a write fact) | who last *wrote* it; a fallback for a removal |
-| `collection_scope` | namespace + selector + window | a collection request covering it was made |
+| `deletecollection_scope` | namespace + selector + window | a collection request covering it was made |
 | `resource_version` | rv (the escape hatch for a fact with no uid) | a fact for this exact version, unidentified |
 | `absent` | none | nothing usable arrived in time |
 
-Two rules carry most of the behavior. **A removal never returns on a write fact without looking
-further:** the per-object tiers are last-writer-wins, so for a removal they hold whoever last *edited*
-the object, which is not who deleted it; such a match is held as a fallback while the wait continues
-for evidence about the deletion itself. And **an exact-capable event may not fall through to the
-removal tiers:** a create or update presents the resourceVersion its own write produced, so if the
-exact tier misses, the uid pointer may name an older, different author.
+Three rules carry most of the behavior. **A fact about a deletion may not be replaced by a fact about
+a write:** a removal fact takes a sticky, uid-keyed slot that the ordinary last-writer-wins
+structures cannot reach, and a removal asks that slot first. That slot is the one structure the fact
+TTL does not bound: a uid is unique across space and time, so the statement cannot be superseded,
+and its horizon is the index's caps instead. It is still in-memory: a restart re-warms the index
+from one TTL of stream retention like everything else. Without the slot, a finalizer patch's fact
+overwrites the deleter's, because both carry the resourceVersion the *deletion* stamped
+([attribution-deletion-intent-actor.md](design/attribution-deletion-intent-actor.md)). **A removal
+never returns on a write fact without looking further:** the per-object tiers are last-writer-wins,
+so for a removal they hold whoever last *edited* the object, which is not who deleted it; such a
+match is held as a fallback while the wait continues for evidence about the deletion itself. And
+**an exact-capable event may not fall through to the removal tiers:** a create or update presents
+the resourceVersion its own write produced, so if the exact tier misses, the uid pointer may name an
+older, different author.
 
 No branch on this path depends on the type. Every decision is made on the verb, on whether the event
 is a removal, and on which fields the event happens to carry. That is why an aggregated API needed

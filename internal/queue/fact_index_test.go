@@ -211,6 +211,54 @@ func TestFactIndex_FactsAreAbsentPastTheTTL(t *testing.T) {
 	require.Zero(t, harness.index.Len())
 }
 
+// TestFactIndex_RewritingOneKeyDoesNotStrandTheEvictionOrder bounds the memory a HOT OBJECT costs.
+//
+// A put that replaces an entry appends an eviction reference and leaves the old one behind — that is
+// what makes replacement safe, since the sequence check is how a stale reference is told from a live
+// one. So an object rewritten N times inside one sweep interval holds ONE entry and N references, and
+// the caps cannot see the difference: they count entries, which is also what the entries gauge
+// reports. The sweep drops the dead references, and must also hand back the capacity they occupied,
+// or a single retry storm leaves its peak resident for the life of the scope.
+func TestFactIndex_RewritingOneKeyDoesNotStrandTheEvictionOrder(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	const rewrites = 4000
+	facts := make([]AuthorFact, 0, rewrites)
+	for range rewrites {
+		// The same object at the same version, over and over: one exact key and one latest key.
+		facts = append(facts, objectFact("alice", "101"))
+	}
+	harness.publish(factIndexTestStream("prod-eu-1"), facts...)
+
+	// Waiting on the ORDER rather than on Len is the only barrier available here: Len reaches 2 on
+	// the first fact and stays there, so it cannot say the batch has finished applying.
+	scope := factScope{route: "prod-eu-1", groupResource: groupResourceKey("apps", "deployments")}
+	require.Eventually(t, func() bool { return harness.orderCapacity(scope) > rewrites },
+		factIndexTestGrace, factIndexTestBlock,
+		"the references are what the sweep has to reclaim, so the test is only meaningful if they piled up")
+	require.Equal(t, 2, harness.index.Len(), "one exact and one latest entry, however many rewrites landed")
+
+	harness.index.Sweep(time.Now())
+
+	require.Equal(t, 2, harness.index.Len(), "the sweep drops references, never live entries")
+	require.Less(t, harness.orderCapacity(scope), rewrites/2,
+		"and it hands back the capacity rather than keeping the peak for the life of the scope")
+	require.Equal(t, "alice", harness.resolve(objectQuery("prod-eu-1", factIndexTestUID, "101", true)).Fact.Author,
+		"the surviving entry is still joinable through its reference-compacted scope")
+}
+
+// orderCapacity reads one scope's eviction-order capacity under the index lock, which is where the
+// cost of a replaced entry accumulates.
+func (h *factIndexHarness) orderCapacity(scope factScope) int {
+	h.t.Helper()
+	h.index.mu.Lock()
+	defer h.index.mu.Unlock()
+	facts, ok := h.index.scopes[scope]
+	if !ok {
+		return 0
+	}
+	return cap(facts.order)
+}
+
 func TestFactIndex_PerTypeCapEvictsOldestFirstAndCountsIt(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
@@ -331,7 +379,7 @@ func TestFactIndex_CollectionMatchesByUIDMembership(t *testing.T) {
 	// the API server said it deleted this object or it did not.
 	for _, uid := range []string{"uid-1", "uid-2"} {
 		resolution := harness.resolve(objectQuery("prod-eu-1", uid, "999", false))
-		require.Equal(t, AttributionCollectionUID, resolution.Result)
+		require.Equal(t, AttributionDeleteCollectionBodyUID, resolution.Result)
 		require.Equal(t, "alice", resolution.Fact.Author)
 	}
 
@@ -352,7 +400,7 @@ func TestFactIndex_CollectionMatchesByScopeAndSelector(t *testing.T) {
 	matching := objectQuery("prod-eu-1", "uid-1", "999", false)
 	matching.Labels = map[string]string{"app": "web", "tier": "front"}
 	resolution := harness.resolve(matching)
-	require.Equal(t, AttributionCollectionScope, resolution.Result)
+	require.Equal(t, AttributionDeleteCollectionScope, resolution.Result)
 	require.Equal(t, "alice", resolution.Fact.Author)
 
 	// The selector is the intent the actor expressed: an object it does not select was not part of
@@ -375,7 +423,7 @@ func TestFactIndex_CollectionWithNoSelectorCoversTheWholeNamespace(t *testing.T)
 
 	// No selector is what --all means.
 	unlabelled := objectQuery("prod-eu-1", "uid-9", "999", false)
-	require.Equal(t, AttributionCollectionScope, harness.resolve(unlabelled).Result)
+	require.Equal(t, AttributionDeleteCollectionScope, harness.resolve(unlabelled).Result)
 }
 
 func TestFactIndex_CollectionScopeMatchStopsAtTheWindow(t *testing.T) {
@@ -383,7 +431,8 @@ func TestFactIndex_CollectionScopeMatchStopsAtTheWindow(t *testing.T) {
 	harness := newFactIndexHarness(t, FactIndexConfig{CollectionWindow: window})
 	harness.publish(factIndexTestStream("prod-eu-1"), aliceCollectionFact(""))
 	harness.waitForFacts(1)
-	require.Equal(t, AttributionCollectionScope, harness.resolve(objectQuery("prod-eu-1", "uid-9", "9", false)).Result)
+	scoped := harness.resolve(objectQuery("prod-eu-1", "uid-9", "9", false))
+	require.Equal(t, AttributionDeleteCollectionScope, scoped.Result)
 
 	// An unrelated delete later in the same namespace must not be claimed by a collection that has
 	// long since finished.
@@ -427,7 +476,7 @@ func TestFactIndex_CollectionUIDOutranksAStaleWriteFact(t *testing.T) {
 	harness.waitForFacts(3)
 
 	resolution := harness.resolve(objectQuery("prod-eu-1", factIndexTestUID, "999", false))
-	require.Equal(t, AttributionCollectionUID, resolution.Result)
+	require.Equal(t, AttributionDeleteCollectionBodyUID, resolution.Result)
 	require.Equal(t, "alice", resolution.Fact.Author,
 		"the removal was caused by alice's collection delete, not by bob's earlier update")
 
@@ -758,8 +807,8 @@ func TestFactIndex_ARemovalWaitsForEvidenceAboutTheDeletion(t *testing.T) {
 	}()
 
 	resolution := harness.index.Await(t.Context(),
-		removalFactQuery("prod-eu-1", factIndexTestUID), 5*time.Second)
-	require.Equal(t, AttributionCollectionUID, resolution.Result)
+		removalFactQuery(factIndexTestUID), 5*time.Second)
+	require.Equal(t, AttributionDeleteCollectionBodyUID, resolution.Result)
 	require.Equal(t, "alice", resolution.Fact.Author,
 		"a removal must wait for evidence about the deletion, not settle for the last edit")
 }
@@ -774,7 +823,7 @@ func TestFactIndex_ARemovalStillNamesTheLastWriterWhenNothingBetterArrives(t *te
 
 	start := time.Now()
 	resolution := harness.index.Await(t.Context(),
-		removalFactQuery("prod-eu-1", factIndexTestUID), 150*time.Millisecond)
+		removalFactQuery(factIndexTestUID), 150*time.Millisecond)
 
 	require.Equal(t, AttributionLatest, resolution.Result)
 	require.Equal(t, "bob", resolution.Fact.Author, "waiting must not turn a match into an absence")
@@ -793,16 +842,91 @@ func TestFactIndex_ARemovalsOwnDeleteFactEndsTheWaitAtOnce(t *testing.T) {
 
 	start := time.Now()
 	resolution := harness.index.Await(t.Context(),
-		removalFactQuery("prod-eu-1", factIndexTestUID), 5*time.Second)
+		removalFactQuery(factIndexTestUID), 5*time.Second)
 
 	require.Equal(t, "carol", resolution.Fact.Author)
 	require.Less(t, time.Since(start), 2*time.Second, "a delete fact must not be held as a fallback")
 }
 
+// TestFactIndex_TheRemovalPointerOutlivesTheTTL pins the horizon the removal pointer deliberately
+// does not share with the rest of the index.
+//
+// This is the replay case. An object left Terminating by a hung finalizer is first OBSERVED hours
+// later, after a restart, a rollout, or a 410 rebuild collapses the watch to CURRENT state: there is
+// no transition event, the file is still in Git, and that first observation renders as a DELETE.
+// Every ordinary tier holding the deleter's fact aged out long before, so the commit is authored
+// unresolved — after sitting out the whole grace window on the shard's serial goroutine, waiting for
+// a fact that can never arrive. The pointer turns that into an immediate hit.
+func TestFactIndex_TheRemovalPointerOutlivesTheTTL(t *testing.T) {
+	const ttl = 300 * time.Millisecond
+	harness := newFactIndexHarness(t, FactIndexConfig{TTL: ttl})
+	deleteFact := objectFact("alice", "101")
+	deleteFact.Verb = "delete"
+	harness.publish(factIndexTestStream("prod-eu-1"), deleteFact)
+	// Exact, latest, and the removal pointer: one delete fact carrying a uid and an rv fills all three.
+	harness.waitForFacts(3)
+
+	time.Sleep(3 * ttl)
+	require.Equal(t, 2, harness.index.Sweep(time.Now()), "the two TTL-bounded entries are reclaimed")
+
+	// The ordinary tiers are gone, including the exact join for the version the deletion stamped.
+	require.Equal(t, AttributionAbsent,
+		harness.index.Lookup(objectQuery("prod-eu-1", factIndexTestUID, "101", true)).Result)
+
+	resolution := harness.index.Lookup(removalFactQuery(factIndexTestUID))
+	require.Equal(t, AttributionDeleteSticky, resolution.Result,
+		"a removal still reaches the pointer once every TTL-bounded tier has expired")
+	require.Equal(t, "alice", resolution.Fact.Author)
+	require.Equal(t, 1, harness.index.Len(), "and the pointer is what the index is still holding")
+}
+
+// TestFactIndex_ARecreatedNameDoesNotInheritThePreviousDeleter pins why the pointer is keyed on the
+// uid and nothing else.
+//
+// A uid is unique across space and time, which is the whole argument for letting the pointer outlive
+// the TTL: the statement can never be superseded. A NAME has no such property — it is reused after a
+// delete and recreate — so the same stickiness on the name tier would not be this fix, it would be a
+// defect that a longer horizon makes MORE likely rather than less. The name tier stays bounded by
+// the TTL exactly as before.
+func TestFactIndex_ARecreatedNameDoesNotInheritThePreviousDeleter(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	key := factIndexTestStream("prod-eu-1")
+	deleted := AuthorFact{
+		Namespace: "team-a", UID: "uid-old", Name: "checkout",
+		ResourceVersion: "101", Author: "alice", Verb: "delete",
+	}
+	recreated := AuthorFact{
+		Namespace: "team-a", UID: "uid-new", Name: "checkout",
+		ResourceVersion: "202", Author: "bob", Verb: "update",
+	}
+	harness.publish(key, deleted, recreated)
+	harness.waitForFacts(5)
+
+	// The recreated object is removed in its turn. It shares the name, and nothing else.
+	removal := FactQuery{
+		AuditRoute:      "prod-eu-1",
+		GroupResource:   deploymentsGroupResource(),
+		UID:             "uid-new",
+		ResourceVersion: "999",
+		Namespace:       "team-a",
+		Name:            "checkout",
+	}
+	resolution := harness.index.Lookup(removal)
+	require.NotEqual(t, "alice", resolution.Fact.Author,
+		"the previous object's deleter must not be inherited through a reused name")
+	require.Equal(t, "bob", resolution.Fact.Author)
+	require.Equal(t, AttributionLatest, resolution.Result, "which leaves the ordinary fallback")
+
+	// The first object's pointer is untouched by any of that: it is a statement about a uid.
+	previous := harness.index.Lookup(removalFactQuery("uid-old"))
+	require.Equal(t, AttributionDeleteSticky, previous.Result)
+	require.Equal(t, "alice", previous.Fact.Author)
+}
+
 // removalFactQuery is a DELETE watch event: its resourceVersion is never the one a write produced.
-func removalFactQuery(route, uid string) FactQuery {
+func removalFactQuery(uid string) FactQuery {
 	return FactQuery{
-		AuditRoute:      route,
+		AuditRoute:      "prod-eu-1",
 		GroupResource:   deploymentsGroupResource(),
 		UID:             uid,
 		ResourceVersion: "999",
