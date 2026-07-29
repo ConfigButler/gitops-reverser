@@ -79,7 +79,23 @@ Nothing about the join can tell those two apart. Whether a deletion is attribute
 on how quickly a controller cleans up, which is a property of the cluster's workloads.
 
 **The more finalizers an object carries, the likelier the wrong answer**, exactly as the report
-says — each finalizer controller adds another write that can land inside the batch window.
+says: each finalizer controller adds another write that can land inside the batch window.
+
+### The second trigger: a hung finalizer plus a restart
+
+A finalizer that hangs — days, when nobody notices — is the *safe* case for as long as the operator
+stays up. The file left Git at the transition, attributed to the human, and the eventual finalizer
+clear and terminal `DELETED` both fold to no-ops against the already-absent path. Slower is better.
+
+It stops being safe the moment the operator is not running at the transition. A restart, a rollout,
+a `GitTarget` created later, a `410` rebuild — after any of them the watch collapses to CURRENT
+state, so there is no transition event to observe. The first observation is of an object already
+`Terminating`, the file is still in Git, that observation renders as a `DELETE`, and a real commit
+lands. The human's fact aged out hours ago, so that commit is authored `unresolved`, or picks up
+whichever fact is still inside the TTL — during cleanup, plausibly the finalizer controller's.
+
+A hang does not cause this. It widens the window in which an ordinary restart does, from seconds to
+days, which turns an unlucky coincidence into an expected one.
 
 ### What the current code does get right
 
@@ -107,9 +123,8 @@ ranking happens.
 
 Concretely: file a fact whose verb is a removal into a **removal slot** keyed by uid, and let a
 later non-removal fact fill the ordinary tiers without touching that slot. `lookupRemoval` consults
-the removal slot first. The slot ages out on the same TTL as everything else, so a name reused after
-a delete-and-recreate cannot inherit a stale deleter — the same bound that already protects the name
-tier.
+the removal slot first. How long the slot lives is its own decision, and not the join TTL — see
+[the horizon](#how-long-it-should-live-and-why-that-is-not-the-ttl).
 
 Sketch, in [`file`](../../internal/queue/fact_index.go):
 
@@ -137,6 +152,40 @@ The ordering change is what makes it reachable.
   may not overwrite. That deserves the comment it will get — the reason is that "who deleted this"
   is a question a later write cannot answer, which is not true of any other tier.
 
+### How long it should live, and why that is not the TTL
+
+The removal pointer should outlive the join TTL, and be bounded by **count rather than time**.
+
+Every other structure in the index must expire for correctness. `exact` and `latest` can be
+superseded by a later write. The name tier must expire because a **name** is reused after a
+delete-and-recreate, which is exactly why it ranks last. A uid-keyed removal statement has neither
+failure mode:
+
+> **A uid is unique across space and time.** "uid X was deleted, and this actor asked for it" can
+> never be superseded, because that object can never be written again, deleted again, or recreated
+> under the same uid.
+
+So holding it for a day is not less accurate than holding it for ten minutes, only more expensive,
+and the question stops being "how long is safe" and becomes "how much memory will we spend". That
+argues for a per-type LRU of recent removals, aged out under pressure rather than by a clock: a
+cluster that deletes rarely keeps its removals for a very long time at no cost, and a busy one keeps
+the most recent, which are the ones a replay is most likely to need. It fits the index's existing
+shape — bounded per type and in total, evictions counted — and it needs no new number for an
+operator to tune.
+
+**Strictly uid-keyed.** The same stickiness on the name tier would be a defect rather than a fix: a
+name reused after a recreate would inherit the previous object's deleter, and a longer horizon makes
+that more likely, not less. The TTL is what bounds that risk today and must keep bounding it.
+
+### The payoff that is not correctness
+
+A `Terminating` object seen on replay resolves `absent` today, which means it waits out the **whole**
+grace window for a fact written days ago that can never arrive — on the shard's single goroutine,
+with every later event queued behind it. That is the head-of-line cost
+[attribution-branch-findings.md](attribution-branch-findings.md) measured. A removal pointer that
+outlives the TTL turns that full-grace wait into an immediate hit, so a cluster carrying objects
+stuck `Terminating` stops paying a grace per replayed event.
+
 ### The alternative, and why it is second
 
 **File every delete fact under the name tier as well**, so it survives the uid tiers being
@@ -157,6 +206,9 @@ The metrics that shipped in the attribution surface make this observable without
   `sum by (tier) (rate(gitopsreverser_attribution_resolutions_total[5m]))`.
 - `commits_total{author_kind}` shifts from `serviceaccount` toward `user` for the affected types —
   the bottom line the report is actually about.
+- The removal wait collapses for `Terminating` objects seen on replay, which today spend a full
+  grace each:
+  `histogram_quantile(0.95, sum by (le) (rate(gitopsreverser_attribution_resolution_wait_seconds_bucket{event_kind="removal"}[5m])))`.
 - The corpus test inverts: the "both facts applied" case names the human, and the assertion that
   currently pins the defect becomes the assertion that pins the fix.
 
