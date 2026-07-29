@@ -1,401 +1,297 @@
 # Proposal: the attribution metric surface
 
-The attribution metrics have grown one label at a time. Two of them now answer questions nobody asked,
-and ten things that matter have no metric at all, including two the design record leaves explicitly
-open because they cannot be settled without data. This proposes a consolidated surface: what to
-rename, what to split, and what to add.
+Revised after review. An earlier draft proposed thirteen new metric families at once and four of them
+would have produced misleading diagnoses. The corrections are spelled out in
+[what the first draft got wrong](#what-the-first-draft-got-wrong), because two of the mistakes are
+the kind that stay invisible: a series that is always zero, and a gauge that moves in the right
+direction while counting the wrong thing.
 
-## Why now, specifically
+What survives is a smaller first release that covers normal-operation health and the loss paths
+nothing can currently see, plus a deferred set with the preconditions each one needs.
 
-**This branch has already broken the `result` label.** `exact_deletecollection_item` is gone,
-replaced by `collection_uid` and `collection_scope`, and `name` is new. Anything reading
-`result="exact_deletecollection_item"` stops matching in this release whatever else happens.
+## Why change anything now
 
-That turns the usual objection inside out. The reason to leave a metric label alone is that changing
-it breaks consumers, and the cost is paid once per break. Since this release breaks `result` already,
-finishing the job here costs the same single migration. Deferring it costs a second one later, for a
-label that will have been wrong twice.
+**This release has already broken the `result` label.** `exact_deletecollection_item` is gone with the
+`deletecollection` rework, replaced by `collection_uid` and `collection_scope`, and `name` is new.
+Anything reading the old value stops matching whatever else happens.
 
-The second reason is that nothing consumes these yet. There are no dashboards or alerts to rewrite,
-so the change is a documentation exercise rather than a coordination one. That will not be true
-forever, which is the argument for doing it in the release that is already breaking.
+The usual reason to leave a label alone is that changing it breaks consumers, and that cost is paid
+once per break. Since this release breaks `result` already, finishing the job costs the same single
+migration; deferring it costs a second one later, on a label that will have been wrong twice. Nothing
+consumes these metrics yet, which will not stay true.
 
-## Principles this applies
+That argument covers the renames. It does not cover new metric families, which is why they are phased.
 
-1. **A label names one dimension.** If a value encodes two things, it needs two labels.
-2. **`result` names the TIER, not the confidence.** The tier ladder is the model; the metric should
-   be readable against the code without a translation table.
-3. **Every silent drop gets a counter.** A record the system discards without recording it is a bug
-   that can only be found by reading a corpus, which is how the last one was found.
-4. **Prefer a gauge or histogram that names its unit.**
+## Phase 1: the set to build now
 
-## Existing metrics: proposed changes
-
-| Now | Proposed | Why |
+| Change | Kind | Why it is in the first release |
 |---|---|---|
-| `attribution_resolutions_total{result=exact_user\|exact_serviceaccount\|weak\|…}` | `attribution_resolutions_total{tier, actor_kind}` | `result` mixes the tier with who the actor was; see below |
-| `attribution_resolution_wait_seconds{result,…}` | `attribution_resolution_wait_seconds{tier, event_kind}` | the wait story is about removals, and the metric cannot currently say whether a wait was one |
-| `attribution_fact_events_total{op}` | `attribution_facts_total{stage}` | "events" collides with audit events and watch events, the two other things called events here |
-| `attribution_fact_index_size` | `attribution_fact_index_entries` | a gauge should name what it counts |
-| `attribution_collection_degraded_total{reason}` | `attribution_collection_without_uidset_total{reason}` | "degraded" suggests something broke; the scope join is correct, the precise one was merely unavailable |
-| `attribution_fact_index_evictions_total{reason}` | unchanged | already says what it counts |
-| `attribution_fact_stream_gaps_total{stream}` | unchanged | already says what it counts |
+| `result` becomes `tier` plus `actor_kind` | label rework | the break is already happening |
+| `weak` splits into `latest` and `resource_version` | label rework | same break, and `latest` is the tier the removal path turns on |
+| `event_kind` on the wait histogram | new label | the wait behavior differs entirely between writes and removals |
+| `watch_event_queue_seconds` | new family | head-of-line delay, the failure mode that broke a spec |
+| follower errors and last-success timestamp | new family | a wedged follower is silent today |
+| `no_attribution_fact` outcome on `audit_events_total` | new value, existing counter | the population that produces no fact, counted where the decision is made |
+| a stream-entry decode-error counter | new family | undecodable entries are dropped and skipped past with no log and no metric |
+| `attribution_transport_info` | new family | changes how every other metric here is read |
+| the four low-risk renames | rename | free while the surface is moving |
+
+Everything else waits. The renames are in [the table below](#the-renames).
 
 ### `result` becomes `tier` plus `actor_kind`
 
-Today `result` has seven values and two of them are the same tier seen twice:
+Today `result` has seven values and two of them are one tier seen twice:
 
 ```text
 exact_user  exact_serviceaccount  weak  collection_uid  collection_scope  name  absent
 ```
 
-`exact` is the only tier that also encodes who the actor was. So counting exact resolutions means
-summing two series, and the actor kind cannot be asked of any other tier at all. There is no way to
-learn how many `name` or `collection_uid` resolutions named a service account, because that dimension
-does not exist there.
+`exact` is the only tier that also encodes who the actor was, so counting exact resolutions means
+summing two series, and the actor kind cannot be asked of any other tier. There is no way to learn
+how many `name` or `collection_uid` resolutions named a service account.
 
-The codebase already models this correctly one metric over: `gitopsreverser_commits_total` carries
-`author_kind` with `user`, `serviceaccount`, `committer` and `unresolved`. Two metrics currently
-disagree about the shape of one distinction.
-
-**Proposed:**
+`gitopsreverser_commits_total` already carries `author_kind` with `user`, `serviceaccount`,
+`committer` and `unresolved`, so two metrics currently disagree about the shape of one distinction.
 
 | Label | Values |
 |---|---|
 | `tier` | `exact`, `latest`, `resource_version`, `name`, `collection_uid`, `collection_scope`, `absent` |
 | `actor_kind` | `user`, `serviceaccount`, `none` |
 
-`actor_kind=none` pairs with `tier=absent`, and lines up with `commits_total`'s `unresolved`.
-
-### `weak` is also two tiers
-
-While `result` is being changed: `weak` currently covers a `latest` (uid) match AND the rv-only
-hatch, which are different evidence. A `latest` match is the object's own last write; an rv-only
-match is a fact that had a resourceVersion and no uid at all. Splitting them into `latest` and
-`resource_version` makes the label exactly the tier ladder, one value per rung, which is the point of
-principle 2.
-
-This matters more than it looks. The removal path turns on the `latest` tier specifically, and the
-measurement that found the window race had to infer "these were `latest` matches held as fallbacks"
-from a wait distribution, because the metric could not say it.
+**`weak` splits at the same time.** It currently covers both a `latest` (uid) match and the rv-only
+hatch, which are different evidence: the object's own last write against a fact that had a
+resourceVersion and no uid. The removal path turns on `latest` specifically, and the measurement that
+found the window race had to infer "these were `latest` matches held as fallbacks" from a wait
+distribution because the label could not say it.
 
 ### `event_kind` on the wait histogram
 
-`ExactCapable` splits every query into a write or a removal, and the entire wait design differs
-between them: a removal holds a fallback and keeps waiting, a write does not. The histogram cannot
-currently distinguish an absent write from an absent removal, which are very different stories.
+`ExactCapable` splits every query into a write or a removal, and the wait design differs completely
+between them: a removal holds a fallback and keeps waiting, a write does not. Today the histogram
+cannot distinguish an absent write from an absent removal. Adding `event_kind` = `write` / `removal`
+makes the removal wait directly queryable, which is the number anyone tuning the grace needs.
 
-Adding `event_kind` = `write` / `removal` costs one label and makes the removal wait directly
-queryable, which is the number anyone tuning the grace needs.
+### `watch_event_queue_seconds`
 
-## New metrics
+`gitopsreverser_watch_event_queue_seconds{group, version, resource}`, a histogram of how long a watch
+event waited between arriving on its shard and being picked up.
 
-### 1. The fact lifecycle, including what is discarded
+The failure that broke an e2e spec was not a slow resolution. It was the delay a slow resolution
+imposed on the events queued behind it on the same single-threaded shard, and nothing measures that.
+The wait histogram times each resolution in isolation; the ten-second window delay was only visible
+by correlating two log lines by hand.
 
-The gap that cost the most. When `file` matches no case it returns no keys, `Apply` records nothing,
-and the fact vanishes. So `written` minus `matched` conflates two populations that need different
-responses: facts nobody happened to need, and facts nobody could ever have joined.
+This is also the pressure signal that makes a separate "resolvers waiting" gauge unnecessary for now.
 
-That second population is not rare or theoretical. It is every aggregated-API create, and before the
-name tier it was every delete the API server answered with a `Status`. The window race lived there
-for the whole branch, and no counter moved.
+### Follower health
 
-**Proposed:** `gitopsreverser_attribution_facts_total{stage}` with stages
+`attribution_fact_follower_errors_total` plus
+`attribution_fact_follower_last_success_timestamp_seconds`.
 
-| Stage | Meaning |
+When the follower fails, `Run` logs and retries with a backoff, and nothing counts it. A follower
+that is flapping, or wedged and retrying forever, degrades attribution to committer-authored across
+the board, with a rising unresolved rate as the only symptom and nothing pointing at the cause.
+
+The timestamp matters more than the counter. A counter says errors are happening; only the timestamp
+distinguishes "erroring occasionally while making progress" from "has not read anything in ten
+minutes", and only the second is an outage.
+
+### `no_attribution_fact` on `audit_events_total`
+
+[`internal/audit/outcome`](../../internal/audit/outcome/outcome.go) is already the single bounded
+vocabulary for what ingestion did with one event, with a derived `Category` and an e2e invariant that
+gates on `category="error"` being zero. An event that is accepted but yields no attribution fact has
+no terminal value there today.
+
+Adding one, in the `Dropped` category rather than `Error`, counts that population at the point where
+the decision is made and where the event's type and verb are still on the label set. That is where
+the aggregated-API create shows up: it is rejected before publication, so no fact-side counter can
+ever see it.
+
+### A decode-error counter for stream entries
+
+This is the gap the "every silent drop gets a counter" principle should have caught first and did
+not. Both transports do the same thing with an entry they cannot decode:
+
+```go
+facts, err := factsFromMessage(messages[j])
+if err != nil {
+    continue
+}
+```
+
+and then advance the cursor past it. No log, no metric, no retry. A malformed or future-schema entry
+is discarded and the follower moves on as though it had read it.
+
+`attribution_fact_stream_decode_errors_total` is the whole fix. It belongs in the first release
+because it is the one loss path with no symptom at all: unlike a trim gap it is not detectable after
+the fact, and unlike a publish failure the API server does not retry it.
+
+### `attribution_transport_info{transport}`
+
+An info gauge, value always 1, with `transport="redis"` or `transport="memory"`.
+
+It is in the first release despite being a new family because it is interpretive metadata rather than
+a signal: the two transports have different failure modes, and the same symptom means different
+things under each. A burst of unresolved commits after a restart is expected under the in-memory
+transport, which loses every fact on restart by design, and is a bug under Redis. Reading any of the
+other metrics without knowing which is in force is reading them without knowing the contract.
+
+If the first release needs to be smaller still, this is the one to cut.
+
+## What the first draft got wrong
+
+Each of these was checked against the code. They are recorded rather than deleted, because the reason
+each was wrong is more useful than the corrected proposal.
+
+### `published - filed` is not delivery loss
+
+The draft proposed a lifecycle counter whose stages could be subtracted: `published` minus `filed`
+for delivery loss, `filed` minus `matched` for facts that went unused.
+
+The subtraction is invalid. `published` counts every fact appended by the audit receiver, for every
+type. `filed` would count only facts arriving on streams **this process follows**, which is a subset
+chosen by which watches are running. Replay compounds it: a restart re-reads the retention window and
+files the same facts again, so the second number can exceed the first without anything being wrong.
+
+Two counters over different populations do not subtract. Delivery loss has to be measured where
+delivery happens, which is what the follower health signals above do.
+
+### `unfilable` would be a permanently zero series
+
+The draft claimed a stage for facts the index can file under no key, and that it would show "every
+aggregated-API create".
+
+It would show neither. The publish gate rejects an event with no resolvable name unless it is a
+collection verb, so a fact reaching the index always has a name, a uid, an rv, or is a collection
+fact. With the name tier in place every one of those files somewhere. The `default` branch in `file`
+is unreachable, and a counter on it would be a flat zero that reads as health.
+
+The aggregated create is the population the draft was reaching for, and it never becomes a fact at
+all: it is rejected before publication. Counting it is what the `no_attribution_fact` outcome above
+does, on the ingestion side where the event still exists.
+
+### The named failure metric does not exist
+
+The draft said publish failures are already visible as `audit_eventlist_*{outcome="write_error"}`.
+
+`write_error` is a value on `gitopsreverser_audit_events_total`, which is per event. The
+`audit_eventlist_*` families are request-level and carry a different outcome set. An alert written
+against the name in the draft would report zero forever, which is the worst failure mode a monitoring
+change can have.
+
+### `facts_filed_total{tier}` conflates two models
+
+The draft proposed counting facts by the tier they were filed under, to show the publish-side
+distribution.
+
+Tiers are resolution outcomes, and they do not partition facts. A fact with a uid and a
+resourceVersion is filed under **both** `exact` and `latest`, which the publish-side documentation in
+this repository states explicitly. Counting by tier would double-count the most common fact shape and
+skew the distribution toward the tier that matters least.
+
+The question underneath it stays interesting: what shape are facts arriving in, and how many carry
+only a name. That needs a fact-shape taxonomy (`uid_rv`, `uid_only`, `rv_only`, `name_only`,
+`collection`), which is a different label with different values. Deferred rather than renamed,
+because it needs designing rather than editing.
+
+### `resolvers_waiting` would count registrations
+
+The draft proposed a gauge incremented when a resolver registers its waiter keys.
+
+`Await` registers **before** its first lookup, deliberately, so that a fact arriving in the gap wakes
+a waiter already listening. Most resolutions then return from that first lookup without ever
+blocking. A gauge incremented at registration therefore counts resolutions in flight rather than
+resolvers blocked, and it would read as pressure on a healthy system.
+
+An earlier revision of this document also claimed the existing `factWaiterRegistry.len()` could be
+exported directly. It cannot: `len()` returns the number of candidate KEYS holding a waiter, and one
+resolver registers under several, so it over-counts by roughly the tier fan-out.
+
+If it is built later it has to be incremented around the blocking `select` alone.
+`watch_event_queue_seconds` measures the same pressure and is in the first release, so this may never
+be needed.
+
+### `streams_behind` does not mean what the name says
+
+The draft treated it as a backlog depth and an early-loss indicator.
+
+`behind` is set when **the last read filled its entry budget**, meaning more was waiting when the
+read returned. It is the precondition for trim-gap detection rather than a measure of how far behind
+the follower is. A stream one entry behind and a stream a thousand entries behind carry the same
+value.
+
+Named and interpreted as drafted it would invite an alert on a condition that occurs during any
+ordinary burst. It needs redefining, or replacing with a real lag measure, before it can carry that
+meaning.
+
+### `fact_index_replay_seconds` cannot show what it was for
+
+The draft proposed measuring replay to show that a restart warms the index before serving.
+
+There is no replay-complete boundary to measure. The follower runs continuously, streams are added to
+the subscription set as watches start, and no readiness barrier gates serving on the index being
+warm. A duration recorded today would measure an arbitrary window rather than the property the metric
+was proposed to prove.
+
+The boundary has to exist first. That is a design change with its own value, and it is the same
+question the fact-stream record leaves open about HA handover: whether a replica must warm its index
+before starting a watch it has taken over. Build the barrier, then measure it.
+
+## Deferred, and what has to be true first
+
+| Deferred | Precondition |
 |---|---|
-| `published` | appended to the fact log by the audit receiver |
-| `filed` | landed in the index under at least one key |
-| `unfilable` | reached the index and could be filed under nothing |
-| `matched` | joined by a watch event |
+| `fact_index_replay_seconds` | a replay-complete boundary and a readiness barrier exist |
+| the four stream-scaling metrics | the followed-stream count is large enough to be in question, and `behind` is redefined as real lag |
+| fact-shape distribution | a shape taxonomy distinct from the tier taxonomy |
+| `resolvers_waiting` | queue delay proves insufficient, and it is measured around the blocking select |
+| `fact_index_expired_total` | wanted when tuning the TTL or the caps; low risk, low urgency |
 
-`published` minus `filed` is delivery loss. `filed` minus `matched` is facts that were joinable and
-went unused. `unfilable` is the population that can never be attributed, and it should be a named,
-graphable number rather than a discovery.
+The stream-scaling set was designed in an earlier revision of this document and that design stands on
+its own merits. What changed is the ordering: it is an investigation suite for a question nobody has
+observed a problem with, and building it before the health signals above inverts the priority. The
+part worth keeping in view is that a count alone cannot answer whether the stream count is reasonable,
+because the same number is fine or fatal depending on what it costs.
 
-### 2. The publish-side tier distribution
+## The renames
 
-**Proposed:** `gitopsreverser_attribution_facts_filed_total{tier}`, with the same tier values as the
-resolution metric.
-
-This answers what shape the facts are arriving in: how many carry a uid, how many only a name.
-That ratio is the whole aggregated-API story, and today it can only be learned by reading the index
-in a debugger. Together with the resolution metric it also shows the two sides in one query: filed
-under `name`, matched at `name`.
-
-### 3. Head-of-line delay on the watch shard
-
-The failure that broke a spec was not a slow resolution. It was the delay a slow resolution imposed
-on the events queued behind it, and nothing measures that. The wait histogram times each resolution
-in isolation; the ten-second window delay was only visible by correlating two log lines by hand.
-
-**Proposed:** `gitopsreverser_watch_event_queue_seconds{group, version, resource}`, a histogram of
-how long a watch event waited between arriving on its shard and being picked up for processing.
-
-That is the honest measure of the blocking, it is cheap (one timestamp per event), and it would alert
-on the condition rather than on one of its symptoms. An optional companion,
-`gitopsreverser_watch_shard_backlog`, gauges depth if the histogram proves too coarse.
-
-## Gaps found by re-reading the design record
-
-[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) makes a series of operational
-claims and leaves three questions explicitly open. Tracing each to a metric finds seven more things
-nothing can see, two of which are open questions the design says need data before they can be
-answered.
-
-| What the design says | Metric today | Proposal |
+| Now | Proposed | Why |
 |---|---|---|
-| A follower that fails is retried with a backoff | log line only | `attribution_fact_follower_errors_total` |
-| Replay from the TTL horizon makes a restart cost nothing | none | `attribution_fact_index_replay_seconds`, `attribution_fact_index_replayed_total` |
-| A process follows only the types it watches; "does the per-type stream count stay reasonable?" (open question) | none | four metrics, [designed below](#designing-the-stream-count-metrics-properly) |
-| "Nothing bounds one entry's size today" (open question) | none | `attribution_fact_entry_facts` |
-| Entries age out by TTL; eviction is the loss case | evictions only | `attribution_fact_index_expired_total`, [designed below](#the-three-cheap-ones-designed) |
-| The shard blocks while a resolver waits | none | `attribution_resolvers_waiting`, [designed below](#the-three-cheap-ones-designed) |
-| The transport is selectable, memory or Redis | none | `attribution_transport_info{transport}`, [designed below](#the-three-cheap-ones-designed) |
+| `attribution_resolutions_total{result}` | `{tier, actor_kind}` | one label, two dimensions |
+| `attribution_resolution_wait_seconds{result}` | `{tier, event_kind}` | same, plus the write and removal split |
+| `attribution_fact_events_total{op}` | `attribution_facts_total{op}` | "events" already means audit events and watch events |
+| `attribution_fact_index_size` | `attribution_fact_index_entries` | a gauge should name what it counts |
+| `attribution_collection_degraded_total{reason}` | `attribution_collection_without_uidset_total{reason}` | nothing broke; the precise join was unavailable |
 
-Already covered, listed so nobody adds it twice: a failed `XADD` propagates out of the audit handler
-and is counted as `audit_eventlist_*{outcome="write_error"}`, so publish failure is visible. It is
-conflated with other write errors, which is tolerable.
+`attribution_fact_index_evictions_total{reason}` and `attribution_fact_stream_gaps_total{stream}` are
+unchanged and stay as they are.
 
-### The two that answer open design questions
+## Reconciling with the canonical plan
 
-**Facts per entry.** The record asks whether one entry per type per request is the right granularity,
-notes that a single entry can carry hundreds of facts, and says plainly that `DefaultFactStreamMaxLen`
-bounds a stream in entries rather than bytes, so nothing bounds one entry today. That question cannot
-be settled by argument. A histogram of facts per appended entry, and its tail in particular, says
-whether an entry-size ceiling is needed or whether the concern is theoretical.
+[`metrics-observability-plan.md`](metrics-observability-plan.md) declares itself the single canonical
+metrics plan and supersedes per-feature metric notes. Its attribution taxonomy and this proposal
+cannot both be right, and its version is already inconsistent with the code:
 
-**Streams followed.** The record asks whether the per-type stream count stays reasonable, observing
-that one `XREAD` across a few dozen streams is ordinary but several hundred would want checking. A
-count on its own cannot answer that, because the same number is fine or fatal depending on what it
-costs, so it needs the size, the shape and the cost together. Designed in full
-[below](#designing-the-stream-count-metrics-properly).
-
-### Designing the stream-count metrics properly
-
-"Does the per-type stream count stay reasonable?" cannot be answered by a count alone. A count with
-no cost attached to it is a number nobody can act on: three hundred streams is fine or a problem
-depending entirely on what it does to the read cycle. So this needs the size, the shape, and the
-cost.
-
-#### What scales, and how
-
-One reader goroutine issues a single blocking `XREAD` across the whole followed set, re-issued every
-block period so a subscription change lands within one. Reading the implementation, the per-cycle
-cost has two parts:
-
-- **The `XREAD` argument list is O(streams).** Every key and every last-seen ID is serialized into
-  the command, and the command is re-issued roughly once a second. This grows with the set whether or
-  not anything is happening.
-- **Gap detection is O(streams that are behind), not O(streams).** `detectGaps` issues one `XRangeN`
-  per target marked behind and skips the rest, so a caught-up follower pays nothing extra. Under load
-  it pays one extra round trip per lagging stream, in the same cycle.
-
-That second one is the interesting shape. The set size alone never tells you the follower is
-struggling; the number of streams behind does, and it does so before any facts are lost.
-
-#### The four metrics
-
-| Metric | Type | Labels | Placement |
-|---|---|---|---|
-| `attribution_fact_streams_followed` | gauge | `route` | `FactStreamSet`, on change |
-| `attribution_fact_streams_behind` | gauge | none | the follower, per cycle |
-| `attribution_fact_stream_read_seconds` | histogram | `outcome` | around `Next` |
-| `attribution_fact_stream_set_changes_total` | counter | `op` | `FactStreamSet`, on change |
-
-**`attribution_fact_streams_followed{route}`** is the headline. It is labeled by route and NOT by
-type, deliberately: routes are bounded by how many clusters an install mirrors, which is small, while
-types are exactly the unbounded thing being measured. A per-stream gauge would make the metric itself
-the scaling problem it is meant to detect.
-
-Summing gives the total; splitting by route separates the two ways the number grows, which have
-different answers. More types on one cluster is a `WatchRule` scope question. The same types across
-more clusters is a topology question, and it multiplies.
-
-Placement is free. `FactStreamSet` already reference-counts and already notifies an observer when a
-key first appears or the last reference goes away, so the gauge is recorded on that existing edge
-rather than sampled.
-
-**`attribution_fact_streams_behind`** is the pressure reading, and the one that makes the count
-actionable. It is how many followed streams the last cycle found the follower behind on, which is
-both the extra round trips being paid and the early warning for a trim gap. A trim gap is already
-counted, but a gap is loss that has already happened; this is the same condition before it costs
-anything.
-
-**`attribution_fact_stream_read_seconds{outcome}`** is the cost, and the label is load-bearing. When
-nothing is happening, `Next` blocks for the whole block period and returns empty, so an unlabelled
-histogram would be dominated by the idle case and say nothing. Outcomes:
-
-| `outcome` | Meaning |
+| It specifies | The code has |
 |---|---|
-| `delivered` | the read returned entries; this is the bucket to read |
-| `idle` | the block period elapsed with nothing on any stream |
-| `error` | the read failed and the follower will back off and retry |
+| `result` includes `conflict` and `expired` | neither value exists |
+| `attribution_fact_events_total{op}` includes `expired_unmatched` and `late` | neither op exists |
+| `attribution_fact_index_size` is "facts parked in **Redis**" | the index has been in process memory since the fact-stream work |
 
-`delivered` against `attribution_fact_streams_followed` is the whole question in one query.
+So this is not a choice between two live designs. The canonical plan drifted when the fact-stream
+work landed, and this proposal has to update it rather than sit beside it.
 
-**`attribution_fact_stream_set_changes_total{op=subscribe|unsubscribe}`** is churn. A set that keeps
-changing means the reader keeps re-issuing, and the cost of a large set is paid more often than once
-per block period. Steady state should be flat; a rising line means watches are being torn down and
-rebuilt, which is a different problem wearing this one's clothes.
-
-#### What "reasonable" then means
-
-The test is a relationship, not a threshold, and that is the point of pairing the count with the
-cost:
-
-| Question | Query |
-|---|---|
-| How many streams, and where does the growth come from? | `sum by (route) (attribution_fact_streams_followed)` |
-| Does read cost track stream count? | `histogram_quantile(0.99, attribution_fact_stream_read_seconds{outcome="delivered"})` against the gauge |
-| Is the follower keeping up? | `attribution_fact_streams_behind` |
-| Is the set thrashing? | `rate(attribution_fact_stream_set_changes_total[5m])` |
-
-Read together they give three distinguishable answers rather than one number:
-
-- **Fine.** The count grows, `streams_behind` stays near zero, and `delivered` latency is flat. The
-  record's worry was theoretical, and that is now a measurement rather than an assumption.
-- **The read is the cost.** Latency tracks the count while nothing is behind. The `XREAD` argument
-  list is the problem, and the fix is sharding the set across more than one reader.
-- **The follower is the cost.** `streams_behind` climbs. The reader cannot keep up with the volume,
-  and stream count is a symptom rather than the cause. Trim gaps follow if it is not addressed.
-
-Only the third of those is urgent, and today all three look identical from outside.
-
-#### Optional: streams written but never followed
-
-The design notes a stream written for a type nobody watches, trimmed away unread. Counting those
-would size the waste, but it needs publisher-side bookkeeping the publisher does not have today, and
-the cost is a `MAXLEN`-capped stream that expires on its own. Worth naming as understood rather than
-overlooked; not worth building first.
-
-### The one that would fail silently
-
-**Follower errors.** When the follower fails, `Run` logs and retries with a backoff. Nothing counts
-it. A follower that is flapping, or wedged and retrying forever, degrades attribution to
-committer-authored across the board, and the only symptom is a rising unresolved rate with nothing
-pointing at the cause. This is the same class of failure as the unfilable fact: a real loss with no
-number attached.
-
-A counter is the minimum. A `last successful read` timestamp gauge would be better, because it
-distinguishes "erroring occasionally" from "has not read anything in ten minutes", and only the
-second is an outage.
-
-### Restart warmth, which an HA decision depends on
-
-The design leans on replay: on start and on reconnect the reader begins from the retention horizon,
-so "the index is populated with the whole retention window before the first watch event needs it,
-which is what makes a restart cost nothing". Nothing measures whether that holds in practice.
-
-It also matters beyond a restart. The record's own last open question asks whether, under HA, a
-replica must warm its index before starting a watch it has taken over, and calls the ordering "a
-small decision with a visible effect". The effect is only visible with a metric: how long the replay
-took, and how many facts it loaded. Without one, the decision is guesswork now and unverifiable
-afterward.
-
-### The three cheap ones, designed
-
-| Metric | Type | Labels | Placement |
-|---|---|---|---|
-| `attribution_fact_index_expired_total` | counter | none | the sweep call site |
-| `attribution_resolvers_waiting` | gauge | none | `factWaiterRegistry`, on register and unregister |
-| `attribution_transport_info` | gauge, always 1 | `transport` | transport selection in `cmd/main.go` |
-
-#### TTL expiry versus eviction
-
-Two different things shrink the index and only one of them is loss. Eviction means the cap was hit
-and a fact was dropped before anything could join it. Expiry means a fact reached the end of its TTL
-having done its job, or having never been needed. Today only the first is counted, so the index size
-gauge falls and nothing says which happened.
-
-The pairing is what makes it useful, and it answers a question that comes up whenever either number
-is tuned: **which constraint is binding?**
-
-| Shape | Reading |
-|---|---|
-| expiries dominate, evictions near zero | the TTL is the binding constraint; the caps have headroom |
-| evictions climbing | the cap is binding and facts are dying before their TTL, which is real loss |
-| both near zero on a busy install | the index is not turning over; suspect a stalled follower |
-
-**Placement is one line.** `Sweep` already returns the number it dropped, and the caller at the
-sweep interval discards it. No new bookkeeping, no new lock, and it is exact rather than sampled.
-
-#### Resolvers waiting
-
-**A correction to an earlier claim in this document:** I wrote that `factWaiterRegistry.len()` could
-be exported directly. It cannot, and the difference matters. `len()` returns the number of candidate
-KEYS that currently have a waiter, and one resolver registers under several keys, one per tier its
-query could resolve through. So `len()` over-counts blocked resolvers by roughly the tier fan-out,
-and by a factor that varies with which tiers each query supports. Exported as "resolvers waiting" it
-would be wrong in a way nobody would catch, because it moves in the right direction.
-
-What is wanted is the count of live waiters: incremented in `register`, decremented in `unregister`,
-both of which already take the registry lock, so it adds no contention. Still cheap, but not the
-existing function.
-
-**What it says.** A resolver blocked is not by itself a problem. The whole design expects the fact to
-be late, which is why a grace exists. The number to watch is the SUSTAINED level against the number
-of active watch shards, because a shard resolving is a shard not processing anything else. As the
-gauge approaches the shard count, every shard is blocked and the pipeline has stopped.
-
-It is the live counterpart to `watch_event_queue_seconds`, which reports the same pressure after the
-fact. One alerts, the other explains.
-
-Left unlabelled on purpose. The queue histogram already carries `group`, `version` and `resource`, so
-the type responsible is identifiable there, and a per-type gauge would add series for a number whose
-value is in the aggregate.
-
-#### Transport in use
-
-An info gauge, the usual shape: the value is always 1 and the information is in the label,
-`transport="redis"` or `transport="memory"`.
-
-It earns its place because the two transports have different failure modes, and the same symptom
-means different things under each:
-
-- the in-memory transport loses every fact on restart by design, so a burst of unresolved commits
-  after a pod restart is expected there and a bug under Redis;
-- it is only valid with a single replica, so it is a configuration whose validity depends on
-  something the metric surface cannot otherwise see;
-- an install that intended Redis and is running in memory has no other signal saying so.
-
-Anyone reading these metrics without that label is interpreting the rest of them without knowing
-which contract is in force.
-
-## Questions this surface can answer that today's cannot
-
-| Question | Query |
-|---|---|
-| Is the fact follower healthy? | `attribution_fact_follower_errors_total` |
-| Did a restart warm its index before serving? | `attribution_fact_index_replay_seconds` |
-| Do we need an entry-size ceiling? | `attribution_fact_entry_facts` tail |
-| How many attributions named a service account, at any tier? | `sum by (actor_kind) (attribution_resolutions_total)` |
-| Are removals waiting longer than writes? | `attribution_resolution_wait_seconds{event_kind="removal"}` |
-| Are we publishing facts nobody can ever join? | `attribution_facts_total{stage="unfilable"}` |
-| Which tier carries the aggregated types? | `attribution_facts_filed_total{tier="name"}` |
-| Is a slow resolve delaying other events? | `watch_event_queue_seconds` |
-| Is the `latest` tier carrying removals, or the rv hatch? | `attribution_resolutions_total{tier="latest"}` |
-
-## Cost and risk
-
-The code cost is small. `actor_kind` is derived from the author string at read time by a function that
-already exists, so nothing new is stored or plumbed. `tier` values already exist as constants and are
-being edited in this release regardless. The two new counters are increments at points the code
-already passes through. Only the queue histogram needs a new value carried, one timestamp per watch
-event.
-
-The risk is the label break, and it is the one thing to be deliberate about. `result` disappears,
-replaced by `tier` and `actor_kind`. Renaming a label rather than adding a value means a query
-referencing `result` returns nothing rather than returning something wrong, which is the failure mode
-to prefer.
+**Proposed:** the attribution rows in the canonical plan's inventory are replaced by the Phase 1
+surface here, and this document is linked from there as the reasoning trail. A taxonomy that lives in
+two places will diverge again, and the canonical plan is the one people are told to read.
 
 ## What to write down
 
-An [`UPGRADING.md`](../UPGRADING.md) entry naming the old and new label for each metric, in a table,
-so a reader can rewrite a query mechanically. It should state plainly that `result` is gone rather
-than describing its replacement only.
+An [`UPGRADING.md`](../UPGRADING.md) entry with a table of old label and metric names against new
+ones, so a query can be rewritten mechanically. It should state that `result` is gone rather than
+only describing what replaces it.
 
-Worth noting while editing that file: its current attribution entry is headed
-`## Unreleased — … (next minor; …)`, which the house rule in [`AGENTS.md`](../../AGENTS.md)
-specifically forbids, because by the time anyone reads an upgrade guide both halves of that heading
-are false. Whoever adds the metrics entry is in the right place to fix it.
+Worth fixing while in that file: its current attribution entry is headed
+`## Unreleased — … (next minor; …)`, which [`AGENTS.md`](../../AGENTS.md) forbids, because by the
+time an upgrade guide is read both halves of that heading are false.
