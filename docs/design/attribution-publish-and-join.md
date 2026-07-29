@@ -30,11 +30,11 @@ flowchart TD
     G -->|yes| H[OBJECT fact<br/>namespace, name, uid, rv, verb, author]
 
     F --> K[file under: collection namespace]
-    H --> L{which keys<br/>does it have?}
-    L -->|uid and rv| M[file under: exact uid+rv<br/>and latest uid]
-    L -->|uid only| N[file under: latest uid]
+    H --> L{strongest key it has<br/>FIRST MATCH WINS}
+    L -->|uid and rv| M[file under: exact uid+rv<br/>AND latest uid]
+    L -->|uid, no rv| N[file under: latest uid]
     L -->|rv, no uid| O[file under: rv]
-    L -->|name only| P[file under: namespace+name]
+    L -->|name, no uid, no rv| P[file under: namespace+name]
     L -->|none of these| X
 
     style X fill:#7f1d1d,color:#fff
@@ -53,6 +53,24 @@ The body backfill is why the name gate is survivable. `objectRef` alone often la
 uid; `IdentityFromAuditEvent` fills what is missing from the request or response object, preferring
 the request object for a delete and the response object otherwise. What the event carries in its body
 therefore decides which keys the fact ends up with, and the type has nothing to do with it.
+
+### Filing picks one branch
+
+The fact keeps every field it recovered, but it is FILED under one branch only. `file` is a switch on
+the strongest key present, and the first matching case wins: a fact with a uid is not also filed
+under its name or its resourceVersion, even though it has them.
+
+That is deliberate, and the argument is reachability. The watch side always carries the object's uid,
+name and resourceVersion, so it always asks the strongest tier its event supports. A weaker duplicate
+entry for a fact that already has a stronger key could therefore never be the thing that answers a
+query. It would be an entry no lookup reaches, paid for in memory on every replica following the
+type, held for the whole TTL, and replayed on every restart.
+
+The one branch that files twice is the uid case, and only when it also has a resourceVersion: `exact`
+serves creates and updates, `latest` serves removals, and the two answer different questions about
+the same object. That is a fact serving two tiers, not a fact hedging.
+
+So the rule is: keep every field, file under exactly the keys a query could reach you by.
 
 ## Part 2: the join side, watch event to author
 
@@ -124,6 +142,104 @@ wait immediately.
 **An exact-capable event may not fall through to the removal tiers.** A create or update presents the
 resourceVersion its own write produced. If the exact tier misses, the `latest` pointer may name an
 older, different author, so the lookup skips straight to the rv hatch and the name tier.
+
+## The wait, and what changed about it
+
+The two halves are racing, and the watch side reliably wins. The API server batches audit deliveries
+(`--audit-webhook-batch-max-wait`), while the watch event is streamed, so by the time a watch event
+needs an author its fact is usually still inside the batch window. The first lookup is a
+near-guaranteed miss. That is the whole reason a grace window exists.
+
+So `Await` does three things in order:
+
+1. register a waiter for every tier this query could resolve through, BEFORE reading the index;
+2. read the index;
+3. if nothing matched, block on the waiter, the context, or the grace deadline.
+
+Registering first is what closes the race the old 150ms poll loop papered over by looking again: a
+fact delivered between steps 1 and 2 wakes a waiter that is already listening. There is no Redis call
+on this path. The fast case is a map read; the waiting case is a channel receive.
+
+### A removal waits for evidence about the deletion
+
+A match does not always end the wait. The per-object tiers are last-writer-wins, so the fact present
+earliest for a removal is usually the object's last WRITE, which says who edited it and nothing about
+who deleted it. Returning on that answered "who deleted this" with "who last edited it" whenever
+anyone had touched the object first.
+
+Such a match is now held as a fallback and the wait continues for evidence about the deletion itself.
+Waiting never costs an attribution: the worst case returns exactly what returning early would have
+returned, one grace later.
+
+### What that cost, and the fix
+
+The wait is not free, and this is the part worth knowing before tuning anything. `attachAuthor` runs
+on the watch shard's own goroutine, and a shard processes its events serially, so a removal that
+waits out its grace is **head-of-line blocking** for every later event of that type. The commit
+window for a subsequent write cannot open until its event is processed.
+
+That turned into a real failure. Measured on the e2e cluster, which runs a 10s grace, three removals
+in one run spent 20.18s between them; a later Deployment create queued behind them, its window opened
+about ten seconds late, and a CommitRequest created 105ms after the write reported `NoWindowInGrace`
+about a window that had not been allowed to exist yet.
+
+The cause was that the delete evidence was in the index and unreachable. A delete fact only has a uid
+if the API server answered the request with the object; when it answers with a `Status` the fact's
+only key is its name. `Lookup` returned as soon as the removal ladder yielded anything, and the uid
+tier yielded the last write fact, so the name-keyed delete fact below was never consulted.
+
+`lookupRemoval` now applies one rule: **a fact about the DELETION outranks a fact about a write,
+whichever key each is filed under.** The object's own delete fact answers from the uid tier, then
+from the name tier, and only then does the held write fact answer.
+
+| | before | after |
+|---|---|---|
+| `weak` | 3 resolutions, 20.18s, mean 6.73s | 2 resolutions, 0.28s, mean 0.14s |
+| `name` | never reached | 2 resolutions, 0.60s, mean 0.30s |
+| total resolver wait | **21.24s** | **1.63s** |
+
+Still open: the head-of-line block itself. A removal with no delete fact coming at all (a type the
+audit policy excludes) still stalls its shard for a whole grace. This change removes the
+largest population that was hitting it; it does not change that a blocking resolve on a serial
+goroutine can do this at all. See
+[`attribution-removal-wait-options.md`](attribution-removal-wait-options.md).
+
+## Why it is split into two halves at all
+
+The split is not an accident of layering. Three requirements each rule out the obvious alternative of
+resolving an author inside the audit receiver, or handing it to the watcher over a channel.
+
+**The audit endpoint must answer fast, and keep answering during a deploy.** The receiver decodes a
+batch, appends one entry per type, and returns. It does no lookup, waits for no watcher, and holds no
+per-object state. A retried POST may append the same batch twice and that is safe without any
+deduplication work on the hot path, because a fact is keyed data rather than a position in a
+sequence: the duplicate carries the same author under the same `(uid, rv)`, `latest` is
+last-writer-wins over identical content, and a waiter woken twice resolves to the same name.
+
+**It has to survive more than one replica.** The API server's audit webhook posts through a Service
+to whichever replica answers, while a given object's watch shard lives on whichever replica owns that
+`GitTarget`. Those are unrelated choices, so the fact and the watcher that needs it routinely land in
+different processes. A per-type stream with independent per-reader cursors is exactly the primitive
+for that: the receiving replica appends, every replica watching the type reads, and neither needs to
+know about the other. An in-process channel works perfectly on one replica and has to be thrown away
+on the second. The alternatives are worse in a more expensive way: sticky audit routing would make
+the API server's load balancing this operator's problem.
+
+**Rollouts are the normal state, not the exception.** A replicated deployment is almost always
+mid-rollout, reconnecting, or restarting a pod, and those are precisely the cases where plain publish
+and subscribe drops facts silently. A resumable stream replays the retention window instead, so a
+process that restarts rebuilds its index rather than starting blind.
+
+**And the delay is not ours to remove.** The batching parameters belong to the API server. Since the
+fact is late by construction, the resolver must wait for something rather than ask repeatedly, which
+is why the wait is a signal on an in-process index and not a poll against Redis. The old loop ran to
+completion on essentially every attributable event, because the first lookup was a near-guaranteed
+miss.
+
+What the split does NOT solve is worth stating too: it stops attribution being an HA blocker, but the
+real HA problem is ownership: which replica owns a `GitTarget`, and keeping commits to one
+`(GitProvider, branch)` serialized through a single writer. That lives in
+[`ha-gittarget-distribution-plan.md`](../future/ha-gittarget-distribution-plan.md).
 
 ## No branch anywhere depends on the type
 
