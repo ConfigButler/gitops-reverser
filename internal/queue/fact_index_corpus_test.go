@@ -61,20 +61,22 @@ func corpusFact(t *testing.T, event auditv1.Event) AuthorFact {
 	return fact
 }
 
-// TestFactIndex_FinalizerRemovalTakesTheDeletersKey is the reproduction of the deletion-intent
-// mis-attribution, driven by the captured audit events themselves.
+// TestFactIndex_FinalizerRemovalNamesTheDeleter pins the sticky removal pointer against the
+// captured audit events that made it necessary.
 //
 // The shape, measured: a human's `delete` on a finalized object and the controller's `patch` that
 // clears the finalizer BOTH carry a response body, and both bodies carry the SAME resourceVersion —
-// the one the deletion stamped. The two facts are therefore filed under identical keys, and the
-// index is last-writer-wins on every one of them, so the controller's fact does not outrank the
-// human's: it REPLACES it.
+// the one the deletion stamped. The two facts are therefore filed under identical keys, and every
+// ordinary structure in the index is last-writer-wins, so the controller's fact never had to
+// outrank the human's: it simply REPLACED it, and no tier ordering could recover a fact that was no
+// longer stored.
 //
 // The watch event that renders as the removal is the deletion-pending MODIFIED, whose
-// resourceVersion is that same value. So whether the deletion is attributed to the person who asked
-// for it comes down to whether the controller's fact has landed yet, which is a race nothing in the
-// join can see. This test pins both sides of it.
-func TestFactIndex_FinalizerRemovalTakesTheDeletersKey(t *testing.T) {
+// resourceVersion is that same value. The fix is that a removal fact also takes a sticky, uid-keyed
+// slot that a later WRITE fact may not overwrite, and that a removal asks that slot first. So the
+// answer no longer depends on whether the controller's fact has landed yet — a race nothing in the
+// join can see. This test pins both sides of that race producing the same author.
+func TestFactIndex_FinalizerRemovalNamesTheDeleter(t *testing.T) {
 	base := time.Now().Add(-time.Second)
 	deleteEvent := loadCorpusAuditEvent(t, corpusDeletionIntentDir, "audit.delete.yaml", base)
 	patchEvent := loadCorpusAuditEvent(t, corpusDeletionIntentDir, "audit.patch.yaml", base.Add(100*time.Millisecond))
@@ -113,9 +115,11 @@ func TestFactIndex_FinalizerRemovalTakesTheDeletersKey(t *testing.T) {
 		resolution := harness.resolve(removal)
 		require.Equal(t, deleteFact.Author, resolution.Fact.Author,
 			"with only the deletion filed, the removal names the actor who requested it")
+		require.Equal(t, AttributionRemoval, resolution.Result,
+			"and it names them from the removal pointer, which the delete fact filled")
 	})
 
-	t.Run("the finalizer controller is named once its fact lands", func(t *testing.T) {
+	t.Run("the deleter is still named once the finalizer controller's fact lands", func(t *testing.T) {
 		harness := newFactIndexHarness(t, FactIndexConfig{})
 		key := FactStreamKeyFor("prod-eu-1", schema.GroupResource{Resource: "configmaps"})
 		// One append, in the order the API server produced them — which is what an audit batch
@@ -125,16 +129,16 @@ func TestFactIndex_FinalizerRemovalTakesTheDeletersKey(t *testing.T) {
 
 		resolution := harness.resolve(removal)
 
-		// THE DEFECT. The removal is attributed to the controller that cleaned up, not to the human
-		// who asked for the deletion. It is not a ranking mistake — the exact tier is the strongest
-		// evidence the join has, and it answers correctly for the key it was asked about. The
-		// deleter's fact is simply gone, overwritten under the same key.
-		require.Equal(t, patchFact.Author, resolution.Fact.Author,
-			"today the last writer under the colliding key wins, and that is the finalizer controller")
-		require.NotEqual(t, deleteFact.Author, resolution.Fact.Author,
-			"if this now names the deleter, the sticky-removal fix has landed and this test should "+
-				"be inverted to assert it")
-		require.Equal(t, AttributionExact, resolution.Result,
-			"and it wins at the strongest tier, so no amount of waiting reaches the deleter's fact")
+		// The controller's patch fact has overwritten the exact and latest tiers, exactly as it did
+		// before — that is what a last-writer-wins structure does, and it is correct for the question
+		// those tiers answer. It cannot reach the removal pointer, so the deleter's fact survives, and
+		// a removal asks the pointer first.
+		require.Equal(t, deleteFact.Author, resolution.Fact.Author,
+			"a fact about a WRITE must not replace the fact about the DELETION")
+		require.NotEqual(t, patchFact.Author, resolution.Fact.Author,
+			"the cleanup controller is not who asked for the deletion")
+		require.Equal(t, AttributionRemoval, resolution.Result,
+			"and the tier says which evidence answered: the removal pointer, not the colliding "+
+				"(uid, resourceVersion) the finalizer patch shares with it")
 	})
 }

@@ -59,6 +59,15 @@ const serviceAccountUserPrefix = "system:serviceaccount:"
 type AttributionResult string
 
 const (
+	// AttributionRemoval is the sticky removal pointer: a fact whose own verb is a delete, filed by
+	// uid into a slot no later WRITE fact may overwrite. It is the strongest evidence a removal can
+	// have about itself, so it is consulted before the exact tier — and only by a removal, because an
+	// exact-capable event asks who produced a version rather than who deleted an object.
+	//
+	// It is also the only tier the TTL does not bound. A uid is unique across space and time, so the
+	// statement can never be superseded; its horizon is the index's caps instead. See
+	// docs/design/attribution-deletion-intent-actor.md.
+	AttributionRemoval AttributionResult = "removal"
 	// AttributionExact is an exact UID+resourceVersion match: this actor produced this exact version.
 	AttributionExact AttributionResult = "exact"
 	// AttributionLatest is the uid-latest tier — the object's own last write or its own delete fact,

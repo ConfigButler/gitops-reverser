@@ -758,7 +758,7 @@ func TestFactIndex_ARemovalWaitsForEvidenceAboutTheDeletion(t *testing.T) {
 	}()
 
 	resolution := harness.index.Await(t.Context(),
-		removalFactQuery("prod-eu-1", factIndexTestUID), 5*time.Second)
+		removalFactQuery(factIndexTestUID), 5*time.Second)
 	require.Equal(t, AttributionCollectionUID, resolution.Result)
 	require.Equal(t, "alice", resolution.Fact.Author,
 		"a removal must wait for evidence about the deletion, not settle for the last edit")
@@ -774,7 +774,7 @@ func TestFactIndex_ARemovalStillNamesTheLastWriterWhenNothingBetterArrives(t *te
 
 	start := time.Now()
 	resolution := harness.index.Await(t.Context(),
-		removalFactQuery("prod-eu-1", factIndexTestUID), 150*time.Millisecond)
+		removalFactQuery(factIndexTestUID), 150*time.Millisecond)
 
 	require.Equal(t, AttributionLatest, resolution.Result)
 	require.Equal(t, "bob", resolution.Fact.Author, "waiting must not turn a match into an absence")
@@ -793,16 +793,91 @@ func TestFactIndex_ARemovalsOwnDeleteFactEndsTheWaitAtOnce(t *testing.T) {
 
 	start := time.Now()
 	resolution := harness.index.Await(t.Context(),
-		removalFactQuery("prod-eu-1", factIndexTestUID), 5*time.Second)
+		removalFactQuery(factIndexTestUID), 5*time.Second)
 
 	require.Equal(t, "carol", resolution.Fact.Author)
 	require.Less(t, time.Since(start), 2*time.Second, "a delete fact must not be held as a fallback")
 }
 
+// TestFactIndex_TheRemovalPointerOutlivesTheTTL pins the horizon the removal pointer deliberately
+// does not share with the rest of the index.
+//
+// This is the replay case. An object left Terminating by a hung finalizer is first OBSERVED hours
+// later, after a restart, a rollout, or a 410 rebuild collapses the watch to CURRENT state: there is
+// no transition event, the file is still in Git, and that first observation renders as a DELETE.
+// Every ordinary tier holding the deleter's fact aged out long before, so the commit is authored
+// unresolved — after sitting out the whole grace window on the shard's serial goroutine, waiting for
+// a fact that can never arrive. The pointer turns that into an immediate hit.
+func TestFactIndex_TheRemovalPointerOutlivesTheTTL(t *testing.T) {
+	const ttl = 300 * time.Millisecond
+	harness := newFactIndexHarness(t, FactIndexConfig{TTL: ttl})
+	deleteFact := objectFact("alice", "101")
+	deleteFact.Verb = "delete"
+	harness.publish(factIndexTestStream("prod-eu-1"), deleteFact)
+	// Exact, latest, and the removal pointer: one delete fact carrying a uid and an rv fills all three.
+	harness.waitForFacts(3)
+
+	time.Sleep(3 * ttl)
+	require.Equal(t, 2, harness.index.Sweep(time.Now()), "the two TTL-bounded entries are reclaimed")
+
+	// The ordinary tiers are gone, including the exact join for the version the deletion stamped.
+	require.Equal(t, AttributionAbsent,
+		harness.index.Lookup(objectQuery("prod-eu-1", factIndexTestUID, "101", true)).Result)
+
+	resolution := harness.index.Lookup(removalFactQuery(factIndexTestUID))
+	require.Equal(t, AttributionRemoval, resolution.Result,
+		"a removal still reaches the pointer once every TTL-bounded tier has expired")
+	require.Equal(t, "alice", resolution.Fact.Author)
+	require.Equal(t, 1, harness.index.Len(), "and the pointer is what the index is still holding")
+}
+
+// TestFactIndex_ARecreatedNameDoesNotInheritThePreviousDeleter pins why the pointer is keyed on the
+// uid and nothing else.
+//
+// A uid is unique across space and time, which is the whole argument for letting the pointer outlive
+// the TTL: the statement can never be superseded. A NAME has no such property — it is reused after a
+// delete and recreate — so the same stickiness on the name tier would not be this fix, it would be a
+// defect that a longer horizon makes MORE likely rather than less. The name tier stays bounded by
+// the TTL exactly as before.
+func TestFactIndex_ARecreatedNameDoesNotInheritThePreviousDeleter(t *testing.T) {
+	harness := newFactIndexHarness(t, FactIndexConfig{})
+	key := factIndexTestStream("prod-eu-1")
+	deleted := AuthorFact{
+		Namespace: "team-a", UID: "uid-old", Name: "checkout",
+		ResourceVersion: "101", Author: "alice", Verb: "delete",
+	}
+	recreated := AuthorFact{
+		Namespace: "team-a", UID: "uid-new", Name: "checkout",
+		ResourceVersion: "202", Author: "bob", Verb: "update",
+	}
+	harness.publish(key, deleted, recreated)
+	harness.waitForFacts(5)
+
+	// The recreated object is removed in its turn. It shares the name, and nothing else.
+	removal := FactQuery{
+		AuditRoute:      "prod-eu-1",
+		GroupResource:   deploymentsGroupResource(),
+		UID:             "uid-new",
+		ResourceVersion: "999",
+		Namespace:       "team-a",
+		Name:            "checkout",
+	}
+	resolution := harness.index.Lookup(removal)
+	require.NotEqual(t, "alice", resolution.Fact.Author,
+		"the previous object's deleter must not be inherited through a reused name")
+	require.Equal(t, "bob", resolution.Fact.Author)
+	require.Equal(t, AttributionLatest, resolution.Result, "which leaves the ordinary fallback")
+
+	// The first object's pointer is untouched by any of that: it is a statement about a uid.
+	previous := harness.index.Lookup(removalFactQuery("uid-old"))
+	require.Equal(t, AttributionRemoval, previous.Result)
+	require.Equal(t, "alice", previous.Fact.Author)
+}
+
 // removalFactQuery is a DELETE watch event: its resourceVersion is never the one a write produced.
-func removalFactQuery(route, uid string) FactQuery {
+func removalFactQuery(uid string) FactQuery {
 	return FactQuery{
-		AuditRoute:      route,
+		AuditRoute:      "prod-eu-1",
 		GroupResource:   deploymentsGroupResource(),
 		UID:             uid,
 		ResourceVersion: "999",
