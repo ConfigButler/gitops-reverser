@@ -91,14 +91,14 @@ flowchart TD
     B --> C{scope known?}
     C -->|no| Z[absent: committer-authored]
     C -->|yes| AA{a removal, and a sticky<br/>removal pointer for its uid?}
-    AA -->|yes| AB[sticky_delete]
+    AA -->|yes| AB[delete_sticky]
     AA -->|no| D{a fact under<br/>this uid and rv?}
 
     D -->|match| E[exact]
     D -->|no match| F{is this a removal?}
 
     F -->|yes| G{uid in a collection's<br/>uid set?}
-    G -->|yes| H[collection_uid_delete]
+    G -->|yes| H[deletecollection_body_uid]
     G -->|no| I{latest uid<br/>is a DELETE fact?}
     I -->|yes| J[latest: the object's own delete]
     I -->|no, it is a write| K[hold it as a fallback]
@@ -107,7 +107,7 @@ flowchart TD
     L -->|no| N{fallback held?}
     N -->|yes| O[latest: last writer]
     N -->|no| P{collection covers<br/>this scope + selector?}
-    P -->|yes| Q[collection_scope_delete]
+    P -->|yes| Q[deletecollection_scope]
     P -->|no| R
 
     F -->|no| R{rv-only hatch?}
@@ -132,13 +132,13 @@ flowchart TD
 
 | Tier | Key | `tier` label | What it asserts |
 |---|---|---|---|
-| sticky delete | uid (a delete fact, sticky) | `sticky_delete` | who asked for this object's deletion |
+| delete, sticky | uid (a delete fact, sticky) | `delete_sticky` | who asked for this object's deletion |
 | exact | uid + rv | `exact` | this actor produced this exact version |
-| collection uid | uid in a collection's set | `collection_uid_delete` | the API server said this request deleted this object |
+| collection uid | uid in a collection's set | `deletecollection_body_uid` | the API server said this request deleted this object |
 | latest, delete | uid | `latest` | this object's own delete fact |
 | name, delete | namespace + name | `name` | this object's own delete fact, when it has no uid |
 | latest, write | uid | `latest` | who last wrote it; a fallback for a removal |
-| collection scope | namespace + selector + window | `collection_scope_delete` | a collection request covering it was made |
+| collection scope | namespace + selector + window | `deletecollection_scope` | a collection request covering it was made |
 | rv-only | rv | `resource_version` | a fact with an rv but no uid |
 | name | namespace + name | `name` | the only key an aggregated write has |
 | absent | none | `absent` | committer-authored |
@@ -334,7 +334,7 @@ it is the argument for the shape, and the migration is in
 [`UPGRADING.md`](../UPGRADING.md#0410--the-attribution-metrics-are-relabelled-and-partly-renamed-breaking-for-queries).
 
 The inconsistency was real rather than cosmetic. `result` should have named the TIER: `weak`,
-`name`, `collection_uid_delete`, `collection_scope_delete`, `absent` all did. `exact` was the only one that also
+`name`, `deletecollection_body_uid`, `deletecollection_scope`, `absent` all did. `exact` was the only one that also
 encoded WHO the actor was, which crammed two orthogonal dimensions into one label.
 
 Two consequences followed directly:
@@ -342,7 +342,7 @@ Two consequences followed directly:
 - counting exact resolutions meant summing two series, and any new actor kind would have multiplied
   them again;
 - the actor kind could only be asked of the exact tier. There was no way to ask how many `name`-tier
-  or `collection_uid_delete` resolutions named a service account, because that dimension did not exist
+  or `deletecollection_body_uid` resolutions named a service account, because that dimension did not exist
   there.
 
 The decisive argument was that the codebase already modeled it correctly one metric over:

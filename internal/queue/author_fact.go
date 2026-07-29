@@ -58,24 +58,29 @@ const serviceAccountUserPrefix = "system:serviceaccount:"
 // resolutions a sum of two series and made the actor kind unaskable of every other tier.
 type AttributionResult string
 
-// Three of these values end in _delete, and that suffix is the vocabulary rather than decoration:
-// they are the tiers that answer with a fact ABOUT the deletion, which is the only evidence that
-// answers "who removed this". `latest` and `name` can hold a delete fact too, but they can equally
-// hold a write, so they cannot say so in their name.
+// Three values are named for the VERB that produced the fact and how it matched — delete_sticky,
+// deletecollection_body_uid, deletecollection_scope — because those three are the tiers reachable
+// only by a removal, and naming the source is the honest thing to do: it says where the evidence came
+// from rather than asserting what it proves. Two of them are statements about this exact object; the
+// third, deletecollection_scope, is a statement about a request whose scope covered it, and can name
+// the wrong actor. A name that claimed otherwise would be read as a guarantee it cannot give.
+//
+// `latest` and `name` can hold a delete fact too, so they are NOT named for one: either can equally
+// hold a write, and a value that could mean either must not claim a verb.
 const (
-	// AttributionStickyDelete is the sticky removal pointer: a fact whose own verb is a delete, filed by
+	// AttributionDeleteSticky is the sticky removal pointer: a fact whose own verb is a delete, filed by
 	// uid into a slot no later WRITE fact may overwrite. It is the strongest evidence a removal can
 	// have about itself, so it is consulted before the exact tier — and only by a removal, because an
 	// exact-capable event asks who produced a version rather than who deleted an object.
 	//
-	// "sticky" is the half of the name that is not about the evidence, and it is there because the
-	// stickiness is the whole reason this tier can answer at all: every other structure would have
-	// been overwritten by the finalizer patch that followed the delete.
+	// "sticky" is the half of the name that is not the verb, and it is there because the stickiness is
+	// the whole reason this tier can answer at all: every other structure would have been overwritten
+	// by the finalizer patch that followed the delete.
 	//
 	// It is also the only tier the TTL does not bound. A uid is unique across space and time, so the
 	// statement can never be superseded; its horizon is the index's caps instead. See
 	// docs/design/attribution-deletion-intent-actor.md.
-	AttributionStickyDelete AttributionResult = "sticky_delete"
+	AttributionDeleteSticky AttributionResult = "delete_sticky"
 	// AttributionExact is an exact UID+resourceVersion match: this actor produced this exact version.
 	AttributionExact AttributionResult = "exact"
 	// AttributionLatest is the uid-latest tier — the object's own last write or its own delete fact,
@@ -86,10 +91,16 @@ const (
 	// and no uid, matched on that version alone. It and AttributionLatest were one value ("weak")
 	// and are different evidence, which is why they are now two.
 	AttributionResourceVersion AttributionResult = "resource_version"
-	// AttributionCollectionUID is a removal matched to a deletecollection fact whose uid set
+	// AttributionDeleteCollectionBodyUID is a removal matched to a deletecollection fact whose uid set
 	// contains this object. There is no over-attribution risk in it: either the API server said it
 	// deleted this object, or it did not.
-	AttributionCollectionUID AttributionResult = "collection_uid_delete"
+	//
+	// "body" is in the name because the uid set comes from the RESPONSE BODY, which is the part the
+	// API server may not send — a proxied collection delete sends none, and a set past
+	// DefaultCollectionUIDCap is dropped. Both land on the scope tier instead, counted on
+	// attribution_collection_without_uidset_total, so the name says which half of the pair answered
+	// and why the other one exists.
+	AttributionDeleteCollectionBodyUID AttributionResult = "deletecollection_body_uid"
 	// AttributionName is a match on (namespace, name) for a fact that carries neither a uid nor a
 	// resourceVersion. It is the tier of last resort for a type whose audit event cannot express
 	// object identity: the kube-apiserver proxies an aggregated-API request and never decodes the
@@ -100,12 +111,12 @@ const (
 	// recreate where a uid is not, so it can name the author of a previous object that held this
 	// name. The TTL is what bounds that: the wrong answer requires the recreate to happen inside it.
 	AttributionName AttributionResult = "name"
-	// AttributionCollectionScope is a removal matched to a deletecollection fact by scope alone —
+	// AttributionDeleteCollectionScope is a removal matched to a deletecollection fact by scope alone —
 	// same type and namespace, selector accepting the object's labels, within the collection window.
 	// It is the weakest evidence the join has, which is why it is reached only when every more
 	// specific tier missed. It is also the tier that resolves what the deleted expander gave up on:
 	// a collection delete the API server sent no response body for.
-	AttributionCollectionScope AttributionResult = "collection_scope_delete"
+	AttributionDeleteCollectionScope AttributionResult = "deletecollection_scope"
 	// AttributionAbsent means no usable author fact matched before the grace elapsed.
 	AttributionAbsent AttributionResult = "absent"
 )

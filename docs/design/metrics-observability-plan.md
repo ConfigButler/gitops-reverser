@@ -52,8 +52,8 @@ uniformly dark. What is left is a sharper, smaller list:
 told to build against the current label names. The cost of renaming a label today is one
 [`UPGRADING.md`](../UPGRADING.md) entry; the cost after a release with a published dashboard is a
 migration for every consumer. This release has already broken the `result` label anyway — the
-`deletecollection` rework removed `exact_deletecollection_item` and added `collection_uid_delete`,
-`collection_scope_delete`, and `name` — so finishing the job costs the same single migration, and deferring
+`deletecollection` rework removed `exact_deletecollection_item` and added `deletecollection_body_uid`,
+`deletecollection_scope`, and `name` — so finishing the job costs the same single migration, and deferring
 it costs a second one later on a label that will have been wrong twice.
 
 So this plan takes the label breaks now, deliberately, and writes them down. It does not take them
@@ -166,7 +166,7 @@ records the metric at the smallest honest boundary.
 |---|---|---|---|
 | `audit_events_total` | counter | `outcome`, `category`, `group`, `version`, `resource`, `verb` | ✅ shipped — `no_attribution_fact` added in the `dropped` category |
 | `audit_eventlists_total` / `_eventlist_events_total` / `_eventlist_duration_seconds` | counter/hist | `outcome` | live, unchanged |
-| `attribution_resolutions_total` | counter | **`tier`**, **`actor_kind`**, `group`, `version`, `resource` | ✅ shipped — `result` is gone; `tier` gained `sticky_delete`, and the two collection values gained a `_delete` suffix |
+| `attribution_resolutions_total` | counter | **`tier`**, **`actor_kind`**, `group`, `version`, `resource` | ✅ shipped — `result` is gone; `tier` gained `delete_sticky`, and the two collection values are named for the `deletecollection` verb |
 | `attribution_resolution_wait_seconds` | histogram | **`tier`**, **`event_kind`**, `group`, `version`, `resource` | ✅ shipped — relabelled and split by write/removal |
 | `attribution_facts_total` | counter | `op` (`written`/`matched`) | ✅ shipped — renamed from `attribution_fact_events_total` |
 | `attribution_fact_index_entries` | gauge | — | ✅ shipped — renamed from `attribution_fact_index_size` |
@@ -247,7 +247,7 @@ two metrics disagreed about the shape of one distinction.
 
 | Label | Values |
 |---|---|
-| `tier` | `exact`, `latest`, `resource_version`, `name`, `sticky_delete`, `collection_uid_delete`, `collection_scope_delete`, `absent` |
+| `tier` | `exact`, `latest`, `resource_version`, `name`, `delete_sticky`, `deletecollection_body_uid`, `deletecollection_scope`, `absent` |
 | `actor_kind` | `user`, `serviceaccount`, `none` |
 
 `weak` split at the same time. It covered both a `latest` (uid) match and the rv-only

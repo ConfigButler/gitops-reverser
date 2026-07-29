@@ -100,8 +100,8 @@ var (
 	AuditEventListDurationSeconds metric.Float64Histogram
 	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes, labelled by
 	// {tier, actor_kind, group, version, resource}. tier names WHICH evidence answered
-	// (sticky_delete/exact/collection_uid_delete/latest/name/collection_scope_delete/resource_version/
-	// absent) and actor_kind
+	// (delete_sticky/exact/deletecollection_body_uid/latest/name/deletecollection_scope/
+	// resource_version/absent) and actor_kind
 	// names WHO it named (user/serviceaccount/none) — two orthogonal questions, so they are two
 	// labels. Match coverage is tier!="absent"; anything narrower reads the collection and name
 	// tiers as misses.

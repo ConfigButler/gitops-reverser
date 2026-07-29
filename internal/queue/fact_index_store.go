@@ -139,7 +139,7 @@ type factRef struct {
 	seq       uint64
 }
 
-// scopeFacts is one (route, group/resource)'s four match structures, its oldest-first insertion
+// scopeFacts is one (route, group/resource)'s match structures, its oldest-first insertion
 // order, and its entry count. Bounding per scope rather than globally is what keeps a burst on one
 // noisy type — a deletecollection over ten thousand objects, a large rollout — from evicting every
 // other type's facts.
@@ -431,8 +431,26 @@ func (s *scopeFacts) removeCollection(seq uint64) bool {
 
 // compact drops eviction references whose entries are gone, so the order does not grow with every
 // swept entry.
+//
+// It reallocates rather than reusing the backing array when the array has grown far past what
+// survives, and that is not a micro-optimization. A put REPLACING an entry appends a reference and
+// leaves the old one behind — the reference is what makes replacement safe, since the sequence check
+// is how a stale reference is told from a live one — so an object rewritten a thousand times inside
+// one sweep interval leaves a thousand references and ONE entry. The dead references go here either
+// way; the peak capacity would not, because `s.order[:0]` keeps the array. That memory is the kind
+// worth giving back: `count` never counted it, so neither the per-type cap nor
+// attribution_fact_index_entries can see it.
 func (s *scopeFacts) compact() {
+	live := 0
+	for _, ref := range s.order {
+		if s.live(ref) {
+			live++
+		}
+	}
 	kept := s.order[:0]
+	if cap(s.order) > 2*live+orderCapacitySlack {
+		kept = make([]factRef, 0, live)
+	}
 	for _, ref := range s.order {
 		if s.live(ref) {
 			kept = append(kept, ref)
@@ -440,6 +458,11 @@ func (s *scopeFacts) compact() {
 	}
 	s.order = kept
 }
+
+// orderCapacitySlack is how much spare capacity the eviction order may keep before compaction hands
+// it back. It exists so an ordinary scope, whose order grows and shrinks by a handful of entries per
+// sweep, keeps reusing one small array instead of reallocating on every pass.
+const orderCapacitySlack = 64
 
 // live reports whether a reference still names the entry it was taken for.
 func (s *scopeFacts) live(ref factRef) bool {

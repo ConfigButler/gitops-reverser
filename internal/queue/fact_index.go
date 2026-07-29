@@ -286,7 +286,7 @@ func (q FactQuery) awaitsBetterEvidence(resolution AuthorResolution) bool {
 		return false
 	}
 	switch resolution.Result {
-	case AttributionStickyDelete, AttributionCollectionUID, AttributionCollectionScope:
+	case AttributionDeleteSticky, AttributionDeleteCollectionBodyUID, AttributionDeleteCollectionScope:
 		return false
 	case AttributionExact, AttributionLatest, AttributionResourceVersion,
 		AttributionName, AttributionAbsent:
@@ -383,7 +383,7 @@ func stickyRemoval(facts *scopeFacts, query FactQuery) AuthorResolution {
 		return AuthorResolution{Result: AttributionAbsent}
 	}
 	if fact, found := facts.lookupRemovalPointer(query.UID); found {
-		return AuthorResolution{Fact: fact, Result: AttributionStickyDelete}
+		return AuthorResolution{Fact: fact, Result: AttributionDeleteSticky}
 	}
 	return AuthorResolution{Result: AttributionAbsent}
 }
@@ -405,7 +405,7 @@ func (i *FactIndex) lookupRemoval(
 	haveWriteFallback := false
 	if query.UID != "" {
 		if fact, found := facts.matchCollectionUID(query, cutoff); found {
-			return AuthorResolution{Fact: fact, Result: AttributionCollectionUID}
+			return AuthorResolution{Fact: fact, Result: AttributionDeleteCollectionBodyUID}
 		}
 		if fact, found := facts.lookupLatest(query.UID, cutoff); found {
 			resolution := AuthorResolution{Fact: fact, Result: AttributionLatest}
@@ -438,7 +438,7 @@ func (i *FactIndex) lookupRemoval(
 		return writeFallback
 	}
 	if fact, found := facts.matchCollectionScope(query, now, cutoff, i.collectionWindow); found {
-		return AuthorResolution{Fact: fact, Result: AttributionCollectionScope}
+		return AuthorResolution{Fact: fact, Result: AttributionDeleteCollectionScope}
 	}
 	return AuthorResolution{Result: AttributionAbsent}
 }

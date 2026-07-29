@@ -70,22 +70,23 @@ because it covered two different kinds of it:
 | `exact_serviceaccount` | `tier="exact"`, `actor_kind="serviceaccount"` |
 | `weak` (a UID-latest match) | `tier="latest"` |
 | `weak` (the RV-only escape hatch) | `tier="resource_version"` |
-| `collection_uid` | `tier="collection_uid_delete"` |
-| `collection_scope` | `tier="collection_scope_delete"` |
+| `collection_uid` | `tier="deletecollection_body_uid"` |
+| `collection_scope` | `tier="deletecollection_scope"` |
 | `name`, `absent` | `tier=` the same value |
 
-The two collection values gained a `_delete` suffix so the vocabulary says what each tier is
-evidence *of*. Three values now end in `_delete` and they are the tiers that answer with a fact about
-the deletion itself: `sticky_delete`, `collection_uid_delete`, `collection_scope_delete`. `latest`
-and `name` can hold a delete fact as well, but either can equally hold a write, which is why neither
-claims it in its name.
+The two collection values are renamed for the **verb that produced the fact** and how it matched, the
+convention the three removal-only tiers now share: `delete_sticky`, `deletecollection_body_uid`,
+`deletecollection_scope`. `body` is in the second because the uid set comes from the response body,
+which is the part the API server may not send; when it does not, the same fact resolves at
+`deletecollection_scope` instead. `latest` and `name` keep their names, because either can hold a
+delete fact or a write and so cannot claim a verb.
 
-`sticky_delete` is a value `result` never had at all, and it comes with a behaviour change. A
+`delete_sticky` is a value `result` never had at all, and it comes with a behaviour change. A
 finalized deletion — a human deletes, a controller clears the finalizer — is attributed to the human
-and resolves at `tier="sticky_delete"`. Before this release it named the controller and was counted
+and resolves at `tier="delete_sticky"`. Before this release it named the controller and was counted
 on the exact path (`result="exact_user"` or `result="exact_serviceaccount"`), because the finalizer
 patch's fact carries the resourceVersion the *deletion* stamped and overwrote the deleter's under
-the same key. A dashboard therefore sees the exact path shift toward `sticky_delete` for types that
+the same key. A dashboard therefore sees the exact path shift toward `delete_sticky` for types that
 carry finalizers, and `commits_total{author_kind}` shift from `serviceaccount` toward `user`. A query
 that enumerates tiers explicitly needs the three new values; `tier!="absent"` covers them already.
 

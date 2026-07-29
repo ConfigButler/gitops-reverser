@@ -717,13 +717,13 @@ same `user`/`serviceaccount`/`none` vocabulary `commits_total{author_kind}` uses
 
 | Tier | Key | What it asserts |
 |---|---|---|
-| `sticky_delete` | uid (a delete fact, sticky) | who asked for this object's deletion |
+| `delete_sticky` | uid (a delete fact, sticky) | who asked for this object's deletion |
 | `exact` | uid + rv | this actor produced this exact version |
-| `collection_uid_delete` | uid in a collection fact's set | the API server said this request deleted this object |
+| `deletecollection_body_uid` | uid in a collection fact's set | the API server said this request deleted this object |
 | `latest` | uid (the object's own delete fact) | who removed it |
 | `name` | namespace + name | the same, for a fact with no uid (an aggregated API's usual shape) |
 | `latest` | uid (a write fact) | who last *wrote* it; a fallback for a removal |
-| `collection_scope_delete` | namespace + selector + window | a collection request covering it was made |
+| `deletecollection_scope` | namespace + selector + window | a collection request covering it was made |
 | `resource_version` | rv (the escape hatch for a fact with no uid) | a fact for this exact version, unidentified |
 | `absent` | none | nothing usable arrived in time |
 
