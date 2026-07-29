@@ -1,8 +1,9 @@
 # Proposal: the attribution metric surface
 
-The attribution metrics have grown one label at a time, and two of them now answer questions nobody
-asked while three questions that matter have no metric at all. This proposes a consolidated surface:
-what to rename, what to split, and what to add.
+The attribution metrics have grown one label at a time. Two of them now answer questions nobody asked,
+and ten things that matter have no metric at all, including two the design record leaves explicitly
+open because they cannot be settled without data. This proposes a consolidated surface: what to
+rename, what to split, and what to add.
 
 ## Why now, specifically
 
@@ -135,10 +136,85 @@ That is the honest measure of the blocking, it is cheap (one timestamp per event
 on the condition rather than on one of its symptoms. An optional companion,
 `gitopsreverser_watch_shard_backlog`, gauges depth if the histogram proves too coarse.
 
+## Gaps found by re-reading the design record
+
+[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) makes a series of operational
+claims and leaves three questions explicitly open. Tracing each to a metric finds seven more things
+nothing can see, two of which are open questions the design says need data before they can be
+answered.
+
+| What the design says | Metric today | Proposal |
+|---|---|---|
+| A follower that fails is retried with a backoff | log line only | `attribution_fact_follower_errors_total` |
+| Replay from the TTL horizon makes a restart cost nothing | none | `attribution_fact_index_replay_seconds`, `attribution_fact_index_replayed_total` |
+| A process follows only the types it watches | none | `attribution_fact_streams_followed` |
+| "Nothing bounds one entry's size today" (open question) | none | `attribution_fact_entry_facts` |
+| Entries age out by TTL; eviction is the loss case | evictions only | `attribution_fact_index_expired_total` |
+| The shard blocks while a resolver waits | none | `attribution_resolvers_waiting` |
+| The transport is selectable, memory or Redis | none | `attribution_transport_info{transport}` |
+
+Already covered, listed so nobody adds it twice: a failed `XADD` propagates out of the audit handler
+and is counted as `audit_eventlist_*{outcome="write_error"}`, so publish failure is visible. It is
+conflated with other write errors, which is tolerable.
+
+### The two that answer open design questions
+
+**Facts per entry.** The record asks whether one entry per type per request is the right granularity,
+notes that a single entry can carry hundreds of facts, and says plainly that `DefaultFactStreamMaxLen`
+bounds a stream in entries rather than bytes, so nothing bounds one entry today. That question cannot
+be settled by argument. A histogram of facts per appended entry, and its tail in particular, says
+whether an entry-size ceiling is needed or whether the concern is theoretical.
+
+**Streams followed.** The record asks whether the per-type stream count stays reasonable, observing
+that one `XREAD` across a few dozen streams is ordinary but several hundred would want checking. A
+gauge of the subscription set size answers it from any real install, and it is one number.
+
+### The one that would fail silently
+
+**Follower errors.** When the follower fails, `Run` logs and retries with a backoff. Nothing counts
+it. A follower that is flapping, or wedged and retrying forever, degrades attribution to
+committer-authored across the board, and the only symptom is a rising unresolved rate with nothing
+pointing at the cause. This is the same class of failure as the unfilable fact: a real loss with no
+number attached.
+
+A counter is the minimum. A `last successful read` timestamp gauge would be better, because it
+distinguishes "erroring occasionally" from "has not read anything in ten minutes", and only the
+second is an outage.
+
+### Restart warmth, which an HA decision depends on
+
+The design leans on replay: on start and on reconnect the reader begins from the retention horizon,
+so "the index is populated with the whole retention window before the first watch event needs it,
+which is what makes a restart cost nothing". Nothing measures whether that holds in practice.
+
+It also matters beyond a restart. The record's own last open question asks whether, under HA, a
+replica must warm its index before starting a watch it has taken over, and calls the ordering "a
+small decision with a visible effect". The effect is only visible with a metric: how long the replay
+took, and how many facts it loaded. Without one, the decision is guesswork now and unverifiable
+afterward.
+
+### The cheap ones
+
+**TTL expiry versus eviction.** Evictions are counted because they are loss. Ordinary TTL ageing is
+not counted at all, so there is no way to see whether the TTL or the cap is the binding constraint.
+`Sweep` already returns the number it dropped and the caller discards it, so this is a one-line
+change.
+
+**Resolvers waiting.** `factWaiterRegistry` already has a `len()`, written so a test can prove
+nothing leaks. Exporting it as a gauge gives a live read on how many resolvers are blocked right now,
+which is the head-of-line pressure the queue histogram measures after the fact.
+
+**Transport in use.** Nothing in the metrics says whether an install runs the Redis or the in-memory
+transport, and the two have different failure modes: the in-memory one loses every fact on restart by
+design. An info gauge is the usual shape and costs nothing.
+
 ## Questions this surface can answer that today's cannot
 
 | Question | Query |
 |---|---|
+| Is the fact follower healthy? | `attribution_fact_follower_errors_total` |
+| Did a restart warm its index before serving? | `attribution_fact_index_replay_seconds` |
+| Do we need an entry-size ceiling? | `attribution_fact_entry_facts` tail |
 | How many attributions named a service account, at any tier? | `sum by (actor_kind) (attribution_resolutions_total)` |
 | Are removals waiting longer than writes? | `attribution_resolution_wait_seconds{event_kind="removal"}` |
 | Are we publishing facts nobody can ever join? | `attribution_facts_total{stage="unfilable"}` |
