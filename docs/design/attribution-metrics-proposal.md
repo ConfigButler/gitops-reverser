@@ -147,7 +147,7 @@ answered.
 |---|---|---|
 | A follower that fails is retried with a backoff | log line only | `attribution_fact_follower_errors_total` |
 | Replay from the TTL horizon makes a restart cost nothing | none | `attribution_fact_index_replay_seconds`, `attribution_fact_index_replayed_total` |
-| A process follows only the types it watches | none | `attribution_fact_streams_followed` |
+| A process follows only the types it watches; "does the per-type stream count stay reasonable?" (open question) | none | four metrics, [designed below](#designing-the-stream-count-metrics-properly) |
 | "Nothing bounds one entry's size today" (open question) | none | `attribution_fact_entry_facts` |
 | Entries age out by TTL; eviction is the loss case | evictions only | `attribution_fact_index_expired_total` |
 | The shard blocks while a resolver waits | none | `attribution_resolvers_waiting` |
@@ -167,7 +167,107 @@ whether an entry-size ceiling is needed or whether the concern is theoretical.
 
 **Streams followed.** The record asks whether the per-type stream count stays reasonable, observing
 that one `XREAD` across a few dozen streams is ordinary but several hundred would want checking. A
-gauge of the subscription set size answers it from any real install, and it is one number.
+count on its own cannot answer that, because the same number is fine or fatal depending on what it
+costs, so it needs the size, the shape and the cost together. Designed in full
+[below](#designing-the-stream-count-metrics-properly).
+
+### Designing the stream-count metrics properly
+
+"Does the per-type stream count stay reasonable?" cannot be answered by a count alone. A count with
+no cost attached to it is a number nobody can act on: three hundred streams is fine or a problem
+depending entirely on what it does to the read cycle. So this needs the size, the shape, and the
+cost.
+
+#### What scales, and how
+
+One reader goroutine issues a single blocking `XREAD` across the whole followed set, re-issued every
+block period so a subscription change lands within one. Reading the implementation, the per-cycle
+cost has two parts:
+
+- **The `XREAD` argument list is O(streams).** Every key and every last-seen ID is serialized into
+  the command, and the command is re-issued roughly once a second. This grows with the set whether or
+  not anything is happening.
+- **Gap detection is O(streams that are behind), not O(streams).** `detectGaps` issues one `XRangeN`
+  per target marked behind and skips the rest, so a caught-up follower pays nothing extra. Under load
+  it pays one extra round trip per lagging stream, in the same cycle.
+
+That second one is the interesting shape. The set size alone never tells you the follower is
+struggling; the number of streams behind does, and it does so before any facts are lost.
+
+#### The four metrics
+
+| Metric | Type | Labels | Placement |
+|---|---|---|---|
+| `attribution_fact_streams_followed` | gauge | `route` | `FactStreamSet`, on change |
+| `attribution_fact_streams_behind` | gauge | none | the follower, per cycle |
+| `attribution_fact_stream_read_seconds` | histogram | `outcome` | around `Next` |
+| `attribution_fact_stream_set_changes_total` | counter | `op` | `FactStreamSet`, on change |
+
+**`attribution_fact_streams_followed{route}`** is the headline. It is labeled by route and NOT by
+type, deliberately: routes are bounded by how many clusters an install mirrors, which is small, while
+types are exactly the unbounded thing being measured. A per-stream gauge would make the metric itself
+the scaling problem it is meant to detect.
+
+Summing gives the total; splitting by route separates the two ways the number grows, which have
+different answers. More types on one cluster is a `WatchRule` scope question. The same types across
+more clusters is a topology question, and it multiplies.
+
+Placement is free. `FactStreamSet` already reference-counts and already notifies an observer when a
+key first appears or the last reference goes away, so the gauge is recorded on that existing edge
+rather than sampled.
+
+**`attribution_fact_streams_behind`** is the pressure reading, and the one that makes the count
+actionable. It is how many followed streams the last cycle found the follower behind on, which is
+both the extra round trips being paid and the early warning for a trim gap. A trim gap is already
+counted, but a gap is loss that has already happened; this is the same condition before it costs
+anything.
+
+**`attribution_fact_stream_read_seconds{outcome}`** is the cost, and the label is load-bearing. When
+nothing is happening, `Next` blocks for the whole block period and returns empty, so an unlabelled
+histogram would be dominated by the idle case and say nothing. Outcomes:
+
+| `outcome` | Meaning |
+|---|---|
+| `delivered` | the read returned entries; this is the bucket to read |
+| `idle` | the block period elapsed with nothing on any stream |
+| `error` | the read failed and the follower will back off and retry |
+
+`delivered` against `attribution_fact_streams_followed` is the whole question in one query.
+
+**`attribution_fact_stream_set_changes_total{op=subscribe|unsubscribe}`** is churn. A set that keeps
+changing means the reader keeps re-issuing, and the cost of a large set is paid more often than once
+per block period. Steady state should be flat; a rising line means watches are being torn down and
+rebuilt, which is a different problem wearing this one's clothes.
+
+#### What "reasonable" then means
+
+The test is a relationship, not a threshold, and that is the point of pairing the count with the
+cost:
+
+| Question | Query |
+|---|---|
+| How many streams, and where does the growth come from? | `sum by (route) (attribution_fact_streams_followed)` |
+| Does read cost track stream count? | `histogram_quantile(0.99, attribution_fact_stream_read_seconds{outcome="delivered"})` against the gauge |
+| Is the follower keeping up? | `attribution_fact_streams_behind` |
+| Is the set thrashing? | `rate(attribution_fact_stream_set_changes_total[5m])` |
+
+Read together they give three distinguishable answers rather than one number:
+
+- **Fine.** The count grows, `streams_behind` stays near zero, and `delivered` latency is flat. The
+  record's worry was theoretical, and that is now a measurement rather than an assumption.
+- **The read is the cost.** Latency tracks the count while nothing is behind. The `XREAD` argument
+  list is the problem, and the fix is sharding the set across more than one reader.
+- **The follower is the cost.** `streams_behind` climbs. The reader cannot keep up with the volume,
+  and stream count is a symptom rather than the cause. Trim gaps follow if it is not addressed.
+
+Only the third of those is urgent, and today all three look identical from outside.
+
+#### Optional: streams written but never followed
+
+The design notes a stream written for a type nobody watches, trimmed away unread. Counting those
+would size the waste, but it needs publisher-side bookkeeping the publisher does not have today, and
+the cost is a `MAXLEN`-capped stream that expires on its own. Worth naming as understood rather than
+overlooked; not worth building first.
 
 ### The one that would fail silently
 
