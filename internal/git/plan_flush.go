@@ -84,6 +84,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	mapper := w.mapperForCluster(clusterIDForEvents(events))
 	batch := newWriteBatch(ctx, w.contentWriter, mapper, scoped.scan, policy, scoped.writeSubdir)
 	batch.pruneMode = pruneMode
+	batch.target = placementTargetForEvents(events)
 	if err := batch.refusal(); err != nil {
 		return false, err
 	}
@@ -120,6 +121,11 @@ type writeBatch struct {
 	// entitled to claim (its resources: entry can legitimately fail to be added — see
 	// appendKustomizationResource — leaving the file written but outside every render).
 	putToKustomize bool
+	// target is the GitTarget this batch writes for, carried only so the placement metrics
+	// can name it (see placement_metrics.go). It is set by the caller — the live path reads
+	// it off the events, the resync path from the request — and is empty for the CLI and for
+	// tests, where the counters are simply unlabelled.
+	target placementTarget
 	// policy is the GitTarget's declared new-file placement policy, consulted
 	// only for a resource with no existing document. nil means no declared policy —
 	// placement falls through to the folder's one kustomize root and then the canonical path.
@@ -357,8 +363,10 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		WriteScope: wb.writeSubdir,
 	})
 	if err != nil {
+		refusal := placementRefusalReason(err)
 		log.FromContext(ctx).Info("Skipping new resource: placement could not be resolved safely",
-			"resource", event.Identifier.String(), "reason", err.Error())
+			"resource", event.Identifier.String(), "refusal", string(refusal), "reason", err.Error())
+		recordPlacementRefusal(ctx, wb.target, event.Identifier, refusal)
 		return upsertSkippedUnsafe, nil
 	}
 
@@ -381,10 +389,21 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 		event.Object.SetNamespace("")
 	}
 
-	outcome, err := wb.placeNewDocument(ctx, event, placement, sensitive)
+	outcome, refusal, err := wb.placeNewDocument(ctx, event, placement, sensitive)
 	if err != nil || !wroteBytes(outcome) {
+		// A skipped write is a resource the mirror does not hold. Count it with the refusals
+		// LocateNew raised, from the same closed reason set, so "resources we declined to
+		// place" is one series rather than a log line here and a metric there.
+		if outcome == upsertSkippedUnsafe {
+			recordPlacementRefusal(ctx, wb.target, event.Identifier, refusal)
+		}
 		return outcome, err
 	}
+	// Recorded here rather than at resolution: this is the point at which the document is
+	// really in the mirror at this path, so placements_total and placement_refusals_total
+	// partition every new resource instead of double-counting the ones that resolved and
+	// then could not be written.
+	recordPlacement(ctx, wb.target, event.Identifier, placement.Source, placement.Append)
 
 	// A new document that joins a kustomization's resources: list is INSIDE a render root, so
 	// the folder's images:/replicas: entries govern it from the moment it lands — and we do not
@@ -403,14 +422,21 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 
 // placeNewDocument writes the new document at its resolved placement: appended to an existing
 // accepted bundle, folded into a same-batch cold bundle, or as a file of its own.
+//
+// It returns the refusal reason alongside the outcome, and only for upsertSkippedUnsafe, so
+// the caller can count WHY a new resource was left out of the mirror without inspecting a log
+// message. The multi-document refusal is attributed here rather than inside writeWholeFile
+// because that function also serves in-place updates, where the same skip is not a placement
+// decision at all.
 func (wb *writeBatch) placeNewDocument(
 	ctx context.Context,
 	event Event,
 	placement manifestanalyzer.PlacementResult,
 	sensitive bool,
-) (upsertOutcome, error) {
+) (upsertOutcome, manifestanalyzer.PlacementRefusalReason, error) {
 	if placement.Append {
-		return wb.appendNewDocument(ctx, event, placement.Path)
+		outcome, err := wb.appendNewDocument(ctx, event, placement.Path)
+		return outcome, "", err
 	}
 
 	buf := wb.buffer(placement.Path)
@@ -435,11 +461,16 @@ func (wb *writeBatch) placeNewDocument(
 			log.FromContext(ctx).Info(
 				"Skipping new resource: sensitive and plaintext resources must not share a new file",
 				"resource", event.Identifier.String(), "file", placement.Path, "sensitive", sensitive)
-			return upsertSkippedUnsafe, nil
+			return upsertSkippedUnsafe, manifestanalyzer.PlacementRefusedMixedSensitivityNewFile, nil
 		}
-		return wb.writeColdBundleMember(ctx, event, placement.Path, sensitive)
+		outcome, err := wb.writeColdBundleMember(ctx, event, placement.Path, sensitive)
+		return outcome, "", err
 	}
-	return wb.writeWholeFile(ctx, event, placement.Path)
+	outcome, err := wb.writeWholeFile(ctx, event, placement.Path)
+	if outcome == upsertSkippedUnsafe {
+		return outcome, manifestanalyzer.PlacementRefusedMultiDocumentTarget, err
+	}
+	return outcome, "", err
 }
 
 // writeColdBundleMember writes a resource with no existing document to rel, a
@@ -555,16 +586,26 @@ func (wb *writeBatch) appendKustomizationResource(
 
 	buf := wb.buffer(k.Path)
 	if buf.current == nil {
-		return // the kustomization vanished within this batch; nothing to edit
+		// The kustomization vanished within this batch; nothing to edit — and the file it
+		// would have registered is now outside every render, which is the same user-visible
+		// outcome as a failed edit, so it is counted as one.
+		recordKustomizationEntry(ctx, wb.target, kustomizationEntryFailed)
+		return
 	}
 	res, diags := manifestedit.AppendKustomizationResource(k.Path, buf.current, entry)
 	switch res.Mode {
 	case manifestedit.EditPatched:
 		buf.current = res.Content
+		recordKustomizationEntry(ctx, wb.target, kustomizationEntryAdded)
 		log.FromContext(ctx).Info("Added resources: entry for new file",
 			"kustomization", k.Path, "entry", entry, "resource", event.Identifier.String())
 	case manifestedit.EditNoChange:
+		recordKustomizationEntry(ctx, wb.target, kustomizationEntryNoChange)
 	case manifestedit.EditSkipped, manifestedit.EditDeleted, manifestedit.EditWholeReplace:
+		// The document is committed and its resources: entry is not, so kustomize will never
+		// build the file: it is in Git, it looks mirrored, and nothing applies it. The counter
+		// is the only signal that is not a log line.
+		recordKustomizationEntry(ctx, wb.target, kustomizationEntryFailed)
 		log.FromContext(ctx).Info("Could not add resources: entry for new file",
 			"kustomization", k.Path, "entry", entry, "resource", event.Identifier.String())
 		logManifestDiagnostics(ctx, diags)

@@ -107,6 +107,59 @@ type PlacementResult struct {
 	NamespaceInherited bool
 }
 
+// PlacementRefusalReason names WHY a placement was refused, from a closed set. It is a
+// metric label value (placement_refusals_total{reason}) as well as a log field, so the
+// strings are lower_snake_case and are part of the observability contract.
+//
+// A refusal is a resource the operator did NOT mirror. It has to be countable per
+// (GitTarget, type): before this it left a log line and, on the resync path, a single
+// integer in a summary — neither of which a dashboard or an alert can reach, so a
+// misconfigured template that silently skipped one Secret on every reconcile was
+// invisible unless somebody read the logs.
+type PlacementRefusalReason string
+
+const (
+	// PlacementRefusedInvalidPath is a resolved path that failed the write-jail gate:
+	// empty, absolute, unclean, escaping via "..", or not a YAML file name. In practice
+	// a declared template whose literal text is wrong.
+	PlacementRefusedInvalidPath PlacementRefusalReason = "invalid_path"
+	// PlacementRefusedSensitiveAppend is a sensitive resource whose resolved path already
+	// holds a document. Sensitive documents are never appended, so the write is skipped
+	// rather than co-mingled — usually a declared template that is not identity-complete.
+	PlacementRefusedSensitiveAppend PlacementRefusalReason = "sensitive_append"
+	// PlacementRefusedPlaintextOntoEncrypted is a plaintext resource routed onto a file
+	// that already holds an encrypted document: appending would produce a
+	// partially-encrypted file and overwriting would destroy the encrypted document.
+	PlacementRefusedPlaintextOntoEncrypted PlacementRefusalReason = "plaintext_onto_encrypted"
+	// PlacementRefusedMixedSensitivityNewFile is two resources of different sensitivity
+	// resolving to the SAME brand-new path within one batch. LocateNew cannot see this
+	// (it resolves every resource against the pre-batch snapshot), so the writer refuses
+	// it; the value is defined here to keep one closed label domain for every refusal.
+	PlacementRefusedMixedSensitivityNewFile PlacementRefusalReason = "mixed_sensitivity_new_file"
+	// PlacementRefusedMultiDocumentTarget is a resolved path that holds a multi-document
+	// file the writer cannot append to (one of its documents is not cleanly editable), so
+	// the write would have to overwrite it and drop the siblings. Raised by the writer.
+	PlacementRefusedMultiDocumentTarget PlacementRefusalReason = "multi_document_target"
+)
+
+// PlacementRefusedError is a placement that resolved but cannot be honoured safely. The
+// caller must skip creating that resource and surface the refusal rather than writing.
+// It carries a bounded Reason so the write path can count refusals by cause without
+// matching on message text.
+type PlacementRefusedError struct {
+	Reason   PlacementRefusalReason
+	Resource string
+	Path     string
+	detail   string
+	cause    error
+}
+
+func (e *PlacementRefusedError) Error() string { return e.detail }
+
+// Unwrap exposes the underlying validation error for an invalid-path refusal, so
+// errors.Is/As still reach it.
+func (e *PlacementRefusedError) Unwrap() error { return e.cause }
+
 // LocateNew resolves the placement of a resource with no existing document, per
 // docs/spec/gittarget-new-file-placement-rules.md: a declared template (Option B)
 // wins when present; otherwise the folder's one supported kustomize root, if it has
@@ -218,9 +271,15 @@ func finishPlacement(
 	// in the design doc: non-empty, a clean relative path, no "..", and a YAML
 	// suffix.
 	if err := ValidateResolvedPlacementPath(resolvedPath); err != nil {
-		return PlacementResult{}, fmt.Errorf(
-			"placement for resource %s resolved to an invalid path: %w", req.Identifier.String(), err,
-		)
+		return PlacementResult{}, &PlacementRefusedError{
+			Reason:   PlacementRefusedInvalidPath,
+			Resource: req.Identifier.String(),
+			Path:     resolvedPath,
+			detail: fmt.Sprintf(
+				"placement for resource %s resolved to an invalid path: %v", req.Identifier.String(), err,
+			),
+			cause: err,
+		}
 	}
 	res := PlacementResult{Path: resolvedPath, Source: source}
 	// A resolved path that already holds a file is only a safe append target when
@@ -237,11 +296,16 @@ func finishPlacement(
 		res.Append = true
 	}
 	if req.Sensitive && res.Append {
-		return PlacementResult{}, fmt.Errorf(
-			"placement for sensitive resource %s resolved to %q, which already holds a document; "+
-				"sensitive resources are never appended to an existing file",
-			req.Identifier.String(), resolvedPath,
-		)
+		return PlacementResult{}, &PlacementRefusedError{
+			Reason:   PlacementRefusedSensitiveAppend,
+			Resource: req.Identifier.String(),
+			Path:     resolvedPath,
+			detail: fmt.Sprintf(
+				"placement for sensitive resource %s resolved to %q, which already holds a document; "+
+					"sensitive resources are never appended to an existing file",
+				req.Identifier.String(), resolvedPath,
+			),
+		}
 	}
 	// A plaintext resource must never join a file that already holds an encrypted
 	// document: appending would sit its cleartext beside SOPS-encrypted data (a
@@ -251,11 +315,16 @@ func finishPlacement(
 	// runtime guard (not a separate sensitive placement block) is what keeps the two
 	// classes from co-mingling for every sensitive type, core or operator-configured.
 	if res.Append && !req.Sensitive && fileHoldsEncryptedDocument(fm) {
-		return PlacementResult{}, fmt.Errorf(
-			"placement for resource %s resolved to %q, which already holds an encrypted document; "+
-				"a plaintext resource is never appended to an encrypted file",
-			req.Identifier.String(), resolvedPath,
-		)
+		return PlacementResult{}, &PlacementRefusedError{
+			Reason:   PlacementRefusedPlaintextOntoEncrypted,
+			Resource: req.Identifier.String(),
+			Path:     resolvedPath,
+			detail: fmt.Sprintf(
+				"placement for resource %s resolved to %q, which already holds an encrypted document; "+
+					"a plaintext resource is never appended to an encrypted file",
+				req.Identifier.String(), resolvedPath,
+			),
+		}
 	}
 	if k := governingKustomization(store, req.WriteScope, resolvedPath); k != nil && !k.Unsupported {
 		if !kustomizationListsResource(k, resolvedPath) {

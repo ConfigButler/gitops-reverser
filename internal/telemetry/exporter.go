@@ -43,6 +43,44 @@ var (
 	// is the configured behaviour, never a fault.
 	PruneRetainedDocumentsTotal metric.Int64Counter
 
+	// PlacementsTotal counts new-file placements resolved for a resource with no document in
+	// Git yet — the only case placement runs for — labelled by {source, disposition,
+	// gittarget_namespace, gittarget_name, group, version, resource}. source is which
+	// mechanism chose the path (declared / kustomize_root / canonical) and disposition is what
+	// it did with it (new_file / appended).
+	//
+	// It exists because sibling inference was deleted (docs/design/open-asks-priority.md): a
+	// repository with a hand-authored layout now needs a placement.byType line, and
+	// `source="canonical"` is how its operator learns which type in which target is missing
+	// one, WITHOUT reading the folder. The (GitTarget, type) labels are the whole point — a
+	// bare "a fall-back happened somewhere" counter is not actionable, which is why the
+	// design doc argued against leading with one. Cardinality is bounded by targets ×
+	// watched types, and placement fires only for a type/name the target has never written.
+	//
+	// Every increment is a resource that WAS mirrored; a resource the writer refused is
+	// PlacementRefusalsTotal instead, never a value of source here.
+	PlacementsTotal metric.Int64Counter
+	// PlacementRefusalsTotal counts resources the writer declined to place, labelled by
+	// {reason, gittarget_namespace, gittarget_name, group, version, resource}. Every
+	// increment is a resource NOT in the mirror: a declared template that escapes spec.path
+	// or is not identity-complete, a sensitive resource whose path is already taken, a
+	// plaintext resource routed at an encrypted file, or two resources of mixed sensitivity
+	// racing onto one brand-new file. The write is retried on the next event or resync, so a
+	// steady non-zero rate means a policy that needs fixing rather than a transient.
+	//
+	// This is the counter that did not exist: a refusal left a log line at the skip site and,
+	// on the resync path only, ResyncStats.PlacementSkipped — a field in a summary, not a
+	// series anything can alert on.
+	PlacementRefusalsTotal metric.Int64Counter
+	// PlacementKustomizationEntriesTotal counts attempts to add a new file to the
+	// resources: list of the kustomization that governs it, labelled by {outcome,
+	// gittarget_namespace, gittarget_name}. outcome is added, no_change, or failed.
+	//
+	// `failed` is the one to watch, and it is otherwise invisible: the document is committed
+	// and the entry is not, so kustomize never builds the file. The object is in Git, looks
+	// mirrored, and is not applied by anything.
+	PlacementKustomizationEntriesTotal metric.Int64Counter
+
 	// TargetReconcileCompletedTotal counts completed watch recovery passes per
 	// GitTarget: each increment marks either a streaming-snapshot resync applied on
 	// the branch worker or a cursor-backed watch resume (see Manager.recordTargetReconcileCompleted).
@@ -261,6 +299,12 @@ func registerCounters() error {
 		{"gitopsreverser_commits_total", &CommitsTotal},
 		{"gitopsreverser_resync_sweep_deletes_total", &ResyncSweepDeletesTotal},
 		{"gitopsreverser_prune_retained_documents_total", &PruneRetainedDocumentsTotal},
+		{"gitopsreverser_placements_total", &PlacementsTotal},
+		{"gitopsreverser_placement_refusals_total", &PlacementRefusalsTotal},
+		{
+			"gitopsreverser_placement_kustomization_entries_total",
+			&PlacementKustomizationEntriesTotal,
+		},
 		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
 		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
 		{"gitopsreverser_audit_events_total", &AuditEventsTotal},
