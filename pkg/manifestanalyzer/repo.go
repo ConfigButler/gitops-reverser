@@ -45,8 +45,15 @@ const (
 	//
 	// Deprecated: no longer emitted; kept for source compatibility.
 	ReasonOverlayFanOutUnsupported IssueKind = "overlay-fan-out-unsupported"
-	// ReasonRefusedStructural is the permanent support boundary: a render root whose
-	// kustomization uses a construct the writer cannot map back to editable source.
+	// ReasonRefusedStructural is the support boundary at a render root: a kustomization
+	// using a construct the writer cannot map back to editable source.
+	//
+	// READ [RefusalReason.Solvable], NOT THIS CODE, to decide whether the refusal can be
+	// cleared. This code answers both ways and is right to: a root refused for a
+	// configMapGenerator is nobody's to solve, while one refused because its
+	// kustomization.yaml does not parse is one commit from adoptable, and both arrive here.
+	// A consumer that reads the code as permanent tells the second author "this can never
+	// be synced" when the truth is "not yet", which is the worse of the two lies.
 	ReasonRefusedStructural IssueKind = "refused-structural"
 )
 
