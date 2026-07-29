@@ -200,7 +200,7 @@ Four details do real work:
 - **`defer unregister`.** Registration is undone on every exit, including the ones that return early.
   The registry exposes a `len()` purely so a test can assert a resolver left nothing behind.
 
-The loop around the `select` matters too: a wake-up is a hint, not an answer. The resolver re-runs the
+The loop around the `select` matters too, because a wake-up is only a hint. The resolver re-runs the
 whole lookup, and if what arrived was not good enough (a write fact when it needs delete evidence)
 it keeps waiting rather than treating the signal as a result.
 
@@ -247,6 +247,73 @@ audit policy excludes) still stalls its shard for a whole grace. This change rem
 largest population that was hitting it; it does not change that a blocking resolve on a serial
 goroutine can do this at all. See
 [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md).
+
+## What is observable
+
+Every metric on this path, and the question each answers.
+
+| Metric | Labels | Answers |
+|---|---|---|
+| `gitopsreverser_attribution_resolutions_total` | `result`, `group`, `version`, `resource` | which evidence named the author, per type |
+| `gitopsreverser_attribution_resolution_wait_seconds` | same | how long the join waited, by outcome |
+| `gitopsreverser_attribution_fact_events_total` | `op` = `written` / `matched` | how much of what is published is ever used |
+| `gitopsreverser_attribution_fact_index_size` | none | entries held across every scope |
+| `gitopsreverser_attribution_fact_index_evictions_total` | `reason` = `per_type` / `total` | whether the caps are binding |
+| `gitopsreverser_attribution_collection_degraded_total` | `reason` = `uid_cap` / `no_uids` | how often the precise collection join was unavailable |
+| `gitopsreverser_attribution_fact_stream_gaps_total` | `stream` | facts lost for good to a trim |
+| `gitopsreverser_commits_total` | …, `author_kind` | what reached Git |
+
+The wait histogram is the one that earns its keep. Splitting wait time BY RESULT is what turned the
+window race from a mystery into a measurement: `weak` at a 6.7s mean against `exact_user` at 0.18s
+said immediately that removals were sitting out their grace, which no aggregate mean would have shown.
+
+### What is not visible, and one gap that mattered
+
+**A fact published and filed under nothing is invisible.** When `file` matches no case it returns no
+keys, and `Apply` records nothing. So `written` minus `matched` conflates two very different
+populations: facts nobody happened to need, and facts that could never have been joined by anyone.
+
+That is not hypothetical. It is exactly the population behind the window race: name-only delete facts
+were being published and silently discarded, and no counter moved. A `dropped` op on the lifecycle
+counter, with the reason, would have made that visible from a dashboard instead of from a corpus
+reading. It is the observability gap worth closing first.
+
+**Head-of-line blocking is not measured.** The wait histogram times each resolution in isolation. It
+does not measure the delay a slow resolution imposes on the events queued behind it on the same
+shard, which is the thing that broke a spec. Time-in-queue per shard, or the age of an event
+when it reaches the branch worker, would name it directly.
+
+**The publish-side tier distribution is not counted.** How many facts land under a name versus a uid
+is only discoverable by reading the index. Given that this ratio is the aggregated-API story, it is
+worth a counter.
+
+## The `exact_user` / `exact_serviceaccount` split is a modeling wart
+
+It is, and the inconsistency is real rather than cosmetic. `result` should name the TIER: `weak`,
+`name`, `collection_uid`, `collection_scope`, `absent` all do. `exact` is the only one that also
+encodes WHO the actor was, which crams two orthogonal dimensions into one label.
+
+Two consequences follow directly:
+
+- counting exact resolutions means summing two series, and any new actor kind would multiply them
+  again;
+- the actor kind can only be asked of the exact tier. There is no way to ask how many `name`-tier or
+  `collection_uid` resolutions named a service account, because that dimension does not exist there.
+
+The decisive argument is that the codebase already models it correctly one metric over:
+`gitopsreverser_commits_total` carries `author_kind` as its own label, with `user`, `serviceaccount`,
+`committer` and `unresolved` as values. So the two metrics disagree about the shape of the same
+distinction.
+
+**Recommended shape:** `result` becomes tier-only (`exact`, `weak`, `name`, `collection_uid`,
+`collection_scope`, `absent`) and gains a sibling `actor_kind` label matching `commits_total`. The
+change is cheap in code: `isServiceAccount()` is already derived from the author string at read
+time, so nothing new is stored or plumbed.
+
+**But it is a breaking metric change**, and that is why it is written down here rather than folded
+into this work. Anything querying `result="exact_user"` stops matching. It deserves its own change
+with an [`UPGRADING.md`](../UPGRADING.md) entry, done deliberately, rather than arriving as a
+side effect of an attribution fix.
 
 ## Why it is split into two halves at all
 
