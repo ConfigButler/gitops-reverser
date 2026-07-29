@@ -180,6 +180,18 @@ operator to tune.
 name reused after a recreate would inherit the previous object's deleter, and a longer horizon makes
 that more likely, not less. The TTL is what bounds that risk today and must keep bounding it.
 
+**The longer horizon is a horizon within one process, and the TTL still bounds what a restart can
+recover.** The pointer is not persisted: the index is warmed from the fact streams, and both halves
+of that are one TTL wide — the transport trims to the retention horizon, and the follower replays
+exactly `i.ttl` ([`Run`](../../internal/queue/fact_index.go),
+[`FollowFacts`](../../internal/queue/fact_stream.go)). So a pointer for a delete older than the TTL
+survives a `410` rebuild, a re-list, and any amount of watch churn, but it does not survive the
+operator process going away. The second trigger is therefore *narrowed* rather than closed: it is
+closed for a restart that happens after the delete fact was seen and inside the retention window,
+and untouched when the operator was not running to see the delete at all. Closing that remainder
+needs the pointer to outlive the process, which is a different change — persistence — and is not
+proposed here.
+
 ### The payoff that is not correctness
 
 A `Terminating` object seen on replay resolves `absent` today, which means it waits out the **whole**
@@ -187,7 +199,8 @@ grace window for a fact written days ago that can never arrive — on the shard'
 with every later event queued behind it. That is the head-of-line cost
 [attribution-branch-findings.md](attribution-branch-findings.md) measured. A removal pointer that
 outlives the TTL turns that full-grace wait into an immediate hit, so a cluster carrying objects
-stuck `Terminating` stops paying a grace per replayed event.
+stuck `Terminating` stops paying a grace per replayed event — for as long as the process that saw
+the delete is still running, which is the horizon the section above states exactly.
 
 ### Why not simply refuse to overwrite the exact entry
 

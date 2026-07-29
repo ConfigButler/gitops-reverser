@@ -729,7 +729,10 @@ same `user`/`serviceaccount`/`none` vocabulary `commits_total{author_kind}` uses
 
 Three rules carry most of the behavior. **A fact about a deletion may not be replaced by a fact about
 a write:** a removal fact takes a sticky, uid-keyed slot that the ordinary last-writer-wins
-structures cannot reach, and a removal asks that slot first. Without it, a finalizer patch's fact
+structures cannot reach, and a removal asks that slot first. That slot is the one structure the fact
+TTL does not bound: a uid is unique across space and time, so the statement cannot be superseded,
+and its horizon is the index's caps instead. It is still in-memory: a restart re-warms the index
+from one TTL of stream retention like everything else. Without the slot, a finalizer patch's fact
 overwrites the deleter's, because both carry the resourceVersion the *deletion* stamped
 ([attribution-deletion-intent-actor.md](design/attribution-deletion-intent-actor.md)). **A removal
 never returns on a write fact without looking further:** the per-object tiers are last-writer-wins,

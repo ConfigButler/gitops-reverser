@@ -92,7 +92,7 @@ flowchart TD
     C -->|no| Z[absent: committer-authored]
     C -->|yes| AA{a removal, and a sticky<br/>removal pointer for its uid?}
     AA -->|yes| AB[sticky_delete]
-    AA -->|no| D{uid and rv,<br/>and exact-capable?}
+    AA -->|no| D{a fact under<br/>this uid and rv?}
 
     D -->|match| E[exact]
     D -->|no match| F{is this a removal?}
@@ -167,6 +167,11 @@ wait immediately.
 **An exact-capable event may not fall through to the removal tiers.** A create or update presents the
 resourceVersion its own write produced. If the exact tier misses, the `latest` pointer may name an
 older, different author, so the lookup skips straight to the rv hatch and the name tier.
+
+The gate is one-directional, and only one of the two tiers above is gated. The exact tier is tried
+for *any* query carrying a uid and a resourceVersion, a removal included. A removal that misses
+the sticky pointer can therefore still resolve at `exact`, which is exactly what it did before the
+pointer existed. What an exact-capable event may not do is the reverse: reach the tiers below.
 
 ## The wait, and what changed about it
 

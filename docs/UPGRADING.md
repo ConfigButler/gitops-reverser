@@ -80,13 +80,14 @@ the deletion itself: `sticky_delete`, `collection_uid_delete`, `collection_scope
 and `name` can hold a delete fact as well, but either can equally hold a write, which is why neither
 claims it in its name.
 
-`sticky_delete` is a value `result` never had at all. A finalized deletion — a human deletes, a
-controller clears the finalizer — used to resolve at `tier="exact"` and name the controller, because
-the finalizer patch's fact carries the resourceVersion the *deletion* stamped and overwrote the
-deleter's under the same key. It now resolves at `tier="sticky_delete"` and names the human, so a
-dashboard sees `exact` shift toward `sticky_delete` for types that carry finalizers, and
-`commits_total{author_kind}` shift from `serviceaccount` toward `user`. A query that enumerates tiers
-explicitly needs the three new values; `tier!="absent"` covers them already.
+`sticky_delete` is a value `result` never had at all, and it comes with a behaviour change. A
+finalized deletion — a human deletes, a controller clears the finalizer — is attributed to the human
+and resolves at `tier="sticky_delete"`. Before this release it named the controller and was counted
+on the exact path (`result="exact_user"` or `result="exact_serviceaccount"`), because the finalizer
+patch's fact carries the resourceVersion the *deletion* stamped and overwrote the deleter's under
+the same key. A dashboard therefore sees the exact path shift toward `sticky_delete` for types that
+carry finalizers, and `commits_total{author_kind}` shift from `serviceaccount` toward `user`. A query
+that enumerates tiers explicitly needs the three new values; `tier!="absent"` covers them already.
 
 `actor_kind` is `user`, `serviceaccount`, or `none`, the vocabulary
 `gitopsreverser_commits_total{author_kind}` already uses, and it is available on **every** tier

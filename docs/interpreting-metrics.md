@@ -289,10 +289,12 @@ and it is ordered, strongest first. **`actor_kind`** names who that evidence nam
 vocabulary `commits_total{author_kind}` uses.
 
 The three values ending in **`_delete`** are the tiers that answered with a fact about the *deletion*
-itself, which is the only evidence that can say who removed something. `latest` and `name` may hold
-a delete fact too, but either can equally hold a write, so neither can claim it in its name. Summing
-`tier=~".*_delete"` is therefore "removals attributed to the actor who asked for the removal",
-and it is worth watching on its own.
+itself, which is the only kind of evidence that can speak to who removed something. `latest` and
+`name` may hold a delete fact too, but either can equally hold a write, so neither can claim it in
+its name. `tier=~".*_delete"` therefore reads as "resolved on deletion-specific evidence" — not as a
+guarantee that the actor named asked for this object's removal: `collection_scope_delete` matches a
+collection request by scope alone and can name the wrong actor, and `name` can go stale after a
+name is reused. Only `sticky_delete` and `collection_uid_delete` are statements about *this object*.
 
 | `tier` | Meaning |
 | --- | --- |
