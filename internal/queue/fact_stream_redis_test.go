@@ -49,3 +49,34 @@ func TestRedisFactStream_TrimIsRateLimited(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
 }
+
+// TestRedisFactStream_StreamExpiresWhenNobodyWritesToItAnyMore pins the counterpart to the
+// amortized trim above, and the leak it would otherwise leave. MINID trimming rides on the publish
+// path, so a stream whose type stops being written to is never trimmed again and its key would
+// live in Redis for the life of the instance — one immortal key per (route, type) pair that ever
+// saw a single write. A namespace-scoped type garbage-collected once when a namespace is torn down
+// is exactly that shape, and there is nothing left to clean it up.
+//
+// EXPIRE rides along with every XADD instead, so the key dies one retention horizon after its last
+// append, and a busy stream keeps refreshing the deadline.
+func TestRedisFactStream_StreamExpiresWhenNobodyWritesToItAnyMore(t *testing.T) {
+	store, mr := newTestRedisStoreWithRedis(t)
+	stream := store.FactStream(RedisFactStreamConfig{TTL: 10 * time.Minute})
+	key := factStreamTestKey("acme.cert-manager.io", "challenges")
+	ctx := t.Context()
+
+	require.NoError(t, stream.PublishFacts(ctx, key, authorFacts("alice")))
+	streamKey := stream.streamKey(key)
+	require.Equal(t, 10*time.Minute, mr.TTL(streamKey),
+		"every append must set the retention deadline, or an idle stream never goes away")
+
+	// A later append refreshes it rather than letting it run down, so a busy stream never expires.
+	mr.FastForward(9 * time.Minute)
+	require.NoError(t, stream.PublishFacts(ctx, key, authorFacts("bob")))
+	require.Equal(t, 10*time.Minute, mr.TTL(streamKey), "a live stream's deadline must be refreshed")
+
+	// Nothing writes to it again, so it goes.
+	mr.FastForward(11 * time.Minute)
+	require.False(t, mr.Exists(streamKey),
+		"a stream past its retention horizon must not outlive the facts it carried")
+}

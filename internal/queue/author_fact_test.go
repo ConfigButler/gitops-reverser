@@ -3,17 +3,50 @@
 package queue
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	authnv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
+
+// mutationEvent builds an apps/deployments event for team-a/web authored by username,
+// whose objectRef + responseObject carry uid and resourceVersion rv.
+func mutationEvent(verb, uid, rv, username string) auditv1.Event {
+	const namespace, name = "team-a", "web"
+	body := fmt.Sprintf(`{"apiVersion":"apps/v1","kind":"Deployment",`+
+		`"metadata":{"name":%q,"namespace":%q,"uid":%q,"resourceVersion":%q}}`, name, namespace, uid, rv)
+	return auditv1.Event{
+		AuditID:        "audit-1",
+		Verb:           verb,
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.Now()},
+		User:           authnv1.UserInfo{Username: username},
+		ObjectRef: &auditv1.ObjectReference{
+			APIGroup:   "apps",
+			APIVersion: "v1",
+			Resource:   "deployments",
+			Namespace:  namespace,
+			Name:       name,
+			UID:        k8stypes.UID(uid),
+		},
+		ResponseObject: &runtime.Unknown{Raw: []byte(body)},
+	}
+}
+
+func appsDeploymentGVR() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+}
 
 // collectionDeleteEvent is one name-less collection delete over count objects.
 func collectionDeleteEvent(selector string, count int) auditv1.Event {
@@ -41,28 +74,28 @@ func collectionDeleteEvent(selector string, count int) auditv1.Event {
 }
 
 func TestAuthorFactFromEvent_CollectionCarriesScopeSelectorAndUIDs(t *testing.T) {
-	fact, groupResource, ok := AuthorFactFromEvent(t.Context(), collectionDeleteEvent("app%3Dweb", 2))
+	fact, groupResource, ok := AuthorFactFromEvent(t.Context(), collectionDeleteEvent("app%3Dweb", 2), 0)
 	require.True(t, ok, "a name-less deletecollection is the case that DOES produce a fact")
 	require.Equal(t, "configmaps", groupResource.Resource)
 	require.Equal(t, "team-a", fact.Namespace)
 	require.Equal(t, "app=web", fact.LabelSelector)
 	require.Equal(t, []string{"uid-0", "uid-1"}, fact.UIDs)
-	require.Empty(t, fact.Name)
-	require.Empty(t, fact.UID)
+	require.Empty(t, fact.UID, "a collection request names no object")
 }
 
 func TestAuthorFactFromEvent_UIDSetIsDroppedPastTheCapAndCounted(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	fact, _, ok := AuthorFactFromEvent(t.Context(), collectionDeleteEvent("", DefaultCollectionUIDCap+1))
+	fact, _, ok := AuthorFactFromEvent(t.Context(), collectionDeleteEvent("", DefaultCollectionUIDCap+1), 0)
 	require.True(t, ok)
 	// The fact degrades to scope matching, which is already correct — and says so in the metrics,
 	// so "we fell back to scope" is visible rather than inferred.
 	require.Nil(t, fact.UIDs)
 	require.Empty(t, fact.LabelSelector)
 
-	degraded, found := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_collection_degraded_total",
+	degraded, found := telemetry.CollectInt64Sum(reader,
+		"gitopsreverser_attribution_collection_without_uidset_total",
 		map[string]string{"reason": "uid_cap"})
 	require.True(t, found)
 	require.Equal(t, int64(1), degraded)
@@ -74,7 +107,7 @@ func TestAuthorFactFromEvent_BodylessCollectionStillProducesAFact(t *testing.T) 
 
 	// The shape a production cluster with --audit-webhook-truncate-enabled actually sends, and the
 	// one the old expander gave up on entirely.
-	fact, _, ok := AuthorFactFromEvent(t.Context(), event)
+	fact, _, ok := AuthorFactFromEvent(t.Context(), event, 0)
 	require.True(t, ok)
 	require.Nil(t, fact.UIDs)
 	require.Equal(t, "alice", fact.Author)
@@ -98,18 +131,17 @@ func TestAuthorFactFromEvent_EventsThatCanNameNobody(t *testing.T) {
 	}
 	for name, event := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, _, ok := AuthorFactFromEvent(t.Context(), event)
+			_, _, ok := AuthorFactFromEvent(t.Context(), event, 0)
 			require.False(t, ok)
 		})
 	}
 }
 
 func TestAuthorFactFromEvent_ObjectWriteCarriesTheIdentityTheJoinNeeds(t *testing.T) {
-	fact, groupResource, ok := AuthorFactFromEvent(t.Context(), mutationEvent("update", "uid-1", "101", "alice"))
+	fact, groupResource, ok := AuthorFactFromEvent(t.Context(), mutationEvent("update", "uid-1", "101", "alice"), 0)
 	require.True(t, ok)
 	require.Equal(t, "apps", groupResource.Group)
 	require.Equal(t, "deployments", groupResource.Resource)
-	require.Equal(t, "apps/deployments", fact.GroupResource)
 	require.Equal(t, "uid-1", fact.UID)
 	require.Equal(t, "101", fact.ResourceVersion)
 	require.Equal(t, "alice", fact.Author)
@@ -117,4 +149,36 @@ func TestAuthorFactFromEvent_ObjectWriteCarriesTheIdentityTheJoinNeeds(t *testin
 	// An ordinary write is about one object, so it carries no collection fields.
 	require.Empty(t, fact.LabelSelector)
 	require.Nil(t, fact.UIDs)
+}
+
+// TestAuthorFact_UnmarshalRefusesAFactThatNamesNobody pins the wire contract. A fact exists to name
+// somebody, so `author` is the one required field, and missing, null, and empty are one violation
+// rather than three. Go cannot state that as a type — every type has a constructible zero value, and
+// encoding/json writes exported fields past any constructor — so the boundary holds it instead.
+func TestAuthorFact_UnmarshalRefusesAFactThatNamesNobody(t *testing.T) {
+	refused := map[string]string{
+		"author missing": `{"uid":"uid-1","verb":"update"}`,
+		"author null":    `{"uid":"uid-1","author":null,"verb":"update"}`,
+		"author empty":   `{"uid":"uid-1","author":"","verb":"update"}`,
+	}
+	for name, payload := range refused {
+		t.Run(name, func(t *testing.T) {
+			var fact AuthorFact
+			err := json.Unmarshal([]byte(payload), &fact)
+			require.ErrorIs(t, err, errFactWithoutAuthor)
+		})
+	}
+
+	// A named actor decodes intact, fields and all — the check refuses a fact, it does not filter one.
+	var fact AuthorFact
+	require.NoError(t, json.Unmarshal(
+		[]byte(`{"uid":"uid-1","author":"alice","email":"a@x.io","verb":"update","uids":["a","b"]}`), &fact))
+	require.Equal(t, "alice", fact.Author)
+	require.Equal(t, "a@x.io", fact.Email)
+	require.Equal(t, []string{"a", "b"}, fact.UIDs)
+
+	// A batch is refused as a whole when any fact in it violates the contract: the entry is the unit
+	// the transport can skip, and a partially-absorbed batch would hide the violation.
+	_, err := decodeFactBatch([]byte(`[{"author":"alice"},{"author":""}]`))
+	require.ErrorIs(t, err, errFactWithoutAuthor)
 }

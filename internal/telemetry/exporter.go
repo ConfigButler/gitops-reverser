@@ -98,29 +98,59 @@ var (
 	// AuditEventListDurationSeconds records how long the webhook takes to answer an
 	// EventList request, labelled by outcome.
 	AuditEventListDurationSeconds metric.Float64Histogram
-	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes,
-	// labelled by {result, group, version, resource}.
+	// AttributionResolutionsTotal counts watch-event attribution resolver outcomes, labelled by
+	// {tier, actor_kind, group, version, resource}. tier names WHICH evidence answered
+	// (exact/latest/resource_version/name/collection_uid/collection_scope/absent) and actor_kind
+	// names WHO it named (user/serviceaccount/none) — two orthogonal questions, so they are two
+	// labels. Match coverage is tier!="absent"; anything narrower reads the collection and name
+	// tiers as misses.
 	AttributionResolutionsTotal metric.Int64Counter
-	// AttributionFactEventsTotal counts attribution fact lifecycle events in Redis,
-	// labelled by bounded op (written/matched/expired_unmatched/late).
-	AttributionFactEventsTotal metric.Int64Counter
-	// AttributionResolutionWaitSeconds records resolver wait time by final result.
+	// AttributionFactsTotal counts attribution fact lifecycle events, labelled by bounded op:
+	// "written" is one fact appended to the fact log, "matched" is one joined by a watch event.
+	// Together they say how much of what is published is ever used. They are NOT subtractable:
+	// written counts every type, matched only the streams this process follows.
+	AttributionFactsTotal metric.Int64Counter
+	// AttributionResolutionWaitSeconds records resolver wait time by {tier, event_kind, group,
+	// version, resource}. event_kind is write or removal, and the split is load-bearing: a removal
+	// holds a fallback and keeps waiting where a write does not, so the removal wait is the number
+	// --author-attribution-grace is tuned from.
 	AttributionResolutionWaitSeconds metric.Float64Histogram
-	// AttributionFactIndexSize gauges attribution fact keys currently held in Redis.
-	AttributionFactIndexSize metric.Int64Gauge
+	// AttributionFactIndexEntries gauges the entries the in-memory fact index currently holds across
+	// every scope and match structure. Read against the eviction counter it says whether the caps
+	// are binding.
+	AttributionFactIndexEntries metric.Int64Gauge
 	// AttributionFactIndexEvictionsTotal counts facts dropped from the in-memory fact index because
 	// it was full, labelled by bounded reason (per_type/total). An attribution lost to a full index
 	// has to look different from one that was never published, or a burst is silently absorbed.
 	AttributionFactIndexEvictionsTotal metric.Int64Counter
-	// AttributionCollectionDegradedTotal counts collection facts published without the uid set the
-	// precise join would have used, labelled by bounded reason (uid_cap/no_uids). The scope fallback
-	// is already correct, so this says how often the precise path was available — not that anything
-	// broke.
-	AttributionCollectionDegradedTotal metric.Int64Counter
+	// AttributionCollectionWithoutUIDSetTotal counts collection facts published without the uid set
+	// the precise join would have used, labelled by bounded reason (uid_cap/no_uids). The scope
+	// fallback is already correct, so this says how often the precise path was available — not that
+	// anything broke.
+	AttributionCollectionWithoutUIDSetTotal metric.Int64Counter
 	// AttributionFactStreamGapsTotal counts occasions a fact stream was trimmed past this process's
 	// follower, labelled by stream. Every gap is facts lost for good, and it is the one loss a log
 	// transport can see at all.
 	AttributionFactStreamGapsTotal metric.Int64Counter
+	// AttributionFactStreamDecodeErrorsTotal counts fact-stream entries the follower could not
+	// decode, labelled by transport. Such an entry is skipped and its position passed, so the facts
+	// it carried are lost — and unlike a trim gap the loss leaves no other trace, which is why this
+	// is the loss path that most needed a counter.
+	AttributionFactStreamDecodeErrorsTotal metric.Int64Counter
+	// AttributionFactFollowerErrorsTotal counts fact-follower read failures, labelled by transport.
+	// The follower retries with a backoff rather than returning, so the errors are otherwise only a
+	// log line.
+	AttributionFactFollowerErrorsTotal metric.Int64Counter
+	// AttributionFactFollowerLastSuccessTimestampSeconds gauges the Unix time of the follower's last
+	// successful read, idle rounds included. It matters more than the error counter: only it
+	// separates "erroring occasionally while making progress" from "has read nothing in ten
+	// minutes", and only the second is an outage. Read it as time() - <gauge>.
+	AttributionFactFollowerLastSuccessTimestampSeconds metric.Int64Gauge
+	// AttributionTransportInfo is an info gauge, always 1, labelled by the fact transport in force
+	// (redis/memory). It is interpretive metadata rather than a signal: a burst of unresolved
+	// commits after a restart is EXPECTED under the in-process transport, which drops every fact
+	// with the process, and a bug under Redis.
+	AttributionTransportInfo metric.Int64Gauge
 
 	// APICatalogResources gauges the count of served top-level resources in the catalog,
 	// split by the default-watch-policy allowed/excluded state.
@@ -236,10 +266,18 @@ func registerCounters() error {
 		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
 		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
 		{"gitopsreverser_attribution_resolutions_total", &AttributionResolutionsTotal},
-		{"gitopsreverser_attribution_fact_events_total", &AttributionFactEventsTotal},
+		{"gitopsreverser_attribution_facts_total", &AttributionFactsTotal},
 		{"gitopsreverser_attribution_fact_index_evictions_total", &AttributionFactIndexEvictionsTotal},
 		{"gitopsreverser_attribution_fact_stream_gaps_total", &AttributionFactStreamGapsTotal},
-		{"gitopsreverser_attribution_collection_degraded_total", &AttributionCollectionDegradedTotal},
+		{
+			"gitopsreverser_attribution_collection_without_uidset_total",
+			&AttributionCollectionWithoutUIDSetTotal,
+		},
+		{
+			"gitopsreverser_attribution_fact_stream_decode_errors_total",
+			&AttributionFactStreamDecodeErrorsTotal,
+		},
+		{"gitopsreverser_attribution_fact_follower_errors_total", &AttributionFactFollowerErrorsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
@@ -301,7 +339,12 @@ func registerGauges() error {
 		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
 		{"gitopsreverser_watched_types", &WatchedTypes},
 		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
-		{"gitopsreverser_attribution_fact_index_size", &AttributionFactIndexSize},
+		{"gitopsreverser_attribution_fact_index_entries", &AttributionFactIndexEntries},
+		{
+			"gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds",
+			&AttributionFactFollowerLastSuccessTimestampSeconds,
+		},
+		{"gitopsreverser_attribution_transport_info", &AttributionTransportInfo},
 	}
 	for _, s := range gauges {
 		v, err := otelMeter.Int64Gauge(s.name)

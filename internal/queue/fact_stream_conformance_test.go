@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // The attribution fact transport has two implementations and ONE test suite. They are the same
@@ -56,10 +59,14 @@ func defaultFactStreamParams() factStreamParams {
 	}
 }
 
-// factStreamImplementation names one transport and builds it for one case.
+// factStreamImplementation names one transport and builds it for one case. appendRaw writes an
+// entry payload verbatim, which is the only thing a transport's own internals are needed for here:
+// PublishFacts cannot produce an entry that violates the wire contract, and refusing one is the
+// loss path with no other symptom.
 type factStreamImplementation struct {
-	name  string
-	build func(t *testing.T, params factStreamParams) FactTransport
+	name      string
+	build     func(t *testing.T, params factStreamParams) FactTransport
+	appendRaw func(t *testing.T, transport FactTransport, key FactStreamKey, payload string)
 }
 
 func factStreamImplementations() []factStreamImplementation {
@@ -79,6 +86,15 @@ func factStreamImplementations() []factStreamImplementation {
 					ReadCount:    params.ReadCount,
 				})
 			},
+			appendRaw: func(t *testing.T, transport FactTransport, key FactStreamKey, payload string) {
+				t.Helper()
+				stream, ok := transport.(*RedisFactStream)
+				require.True(t, ok)
+				require.NoError(t, stream.client.XAdd(t.Context(), &redis.XAddArgs{
+					Stream: stream.streamKey(key),
+					Values: map[string]any{factStreamEntryField: payload},
+				}).Err())
+			},
 		},
 		{
 			name: "memory",
@@ -90,6 +106,16 @@ func factStreamImplementations() []factStreamImplementation {
 					Block:     factStreamTestBlock,
 					ReadCount: params.ReadCount,
 				})
+			},
+			appendRaw: func(t *testing.T, transport FactTransport, key FactStreamKey, payload string) {
+				t.Helper()
+				stream, ok := transport.(*MemoryFactStream)
+				require.True(t, ok)
+				stream.mu.Lock()
+				defer stream.mu.Unlock()
+				ring, ok := stream.streams[key]
+				require.True(t, ok, "publish something before writing a raw entry")
+				ring.append([]byte(payload), time.Now())
 			},
 		},
 	}
@@ -187,6 +213,52 @@ func TestFactStreamConformance_AppendsAreFollowedInOrder(t *testing.T) {
 		require.Negative(t, compareStreamIDs(entries[0].ID, entries[1].ID))
 		require.Negative(t, compareStreamIDs(entries[1].ID, entries[2].ID))
 	})
+}
+
+// TestFactStreamConformance_ARefusedEntryIsSkippedAndCounted pins the loss path that had no
+// symptom at all, over both ways an entry can be refused: a payload that is not JSON, and one that
+// is JSON but violates the fact contract by naming nobody.
+//
+// A refused entry is skipped and its position passed — which is right, since it can never decode and
+// stalling on it would cost every later fact on that stream — so the facts it carried are gone.
+// Unlike a trim gap that is not detectable after the fact, and unlike a publish failure the API
+// server does not retry it, which is why the counter IS the symptom.
+func TestFactStreamConformance_ARefusedEntryIsSkippedAndCounted(t *testing.T) {
+	payloads := map[string]string{
+		"malformed":       "{not json",
+		"authorless fact": `[{"uid":"uid-1","resourceVersion":"101","verb":"update"}]`,
+		"null author":     `[{"uid":"uid-1","author":null,"verb":"update"}]`,
+	}
+	for name, payload := range payloads {
+		t.Run(name, func(t *testing.T) {
+			for _, impl := range factStreamImplementations() {
+				t.Run(impl.name, func(t *testing.T) {
+					reader, err := telemetry.InitTestExporter()
+					require.NoError(t, err)
+
+					transport := impl.build(t, defaultFactStreamParams())
+					ctx := t.Context()
+					key := factStreamTestKey("", "configmaps")
+					sub := transport.FollowFacts([]FactStreamKey{key}, factStreamTestHorizon)
+
+					require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("alice")))
+					impl.appendRaw(t, transport, key, payload)
+					require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("bob")))
+
+					// The follower reads past the refused entry rather than stalling on it, so the
+					// fact appended after it still arrives.
+					entries := drainFactEntries(t, sub, 2)
+					require.Equal(t, []string{"alice", "bob"}, factAuthors(entries))
+
+					decodeErrors, found := telemetry.CollectInt64Sum(reader,
+						"gitopsreverser_attribution_fact_stream_decode_errors_total",
+						map[string]string{"transport": string(transport.TransportKind())})
+					require.True(t, found, "a refused entry must be counted; it has no other symptom")
+					require.Equal(t, int64(1), decodeErrors)
+				})
+			}
+		})
+	}
 }
 
 func TestFactStreamConformance_EmptyBatchIsNotAppended(t *testing.T) {
@@ -464,4 +536,43 @@ func drainUntilFactStreamGap(t *testing.T, sub FactSubscription) (FactStreamGap,
 			return delivery.Gaps[0], entries
 		}
 	}
+}
+
+// TestFactStreamConformance_ExactlyFullReadDoesNotReportAPhantomGap pins the trim-gap precondition
+// against a FALSE positive, which is the other half of the test above.
+//
+// "Behind" is inferred from a read filling its entry budget, because a read that fills it exactly is
+// indistinguishable from one that left more waiting. That inference is fine; leaving it set
+// afterwards is not. A follower that fills the budget exactly and then finds nothing more is caught
+// up — and if the mark survived, ordinary retention ageing out the entries it had ALREADY read
+// would surface as a data-loss report and a scary log line for a follower that never lost anything.
+func TestFactStreamConformance_ExactlyFullReadDoesNotReportAPhantomGap(t *testing.T) {
+	params := defaultFactStreamParams()
+	params.TTL = factStreamTestTTL
+	// One entry per read, and exactly one entry to read: the budget is filled precisely.
+	params.ReadCount = 1
+	runFactStreamConformance(t, params, func(t *testing.T, transport FactTransport) {
+		ctx := t.Context()
+		key := factStreamTestKey("", "configmaps")
+
+		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("only")))
+		sub := transport.FollowFacts([]FactStreamKey{key}, factStreamTestHorizon)
+		require.Equal(t, []string{"only"}, factAuthors(drainFactEntries(t, sub, 1)))
+
+		// It asks again and is given nothing: it has read everything there is.
+		empty, err := sub.Next(ctx)
+		require.NoError(t, err)
+		require.Empty(t, empty.Entries)
+		require.Empty(t, empty.Gaps)
+
+		// Retention now ages out the entry it already read, and a new one arrives behind it. That is
+		// ordinary retention, not loss: this follower missed nothing.
+		time.Sleep(factStreamTestAgeWait)
+		require.NoError(t, transport.PublishFacts(ctx, key, authorFacts("next")))
+
+		delivery, err := sub.Next(ctx)
+		require.NoError(t, err)
+		require.Empty(t, delivery.Gaps,
+			"a follower that read everything there was must never be reported as trimmed past")
+	})
 }

@@ -108,7 +108,19 @@ func (s *RedisFactStream) PublishFacts(ctx context.Context, key FactStreamKey, f
 		args.MaxLen = s.maxLen
 		args.Approx = true
 	}
-	if err := s.client.XAdd(ctx, args).Err(); err != nil {
+	// EXPIRE rides along with every append, so a stream whose type stops being written to deletes
+	// ITSELF one TTL later. Without it the keyspace only ever grows: MINID trimming is amortized
+	// onto the publish path, so a stream that goes quiet is never trimmed again and keeps its last
+	// entries for the life of the Redis instance. A namespace-scoped type that is garbage-collected
+	// once and never written again — the shape a torn-down namespace produces — would otherwise
+	// leave an immortal key behind for every (route, type) pair that ever saw one write.
+	//
+	// The deadline is refreshed by every append, so a busy stream never expires, and it matches the
+	// retention horizon, so the key dies exactly when its newest entry would have aged out anyway.
+	pipe := s.client.Pipeline()
+	pipe.XAdd(ctx, args)
+	pipe.Expire(ctx, streamKey, s.ttl)
+	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("append facts to %q: %w", streamKey, err)
 	}
 	s.trimIfDue(ctx, streamKey)
@@ -118,6 +130,11 @@ func (s *RedisFactStream) PublishFacts(ctx context.Context, key FactStreamKey, f
 // FollowFacts starts following keys from horizon before now.
 func (s *RedisFactStream) FollowFacts(keys []FactStreamKey, horizon time.Duration) FactSubscription {
 	return &redisFactSubscription{stream: s, follow: newFollowSet(keys, horizon)}
+}
+
+// TransportKind names this transport for the metric labels.
+func (s *RedisFactStream) TransportKind() FactTransportKind {
+	return FactTransportRedis
 }
 
 // streamKey renders one stream's Redis key, e.g.
@@ -192,6 +209,12 @@ func (sub *redisFactSubscription) Next(ctx context.Context) (FactDelivery, error
 		Block:   sub.stream.block,
 	}).Result()
 	if errors.Is(err, redis.Nil) {
+		// The whole block period elapsed with nothing on any followed stream, so every one of them
+		// is caught up — including any the last read left marked behind for having exactly filled
+		// its entry budget.
+		for _, target := range targets {
+			sub.follow.caughtUp(target.Key)
+		}
 		return FactDelivery{Gaps: gaps}, nil
 	}
 	if err != nil {
@@ -200,16 +223,32 @@ func (sub *redisFactSubscription) Next(ctx context.Context) (FactDelivery, error
 		sub.follow.forgetGaps(gaps)
 		return FactDelivery{}, fmt.Errorf("read fact streams: %w", err)
 	}
-	return FactDelivery{Entries: sub.collect(res, byStreamKey), Gaps: gaps}, nil
+	return FactDelivery{Entries: sub.collect(ctx, res, byStreamKey), Gaps: gaps}, nil
 }
 
 // collect turns one XREAD result into entries and advances the cursors it delivered. An entry
 // whose payload does not decode is skipped rather than retried: it can never decode, and stalling
-// the follower on it would cost every later fact on that stream.
+// the follower on it would cost every later fact on that stream. It is counted and logged, because
+// skipping it loses its facts and leaves no other trace.
 func (sub *redisFactSubscription) collect(
+	ctx context.Context,
 	res []redis.XStream,
 	byStreamKey map[string]FactStreamKey,
 ) []FactEntry {
+	// XREAD returns only the streams that had something, so every followed stream missing from the
+	// result was asked and gave nothing: it is caught up, whatever the last read left marked.
+	delivered := make(map[FactStreamKey]struct{}, len(res))
+	for i := range res {
+		if key, ok := byStreamKey[res[i].Stream]; ok && len(res[i].Messages) > 0 {
+			delivered[key] = struct{}{}
+		}
+	}
+	for _, key := range byStreamKey {
+		if _, ok := delivered[key]; !ok {
+			sub.follow.caughtUp(key)
+		}
+	}
+
 	var entries []FactEntry
 	for i := range res {
 		key, ok := byStreamKey[res[i].Stream]
@@ -223,6 +262,7 @@ func (sub *redisFactSubscription) collect(
 		for j := range messages {
 			facts, err := factsFromMessage(messages[j])
 			if err != nil {
+				recordFactStreamDecodeError(ctx, sub.stream.TransportKind(), key, messages[j].ID, err)
 				continue
 			}
 			entries = append(entries, FactEntry{Key: key, ID: messages[j].ID, Facts: facts})

@@ -24,25 +24,60 @@ import (
 // enforceable: we wait briefly BEFORE shipping rather than rewrite afterwards.
 const DefaultAttributionGraceWindow = 3 * time.Second
 
-// attributionPollInterval is how often the resolver re-checks the index while it
-// waits out the grace window for a fact that has not arrived yet.
-const attributionPollInterval = 150 * time.Millisecond
-
-// AttributionLookup is the read side of the optional audit attribution index. The
-// Redis-backed queue.AttributionIndex satisfies it; nil means configured-author.
+// AttributionLookup is the read side of the attribution fact index. The in-process
+// queue.FactIndex satisfies it; nil means configured-author.
+//
+// It waits rather than polls. The index registers the waiter BEFORE it reads itself, so a fact
+// delivered in the gap between the two wakes a waiter that is already listening — the race the old
+// 150ms poll loop papered over by looking again. There is no Redis call anywhere on this path: the
+// fast case is a map read and the waiting case is a channel receive.
 type AttributionLookup interface {
-	// LookupAuthorResolution resolves the strongest author fact for a watch event.
-	// exactCapable is true for ADDED/MODIFIED events (try only the immutable exact key
-	// and the rv-only hatch) and false for known RV-mismatch events such as DELETED
-	// (also consult the last-writer-wins /last pointer).
-	LookupAuthorResolution(
-		ctx context.Context,
-		auditRoute string,
-		gvr schema.GroupVersionResource,
-		uid k8stypes.UID,
-		rv string,
-		exactCapable bool,
-	) queue.AuthorResolution
+	// Await resolves the strongest author fact for a watch event, waiting up to grace for one that
+	// has not been delivered yet. It returns an AttributionAbsent resolution when nothing matched in
+	// time; it never blocks longer than grace and never returns an error path.
+	Await(ctx context.Context, query queue.FactQuery, grace time.Duration) queue.AuthorResolution
+}
+
+// AuthorQuery is one watch event's identity, as the author resolver reads it.
+//
+// It is a struct rather than the parameter list this used to be because the collection tier needs
+// the object's namespace and labels: a body-less deletecollection is joined by scope — type,
+// namespace, selector, window — and neither the namespace nor the labels could be expressed in the
+// old six arguments, so that tier would have been unreachable from the resolver.
+type AuthorQuery struct {
+	// AuditRoute partitions the facts. It is the route the API server posts audit under, NOT the
+	// ClusterProvider's name: several providers may name one cluster and all read its facts.
+	AuditRoute string
+	// GVR is the watched type. The version serves the metric labels only; the join is keyed on the
+	// group/resource, which is what a fact carries.
+	GVR             schema.GroupVersionResource
+	UID             k8stypes.UID
+	ResourceVersion string
+	// Namespace and Labels serve the collection tier only: they are how a removal finds the
+	// deletecollection whose scope covered it.
+	Namespace string
+	Labels    map[string]string
+	// Name serves the name tier only, the floor for a fact carrying neither a uid nor a
+	// resourceVersion — an aggregated-API write, whose audit objectRef holds the name and nothing
+	// else. The watch event always carries it, so supplying it costs nothing when no fact needs it.
+	Name string
+	// ExactCapable is true for ADDED and MODIFIED, whose resourceVersion is the one the write
+	// produced. A removal's is not, so it consults the weaker tiers the exact-capable events skip.
+	ExactCapable bool
+}
+
+// factQuery renders the query the way the index is keyed.
+func (q AuthorQuery) factQuery() queue.FactQuery {
+	return queue.FactQuery{
+		AuditRoute:      q.AuditRoute,
+		GroupResource:   q.GVR.GroupResource(),
+		UID:             string(q.UID),
+		ResourceVersion: q.ResourceVersion,
+		Namespace:       q.Namespace,
+		Labels:          q.Labels,
+		Name:            q.Name,
+		ExactCapable:    q.ExactCapable,
+	}
 }
 
 // CursorStore persists the last processed resourceVersion for each (GitTarget UID,
@@ -82,15 +117,8 @@ type AuthorResolver interface {
 	// In production this method only ever returns the latter two: configured-author mode is
 	// expressed by leaving Manager.AuthorResolver nil (attachAuthor returns early, leaving the
 	// event's zero AttributionNotAttempted), never by constructing a resolver over a nil
-	// lookup. cmd/main.go:258 only builds one with a non-nil index.
-	ResolveAuthor(
-		ctx context.Context,
-		auditRoute string,
-		gvr schema.GroupVersionResource,
-		uid k8stypes.UID,
-		rv string,
-		exactCapable bool,
-	) (git.UserInfo, git.AttributionOutcome)
+	// lookup. cmd/main.go only builds one with a non-nil index.
+	ResolveAuthor(ctx context.Context, query AuthorQuery) (git.UserInfo, git.AttributionOutcome)
 }
 
 // attributionUnresolvedWarnThreshold is how many consecutive unresolved events one audit route may
@@ -159,42 +187,43 @@ func NewAuthorResolver(
 
 func (r *attributionResolver) ResolveAuthor(
 	ctx context.Context,
-	auditRoute string,
-	gvr schema.GroupVersionResource,
-	uid k8stypes.UID,
-	rv string,
-	exactCapable bool,
+	query AuthorQuery,
 ) (git.UserInfo, git.AttributionOutcome) {
 	start := time.Now()
 	// A nil lookup is configured-author mode: attribution was never switched on, so nothing
 	// was attempted and the committer legitimately authors the commit. Defensive only —
 	// production expresses that mode with a nil Manager.AuthorResolver, so this branch is
-	// unreachable there (cmd/main.go:258 always passes a non-nil index).
+	// unreachable there (cmd/main.go always passes a non-nil index).
 	if r.lookup == nil {
-		recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
+		recordAttributionResolution(ctx, query, queue.AttributionAbsent, queue.ActorKindNone, time.Since(start))
 		return git.UserInfo{}, git.AttributionNotAttempted
 	}
-	deadline := time.Now().Add(r.grace)
-	for {
-		resolution := r.lookup.LookupAuthorResolution(ctx, auditRoute, gvr, uid, rv, exactCapable)
-		if resolution.Result != queue.AttributionAbsent {
-			ui, outcome, result := r.userInfoForResolution(resolution)
-			recordAttributionResolution(ctx, gvr, result, time.Since(start))
-			r.health.observe(auditRoute, outcome == git.AttributionResolved)
-			return ui, outcome
-		}
-		if !time.Now().Before(deadline) || !sleepOrDone(ctx, attributionPollInterval) {
-			recordAttributionResolution(ctx, gvr, queue.AttributionAbsent, time.Since(start))
-			r.warnIfRouteNeverResolves(auditRoute, gvr)
-			return git.UserInfo{}, git.AttributionUnresolved
-		}
+	// One call, not a loop. The whole wait — register the waiter, read the index, block on the
+	// waiter or the grace deadline — belongs to the index, which is the only thing that knows when a
+	// fact arrives. AttributionResolutionWaitSeconds still measures the same span it always did:
+	// entry to outcome on the watch shard's own goroutine.
+	resolution := r.lookup.Await(ctx, query.factQuery(), r.grace)
+	if resolution.Result != queue.AttributionAbsent {
+		ui, outcome, result := r.userInfoForResolution(resolution)
+		recordAttributionResolution(ctx, query, result, resolution.ActorKind(), time.Since(start))
+		r.health.observe(query.AuditRoute, outcome == git.AttributionResolved)
+		return ui, outcome
 	}
+	recordAttributionResolution(ctx, query, queue.AttributionAbsent, queue.ActorKindNone, time.Since(start))
+	r.warnIfRouteNeverResolves(query.AuditRoute, query.GVR)
+	return git.UserInfo{}, git.AttributionUnresolved
 }
 
 // userInfoForResolution turns a matched fact into a commit author. The matched
 // actor — human or service account — is always named by its own username; a fact
 // that carries no author is UNRESOLVED, not not-attempted: attribution ran, found a
 // fact, and still could not name anyone.
+//
+// Both ends now make that branch unreachable rather than merely unlikely — the publish gate refuses
+// an event whose user cannot be resolved, and the fact's own UnmarshalJSON refuses an entry that
+// names nobody — so it survives for the zero-value paths and to keep the metric honest if a fact
+// ever reaches here without an author: it is recorded with its tier and actor_kind="none", never as
+// a named actor.
 func (r *attributionResolver) userInfoForResolution(
 	resolution queue.AuthorResolution,
 ) (git.UserInfo, git.AttributionOutcome, queue.AttributionResult) {
@@ -210,24 +239,52 @@ func (r *attributionResolver) userInfoForResolution(
 	}, git.AttributionResolved, result
 }
 
+// attributionEventKindWrite and attributionEventKindRemoval are the bounded event kinds on the wait
+// histogram. They come from ExactCapable, which is the same split the wait design turns on: a
+// removal holds a fallback and keeps waiting for evidence about the deletion, a write does not. An
+// absent write and an absent removal used to be one series, and the removal wait is the number
+// anyone tuning --author-attribution-grace actually needs.
+const (
+	attributionEventKindWrite   = "write"
+	attributionEventKindRemoval = "removal"
+)
+
+// recordAttributionResolution counts one resolution and times it.
+//
+// The two instruments carry DIFFERENT label sets on purpose. actor_kind is a property of the answer
+// and belongs on the census; event_kind is a property of the question and only changes what the
+// wait means. Putting both on both would multiply a histogram that already carries the type triple
+// by six for no reading anyone would make.
 func recordAttributionResolution(
 	ctx context.Context,
-	gvr schema.GroupVersionResource,
-	result queue.AttributionResult,
+	query AuthorQuery,
+	tier queue.AttributionResult,
+	actorKind queue.ActorKind,
 	wait time.Duration,
 ) {
-	attrs := metric.WithAttributes(
-		attribute.String("result", string(result)),
+	gvr := query.GVR
+	typeAttrs := []attribute.KeyValue{
+		attribute.String("tier", string(tier)),
 		attribute.String("group", gvr.Group),
 		attribute.String("version", gvr.Version),
 		attribute.String("resource", gvr.Resource),
-	)
+	}
 	if telemetry.AttributionResolutionsTotal != nil {
-		telemetry.AttributionResolutionsTotal.Add(ctx, 1, attrs)
+		telemetry.AttributionResolutionsTotal.Add(ctx, 1, metric.WithAttributes(
+			append(typeAttrs, attribute.String("actor_kind", string(actorKind)))...))
 	}
 	if telemetry.AttributionResolutionWaitSeconds != nil {
-		telemetry.AttributionResolutionWaitSeconds.Record(ctx, wait.Seconds(), attrs)
+		telemetry.AttributionResolutionWaitSeconds.Record(ctx, wait.Seconds(), metric.WithAttributes(
+			append(typeAttrs, attribute.String("event_kind", attributionEventKind(query)))...))
 	}
+}
+
+// attributionEventKind names whether the query was about a write or a removal.
+func attributionEventKind(query AuthorQuery) string {
+	if query.ExactCapable {
+		return attributionEventKindWrite
+	}
+	return attributionEventKindRemoval
 }
 
 // warnIfRouteNeverResolves says, once per audit route, that a route has produced a run of

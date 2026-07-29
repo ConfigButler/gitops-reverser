@@ -97,14 +97,40 @@ func (m *MemoryFactStream) PublishFacts(ctx context.Context, key FactStreamKey, 
 	}
 	ring.append(raw, now)
 	ring.trim(now.Add(-m.ttl), m.maxLen)
+	m.dropIdleRings(now)
 	close(m.signal)
 	m.signal = make(chan struct{})
 	return nil
 }
 
+// dropIdleRings forgets every stream whose entries have all aged out. Trimming is amortized onto
+// the publish path, so without this a type that stops being written to keeps its last window of
+// entries for the life of the process: nothing appends to it, so nothing ever trims it again. A
+// namespace-scoped type garbage-collected once when a namespace is torn down is exactly that shape,
+// and the memory is billed against a number that only ever grows — every (route, type) pair the
+// process has ever seen.
+//
+// It runs under the publish lock, over a map holding one entry per followed type, so it is a walk
+// of a few dozen entries on a path that already holds the lock. Its Redis counterpart is the EXPIRE
+// that rides along with every XADD.
+func (m *MemoryFactStream) dropIdleRings(now time.Time) {
+	horizon := now.Add(-m.ttl)
+	for key, ring := range m.streams {
+		ring.trim(horizon, m.maxLen)
+		if len(ring.entries) == 0 {
+			delete(m.streams, key)
+		}
+	}
+}
+
 // FollowFacts starts following keys from horizon before now.
 func (m *MemoryFactStream) FollowFacts(keys []FactStreamKey, horizon time.Duration) FactSubscription {
 	return &memFactSubscription{stream: m, follow: newFollowSet(keys, horizon)}
+}
+
+// TransportKind names this transport for the metric labels.
+func (m *MemoryFactStream) TransportKind() FactTransportKind {
+	return FactTransportMemory
 }
 
 // wakeup returns the channel closed by the next publish.
@@ -219,7 +245,7 @@ func (sub *memFactSubscription) Next(ctx context.Context) (FactDelivery, error) 
 		// Take the wake-up channel BEFORE reading, so a publish that lands between the read and
 		// the wait is not missed: it closes the channel this iteration already holds.
 		signal := sub.stream.wakeup()
-		delivery := sub.collect()
+		delivery := sub.collect(ctx)
 		if len(delivery.Entries) > 0 || len(delivery.Gaps) > 0 {
 			return delivery, nil
 		}
@@ -241,7 +267,7 @@ func (sub *memFactSubscription) Next(ctx context.Context) (FactDelivery, error) 
 }
 
 // collect reads every followed ring once, advancing the cursors it delivered.
-func (sub *memFactSubscription) collect() FactDelivery {
+func (sub *memFactSubscription) collect(ctx context.Context) FactDelivery {
 	targets := sub.follow.targets()
 	var delivery FactDelivery
 	for _, target := range targets {
@@ -250,11 +276,13 @@ func (sub *memFactSubscription) collect() FactDelivery {
 			delivery.Gaps = append(delivery.Gaps, gap)
 		}
 		if len(entries) == 0 {
+			sub.follow.caughtUp(target.Key)
 			continue
 		}
 		for _, entry := range entries {
 			facts, err := decodeFactBatch(entry.raw)
 			if err != nil {
+				recordFactStreamDecodeError(ctx, sub.stream.TransportKind(), target.Key, entry.id, err)
 				continue
 			}
 			delivery.Entries = append(delivery.Entries, FactEntry{Key: target.Key, ID: entry.id, Facts: facts})

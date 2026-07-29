@@ -155,6 +155,8 @@ type collector struct {
 	cred    *ordered
 	rnd     *ordered
 	ns      *ordered
+	// genName maps each full generated name to its stable generateName prefix.
+	genName map[string]string
 }
 
 func newCollector() *collector {
@@ -168,6 +170,7 @@ func newCollector() *collector {
 		node:    newOrdered(),
 		cred:    newOrdered(),
 		rnd:     newOrdered(),
+		genName: map[string]string{},
 		ns:      newOrdered(),
 	}
 }
@@ -209,6 +212,11 @@ func (c *collector) collectGenerateNameSuffix(m map[string]any) {
 		return
 	}
 	c.rnd.add(name[len(gn):])
+	// The FULL generated name is recorded too, because the suffix rule alone only reaches a `name`
+	// that sits beside its own `generateName`. An AdmissionReview carries the assigned name at
+	// request.name, a sibling of kind and namespace with no metadata around it, so without this the
+	// admission record churns the corpus on every capture (Row 18).
+	c.genName[name] = gn
 }
 
 func (c *collector) collectScalar(key string, v any) {
@@ -298,6 +306,10 @@ type indices struct {
 	cred    map[string]string
 	rnd     map[string]string
 	ns      map[string]string
+	// genName maps a full generated name to its normalized form, and genNameByLen is that set
+	// longest-first for substring replacement.
+	genName      map[string]string
+	genNameByLen []string
 	// nsByLen / ipByLen / uidByLen are the namespace / IP / UID values sorted
 	// longest-first, so substring replacement (in requestURIs and in managedFields
 	// association keys like k:{"ip":"10.42.3.14"} or k:{"uid":"<owner-uid>"}) never
@@ -334,6 +346,18 @@ func (c *collector) buildIndices() *indices {
 	sort.SliceStable(idx.uidByLen, func(i, j int) bool {
 		return len(idx.uidByLen[i]) > len(idx.uidByLen[j])
 	})
+	idx.genName = map[string]string{}
+	for name, prefix := range c.genName {
+		if ph, ok := idx.rnd[name[len(prefix):]]; ok {
+			idx.genName[name] = prefix + ph
+		}
+	}
+	for name := range idx.genName {
+		idx.genNameByLen = append(idx.genNameByLen, name)
+	}
+	sort.SliceStable(idx.genNameByLen, func(i, j int) bool {
+		return len(idx.genNameByLen[i]) > len(idx.genNameByLen[j])
+	})
 	return idx
 }
 
@@ -366,6 +390,9 @@ func (idx *indices) transform(v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, val := range t {
+			if isDroppedKey(k) {
+				continue
+			}
 			// Values key off the original k (for type detection); the output key
 			// is rewritten so a volatile value embedded in a managedFields
 			// association key (k:{"ip":"10.42.3.14"}) does not churn the corpus.
@@ -383,12 +410,35 @@ func (idx *indices) transform(v any) any {
 	}
 }
 
+// latencyAnnotationPrefix is the API server's per-request timing telemetry, which it attaches to an
+// audit event's annotations only when a request was slow enough to be worth reporting.
+const latencyAnnotationPrefix = "apiserver.latency.k8s.io/"
+
+// isDroppedKey reports whether a key is removed from the corpus rather than normalized.
+//
+// The latency annotations are dropped whole, not placeholder-ed, because BOTH halves of them are
+// nondeterministic: the values are durations that differ every run, and the keys are present at all
+// only when the request crossed the API server's slow-request threshold. Rewriting the values would
+// still leave a corpus that churns between a fast run and a slow one, which is a diff that says
+// nothing about behavior — and a corpus whose diff cannot be trusted to mean something is the one
+// thing this tree must not become.
+func isDroppedKey(key string) bool {
+	return strings.HasPrefix(key, latencyAnnotationPrefix)
+}
+
 // transformScalar rewrites a single key/value, falling back to a recursive
 // transform when the value is not a normalized leaf.
 func (idx *indices) transformScalar(key string, v any, parent map[string]any) any {
 	if key == "name" {
 		if rewritten, ok := idx.rewriteGeneratedName(v, parent); ok {
 			return rewritten
+		}
+		// The same name without its generateName sibling: an AdmissionReview carries the assigned
+		// name at request.name, beside kind and namespace rather than inside metadata.
+		if s, ok := stringVal(v); ok {
+			if ph, known := idx.genName[s]; known {
+				return ph
+			}
 		}
 	}
 	if key == "sourceIPs" || key == credentialIDKey {
@@ -426,11 +476,23 @@ func (idx *indices) transformStringScalar(key, s string) any {
 		return idx.rewriteExpiredMessage(s)
 	case key == "requestURI" || key == "selfLink":
 		// The namespace appears embedded in the path; replace it as a substring so
-		// a unique per-run namespace does not churn the corpus.
-		return idx.replaceNamespaces(s)
+		// a unique per-run namespace does not churn the corpus. A generated name appears there too
+		// for any request that addresses such an object by name.
+		return idx.replaceGeneratedNames(idx.replaceNamespaces(s))
 	default:
 		return s
 	}
+}
+
+// replaceGeneratedNames rewrites each full generated name, wherever it appears as a substring, to
+// its normalized form — longest first, so a shorter name that prefixes a longer one cannot partially
+// match. It is the substring counterpart of the metadata rule, for the places a generated name is
+// embedded in a larger string rather than standing alone.
+func (idx *indices) replaceGeneratedNames(s string) string {
+	for _, name := range idx.genNameByLen {
+		s = strings.ReplaceAll(s, name, idx.genName[name])
+	}
+	return s
 }
 
 // rewriteExpiredMessage replaces the resourceVersions in a 410/Expired watch error

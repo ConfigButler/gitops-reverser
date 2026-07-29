@@ -86,13 +86,9 @@ func TestRedisStore_KeyPrefixReachesEveryKeyFamily(t *testing.T) {
 		"cell-a:tenant-7:watch:v1:target:gtuid-3:apps/deployments:namespace:team-a:last-rv",
 		store.watchCursorKey("gtuid-3", gvr, "team-a"))
 
-	idx := store.AttributionIndex(0)
-	require.Equal(t, "cell-a:tenant-7:author:v1:audit:route:default:apps/deployments:object:uid-1:101",
-		idx.factKeyExact("default", "apps/deployments", "uid-1", "101"))
-	require.Equal(t, "cell-a:tenant-7:author:v1:audit:route:default:apps/deployments:object:uid-1:last",
-		idx.factKeyLast("default", "apps/deployments", "uid-1"))
-	require.Equal(t, "cell-a:tenant-7:author:v1:audit:route:default:apps/deployments:rv:101",
-		idx.factKeyRV("default", "apps/deployments", "101"))
+	stream := store.FactStream(RedisFactStreamConfig{})
+	require.Equal(t, "cell-a:tenant-7:author:v2:audit:route:default:apps/deployments",
+		stream.streamKey(FactStreamKeyFor("default", gvr.GroupResource())))
 
 	require.Equal(t, "cell-a:tenant-7:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
 }
@@ -119,8 +115,9 @@ func TestRedisStore_ZeroValueStoreStillWritesPrefixedKeys(t *testing.T) {
 	require.Equal(t, "gitops-reverser:watch:v1:target:gtuid-3:configmaps:cluster:last-rv",
 		store.watchCursorKey("gtuid-3", coreConfigmapsGVR(), ""))
 	require.Equal(t, "gitops-reverser:author:v1:command:cr-uid", store.CommandAuthorStore().key("cr-uid"))
-	require.Equal(t, "gitops-reverser:author:v1:audit:route:default:",
-		store.AttributionIndex(0).routeFactPrefix("default"))
+	require.Equal(t, "gitops-reverser:author:v2:audit:route:default:configmaps",
+		store.FactStream(RedisFactStreamConfig{}).streamKey(
+			FactStreamKeyFor("default", coreConfigmapsGVR().GroupResource())))
 }
 
 // Two reversers sharing one Redis/Valkey and one logical database must not read each
@@ -153,14 +150,25 @@ func TestRedisStore_DistinctPrefixesIsolateCursors(t *testing.T) {
 	require.Equal(t, "111", rv, "tenant-b's write must not clobber tenant-a's cursor")
 }
 
-// The attribution telemetry gauge SCANs "<prefix>:author:v1:audit:*" and the per-provider purge
-// SCANs "<prefix>:author:v1:audit:route:<name>:*". A prefix that contained a glob metacharacter
-// would make either count/delete the wrong keyspace; validation rejects those, so the pattern is
-// always a literal prefix plus one trailing star.
-func TestAttributionIndex_ScanPatternIsPrefixed(t *testing.T) {
+// A route's streams share one glob prefix, so an operator can inspect or purge exactly one audit
+// route's facts with "<prefix>:author:v2:audit:route:<name>:*". Validation rejects a prefix carrying
+// a glob metacharacter, so that pattern is always a literal prefix plus one trailing star.
+func TestRedisFactStream_RouteStreamsShareOneGlobPrefix(t *testing.T) {
 	t.Parallel()
 
-	store := newPrefixedRedisStore(t, "tenant-a")
-	idx := store.AttributionIndex(0)
-	require.Equal(t, "tenant-a:author:v1:audit:route:prod-eu-1:", idx.routeFactPrefix("prod-eu-1"))
+	stream := newPrefixedRedisStore(t, "tenant-a").FactStream(RedisFactStreamConfig{})
+	const routePrefix = "tenant-a:author:v2:audit:route:prod-eu-1:"
+
+	for _, gr := range []schema.GroupResource{
+		{Resource: "configmaps"},
+		{Group: "apps", Resource: "deployments"},
+	} {
+		require.True(t,
+			strings.HasPrefix(stream.streamKey(FactStreamKeyFor("prod-eu-1", gr)), routePrefix),
+			"every stream on a route must sit under that route's prefix")
+	}
+	// Another route's stream must NOT: the prefix is what makes a per-route purge safe.
+	require.False(t, strings.HasPrefix(
+		stream.streamKey(FactStreamKeyFor("prod-us-1", schema.GroupResource{Resource: "configmaps"})),
+		routePrefix))
 }

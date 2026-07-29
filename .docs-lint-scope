@@ -25,3 +25,6 @@
 README.md
 docs/architecture.md
 docs/configuration.md
+docs/design/attribution-branch-findings.md
+docs/design/attribution-publish-and-join.md
+docs/design/attribution-metrics-proposal.md

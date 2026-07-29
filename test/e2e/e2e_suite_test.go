@@ -107,7 +107,10 @@ func assertNoAnomalousAuditOutcomes() {
 	// older_than_high_water reorder, which is dropped/recovered and does NOT fail the gate) is
 	// self-explaining in the artifacts. diag_all (when --audit-bytype-diag is on, as in e2e) holds
 	// the full per-event records in Redis for deeper inspection.
-	for _, oc := range []string{"queued", "older_than_high_water", "non_numeric_rv", "rvless_empty_highwater", "not_needed", "shallow_dropped", "write_error"} {
+	for _, oc := range []string{
+		"queued", "older_than_high_water", "non_numeric_rv", "rvless_empty_highwater",
+		"not_needed", "shallow_dropped", "no_attribution_fact", "write_error",
+	} {
 		n, qErr := queryPrometheus(fmt.Sprintf(
 			`sum(max_over_time(gitopsreverser_audit_events_total{outcome=%q}[2h])) or vector(0)`, oc))
 		if qErr == nil {
@@ -168,35 +171,53 @@ func reportAttributionStats() {
 	_, _ = fmt.Fprintf(GinkgoWriter, "\n📊 author attribution — %.0f resolutions this run\n", total)
 
 	var absent float64
-	for _, result := range []string{
-		"exact_user", "exact_serviceaccount", "weak", "exact_deletecollection_item", "absent",
+	// The tiers, strongest first. collection_uid and collection_scope replaced the expander's
+	// exact_deletecollection_item: the collection match is two-tiered now, and the second tier
+	// resolves what used to degrade to committer-authored, so they are worth reading apart.
+	for _, tier := range []string{
+		"exact", "collection_uid", "latest", "name", "collection_scope", "resource_version", "absent",
 	} {
 		n, qErr := queryPrometheus(fmt.Sprintf(
-			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{result=%q}[2h])) or vector(0)`, result))
+			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{tier=%q}[2h])) or vector(0)`, tier))
 		if qErr != nil {
 			continue
 		}
-		if result == "absent" {
+		if tier == "absent" {
 			absent = n
 		}
-		_, _ = fmt.Fprintf(GinkgoWriter, "   result %-28s = %6.0f  (%5.1f%%)\n", result, n, 100*n/total)
+		_, _ = fmt.Fprintf(GinkgoWriter, "   tier %-28s = %6.0f  (%5.1f%%)\n", tier, n, 100*n/total)
+	}
+
+	// Who the evidence named, which is now a label of its own rather than a value on two tiers.
+	for _, actorKind := range []string{"user", "serviceaccount", "none"} {
+		n, qErr := queryPrometheus(fmt.Sprintf(
+			`sum(max_over_time(gitopsreverser_attribution_resolutions_total{actor_kind=%q}[2h])) or vector(0)`,
+			actorKind))
+		if qErr != nil {
+			continue
+		}
+		_, _ = fmt.Fprintf(GinkgoWriter, "   actor_kind %-22s = %6.0f  (%5.1f%%)\n", actorKind, n, 100*n/total)
 	}
 
 	// Cumulative histogram: le=X is "waited at most X seconds".
 	//
-	// Split by result, because the two populations answer different questions. For RESOLVED
-	// results the tail says how close fact delivery ran to the window — anything above 3s only
+	// Split by tier, because the two populations answer different questions. For RESOLVED
+	// tiers the tail says how close fact delivery ran to the window — anything above 3s only
 	// succeeded because e2e widens the grace past the 3s default. For "absent" the wait is just
 	// the grace window being spent, so a cluster of absents at the ceiling means "waited the
 	// whole time and nothing ever came", NOT "arrived slightly too late".
+	//
+	// The removal split is the one --author-attribution-grace is tuned from: a removal holds a
+	// fallback and keeps waiting for evidence about the deletion where a write does not.
 	_, _ = fmt.Fprintf(GinkgoWriter, "   wait distribution (cumulative):\n")
-	printWaitBuckets("resolved", `,result!="absent"`)
-	printWaitBuckets("absent  ", `,result="absent"`)
+	printWaitBuckets("resolved", `,tier!="absent"`)
+	printWaitBuckets("absent  ", `,tier="absent"`)
+	printWaitBuckets("removals", `,event_kind="removal"`)
 
 	resolvedOverDefault, err := queryPrometheus(
-		`(sum(max_over_time(gitopsreverser_attribution_resolution_wait_seconds_count{result!="absent"}[2h])) ` +
+		`(sum(max_over_time(gitopsreverser_attribution_resolution_wait_seconds_count{tier!="absent"}[2h])) ` +
 			`or vector(0)) - (sum(max_over_time(` +
-			`gitopsreverser_attribution_resolution_wait_seconds_bucket{result!="absent",le="3.0"}[2h])) or vector(0))`)
+			`gitopsreverser_attribution_resolution_wait_seconds_bucket{tier!="absent",le="3.0"}[2h])) or vector(0))`)
 	if err == nil {
 		_, _ = fmt.Fprintf(GinkgoWriter,
 			"   %.0f resolution(s) SUCCEEDED after waiting longer than the 3s default grace"+
@@ -217,7 +238,7 @@ func reportAttributionStats() {
 // OTel→Prometheus exporter as "1.0"/"3.0"/"10.0" — NOT "1"/"3"/"10" — so an integral boundary
 // must be formatted with a decimal or every query above 0.5 silently matches nothing and
 // returns 0, which reads as a plausible (and wrong) distribution rather than as an error.
-func printWaitBuckets(label, resultSelector string) {
+func printWaitBuckets(label, selector string) {
 	var prev float64
 	for _, le := range attributionWaitBuckets {
 		leLabel := strconv.FormatFloat(le, 'g', -1, 64)
@@ -226,7 +247,7 @@ func printWaitBuckets(label, resultSelector string) {
 		}
 		n, qErr := queryPrometheus(fmt.Sprintf(
 			`sum(max_over_time(gitopsreverser_attribution_resolution_wait_seconds_bucket{le=%q%s}[2h]))`+
-				` or vector(0)`, leLabel, resultSelector))
+				` or vector(0)`, leLabel, selector))
 		if qErr != nil {
 			continue
 		}
@@ -255,14 +276,21 @@ func configuredAuthorModeEnabled() bool {
 	return configuredAuthorModeFromArgs(out)
 }
 
-// configuredAuthorModeFromArgs is the pure decision, mirroring the mode switch in
-// cmd/main.go: attribution runs only when author attribution is on AND Redis is configured;
-// anything else is configured-author mode. Both flags default to ENABLED in cmd/main.go
-// (`--author-attribution` defaults true, `--redis-addr` defaults to "valkey:6379"), so an
-// absent flag means attribution, and only an explicit opt-out turns it off.
+// configuredAuthorModeFromArgs is the pure decision, mirroring the mode switch in cmd/main.go:
+// attribution runs when author attribution is on AND it has a fact transport. Anything else is
+// configured-author mode. Every flag defaults to ENABLED in cmd/main.go (`--author-attribution`
+// defaults true, `--redis-addr` to "valkey:6379", the transport to redis), so an absent flag means
+// attribution and only an explicit opt-out turns it off.
+//
+// "Has a transport" is the part that stopped meaning "has Redis". The in-memory transport needs no
+// Redis at all, so an empty --redis-addr with --author-attribution-transport=memory is attribution
+// running normally. Reading it as configured-author SKIPPED every attribution spec and reported a
+// green run that had asserted nothing about attribution — the failure mode this probe exists to
+// prevent, turned on the probe itself.
 func configuredAuthorModeFromArgs(args string) bool {
 	attribution := true
 	redisAddr := "valkey:6379"
+	transport := "redis"
 	for _, arg := range strings.Fields(strings.NewReplacer(`"`, " ", `[`, " ", `]`, " ", `,`, " ").Replace(args)) {
 		switch {
 		case arg == "--author-attribution":
@@ -279,9 +307,11 @@ func configuredAuthorModeFromArgs(args string) bool {
 			}
 		case strings.HasPrefix(arg, "--redis-addr="):
 			redisAddr = strings.TrimPrefix(arg, "--redis-addr=")
+		case strings.HasPrefix(arg, "--author-attribution-transport="):
+			transport = strings.TrimPrefix(arg, "--author-attribution-transport=")
 		}
 	}
-	return !attribution || redisAddr == ""
+	return !attribution || (redisAddr == "" && transport != "memory")
 }
 
 var _ = AfterEach(func() {

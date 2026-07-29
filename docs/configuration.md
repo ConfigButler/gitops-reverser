@@ -1030,10 +1030,11 @@ Object state comes from Kubernetes **watch**, not from audit. Audit is an option
 kube-apiserver posts audit events to a named path, `/audit-webhook/<audit-route>`, where the route is
 `ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name. The
 operator extracts a minimal attribution fact from each (auditID, user, verb, resourceVersion, GVR, namespace, name, UID,
-status, timestamps) into a Redis attribution index keyed for the join. A resolver attaches the commit
-author to each watch event by matching a fact (by resourceVersion/UID) within a bounded grace window.
-The same Redis connection also stores per-watch resume cursors, so short reconnects can resume a normal
-watch from the last processed resourceVersion when the apiserver can still serve that history.
+status, timestamps) and appends it to a per-type **fact log**: one append per type per request, not one
+per event. The watch side follows the log for the types it is watching, holds the facts in a bounded,
+TTL'd in-memory index, and attaches the commit author to each watch event by matching a fact within a
+bounded grace window. Redis also stores per-watch resume cursors, so short reconnects can resume a
+normal watch from the last processed resourceVersion when the apiserver can still serve that history.
 
 Named ingress is currently authenticated to the shared audit CA and gated on the provider name existing;
 it does **not** yet bind a particular client certificate to that provider. Do not use one shared audit
@@ -1079,12 +1080,29 @@ Use an annotation that the producing control plane sets consistently as source m
 routing metadata only: it keeps the audit fact and the watch event in the same source-cluster
 partition, so a user from one logical cluster can never be credited for a matching object in another.
 
-Valkey/Redis is **optional in configured-author mode**: when `--redis-addr` is set, watch resume cursors are
-stored so restarts pick up where they left off; when left empty, watches cold-replay from scratch on
-restart instead. When author attribution is enabled (`--author-attribution=true`), a non-empty
-`--redis-addr` is required: attribution facts and resume cursors both use the same connection. The Helm
-chart defaults to **configured-author** (`attribution.enabled: false`): the audit webhook is unused and every
-mirrored-resource commit is authored by the configured committer.
+Valkey/Redis is **optional**: when `--redis-addr` is set, watch resume cursors are stored so restarts
+pick up where they left off; when left empty, watches cold-replay from scratch on restart instead. The
+Helm chart defaults to **configured-author** (`attribution.enabled: false`): the audit webhook is
+unused and every mirrored-resource commit is authored by the configured committer.
+
+Attribution needs a **fact transport**, which is not the same as needing Redis:
+
+| `--author-attribution-transport` | What carries the facts | `--redis-addr` |
+|---|---|---|
+| `redis` (default) | Redis streams, one per (audit route, type) | required |
+| `memory` | an in-process ring buffer | may be empty |
+
+Choose `redis` for anything you would call production. It is the only transport whose facts survive a
+restart, and the only one that can reach a second process, so it is what an eventual HA topology needs.
+Choose `memory` for a single-pod install where running a Valkey StatefulSet to name commit authors
+is out of proportion to the benefit. The cost is worth stating plainly: in-memory facts do not survive a
+restart, so events in flight across one lose their author. That is already true of any restart today,
+which is what keeps the difference small.
+
+`memory` is **refused at startup with more than one replica**. The transport only carries facts within
+one process, so with two replicas an audit request answered by one pod leaves a watch running on the
+other with nothing to join, and every commit through it would be authored `attribution-unresolved` with
+nothing saying why. The chart passes `replicaCount` in for this check.
 
 ```yaml
 queue:
@@ -1107,7 +1125,39 @@ When attribution is enabled, these flags tune the join:
 - `--author-attribution-grace` (default `3s`): bounded per-event wait for a matching audit fact before a
   watch event ships authored by the `attribution-unresolved` sentinel. Note the delivery floor: the
   apiserver's own `--audit-webhook-batch-max-wait` delays every fact by up to that much, so a grace at or
-  below it will lose actors systematically.
+  below it will lose actors systematically. The wait ends the moment the fact arrives, so a generous
+  grace costs latency only when a fact never comes.
+
+  **A removal is the exception, and it is worth budgeting for.** It waits for evidence about the
+  DELETION rather than settling for the object's last write, so an object edited by one person and
+  deleted by another is credited to the deleter rather than to the editor. Sometimes no delete fact
+  ever arrives, most often because the cluster's **audit policy excludes the type** (which is true of
+  every type in the recommended policy's runtime-noise list). In that case the
+  removal spends the whole grace before naming the last writer, which is the same answer it would
+  have given immediately. Measured across one e2e run, where the grace is 10s, the cost lands on
+  exactly that case and nowhere else: a removal that finds its delete evidence resolves in about
+  70ms, while one that never does averages about 3.1s before falling back. Creates and updates do
+  not consult the deletion tiers at all. The watch shard is single-threaded, so the wait also delays
+  the events queued behind it on the same `(GitTarget, type, scope)`. Lowering this flag bounds both
+  directly.
+
+  **Watching a type your audit policy excludes costs more than attribution.** Every removal on such
+  a type spends the full grace before shipping as the committer, because the fact it is waiting for
+  was never recorded. If a watched type's commits are consistently committer-authored, check the
+  audit policy before anything else: a type in the policy's `level: None` list can never be
+  attributed, and no operator-side setting changes that.
+- `--author-attribution-max-facts-per-type` (default `4096`) and `--author-attribution-max-facts`
+  (default `65536`): how many facts the in-memory index holds, per type and in total, evicted
+  oldest-first. Per-type is the fair cap: a burst on one noisy type must not evict every other type's
+  facts. Evictions are counted on `attribution_fact_index_evictions_total{reason}`.
+- `--author-attribution-collection-window` (default `30s`): how long after a `deletecollection` a
+  removal in its scope may still be credited to it. It only has to cover audit batching plus clock skew,
+  because the removal is attributed at delete-request time, so finalizers do not stretch it. Raising it
+  widens the risk of crediting an unrelated delete to the collection's actor.
+- `--author-attribution-collection-uid-cap` (default `10000`): how many object UIDs a `deletecollection`
+  fact carries before the set is dropped and the join falls back to scope matching. The fallback is
+  already correct, so this only decides how often the precise path is taken; drops are counted on
+  `attribution_collection_without_uidset_total{reason}`.
 
 A matched actor is always named by its own username, humans and service accounts alike (e.g.
 `system:serviceaccount:flux-system:kustomize-controller`); there is no option to collapse service
@@ -1115,8 +1165,13 @@ accounts to the committer.
 
 ```yaml
 attribution:
+  transport: "redis"
   ttl: "10m"
   grace: "3s"
+  maxFactsPerType: 4096
+  maxFacts: 65536
+  collectionWindow: "30s"
+  collectionUIDCap: 10000
 ```
 
 ## Quickstart vs hand-managed resources

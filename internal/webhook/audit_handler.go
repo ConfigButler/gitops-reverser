@@ -39,18 +39,9 @@ const DefaultAuditMaxRequestBodyBytes = int64(10 * 1024 * 1024)
 // each transition so operators can see ingress is wired up at a glance.
 type auditHandlerFirsts struct {
 	request           sync.Once
-	factRecorded      sync.Once
+	factPublished     sync.Once
 	impersonatedEvent sync.Once
 	unroutableEvent   sync.Once
-}
-
-// AuditFactRecorder stores the minimal author-attribution fact for one accepted, mutating audit
-// event under the AUDIT ROUTE it arrived on, so a fact from one cluster never joins a watch event
-// from another. It is the only thing the audit webhook does now: watch carries the object body, so
-// audit is a pure attribution lookup table. A nil recorder means configured-author mode — the
-// handler is not wired at all.
-type AuditFactRecorder interface {
-	RecordFact(ctx context.Context, auditRoute string, event auditv1.Event) error
 }
 
 // AuditFactPublisher appends one request's attribution facts to the stream for a
@@ -68,14 +59,14 @@ type AuditFactPublisher interface {
 type AuditHandlerConfig struct {
 	// MaxRequestBodyBytes is the maximum accepted HTTP request body size.
 	MaxRequestBodyBytes int64
-	// FactRecorder persists the attribution fact for each accepted, mutating event.
-	// A write failure returns an audit-request error so the API server retries
-	// delivery; mirrored-resource author attribution depends on these facts.
-	FactRecorder AuditFactRecorder
-	// FactPublisher appends the facts one request produced, grouped by stream. It is additive to
-	// FactRecorder for now: the keys are still written and still read, and the stream is filled
-	// alongside them until the resolver reads from it instead.
+	// FactPublisher appends the facts one request produced, grouped by stream. A publish failure
+	// returns an audit-request error so the API server retries the delivery; mirrored-resource
+	// author attribution depends on these facts arriving. A nil publisher means configured-author
+	// mode — the handler is not wired at all.
 	FactPublisher AuditFactPublisher
+	// CollectionUIDCap is how many object uids a deletecollection fact may carry before the set is
+	// dropped and the join falls back to scope matching. Zero means queue.DefaultCollectionUIDCap.
+	CollectionUIDCap int
 	// AuditRouteAnnotationKey enables the bare /audit-webhook endpoint for a SHARED audit stream
 	// that carries several logical clusters: the AUDIT ROUTE is read PER EVENT from this
 	// audit-event annotation, so one batch may fan out to several routes. Empty (the default) means
@@ -293,63 +284,121 @@ func (h *AuditHandler) decodeEventList(r *http.Request) (*auditv1.EventList, err
 // Facts are ACCUMULATED across the whole request and appended once per stream at the end, rather
 // than written per event. That is what turns one apiserver batch over three types into three
 // appends.
+// Each accepted event's terminal outcome is recorded AFTER the append, not before it, so an event
+// is counted queued only once its fact is actually in the log. Recording it up front would leave
+// audit_events_total{outcome="write_error"} unreachable and claim delivery for a batch that failed.
+//
+// Publication is per stream and sequential, so a failure is NOT all-or-nothing: the batches before
+// the failing one have appended, and their facts are in the log whatever happens next. Counting
+// those events as write_error would claim a loss that did not occur. Only the events whose own
+// batch did not land are counted as failures. The API server retries the whole request, so the
+// batches that did land are appended again — which is safe precisely because a fact is keyed data
+// rather than a position in a sequence.
 func (h *AuditHandler) processEvents(ctx context.Context, route auditRoute, events []auditv1.Event) error {
 	batches := newFactStreamBatches()
+	accepted := make([]acceptedFact, 0, len(events))
 	for i := range events {
-		accepted, err := h.processEvent(ctx, route, events[i])
-		if err != nil {
-			return err
+		result := h.processEvent(ctx, route, events[i])
+		if !result.accepted {
+			continue
 		}
-		batches.add(accepted)
+		accepted = append(accepted, result)
+		batches.add(result)
 	}
-	return h.publishFactBatches(ctx, batches)
+	appended, err := h.publishFactBatches(ctx, batches)
+	h.recordAcceptedOutcomes(ctx, accepted, appended)
+	if err != nil {
+		return err
+	}
+	h.logPublishedFacts(accepted)
+	return nil
 }
 
-// processEvent applies the intrinsic accept gate, resolves the event's source cluster, records the
-// attribution fact for an accepted, mutating event, and returns the fact the request will append.
-// A rejected event is recorded with its terminal outcome and dropped; only a fact-store or
-// provider-lookup failure returns an error (the API server then retries delivery).
+// recordAcceptedOutcomes stamps one terminal outcome on every event that passed the accept gate,
+// deciding each from whether it produced a fact at all and then from whether its OWN stream
+// appended.
+//
+// An event that produced no fact is not a failure — nothing was owed for it — but it is not queued
+// either. It used to be counted queued, which claimed an append that never happened and hid the
+// whole population that can never be attributed behind the busiest value on the counter. This is
+// the only place it can be counted: no fact exists, so no fact-side counter can ever see it.
+func (h *AuditHandler) recordAcceptedOutcomes(
+	ctx context.Context,
+	accepted []acceptedFact,
+	appended map[queue.FactStreamKey]struct{},
+) {
+	for i := range accepted {
+		outcome.Record(ctx, accepted[i].event, acceptedOutcome(accepted[i], appended))
+	}
+}
+
+// acceptedOutcome is one accepted event's terminal outcome.
+func acceptedOutcome(accepted acceptedFact, appended map[queue.FactStreamKey]struct{}) outcome.Outcome {
+	if !accepted.ok {
+		return outcome.NoAttributionFact
+	}
+	if _, landed := appended[accepted.key]; !landed {
+		return outcome.WriteError
+	}
+	return outcome.Queued
+}
+
+// logPublishedFacts says, once per process and then only at verbosity, which facts were published.
+//
+// It skips an accepted event that produced no fact. Nothing was appended for it, so calling it
+// published would be a line that is simply untrue — and in configured-author mode, where no
+// publisher is wired at all, every event is that case.
+func (h *AuditHandler) logPublishedFacts(accepted []acceptedFact) {
+	log := logf.Log.WithName("audit-handler")
+	for i := range accepted {
+		if !accepted[i].ok {
+			continue
+		}
+		event := accepted[i].event
+		h.firsts.factPublished.Do(func() {
+			log.Info("Published first audit attribution fact",
+				"auditID", event.AuditID, "verb", event.Verb)
+		})
+		log.V(1).Info("Published audit attribution fact",
+			"gvr", extractGVR(event), "verb", event.Verb, "auditID", event.AuditID,
+			"user", effectiveAuditUsername(*event))
+	}
+}
+
+// processEvent applies the intrinsic accept gate, resolves the event's audit route, and reduces an
+// accepted, mutating event to the fact the request will append. A rejected event is recorded with
+// its terminal outcome here and dropped. It cannot fail: the only failure this path has left is the
+// append itself, which happens once per stream after the whole batch is reduced.
 func (h *AuditHandler) processEvent(
 	ctx context.Context,
 	route auditRoute,
 	event auditv1.Event,
-) (acceptedFact, error) {
+) acceptedFact {
 	log := logf.Log.WithName("audit-handler")
 	h.logAuditEventReceived(event)
 
 	if !shouldForwardSubresource(&event) {
 		// A non-/scale subresource (or an unmapped-verb subresource): dropped before recording.
 		outcome.Record(ctx, &event, outcome.NonScaleSubresource)
-		return acceptedFact{}, nil
+		return acceptedFact{}
 	}
 
 	if decision := classifyAuditIngress(&event); !decision.Process {
 		outcome.Record(ctx, &event, outcome.Outcome(decision.Reason))
 		log.V(1).Info("Dropped audit event before recording",
 			"reason", decision.Reason, "gvr", extractGVR(&event), "auditID", event.AuditID)
-		return acceptedFact{}, nil
+		return acceptedFact{}
 	}
 
 	eventRoute, routed := h.resolveEventRoute(ctx, route, &event)
 	if !routed {
-		return acceptedFact{}, nil
+		return acceptedFact{}
 	}
 
-	if h.config.FactRecorder != nil {
-		if err := h.config.FactRecorder.RecordFact(ctx, eventRoute, event); err != nil {
-			outcome.Record(ctx, &event, outcome.WriteError)
-			return acceptedFact{}, fmt.Errorf("record attribution fact %q: %w", event.AuditID, err)
-		}
-	}
-	outcome.Record(ctx, &event, outcome.Queued)
-
-	h.firsts.factRecorded.Do(func() {
-		log.Info("Recorded first audit attribution fact", "auditID", event.AuditID, "verb", event.Verb)
-	})
-	log.V(1).Info("Recorded audit attribution fact",
-		"gvr", extractGVR(&event), "verb", event.Verb, "auditID", event.AuditID,
-		"user", effectiveAuditUsername(event))
-	return h.factForStream(ctx, eventRoute, event), nil
+	accepted := h.factForStream(ctx, eventRoute, event)
+	accepted.accepted = true
+	accepted.event = &event
+	return accepted
 }
 
 // factForStream reduces one accepted event to the fact its stream carries. It produces nothing when
@@ -360,7 +409,7 @@ func (h *AuditHandler) factForStream(ctx context.Context, auditRoute string, eve
 	if h.config.FactPublisher == nil {
 		return acceptedFact{}
 	}
-	fact, groupResource, ok := queue.AuthorFactFromEvent(ctx, event)
+	fact, groupResource, ok := queue.AuthorFactFromEvent(ctx, event, h.config.CollectionUIDCap)
 	if !ok {
 		return acceptedFact{}
 	}
@@ -371,24 +420,36 @@ func (h *AuditHandler) factForStream(ctx context.Context, auditRoute string, eve
 // server retries the delivery; a retried batch appends the same facts again under fresh stream IDs,
 // which is safe because a fact is keyed data rather than a position in a sequence — the duplicate
 // resolves to the same author and costs one entry's worth of retention.
-func (h *AuditHandler) publishFactBatches(ctx context.Context, batches *factStreamBatches) error {
+func (h *AuditHandler) publishFactBatches(
+	ctx context.Context,
+	batches *factStreamBatches,
+) (map[queue.FactStreamKey]struct{}, error) {
+	appended := make(map[queue.FactStreamKey]struct{}, len(batches.order))
 	if h.config.FactPublisher == nil {
-		return nil
+		return appended, nil
 	}
 	for _, key := range batches.order {
-		if err := h.config.FactPublisher.PublishFacts(ctx, key, batches.facts[key]); err != nil {
-			return fmt.Errorf("publish attribution facts for %s: %w", key, err)
+		facts := batches.facts[key]
+		if err := h.config.FactPublisher.PublishFacts(ctx, key, facts); err != nil {
+			return appended, fmt.Errorf("publish attribution facts for %s: %w", key, err)
 		}
+		queue.RecordFactsWritten(ctx, len(facts))
+		appended[key] = struct{}{}
 	}
-	return nil
+	return appended, nil
 }
 
-// acceptedFact is one event's contribution to the request's appends, or the zero value when the
-// event produced none.
+// acceptedFact is one event's contribution to the request's appends. accepted and ok are NOT the
+// same thing: an event that passed the accept gate but can never name an author — no user, no
+// resolvable name and not a collection verb — is accepted (it gets a terminal outcome) and produces
+// no fact (nothing is appended for it), because a waiter woken by a fact naming nobody has been
+// woken for nothing.
 type acceptedFact struct {
-	key  queue.FactStreamKey
-	fact queue.AuthorFact
-	ok   bool
+	key      queue.FactStreamKey
+	fact     queue.AuthorFact
+	ok       bool
+	accepted bool
+	event    *auditv1.Event
 }
 
 // factStreamBatches groups one request's facts by the stream they belong to, keeping the order the

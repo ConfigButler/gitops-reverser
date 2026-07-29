@@ -1,9 +1,12 @@
 # Attribution facts as a stream, not a keyspace
 
-> **design**: proposed, not built. Index: [`../INDEX.md`](../INDEX.md)
+> **design**: BUILT and shipped. The v1 fact keyspace and the `deletecollection` expander are gone,
+> the resolver waits on the in-memory index, and the transport is selectable. See
+> [what is built](#what-is-built-and-what-the-code-settled) for what each piece landed as, and for
+> the numbers the implementation chose. Index: [`../INDEX.md`](../INDEX.md)
 >
 > Supersedes the option analysis in
-> [`attribution-wait-poll-vs-push.md`](attribution-wait-poll-vs-push.md), which priced six ways to
+> [`attribution-wait-poll-vs-push.md`](../design/attribution-wait-poll-vs-push.md), which priced six ways to
 > stop polling Redis. This record picks one and specifies it: the audit receiver publishes facts,
 > the watch side subscribes per type and holds them in memory, and the per-key Redis lookup is
 > deleted rather than optimized.
@@ -36,8 +39,60 @@ against that index, and the grace window becomes a wait on an in-process signal 
 against Redis.
 
 `SET`, `GET`, and the three fact key shapes in
-[`attribution_index.go`](../../internal/queue/attribution_index.go) go away. Redis keeps the watch
+`attribution_index.go` go away. Redis keeps the watch
 resume cursors and the command-author records, which are unrelated and unchanged.
+
+## What is built, and what the code settled
+
+The design shipped in four pieces. The first three changed no behaviour, because the resolver still
+read the v1 keys; the fourth is where the behaviour change landed, all at once, so no install is
+left half on each path.
+
+| Piece | State | What landed |
+|---|---|---|
+| The design | merged, [#283](https://github.com/ConfigButler/gitops-reverser/pull/283) | this record |
+| The transport seam | merged, [#284](https://github.com/ConfigButler/gitops-reverser/pull/284) | `FactPublisher` / `FactFollower`, the Redis-stream and in-memory implementations, one conformance suite over both |
+| The index and the publish side | merged, [#286](https://github.com/ConfigButler/gitops-reverser/pull/286) | the four match structures, the subscription set, the waiter registry, the follower loop, and `audit_handler.go` appending one entry per type per request |
+| The switch-over | merged, [#287](https://github.com/ConfigButler/gitops-reverser/pull/287) | the resolver waits on the index, the v1 keys and the collection expander are deleted, `cmd/main.go` selects the transport |
+
+Six things the code decided that this record only pointed at:
+
+**`FactStreamKey` holds a typed `schema.GroupResource`, not a rendered string.** The stream name
+embeds the API-path form (`apps/deployments`) that `groupResourceKey` produces, while
+`schema.GroupResource.String()` produces the reversed dotted form (`deployments.apps`). A caller
+rendering its own key would publish to a stream nobody follows, with no compile error and no failing
+test. Holding the type and rendering at the transport boundary makes that unrepresentable.
+
+**The v2 streams are deliberately not siblings of the v1 keys.** The stream key suffix is
+`:author:v2:audit:` and the keyspaces are unrelated, so an install that rolls back keeps reading v1
+keys while the v2 streams age out on their own.
+
+**Expiry is decided on read, not only by the sweep.** A lookup checks each entry's TTL itself, so an
+aged-out fact is never joined merely because the sweep has not run. `SweepInterval` bounds memory,
+never correctness.
+
+**A trim gap is only reported when the follower was actually behind.** Detection is gated on that,
+so ordinary retention ageing out an entry a caught-up follower already read is not counted as loss.
+
+**`ResolveAuthor` took a query struct rather than keeping its parameter list.** This record said the
+signature would not change, and that turned out to be wrong: the collection tier joins on the
+object's namespace and labels, and neither could be expressed in the six arguments the resolver
+took. Keeping the signature would have left step 4 — the body-less collection delete, the case the
+expander gave up on and the whole reason the collection tier exists — unreachable from production.
+Everything the constraint was protecting held: the grace window, the blocking behaviour, the outcome
+classification, and both metric names.
+
+**The replica count is a flag, because the process cannot see it.** The in-memory transport has to
+be refused with more than one replica, and nothing in the downward API reports a Deployment's
+replica count, so the chart templates `--replica-count` in from `.Values.replicaCount`. The chart's
+own `validate-replica-count.yaml` still fails a chart install outright; this is the gate for
+everything installed another way.
+
+And two the code refused to guess at until now: `cmd/main.go` stayed untouched through #284 and
+#286, so the transport-selection flag and the in-memory-plus-multiple-replicas rejection landed with
+the switch-over — a flag whose consumer does not exist yet is a flag nobody can test. The tuning
+numbers were likewise constants and `FactIndexConfig` fields, defaulted to the values in
+[the open questions](#open-questions), and became flags at the same moment.
 
 ## What this is replacing
 
@@ -126,7 +181,7 @@ gitops-reverser:author:v2:audit:route:<route>:<group/resource>
 The route infix stays exactly as it is today and for the same reason: an apiserver posts under one
 route, several `ClusterProvider`s naming one cluster share that route and therefore share its facts,
 and a fact from cluster A must never name the author of an object watched on cluster B. See
-[`attribution-fact-identity.md`](attribution-fact-identity.md).
+[`attribution-fact-identity.md`](../design/attribution-fact-identity.md).
 
 The group/resource suffix is the new part, and it is what makes the fan-out meaningful. A process
 watching only `configmaps` and `deployments` follows two streams and never receives a fact for
@@ -139,8 +194,8 @@ anything else.
 decides which events produce a usable fact. The change is to accumulate rather than write
 immediately:
 
-1. Each accepted event is reduced to an [`AuthorFact`](../../internal/queue/attribution_index.go#L90)
-   as [`RecordFact`](../../internal/queue/attribution_index.go#L132) does now, with one change: a
+1. Each accepted event is reduced to an `AuthorFact`
+   as `RecordFact` does now, with one change: a
    `deletecollection` is published as **one fact describing the collection**, not expanded into one
    fact per object. See [collection deletes](#collection-deletes-are-one-fact).
 2. Facts are grouped by `(route, group/resource)` across the whole request.
@@ -156,7 +211,7 @@ anyone. The "no resolvable name" rule is the one exception that changes: a name-
 `deletecollection` is now exactly the case that produces a fact, so the check becomes "no name and
 not a collection verb".
 
-[`AuthorFact`](../../internal/queue/attribution_index.go#L90) gains two fields: the label selector
+`AuthorFact` gains two fields: the label selector
 from the request URI, and the optional set of uids the collection covered, reduced from the response
 body at the receiver and dropped past a size cap. It already carries the namespace, verb, and stage
 timestamp that the collection join reads, and it stops needing the per-item name and namespace the
@@ -212,7 +267,7 @@ Entries are applied in stream order into four structures:
 | collection | `(route, group/resource, namespace)`, time-bounded, with an optional uid set | removals caused by a `deletecollection` |
 
 The first three mirror the key shapes the lookup already knows, so the join policy in
-[`LookupAuthorResolution`](../../internal/queue/attribution_index.go#L382) survives unchanged. The
+`LookupAuthorResolution` survives unchanged. The
 fourth is new and is described in [the next section](#collection-deletes-are-one-fact).
 
 **The route leads every key, and it has to.** The index is one per process while the streams are one
@@ -221,7 +276,7 @@ one map and hand a watch event on cluster B an author from cluster A. The rv-onl
 that bites hardest, because a resourceVersion is opaque and not unique across clusters, and the
 collection tier is where it bites most quietly, because a namespace name says nothing about which
 cluster it is in. The v1 fact keys already carry the route for this reason
-([`attribution-fact-identity.md`](attribution-fact-identity.md)), and the same dimension has to
+([`attribution-fact-identity.md`](../design/attribution-fact-identity.md)), and the same dimension has to
 travel through the waiter candidate keys and the collection scope match, not only the four maps
 above. A test that stores identical `(group/resource, uid, rv)` facts under two routes and resolves
 each from its own is the one that proves it, and it belongs with the index rather than the
@@ -237,18 +292,60 @@ oldest-first eviction.
 
 ### The resolver
 
-[`ResolveAuthor`](../../internal/watch/author_resolver.go#L160) keeps its signature, its grace
-window, and its blocking behavior. Only the middle changes:
+[`ResolveAuthor`](../../internal/watch/author_resolver.go) keeps its grace window and its blocking
+behavior. Only the middle changes:
 
 1. Register a waiter for this event's candidate keys.
 2. Check the in-memory index.
 3. If absent, block on the waiter, `ctx.Done()`, or the grace deadline.
-4. On a hit, return exactly as today, including the
-   [outcome classification](../../internal/watch/author_resolver.go#L198) that distinguishes
+4. On a hit, return with the
+   [outcome classification](../../internal/watch/author_resolver.go) that distinguishes
    not-attempted from unresolved.
 
 Step 1 must precede step 2. Registering after the check loses a fact applied in the gap between
 them, which is the same race the poll loop currently papers over by looking again.
+
+**A hit does not always end the wait, and assuming it did was a bug this record shipped with.**
+Ordering the tiers only decides between facts that are both PRESENT. The watch event reliably beats
+the audit batch carrying its delete — that is the entire reason the grace window exists — so when a
+removal is resolved, the only fact in the index is often the object's last write. Returning on it
+answered "who deleted this" with "who last edited it" every time someone else had touched the object
+first, and no ordering could have helped, because the right fact had not been delivered yet.
+
+So a per-object match on a REMOVAL is held as a fallback rather than returned, unless the fact is
+itself about a deletion. The wait continues for evidence about the removal — either collection tier,
+or the object's own delete fact — and the fallback is returned when the grace expires with nothing
+better. Waiting never costs an attribution: the worst case returns exactly what returning early
+would have, one grace window later, which is the case the grace window is for.
+
+It does cost LATENCY, and the number belongs here rather than in a dashboard someone discovers it
+from. Measured over one e2e run, by tier: a removal that finds its delete evidence resolves in about
+70ms, and one that never does averages about 3.1s before falling back to the last write. Creates and
+updates never consult those tiers. So the cost is not spread across attribution, it is concentrated
+in removals for which no delete fact ever arrives, which is most often a type the cluster's AUDIT
+POLICY excludes rather than anything Kubernetes withholds: those spend the grace to end up exactly
+where they started. (An earlier draft of this said a graceful pod delete produces no audit event at
+all. It does — the DELETE request is audited like any other, and under deletion-as-intent that
+request is the fact the join wants. Pods are absent from this repository's own e2e facts because the
+recommended policy drops them as runtime noise.) The
+shard is single-threaded, so the wait also delays whatever is queued behind it, and
+`--author-attribution-grace` is the one lever that bounds both.
+
+**What is deliberately NOT claimed here is a before-and-after.** Comparing a run of this against a
+run of the previous behaviour looked easy and was not: the two runs' populations differed by more
+than the change (one had 203 non-exact resolutions against the other's 59, and the specs added
+alongside this work generate collection deletes that shift the mix by construction), and the
+baseline was never captured per tier. A headline "the mean wait moved from X to Y" out of those two
+runs would have been a workload difference wearing a causal claim's clothes. The per-tier numbers
+above are from a single run and need no comparison to mean something.
+
+Trading the wait back is a product decision about how much commit latency a correct deletion author
+is worth; the alternative on offer is naming an innocent person.
+
+Its parameter list does change, into an `AuthorQuery` carrying the object's namespace and labels
+alongside the route, type, uid and resourceVersion it already took. Those two fields are what the
+collection tier joins on, so without them a body-less `deletecollection` could never reach step 4
+from production — see [what the code settled](#what-is-built-and-what-the-code-settled).
 
 The waiter signal comes from the goroutine applying stream entries. There is no Redis call anywhere
 on this path: the fast case is a map read, and the waiting case is a channel receive.
@@ -266,7 +363,7 @@ independent watch events. That asymmetry is not an accident of our plumbing, it 
 mechanisms are: audit reports the request that was made, and the watch reports each object that
 changed. The lab corpus records exactly this shape for row 9, watch times N against audit times one.
 
-[`RecordDeleteCollectionFacts`](../../internal/queue/attribution_index.go#L242) tries to erase the
+`RecordDeleteCollectionFacts` tries to erase the
 asymmetry by rebuilding the N from the one, parsing `responseObject` into a list of per-object
 identities and writing a fact for each. Everything about that is fragile:
 
@@ -289,16 +386,26 @@ was given. Then a removal joins it by **scope** instead of by identity.
 For a removal event, the resolver tries in order:
 
 1. the exact `(group/resource, uid, rv)` fact,
-2. the `latest` fact for that uid,
-3. a **collection** fact whose scope matches and whose **uid set contains this object**, when the
-   collection carried a usable response body,
+2. a **collection** fact whose **uid set contains this object**, when the collection carried a
+   usable response body,
+3. the `latest` fact for that uid,
 4. a **collection** fact whose group/resource and namespace match the object, whose selector matches
    the object's labels, and whose stage timestamp is within the collection window,
 5. the rv-only hatch.
 
-Precedence is the correctness argument. A collection fact is the weakest evidence in the table, so
-it only ever names an author when nothing more specific does. An unrelated delete by another actor
-during the same window is claimed by its own fact at step 2 and never reaches step 4.
+**The two collection tiers sit on opposite sides of `latest`, and this record originally had both
+below it.** That was wrong, and the implementation corrected it. The `latest` tier answers "who last
+WROTE this object"; a removal asks "who DELETED it". For a single-object delete the two coincide,
+because the delete files its own fact under that uid and overwrites what was there. A collection
+delete files one fact about the collection, so the uid's `latest` entry is left holding whoever
+edited the object last — and ranking it above the collection's uid set credited every removal to the
+previous editor while the uid set went unread. It is the one thing the expander got right, by
+overwriting that entry per object. Uid membership is the API server stating that THIS request
+deleted THIS object, so nothing weaker may answer ahead of it.
+
+Scope matching stays below `latest`, because it is the weakest evidence here and the only tier that
+can name the wrong human. An unrelated delete by another actor during the same window is claimed by
+its own fact at step 3 and never reaches step 4.
 
 Steps 3 and 4 are the same fact matched two ways, and the split is the subject of
 [the next section](#should-the-response-body-travel-with-the-fact). Step 4 alone is already more
@@ -386,7 +493,7 @@ set is an opportunistic upgrade taken when the apiserver happened to send a body
 This applies to collection deletes only. For a normal write, the watch event already carries the
 full object, so an audit body would duplicate it for no gain, and the fact already extracts the one
 thing it needs from `responseObject`, the post-write resourceVersion
-([`rvFromRawObject`](../../internal/queue/attribution_index.go#L558)).
+(`rvFromRawObject`).
 
 That question is settled in this repository rather than open. Row 15 of the lab corpus established
 that an aggregated-API write produces an audit event with an **empty** body while the watch carries
@@ -503,11 +610,22 @@ no stream reader started and no subscription taken.
 **The fan-in property.** One fact still serves every `GitTarget` that needs it, now through a shared
 index instead of a shared key.
 
-**Facts that never resolve.** A status subresource update and a graceful pod delete produce no audit
-event at all, so no wait and no transport can name their author. They still spend the grace window
-and ship unresolved. That is unchanged, and it is the population that keeps
-[the circuit breaker](attribution-wait-poll-vs-push.md#option-c-circuit-break-a-route-that-has-never-resolved-anything)
-worth building separately.
+**Facts that never resolve.** Some events produce no audit fact at all, so no wait and no transport
+can name their author. They still spend the grace window and ship unresolved. That is unchanged, and
+it is the population that keeps
+[the circuit breaker](../design/attribution-wait-poll-vs-push.md#option-c-circuit-break-a-route-that-has-never-resolved-anything)
+worth building separately — see
+[when a removal should stop waiting](../design/attribution-removal-wait-options.md).
+
+**What that population is, corrected.** This record named "a status subresource update and a
+graceful pod delete" and called them structural. They are not: this repository's e2e audit policy
+drops `pods` and every `*/status` as runtime noise, and the mutation-capture lab runs against that
+same cluster, so corpus rows 5 and 7 recorded the POLICY's silence rather than the API server's. A
+`DELETE` request on a pod is audited like any other request, and under the deletion-as-intent rule
+that request is exactly the fact the join wants. The population that can never resolve is therefore
+mostly **the types the cluster's audit policy excludes** — which is configuration, is knowable, and
+is a far better thing to be up against than a wall. Confirming it by measurement, rather than by
+reading the policy, is worth a lab run.
 
 ## Starting up and catching up
 
@@ -638,14 +756,20 @@ rejects that when author attribution or the admission webhook is enabled
 [`lookupTargetWatchCursor`](../../internal/watch/target_watch.go#L956) returns a miss and the watch
 cold-replays on restart, which is correct and only more expensive.
 
-So Redis is a hard requirement for **attribution and the admission webhook**, and for nothing else.
-Making attribution work without it is one seam, not a project.
+So Redis is a hard requirement for **attribution**, and for nothing else. Making attribution work
+without it is one seam, not a project.
 
-That requirement narrows once the transport is selectable, and the startup validation has to narrow
-with it or the in-memory mode is unreachable: an empty `--redis-addr` becomes an error only when the
-**Redis** transport is selected, or when the admission webhook is enabled, and the combination of
-the in-memory transport with an empty address becomes a supported configuration rather than a
-rejected one. The flag, the validation in [`cmd/main.go`](../../cmd/main.go), and
+**A correction to that sentence, which this record got wrong.** It claimed the admission webhook
+required Redis too. It does not, and deliberately so: the webhook is `failurePolicy: Ignore` and the
+controller is the real gate, so without Redis it simply no-ops command-author capture and
+`CommitRequest`s claim no actor. That is a supported, degraded mode rather than a usage error, it
+pre-dates this design, and a test pins it. Turning it into a startup error to match this record
+would have broken a shape installs already run. The record is what changed.
+
+The remaining requirement narrows once the transport is selectable, and the startup validation has
+to narrow with it or the in-memory mode is unreachable: an empty `--redis-addr` becomes an error
+only when the **Redis** transport is selected, and the combination of the in-memory transport with
+an empty address becomes a supported configuration rather than a rejected one. The flag, the validation in [`cmd/main.go`](../../cmd/main.go), and
 [`configuration.md`](../configuration.md) move together in that change, because a flag whose
 validation and documentation disagree is how a mode ends up unreachable in the first place.
 
@@ -704,19 +828,20 @@ restart today, which is what keeps the delta small.
 
 ## Code inventory
 
-| Change | Where |
-|---|---|
-| Delete the fact key builders, `SET`/`GET` paths, and the SCAN-based size gauge | [`attribution_index.go`](../../internal/queue/attribution_index.go) |
-| Delete the collection expander: `RecordDeleteCollectionFacts`, `storeDeleteCollectionFacts`, `deleteCollectionItems`, `deleteCollectionItem`, and their tests | [`attribution_index.go`](../../internal/queue/attribution_index.go), `attribution_index_deletecollection_test.go` |
-| Retire §5 and §8 of the expander spec; §2, the deletion-as-intent render rule, is untouched and still binds | [`deletecollection-attribution-expander.md`](../spec/deletecollection-attribution-expander.md) |
-| Group per request, one `XADD` per type | [`audit_handler.go`](../../internal/webhook/audit_handler.go) |
-| New: the two-method transport seam, plus a Redis-stream and an in-memory implementation and one conformance suite over both | new files under [`internal/queue/`](../../internal/queue/) |
-| New: subscription set, in-memory index, waiter registry, all transport-agnostic | new file under [`internal/queue/`](../../internal/queue/) |
-| Add the transport selection flag and reject in-memory with more than one replica | [`cmd/main.go`](../../cmd/main.go) |
-| Correct the stale "hard dependency in every mode" comment | [`redis_store.go`](../../internal/queue/redis_store.go#L45) |
-| Wait on a signal instead of polling; drop `attributionPollInterval` | [`author_resolver.go`](../../internal/watch/author_resolver.go) |
-| Subscribe and unsubscribe a type as watches come and go | [`target_watch.go`](../../internal/watch/target_watch.go) |
-| Replace the fact-index size gauge; add eviction and trim-gap counters | [`telemetry/exporter.go`](../../internal/telemetry/exporter.go) |
+| Change | Where | State |
+|---|---|---|
+| New: the two-method transport seam, plus a Redis-stream and an in-memory implementation and one conformance suite over both | [`fact_stream.go`](../../internal/queue/fact_stream.go), [`fact_stream_redis.go`](../../internal/queue/fact_stream_redis.go), [`fact_stream_memory.go`](../../internal/queue/fact_stream_memory.go) | done, #284 |
+| New: subscription set, in-memory index, waiter registry, all transport-agnostic | [`fact_index.go`](../../internal/queue/fact_index.go), [`fact_index_store.go`](../../internal/queue/fact_index_store.go), [`fact_streams.go`](../../internal/queue/fact_streams.go), [`fact_waiters.go`](../../internal/queue/fact_waiters.go) | done, #286 |
+| Group per request, one append per type; publish a collection as one fact | [`audit_handler.go`](../../internal/webhook/audit_handler.go), [`author_fact.go`](../../internal/queue/author_fact.go) | done, #286 |
+| Add the eviction, trim-gap, and collection-degraded counters | [`telemetry/exporter.go`](../../internal/telemetry/exporter.go) | done |
+| Wait on a signal instead of polling; drop `attributionPollInterval` | [`author_resolver.go`](../../internal/watch/author_resolver.go) | done |
+| Subscribe and unsubscribe a type as watches come and go | [`target_watch.go`](../../internal/watch/target_watch.go) | done |
+| Delete the fact key builders, `SET`/`GET` paths, and the SCAN-based size gauge. The file goes with them: what survived is the fact shape and the result taxonomy, in [`author_fact.go`](../../internal/queue/author_fact.go), and the shared key helpers, in [`key_prefix.go`](../../internal/queue/key_prefix.go). `attribution_fact_index_size` survives too, now a field read on the sweep rather than a SCAN of the whole keyspace | `attribution_index.go`, deleted | done |
+| Delete the collection expander: `RecordDeleteCollectionFacts`, `storeDeleteCollectionFacts`, and their tests. `deleteCollectionItems` survives, reduced to uids only: the publish side still needs the body parsed once, to build the uid SET one fact carries. Nothing rebuilds N per-object facts from one request | `attribution_index.go` and `attribution_index_deletecollection_test.go`, deleted | done |
+| Retire §5 and §8 of the expander spec; §2, the deletion-as-intent render rule, is untouched and still binds | [`deletecollection-attribution-expander.md`](../spec/deletecollection-attribution-expander.md) | done |
+| Add the transport selection flag, narrow the `--redis-addr` validation, and reject in-memory with more than one replica | [`cmd/main.go`](../../cmd/main.go), [`configuration.md`](../configuration.md) | done |
+| Correct the stale "hard dependency in every mode" comment | [`redis_store.go`](../../internal/queue/redis_store.go) | done |
+| Document the three new counters and the replaced result label | [`interpreting-metrics.md`](../interpreting-metrics.md) | done |
 
 `AttributionResolutionsTotal` and `AttributionResolutionWaitSeconds` keep their names and meanings,
 so the e2e reporting in [`reportAttributionStats`](../../test/e2e/e2e_suite_test.go) and every
@@ -736,14 +861,24 @@ already true of any restart today.
 ### What a fact holds about a person
 
 A fact names an actor, so it carries personal data and should be described as such: the username,
-and the display name and email when the API server supplied them, alongside the object identity,
-verb, and stage timestamp. That is the same content the v1 fact keys hold today, taken from the
-audit event's `user` field, and moving it from a key to a stream entry changes where it lives rather
-than what it is.
+and the display name and email when the API server supplied them, alongside the object's namespace
+and uid, the verb, and the stage timestamp. That is taken from the audit event's `user` field, and
+moving it from a key to a stream entry changed where it lives rather than what it is.
+
+It carries **less** than the v1 keys did. The switch-over dropped the object's name and subresource
+and the group/resource from the wire, because no join tier reads them — the type is the stream's own
+name, and the join is by uid, resourceVersion, or scope. `isServiceAccount` went too, being a prefix
+check on the username rather than evidence. A fact is broadcast to every process following its type,
+held for the whole TTL, and replayed into memory on every restart, so a field nothing reads is paid
+for three times; on a real collection-delete fact the removals cut the entry by about a quarter. The
+one field kept without being read is `auditID`, which is what ties a commit authored by the wrong
+person back to the audit event that named them.
 
 Retention moves the same way. A fact is held for `--author-attribution-ttl` (ten minutes by default)
 in the Redis stream and, once read, in the process's in-memory index, and the trim and the TTL sweep
-drop it after that. Nothing writes it to Git: the commit carries the author's
+drop it after that. The stream KEY carries the same deadline, refreshed by every append, so a type
+that stops being written to takes its stream with it instead of leaving an immortal key behind; the
+in-memory transport forgets an idle ring on the same horizon. Nothing writes it to Git: the commit carries the author's
 name and email as commit metadata, which is what the actor already published by making the change.
 Access is whoever can read the Redis keyspace and the pod's memory, which is why the keyspace is
 namespaced per install ([`--redis-key-prefix`](../configuration.md)) and why an install that
@@ -767,24 +902,37 @@ would build a compatibility path for a topology the chart refuses to start.
 
 ## Open questions
 
-- **How large may a collection's uid set be before it is dropped?** It bounds one entry's size, the
-  broadcast to every subscriber, and the replay on restart. The fallback is already correct, so this
-  is a tuning number rather than a correctness one, but it decides how often the precise path is
-  taken.
-- **How long is the collection window?** Short enough that an unrelated delete in the same namespace
-  is not claimed, long enough to cover audit batching plus clock skew. The deletion-as-intent rule
-  means it does not have to cover finalization, so a few multiples of the grace window is the
-  starting point. It should be measurable from the lab's per-scenario timing report.
-- **What replaces the `exact_deletecollection_item` result label?** The match is now scope-based, so
-  the name is wrong. Renaming it is a visible change to an exported metric's label value, which
-  needs saying in the release notes even though the metric keeps its name.
-- **Cap per type, or one global cap?** Per type is fairer under a burst on one noisy type. A global
-  cap is simpler and bounds the pod. Probably both, with the per-type cap as the primary.
+### Answered by the implementation
+
+Each of these is a constant in [`internal/queue/`](../../internal/queue/) today and becomes a flag
+in the switch-over, when a consumer for it first exists.
+
+| Question | Answer | Why that number |
+|---|---|---|
+| How large may a collection's uid set be? | **10000 uids** (`DefaultCollectionUIDCap`) | A few hundred kilobytes against a body for the same request that runs to tens of megabytes. A collection larger than that is exactly the one a cluster with audit truncation enabled would not have sent a body for anyway. |
+| How long is the collection window? | **30s** (`DefaultFactCollectionWindow`) | Ten times the default grace window. Under the deletion-as-intent rule it only has to cover audit batching plus clock skew, so it can be far shorter than the fact TTL, and short enough that an unrelated delete a minute later is not claimed. |
+| Cap per type, or one global cap? | **Both**: 4096 per `(route, group/resource)`, 65536 total | Per-type is the primary because it is the fair one — a burst on one noisy type must not evict every other type's facts. The total cap bounds the pod with a number that does not scale with how many types happen to be watched; overflow evicts from the type holding the most, so the pressure lands where it came from. |
+| `BLOCK` interval | **1s** (`DefaultFactStreamBlock`) | A follower re-reads the subscription set on every `Next`, so this is also how long a subscribe or unsubscribe takes to land. |
+
+**What replaces the `exact_deletecollection_item` result label**: two labels rather than one, because
+the match is now two-tiered. `collection_uid` is a removal whose uid was in the set the API server
+said it deleted — no over-attribution risk at all — and `collection_scope` is one matched by
+namespace, selector, and window alone, which is the weaker evidence. `exact_deletecollection_item`
+disappears with the expander in the switch-over, and that is the visible metric-label change the
+release notes have to carry.
+
+Three counters were added alongside them, registered with the index and first emitted when it is
+wired in: `attribution_fact_index_evictions_total{reason}` (`per_type` or `total`),
+`attribution_fact_stream_gaps_total{stream}`, and `attribution_collection_degraded_total{reason}`
+for a collection fact published without its uid set. They get their row in
+[`interpreting-metrics.md`](../interpreting-metrics.md) in the switch-over, where they start moving.
+
+### Still open
+
 - **Is one entry per type per request the right granularity?** It matches the apiserver's batching
   exactly, but a single entry can then carry hundreds of facts. An entry-size ceiling that splits
-  oversized groups may be needed.
-- **`BLOCK` interval.** It sets how quickly a subscription change takes effect and how often the
-  reader wakes for nothing. Likely a second, worth confirming against the observed publish rate.
+  oversized groups may be needed. `DefaultFactStreamMaxLen` bounds a stream in *entries*, not bytes,
+  so nothing bounds one entry's size today.
 - **Does the per-type stream count stay reasonable?** One `XREAD` across a few dozen streams is
   ordinary. A cluster watching several hundred types would want checking before it is assumed.
 - **Should the trim-gap counter feed a condition?** A reader that is losing facts is a real

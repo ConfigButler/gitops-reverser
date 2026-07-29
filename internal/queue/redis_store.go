@@ -41,11 +41,15 @@ type RedisStoreConfig struct {
 	KeyPrefix string
 }
 
-// RedisStore is the required Redis/Valkey-backed store. It owns the connection and
-// persists each GitTarget watch shard's resume cursor (state continuity / work
-// re-pickup), and the readiness gate pings it. It is a hard dependency in every mode
-// and knows nothing about attribution: author attribution is an optional layer built
-// on the same connection via AttributionIndex.
+// RedisStore is the optional Redis/Valkey-backed store. It owns the connection and persists each
+// GitTarget watch shard's resume cursor (state continuity / work re-pickup), and the readiness gate
+// pings it. It is NOT a hard dependency: --redis-addr may be empty, in which case watches
+// cold-replay on restart instead of resuming. What does require it is the admission webhook's
+// command-author capture, and attribution when it runs over the Redis fact-stream transport;
+// attribution over the in-memory transport needs no Redis at all.
+//
+// It knows nothing about attribution facts. Those live in their own streams, built on the same
+// connection by RedisFactStream.
 type RedisStore struct {
 	client    *redis.Client
 	keyPrefix string
@@ -74,16 +78,6 @@ func NewRedisStore(cfg RedisStoreConfig) (*RedisStore, error) {
 // under. Reported at startup so an operator can confirm which keyspace a pod claims.
 func (s *RedisStore) KeyPrefix() string {
 	return s.keyPrefix
-}
-
-// AttributionIndex builds the optional author-attribution fact index on this store's
-// connection. Call it only when author attribution is enabled — the store itself,
-// and the resume cursors it holds, never depend on it.
-func (s *RedisStore) AttributionIndex(factTTL time.Duration) *AttributionIndex {
-	if factTTL <= 0 {
-		factTTL = DefaultAttributionFactTTL
-	}
-	return &AttributionIndex{client: s.client, factTTL: factTTL, keyPrefix: s.keyPrefix}
 }
 
 // CommandAuthorStore builds the command-authorship store on this connection. Wire it

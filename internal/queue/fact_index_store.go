@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// factKind names one of the four match structures a fact can land in. The set is closed: a fact
+// factKind names one of the five match structures a fact can land in. The set is closed: a fact
 // that fits none of them is not stored, because a fact nothing can ever join is only memory.
 type factKind uint8
 
@@ -19,6 +19,10 @@ const (
 	factKindLatest
 	// factKindRV is (rv), the escape hatch for a fact with an rv but no uid.
 	factKindRV
+	// factKindName is (namespace, name), the floor for a fact with neither a uid nor an rv. Only an
+	// aggregated-API write reaches it today: the API server proxies the request, so the objectRef
+	// carries the name from the URL and nothing else.
+	factKindName
 	// factKindCollection is (namespace), time-bounded, serving removals caused by a
 	// deletecollection.
 	factKindCollection
@@ -42,6 +46,13 @@ type factScope struct {
 type exactFactKey struct {
 	uid string
 	rv  string
+}
+
+// nameFactKey is the (namespace, name) pair of the name tier. The namespace is part of the key
+// because a name is only unique within one, and the scope already binds the type and the route.
+type nameFactKey struct {
+	namespace string
+	name      string
 }
 
 // indexedFact is one stored fact plus the insertion time the TTL sweep reads and the sequence
@@ -119,7 +130,10 @@ type factRef struct {
 	kind factKind
 	uid  string
 	rv   string
-	seq  uint64
+	// namespace and name locate a name-tier entry; they are unset for every other kind.
+	namespace string
+	name      string
+	seq       uint64
 }
 
 // scopeFacts is one (route, group/resource)'s four match structures, its oldest-first insertion
@@ -130,6 +144,7 @@ type scopeFacts struct {
 	exact       map[exactFactKey]*indexedFact
 	latest      map[string]*indexedFact
 	rvOnly      map[string]*indexedFact
+	byName      map[nameFactKey]*indexedFact
 	collections []*indexedCollection
 	// order is every live entry's reference in insertion order, oldest first. It may hold stale
 	// references, which remove skips.
@@ -142,6 +157,7 @@ func newScopeFacts() *scopeFacts {
 		exact:  map[exactFactKey]*indexedFact{},
 		latest: map[string]*indexedFact{},
 		rvOnly: map[string]*indexedFact{},
+		byName: map[nameFactKey]*indexedFact{},
 	}
 }
 
@@ -175,6 +191,18 @@ func (s *scopeFacts) putRV(rv string, entry *indexedFact) {
 	s.order = append(s.order, factRef{kind: factKindRV, rv: rv, seq: entry.seq})
 }
 
+// putName stores the (namespace, name) floor. Like putLatest it is last-writer-wins: two writes to
+// one name inside the TTL leave the later actor, which is the same answer the uid tier would give
+// for the same pair of writes.
+func (s *scopeFacts) putName(namespace, name string, entry *indexedFact) {
+	key := nameFactKey{namespace: namespace, name: name}
+	if _, ok := s.byName[key]; !ok {
+		s.count++
+	}
+	s.byName[key] = entry
+	s.order = append(s.order, factRef{kind: factKindName, namespace: namespace, name: name, seq: entry.seq})
+}
+
 // putCollection appends one collection fact. Collection facts are not keyed one per namespace:
 // two actors may delete collections in one namespace within the same window, and each removal must
 // be able to find the one that covered it.
@@ -199,28 +227,48 @@ func (s *scopeFacts) lookupRV(rv string, cutoff time.Time) (AuthorFact, bool) {
 	return liveFact(s.rvOnly[rv], cutoff)
 }
 
-// matchCollection resolves a removal against the collection tier, in the two passes the design
-// orders: uid membership first, because either the API server said it deleted this object or it did
-// not, and scope matching second, because it accepts a bounded risk of naming the wrong human and
-// so must only ever be reached when nothing more precise applies.
-func (s *scopeFacts) matchCollection(q FactQuery, now, cutoff time.Time, window time.Duration) AuthorResolution {
+// lookupName reads the (namespace, name) floor.
+func (s *scopeFacts) lookupName(namespace, name string, cutoff time.Time) (AuthorFact, bool) {
+	return liveFact(s.byName[nameFactKey{namespace: namespace, name: name}], cutoff)
+}
+
+// matchCollectionUID resolves a removal against a collection fact that NAMED this object: the API
+// server returned the set it deleted, and this uid was in it. There is no over-attribution risk in
+// that — either the object was in the set or it was not — which is why it outranks the latest tier.
+//
+// It carries no window check, deliberately. The uid set is a statement about this exact object
+// rather than about a span of time, so the fact's own TTL is the only bound it needs; a window would
+// only discard evidence that cannot be wrong.
+func (s *scopeFacts) matchCollectionUID(q FactQuery, cutoff time.Time) (AuthorFact, bool) {
 	for i := len(s.collections) - 1; i >= 0; i-- {
 		entry := s.collections[i]
 		if !entry.covers(q, cutoff) || entry.uids == nil {
 			continue
 		}
 		if _, ok := entry.uids[q.UID]; ok {
-			return AuthorResolution{Fact: entry.fact, Result: AttributionCollectionUID}
+			return entry.fact, true
 		}
 	}
+	return AuthorFact{}, false
+}
+
+// matchCollectionScope resolves a removal against a collection fact by scope alone: same type and
+// namespace, the request's selector accepting this object's labels, within the collection window.
+// It is the weakest evidence the join has and the only tier that can name the wrong human, so it
+// runs last — after the object's own facts have all missed.
+func (s *scopeFacts) matchCollectionScope(
+	q FactQuery,
+	now, cutoff time.Time,
+	window time.Duration,
+) (AuthorFact, bool) {
 	for i := len(s.collections) - 1; i >= 0; i-- {
 		entry := s.collections[i]
 		if !entry.covers(q, cutoff) || !entry.inWindow(now, window) || !entry.selects(q.Labels) {
 			continue
 		}
-		return AuthorResolution{Fact: entry.fact, Result: AttributionCollectionScope}
+		return entry.fact, true
 	}
-	return AuthorResolution{Result: AttributionAbsent}
+	return AuthorFact{}, false
 }
 
 // sweep drops every entry inserted before the cutoff and reports how many went. It also compacts
@@ -242,6 +290,12 @@ func (s *scopeFacts) sweep(cutoff time.Time) int {
 	for key, entry := range s.rvOnly {
 		if entry.at.Before(cutoff) {
 			delete(s.rvOnly, key)
+			removed++
+		}
+	}
+	for key, entry := range s.byName {
+		if entry.at.Before(cutoff) {
+			delete(s.byName, key)
 			removed++
 		}
 	}
@@ -286,27 +340,36 @@ func (s *scopeFacts) evictOldest() bool {
 func (s *scopeFacts) remove(ref factRef) bool {
 	switch ref.kind {
 	case factKindExact:
-		key := exactFactKey{uid: ref.uid, rv: ref.rv}
-		if entry, ok := s.exact[key]; ok && entry.seq == ref.seq {
-			delete(s.exact, key)
-			return true
-		}
+		return removeKeyed(s.exact, exactFactKey{uid: ref.uid, rv: ref.rv}, ref.seq)
 	case factKindLatest:
-		if entry, ok := s.latest[ref.uid]; ok && entry.seq == ref.seq {
-			delete(s.latest, ref.uid)
-			return true
-		}
+		return removeKeyed(s.latest, ref.uid, ref.seq)
 	case factKindRV:
-		if entry, ok := s.rvOnly[ref.rv]; ok && entry.seq == ref.seq {
-			delete(s.rvOnly, ref.rv)
-			return true
-		}
+		return removeKeyed(s.rvOnly, ref.rv, ref.seq)
+	case factKindName:
+		return removeKeyed(s.byName, nameFactKey{namespace: ref.namespace, name: ref.name}, ref.seq)
 	case factKindCollection:
-		for i, entry := range s.collections {
-			if entry.seq == ref.seq {
-				s.collections = append(s.collections[:i], s.collections[i+1:]...)
-				return true
-			}
+		return s.removeCollection(ref.seq)
+	}
+	return false
+}
+
+// removeKeyed deletes one map entry when it is still the one the reference was taken for, which is
+// what the sequence check decides. It is generic over the key because the four keyed structures
+// differ only in how they are addressed.
+func removeKeyed[K comparable](m map[K]*indexedFact, key K, seq uint64) bool {
+	if entry, ok := m[key]; ok && entry.seq == seq {
+		delete(m, key)
+		return true
+	}
+	return false
+}
+
+// removeCollection drops the collection entry with this sequence, reporting whether it was there.
+func (s *scopeFacts) removeCollection(seq uint64) bool {
+	for i, entry := range s.collections {
+		if entry.seq == seq {
+			s.collections = append(s.collections[:i], s.collections[i+1:]...)
+			return true
 		}
 	}
 	return false
@@ -328,14 +391,13 @@ func (s *scopeFacts) compact() {
 func (s *scopeFacts) live(ref factRef) bool {
 	switch ref.kind {
 	case factKindExact:
-		entry, ok := s.exact[exactFactKey{uid: ref.uid, rv: ref.rv}]
-		return ok && entry.seq == ref.seq
+		return liveKeyed(s.exact, exactFactKey{uid: ref.uid, rv: ref.rv}, ref.seq)
 	case factKindLatest:
-		entry, ok := s.latest[ref.uid]
-		return ok && entry.seq == ref.seq
+		return liveKeyed(s.latest, ref.uid, ref.seq)
 	case factKindRV:
-		entry, ok := s.rvOnly[ref.rv]
-		return ok && entry.seq == ref.seq
+		return liveKeyed(s.rvOnly, ref.rv, ref.seq)
+	case factKindName:
+		return liveKeyed(s.byName, nameFactKey{namespace: ref.namespace, name: ref.name}, ref.seq)
 	case factKindCollection:
 		for _, entry := range s.collections {
 			if entry.seq == ref.seq {
@@ -344,6 +406,12 @@ func (s *scopeFacts) live(ref factRef) bool {
 		}
 	}
 	return false
+}
+
+// liveKeyed reports whether a map still holds the entry a reference was taken for.
+func liveKeyed[K comparable](m map[K]*indexedFact, key K, seq uint64) bool {
+	entry, ok := m[key]
+	return ok && entry.seq == seq
 }
 
 // covers reports whether a collection fact is in scope for a query at all: same namespace, and not

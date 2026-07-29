@@ -50,15 +50,18 @@ Every write to that branch goes through the worker's single event loop and commi
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches cold-replay on restart. When an endpoint is configured,
 Redis stores watch resume cursors (warm restarts) and the small coordination records used by
-attribution, CommitRequest author capture, and HA. Attributed-author mode requires Redis, and HA will
-require it as the shared store across replicas.
+CommitRequest author capture and HA. Attribution no longer requires it on its own: its facts travel
+on a selectable transport, Redis Streams by default and an in-process ring with
+`--author-attribution-transport=memory`, which is refused with more than one replica. HA will require
+Redis as the shared store across replicas.
 
 **Audit is an optional attribution lookup.** When attribution is enabled, kube-apiserver posts audit
 events to `/audit-webhook/<audit-route>` (or a configured annotation-routed shared endpoint). The route
 is `ClusterProvider.spec.attribution.auditRoute`, which defaults to the provider's own name.
-The operator stores a minimal fact under that route's partition and joins it to a watch event
-within a bounded grace window. A missing, late, or absent fact never blocks state capture; it only
-changes the author.
+The operator appends a minimal fact to that route's per-type fact stream; every process watching the
+type follows that stream into a bounded, TTL'd in-process index, and a watch event joins against the
+index within a bounded grace window. A missing, late, or absent fact never blocks state capture; it
+only changes the author.
 
 **Behavior is deterministic and proven by tests.** Given the same observed Kubernetes state, configuration,
 and Git base, the operator makes the same materialization decisions. Ordering, attribution fallbacks,
@@ -379,7 +382,8 @@ flowchart LR
         RESOLVE["Resolver\nbounded grace window"]
         GTES[GitTargetEventStream]
         AFACTS["Audit fact extractor"]
-        AINDEX[("Redis attribution index\nTTL, keyed for join")]
+        ASTREAM[("Per-type fact stream\nRedis Streams or in-process ring")]
+        AINDEX[("In-process fact index\nbounded, TTL, keyed for join")]
     end
 
     subgraph SOURCE["Source cluster selected by ClusterProvider\n(the control cluster when kubeConfig is omitted)"]
@@ -409,7 +413,8 @@ flowchart LR
     PLAN --> PUSH
 
     AUDIT -. configured .-> AFACTS
-    AFACTS --> AINDEX
+    AFACTS -->|append| ASTREAM
+    ASTREAM -->|follow| AINDEX
     AINDEX -. lookup .-> RESOLVE
 ```
 
@@ -438,8 +443,9 @@ Following the ConfigMap edit:
    the remote moved).
 
 Separately, the audit path (only when attribution is enabled): kube-apiserver POSTs audit events to
-`/audit-webhook/<provider>`; [AuditHandler](../internal/webhook/audit_handler.go) extracts a minimal
-attribution fact and writes it to that provider's Redis partition with a short TTL. That index is read
+`/audit-webhook/<provider>`; [AuditHandler](../internal/webhook/audit_handler.go) extracts the minimal
+attribution facts and appends them to that route's per-type fact stream. A follower on the watch side
+reads the streams for the types it watches into a bounded, TTL'd in-process index. That index is read
 only by the resolver in step 3; it never creates or repairs object state.
 
 **And if the watch had been lost?** A delete that happened while no watch was running is reconciled on
@@ -605,17 +611,35 @@ per-mutation change log.
 ## Optional attribution
 
 - **Handler / fact extractor**: [internal/webhook/audit_handler.go](../internal/webhook/audit_handler.go)
-- **Attribution index**: [internal/queue/attribution_index.go](../internal/queue/attribution_index.go)
+- **Fact transport (per-type stream)**: [internal/queue/fact_stream.go](../internal/queue/fact_stream.go)
+- **In-process fact index**: [internal/queue/fact_index.go](../internal/queue/fact_index.go)
 - **Resolver (grace window join)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
+- **Design**: [attribution-publish-and-join.md](design/attribution-publish-and-join.md),
+  [attribution-fact-stream.md](finished/attribution-fact-stream.md)
 
-Attribution runs only when `--author-attribution=true`; Redis is then its required state store. A normal
+Attribution runs only when `--author-attribution=true`. A normal
 source posts audit `EventList` payloads to `/audit-webhook/<audit-route>`, where the route is
 `ClusterProvider.spec.attribution.auditRoute` and defaults to the provider's own name. The bare
 `/audit-webhook` endpoint is enabled only with `--author-attribution-audit-route-annotation-key`, for a
 trusted control plane that puts an audit route in each event. There is no supplementary body endpoint or
 body joiner, because watch (not audit) carries the object body. The handler applies an intrinsic accept
 gate (StageResponseComplete, a mutating verb, success, non-dry-run, a changed resourceVersion, and the
-`/scale` subresource only), then writes the minimal attribution fact to that route's Redis partition.
+`/scale` subresource only), then appends the accepted events' facts to that route's per-type fact
+stream: **one append per type per request**, not one per event.
+
+The two halves never call each other. The receiver publishes and returns; the watch side follows the
+streams for the types it watches and keeps their facts in a bounded, TTL'd **in-process index**. They
+meet only through the keys a fact was filed under. That split is what lets the audit endpoint answer
+fast during a rollout, and what lets a fact published by one replica serve a watch running on another
+once the streams are shared (the Redis transport below).
+
+The transport is selectable, because the index is what does the work and the stream is only how facts
+travel:
+
+| `--author-attribution-transport` | Store | When |
+|---|---|---|
+| `redis` (default) | Redis Streams, per type, with a retention window a restarting process replays | any install; **required** for more than one replica |
+| `memory` | an in-process ring | single replica, no Redis; every fact is lost on restart, by design |
 
 | Endpoint | Role |
 |---|---|
@@ -645,7 +669,8 @@ Two engineering choices follow directly from that stance:
   binding, so multi-source deployments must not share a credential across independently trusted sources.
 - **Tests pin the behavior.** Because a misattribution is a real harm, the attribution and resolver paths
   carry unit and e2e tests that prove the concrete cases: strong match, weak/last-key match, deletes whose
-  audit RV differs from the watch RV, missing/late/expired facts, service-account vs human actor,
+  audit RV differs from the watch RV, a collection delete joined by uid set and by scope, an aggregated
+  API whose facts carry only a name, missing/late/expired facts, service-account vs human actor,
   impersonation, and the explicit unresolved outcome, so these certainty guarantees cannot silently regress.
 
 ### Attribution fact shape
@@ -662,21 +687,66 @@ The fact is the smallest thing needed to name an author, not an object log:
 | response object resourceVersion | exact watch-event match |
 | stage timestamp | recency |
 
-The index writes the fact under several join keys, all prefixed by the `ClusterProvider` name: exact
-`(provider, GVR, ns, name, uid, rv)`, then `(provider, GVR, ns, name, uid)` (for deletes whose watch RV
-differs from the audit RV), then `(provider, GVR, ns, name, rv)` (when UID is absent). Each key carries
-the same short TTL (minutes, not hours); old facts are never needed for correctness because watch owns
-state.
+A `deletecollection` produces one **collection fact** instead: it names no object, so it keeps the
+request's selector and whatever uid set the API server returned, and every removal in its scope joins
+against it.
+
+The index files each fact under the **strongest key it has**, first match wins, within a scope of
+`(audit route, group/resource)`: `(uid, rv)` *and* `(uid)` together when it has both, else `(uid)`,
+else `(rv)`, else `(namespace, name)`. A fact keeps every field it recovered but is not filed under
+weaker keys it could never be read by. A watch event always knows its object's uid, so a uid-keyed
+fact is never looked up by name, and a second copy would cost memory on every replica for the whole
+TTL and answer nothing. The one branch that files twice is `(uid, rv)` plus `(uid)`: the first serves
+creates and updates, the second serves removals, one fact answering two different questions.
+
+Entries carry a short TTL (minutes, not hours) and are bounded per type and in total; expiry is
+checked on read, so an aged-out fact is never joined merely because the sweep has not run. Old facts
+are never needed for correctness, because watch owns state.
 
 ### The resolver and its grace window
 
-A watch event waits a **bounded grace window** (`--author-attribution-grace`, default `3s`) for a matching fact
-to arrive, then ships regardless. On a strong match the actor becomes the author: a human or a service
-account alike, always named by its own username (e.g.
-`system:serviceaccount:flux-system:kustomize-controller`). A weak, conflicting, missing, or expired fact
-produces `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>` instead of a
-guessed actor. A late fact that arrives after a commit has shipped **never rewrites it**. With attribution
-disabled the resolver is absent and every commit is committer-authored.
+A watch event waits a **bounded grace window** (`--author-attribution-grace`, default `3s`) for
+matching evidence, then ships regardless. It does not poll: it registers a waiter under every key its
+query could match, looks once, and then sleeps until either a fact that could answer it is applied or
+the grace expires. Registering before the first lookup is what closes the race a fact landing in the
+gap would otherwise win. There is no Redis call on this path: the fast case is a map read.
+
+The resolver takes the strongest evidence available, and the tier it used is the `tier` label on
+`attribution_resolutions_total`. Who that evidence named is the separate `actor_kind` label, in the
+same `user`/`serviceaccount`/`none` vocabulary `commits_total{author_kind}` uses:
+
+| Tier | Key | What it asserts |
+|---|---|---|
+| `exact` | uid + rv | this actor produced this exact version |
+| `collection_uid` | uid in a collection fact's set | the API server said this request deleted this object |
+| `latest` | uid (the object's own delete fact) | who removed it |
+| `name` | namespace + name | the same, for a fact with no uid (an aggregated API's usual shape) |
+| `latest` | uid (a write fact) | who last *wrote* it; a fallback for a removal |
+| `collection_scope` | namespace + selector + window | a collection request covering it was made |
+| `resource_version` | rv (the escape hatch for a fact with no uid) | a fact for this exact version, unidentified |
+| `absent` | none | nothing usable arrived in time |
+
+Two rules carry most of the behavior. **A removal never returns on a write fact without looking
+further:** the per-object tiers are last-writer-wins, so for a removal they hold whoever last *edited*
+the object, which is not who deleted it; such a match is held as a fallback while the wait continues
+for evidence about the deletion itself. And **an exact-capable event may not fall through to the
+removal tiers:** a create or update presents the resourceVersion its own write produced, so if the
+exact tier misses, the uid pointer may name an older, different author.
+
+No branch on this path depends on the type. Every decision is made on the verb, on whether the event
+is a removal, and on which fields the event happens to carry. That is why an aggregated API needed
+no special case to attribute.
+
+On a resolved tier the actor becomes the author: a human or a service account alike, always named by
+its own username (e.g. `system:serviceaccount:flux-system:kustomize-controller`). An `absent`
+resolution produces `unknown (attribution unresolved) <attribution-unresolved@gitops-reverser.invalid>`
+instead of a guessed actor. A late fact that arrives after a commit has shipped **never rewrites it**.
+With attribution disabled the resolver is absent and every commit is committer-authored.
+
+The wait is head-of-line on its watch shard, so a resolution that sits out the grace delays the events
+queued behind it on the same `(GitTarget, GVR, scope)` goroutine. That cost, and what it once broke,
+is in [Watch Event Ordering](#watch-event-ordering) and
+[attribution-removal-wait-options.md](design/attribution-removal-wait-options.md).
 
 The CommitRequest controller does **not** read this audit index. A CommitRequest's submitter is named by
 the `/validate-operator-types` validating admission webhook instead, captured synchronously at admission,
@@ -1166,8 +1236,8 @@ flowchart TD
     H -->|no| Hj[Skip Redis: WatchCursorStore nil; watches cold-replay on restart]
     Hi --> Hq{author-attribution?}
     Hj --> Hq
-    Hq -->|yes| I[Build attribution index + audit fact extractor + audit HTTP server + resolver]
-    Hq -->|no| J[Configured-author: no attribution index; audit webhook skipped]
+    Hq -->|yes| I[Select fact transport; start fact index + follower;<br/>wire audit fact extractor + audit HTTP server + resolver]
+    Hq -->|no| J[Configured-author: no fact streams or index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
     K --> L[Register GitProvider + ClusterProvider + GitTarget + CommitRequest controllers]
@@ -1179,10 +1249,12 @@ Redis is optional in configured-author mode. When `--redis-addr` is set, the cur
 Redis readiness gate keeps the pod not-ready until Redis is reachable; watches resume from their last
 stored resourceVersion after a restart. When `--redis-addr` is empty, the cursor store is skipped and
 watches cold-replay from scratch on restart instead. The binary's `--author-attribution` flag defaults to
-on, which requires a non-empty `--redis-addr`: the attribution index is built on the Redis connection, the
-audit HTTP handler is wired with the fact extractor, the watch manager gets the author resolver, and the
-audit ingress is added to `/readyz`. The Helm chart deliberately passes `--author-attribution=false` by
-default, so a first install runs configured-author with no attribution index or audit webhook and every
+on: the fact transport is constructed, the fact index and its follower are started, the audit HTTP
+handler is wired with the fact extractor, the watch manager gets the author resolver, and the audit
+ingress is added to `/readyz`. Which transport it builds is `--author-attribution-transport`: `redis`
+(the default) requires a non-empty `--redis-addr`, while `memory` runs the streams in process and is
+refused unless `--replica-count` is 1. The Helm chart deliberately passes `--author-attribution=false`
+by default, so a first install runs configured-author with no fact streams or audit webhook and every
 commit is committer-authored.
 
 ***
@@ -1191,20 +1263,46 @@ commit is committer-authored.
 
 - **Source**: [internal/telemetry/exporter.go](../internal/telemetry/exporter.go)
 
-Metrics are exported over OTLP / the metrics server. The audit-attribution path is instrumented:
+Metrics are exported over OTLP / the metrics server. The reader's guide to every live family, with
+copy-pasteable PromQL, is [interpreting-metrics.md](interpreting-metrics.md).
 
-- `gitopsreverser_audit_events_total{outcome,category}`: one terminal outcome per audit event (e.g.
-  `queued`, `stage`, `read_only_or_unknown_verb`, `failed_request`, `dry_run`,
-  `unchanged_resource_version`, `non_scale_subresource`, `write_error`);
-- `gitopsreverser_audit_eventlists_total` / `_eventlist_events_total` / `_eventlist_duration_seconds`
-  `{outcome}`: the `/audit-webhook` request boundary;
-- `gitopsreverser_target_reconcile_completed_total{gittarget_*}`: per-GitTarget reconcile completions
-  (read by the restart-reconcile guarantee);
-- resync/background-apply failure counters so a silently-recovered fault stays visible.
+The pipeline is one sentence: watch events arrive and are processed into commits. The coverage
+follows those stages:
 
-Per-watch volume/restart/replay metrics and per-attribution result/wait histograms are designed in the
-[metrics observability plan](design/metrics-observability-plan.md) but **not yet emitted**; see
-[Operational Boundaries](#operational-boundaries).
+- **Audit ingress.** `gitopsreverser_audit_events_total{outcome,category,group,version,resource,verb}`
+  gives one terminal outcome per audit event (`queued`, `stage`, `read_only_or_unknown_verb`,
+  `failed_request`, `dry_run`, `unchanged_resource_version`, `non_scale_subresource`,
+  `no_attribution_fact`, `write_error`), and `gitopsreverser_audit_eventlists_total` /
+  `_eventlist_events_total` / `_eventlist_duration_seconds` `{outcome}` cover the `/audit-webhook`
+  request boundary.
+- **Attribution join.**
+  `gitopsreverser_attribution_resolutions_total{tier,actor_kind,group,version,resource}` says which
+  tier of evidence named the author and who it named, per type;
+  `_resolution_wait_seconds{tier,event_kind,…}` says how long the grace wait cost, split by write and
+  removal. Splitting the wait by tier is what turned a head-of-line stall from a mystery into a
+  measurement, and `event_kind` is what the removal wait (the number the grace is tuned from) is
+  read through. Match coverage is `tier!="absent"`.
+- **Fact pipeline.** `_attribution_facts_total{op}` (`written`/`matched`, not subtractable),
+  `_attribution_fact_index_entries`, `_attribution_fact_index_evictions_total{reason}`,
+  `_attribution_fact_stream_gaps_total{stream}` (facts lost for good to a trim; should be zero),
+  `_attribution_fact_stream_decode_errors_total{transport}` (an entry skipped because it could not be
+  decoded: the loss path with no other symptom), `_attribution_fact_follower_errors_total{transport}`
+  with `_attribution_fact_follower_last_success_timestamp_seconds` (a wedged follower degrades
+  attribution cluster-wide), `_attribution_transport_info{transport}`, and
+  `_attribution_collection_without_uidset_total{reason}`.
+- **Git write and reconcile.** `gitopsreverser_commits_total{provider_*,branch,author_kind}` is the
+  bottom line: `unresolved` means attribution ran and could not name an actor. Alongside it,
+  `_branch_worker_queue_depth`, `_objects_written_total`, `_resync_sweep_deletes_total`,
+  `gitopsreverser_target_reconcile_completed_total{gittarget_*}` (read by the restart-reconcile
+  guarantee), and resync/background-apply failure counters so a silently-recovered fault stays visible.
+- **Discovery and encryption.** The API resource catalog and Secret-encryption families.
+
+**Watch ingestion itself is not instrumented.** Per-type event volume, restarts and `410` rebuilds,
+replay cost, recovery mode, and the delay between an event arriving on a shard and being processed are
+all designed in the [metrics observability plan](design/metrics-observability-plan.md) and **not yet
+emitted**. The attribution half of that plan (the label taxonomy and the silent loss paths) has
+shipped; the migration for the label break is in [UPGRADING.md](UPGRADING.md).
+See [Operational Boundaries](#operational-boundaries).
 
 ***
 
@@ -1220,7 +1318,13 @@ Current limitations:
   so short reconnects resume a normal watch from that cursor. Kubernetes does not guarantee replay from an
   arbitrary resourceVersion, so if the apiserver has expired the cursor (`410 Gone`) recovery falls back to
   `sendInitialEvents` replay or LIST + mark-and-sweep.
-- **Per-watch and per-attribution metrics are not yet emitted** (see [Observability](#observability)).
+- **Watch-ingestion metrics are not yet emitted.** The attribution join is instrumented, but per-type
+  watch volume, restarts, replay cost, recovery mode, and shard queue delay are not, so a stalled or
+  thrashing watch is visible only in logs and in its downstream effects (see
+  [Observability](#observability)).
+- **The in-process attribution transport is single-replica.** `--author-attribution-transport=memory`
+  is refused with more than one replica, and it loses every unjoined fact on restart by design; a
+  multi-replica install must use the Redis transport.
 - **No pull request creation;** the operator writes directly to branches.
 - **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<provider>` routes and the
   annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
@@ -1247,7 +1351,7 @@ Current limitations:
 | [internal/giteaclient/](../internal/giteaclient/) | Gitea helper client |
 | [internal/manifestanalyzer/](../internal/manifestanalyzer/) | manifest inventory, acceptance, and resync planning |
 | [internal/manifestreport/](../internal/manifestreport/) | projection of Kubernetes objects into comparable manifest reports |
-| [internal/queue/](../internal/queue/) | Redis attribution index (audit facts keyed for the join) and per-watch resume cursors |
+| [internal/queue/](../internal/queue/) | attribution fact streams (Redis or in-process), the in-process fact index and its follower, and per-watch resume cursors |
 | [internal/reconcile/](../internal/reconcile/) | per-GitTarget event stream (watch event → branch worker) |
 | [internal/rulestore/](../internal/rulestore/) | compiled rule cache |
 | [internal/sanitize/](../internal/sanitize/) | Kubernetes object sanitization and stable YAML marshal |
@@ -1269,6 +1373,10 @@ Deeper dives live under [docs/design/](design/):
 
 - [Watch-first ingestion design record](finished/watch-first-ingestion-architecture.md): historical context
   for the current watch-only object-state model and optional audit attribution.
+- [How attribution works: the publish side and the join side](design/attribution-publish-and-join.md):
+  the two halves, the tier ladder, and the wait.
+- [Attribution facts as a stream, not a keyspace](finished/attribution-fact-stream.md): the shipped
+  transport seam, the in-process index, and what running without Redis costs.
 - [Watch event ordering under the attribution grace window](facts/watch-event-ordering-and-attribution-grace.md)
 - [Reconcile via watchlist mark and sweep](spec/reconcile-via-watchlist-mark-and-sweep.md)
 - [CommitRequest design](spec/commitrequest-design.md)

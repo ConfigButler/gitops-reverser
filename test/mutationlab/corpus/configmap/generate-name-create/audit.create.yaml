@@ -1,0 +1,53 @@
+annotations:
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: ""
+  validate-all.configbutler.ai/scenario: generate-name-create
+auditID: <auditID-1>
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  namespace: <ns-1>
+  resource: configmaps
+requestObject:
+  apiVersion: v1
+  data:
+    key: value
+  kind: ConfigMap
+  metadata:
+    generateName: cm-gen-
+    labels:
+      mutationlab.configbutler.ai/scenario: generate-name-create
+    namespace: <ns-1>
+requestReceivedTimestamp: <ts>
+requestURI: /api/v1/namespaces/<ns-1>/configmaps
+responseObject:
+  apiVersion: v1
+  data:
+    key: value
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: <ts>
+    generateName: cm-gen-
+    labels:
+      mutationlab.configbutler.ai/scenario: generate-name-create
+    name: cm-gen-<rand-1>
+    namespace: <ns-1>
+    resourceVersion: <rv-1>
+    uid: <uid-1>
+responseStatus:
+  code: 201
+  metadata: {}
+sourceIPs:
+- <ip-1>
+stage: ResponseComplete
+stageTimestamp: <ts>
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - <credential-1>
+  groups:
+  - system:masters
+  - system:authenticated
+  username: system:admin
+userAgent: e2e.test/v0.0.0 (linux/amd64) kubernetes/$Format
+verb: create

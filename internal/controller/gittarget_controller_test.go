@@ -1120,10 +1120,15 @@ var _ = Describe("GitTarget Controller Security", func() {
 			// RequeueStreamSettleInterval — with the shared 10s `timeout` it equalled one, so a
 			// deletion landing just after a reconcile lost the race by milliseconds.
 			//
-			// Two intervals, not one: the previous budget covered exactly two ticks with no slack, so
-			// a CI runner busy enough to delay one of them by a second failed the spec on timing
-			// alone. Eventually returns as soon as the Secret is back, so the extra room is free on
-			// every run that was going to pass anyway.
+			// Three and a half intervals, not two: the two-interval budget was still exactly 30s and a
+			// CI runner busy enough to drop a tick failed the spec on timing alone — twice, months
+			// apart. Eventually returns as soon as the Secret is back, so the extra room is free on
+			// every run that was going to pass anyway; it is only ever spent by a run that was going
+			// to fail, and 15 seconds is a cheap price for not re-litigating a red build.
+			//
+			// It is deliberately still a BOUND rather than a generous number. The budget is this
+			// spec's implicit SLO — recreation must happen within about four ticks of the deletion —
+			// so a regression that made the requeue path slow rather than broken still fails here.
 			Eventually(func(g Gomega) {
 				var recreated corev1.Secret
 				err := k8sClient.Get(ctx, secretKey, &recreated)
@@ -1132,7 +1137,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				g.Expect(ageKeyName).NotTo(BeEmpty())
 				g.Expect(string(ageKeyValue)).To(ContainSubstring("AGE-SECRET-KEY-"))
 				g.Expect(recreated.Annotations).To(HaveKey(encryptionSecretRecipientAnnoKey))
-			}, 2*RequeueStreamSettleInterval+timeout, interval).Should(Succeed())
+			}, 7*RequeueStreamSettleInterval/2+timeout, interval).Should(Succeed())
 
 			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())

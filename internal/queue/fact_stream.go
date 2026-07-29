@@ -12,7 +12,12 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // Defaults for the attribution fact transport. They are shared by both implementations so a
@@ -122,6 +127,21 @@ type FactPublisher interface {
 	PublishFacts(ctx context.Context, key FactStreamKey, facts []AuthorFact) error
 }
 
+// FactTransportKind is the bounded name of the transport carrying the facts. It is metric metadata
+// rather than behavior: nothing above the seam branches on it, but every reading of the attribution
+// metrics depends on it, because the two transports fail differently — a burst of unresolved
+// commits after a restart is expected under memory, which drops every fact with the process, and a
+// bug under redis.
+type FactTransportKind string
+
+const (
+	// FactTransportRedis is the Redis Streams transport, the default and the only multi-replica one.
+	FactTransportRedis FactTransportKind = "redis"
+	// FactTransportMemory is the in-process ring, which requires a single replica and loses every
+	// fact on restart by design.
+	FactTransportMemory FactTransportKind = "memory"
+)
+
 // FactFollower follows a set of streams from a horizon. The fact index is its only caller: it
 // follows the union of the types any watch covers and applies what it reads into memory.
 type FactFollower interface {
@@ -130,6 +150,11 @@ type FactFollower interface {
 	// window before the first watch event needs it. Entries older than the horizon are skipped,
 	// to within the millisecond granularity of a stream position.
 	FollowFacts(keys []FactStreamKey, horizon time.Duration) FactSubscription
+
+	// TransportKind names this transport for the metric labels. It is on the follower half rather
+	// than beside the wiring because the index is what records follower health, and a counter that
+	// cannot say which transport erred says half of what an operator needs.
+	TransportKind() FactTransportKind
 }
 
 // FactSubscription is one follower's live position across its followed streams. It is not safe to
@@ -175,6 +200,30 @@ func decodeFactBatch(raw []byte) ([]AuthorFact, error) {
 		return nil, fmt.Errorf("unmarshal fact batch: %w", err)
 	}
 	return facts, nil
+}
+
+// recordFactStreamDecodeError counts and says out loud that one entry could not be decoded.
+//
+// Both transports skip such an entry and advance past it, which is the right call — it can never
+// decode, and stalling the follower on it would cost every later fact on that stream — but it makes
+// this the one loss path with NO other symptom. A trim gap is detectable after the fact and a
+// publish failure is retried by the API server; a skipped entry simply never existed, and the
+// commits that needed its facts are authored unresolved with nothing pointing at why.
+func recordFactStreamDecodeError(
+	ctx context.Context,
+	transport FactTransportKind,
+	key FactStreamKey,
+	id string,
+	err error,
+) {
+	if telemetry.AttributionFactStreamDecodeErrorsTotal != nil {
+		telemetry.AttributionFactStreamDecodeErrorsTotal.Add(ctx, 1,
+			metric.WithAttributes(attribute.String("transport", string(transport))))
+	}
+	logf.Log.WithName("attribution-fact-stream").Error(err,
+		"attribution fact stream entry could not be decoded; it is skipped and its facts are lost, so "+
+			"the commits that needed them are authored unresolved",
+		"transport", string(transport), "stream", key.String(), "entry", id)
 }
 
 // streamIDAt renders the position a stream reads from for entries appended at or after t. Stream
@@ -308,6 +357,23 @@ func (f *followSet) advance(key FactStreamKey, cursor string, behind bool) {
 	state.behind = behind
 	if state.reportedGap != "" && compareStreamIDs(cursor, state.reportedGap) >= 0 {
 		state.reportedGap = ""
+	}
+}
+
+// caughtUp clears one stream's behind mark without moving its cursor. A follower that asked a
+// stream for entries and was given none has, by definition, read everything there is.
+//
+// It exists because behind is otherwise STICKY: it is set when a read fills its entry budget, and a
+// read that fills the budget exactly is indistinguishable from one that left more waiting. Without
+// this the mark survives every later empty read, so a caught-up follower stays flagged until the
+// next non-empty one — and if ordinary retention ages out the entries it already read in the
+// meantime, trim-gap detection reports a data loss that never happened. The precondition is meant
+// to mean "was actually behind", so it has to be cleared by the evidence that it is not.
+func (f *followSet) caughtUp(key FactStreamKey) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if state, ok := f.states[key]; ok {
+		state.behind = false
 	}
 }
 

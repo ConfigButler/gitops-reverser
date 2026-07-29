@@ -87,11 +87,11 @@ func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 			reader, err := telemetry.InitTestExporter()
 			require.NoError(t, err)
 
-			recorder := &fakeFactRecorder{}
+			recorder := &fakeFactSink{}
 			if tt.recorderErr {
 				recorder.err = errAuditTest
 			}
-			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+			handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 			require.NoError(t, err)
 
 			w := serveBody(t, handler, http.MethodPost, defaultRoute, tt.body)
@@ -124,8 +124,8 @@ func TestServeHTTP_AcceptedEventQueuedOutcome(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(acceptedCreateEvent))
@@ -157,9 +157,9 @@ func TestServeHTTP_UnroutableEventOutcomes(t *testing.T) {
 			reader, err := telemetry.InitTestExporter()
 			require.NoError(t, err)
 
-			recorder := &fakeFactRecorder{}
+			recorder := &fakeFactSink{}
 			handler, err := NewAuditHandler(AuditHandlerConfig{
-				FactRecorder:            recorder,
+				FactPublisher:           recorder,
 				AuditRouteAnnotationKey: clusterAnnotation,
 			})
 			require.NoError(t, err)
@@ -187,8 +187,8 @@ func TestServeHTTP_NonScaleSubresourceDropped(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	recorder := &fakeFactRecorder{}
-	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactRecorder: recorder}))
+	recorder := &fakeFactSink{}
+	handler, err := NewAuditHandler(routedConfig(AuditHandlerConfig{FactPublisher: recorder}))
 	require.NoError(t, err)
 
 	w := serveBody(t, handler, http.MethodPost, defaultRoute, eventListBody(subresourceExecEvent))

@@ -204,15 +204,42 @@ queue:
 # operator runs configured-author (Redis optional — leave queue.redis.addr empty to run without it), and every mirrored-resource commit uses the
 # configured committer.
 attribution:
-  # When true, run the audit webhook ingress and name commit authors from matching audit facts; requires
-  # a non-empty queue.redis.addr. When false, run configured-author (no audit ingress, commits authored by
-  # the committer); Redis is optional (leave queue.redis.addr empty to run without it).
+  # When true, run the audit webhook ingress and name commit authors from matching audit facts. It
+  # needs a fact transport, which is not the same as needing Redis: `transport: redis` requires a
+  # non-empty queue.redis.addr, while `transport: memory` needs none and requires replicaCount 1.
+  # When false, run configured-author (no audit ingress, commits authored by the committer); Redis
+  # stays optional either way (leave queue.redis.addr empty to run without it).
   enabled: false
-  # How long an attribution fact is retained waiting for the matching watch event to join it.
+  # Where attribution facts travel between the audit receiver and the watch side.
+  # "redis" (the default) appends them to Redis streams and needs a non-empty queue.redis.addr; it
+  # is the production choice and the only one that survives a restart or reaches a second replica.
+  # "memory" keeps them in an in-process ring, so a single-pod install can run attribution with no
+  # Valkey at all — at the cost that facts do not survive a restart, and it is REFUSED at startup
+  # with replicaCount > 1, where the audit receiver and the resolver are no longer one process.
+  transport: "redis"
+  # How long an attribution fact is retained waiting for the matching watch event to join it. It
+  # bounds stream retention and the in-memory index together, and doubles as the replay horizon a
+  # restart warms the index from.
   ttl: "10m"
   # Bounded per-event wait for a matching audit fact before a watch event ships as the committer.
   # Larger values raise attribution hit-rate at the cost of commit latency.
   grace: "3s"
+  # Caps on the facts held in memory. Per-type is the primary because it is the fair one: a burst on
+  # one noisy type — a deletecollection over ten thousand objects, a large rollout — must not evict
+  # every other type's facts. The total bounds the pod with a number that does not scale with how
+  # many types happen to be watched; overflow evicts from the type holding the most. Evictions are
+  # counted on attribution_fact_index_evictions_total{reason}.
+  maxFactsPerType: 4096
+  maxFacts: 65536
+  # How long after a deletecollection a removal in its scope may still be credited to it. It only has
+  # to cover audit batching plus clock skew — the removal is attributed at delete-REQUEST time, so
+  # finalizers do not stretch it. Longer widens the risk of crediting an unrelated delete to the
+  # collection's actor.
+  collectionWindow: "30s"
+  # How many object uids a deletecollection fact carries before the set is dropped and the join falls
+  # back to scope matching. The fallback is already correct, so this only decides how often the
+  # precise path is taken; drops are counted on attribution_collection_without_uidset_total{reason}.
+  collectionUIDCap: 10000
   # Audit-event annotation naming the AUDIT ROUTE each event belongs to. Audit routes are normally
   # NAMED (/audit-webhook/<audit-route>, including /audit-webhook/default), and this is empty.
   # Set it only for a control plane that emits ONE shared audit stream for several logical

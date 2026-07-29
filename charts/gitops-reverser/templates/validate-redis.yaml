@@ -1,9 +1,15 @@
 {{- /*
-Attribution (attributed-author mode) reads and writes audit facts in Redis, so it cannot run
-without an endpoint — the controller would fail at startup. Fail the render early with an
-actionable message instead. The admission webhook is deliberately NOT gated here: it stays
-enabled without Redis and simply no-ops command-author capture.
+Attribution needs a fact TRANSPORT, which is not the same as needing Redis. The redis transport
+appends facts to Redis streams, so it cannot run without an endpoint — the controller would fail at
+startup, so fail the render early with an actionable message instead. The memory transport needs no
+endpoint at all, and refusing it here would make a value this chart itself documents unreachable.
+
+The memory transport's other requirement, a single replica, needs no check here: validate-replica-count.yaml
+already refuses replicaCount > 1 for the whole chart, so there is no configuration this could catch.
+
+The admission webhook is deliberately NOT gated here: it stays enabled without Redis and simply
+no-ops command-author capture.
 */ -}}
-{{- if and .Values.attribution.enabled (eq (trim .Values.queue.redis.addr) "") -}}
-{{- fail "attribution.enabled=true requires queue.redis.addr: attributed-author mode stores audit facts in Redis. Set queue.redis.addr, or leave attribution.enabled=false." -}}
+{{- if and .Values.attribution.enabled (eq .Values.attribution.transport "redis") (eq (trim .Values.queue.redis.addr) "") -}}
+{{- fail "attribution.enabled=true with attribution.transport=redis requires queue.redis.addr: the redis transport carries audit facts on Redis streams. Set queue.redis.addr, select attribution.transport=memory to run attribution in-process on a single replica, or leave attribution.enabled=false." -}}
 {{- end -}}
