@@ -302,7 +302,14 @@ vocabulary `commits_total{author_kind}` uses.
 | --- | --- |
 | `user` | A human (or any non-service-account subject). |
 | `serviceaccount` | A named service account — a controller, an operator, a CI identity. |
-| `none` | Nobody was named: nothing matched, or the fact that matched carried no author. |
+| `none` | Nobody was named, which in practice means nothing matched. |
+
+`actor_kind="none"` and `tier="absent"` go together, and that is an invariant rather than a
+coincidence: an audit event whose user cannot be resolved never becomes a fact at all (it is counted
+`no_attribution_fact` above), so every fact that reaches the index names someone. This is why
+coverage can be read off the tier alone. A `{tier!="absent", actor_kind="none"}` series is not a
+low-quality attribution — it means something published a fact this operator could not have
+published, and it is worth investigating rather than counting.
 
 **Evidence quality, independently of coverage.** A shift from `exact` toward `collection_scope` or
 `name` is a quality regression even while coverage holds flat, so it is worth its own panel:
@@ -385,6 +392,21 @@ time() - gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds
 
 ```promql
 sum by (transport) (rate(gitopsreverser_attribution_fact_follower_errors_total[5m]))
+```
+
+**An absent gauge is the worst case, not a healthy one.** The timestamp is not published until the
+follower's first successful read, so a follower that has been wedged since startup — a transport
+unreachable at boot — has no series at all, and `time() - <gauge>` therefore returns nothing rather
+than a large number. An alert must cover that arm explicitly, which is what `attribution_transport_info`
+is for: it is published when the follower starts, so a transport running without a last-success
+timestamp is exactly the never-succeeded case. Give it a `for: 10m` so an ordinary restart's gap does
+not trip it:
+
+```promql
+(time() - gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds > 600)
+or
+(gitopsreverser_attribution_transport_info == 1
+   unless on() gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds)
 ```
 
 **Which transport is in force?** `gitopsreverser_attribution_transport_info` is an info gauge whose
@@ -498,7 +520,7 @@ rate(gitopsreverser_secret_encryption_attempts_total[5m])
 | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | Attribution fact-store writes are failing — check Redis. |
 | `rate(gitopsreverser_audit_eventlists_total{outcome="decode_error"}[10m]) > 0` | A sender is posting non-EventList payloads to `/audit-webhook`. |
 | `rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | A schema or version mismatch on the fact stream; facts are being skipped and lost. |
-| `time() - gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds > 600` | The fact follower is wedged; attribution is degrading to committer-authored cluster-wide. |
+| `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)`, `for: 10m` | The fact follower is wedged; attribution is degrading to committer-authored cluster-wide. Both arms are needed — see below. |
 | `rate(gitopsreverser_resync_background_failures_total[15m]) > 0` sustained | Background resyncs are not committing; the folder relies on steady-state events to catch up. |
 | `gitopsreverser_api_catalog_group_versions{state="degraded"} > 0` | Part of the API surface is hidden behind a broken APIService. |
 | `rate(gitopsreverser_secret_encryption_failures_total[10m]) > 0` | Secret writes are being rejected by the encryption path. |

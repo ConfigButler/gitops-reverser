@@ -34,7 +34,6 @@ That argument covers the renames. It does not cover new metric families, which i
 | `result` becomes `tier` plus `actor_kind` | label rework | the break is already happening |
 | `weak` splits into `latest` and `resource_version` | label rework | same break, and `latest` is the tier the removal path turns on |
 | `event_kind` on the wait histogram | new label | the wait behavior differs entirely between writes and removals |
-| `watch_event_queue_seconds` | new family | head-of-line delay, the failure mode that broke a spec |
 | follower errors and last-success timestamp | new family | a wedged follower is silent today |
 | `no_attribution_fact` outcome on `audit_events_total` | new value, existing counter | the population that produces no fact, counted where the decision is made |
 | a stream-entry decode-error counter | new family | undecodable entries are dropped and skipped past with no log and no metric |
@@ -76,17 +75,16 @@ between them: a removal holds a fallback and keeps waiting, a write does not. To
 cannot distinguish an absent write from an absent removal. Adding `event_kind` = `write` / `removal`
 makes the removal wait directly queryable, which is the number anyone tuning the grace needs.
 
-### `watch_event_queue_seconds`
+### `watch_event_queue_seconds`, moved to Phase 2
 
-`gitopsreverser_watch_event_queue_seconds{group, version, resource}`, a histogram of how long a watch
-event waited between arriving on its shard and being picked up.
-
-The failure that broke an e2e spec was not a slow resolution. It was the delay a slow resolution
-imposed on the events queued behind it on the same single-threaded shard, and nothing measures that.
-The wait histogram times each resolution in isolation; the ten-second window delay was only visible
-by correlating two log lines by hand.
-
-This is also the pressure signal that makes a separate "resolvers waiting" gauge unnecessary for now.
+This was proposed here and is **not** part of the attribution release. It measures head-of-line
+blocking on a watch shard, which is a property of the whole pipeline rather than of attribution, so
+the canonical plan took it as the processing-delay stage of §4.2 and scheduled it with the watch
+families. The argument for it stands and is kept here: the failure that broke an e2e spec was not a
+slow resolution but the delay a slow resolution imposed on the events queued behind it on the same
+single-threaded shard, which the wait histogram cannot see because it times each resolution in
+isolation. It is also the pressure signal that makes a separate "resolvers waiting" gauge
+unnecessary for now.
 
 ### Follower health
 
@@ -214,8 +212,8 @@ exported directly. It cannot: `len()` returns the number of candidate KEYS holdi
 resolver registers under several, so it over-counts by roughly the tier fan-out.
 
 If it is built later it has to be incremented around the blocking `select` alone.
-`watch_event_queue_seconds` measures the same pressure and is in the first release, so this may never
-be needed.
+`watch_event_queue_seconds` measures the same pressure and is scheduled for Phase 2, so this may
+never be needed.
 
 ### `streams_behind` does not mean what the name says
 

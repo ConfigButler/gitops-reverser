@@ -419,7 +419,7 @@ watch and push families they sit beside are not emitted yet.
 | Audit fact-store errors | `rate(gitopsreverser_audit_events_total{category="error"}[10m]) > 0` | fact appends are failing — check the transport |
 | Fact stream loss | `rate(gitopsreverser_attribution_fact_stream_gaps_total[10m]) > 0` | the stream was trimmed past this process's position; those facts are gone |
 | Undecodable fact entries | `rate(gitopsreverser_attribution_fact_stream_decode_errors_total[10m]) > 0` | a schema or version mismatch on the stream; facts are being skipped |
-| Fact follower wedged | `time() - gitopsreverser_attribution_fact_follower_last_success_timestamp_seconds > 600` | attribution is degrading to committer-authored cluster-wide |
+| Fact follower wedged | `(time() - …_fact_follower_last_success_timestamp_seconds > 600) or (…_transport_info == 1 unless on() …_fact_follower_last_success_timestamp_seconds)`, `for: 10m` | attribution is degrading to committer-authored cluster-wide |
 | Attribution coverage drop | coverage (`tier!="absent"`) `< 0.5` for 30m while audit is flowing | facts stopped matching watch events |
 | Grace window saturating | `attribution_resolution_wait_seconds{tier="absent",event_kind="removal"}` p95 → `--author-attribution-grace` | removals are sitting out the full grace; raise grace, or skip the wait for never-attributed types |
 | Shard queue delay | `watch_event_queue_seconds` p95 approaching the grace window | head-of-line blocking; events are queued behind slow resolutions |
@@ -428,6 +428,15 @@ watch and push families they sit beside are not emitted yet.
 | Worker backing up | `branch_worker_queue_depth` rising, not draining | stalled remote |
 | Degraded API surface | `api_catalog_group_versions{state="degraded"} > 0` | broken APIService |
 
+The follower row needs both arms, and the second is the one that is easy to leave out. The gauge is
+not emitted until the follower's first successful read, so `time() - <gauge>` returns **no series**
+for a follower that has been wedged since startup — a transport unreachable at boot, which is
+precisely the outage the metric exists for. The `unless` arm fires on the gauge's ABSENCE while
+`attribution_transport_info` says a follower is running, and `for: 10m` keeps an ordinary restart's
+gap from tripping it. Stamping the gauge at start instead would remove the arm at the cost of
+claiming a success that never happened, which is worse: it reads as health for the first ten minutes
+of every outage.
+
 Note the first row's metric: `write_error` is a value on `gitopsreverser_audit_events_total`, which
 is **per event**. The `audit_eventlist_*` families are request-level and carry a different outcome
 set; an alert written against `audit_eventlist_*{outcome="write_error"}` reports zero forever, which
@@ -435,10 +444,13 @@ is the worst failure mode a monitoring change can have.
 
 ## 9. Implementation phases
 
-Each phase ships: recording sites → unit tests (manual-reader assertions) →
-`interpreting-metrics.md` rows → dashboard panels → alerts, validated per
+Phases 1-3 each ship: recording sites → unit tests (manual-reader assertions) →
+`interpreting-metrics.md` rows, validated per
 [AGENTS.md](../../AGENTS.md) (`fmt`→`generate`→`manifests`→`vet`→`lint`→`test`→`test-e2e`, e2e
-sequential). **No metric merges without its doc row.**
+sequential). **No metric merges without its doc row.** The dashboard JSON and the alert RULES are
+Phase 4 for one reason: a panel or an alert written against a family that is still being designed is
+a query nobody re-checks once it stops matching. The alert *sketches* in §8 are the specification
+those rules are written from, not shipped rules.
 
 0. **Attribution join — done.** Structured resolver result, `attribution_resolutions_total`,
    `attribution_resolution_wait_seconds`, `attribution_fact_events_total`,

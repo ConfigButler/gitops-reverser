@@ -258,7 +258,16 @@ func TestAuthorResolver_NilLookupIsNotAttempted(t *testing.T) {
 
 // A fact that exists but carries no author is also unresolved, not not-attempted: attribution
 // ran, found something, and still could not name anyone.
+//
+// The publish gate makes this unreachable in production — AuthorFactFromEvent refuses an event
+// whose user cannot be resolved, and counts it as no_attribution_fact — so this pins the DEFENSIVE
+// branch, and with it the invariant every coverage query rests on: the tier says which evidence
+// answered, and if that evidence names nobody the metrics say so on the actor_kind label rather
+// than quietly counting it as a named actor.
 func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
 	lookup := &fakeLookup{
 		resolution: queue.AuthorResolution{
 			Fact:   queue.AuthorFact{Author: ""},
@@ -270,6 +279,16 @@ func TestAuthorResolver_AuthorlessFactIsUnresolved(t *testing.T) {
 	_, outcome := r.ResolveAuthor(context.Background(), resolverQuery("prod-eu-1", "uid-1", "101", true))
 
 	assert.Equal(t, git.AttributionUnresolved, outcome)
+
+	// The tier is the one that matched, and the actor kind is none — so a reader can tell this apart
+	// from a resolution that named somebody, which reading coverage off the tier alone cannot.
+	named, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_attribution_resolutions_total",
+		map[string]string{
+			"tier":       string(queue.AttributionExact),
+			"actor_kind": string(queue.ActorKindNone),
+		})
+	require.True(t, ok, "an authorless match must not be recorded as a named actor")
+	assert.Equal(t, int64(1), named)
 }
 
 // TestAuthorResolver_WarnsOnceForARouteThatNeverResolves drives the whole resolver, not just the
