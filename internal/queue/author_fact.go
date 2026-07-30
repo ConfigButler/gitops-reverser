@@ -79,7 +79,7 @@ const (
 	//
 	// It is also the only tier the TTL does not bound. A uid is unique across space and time, so the
 	// statement can never be superseded; its horizon is the index's caps instead. See
-	// docs/design/attribution-deletion-intent-actor.md.
+	// docs/spec/attribution.md.
 	AttributionDeleteSticky AttributionResult = "delete_sticky"
 	// AttributionExact is an exact UID+resourceVersion match: this actor produced this exact version.
 	AttributionExact AttributionResult = "exact"

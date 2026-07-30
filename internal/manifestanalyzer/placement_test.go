@@ -132,48 +132,123 @@ func TestLocateNew_WriteScope_RebasesDeclared(t *testing.T) {
 	}
 }
 
-func TestLocateNew_BundleCohort_Appends(t *testing.T) {
+// Every layout sibling inference used to read, in one table, all resolving to the
+// canonical path. This is the deletion's contract, stated as the behaviour rather than
+// as an absence: the destination of a new document depends on the GitTarget's
+// declaration and on whether the folder has one kustomize root — never on where the
+// repository happens to keep the OTHER documents of the same type.
+//
+// The last two rows are the ones the ladder used to accept, and they are the cost the
+// deletion is paying deliberately (docs/design/open-asks-priority.md, "The cost, stated
+// plainly"): a bundle or a directory that had already proven itself namespace-agnostic
+// was extended. It is not extended now. A `placement.byType` line is how a repository
+// asks for either, and it is now the only way.
+func TestLocateNew_LayoutsThatUsedToBeInferred_AllResolveCanonical(t *testing.T) {
+	cases := []struct {
+		name      string
+		files     map[string]string
+		namespace string
+	}{
+		{
+			name:      "a bundle of the same type in the same namespace",
+			files:     map[string]string{"all.yaml": configMapYAML("a", "app") + "---\n" + configMapYAML("b", "app")},
+			namespace: "app",
+		},
+		{
+			name:      "one document per file, same type and namespace",
+			files:     map[string]string{"overlays/test/configmap-a.yaml": configMapYAML("a", "app")},
+			namespace: "app",
+		},
+		{
+			name: "a per-namespace bundle, for an unseen namespace",
+			files: map[string]string{
+				"ns1/configmaps.yaml": configMapYAML("a", "ns1") + "---\n" + configMapYAML("b", "ns1"),
+			},
+			namespace: "ns2",
+		},
+		{
+			name: "a directory per namespace, for an unseen namespace",
+			files: map[string]string{
+				"ns1/configmap-a.yaml": configMapYAML("a", "ns1"),
+				"ns2/configmap-b.yaml": configMapYAML("b", "ns2"),
+			},
+			namespace: "ns3",
+		},
+		{
+			name:      "one directory holding one namespace, for an unseen namespace",
+			files:     map[string]string{"ns1/configmap-a.yaml": configMapYAML("a", "ns1")},
+			namespace: "ns2",
+		},
+		{
+			name:      "a bundle that already spans two namespaces",
+			files:     map[string]string{"all.yaml": configMapYAML("a", "ns1") + "---\n" + configMapYAML("b", "ns2")},
+			namespace: "ns3",
+		},
+		{
+			name: "a shared directory that already spans two namespaces",
+			files: map[string]string{
+				"shared/configmap-a.yaml": configMapYAML("a", "ns1"),
+				"shared/configmap-b.yaml": configMapYAML("b", "ns2"),
+			},
+			namespace: "ns3",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fsys := fstest.MapFS{}
+			for path, body := range tc.files {
+				fsys[path] = &fstest.MapFile{Data: []byte(body)}
+			}
+			store := placementStore(t, fsys)
+			req := newConfigMapRequest("cache", tc.namespace)
+
+			res, err := LocateNew(store, nil, req)
+			if err != nil {
+				t.Fatalf("LocateNew: %v", err)
+			}
+			if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
+				t.Fatalf("got %+v, want the canonical path %q", res, req.Identifier.ToGitPath())
+			}
+			if res.Append {
+				t.Fatalf("got %+v, want a file of its own: no existing document's file is ever joined", res)
+			}
+		})
+	}
+}
+
+// The production shape of the cascade the deletion retires, kept as its own named test
+// because it is the failure the argument rests on. Objects that exist under the SAME NAME
+// in every namespace (kube-root-ca.crt is in all of them) made the inferred path collide
+// exactly with the first namespace's file, so the second namespace's object was appended
+// as an extra document. That file then genuinely spanned two namespaces, so every later
+// object of the type legitimately preferred the bundle and the whole type collapsed into
+// one file — one wrong inference cascading into total collapse. With no ladder there is
+// no first wrong step to cascade from.
+func TestLocateNew_SameNameInANewNamespace_NeverLandsOnTheFirstNamespacesFile(t *testing.T) {
 	fsys := fstest.MapFS{
-		"all.yaml": {Data: []byte(configMapYAML("a", "app") + "---\n" + configMapYAML("b", "app"))},
+		"ns1/configmaps/kube-root-ca.crt.yaml": {Data: []byte(configMapYAML("kube-root-ca.crt", "ns1"))},
 	}
 	store := placementStore(t, fsys)
-	req := newConfigMapRequest("cache", "app")
+	req := newConfigMapRequest("kube-root-ca.crt", "ns2")
 
 	res, err := LocateNew(store, nil, req)
 	if err != nil {
 		t.Fatalf("LocateNew: %v", err)
 	}
-	if res.Path != "all.yaml" || !res.Append || res.Source != PlacementSourceInferred {
-		t.Fatalf("got %+v, want append to all.yaml via inference", res)
+	if res.Append || res.Path == "ns1/configmaps/kube-root-ca.crt.yaml" {
+		t.Fatalf("ns2's object was filed onto ns1's own file: %+v", res)
+	}
+	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
+		t.Fatalf("got %+v, want canonical fallback carrying ns2's own namespace segment", res)
 	}
 }
 
-func TestLocateNew_SingletonCohort_NewFileBesideSiblings(t *testing.T) {
-	fsys := fstest.MapFS{
-		"overlays/test/configmap-a.yaml": {Data: []byte(configMapYAML("a", "app"))},
-	}
-	store := placementStore(t, fsys)
-	req := newConfigMapRequest("cache", "app")
-
-	res, err := LocateNew(store, nil, req)
-	if err != nil {
-		t.Fatalf("LocateNew: %v", err)
-	}
-	want := "overlays/test/cache.yaml"
-	if res.Path != want || res.Append || res.Source != PlacementSourceInferred {
-		t.Fatalf("got %+v, want a new file %q beside the sibling", res, want)
-	}
-}
-
-// A sibling whose namespace is inherited from a kustomization's namespace:
-// transformer (no metadata.namespace in its own bytes) means a new document
-// placed beside it must also omit metadata.namespace — otherwise the write
-// would silently break the convention every document in that context follows
-// (this is what let an incidental resource sharing the namespace, e.g. a
-// cluster-injected ConfigMap, write a namespace: line into a hand-curated
-// bundle file in production; see the design doc's Option C test plan, "the new
-// file inherits its sibling's NamespaceSource").
-func TestLocateNew_SiblingNamespaceInheritedFromKustomize_NewFileOmitsNamespace(t *testing.T) {
+// A folder whose one kustomization sets a namespace: transformer for this resource's own
+// namespace means the new document must omit metadata.namespace — the build context
+// supplies it, and repeating it would break the convention every document in that
+// context follows. The destination here comes from there being ONE kustomize root, not
+// from the sibling: what the sibling's own bytes look like no longer enters into it.
+func TestLocateNew_KustomizeContextNamespace_NewFileOmitsNamespace(t *testing.T) {
 	fsys := fstest.MapFS{
 		"overlays/test/kustomization.yaml": {
 			Data: []byte("namespace: app\nresources:\n  - configmap-a.yaml\n"),
@@ -194,9 +269,9 @@ func TestLocateNew_SiblingNamespaceInheritedFromKustomize_NewFileOmitsNamespace(
 	}
 }
 
-// A sibling with an explicit metadata.namespace (no kustomize context) means a
-// new document beside it keeps writing its namespace explicitly too.
-func TestLocateNew_SiblingNamespaceExplicit_NewFileKeepsNamespace(t *testing.T) {
+// No kustomize context means no inherited namespace: the document carries its own
+// metadata.namespace, because nothing else will supply it.
+func TestLocateNew_NoKustomizeContext_NewFileKeepsNamespace(t *testing.T) {
 	fsys := fstest.MapFS{
 		"overlays/test/configmap-a.yaml": {Data: []byte(configMapYAML("a", "app"))},
 	}
@@ -208,13 +283,67 @@ func TestLocateNew_SiblingNamespaceExplicit_NewFileKeepsNamespace(t *testing.T) 
 		t.Fatalf("LocateNew: %v", err)
 	}
 	if res.NamespaceInherited {
-		t.Fatalf("got %+v, want NamespaceInherited false: the sibling writes its namespace explicitly", res)
+		t.Fatalf("got %+v, want NamespaceInherited false: no build context supplies a namespace", res)
 	}
 }
 
-// resolveKustomizeRoot's fallback (no sibling of this type yet) must also flag
-// NamespaceInherited when the one kustomization declares a namespace:
-// transformer, for the same reason.
+// The safety half of the inheritance rule, and the case the old kustomize-root path got
+// wrong: a kustomization whose namespace: transformer names a DIFFERENT namespace than the
+// resource's own must not make the write omit metadata.namespace. Omitting it would hand
+// the namespace to kustomize, which renders the document as an object in the
+// transformer's namespace — a different object than the one being mirrored. The explicit
+// line stays, and the render oracle reports the folder as unable to express this object.
+func TestLocateNew_KustomizeContextNamespaceMismatch_NewFileKeepsItsOwnNamespace(t *testing.T) {
+	fsys := fstest.MapFS{
+		"overlays/test/kustomization.yaml": {
+			Data: []byte("namespace: other\nresources:\n  - configmap-a.yaml\n"),
+		},
+		"overlays/test/configmap-a.yaml": {
+			Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n"),
+		},
+	}
+	store := placementStore(t, fsys)
+	req := newConfigMapRequest("cache", "app")
+
+	res, err := LocateNew(store, nil, req)
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.NamespaceInherited {
+		t.Fatalf("got %+v, want the namespace written explicitly: the transformer names another namespace", res)
+	}
+}
+
+// A DECLARED template pointing into a governed directory carries the same obligation as
+// the kustomize-root fallback: the context supplies the namespace, so the file must not
+// repeat it. Before the Option C deletion this only ever came out of a sibling's own
+// bytes, so a declared placement silently wrote a namespace: line the folder omits.
+func TestLocateNew_DeclaredIntoKustomizeContext_OmitsNamespace(t *testing.T) {
+	fsys := fstest.MapFS{
+		"overlays/test/kustomization.yaml": {
+			Data: []byte("namespace: app\nresources:\n  - configmap-a.yaml\n"),
+		},
+		"overlays/test/configmap-a.yaml": {
+			Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n"),
+		},
+	}
+	store := placementStore(t, fsys)
+	policy := &PlacementPolicy{Default: "overlays/test/{name}.yaml"}
+
+	res, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))
+	if err != nil {
+		t.Fatalf("LocateNew: %v", err)
+	}
+	if res.Source != PlacementSourceDeclared {
+		t.Fatalf("expected a declared placement, got %s", res.Source)
+	}
+	if !res.NamespaceInherited {
+		t.Fatalf("got %+v, want NamespaceInherited: the declared path lands in a namespaced context", res)
+	}
+}
+
+// resolveKustomizeRoot's fallback must flag NamespaceInherited when the one
+// kustomization declares a namespace: transformer for this resource's namespace.
 func TestLocateNew_KustomizeRootWithNamespaceTransformer_NewFileOmitsNamespace(t *testing.T) {
 	fsys := fstest.MapFS{
 		"overlays/test/kustomization.yaml": {
@@ -256,7 +385,11 @@ func TestLocateNew_Sensitive_NeverJoinsPlaintextBundle(t *testing.T) {
 	}
 }
 
-func TestLocateNew_Sensitive_JoinsSensitiveSiblingDirectory(t *testing.T) {
+// A sensitive resource gets no sibling reuse either: with the ladder gone, the existing
+// .sops.yaml directory does not attract the new Secret, and the canonical SOPS path — which
+// is identity-complete by construction — is what it gets. A repository that wants its
+// secrets kept together says so with one placement.byType line.
+func TestLocateNew_Sensitive_ExistingSopsDirectoryIsNotReused(t *testing.T) {
 	fsys := fstest.MapFS{
 		"secrets/app/db.sops.yaml": {Data: []byte(secretYAML("db", "app"))},
 	}
@@ -267,57 +400,16 @@ func TestLocateNew_Sensitive_JoinsSensitiveSiblingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LocateNew: %v", err)
 	}
-	want := "secrets/app/api-token.sops.yaml"
-	if res.Path != want || res.Append || res.Source != PlacementSourceInferred {
-		t.Fatalf("got %+v, want a new single-doc SOPS file beside the sensitive sibling %q", res, want)
+	want := "app/secrets/api-token.sops.yaml"
+	if res.Path != want || res.Append || res.Source != PlacementSourceCanonical {
+		t.Fatalf("got %+v, want the canonical SOPS path %q", res, want)
 	}
 }
 
-func TestLocateNew_TieBreak_SingletonWinsWhenAheadOrTied(t *testing.T) {
-	cases := []struct {
-		name       string
-		singletons int
-		bundleSize int
-		wantBundle bool
-	}{
-		{"singleton strictly ahead", 3, 2, false},
-		{"tie favours singleton", 2, 2, false},
-		{"bundle strictly ahead", 2, 3, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fsys := fstest.MapFS{}
-			for i := range tc.singletons {
-				fsys[fmt.Sprintf("solo-%d.yaml", i)] = &fstest.MapFile{
-					Data: []byte(configMapYAML(fmt.Sprintf("solo-%d", i), "app")),
-				}
-			}
-			var bundle strings.Builder
-			for i := range tc.bundleSize {
-				if i > 0 {
-					bundle.WriteString("---\n")
-				}
-				bundle.WriteString(configMapYAML(fmt.Sprintf("bundled-%d", i), "app"))
-			}
-			if tc.bundleSize > 0 {
-				fsys["bundle.yaml"] = &fstest.MapFile{Data: []byte(bundle.String())}
-			}
-
-			store := placementStore(t, fsys)
-			res, err := LocateNew(store, nil, newConfigMapRequest("new", "app"))
-			if err != nil {
-				t.Fatalf("LocateNew: %v", err)
-			}
-			if got := res.Path == "bundle.yaml"; got != tc.wantBundle {
-				t.Fatalf("path = %q (append=%v), wantBundle=%v", res.Path, res.Append, tc.wantBundle)
-			}
-		})
-	}
-}
-
-func TestLocateNew_DeclaredOutranksInferred(t *testing.T) {
+func TestLocateNew_DeclaredOutranksTheKustomizeRoot(t *testing.T) {
 	fsys := fstest.MapFS{
-		"all.yaml": {Data: []byte(configMapYAML("a", "app"))},
+		"overlays/test/kustomization.yaml": {Data: []byte("resources:\n  - configmap-a.yaml\n")},
+		"overlays/test/configmap-a.yaml":   {Data: []byte(configMapYAML("a", "app"))},
 	}
 	store := placementStore(t, fsys)
 	policy := &PlacementPolicy{
@@ -330,135 +422,7 @@ func TestLocateNew_DeclaredOutranksInferred(t *testing.T) {
 	}
 	want := "app/configmaps.yaml"
 	if res.Path != want || res.Source != PlacementSourceDeclared {
-		t.Fatalf("got %+v, want the declared template %q to win over inference", res, want)
-	}
-}
-
-func TestLocateNew_Step2_NewNamespaceUnderPerNamespaceBundle_FallsToCanonical(t *testing.T) {
-	fsys := fstest.MapFS{
-		"ns1/configmaps.yaml": {
-			Data: []byte(
-				configMapYAML("a", "ns1") + "---\n" + configMapYAML("b", "ns1") + "---\n" + configMapYAML("c", "ns1"),
-			),
-		},
-	}
-	store := placementStore(t, fsys)
-	req := newConfigMapRequest("cache", "ns2")
-
-	res, err := LocateNew(store, nil, req)
-	if err != nil {
-		t.Fatalf("LocateNew: %v", err)
-	}
-	// P4: a per-namespace-segmented bundle must not be guessed for an unseen
-	// namespace; the new namespace's ConfigMap must fall through to canonical,
-	// never land in ns1/configmaps.yaml.
-	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want canonical fallback (never ns1's bundle)", res)
-	}
-}
-
-func TestLocateNew_Step2_NamespaceAgnosticBundle_IsReused(t *testing.T) {
-	fsys := fstest.MapFS{
-		"all.yaml": {Data: []byte(configMapYAML("a", "ns1") + "---\n" + configMapYAML("b", "ns2"))},
-	}
-	store := placementStore(t, fsys)
-	req := newConfigMapRequest("cache", "ns3")
-
-	res, err := LocateNew(store, nil, req)
-	if err != nil {
-		t.Fatalf("LocateNew: %v", err)
-	}
-	if res.Path != "all.yaml" || !res.Append || res.Source != PlacementSourceInferred {
-		t.Fatalf("got %+v, want the namespace-agnostic bundle reused for the new namespace", res)
-	}
-}
-
-func TestLocateNew_Step2_NewNamespaceUnderPerNamespaceDirectories_FallsToCanonical(t *testing.T) {
-	// Two distinct singleton directories, one per namespace, is what proves a
-	// per-namespace-segmented convention (P4) — a single existing directory would
-	// be indistinguishable from coincidence, so this needs at least two.
-	fsys := fstest.MapFS{
-		"ns1/configmap-a.yaml": {Data: []byte(configMapYAML("a", "ns1"))},
-		"ns2/configmap-b.yaml": {Data: []byte(configMapYAML("b", "ns2"))},
-	}
-	store := placementStore(t, fsys)
-	req := newConfigMapRequest("cache", "ns3")
-
-	res, err := LocateNew(store, nil, req)
-	if err != nil {
-		t.Fatalf("LocateNew: %v", err)
-	}
-	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want canonical fallback, never ns1/ or ns2/ for a resource in ns3", res)
-	}
-}
-
-func TestLocateNew_Step2_NewNamespaceUnderTheOnlyExistingDirectory_FallsToCanonical(t *testing.T) {
-	// ONE directory holding ONE namespace is the case that used to slip through: "all the
-	// singleton directories agree" is trivially true of a single directory, so a
-	// per-namespace-segmented layout whose second namespace had simply never been written
-	// was indistinguishable from a shared one — and the new namespace's object was filed
-	// under the first namespace's folder. Absence of contrary evidence is not proof.
-	fsys := fstest.MapFS{
-		"ns1/configmap-a.yaml": {Data: []byte(configMapYAML("a", "ns1"))},
-	}
-	store := placementStore(t, fsys)
-	req := newConfigMapRequest("cache", "ns2")
-
-	res, err := LocateNew(store, nil, req)
-	if err != nil {
-		t.Fatalf("LocateNew: %v", err)
-	}
-	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want canonical fallback, never ns1/ for a resource in ns2", res)
-	}
-}
-
-func TestLocateNew_Step2_SameNameInANewNamespace_IsNeverAppendedOntoTheFirstNamespacesFile(t *testing.T) {
-	// The production shape of the bug. Objects that exist under the SAME NAME in every
-	// namespace (kube-root-ca.crt is in all of them) made the inferred path collide exactly
-	// with the first namespace's file, so the second namespace's object was appended as an
-	// extra document. That file then genuinely spanned two namespaces, so every later object
-	// of the type legitimately preferred the bundle and the whole type collapsed into one
-	// file — one wrong inference cascading into total collapse.
-	fsys := fstest.MapFS{
-		"ns1/configmaps/kube-root-ca.crt.yaml": {Data: []byte(configMapYAML("kube-root-ca.crt", "ns1"))},
-	}
-	store := placementStore(t, fsys)
-	req := newConfigMapRequest("kube-root-ca.crt", "ns2")
-
-	res, err := LocateNew(store, nil, req)
-	if err != nil {
-		t.Fatalf("LocateNew: %v", err)
-	}
-	if res.Append {
-		t.Fatalf("got %+v, want a distinct file; appending merges two namespaces' objects", res)
-	}
-	if res.Path == "ns1/configmaps/kube-root-ca.crt.yaml" {
-		t.Fatalf("ns2's object was filed onto ns1's own file: %+v", res)
-	}
-	if res.Path != req.Identifier.ToGitPath() || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want canonical fallback carrying ns2's own namespace segment", res)
-	}
-}
-
-func TestLocateNew_Step2_ProvenNamespaceAgnosticDirectory_IsStillReused(t *testing.T) {
-	// The other side of the rule: one shared directory that ALREADY holds more than one
-	// namespace has proven itself namespace-agnostic, so a third namespace still joins it.
-	// Requiring proof must not degrade into refusing every singleton-style layout.
-	fsys := fstest.MapFS{
-		"shared/configmap-a.yaml": {Data: []byte(configMapYAML("a", "ns1"))},
-		"shared/configmap-b.yaml": {Data: []byte(configMapYAML("b", "ns2"))},
-	}
-	store := placementStore(t, fsys)
-	req := newConfigMapRequest("cache", "ns3")
-
-	res, err := LocateNew(store, nil, req)
-	if err != nil {
-		t.Fatalf("LocateNew: %v", err)
-	}
-	if res.Path != "shared/cache.yaml" || res.Source != PlacementSourceInferred {
-		t.Fatalf("got %+v, want the proven shared directory reused for the new namespace", res)
+		t.Fatalf("got %+v, want the declared template %q to win over the kustomize root", res, want)
 	}
 }
 
@@ -646,51 +610,30 @@ func TestPlacementVars_GroupedClusterScoped(t *testing.T) {
 	}
 }
 
-// A sensitive and a normal document of the SAME type (e.g. one ConfigMap
-// encrypted as .sops.yaml, one plain) must not be conflated: cohortMembers must
-// skip the mismatched-sensitivity sibling rather than only relying on the type
-// filter (which cannot tell them apart, since sensitivity is an encryption fact,
-// not a type fact).
-func TestLocateNew_MixedSensitivityConfigMapsInSameNamespace_NeverConflated(t *testing.T) {
-	fsys := fstest.MapFS{
-		"normal.yaml": {Data: []byte(configMapYAML("a", "app") + "---\n" + configMapYAML("b", "app"))},
-		"secret.sops.yaml": {
-			Data: []byte(
-				"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: sensitive-cm\n  namespace: app\nsops:\n  version: \"3\"\n",
-			),
-		},
-	}
-	store := placementStore(t, fsys)
-
-	res, err := LocateNew(store, nil, newConfigMapRequest("cache", "app"))
-	if err != nil {
-		t.Fatalf("LocateNew: %v", err)
-	}
-	want := "normal.yaml"
-	if res.Path != want || !res.Append {
-		t.Fatalf("got %+v, want the new normal ConfigMap appended to its normal bundle %q, "+
-			"never to the encrypted sibling", res, want)
-	}
-}
-
-// A file tolerated despite a non-editable construct (e.g. a YAML anchor) must
-// never be joined — classifyCohortLocations excludes it from both bundle and
-// singleton candidacy, so a genuinely new sibling falls through past it instead
-// of silently landing beside content the writer cannot vouch for.
-func TestLocateNew_TaintedSiblingNeverJoined(t *testing.T) {
+// A declared template resolving onto a file the writer cannot vouch for — one holding a
+// document tolerated despite a non-editable construct (a YAML anchor) — must not be
+// appended to. Append stays false and the caller falls through to writeWholeFile, whose
+// multi-document guard refuses rather than overwriting. This used to be enforced twice,
+// once for cohort candidacy and once here; the append gate is now the only place, so it is
+// worth pinning directly.
+func TestLocateNew_DeclaredOntoTaintedFile_NeverAppends(t *testing.T) {
 	tainted := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: anchored\n  namespace: app\n" +
 		"data: &d\n  color: blue\nextra:\n  <<: *d\n"
 	fsys := fstest.MapFS{
 		"tainted.yaml": {Data: []byte(tainted)},
 	}
 	store := placementStore(t, fsys)
+	policy := &PlacementPolicy{Default: "tainted.yaml"}
 
-	res, err := LocateNew(store, nil, newConfigMapRequest("cache", "app"))
+	res, err := LocateNew(store, policy, newConfigMapRequest("cache", "app"))
 	if err != nil {
 		t.Fatalf("LocateNew: %v", err)
 	}
-	if res.Path == "tainted.yaml" || res.Source != PlacementSourceCanonical {
-		t.Fatalf("got %+v, want the tainted file excluded and canonical fallback used", res)
+	if res.Path != "tainted.yaml" {
+		t.Fatalf("got %+v, want the declared path honoured", res)
+	}
+	if res.Append {
+		t.Fatalf("got %+v, want Append false: the file holds a document the writer cannot account for", res)
 	}
 }
 
@@ -840,30 +783,6 @@ func TestFileIsAppendSafe(t *testing.T) {
 	}}
 	if fileIsAppendSafe(tainted) {
 		t.Error("a file holding a non-editable (e.g. anchor-using) document must never be append-safe")
-	}
-}
-
-func TestSpansMultipleNamespaces(t *testing.T) {
-	if spansMultipleNamespaces(nil) {
-		t.Error("no members cannot span multiple namespaces")
-	}
-	unresolved := []*DocumentModel{{ResourceIdentity: nil}}
-	if spansMultipleNamespaces(unresolved) {
-		t.Error("a document with no resolved ResourceIdentity contributes no namespace")
-	}
-	oneNamespace := []*DocumentModel{
-		{ResourceIdentity: &types.ResourceIdentifier{Namespace: "a"}},
-		{ResourceIdentity: &types.ResourceIdentifier{Namespace: "a"}},
-	}
-	if spansMultipleNamespaces(oneNamespace) {
-		t.Error("members sharing one namespace do not span multiple namespaces")
-	}
-	twoNamespaces := []*DocumentModel{
-		{ResourceIdentity: &types.ResourceIdentifier{Namespace: "a"}},
-		{ResourceIdentity: &types.ResourceIdentifier{Namespace: "b"}},
-	}
-	if !spansMultipleNamespaces(twoNamespaces) {
-		t.Error("members in two distinct namespaces must span multiple namespaces")
 	}
 }
 

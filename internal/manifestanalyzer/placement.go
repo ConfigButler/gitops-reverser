@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -24,11 +23,11 @@ import (
 // There is no sensitive/normal split here: sensitivity is a write-safety property
 // (encrypt the content, keep the path identity-complete, never append or
 // co-mingle) enforced after resolution — in finishPlacement (sensitive never
-// appends), in the writer (encrypt by classification), and in cohortMembers
-// (inference never crosses the encrypted boundary) — not a second map to configure.
+// appends) and in the writer (encrypt by classification) — not a second map to
+// configure.
 //
 // A nil *PlacementPolicy, or one with no matching ByType entry and no Default,
-// falls through to sibling inference (Option C) and then the canonical fallback.
+// falls through to the kustomize-root fallback and then the canonical path.
 type PlacementPolicy struct {
 	ByType  map[string]string
 	Default string
@@ -45,28 +44,41 @@ type PlacementRequest struct {
 	// WriteScope is the write jail relative to the scanned (render) root, set only when
 	// render-root scoping re-rooted the scan past spec.path into a base an overlay reads.
 	// Placement is documented as relative to spec.path, so a resolved path that would land
-	// outside the jail (a declared/canonical path resolved against the render anchor, or an
-	// inference from a read-only base sibling) is rebased under WriteScope rather than escaping
-	// it. Empty for a self-contained subtree, where the scan root IS spec.path and every
-	// resolved path is already in scope.
+	// outside the jail (a declared or canonical path resolved against the render anchor) is
+	// rebased under WriteScope rather than escaping it. Empty for a self-contained subtree,
+	// where the scan root IS spec.path and every resolved path is already in scope.
 	WriteScope string
 }
 
-// PlacementSource names which mechanism produced a PlacementResult's Path, for
-// logging and the scan/dry-run "why here" trace (P8 in the design doc).
+// PlacementSource names which mechanism produced a PlacementResult's Path. It is
+// the "why here" answer for one new document, and it is reported three ways: the
+// write path's log line, the placements_total metric's `source` label, and the
+// scan/dry-run trace. The values are a public observability contract — they are
+// metric label values — so they are lower_snake_case and are not renamed lightly.
+//
+// There are exactly three, and the list is closed by construction: a declaration,
+// one structural fact about the folder, and the built-in path. Nothing here reads
+// the repository's *layout* to guess an intent — that was Option C's sibling-cohort
+// ladder, and it is gone (see the deletion argument in
+// docs/design/open-asks-priority.md).
 type PlacementSource string
 
 const (
 	// PlacementSourceDeclared is Option B: an explicit placement.byType/default
 	// template matched.
 	PlacementSourceDeclared PlacementSource = "declared"
-	// PlacementSourceInferred is Option C: no declared template matched, but an
-	// existing sibling cohort determined the destination.
-	PlacementSourceInferred PlacementSource = "inferred"
+	// PlacementSourceKustomizeRoot is the structural fallback: no declared template
+	// matched, and the whole writable subtree is governed by exactly one supported
+	// kustomization, so the new document goes beside it and into its resources: list
+	// (see resolveKustomizeRoot). It is a fact about reachability, not a guess about
+	// convention: a file that root cannot reach would never render at all.
+	PlacementSourceKustomizeRoot PlacementSource = "kustomize_root"
 	// PlacementSourceCanonical is the built-in, versionless
 	// {namespaceOrCluster}/{group}/{resource}/{name}.yaml fallback: no declared
-	// template and no sibling to follow (e.g. an empty repository, or the
-	// type/namespace is new).
+	// template, and no single kustomize root to hang the file off. For a repository
+	// with a hand-authored layout this is the signal that a placement.byType or
+	// placement.default line is missing — which is why it is counted per
+	// (GitTarget, type) rather than only logged. See recordPlacement in internal/git.
 	PlacementSourceCanonical PlacementSource = "canonical"
 )
 
@@ -80,41 +92,92 @@ type PlacementResult struct {
 	Append bool
 	// Source names which mechanism produced Path.
 	Source PlacementSource
-	// Cohort describes the sibling cohort and ladder step that produced Path;
-	// empty unless Source is PlacementSourceInferred.
-	Cohort string
 	// Kustomization is set when Path's directory carries a supported
 	// kustomization.yaml whose resources: list does not already name Path — the
 	// writer must add it as part of the same commit so kustomize picks the file
 	// up ("add to the right kustomize file").
 	Kustomization *KustomizationInfo
 	// NamespaceInherited is true when Path's destination infers its namespace
-	// from build context (a kustomization.yaml's namespace: transformer) rather
-	// than from metadata.namespace in the file — mirroring
-	// DocumentModel.NamespaceInheritedFromContext for a document that does not
-	// exist yet. The writer must keep metadata.namespace out of the written
+	// from build context (a kustomization.yaml's namespace: transformer set to this
+	// resource's own namespace) rather than from metadata.namespace in the file —
+	// mirroring DocumentModel.NamespaceInheritedFromContext for a document that does
+	// not exist yet. The writer must keep metadata.namespace out of the written
 	// bytes, exactly as it already does for an in-place edit of an existing
-	// document in the same context (see design doc: "the new file inherits its
-	// sibling's NamespaceSource").
+	// document in the same context.
 	NamespaceInherited bool
 }
 
+// PlacementRefusalReason names WHY a placement was refused, from a closed set. It is a
+// metric label value (placement_refusals_total{reason}) as well as a log field, so the
+// strings are lower_snake_case and are part of the observability contract.
+//
+// A refusal is a resource the operator did NOT mirror. It has to be countable per
+// (GitTarget, type): before this it left a log line and, on the resync path, a single
+// integer in a summary — neither of which a dashboard or an alert can reach, so a
+// misconfigured template that silently skipped one Secret on every reconcile was
+// invisible unless somebody read the logs.
+type PlacementRefusalReason string
+
+const (
+	// PlacementRefusedInvalidPath is a resolved path that failed the write-jail gate:
+	// empty, absolute, unclean, escaping via "..", or not a YAML file name. In practice
+	// a declared template whose literal text is wrong.
+	PlacementRefusedInvalidPath PlacementRefusalReason = "invalid_path"
+	// PlacementRefusedSensitiveAppend is a sensitive resource whose resolved path already
+	// holds a document. Sensitive documents are never appended, so the write is skipped
+	// rather than co-mingled — usually a declared template that is not identity-complete.
+	PlacementRefusedSensitiveAppend PlacementRefusalReason = "sensitive_append"
+	// PlacementRefusedPlaintextOntoEncrypted is a plaintext resource routed onto a file
+	// that already holds an encrypted document: appending would produce a
+	// partially-encrypted file and overwriting would destroy the encrypted document.
+	PlacementRefusedPlaintextOntoEncrypted PlacementRefusalReason = "plaintext_onto_encrypted"
+	// PlacementRefusedMixedSensitivityNewFile is two resources of different sensitivity
+	// resolving to the SAME brand-new path within one batch. LocateNew cannot see this
+	// (it resolves every resource against the pre-batch snapshot), so the writer refuses
+	// it; the value is defined here to keep one closed label domain for every refusal.
+	PlacementRefusedMixedSensitivityNewFile PlacementRefusalReason = "mixed_sensitivity_new_file"
+	// PlacementRefusedMultiDocumentTarget is a resolved path that holds a multi-document
+	// file the writer cannot append to (one of its documents is not cleanly editable), so
+	// the write would have to overwrite it and drop the siblings. Raised by the writer.
+	PlacementRefusedMultiDocumentTarget PlacementRefusalReason = "multi_document_target"
+)
+
+// PlacementRefusedError is a placement that resolved but cannot be honoured safely. The
+// caller must skip creating that resource and surface the refusal rather than writing.
+// It carries a bounded Reason so the write path can count refusals by cause without
+// matching on message text.
+type PlacementRefusedError struct {
+	Reason   PlacementRefusalReason
+	Resource string
+	Path     string
+	detail   string
+	cause    error
+}
+
+func (e *PlacementRefusedError) Error() string { return e.detail }
+
+// Unwrap exposes the underlying validation error for an invalid-path refusal, so
+// errors.Is/As still reach it.
+func (e *PlacementRefusedError) Unwrap() error { return e.cause }
+
 // LocateNew resolves the placement of a resource with no existing document, per
-// docs/spec/gittarget-new-file-placement-rules.md: a declared
-// template (Option B) wins when present; otherwise an existing sibling cohort
-// decides (Option C, steps 1/2 — same type+namespace, then same type+any
-// namespace); otherwise the canonical path.
+// docs/spec/gittarget-new-file-placement-rules.md: a declared template (Option B)
+// wins when present; otherwise the folder's one supported kustomize root, if it has
+// exactly one; otherwise the canonical path.
 //
-// store MUST be the pre-plan snapshot for the whole batch and must never be mutated
-// mid-batch, so a batch of several new creates resolves order-independently
-// regardless of event order — a new resource never becomes another new resource's
-// sibling within the same commit (P2 of the design doc).
+// There is no step that reads the layout of the *other* documents of this type.
+// Sibling-cohort inference (Option C) was removed: it let a human's edit to the
+// repository change where the operator writes, with no Kubernetes object changing
+// and nothing in status recording the move, and its central namespace-agnosticism
+// guard had already failed once by cascading. The argument, and what replaced it
+// (a declared byType line, plus the placements_total metric that says which
+// (GitTarget, type) needs one), is in docs/design/open-asks-priority.md.
 //
-// Step 3 (same namespace, any type) is deliberately not implemented: the design
-// doc's own P5 discussion flags it as the highest-risk rung (an unbounded
-// namespace-wide bundle that swallows every new type sharing a namespace), and
-// steps 1/2/4 already cover the launch use cases (per-type bundles, per-type files,
-// canonical). A namespace-bundle layout remains reachable via Option B.
+// store is still the pre-plan snapshot for the whole batch and must never be mutated
+// mid-batch: the remaining store reads — does the resolved path already hold an
+// append-safe file, does its directory carry a kustomization — must answer the same
+// way for every resource in one batch, so a batch of several new creates resolves
+// order-independently regardless of event order (P2 of the design doc).
 //
 // An error is returned only when the resolved placement cannot be honoured safely
 // — currently, a sensitive resource whose resolved path already exists (sensitive
@@ -125,42 +188,30 @@ func LocateNew(store *ManifestStore, policy *PlacementPolicy, req PlacementReque
 	vars := placementVars(req)
 
 	if path, ok, err := resolveDeclared(policy, req, vars); err == nil && ok {
-		return finishPlacement(store, req, path, PlacementSourceDeclared, "", false)
+		return finishPlacement(store, req, path, PlacementSourceDeclared)
 	}
 
-	if path, cohort, nsInherited, ok := resolveInferred(store, req); ok {
-		return finishPlacement(store, req, path, PlacementSourceInferred, cohort, nsInherited)
+	if path, ok := resolveKustomizeRoot(store, req); ok {
+		return finishPlacement(store, req, path, PlacementSourceKustomizeRoot)
 	}
 
-	if path, ok, nsInherited := resolveKustomizeRoot(store, req); ok {
-		return finishPlacement(
-			store, req, path, PlacementSourceInferred, "the GitTarget's one kustomization root", nsInherited,
-		)
-	}
-
-	return finishPlacement(store, req, canonicalPath(req), PlacementSourceCanonical, "", false)
+	return finishPlacement(store, req, canonicalPath(req), PlacementSourceCanonical)
 }
 
-// resolveKustomizeRoot is a narrow, placement-specific fallback for when no sibling cohort
-// exists (steps 1/2 both miss) — typically a resource whose type has never before
-// appeared in this GitTarget. The canonical path (step 4) is a
-// {group}/{version}/{resource}/{namespace}/{name}.yaml tree a kustomization's
-// resources: graph can never reach, so a brand-new type in an otherwise
-// kustomize-managed folder would silently land outside the folder's own
-// convention — precisely the problem new-file placement exists to fix. When the whole scanned
-// subtree is governed by exactly one supported kustomization (today's
-// single-context baseline), the new resource belongs beside that kustomization's
-// other files instead.
+// resolveKustomizeRoot is the one non-declared, non-canonical placement, and it is a
+// structural fact rather than a reading of the repository's conventions. The canonical
+// path is a {namespaceOrCluster}/{group}/{resource}/{name}.yaml tree a kustomization's
+// resources: graph can never reach, so a new document in an otherwise kustomize-managed
+// folder would land outside every render — not merely oddly placed, but never applied.
+// When the whole writable subtree is governed by exactly one supported kustomization
+// (today's single-context baseline), the new resource belongs beside that
+// kustomization's other files, and finishPlacement adds the resources: entry.
 //
-// This is intentionally narrower than the design doc's shelved step 3 (same
-// namespace, any type): it never appends into an existing bundle file, and it only
-// ever fires when there is exactly one supported kustomization for the whole
-// GitTarget to be about — the destination follows from there being one root, not
-// from picking the largest matching cohort — so it cannot become the "sink that
-// swallows every new type" risk (P5) the doc's own step 3 raised. More than one
-// supported kustomization under the scanned root is ambiguous and declines rather
-// than guessing.
-func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, bool, bool) {
+// The destination follows from there being ONE root, not from picking a cohort: more
+// than one supported kustomization under the scanned root is ambiguous and declines
+// rather than guessing. That is why this survived the Option C deletion — deleting it
+// would reintroduce the unreachable-file bug it was added to fix.
+func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, bool) {
 	var only *KustomizationInfo
 	for _, k := range store.Kustomizations {
 		if k.Unsupported {
@@ -174,18 +225,18 @@ func resolveKustomizeRoot(store *ManifestStore, req PlacementRequest) (string, b
 			continue
 		}
 		if only != nil {
-			return "", false, false
+			return "", false
 		}
 		only = k
 	}
 	if only == nil {
-		return "", false, false
+		return "", false
 	}
 	name := req.Identifier.Name + ".yaml"
 	if req.Sensitive {
 		name = req.Identifier.Name + ".sops.yaml"
 	}
-	return cleanJoin(slashDir(only.Path), name), true, only.Namespace != ""
+	return cleanJoin(slashDir(only.Path), name), true
 }
 
 // finishPlacement fills in the parts of a PlacementResult that depend only on the
@@ -207,26 +258,30 @@ func finishPlacement(
 	req PlacementRequest,
 	resolvedPath string,
 	source PlacementSource,
-	cohort string,
-	namespaceInherited bool,
 ) (PlacementResult, error) {
 	// Render-root scoping re-roots the scan at the common ancestor of spec.path and the bases
 	// it reads, so a resolved path is anchored there, not at spec.path. Placement is documented
 	// as relative to spec.path, so rebase a path that would land outside the write jail back
 	// under it before it is validated, checked for append, or matched to a kustomization.
 	resolvedPath = rebaseIntoWriteScope(req.WriteScope, resolvedPath)
-	// This is the one gate every resolution path — declared, inferred, the
-	// kustomize-root fallback, and canonical alike — funnels through before a
+	// This is the one gate every resolution path — declared, the kustomize-root
+	// fallback, and canonical alike — funnels through before a
 	// byte is ever written, so a rendered path can never escape the GitTarget's
 	// spec.path regardless of which mechanism produced it. See "Path validation"
 	// in the design doc: non-empty, a clean relative path, no "..", and a YAML
 	// suffix.
 	if err := ValidateResolvedPlacementPath(resolvedPath); err != nil {
-		return PlacementResult{}, fmt.Errorf(
-			"placement for resource %s resolved to an invalid path: %w", req.Identifier.String(), err,
-		)
+		return PlacementResult{}, &PlacementRefusedError{
+			Reason:   PlacementRefusedInvalidPath,
+			Resource: req.Identifier.String(),
+			Path:     resolvedPath,
+			detail: fmt.Sprintf(
+				"placement for resource %s resolved to an invalid path: %v", req.Identifier.String(), err,
+			),
+			cause: err,
+		}
 	}
-	res := PlacementResult{Path: resolvedPath, Source: source, Cohort: cohort, NamespaceInherited: namespaceInherited}
+	res := PlacementResult{Path: resolvedPath, Source: source}
 	// A resolved path that already holds a file is only a safe append target when
 	// every document already in it is cleanly editable. A file that tolerates a
 	// non-editable construct (an anchor, alias, or other disallowed pattern) may
@@ -241,11 +296,16 @@ func finishPlacement(
 		res.Append = true
 	}
 	if req.Sensitive && res.Append {
-		return PlacementResult{}, fmt.Errorf(
-			"placement for sensitive resource %s resolved to %q, which already holds a document; "+
-				"sensitive resources are never appended to an existing file",
-			req.Identifier.String(), resolvedPath,
-		)
+		return PlacementResult{}, &PlacementRefusedError{
+			Reason:   PlacementRefusedSensitiveAppend,
+			Resource: req.Identifier.String(),
+			Path:     resolvedPath,
+			detail: fmt.Sprintf(
+				"placement for sensitive resource %s resolved to %q, which already holds a document; "+
+					"sensitive resources are never appended to an existing file",
+				req.Identifier.String(), resolvedPath,
+			),
+		}
 	}
 	// A plaintext resource must never join a file that already holds an encrypted
 	// document: appending would sit its cleartext beside SOPS-encrypted data (a
@@ -255,17 +315,52 @@ func finishPlacement(
 	// runtime guard (not a separate sensitive placement block) is what keeps the two
 	// classes from co-mingling for every sensitive type, core or operator-configured.
 	if res.Append && !req.Sensitive && fileHoldsEncryptedDocument(fm) {
-		return PlacementResult{}, fmt.Errorf(
-			"placement for resource %s resolved to %q, which already holds an encrypted document; "+
-				"a plaintext resource is never appended to an encrypted file",
-			req.Identifier.String(), resolvedPath,
-		)
+		return PlacementResult{}, &PlacementRefusedError{
+			Reason:   PlacementRefusedPlaintextOntoEncrypted,
+			Resource: req.Identifier.String(),
+			Path:     resolvedPath,
+			detail: fmt.Sprintf(
+				"placement for resource %s resolved to %q, which already holds an encrypted document; "+
+					"a plaintext resource is never appended to an encrypted file",
+				req.Identifier.String(), resolvedPath,
+			),
+		}
 	}
-	if k := governingKustomization(store, req.WriteScope, resolvedPath); k != nil && !k.Unsupported &&
-		!kustomizationListsResource(k, resolvedPath) {
-		res.Kustomization = k
+	if k := governingKustomization(store, req.WriteScope, resolvedPath); k != nil && !k.Unsupported {
+		if !kustomizationListsResource(k, resolvedPath) {
+			res.Kustomization = k
+		}
+		res.NamespaceInherited = namespaceIsInheritedFromContext(k, req)
 	}
 	return res, nil
+}
+
+// namespaceIsInheritedFromContext reports whether a new document at a path this
+// kustomization governs must OMIT metadata.namespace, because the build context already
+// supplies it. Two conditions, and the second one is the safety half:
+//
+//   - the kustomization sets a namespace: transformer at all, and
+//   - it sets it to THIS resource's own namespace.
+//
+// The second condition is what keeps the write honest. Omitting metadata.namespace hands
+// the namespace to kustomize, so if the transformer named a DIFFERENT namespace the
+// document would render as another object entirely — the mirror would claim to hold a
+// resource it does not. Writing the namespace explicitly in that case is not a
+// convention break; it is the only truthful bytes available, and the render oracle then
+// reports the folder as unable to express this object rather than silently mis-rendering
+// it. (kustomize's namespace transformer overrides an explicit metadata.namespace, so the
+// explicit line is redundant when the two agree and load-bearing when they do not.)
+//
+// A cluster-scoped resource has no namespace, so it never inherits one.
+//
+// This applies to every resolved path, not just the kustomize-root fallback: a DECLARED
+// template pointing into a governed directory has exactly the same obligation, and before
+// this it silently wrote a namespace: line the folder's own documents omit.
+func namespaceIsInheritedFromContext(k *KustomizationInfo, req PlacementRequest) bool {
+	if k.Namespace == "" || req.Identifier.Namespace == "" {
+		return false
+	}
+	return k.Namespace == req.Identifier.Namespace
 }
 
 // governingKustomization returns the kustomization whose resources: list a new file at
@@ -561,125 +656,16 @@ func IdentityCompletePlacementTemplate(tmpl string, narrowedToOneType bool) bool
 		strings.Contains(tmpl, "{resource}")
 }
 
-// --- Option C: sibling inference -------------------------------------------------
-
-// resolveInferred implements Option C steps 1 and 2. See LocateNew's doc comment for
-// why step 3 is not implemented.
-func resolveInferred(store *ManifestStore, req PlacementRequest) (string, string, bool, bool) {
-	id := req.Identifier
-	// Render-root scoping puts the read-only base documents in the store too; a new write must
-	// never be inferred to sit beside one — that path is outside the jail, and rebasing it would
-	// duplicate a base object under the overlay. Restrict every cohort to writable siblings.
-	// The identity when there is no jail (WriteScope == ""), so self-contained placement is
-	// unchanged.
-	writable := writableCohort(store, req.WriteScope)
-
-	if members := writable(cohortMembers(
-		store,
-		id.Group,
-		id.Version,
-		id.Resource,
-		id.Namespace,
-		true,
-		req.Sensitive,
-	)); len(
-		members,
-	) > 0 {
-		if path, cohort, nsInherited, ok := cohortDestination(
-			store,
-			members,
-			req,
-			"same type and namespace",
-			false,
-		); ok {
-			return path, cohort, nsInherited, true
-		}
-	}
-	// Step 2 matches across namespaces, so — unlike step 1, where every candidate
-	// already shares the new resource's own namespace — a candidate here must prove
-	// it is namespace-agnostic before it can be trusted for a namespace it has never
-	// seen (P4 of the design doc): a per-namespace-segmented layout (a dedicated
-	// bundle or directory per namespace) must NOT be extended by guessing one of the
-	// existing namespaces' files/directories for a brand-new namespace. cohortDestination
-	// disqualifies any candidate that has not demonstrated it already spans more than
-	// one namespace (a bundle) or lives in a single shared directory regardless of
-	// namespace (singleton style); an unseen namespace then correctly falls through to
-	// the canonical path, which builds the right namespace segment directly.
-	if members := writable(
-		cohortMembers(store, id.Group, id.Version, id.Resource, "", false, req.Sensitive),
-	); len(members) > 0 {
-		if path, cohort, nsInherited, ok := cohortDestination(
-			store,
-			members,
-			req,
-			"same type, any namespace",
-			true,
-		); ok {
-			return path, cohort, nsInherited, true
-		}
-	}
-	return "", "", false, false
-}
-
-// writableCohort returns a filter that keeps only documents inside the write jail, so sibling
-// inference never places a new write beside a read-only base document render-root scoping
-// pulled into the store. With no jail (writeScope == "") it is the identity, so self-contained
-// placement is byte-for-byte unchanged. DocumentLocations is resolved once, only when a jail
-// is in force.
-func writableCohort(store *ManifestStore, writeScope string) func([]*DocumentModel) []*DocumentModel {
-	if writeScope == "" {
-		return func(dms []*DocumentModel) []*DocumentModel { return dms }
-	}
-	locs := store.DocumentLocations()
-	return func(dms []*DocumentModel) []*DocumentModel {
-		out := make([]*DocumentModel, 0, len(dms))
-		for _, dm := range dms {
-			if pathWithin(locs[dm].FilePath, writeScope) {
-				out = append(out, dm)
-			}
-		}
-		return out
-	}
-}
-
-// cohortMembers collects every existing document of the given type (optionally
-// pinned to namespace) whose sensitivity matches the resource being placed. A
-// document's sensitivity is read off the analyzer's own encrypted-document
-// classification (CauseEncrypted) rather than a separately threaded policy, so a
-// sensitive resource can never infer from a plaintext sibling or vice versa (the
-// design doc's "sensitive stays hard-split — with no config").
-func cohortMembers(
-	store *ManifestStore,
-	group, version, resource, namespace string,
-	matchNamespace, sensitive bool,
-) []*DocumentModel {
-	var out []*DocumentModel
-	for rid, dm := range store.ByResourceIdentity {
-		if rid.Group != group || rid.Version != version || rid.Resource != resource {
-			continue
-		}
-		if matchNamespace && rid.Namespace != namespace {
-			continue
-		}
-		if isSensitiveDocument(dm) != sensitive {
-			continue
-		}
-		out = append(out, dm)
-	}
-	return out
-}
-
-func isSensitiveDocument(dm *DocumentModel) bool {
-	return dm.Cause.Kind == CauseEncrypted
-}
+// --- Write-safety helpers for an already-occupied destination ------------------
 
 // fileIsAppendSafe reports whether every document already in fm is cleanly
 // editable or an ordinary encrypted document — never a document tolerated despite
 // an unsupported construct (CauseNonEditable: an anchor, alias, or other disallowed
 // pattern), which does not claim its identity and so cannot be vouched for. Such a
-// file is excluded from both bundle and singleton-style candidacy (cohortDestination)
-// and from the append decision (finishPlacement): a genuinely new resource must
-// never be joined to a file the writer cannot fully account for.
+// file is excluded from the append decision (finishPlacement): a genuinely new
+// resource must never be joined to a file the writer cannot fully account for. The
+// caller falls back to writeWholeFile, whose own multi-document guard refuses rather
+// than overwrites.
 func fileIsAppendSafe(fm *FileModel) bool {
 	if fm == nil {
 		return false
@@ -707,170 +693,4 @@ func fileHoldsEncryptedDocument(fm *FileModel) bool {
 		}
 	}
 	return false
-}
-
-// cohortDestination decides, for one matched cohort, whether the repository's
-// established pattern is "one resource per file" or "resources of this cohort share
-// a file" (a bundle), and resolves the concrete destination:
-//
-//   - every file holding >1 document is a candidate bundle, keyed by path, weighted
-//     by how many cohort members it holds;
-//   - every file holding exactly one document is "singleton style," aggregated into
-//     one virtual candidate regardless of how many separate files/directories it
-//     spans, weighted by its total member count;
-//   - the candidate with the most members wins; ties (including "no bundle beats
-//     the singleton style") favour singleton style, the more conservative choice,
-//     since it never grows an existing bundle the repository's siblings do not
-//     clearly favour. Among multiple bundle files tied for the lead, the
-//     lexicographically smallest file path wins; the singleton style's directory is
-//     the lexicographically smallest directory among its members.
-//
-// This is deterministic and independent of map/walk iteration order (P1 of the
-// design doc): the result depends only on the (path -> member count) shape of the
-// pre-plan snapshot, never on the order LocateNew is called for other resources in
-// the same batch.
-//
-// namespaceAgnostic is true only for step 2 (any namespace). It disqualifies a
-// candidate that has not demonstrated it is independent of namespace: a bundle file
-// must already hold members from more than one distinct namespace, and singleton
-// style must have every member in exactly one directory (P4 — see resolveInferred).
-// A step-1 candidate (namespaceAgnostic false) is never disqualified this way,
-// because every member there already shares the new resource's own namespace.
-func cohortDestination(
-	store *ManifestStore,
-	members []*DocumentModel,
-	req PlacementRequest,
-	step string,
-	namespaceAgnostic bool,
-) (string, string, bool, bool) {
-	docLoc := store.DocumentLocations()
-	perFile := map[string][]*DocumentModel{}
-	for _, m := range members {
-		if p := docLoc[m].FilePath; p != "" {
-			perFile[p] = append(perFile[p], m)
-		}
-	}
-	if len(perFile) == 0 {
-		return "", "", false, false
-	}
-
-	singletonDirs, bestPath, bestCount, dirReps, bundleReps := classifyCohortLocations(
-		store,
-		perFile,
-		namespaceAgnostic,
-	)
-	if bestPath == "" && len(singletonDirs) == 0 {
-		return "", "", false, false
-	}
-
-	cohort := fmt.Sprintf("%d sibling(s) via %s", len(members), step)
-	if bestCount > len(singletonDirs) {
-		nsInherited := bundleReps[bestPath] != nil && bundleReps[bestPath].NamespaceInheritedFromContext()
-		return bestPath, cohort, nsInherited, true
-	}
-
-	sort.Strings(singletonDirs)
-	winDir := singletonDirs[0]
-	name := req.Identifier.Name + ".yaml"
-	if req.Sensitive {
-		name = req.Identifier.Name + ".sops.yaml"
-	}
-	nsInherited := dirReps[winDir] != nil && dirReps[winDir].NamespaceInheritedFromContext()
-	return cleanJoin(winDir, name), cohort, nsInherited, true
-}
-
-// classifyCohortLocations partitions a cohort's members by where they live:
-// every file holding more than one document is a bundle candidate (keyed by path,
-// weighted by member count); every file holding exactly one document contributes to
-// the singleton-style candidate. A tainted file (fileIsAppendSafe false) is
-// excluded from both. namespaceAgnostic applies the P4 safety rule (see
-// resolveInferred): a candidate must PROVE it is namespace-agnostic by already
-// spanning more than one namespace — a bundle through its own documents, singleton
-// style through the documents of its one shared directory — or it is dropped.
-// It returns the eligible singleton directories, the winning bundle
-// (path/count), and one representative document per singleton directory / bundle
-// path — used to decide whether the destination's namespace is inherited from
-// build context (see PlacementResult.NamespaceInherited) — determined
-// independently of map iteration order by scanning candidate paths in sorted order.
-func classifyCohortLocations(
-	store *ManifestStore,
-	perFile map[string][]*DocumentModel,
-	namespaceAgnostic bool,
-) ([]string, string, int, map[string]*DocumentModel, map[string]*DocumentModel) {
-	var singletonDirs []string
-	var singletonDocs []*DocumentModel
-	dirReps := map[string]*DocumentModel{}
-	bundleReps := map[string]*DocumentModel{}
-	bundleCounts := map[string]int{}
-	for p, ms := range perFile {
-		fm := store.FilesByPath[p]
-		if !fileIsAppendSafe(fm) {
-			continue // a tainted file is never a placement destination
-		}
-		if len(fm.Documents) > 1 {
-			if namespaceAgnostic && !spansMultipleNamespaces(ms) {
-				continue // unproven: looks like a per-namespace-segmented bundle (P4)
-			}
-			bundleCounts[p] = len(ms)
-			bundleReps[p] = ms[0]
-			continue
-		}
-		dir := slashDir(p)
-		singletonDirs = append(singletonDirs, dir)
-		singletonDocs = append(singletonDocs, ms...)
-		if _, seen := dirReps[dir]; !seen {
-			dirReps[dir] = ms[0]
-		}
-	}
-	// P4 for singleton style, symmetric with the bundle branch above: reuse needs POSITIVE
-	// proof of namespace-agnosticism, not merely the absence of contrary evidence. One
-	// directory holding one namespace's documents is exactly as consistent with a
-	// per-namespace-segmented layout whose second namespace has simply never been written as
-	// it is with a shared directory — and guessing wrong files another namespace's object
-	// under the first namespace's folder. Declining costs nothing: the canonical path builds
-	// the correct namespace segment directly.
-	if namespaceAgnostic && (!allSameDir(singletonDirs) || !spansMultipleNamespaces(singletonDocs)) {
-		singletonDirs = nil // unproven: directories look namespace-segmented (P4)
-	}
-
-	bundlePaths := make([]string, 0, len(bundleCounts))
-	for p := range bundleCounts {
-		bundlePaths = append(bundlePaths, p)
-	}
-	sort.Strings(bundlePaths)
-	bestPath, bestCount := "", 0
-	for _, p := range bundlePaths {
-		if bundleCounts[p] > bestCount {
-			bestCount, bestPath = bundleCounts[p], p
-		}
-	}
-	return singletonDirs, bestPath, bestCount, dirReps, bundleReps
-}
-
-// spansMultipleNamespaces reports whether ms (all documents sharing one file)
-// carry more than one distinct namespace, proving the file is namespace-agnostic
-// rather than one namespace's dedicated bundle.
-func spansMultipleNamespaces(ms []*DocumentModel) bool {
-	seen := map[string]struct{}{}
-	for _, m := range ms {
-		if m.ResourceIdentity == nil {
-			continue
-		}
-		seen[m.ResourceIdentity.Namespace] = struct{}{}
-		if len(seen) > 1 {
-			return true
-		}
-	}
-	return false
-}
-
-// allSameDir reports whether every directory in dirs is identical (trivially true
-// for zero or one element).
-func allSameDir(dirs []string) bool {
-	for i := 1; i < len(dirs); i++ {
-		if dirs[i] != dirs[0] {
-			return false
-		}
-	}
-	return true
 }

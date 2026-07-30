@@ -240,7 +240,8 @@ type ResolvedTargetMetadata struct {
 	EncryptionConfig *ResolvedEncryptionConfig
 	// Placement is the GitTarget's declared new-file placement policy, resolved
 	// from spec.placement. Nil when the GitTarget declares none, in which case new
-	// resources are placed by sibling inference and then the canonical path.
+	// resources are placed beside the folder's one kustomize root, if it has exactly one,
+	// and otherwise at the canonical path.
 	Placement *manifestanalyzer.PlacementPolicy
 	// PruneMode is the GitTarget's EFFECTIVE spec.prune.mode — always a concrete value,
 	// because it is resolved through EffectivePruneMode and an omitted policy is onEvent.

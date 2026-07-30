@@ -14,6 +14,15 @@
 > **F6** (`spec.suspend`, `spec.interval`, reconcile-request annotation), **F9** (the stored
 > `scope: Namespaced` status-write question), **F10** (CommitRequest lifecycle). Those are §4's
 > "Then (API surface)" block and are a separate change.
+>
+> **That change now has a shape.** F6, F10, F12's reference-type nit and §3's pushbacks are sequenced
+> together with the new-file-placement redesign in
+> [`gittarget-api-wave.md`](../design/gittarget-api-wave.md), on the principle that the folder is
+> described on the GitTarget and the connection describes only the connection. Two of this review's
+> findings change that design rather than accompanying it: `spec.mode: Observe` (config-surface B1)
+> becomes the way a layout is adopted safely, and `spec.interval` is what keeps the layout's
+> scan-derived status fresh. F9 is deliberately kept **outside** the wave, because its answer
+> constrains the enum work and should be known before anything is planned around it.
 > Stance: reviewed as if this API were proposed for the GitOps Toolkit, with Flux's own
 > source (`external-sources/flux/`) and kstatus (`sigs.k8s.io/cli-utils/pkg/kstatus`) as ground
 > truth rather than recollection.
@@ -629,7 +638,9 @@ criticism.
 3. **F4** — delete `Reconciling`/`Stalled` rather than writing them False.
 4. **F7** — wire an `EventRecorder`; emit on every terminal outcome and every push failure.
 
-**Then** (API surface — do the breaking ones while still `v1alpha3`):
+**Then** (API surface — do the breaking ones while still `v1alpha3`). These are the wave, and they
+are now sequenced with the layout model in
+[`gittarget-api-wave.md`](../design/gittarget-api-wave.md) rather than scheduled from here:
 
 1. **F6** — `spec.suspend` on GitTarget/WatchRule/ClusterWatchRule/GitProvider; `spec.interval` on
    GitProvider at minimum; jitter the requeue; `reconcile.configbutler.ai/requestedAt` +
@@ -637,8 +648,10 @@ criticism.
 2. **F12** — ~~decide `PruneMode` casing **now**~~ (done, pre-release); trim printer columns; unify
    ObjectMeta tags.
 3. **F10** — CommitRequest lifecycle (TTL or ownerRef) and the `delete` verb.
-4. **F9** — verify the `scope: Namespaced` status-write path on the minimum supported Kubernetes
-    version.
+4. ~~**F9**~~ — **not in this block.** F9 is deliberately kept OUTSIDE the wave, because its answer
+    constrains the enum work and should be known before anything is planned around it. Verify the
+    `scope: Namespaced` status-write path on the minimum supported Kubernetes version as its own
+    change, ahead of the wave.
 
 ---
 

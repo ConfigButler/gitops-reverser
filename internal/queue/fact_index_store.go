@@ -199,7 +199,7 @@ func (s *scopeFacts) putLatest(uid string, entry *indexedFact) {
 // DELETION stamped, so both facts are filed under the same (uid, rv) and the same uid. Every other
 // structure here is last-writer-wins, so the deleter's fact is not outranked by the controller's —
 // it is replaced, and no tier ordering can recover what is no longer stored. See
-// docs/design/attribution-deletion-intent-actor.md.
+// docs/spec/attribution.md.
 //
 // A later removal fact may replace it, because that is a statement about the same question.
 func (s *scopeFacts) putRemoval(uid string, entry *indexedFact) {

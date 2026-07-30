@@ -7,6 +7,81 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## New resources land where you declare, not where the folder's other documents live
+
+Sibling inference is gone. A resource with no document in Git yet is placed by the first of three
+things that applies, and nothing else:
+
+1. the GitTarget's `spec.placement.byType` entry for its type, or `spec.placement.default`;
+2. the folder's one supported `kustomization.yaml`, when the whole folder has exactly one — the file
+   lands beside it and joins its `resources:` list;
+3. the built-in canonical path, `{namespaceOrCluster}/{groupPath}/{resource}/{name}{sensitiveSuffix}`:
+   a cluster-scoped resource uses the literal `_cluster/` in place of the namespace, a core resource
+   omits the group segment, there is no version segment, and a sensitive resource gets `.sops.yaml`
+   instead of `.yaml`.
+
+Before this, a folder with no declared placement was read for its layout: a new ConfigMap was appended
+to the bundle the other ConfigMaps shared, or written beside them one-per-file. That is what changes.
+
+**Who is affected.** A target whose repository this operator created is **unaffected** — such a folder
+already used canonical paths, which inference also produced. A target pointed at a **hand-authored**
+folder with a layout of its own is affected: a resource of a type that folder already holds, in a
+namespace or with a name it has never held, now gets the canonical path instead of joining the
+existing file or directory. Nothing already in Git moves — an existing document is still edited in
+place at its current location, forever.
+
+**What to do about it.** Declare the layout the folder means:
+
+```yaml
+spec:
+  placement:
+    byType:
+      v1/configmaps: "all.yaml"                      # keep bundling ConfigMaps into one file
+      v1/secrets: "team-a/secrets/{name}.sops.yaml"  # one encrypted file per Secret
+```
+
+A declared template does everything inference did and says so on the page. A **kustomize** folder needs
+no declaration: step 2 already places new files where that folder builds them.
+
+**One shape worth expecting.** In a folder that kustomize builds, a bundle file is no longer extended
+by default. A new resource gets a file of its own beside the `kustomization.yaml` and an entry added to
+its `resources:` list, so the build file changes where it previously did not (the bundle was already
+listed, so extending it needed no entry). Both outcomes mirror the resource and both render; the new
+one keeps a resource the operator placed out of a file a human curated, and it is undone by declaring
+the bundle in `byType`.
+
+**How to tell whether it affects you**, before or after upgrading — every placement is counted, by
+GitTarget and by type:
+
+```promql
+sum by (gittarget_namespace, gittarget_name, group, version, resource) (
+  increase(gitopsreverser_placements_total{source="canonical"}[24h]))
+```
+
+Each series is a type that took the built-in path. For a canonical-layout folder that is simply the
+layout. For a folder with a convention of its own it is the `byType` line to add. `source="declared"`
+and `source="kustomize_root"` need no attention. Two companions ship with it:
+`gitopsreverser_placement_refusals_total{reason}` (resources the writer declined to place — each one
+is absent from the mirror) and `gitopsreverser_placement_kustomization_entries_total{outcome}`, whose
+`failed` value is a new file committed outside every render. See
+[interpreting-metrics.md](interpreting-metrics.md).
+
+**Why the feature was removed rather than made switchable.** It let an edit to the *repository* change
+where the operator writes, with no Kubernetes object changing and nothing in status recording the move
+— delete enough of one namespace's documents from a shared bundle and the next new one takes a
+different path. Its namespace-safety guard had also failed once by cascading: one wrong append made a
+per-namespace file look namespace-agnostic, which legitimized it for every later resource, which
+collapsed a whole type into one file. There is deliberately **no** `spec.placement.mode` flag to turn
+inference back on: an off-switch for a removed feature is a permanent API field bought to solve a
+temporary problem. The full argument is in
+[`open-asks-priority.md`](design/open-asks-priority.md).
+
+**One related fix.** A new document in a directory whose kustomization sets `namespace:` omits
+`metadata.namespace` only when the transformer names the resource's **own** namespace. When it names a
+different one the namespace is now written explicitly — omitting it would have handed the namespace to
+kustomize and rendered a different object than the one being mirrored. This also now applies to a path
+you declared, which previously wrote a `namespace:` line the rest of that folder omits.
+
 ## 0.41.0 — attribution facts travel on a selectable transport, and Redis is no longer implied
 
 Attribution stopped meaning Redis. The audit receiver appends its facts to a per-type **stream**,

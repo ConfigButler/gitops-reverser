@@ -470,8 +470,8 @@ The important fields are:
   want the repository root
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
 - `spec.placement`: optional policy for where **new** resources are written (see
-  [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it to follow
-  the repository's existing layout
+  [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it and a new
+  resource takes the folder's one kustomization root, or the built-in canonical path
 - `spec.prune`: which deletion paths may remove documents from this target's folder (see
   [Deletion policy](#deletion-policy-specprunemode)); omit it for the safe default
 
@@ -610,64 +610,64 @@ For each new resource the operator walks this order and stops at the first that 
 1. **`spec.placement.byType[<exact type>]`:** an explicit template for that resource's type, if you
    declared one.
 2. **`spec.placement.default`:** your explicit catch-all template, if you declared one.
-3. **Sibling inference:** follow the layout the repository already uses for resources like this one
-   (described next).
+3. **The folder's one kustomize root:** if the whole folder is governed by exactly one supported
+   `kustomization.yaml`, the new file goes beside it and is added to its `resources:` list in the same
+   commit. This is not a guess about your conventions: a file that kustomization cannot reach would
+   never be rendered, so it would be in Git and applied by nothing. Two or more supported
+   kustomizations is ambiguous, and the operator declines rather than picking one.
 4. **Built-in canonical path:** `{namespace}/{group}/{resource}/{name}.yaml`, namespace first, the group
    omitted for core resources, no version segment, `_cluster/` in place of the namespace for
    cluster-scoped resources (an illegal namespace name, so it can never clash with a real one), and a
    `.sops.yaml` suffix for sensitive resources.
 
-If you set **no** `spec.placement`, only steps 3 and 4 run, which is why pointing a target at an
-existing repository "continues" that repo's conventions, and a brand-new empty repo gets the tidy
-canonical layout.
+**The operator does not read the rest of your repository to place a file.** Where you keep the other
+ConfigMaps does not decide where a new ConfigMap goes: a layout the ladder above cannot derive is one
+you declare. That is deliberate. An earlier version followed the surrounding layout, which meant
+editing the repository silently changed where the operator wrote next, with no Kubernetes object
+changing and nothing recording the move. If you are upgrading from a release that had it, see
+[`UPGRADING.md`](UPGRADING.md).
 
-#### Following the existing layout (sibling inference)
+#### Knowing when you need a rule
 
-This is the part that looks like magic but isn't: the operator never reverse-engineers a template. It
-reads the files already in the target and makes two **observed** decisions for the new resource. *Which
-directory* (the nearest cohort of resources like it: same type, then same type in any namespace) and
-*one-file-or-bundle* (does that cohort keep one resource per file, or share a multi-document file?).
+Every placement is counted, labeled with the GitTarget and the resource type, so "does this folder
+need a `byType` line?" is a query rather than a folder inspection:
 
-Worked example. A target at `spec.path: clusters/prod` already looks like:
-
-```text
-clusters/prod/
-  all.yaml                       # 9 ConfigMaps in one multi-document file (a "bundle")
-  team-a/secrets/db.sops.yaml    # one Secret, encrypted, one file per Secret
+```promql
+# types landing on the built-in path, per target: each is a candidate for a byType entry
+sum by (gittarget_namespace, gittarget_name, group, version, resource) (
+  increase(gitopsreverser_placements_total{source="canonical"}[24h])
+)
 ```
 
-- A new **ConfigMap** `cache` arrives: its type-cohort (ConfigMaps) lives entirely in the `all.yaml`
-  bundle → the new document is **appended to `all.yaml`**. No new file, no canonical tree is created.
-- A new **Secret** `api-token` arrives: it is sensitive, so plaintext siblings are ignored; the only
-  encrypted cohort is `team-a/secrets/` (one-per-file) → a new encrypted file
-  **`team-a/secrets/api-token.sops.yaml`**.
-- A new ConfigMap in a **brand-new namespace** `billing`: the ConfigMap cohort is still the `all.yaml`
-  bundle, which is namespace-agnostic, so it is **appended to `all.yaml`** too, and the new namespace needs
-  no new segment.
+`source="declared"` is a path you asked for, and `source="kustomize_root"` is a folder whose own
+structure answered. Neither needs attention, and two companions matter as much:
 
-The boundaries that keep it predictable:
+- `gitopsreverser_placement_refusals_total{reason}` counts resources the operator **did not write**:
+  a template that escapes `spec.path` (`invalid_path`), a sensitive resource whose path is already
+  taken (`sensitive_append`), a plaintext resource routed at an encrypted file
+  (`plaintext_onto_encrypted`), and two resources of mixed sensitivity landing on one new file
+  (`mixed_sensitivity_new_file`). Any of these means a policy to fix; the write is retried after you
+  fix it.
+- `gitopsreverser_placement_kustomization_entries_total{outcome="failed"}` counts new files whose
+  `resources:` entry could not be added. The file is committed and kustomize will never build it, so
+  this is the one that looks fine in the folder and is not.
 
-- A **sensitive** resource never infers from (or is appended into) a plaintext file; it only follows
-  encrypted siblings, otherwise it uses the secure canonical path.
-- A resource in a **namespace the target has never written before** only joins an existing cohort when
-  that cohort has *proven* it is namespace-agnostic by already holding more than one namespace. One
-  directory holding one namespace looks identical to a per-namespace layout whose second namespace has
-  not arrived yet, so it is not treated as shared. The resource takes the canonical path, which
-  carries its own namespace segment. Guessing here would file one namespace's objects under another's
-  folder.
-- When a type lives in two layouts at once, the tie-break is deterministic (the cohort with the
-  most members wins, then the lexically smallest path), and it is never a coin-flip.
-- Inference can only **continue** a layout that already exists. It cannot invent a greenfield one. "I
-  want all ConfigMaps bundled even though none exist yet" is a job for `byType` below.
+See [interpreting-metrics.md](interpreting-metrics.md) for the full label sets.
 
-The full ladder, tie-break rules, and edge cases are in
-[gittarget-new-file-placement-rules.md](spec/gittarget-new-file-placement-rules.md), which also carries
-the vision the sibling-inference step serves.
+#### Namespaces in a kustomize folder
+
+If the `kustomization.yaml` governing the destination sets `namespace:`, and it names the resource's own
+namespace, the new file omits `metadata.namespace`, because the build supplies it and every other document in
+that folder omits it too. This applies to a path you declared as much as to the kustomize-root
+fallback. When the transformer names a *different* namespace the namespace is written explicitly:
+leaving it out would hand the namespace to kustomize and render a different object than the one being
+mirrored.
 
 #### Declaring a layout (`byType` / `default`)
 
-Set `spec.placement` when you want to **prescribe** a layout rather than follow the repo (for example a
-greenfield repo, or a convention inference can't reach):
+Set `spec.placement` when the layout you want is neither of the two things the operator can work out
+for itself (a folder's single kustomization root, or the canonical path). For example, a bundle every
+ConfigMap joins, or a per-namespace layout:
 
 ```yaml
 spec:
@@ -680,8 +680,8 @@ spec:
 
 - **`byType`** maps an exact `[group/]version/resource` key (core resources omit the group, e.g.
   `v1/configmaps`; grouped resources include it, e.g. `apps/v1/deployments`) to a path template.
-- **`default`** is the template for any type with no `byType` entry. Omit it to fall through to sibling
-  inference and then the built-in path.
+- **`default`** is the template for any type with no `byType` entry. Omit it to fall through to the
+  kustomize-root step and then the built-in path.
 - Templates are small **brace-variable path templates** (see the table below), validated statically as
   part of the `Validated` gate: an unknown variable, a path that escapes `spec.path` (a leading `/` or
   `..`), or a non-`.yaml`/`.yml` suffix fails the target *before* any write.

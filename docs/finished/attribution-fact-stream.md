@@ -5,9 +5,8 @@
 > [what is built](#what-is-built-and-what-the-code-settled) for what each piece landed as, and for
 > the numbers the implementation chose. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Supersedes the option analysis in
-> [`attribution-wait-poll-vs-push.md`](../design/attribution-wait-poll-vs-push.md), which priced six ways to
-> stop polling Redis. This record picks one and specifies it: the audit receiver publishes facts,
+> Supersedes an option analysis that priced six ways to stop polling Redis (folded away; see
+> `git log`). This record picks one and specifies it: the audit receiver publishes facts,
 > the watch side subscribes per type and holds them in memory, and the per-key Redis lookup is
 > deleted rather than optimized.
 >
@@ -181,7 +180,7 @@ gitops-reverser:author:v2:audit:route:<route>:<group/resource>
 The route infix stays exactly as it is today and for the same reason: an apiserver posts under one
 route, several `ClusterProvider`s naming one cluster share that route and therefore share its facts,
 and a fact from cluster A must never name the author of an object watched on cluster B. See
-[`attribution-fact-identity.md`](../design/attribution-fact-identity.md).
+[the attribution spec](../spec/attribution.md#the-scope-is-an-audit-route-and-a-type).
 
 The group/resource suffix is the new part, and it is what makes the fan-out meaningful. A process
 watching only `configmaps` and `deployments` follows two streams and never receives a fact for
@@ -276,7 +275,7 @@ one map and hand a watch event on cluster B an author from cluster A. The rv-onl
 that bites hardest, because a resourceVersion is opaque and not unique across clusters, and the
 collection tier is where it bites most quietly, because a namespace name says nothing about which
 cluster it is in. The v1 fact keys already carry the route for this reason
-([`attribution-fact-identity.md`](../design/attribution-fact-identity.md)), and the same dimension has to
+([the attribution spec](../spec/attribution.md#the-scope-is-an-audit-route-and-a-type)), and the same dimension has to
 travel through the waiter candidate keys and the collection scope match, not only the four maps
 above. A test that stores identical `(group/resource, uid, rv)` facts under two routes and resolves
 each from its own is the one that proves it, and it belongs with the index rather than the
@@ -520,7 +519,7 @@ makes it safe.
 
 Namespace and selector narrow the scope. Precedence keeps anything with its own fact out. And the
 window is short, because of the deletion-as-intent rule in
-[`deletecollection-attribution-expander.md`](../spec/deletecollection-attribution-expander.md): the
+[the attribution spec](../spec/attribution.md#1-deletion-is-attributed-at-intent-time): the
 removal being attributed happens at **delete-request time**, when `deletionTimestamp` is set, not at
 whatever later moment finalization completes. Finalizers do not stretch the window. So the fact's
 own `stageTimestamp` plus a small allowance for skew and delivery is enough, and it can be far
@@ -613,7 +612,7 @@ index instead of a shared key.
 **Facts that never resolve.** Some events produce no audit fact at all, so no wait and no transport
 can name their author. They still spend the grace window and ship unresolved. That is unchanged, and
 it is the population that keeps
-[the circuit breaker](../design/attribution-wait-poll-vs-push.md#option-c-circuit-break-a-route-that-has-never-resolved-anything)
+the circuit breaker for a route that has never resolved anything
 worth building separately — see
 [when a removal should stop waiting](../design/attribution-removal-wait-options.md).
 
@@ -838,7 +837,7 @@ restart today, which is what keeps the delta small.
 | Subscribe and unsubscribe a type as watches come and go | [`target_watch.go`](../../internal/watch/target_watch.go) | done |
 | Delete the fact key builders, `SET`/`GET` paths, and the SCAN-based size gauge. The file goes with them: what survived is the fact shape and the result taxonomy, in [`author_fact.go`](../../internal/queue/author_fact.go), and the shared key helpers, in [`key_prefix.go`](../../internal/queue/key_prefix.go). `attribution_fact_index_size` survives too, now a field read on the sweep rather than a SCAN of the whole keyspace | `attribution_index.go`, deleted | done |
 | Delete the collection expander: `RecordDeleteCollectionFacts`, `storeDeleteCollectionFacts`, and their tests. `deleteCollectionItems` survives, reduced to uids only: the publish side still needs the body parsed once, to build the uid SET one fact carries. Nothing rebuilds N per-object facts from one request | `attribution_index.go` and `attribution_index_deletecollection_test.go`, deleted | done |
-| Retire §5 and §8 of the expander spec; §2, the deletion-as-intent render rule, is untouched and still binds | [`deletecollection-attribution-expander.md`](../spec/deletecollection-attribution-expander.md) | done |
+| Retire §5 and §8 of the expander spec; the deletion-as-intent render rule is untouched and still binds. The spec has since been folded into [`attribution.md`](../spec/attribution.md), which carries that rule as §1 | `deletecollection-attribution-expander.md`, deleted | done |
 | Add the transport selection flag, narrow the `--redis-addr` validation, and reject in-memory with more than one replica | [`cmd/main.go`](../../cmd/main.go), [`configuration.md`](../configuration.md) | done |
 | Correct the stale "hard dependency in every mode" comment | [`redis_store.go`](../../internal/queue/redis_store.go) | done |
 | Document the three new counters and the replaced result label | [`interpreting-metrics.md`](../interpreting-metrics.md) | done |

@@ -25,7 +25,7 @@
 > [`internal/queue/redis_store.go`](../../internal/queue/redis_store.go),
 > [`internal/watch/author_resolver.go`](../../internal/watch/author_resolver.go),
 > [CommitRequest authorship from admission](../spec/commitrequest-admission-authorship.md),
-> [deletecollection attribution & deletion-as-intent](../spec/deletecollection-attribution-expander.md),
+> [attribution](../spec/attribution.md),
 > [watch event ordering & attribution grace](../facts/watch-event-ordering-and-attribution-grace.md),
 > [watch-first ingestion architecture](watch-first-ingestion-architecture.md).
 
@@ -183,9 +183,12 @@ A given `(uid, rv)` had **exactly one writer** — that RV exists *because* of t
 
 - A **delete** writes `:last` = the deleter; the `DELETED` watch event (RV ≠ any write RV) resolves the
   deleter. Correct.
-- A **deletecollection** expands one `:last` per member = the actor; each per-object removal joins it
-  (see [deletecollection §3](../spec/deletecollection-attribution-expander.md)). The whole reason that design
-  pinned itself to the uid-only variant — body RV ≠ removal RV — is just "use `:last`" here.
+- A **deletecollection** expands one `:last` per member = the actor; each per-object removal joins it.
+  The whole reason that design pinned itself to the uid-only variant — body RV ≠ removal RV — is just
+  "use `:last`" here. **Superseded:** there is no expansion any more. A collection delete is published
+  as ONE fact describing the collection, which every removal in its scope joins by uid membership or
+  by scope; see [the attribution spec](../spec/attribution.md). The uid-not-RV argument is the half
+  that survived, and it is why the uid tier outranks the scope tier.
 - A **burst** (author₁ rv₁, author₂ rv₂): `:<rv1>`=author₁, `:<rv2>`=author₂ (both precise), `:last`=author₂.
   Watch events for rv₁ and rv₂ each hit their exact key → both precise. This is the precision an earlier
   single-key sketch gave up; the grouped scheme keeps it.

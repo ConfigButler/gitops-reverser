@@ -4,15 +4,17 @@
 >
 > Status: implemented (v1 — Option B2: one `byType`/`default` placement map,
 > with sensitivity treated as an internal write-safety classification rather than a
-> separate user-facing placement namespace) + Option C sibling inference (steps
-> 1/2/4) + the kustomize-root fallback documented below. The earlier B1 surface (a
-> nested `sensitive:` override block) shipped first and was superseded by B2 on the
-> same branch before release; Option A and C step 3 remain deferred. See
+> separate user-facing placement namespace) + the kustomize-root fallback + the
+> canonical path. **Option C (sibling inference) was implemented and then removed**;
+> its sections below are kept as history because the argument is worth having on the
+> page, and because the risks it enumerated are what the removal answers. The earlier
+> B1 surface (a nested `sensitive:` override block) shipped first and was superseded
+> by B2 on the same branch before release; Option A remains deferred. See
 > "Sensitivity as a write-safety classifier (B2 implementation notes)" below for how
 > the encryption guarantee is preserved without the API-level split.
-> Captured: 2026-06-05
+> Captured: 2026-06-05. Option C removed: 2026-07-29.
 > Related:
-> [file-agnostic-placement.md](gittarget-new-file-placement-rules.md) — **the vision Option C serves**,
+> [open-asks-priority.md](../design/open-asks-priority.md) — **the argument for deleting Option C**,
 > [contextual-namespace-and-kustomize-folder-editing.md](contextual-namespace-and-kustomize-folder-editing.md),
 > [gittarget-repository-validity-and-placement.md](gittarget-new-file-placement-rules.md),
 > [current-manifest-support-review.md](current-manifest-support-review.md),
@@ -21,6 +23,17 @@
 > [gitpath-foreign-content-stringency.md](gitpath-foreign-content-stringency.md)
 
 ## Summary
+
+> **What is live, in one paragraph.** A new resource — one with no document in Git yet —
+> gets its path from the GitTarget's declared `placement.byType`/`placement.default`
+> (Option B2); failing that, from the folder's one supported kustomization root, if it has
+> exactly one; failing that, from the built-in canonical
+> `{namespaceOrCluster}/{group}/{resource}/{name}.yaml` path. Nothing reads the layout of
+> the other documents of the same type. Option C did exactly that and was deleted — the
+> argument is in [`open-asks-priority.md`](../design/open-asks-priority.md) and summarised
+> in [its own section below](#option-c-follow-the-existing-layout-sibling-inference--removed).
+> Every resolution is counted by `placements_total{source,…}`, so a repository whose
+> layout needs a declaration says so in a metric rather than in a folder.
 
 New-resource placement should become an explicit GitTarget-level policy. There
 are three viable shapes:
@@ -48,19 +61,20 @@ they layer:
   identity-completeness, and append/collision rules, not which config block to
   read. Ordered rules (A) stay a later escape hatch only if the type map proves
   too limiting.
-- **Option C is the default underneath it.** With no policy, placement *follows the
-  layout already in the repo*; on an empty repo it falls through to today's
-  canonical path, so default behaviour is byte-identical to now. C is what makes
-  "point me at an existing folder and it just works" real — the vision in
-  [file-agnostic-placement.md](gittarget-new-file-placement-rules.md) — and it removes the
-  need for B to carry a catch-all default, because the gaps B leaves are filled by
-  inference rather than by a hand-written fallback template.
+- **Option C was the default underneath it, and is no longer.** With no policy,
+  placement used to *follow the layout already in the repo*. That is what made "point me
+  at an existing folder and it just works" a demo, and it is what made a human's edit to
+  the repository silently change where the operator writes. It was removed; what fills
+  B's gaps now is one structural fact (the folder's single kustomize root, if it has one)
+  and then the canonical path. See
+  [Option C … removed](#option-c-follow-the-existing-layout-sibling-inference--removed).
 
-So the recommended shape is **B over A for the declared surface, with C as the
-zero-config default that B overrides where the user has an opinion.** The rest of
-this document develops B and C together; C's sharp edges get a dedicated
-[problems-and-risks](#problems-and-risks-with-option-c) section because inferring
-policy from mutable repo state is where the real subtlety lives.
+So the shipped shape is **B for the declared surface, the kustomize root where the
+folder's own structure decides, and canonical otherwise.** The rest of this document
+develops B; C's sections are retained as history, and its
+[problems-and-risks](#problems-and-risks-with-option-c-as-written-before-the-removal)
+list is the record of why inferring policy from mutable repo state was the wrong
+foundation rather than a set of edges to keep filing down.
 
 Existing manifests are still match-first: once a resource already has a document
 in Git, updates and deletes use that document's current location instead of
@@ -409,7 +423,7 @@ type GitTargetPlacementSpec struct {
 The semantics are:
 
 - resolve placement from the single map: exact `byType` first, then `default`,
-  then sibling inference, then canonical fallback;
+  then the folder's single kustomize root, then canonical fallback;
 - independently classify the resource as sensitive or not;
 - for a sensitive resource, require the selected path to be identity-complete;
 - for a sensitive resource, write encrypted content and refuse multi-document
@@ -470,7 +484,7 @@ of the API-level split is written up in "Sensitivity as a write-safety classifie
 
 The validation rules are almost the same as for ordered rules:
 
-- omitted `placement.default` uses sibling inference and then the built-in
+- omitted `placement.default` uses the kustomize-root fallback and then the built-in
   canonical fallback;
 - every `byType` key must parse as a valid resolved type key;
 - every referenced type should be served and watched by the GitTarget, or at
@@ -494,14 +508,15 @@ Implemented shape:
 1. the B2 type-map is **the** declared API — the smallest surface that covers the
    real "this type here, everything else there" need while keeping sensitivity as a
    write-safety rule;
-2. Option C (sibling inference, below) is the **default** that runs when B is
-   absent or silent for a resource, so an unconfigured target follows the repo's
-   own layout instead of forcing canonical;
+2. when B is absent or silent for a resource, the fallbacks run: the folder's single
+   supported kustomize root (a structural fact, so a new file is reachable from a render
+   root), and otherwise canonical. Option C's sibling inference used to sit here and was
+   removed;
 3. ordered rules (A) remain a future extension only if users hit the type-map
    limit;
 4. one template renderer, identity validation, encryption enforcement, and append
-   rules serve all of it, so B's templates and C's inferred locations flow through
-   one writer.
+   rules serve all of it, so a declared template and a fallback path flow through one
+   writer — and through one refusal gate, counted by one metric.
 
 ### Sensitivity as a write-safety classifier (B2 implementation notes)
 
@@ -515,10 +530,12 @@ placement API and stays there under B2:
   `types.SensitiveResourcePolicy` (core Secrets always; plus operator-configured
   types), independent of which path placement chose. A Secret routed to `all.yaml`
   is still encrypted.
-- **Inference never crosses the encrypted boundary.** Sibling-cohort matching
-  reads a document's own `CauseEncrypted` classification, so a sensitive resource
-  only ever infers from encrypted siblings and a plaintext one only from plaintext
-  siblings — no config needed.
+- **The encrypted boundary is enforced at the write, not at resolution.** A sensitive
+  resource whose path already holds any document is refused, and a plaintext resource
+  routed at a file holding an encrypted document is refused — both read the document's own
+  `CauseEncrypted` classification, and both are counted with a bounded reason. This is
+  where the guarantee always actually lived: sibling inference had its own version of the
+  rule, and deleting it removed a second implementation rather than the guarantee.
 - **Sensitive never appends.** A sensitive resource whose resolved path already
   holds a document is refused (`finishPlacement`), never appended.
 - **Canonical stays SOPS.** The built-in fallback keeps the `.sops.yaml` suffix for
@@ -559,31 +576,114 @@ Whether to teach the Validated gate about operator-configured sensitive types (s
 this becomes a fast, up-front rejection there too), and whether to add a bounded
 status surface for placement skips, are open questions below.
 
-## Option C: follow the existing layout (sibling inference)
+## The resolution ladder, as implemented
+
+Placement only ever runs for a **new** resource — one with no document in the store yet
+(match-first handles everything else, and never moves it afterwards). Three steps, in order,
+and each one either answers or declines:
+
+| Step | Mechanism | `placements_total{source}` | Decides because |
+|---|---|---|---|
+| 1 | declared `placement.byType`, then `placement.default` | `declared` | the GitTarget said so |
+| 2 | the folder's single supported kustomization root | `kustomize_root` | a file that root cannot reach never renders |
+| 3 | canonical `{namespaceOrCluster}/{group}/{resource}/{name}.yaml` | `canonical` | nothing else did |
+
+Every resolved path — whichever step produced it — then passes one gate before a byte is
+written: [path validation](#path-validation), the append-safety rules, and the
+[write-safety refusals](#sensitive-placement-and-uniqueness). A refusal is a resource the
+mirror does not hold, and it is counted as `placement_refusals_total{reason}` rather than
+being merely logged.
+
+### The kustomize-root fallback
+
+The canonical path is a `{namespaceOrCluster}/{group}/{resource}/{name}.yaml` tree a
+kustomization's `resources:` graph can never reach. So in a folder that kustomize builds,
+a new document at the canonical path is not merely oddly placed — it is **never rendered**,
+and nothing applies it. That is the failure new-file placement exists to prevent, and it is
+why this step survived the Option C deletion.
+
+When the whole *writable* subtree is governed by **exactly one** supported kustomization,
+the new document is written beside that kustomization's other files and added to its
+`resources:` list in the same commit (the product-level "add to the right kustomize file"
+framing lives in
+[`unreflectable-edits-and-write-gating.md`](../design/support-boundary/unreflectable-edits-and-write-gating.md)).
+
+This is a **structural fact, not an inference**: the destination follows from there being
+one root, not from picking the largest matching cohort of similar documents. Consequently:
+
+- more than one supported kustomization under the scanned root is **ambiguous** and
+  declines to canonical rather than guessing which root the resource belongs to;
+- an *unsupported* kustomization is never a root (the writer must not edit one), and never
+  a destination;
+- under render-root scoping — where the scan reaches past `spec.path` into a base the
+  overlay reads — "one supported kustomization" means one **writable** one, so an overlay
+  resolves to its own root instead of declining because the read-only base counts as a
+  second;
+- if the `resources:` entry cannot be added, the file is committed outside every render.
+  That is invisible in the folder, so it is counted:
+  `placement_kustomization_entries_total{outcome="failed"}`.
+
+### Namespace style follows the governing kustomization
+
+A document in a directory whose kustomization sets a `namespace:` transformer does not carry
+`metadata.namespace` — the build context supplies it (see
+[contextual-namespace-and-kustomize-folder-editing.md](contextual-namespace-and-kustomize-folder-editing.md)).
+A new document placed there must follow that convention, or it breaks the folder's own
+style, and this applies to **every** resolved path: a declared template pointing into a
+governed directory is under the same obligation as the kustomize-root fallback.
+
+It is conditional on the two namespaces **matching**. Omitting `metadata.namespace` hands
+the namespace to kustomize, so a transformer naming a *different* namespace would render the
+document as a different object — the mirror would claim to hold a resource it does not. When
+they differ the namespace is written explicitly, and the render oracle reports a folder that
+cannot express the object rather than the write quietly diverging.
+
+## Option C: follow the existing layout (sibling inference) — REMOVED
+
+> **History.** Option C shipped (steps 1/2/4) and was removed on 2026-07-29. The full
+> argument is in [`open-asks-priority.md`](../design/open-asks-priority.md), "The one real
+> design call". The short form:
+>
+> - **It made a human's edit to the repository change the operator's behaviour**, with no
+>   Kubernetes object changing and nothing in status recording the move. Delete enough of
+>   one namespace's ConfigMaps from a bundle and the bundle stops being namespace-agnostic,
+>   so the next new ConfigMap takes a different path. Nobody approved that.
+> - **Its central guard failed by cascading.** The namespace-agnosticism check was, for a
+>   period, vacuous on the singleton branch: one directory holding one namespace satisfied
+>   "all the same directory" trivially, so a new namespace's object was appended into the
+>   first namespace's file, which then genuinely spanned two namespaces, which legitimized
+>   the bundle for every later object, which collapsed a whole type into one file. The fix
+>   was right; the lesson is that a rule inferred from mutable state has failure modes that
+>   feed themselves.
+> - **The explainability it required (P8, below) was declared mandatory and never built.**
+> - **What it bought was smaller than the demo suggested.** "Point me at an existing repo
+>   and it just works" is carried by *match-first*, not by inference: every resource that
+>   already has a document is edited exactly where it lives, forever. Inference only fired
+>   for a type or namespace the target had never written — a rare event, and precisely the
+>   one where a wrong guess is invisible because there is no prior file to compare against.
+> - **And the layout most likely to be hand-authored — per-namespace segmentation — was the
+>   one it could not extend anyway (P4).** The user had to declare it regardless.
+>
+> **What replaced it:** nothing, deliberately. A layout this operator cannot derive from one
+> root is declared in `placement.byType`/`placement.default`, or it is canonical — and
+> `placements_total{source="canonical"}` names the GitTarget and the type that needs the
+> line, so "you need a declaration here" is a query rather than an archaeology exercise. No
+> `spec.placement.mode` enum was added: an off-switch for a removed feature is a permanent
+> API field bought to solve a temporary problem.
+>
+> The rest of this section is what the design said while it was live.
 
 A and B both ask the user to *declare* the layout in the CRD up front, in a
 template language, split into sensitive and normal. Option C asks for nothing. It
 places a new resource **where resources like it already live in the repo.** The
 folder is the policy.
 
-This is not a new principle — it is the one the writer already uses, generalized
-one notch. Today an existing resource is found by manifest identity and edited *in
-place*: the operator already follows a file's current location instead of imposing
-canonical placement ("existing manifests are still match-first", above). Option C
-extends "follow the existing location" from *the same resource* to *its siblings*:
-a resource the operator has never written before is placed next to the resources
-it most resembles. It is the literal implementation of
-[file-agnostic-placement.md](gittarget-new-file-placement-rules.md)'s goal — "point at a
-real folder and it just works", "the location doesn't matter" — because the layout
-already in Git, having passed acceptance, is by definition a layout the operator
-will accept.
-
-### How it resolves a path
+### How it resolved a path
 
 Placement only ever runs for a **new** resource — one with no document in the
 store yet (match-first handles everything else). The content-derived store already
-knows every accepted document, its file path, and its effective identity. C reads
-two independent facts straight off that store; it never reverse-engineers a
+knows every accepted document, its file path, and its effective identity. C read
+two independent facts straight off that store; it never reverse-engineered a
 template.
 
 1. **Which directory** — find the nearest *cohort* of existing documents that
@@ -593,237 +693,131 @@ template.
    |---|---|---|
    | 1 | same (resource type, namespace) | that cohort's directory |
    | 2 | same resource type, any namespace | that cohort's directory |
-   | 3 | same namespace, any type | that cohort's directory |
-   | 4 | nothing matches | canonical `ToGitPath()` directory (today's default) |
+   | 3 | same namespace, any type | never implemented (P5) |
+   | 4 | nothing matches | canonical `ToGitPath()` directory |
 
 2. **One-per-file vs bundle** — look at how that cohort is stored:
    - cohort is **one resource per file** → create a new single-document file in
-     that directory, named `{name}.yaml` (the only filename pattern worth
-     inferring; anything fancier falls back to `{name}.yaml`);
+     that directory, named `{name}.yaml`;
    - cohort **shares a file** (a bundle such as `configmaps.yaml` or `all.yaml`) →
-     append the new resource as a document to that same bundle, via the existing
-     plaintext multi-document append path.
+     append the new resource as a document to that same bundle.
 
-Both decisions are *observed*, not guessed, so there is no fuzzy template
-inference and the result round-trips: the store's file↔identity map (the same one
-match-first relies on) is the single source of truth.
+Step 2 additionally required a candidate to **prove** it was namespace-agnostic before it
+could be used for a namespace it had never seen — a bundle by already spanning two
+namespaces, a singleton style by having every member in one shared directory that spans
+two. That proof requirement was the fix for the cascade described above, and it is the part
+worth remembering: it was correct, and it was not enough, because the feature's problem was
+never the quality of its guard.
 
-### Sensitive stays hard-split — with no config
+### Sensitive stayed hard-split — with no config
 
-The sensitive/normal split that A and B get from two config blocks, C gets for
-free from the encryption classification already in the store:
-
-- a sensitive resource **never** infers from plaintext siblings and is **never**
-  appended to a plaintext bundle;
-- it infers only from other encrypted/sensitive single-document siblings in the
-  same directory, regardless of filename suffix; otherwise it uses the built-in
-  **secure canonical fallback** (identity-complete and encrypted, with a
-  `.sops.yaml` suffix only as a convention).
-
-So the encryption guarantee never depends on the user having configured the split
-correctly — there is no split to configure.
-
-### Namespace style comes along for free
-
-Because C mirrors a sibling, it also mirrors that sibling's `NamespaceSource`
-(from [contextual-namespace-and-kustomize-folder-editing.md](contextual-namespace-and-kustomize-folder-editing.md)).
-Drop a new file beside namespace-less documents that sit under a supported
-kustomize context and it inherits that style — no `metadata.namespace` is written;
-beside explicit-namespace documents the namespace is written. This is the one
-option that answers file-agnostic-placement.md's "I'd like to *not* write the
-namespace" without adding a `manifestStyle` knob: placement and output style
-converge under "match your neighbours". (Bounded by the contextual-namespace
-rules: an ambiguous context already refuses the GitTarget before placement runs.)
+The sensitive/normal split that A and B get from two config blocks, C got for
+free from the encryption classification already in the store: a sensitive resource never
+inferred from plaintext siblings and was never appended to a plaintext bundle; it inferred
+only from other encrypted siblings, and otherwise used the built-in secure canonical
+fallback. That guarantee is unchanged by the removal — it is now enforced entirely by the
+[write-safety refusals](#sensitive-placement-and-uniqueness), which is where it always
+actually lived.
 
 ### Empty folder → canonical, then self-propagating
 
 A freshly bootstrapped repo has no siblings, so the first resource of each kind
-lands on canonical `ToGitPath()` — **byte-identical to today.** From then on the
-layout propagates itself. A brand-new target behaves exactly as it does now; the
-power only appears once a human (or a prior import) has established any layout.
-
-**Amendment, decided during implementation: a kustomize-root fallback sits
-between "no sibling match" and true canonical.** The rule above is exactly right
-for a flat or already-populated folder, but it silently breaks the moment the
-GitTarget's one kustomization-managed folder receives its *first* resource of a
-brand-new type: canonical is a `{group}/{version}/{resource}/{namespace}/{name}.yaml`
-tree the kustomization's `resources:` graph can never reach, so the new file
-would land outside the very folder it was meant to join — precisely what this
-document exists to prevent, just for a type instead of a whole folder.
-
-So, when steps 1/2 (sibling inference) both miss **and** the scanned subtree is
-governed by exactly one supported kustomization, the new resource is placed
-beside that kustomization's other files (and gets a `resources:` entry — see
-`kustomize-support-boundary.md` and
-`unreflectable-edits-and-write-gating.md` for the product-level "add to the right
-kustomize file" framing) instead of falling to canonical. This is deliberately
-narrower than the shelved step 3 (same namespace, any type) above: it never joins
-an existing bundle, and it only ever fires when there is exactly one supported
-kustomization for the whole GitTarget to be about — the destination follows from
-there being one root, not from picking the largest matching cohort — so it cannot
-become the "sink that swallows every new type" risk (P5) step 3 raised. More than
-one supported kustomization under the scanned root is ambiguous and falls through
-to canonical rather than guessing which root the new resource belongs to.
-
-True canonical — no sibling of the matching type or kind, and no single
-kustomization root to fall back to — remains exactly as described above: a
-brand-new, unmanaged target behaves byte-identical to today.
+landed on canonical `ToGitPath()` — byte-identical to today. From then on the layout
+propagated itself. This is why **cold-start repositories are unaffected by the removal**:
+inference already fell to canonical there. The behaviour change is confined to a brownfield
+folder that had a layout to continue.
 
 ### Determinism and ambiguity
 
 A type can legitimately live in two layouts at once (some ConfigMaps bundled, some
-canonical). The lookup must be deterministic:
+canonical), so the lookup picked the cohort with the **most members**, tie-breaking on
+lexically-smallest directory then file — stable and independent of walk order. The
+reasoning at the time was that a "wrong but valid" location is cosmetic, since the document
+is match-first the instant it exists. That is true of one document and false of a
+convention: the wrong file is where every later resource of that type then goes.
 
-- pick the cohort with the **most members**; tie-break on lexically-smallest
-  directory, then smallest file — stable and independent of walk order.
-- Unlike contextual-namespace ambiguity (a correctness hazard, so it *refuses*), a
-  "wrong but valid" new-file location is cosmetic: the document is match-first the
-  instant it exists, so a deterministic tie-break is better than failing the
-  target. Sensitive identity-completeness is still enforced, so determinism never
-  weakens the encryption guarantee.
+### What it could not do, and how it composed
 
-### What it does not do, and how it composes
+C could not express a layout you did not yet *have* — a greenfield "I want all ConfigMaps
+bundled even though none exist yet" intent. That is what B is for, and B always outranked
+C. It is also, in hindsight, the whole trade: B could express everything C could and say so
+on the page.
 
-C cannot express a layout you do not yet *have* — a greenfield "I want all
-ConfigMaps bundled even though none exist yet" intent. That is exactly what A and B
-are for, and the three compose cleanly:
-
-- **C is the default** (no config), best for brownfield / "point me at an existing
-  repo";
-- **B (or A) is the override:** an explicit type-map entry takes precedence, and C
-  fills every gap — so B no longer needs a catch-all default, because the canonical
-  fallback is just C's step 4;
-- if a per-repo override is ever wanted *without* CRD surface, the repo-native
-  form — consistent with the just-landed `.gittargetignore` (an in-repo, versioned,
-  zero-API policy file, see
-  [gitpath-foreign-content-stringency.md](gitpath-foreign-content-stringency.md))
-  — is the natural shape. Noted, not required: C's whole point is that the base
-  case needs nothing.
-
-### Problems and risks with Option C
+### Problems and risks with Option C, as written before the removal
 
 Sibling inference is powerful precisely because it reads its policy from mutable
 repo state — which is also exactly where every one of its sharp edges comes from.
-None of these is fatal, but each needs a decided answer before C ships, and several
-are the concrete reason **B exists as the override.**
+This list was written as "each needs a decided answer before C ships". Read in retrospect,
+it is the case for the deletion: **P1, P2, P3, P4, P6 and P8 are all one property**, stated
+six times, and only P7, P9 and P10 survive as facts about the code that remains.
 
 **P1 — Placement is path-dependent on history, and the "most members" tie-break can
-flip.** The cohort lookup is computed against the repo *as it is now*. If a type
-lives in two layouts at once (some ConfigMaps canonical, some bundled into
-`all.yaml`), the winner is "most members" — but that count moves as the repo grows.
-A repo that is 6-canonical / 5-bundled routes a new ConfigMap to canonical; after a
-human bundles four more it is 6-canonical / 9-bundled and the *next* new ConfigMap
-goes to the bundle. Same kind, different destination, purely because of *when* it
-arrived. This instability is inherent to "infer from the repo" and cannot be fully
-removed; it can be tamed: (a) surface the chosen cohort, its size, and the
-tie-break in the scan/dry-run output so a flip is never silent, and (b) let a
-cohort the user declared in **B outrank any inferred cohort**, so the unstable case
-only exists where the user expressed no preference at all.
+flip.** The cohort lookup is computed against the repo *as it is now*. A repo that is
+6-canonical / 5-bundled routes a new ConfigMap to canonical; after a human bundles four
+more it is 6-canonical / 9-bundled and the *next* new ConfigMap goes to the bundle. Same
+kind, different destination, purely because of *when* it arrived. *Retired by the
+deletion: the destination no longer depends on repo state at all.*
 
-**P2 — Cold start and batch resync collapse to canonical.** On a fresh import or a
-full resync the desired set is planned against a store that is empty (or mid-fill).
-With no siblings, every resource falls to canonical — including a large initial
-sync the user might have wanted bundled. Worse, if placement consulted a store that
-mutates *within* a single plan, the first ConfigMap placed would become the sibling
-for the rest, making a whole batch's layout depend on intra-batch ordering.
-Decision: **resolve every cohort against the pre-plan store snapshot** and place a
-batch together (reusing step 8's "group new creates by path"), so a batch is
-order-independent and a cold start is deterministically canonical. The consequence
-is blunt and must be stated: **C cannot bootstrap a layout that does not yet
-exist.** A greenfield bundled layout happens only if the user declares it (B) or
-seeds one file by hand first.
+**P2 — Cold start and batch resync collapse to canonical.** With no siblings, every
+resource falls to canonical — and a store mutating *within* one plan would have made a
+whole batch's layout depend on intra-batch ordering. Decision at the time: resolve every
+cohort against the pre-plan store snapshot. *The snapshot rule is still in force* for the
+store reads that remain (does this path already hold an append-safe file; does its
+directory carry a kustomization), so a batch is still order-independent.
 
-**P3 — The self-fulfilling canonical bias.** Because empty → canonical and siblings
-then propagate, a repo the operator bootstrapped itself stays canonical *forever*
-unless a human reorganizes it. C's benefit is therefore concentrated almost
-entirely on the brownfield / human-authored / imported repo; for the dominant
-"operator created the repo" path, C ≡ today's behaviour. That is a safe default,
-not a defect — but nobody should expect bundling to *emerge* on its own, and the
-user docs must say so.
+**P3 — The self-fulfilling canonical bias.** A repo the operator bootstrapped itself stayed
+canonical forever unless a human reorganized it, so C's benefit was concentrated on the
+brownfield repo and was a no-op for the dominant path. *Retired: canonical is now simply
+the documented answer, and the metric says when a declaration would be better.*
 
 **P4 — Step 2 cannot extend a custom per-namespace layout to an unseen namespace.**
-Inference deliberately refuses to reverse-engineer a filename/segment template, so
-when a brand-new namespace appears for a known type, step 1 (same type + namespace)
-misses and step 2 (same type, any namespace) finds a cohort spread across
-`…/<ns>/…` directories but cannot know the `<ns>` segment without inferring the very
-template it swore off. For the **canonical** layout this is harmless — step 4's
-fallback *is* the canonical per-namespace path, so the result is identical. For a
-**custom** per-namespace layout (e.g. `{namespace}/configmaps.yaml`) the new
-namespace cannot be inferred and lands canonical, breaking the user's pattern. This
-is the single clearest reason **B is the override, not a nicety:** a custom
-namespace-segmented layout must be *declared*; C can continue it for namespaces it
-has already seen but cannot invent the segment for new ones. Document the boundary
-so it is a known limit, not a surprise.
+Inference refused to reverse-engineer a path segment, so a custom `{namespace}/…` layout
+could not be continued into a namespace it had never seen and fell to canonical, breaking
+the user's pattern. *This was the strongest argument for the deletion: the layout most
+likely to be hand-authored was the one inference could not reach, so the user had to
+declare it anyway.*
 
-**P5 — Step 3 (same namespace, any type) can over-capture into a growing bundle.**
-This is the most dangerous rung. A single heterogeneous bundle in a namespace can
-become a sink that swallows every *new* type in that namespace just because they
-share a namespace — a layout the user never asked for, growing without bound.
-Mitigation: fire step 3 **only into a cohort that is already a single heterogeneous
-bundle file** (the user demonstrably chose "one file for this namespace"), never to
-scatter a new type into per-type files that merely happen to share a namespace. If
-step 3 still feels too clever, **drop it entirely** — steps 1, 2, and 4 already
-cover per-type bundles, per-type files, and canonical, and the namespace-bundle
-layout can simply be required via B. (See the open question on whether step 3 ships
-at all.)
+**P5 — Step 3 (same namespace, any type) can over-capture into a growing bundle.** A single
+heterogeneous bundle could become a sink that swallowed every new type in a namespace.
+*Never implemented, and now unreachable.*
 
-**P6 — Delete-then-recreate can move a resource.** Existing documents are
-match-first, so a live resource never moves while it exists. But a resource that is
-deleted (its document swept) and later recreated is "new" again and re-inferred
-against whatever the repo looks like *then*, which may differ from where it lived
-before. Placement is create-time and non-retroactive — the same contract A and B
-carry — but C makes "create-time" depend on mutable repo state, so this churn is
-more visible. Acceptable, but call it out.
+**P6 — Delete-then-recreate can move a resource.** A resource whose document was swept and
+which was later recreated was "new" again, and re-inferred against whatever the repo looked
+like then. *Retired: a recreated resource resolves the same way it did the first time,
+because the answer does not depend on the folder's history.*
 
-**P7 — An inferred path is still subject to the write-time ignore invariant.** A
-resolved path — inferred or canonical — can collide with a `.gittargetignore`
+**P7 — A resolved path is still subject to the write-time ignore invariant.** Any resolved
+path — declared, kustomize-root, or canonical — can collide with a `.gittargetignore`
 pattern and trip the §4.3 `IgnoreShadowsManagedPath` precondition
-([gitpath-foreign-content-stringency.md](gitpath-foreign-content-stringency.md)),
-aborting the flush. Ignored and foreign files are never in the store, so they can
-never *be* siblings (good) — but a new canonical-fallback path can still be
-shadowed. C inherits this failure mode rather than creating it; the existing
-precondition already handles it, and the diagnostic must name the inferred path and
-the matching pattern.
+([gitpath-foreign-content-stringency.md](gitpath-foreign-content-stringency.md)), aborting
+the flush. *Still live, and unrelated to inference: placement inherits this failure mode
+rather than creating it.*
 
-**P8 — Explainability becomes a hard requirement, not a nicety.** With A/B a user
-reads the CRD to know where a resource will go; with C the answer lives in the repo
-plus a precedence ladder. The scan/dry-run output **must** state, per new resource,
-the chosen path *and* the cohort + ladder step that produced it (e.g. "matched 9
-ConfigMaps in `all.yaml` via step 1"). Without that, "why did it land there?" is
-unanswerable. This is the one part of C that is genuinely *more* work than B, and it
-should be treated as in-scope, not optional polish.
+**P8 — Explainability becomes a hard requirement, not a nicety.** With A/B a user reads the
+CRD to know where a resource will go; with C the answer lived in the repo plus a precedence
+ladder, so the scan/dry-run output **must** state, per new resource, the chosen path and the
+cohort and ladder step that produced it. *It was never built, which is a fact worth keeping
+on this page: the feature shipped without the thing that made it defensible.* What exists
+now is the smaller obligation the smaller ladder deserves — `placements_total{source}` per
+(GitTarget, type), plus the per-resource log line naming the resolved path.
 
-**P9 — Cohort lookup cost at scale.** Naively, each new resource scans the store
-(O(store size)); a large repo × a big resync batch is O(N·M). Build the per-plan
-indexes (by resource type, by namespace) once from the snapshot and resolve against
-them. Minor, but real at cluster scale.
+**P9 — Cohort lookup cost at scale.** Each new resource scanned the store, so a large repo
+× a big resync batch was O(N·M). *Retired: there are no cohorts to index.*
 
-**P10 — It sharpens the stakes on exact indexing.** C trusts the store's
-file↔identity map to decide *where new things go*, not only how existing ones are
-edited. It is the same map match-first already depends on, so this is a sharpening
-of an existing requirement rather than a new one — but a misindexed existing
-document now also mis-routes future siblings, so the cost of an indexing bug is
-higher under C.
+**P10 — It sharpens the stakes on exact indexing.** C trusted the store's file↔identity map
+to decide where *new* things go, not only how existing ones are edited, so a misindexed
+document also mis-routed future siblings. *Partly retired: the map still decides
+match-first and append safety, but a bad index can no longer propagate into a layout.*
 
-### Validation and acceptance (reuses the existing gate)
+### Validation and acceptance
 
-- C adds **no policy to validate** — there is no template to parse in the base
-  case. The only new runtime check is the sensitive backstop: a resolved sensitive
-  path must be identity-complete and must use the encrypted writer. If the
-  inferred sibling cohort cannot prove that, placement falls back to the secure
-  canonical path.
-- The resolved path still passes the existing path validation (under `spec.path`,
-  no `..`, correct suffix, inside discovery scope) and the existing
-  plaintext-append acceptance (never partially manage a file).
-
-### Keeping it small (C-specific limits)
-
-- infer only **directory** + **single-file-vs-bundle**; never reverse-engineer a
-  filename template beyond `{name}.yaml`;
-- one fixed precedence ladder; no configurable matching;
-- deterministic, documented tie-break; no per-resource status spam;
-- sensitive never infers across the plaintext boundary;
-- no retroactive moves when the repo layout changes — same rule as A and B.
+- There is no inferred policy left to validate. A declared template is validated
+  statically (see [Path validation](#path-validation)); the resolved path is validated at
+  runtime on every resolution path, and the sensitive backstop (identity-complete,
+  encrypted writer) is enforced at the write.
+- The resolved path still passes the existing path validation (under `spec.path`, no `..`,
+  correct suffix) and the existing plaintext-append acceptance (never partially manage a
+  file).
 
 ## Sensitive placement and uniqueness
 
@@ -1189,7 +1183,7 @@ If `v1/secrets` were not covered, `default: "all.yaml"` would be invalid for a
 GitTarget that can write Secrets, because a sensitive resource could otherwise
 land in a non-identity-complete bundle.
 
-### Brownfield import with no policy (Option C)
+### Brownfield import with no policy
 
 A user points a GitTarget at an existing folder and sets **no** `placement`. The
 folder already looks like:
@@ -1200,28 +1194,35 @@ clusters/prod/
   v1/secrets/app/db.yaml         # one Secret, encrypted, one-per-file
 ```
 
-A new ConfigMap `cache` in namespace `app` arrives:
+A new ConfigMap `cache` in namespace `app` arrives. There is no declaration and no
+kustomization, so it lands at the canonical path
+**`clusters/prod/app/configmaps/cache.yaml`** — *not* appended to `all.yaml`. The same for a
+new Secret, at the canonical encrypted path. The user's bundle is not extended, because
+nothing told the operator it was a convention rather than a coincidence, and it counts:
 
-- step 1 finds the type-cohort "ConfigMaps", which lives entirely in `all.yaml` (a
-  bundle) → the new document is **appended to `all.yaml`** — no `configmaps.yaml`
-  guessed, no canonical tree created.
+```promql
+sum by (gittarget_name, group, version, resource) (
+  increase(gitopsreverser_placements_total{source="canonical"}[24h])
+)
+```
 
-A new Secret `api-token` in namespace `app` arrives:
+That series is the prompt to declare what the folder means:
 
-- it is sensitive, so plaintext siblings are ignored; the only sensitive cohort is
-  `v1/secrets/app/` one-per-file → a new encrypted
-  **`v1/secrets/app/api-token.yaml`**.
+```yaml
+placement:
+  byType:
+    v1/configmaps: "all.yaml"
+```
 
-A new ConfigMap in a *new* namespace `billing` arrives:
+after which the same ConfigMap is appended to `all.yaml`, and the metric moves to
+`source="declared", disposition="appended"`. **This is the behaviour change**: before the
+Option C deletion the bundle was extended with no declaration at all. One line of YAML buys
+back the old behaviour, and it says on the page what used to be a guess.
 
-- step 1 misses (no `billing` ConfigMaps yet); the type-cohort is the `all.yaml`
-  bundle, so it is **appended to `all.yaml`** too — the bundle is namespace-agnostic,
-  so the new namespace needs no new segment.
-
-Nothing was configured; the layout the user already had simply continued. The same
-target with `placement.byType: { "v1/configmaps": "{namespace}/configmaps.yaml" }`
-in the B2 shape would instead route ConfigMaps into per-namespace files — B
-overriding C where the user has an opinion.
+If instead the folder is a kustomize overlay — one `kustomization.yaml` governing the whole
+subtree — no declaration is needed: the new document lands beside it and joins its
+`resources:` list, `source="kustomize_root"`, because a file that root cannot reach would
+never be applied.
 
 ## Keeping it small
 
@@ -1229,11 +1230,11 @@ The placement model can get too clever quickly. The first version should stay
 inside these limits:
 
 - GitTarget-level only;
-- default to inference (C); declare a layout (B) only when inference cannot reach
-  it (a layout that does not exist yet, or a custom per-namespace pattern that must
-  extend to unseen namespaces — P4);
-- C infers **directory + bundle-vs-file only** — never a filename or path-segment
-  template (that is B's job);
+- three resolution steps and no more: declared, the folder's single kustomize root,
+  canonical. Nothing reads the layout of other documents to guess an intent (that was
+  Option C, removed);
+- a layout the ladder cannot reach is **declared**, not inferred — and the
+  `placements_total{source="canonical"}` series is how its absence is noticed;
 - keep sensitivity as an internal write-safety classifier, not a second public
   placement namespace;
 - prefer exact type-map overrides plus defaults unless ordered matching proves
@@ -1254,11 +1255,13 @@ catch-all layout.
 
 ## Implementation sketch
 
-1. Settle the surface: **B2 is the declared API, C is the default.**
+1. Settle the surface: **B2 is the declared API; the fallbacks carry no API at all.**
    - B2: one top-level type map (`placement.byType`) plus one
      `placement.default`; sensitivity is applied as write policy after placement
      resolves;
-   - C (default): no API surface — it resolves against the content-derived store;
+   - the kustomize-root fallback and the canonical path: no API surface, and no
+     off-switch — see the note on `spec.placement.mode` in
+     [`open-asks-priority.md`](../design/open-asks-priority.md);
    - A: ordered `sensitiveRules` / `normalRules`, a later escape hatch only, not
      implemented.
 2. Add the CRD field:
@@ -1273,20 +1276,16 @@ catch-all layout.
    }
    ```
 
-4. The default implementation is **Option C, not bare canonical.** Provide it as a
-   `PlacementPolicy` that resolves against the store; with no `spec.placement` and
-   an empty repo it falls through to `ResourceIdentifier.ToGitPath()`, so output is
-   byte-identical to today, and once siblings exist it follows them. When B is
-   present, B is consulted first and C fills every gap B leaves (canonical becomes
-   C's step-4 fallback, not the whole policy). The C resolver must:
-   - read cohorts from the **pre-plan store snapshot** only (P2), via per-plan
-     by-type and by-namespace indexes (P9);
-   - resolve a whole batch of new creates together so placement is
-     order-independent (P2), reusing step 8's grouping;
-   - never let a sensitive resource infer across the plaintext boundary (it uses
-     other encrypted/sensitive siblings or the secure canonical fallback);
-   - emit, for every new create, the chosen path plus the cohort and ladder step
-     that produced it, into the scan/dry-run output (P8).
+4. The fallback is the **kustomize root, then bare canonical.** B is consulted first;
+   with no `spec.placement` the resolver looks for exactly one supported writable
+   kustomization and otherwise returns `ResourceIdentifier.ToGitPath()`. It must:
+   - read the store from the **pre-plan snapshot** only, so a batch of new creates is
+     order-independent — one new resource must never become another's context (P2);
+   - never let a sensitive resource join a plaintext file, or a plaintext resource an
+     encrypted one; refuse instead, with a bounded reason;
+   - count every resolution by `{source, disposition}` and every refusal by `{reason}`,
+     labelled with the GitTarget and the type, which is the smaller obligation that
+     replaces P8's never-built cohort trace.
 5. Parse and validate path templates once per GitTarget reconcile. Sensitive
    resources must resolve to identity-complete paths and must be written through
    the encrypted writer; the selected filename suffix is not the contract.
@@ -1302,11 +1301,18 @@ catch-all layout.
    - write or append multi-document YAML only for accepted plaintext files.
 9. Add sensitive collision checks before rendering encrypted bytes; this is a
    runtime backstop behind the static identity-completeness validation.
-10. Surface placement skips. **Implemented as:** each fail-safe skip is logged
-    per-resource at the skip site and counted in the resync summary
-    (`ResyncStats.PlacementSkipped`, distinct from the planner's `Skipped`). A
-    dedicated GitTarget status condition and a scan/dry-run "why here" trace remain
-    future work (see open questions).
+10. Surface placement outcomes. **Implemented as:** every **successful** placement — one new
+    document actually in the mirror — increments
+    `gitopsreverser_placements_total{source, disposition, gittarget_namespace,
+    gittarget_name, group, version, resource}` and every refusal
+    `gitopsreverser_placement_refusals_total{reason, …}` with the same target/type labels;
+    a new file's `resources:` entry is counted by
+    `gitopsreverser_placement_kustomization_entries_total{outcome}`, whose `failed` value
+    is the otherwise-invisible "committed but outside every render". Each fail-safe skip
+    is still logged per-resource at the skip site and counted in the resync summary
+    (`ResyncStats.PlacementSkipped`, distinct from the planner's `Skipped`). A GitTarget
+    status surface (`status.layout`) remains future work — see
+    [`open-asks-priority.md`](../design/open-asks-priority.md), B2.
 11. Update chart docs and examples after the API shape is settled.
 
 ## Tests
@@ -1334,27 +1340,45 @@ Unit tests:
 - existing moved manifests are updated in place and do not re-run placement;
 - policy changes do not move existing files.
 
-Option C (sibling inference) unit tests:
+Resolution-ladder unit tests:
 
-- empty repo reproduces `ResourceIdentifier.ToGitPath()` exactly (C ≡ canonical at
-  cold start);
-- a new resource whose type-cohort is a bundle is appended to that bundle file;
-- a new resource whose type-cohort is one-per-file gets a new `{name}.yaml` beside
-  the siblings;
-- a sensitive resource never joins a plaintext bundle and uses the secure
-  canonical encrypted path when only plaintext siblings exist;
-- cohort tie-break is deterministic: most members, then lexically-smallest
-  directory, then file (P1);
-- a batch of new creates against an empty snapshot is order-independent — all
-  canonical, regardless of input order (P2);
-- a declared B entry outranks any inferred cohort (P1);
-- a new namespace under a custom per-namespace layout falls back to canonical, while
-  a new namespace under the canonical layout is unchanged (P4);
-- the new file inherits its sibling's `NamespaceSource` (namespace omitted beside
-  namespace-less kustomize-context siblings, written beside explicit-namespace
-  ones);
-- an inferred path that collides with a `.gittargetignore` pattern fails via the
-  write-time precondition, naming the inferred path (P7).
+- an empty repo reproduces `ResourceIdentifier.ToGitPath()` exactly;
+- **every layout sibling inference used to read resolves canonical** — a bundle of the same
+  type in the same namespace, one-document-per-file, a per-namespace bundle, a directory per
+  namespace, a single directory holding one namespace, a bundle spanning two namespaces, and
+  a shared directory spanning two. One table, because it is one contract: the destination
+  does not depend on where the other documents of the type live;
+- the `kube-root-ca.crt`-shaped case keeps its own named test: an object that exists under
+  the same name in every namespace is never filed onto the first namespace's file, which is
+  the cascade the deletion retires;
+- a declared entry outranks both fallbacks;
+- a batch of new creates against one snapshot is order-independent;
+- two supported kustomizations are ambiguous and fall to canonical; one supported
+  kustomization places beside it and reports the `resources:` entry to add; an unsupported
+  one is never edited or used as a root;
+- namespace inheritance: omitted when the governing kustomization's `namespace:` matches the
+  resource's own namespace (for a declared path as well as the kustomize-root one), written
+  explicitly when it names a different namespace, and never claimed with no context;
+- a sensitive resource never joins a plaintext file and never reuses an existing
+  `.sops.yaml` directory without a declaration;
+- a declared path onto a file holding a non-editable construct never appends;
+- refusals carry their bounded reason, and each is counted: an escaping template
+  (`invalid_path`), a sensitive collision (`sensitive_append`), a plaintext resource routed
+  at an encrypted file (`plaintext_onto_encrypted`), and mixed sensitivity onto one new file
+  (`mixed_sensitivity_new_file`);
+- a resolved path that collides with a `.gittargetignore` pattern fails via the write-time
+  precondition, naming the path (P7).
+
+Metric tests (`internal/git/placement_metrics_test.go`), driving the real write path:
+
+- a canonical fall-back is labelled with the GitTarget and the type key a `byType` line
+  would name — the labels are the feature, so they are asserted rather than the count alone;
+- declared and kustomize-root placements are distinguishable from canonical, and
+  `kustomize_root` is never counted as a fall-back;
+- a declared bundle records `disposition="appended"`;
+- a refused resource is counted as a refusal and **never also** as a placement;
+- a `resources:` entry that could not be added is counted as `failed`;
+- a resync's create carries the same target labels as a live create.
 
 Integration/e2e tests:
 
@@ -1380,19 +1404,25 @@ Integration/e2e tests:
   model, or should flat discovery be dropped before placement rules land?
 - Should placement rule matches include `watchRuleNames` later for users who want
   rule-origin-aware placement without moving policy onto WatchRule?
-- For Option C, should step 3 (same namespace, any type) ship at all, or only fire
-  into an already-heterogeneous bundle file (P5)? Dropping it keeps inference to
-  per-type cohorts and canonical, and pushes the namespace-bundle layout onto B.
-- Should C ever offer a one-time, opt-in "adopt/normalize" pass that *does* move
-  existing files to a declared B layout, or is non-retroactive placement absolute?
-  (Today both A/B and C never move existing files; this would be a deliberate,
-  separate, destructive feature.)
-- How much of C's cohort/ladder reasoning belongs in GitTarget *status* versus the
-  scan/dry-run output (P8)? Status must stay bounded; the per-resource "why here"
-  trace likely belongs only in the dry-run.
-- When B and C disagree for a resource (B names a path, C would infer another),
-  confirm B always wins and C only fills B's gaps — and that this precedence is
-  visible in the dry-run.
+- ~~For Option C, should step 3 (same namespace, any type) ship at all (P5)?~~ **Closed by
+  the removal**: step 3 was never implemented and the ladder it belonged to is gone.
+- ~~When B and C disagree, confirm B always wins.~~ **Closed**: there is nothing left to
+  disagree with. A declaration is consulted first and the fallbacks are structural.
+- Should a one-time, opt-in "adopt/normalize" pass ever move *existing* files to a declared
+  layout, or is non-retroactive placement absolute? Today nothing moves an existing
+  document; this would be a deliberate, separate, destructive feature. The removal makes it
+  more interesting, not less: a brownfield folder that wants its bundle back declares it,
+  and the documents already at canonical paths stay where they are.
+- How much of the "why here" answer belongs in GitTarget *status* rather than in a metric?
+  `placements_total{source}` says which (target, type) fell back; it does not say what the
+  operator understood about the folder, and it expires with the scrape window. That is what
+  `status.layout` (B2 in the config-surface doc) is for, and the two are complements: a
+  status field is what a `kubectl get -o yaml` in a bug report contains.
+- Whether the first canonical fall-back for a (target, type) should also raise a
+  `corev1.Event` on the GitTarget for timeliness. Placement runs on the branch worker, which
+  has no recorder and no reconcile context, so this is a hand-back over the existing
+  refusal→condition seam rather than a one-line addition — see the same section of
+  [`open-asks-priority.md`](../design/open-asks-priority.md).
 - Should the Validated gate learn about operator-configured *additional* sensitive
   types (beyond core Secrets) so a bundling `default` that could catch one is
   rejected up front, instead of relying on the write-time guards to skip those

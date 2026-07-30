@@ -289,12 +289,14 @@ func TestResync_FoldsCreateUpdateDropTogether(t *testing.T) {
 	_, dropErr := os.Stat(dropFull)
 	assert.True(t, os.IsNotExist(dropErr))
 
-	// Placement: with existing ConfigMap siblings ("keep", "drop") each in their own file
-	// under apps/, a genuinely new ConfigMap follows that established layout
-	// (Option C sibling inference) rather than the canonical GVR-tree path.
-	freshInferred := filepath.Join(root, "apps", "fresh.yaml")
-	_, freshErr := os.Stat(freshInferred)
-	assert.NoError(t, freshErr, "the created resource lands beside its siblings under apps/")
+	// Placement: the existing ConfigMaps under apps/ do not decide where a genuinely new
+	// one goes. With no declared policy and no kustomize root, the create lands at the
+	// canonical path — the same answer the live-event path gives, which is the point: a
+	// resync must not place a resource anywhere a steady-state create would not.
+	_, siblingErr := os.Stat(filepath.Join(root, "apps", "fresh.yaml"))
+	assert.True(t, os.IsNotExist(siblingErr), "apps/ is not inferred from the siblings")
+	_, freshErr := os.Stat(filepath.Join(root, "default", "configmaps", "fresh.yaml"))
+	assert.NoError(t, freshErr, "the created resource lands at the canonical path")
 }
 
 // A fail-safe placement refusal during resync is counted in PlacementSkipped, not

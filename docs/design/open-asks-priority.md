@@ -2,8 +2,17 @@
 
 > **design**: a priority call, not a plan of record. Nothing here binds until scheduled.
 > Index: [`../INDEX.md`](../INDEX.md)
-> Date: 2026-07-29. Written against `v0.40.1` / `main` plus the attribution branch
-> (`feat/attribution-sticky-removal-pointer`), which is where the largest item on this page went.
+> Date: 2026-07-29, swept 2026-07-30 against the 0.41.0 release.
+>
+> **Where this stands as of the sweep.** `0.41.0` is the attribution release: the fact stream, the
+> sticky removal pointer, the metric relabel, the name tier, and the analyzer/encoder corrections,
+> plus PR #291's sibling-inference deletion and placement counters. That is a large breaking release
+> on its own, and **the GitTarget work is deliberately not in it**. The layout model and the API wave
+> ([`gittarget-layout-model.md`](gittarget-layout-model.md),
+> [`gittarget-api-wave.md`](gittarget-api-wave.md)) are postponed to a later deployment and tracked as
+> GitHub issues, so the queue below is read with one standing caveat: **every Tier 2 entry that
+> changes a `GitTarget` field is now part of that postponed wave, not independently schedulable.**
+> The Tier 1 entries are not, and should not wait for it.
 >
 > **The queue was built bottom-up rather than top-down.** Tier 0 and Tier 1 are still unbuilt, and
 > the Tier 2 item nobody scheduled — the attribution fact stream — shipped anyway, together with a
@@ -54,7 +63,13 @@ do not own.
 
 ---
 
-## The one real design call: delete sibling inference, do not switch it off
+## The one real design call: delete sibling inference, do not switch it off — SHIPPED
+
+> **Built.** `resolveInferred` through `allSameDir` are gone, the kustomize-root fallback stayed, and no
+> enum was added. What building it added to the argument below is recorded in
+> [what the deletion taught](#what-the-deletion-taught). The spec's Option C sections are retained as
+> history in [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md),
+> and the behaviour change has a [`docs/UPGRADING.md`](../UPGRADING.md) entry.
 
 The config-surface proposal's **B3** offers `spec.placement.mode: Infer|Declared|Strict`: an
 enum that lets a user turn inference off. This document argues the opposite: **remove Option C's
@@ -170,39 +185,94 @@ and the word *Event* meant a real `corev1.Event` through
 **The shape that follows is a split, not one of the three.** An **Event on the GitTarget** for
 timeliness, over the existing refusal seam plus an enqueue; and **`status.layout` (B2)** for
 durability, because "what the operator understood about this folder" is where someone looks a day
-later. The log line stays. A Prometheus counter is the one to argue *against* leading with:
-`placement_fell_back_total` says it happened somewhere, not which type in which target, which is the
-only actionable part.
+later. The log line stays.
+
+**What shipped, and where this paragraph was wrong.** A Prometheus counter was the one this document
+argued *against* leading with, on the grounds that `placement_fell_back_total` says it happened
+somewhere and not which type in which target. That objection was to the **labels**, and it does not
+survive them being fixed: `placements_total{source, disposition, gittarget_namespace, gittarget_name,
+group, version, resource}` names the target and the exact `byType` key, so one series **is** the line
+that is missing. It shipped with two companions the argument had not asked for and should have —
+`placement_refusals_total{reason}`, because a resource the writer *declined* to place had no
+countable trace at all, and `placement_kustomization_entries_total{outcome}`, whose `failed` value is
+a file committed outside every render. The Event and `status.layout` are still the right split for
+timeliness and durability, and neither is built; what is no longer true is that there was nothing
+actionable in a metric.
+
+### What the deletion taught
+
+Three things came out of building it that the argument above did not contain.
+
+- **Deleting the inference exposed a second implementation of a rule, not just the rule.** "Omit
+  `metadata.namespace`, the build context supplies it" was read off a *sibling's bytes*, so it only
+  ever fired for an inferred placement. A **declared** path into the same kustomize directory wrote a
+  `namespace:` line every other document in that folder omits. The obligation belongs to the
+  kustomization that governs the destination, not to whatever document happened to be next door, and
+  moving it there fixed the declared path for free.
+- **And that rule was missing its safety half.** The old kustomize-root fallback asked only whether a
+  `namespace:` transformer was *set*, never whether it named the resource's own namespace. Omitting
+  the namespace hands it to kustomize, so a transformer naming a different namespace rendered the
+  document as a different object: the mirror claimed to hold a resource it did not. It now writes the
+  namespace explicitly in that case and lets the render oracle report a folder that cannot express
+  the object. This was reachable before the deletion and is one of the things the deletion's own
+  test table found.
+- **The write path had no identity to label with, and that is why it had no metrics.** `LocateNew`
+  runs on the branch worker with no reconcile context, which this document already noted about the
+  Event. The same fact is why the placement counters did not exist: there was no GitTarget on the
+  batch to name. It is one field, taken from the events on the live path and from the resolved
+  metadata on the resync path — deliberately both, because which of the two created a file is not
+  something the operator chose, and a fall-back visible for one and invisible for the other would be
+  worse than neither.
 
 ---
 
 ## The queue
 
-| # | Ask | Source | Tier |
-|---|---|---|---|
-| 15 | A declared `auditRoute` with zero facts must say so, and a route losing them with it | gitops-api | **1** |
-| n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** |
-| n/a | Delete sibling inference (answers #10) | this doc | **1** |
-| F6 | `spec.suspend`, `spec.interval`, `requestedAt` | maintainer review | **2** |
-| 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** |
-| B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** |
-| B1 | `GitTarget.spec.mode: Observe\|Write` | config surface | **2** |
-| 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **2** |
-| F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** |
-| n/a | The blocking resolve is head-of-line on the shard goroutine | [`attribution-branch-findings.md`](attribution-branch-findings.md) | **2** |
-| B2 | `GitTarget.status.layout` | config surface | **3** |
-| F9 | The `scope: Namespaced` status-write envtest | maintainer review | **3** |
-| B6 | The `default` ClusterProvider not-found message | config surface | **3** |
-| n/a | An aggregated create carries no name and no body: accept it, or stop waiting for it | [`attribution-branch-findings.md`](attribution-branch-findings.md) | **3** |
-| n/a | Entry-size ceiling and per-type stream count under a few hundred watched types | [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) | **3** |
-| 10 | Namespace-aware sibling inference *as asked* | gitops-api | **declined** |
-| B3 | `spec.placement.mode` enum | config surface | **declined** |
+**Filed** means there is a GitHub issue, so the item is legible without this page. **Wave** means it is
+part of the postponed breaking GitTarget sequence ([#294](https://github.com/ConfigButler/gitops-reverser/issues/294))
+and is not independently schedulable.
+
+| # | Ask | Source | Tier | Tracked |
+|---|---|---|---|---|
+| 15 | A declared `auditRoute` with zero facts must say so, and a route losing them with it | gitops-api | **1** | — |
+| n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** | — |
+| n/a | A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | **1** | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) |
+| n/a | `spec.layout`: declare what the folder is | [`gittarget-layout-model.md`](gittarget-layout-model.md) | **2** | [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), wave |
+| F6 | `spec.suspend`, `spec.interval`, `requestedAt` | maintainer review | **2** | wave |
+| 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** | wave |
+| B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
+| B1 | `GitTarget.spec.mode: Observe\|Write` | config surface | **2** | wave |
+| 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **2** | wave |
+| F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** | wave |
+| n/a | The blocking resolve is head-of-line on the shard goroutine | [`../spec/attribution.md`](../spec/attribution.md#the-wait) | **2** | — |
+| B2 | `GitTarget.status.layout` | config surface | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
+| n/a | The ambiguous render root, the `declared` metric split, `{kindLower}`, canonical-as-template | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
+| F9 | The `scope: Namespaced` status-write envtest | maintainer review | **3** | outside the wave, deliberately |
+| B6 | The `default` ClusterProvider not-found message | config surface | **3** | — |
+| n/a | An aggregated create carries no name and no body: accept it, or stop waiting for it | [`../spec/attribution.md`](../spec/attribution.md#what-the-shape-driven-rules-reach-and-what-they-do-not) | **3** | — |
+| n/a | Entry-size ceiling and per-type stream count under a few hundred watched types | [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) | **3** | — |
+| 10 | Namespace-aware sibling inference *as asked* | gitops-api | **declined — answered by the deletion, SHIPPED** | — |
+| B3 | `spec.placement.mode` enum | config surface | **declined** | — |
+
+**One entry moved up in this sweep.** The declared-path-in-a-subdirectory bug is Tier 1, not Tier 3,
+under this page's own first test: one line of ordinary user configuration silently produces a file that
+is in Git and rendered by nothing, and nothing in status or in the counters says so. That is the
+product being silently wrong, which is what Tier 1 is for. It was written down as a finding rather than
+ranked, because it was found while arguing about metric names.
 
 ### Already shipped, and struck from the queue
 
-Four things left this page between 2026-07-28 and 2026-07-29, all on
-`feat/attribution-sticky-removal-pointer`. They are listed rather than deleted because two of them
-change what the *remaining* entries should be.
+Everything in this section is in **0.41.0**. Four items left this page between 2026-07-28 and
+2026-07-29 on `feat/attribution-sticky-removal-pointer`, two more arrived with #290, and the
+placement break arrived with #291. They are listed rather than deleted because several of them change
+what the *remaining* entries should be.
+
+The release is worth naming as one thing, because it is what makes postponing the GitTarget wave the
+right call rather than a delay: **0.41.0 replaces the whole attribution model** (a fact keyspace
+becomes a per-type stream, the resolver stops polling Redis, the metric surface is relabelled, and
+three populations that used to ship committer-authored now resolve) **and breaks placement**
+(sibling inference is gone). Two breaking dimensions in one release is already a lot to ask a consumer
+to absorb. A third, on the shape of `GitTarget` itself, is a separate conversation.
 
 - **The attribution fact stream** (was the largest Tier 2 entry). Built as #283, #284, #286 and #287:
   the audit receiver appends one batched entry per type to a per-`(route, group/resource)` stream,
@@ -211,8 +281,9 @@ change what the *remaining* entries should be.
   `exact_deletecollection_item` is replaced by `deletecollection_body_uid` and
   `deletecollection_scope`, and `--author-attribution-transport=memory` runs attribution with no
   Redis on one replica. Record: [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md).
-  §5, §6 and §8 of [`deletecollection-attribution-expander.md`](../spec/deletecollection-attribution-expander.md)
-  have been rewritten to say what took their place, which discharges commitment 6 below.
+  the expander spec has been folded into [`../spec/attribution.md`](../spec/attribution.md), which keeps
+  its deletion-as-intent rule as §1 and drops the sections about the deleted machinery. That discharges
+  commitment 6 below.
 - **#23 — deletion-as-intent picked the cleanup controller, not the deleter.** Filed in revision 11
   and fixed before it was ranked, because the reproduction fell out of the switchover's own corpus:
   the human's `delete` and the controller's finalizer `patch` both return a body carrying the
@@ -222,16 +293,16 @@ change what the *remaining* entries should be.
   about a write, keyed strictly by uid, consulted ahead of the exact tier for a removal, bounded by
   the index's caps rather than the join TTL. Ships `delete_sticky` on
   `attribution_resolutions_total{tier}`. Record:
-  [`attribution-deletion-intent-actor.md`](attribution-deletion-intent-actor.md).
+  [`../spec/attribution.md`](../spec/attribution.md#three-rules-that-are-easy-to-miss).
 - **A name tier**, which was not asked for by anyone. An aggregated-API write or single delete is
   audited with a name but no uid and no resourceVersion, so every stronger tier misses it and it used
   to ship committer-authored. Facts carrying neither identifier are now filed under
   `(namespace, name)` and consulted last. Record:
-  [`attribution-branch-findings.md`](attribution-branch-findings.md) §4.
+  [`../spec/attribution.md`](../spec/attribution.md#the-tiers-strongest-first).
 - **Phase 1 of the attribution metric surface.** `result` split into `tier` and `actor_kind`, the
   `no_attribution_fact` audit outcome, and the loss-path counters — including the stream decode
   error, which had no symptom at all. Record:
-  [`attribution-metrics-proposal.md`](attribution-metrics-proposal.md), migration in
+  [`../spec/attribution.md`](../spec/attribution.md#what-is-observable), migration in
   [`UPGRADING.md`](../UPGRADING.md).
 
 - **#22 — the analyzer contract's three false sentences**, all three fixed:
@@ -324,10 +395,10 @@ shipped with it already say when a follower is losing facts. Two consequences:
   losing facts and a route that never had any are the same user-visible failure: commits authored
   `unknown (attribution unresolved)`. One condition, two messages.
 
-Where `auditRoute` came from is [`attribution-fact-identity.md`](attribution-fact-identity.md).
+Where `auditRoute` came from is [`../spec/attribution.md`](../spec/attribution.md#the-scope-is-an-audit-route-and-a-type).
 The related question about *how the watch waits* is answered for the transport and reopened one
 level down: the six options in
-[`attribution-wait-poll-vs-push.md`](attribution-wait-poll-vs-push.md) are superseded by
+an earlier option analysis are superseded by
 [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md), and what remains is *when a
 removal should stop waiting*, immediately below.
 
@@ -351,9 +422,11 @@ What is explicitly *not* measured yet, and should be before either lands: how co
 never-resolved population is outside the e2e suite, and whether a quiet route's watermark advances
 often enough to be worth having. The one number we do have came from a single run.
 
-**The inference deletion** sits in this tier for the reason argued above: repo state changing
-operator behavior invisibly is the same class of defect as an audit route that silently resolves
-nothing.
+**The inference deletion — SHIPPED.** It sat in this tier for the reason argued above: repo state
+changing operator behavior invisibly is the same class of defect as an audit route that silently
+resolves nothing. What replaced it is a declaration plus
+`placements_total{source="canonical"}` per (GitTarget, type), so the same class of defect now has a
+query. `#10` and `B3` are answered by it and stay declined.
 
 ### Tier 2: the breaking wave, all at once, while `v1alpha3`
 
@@ -373,7 +446,7 @@ evidence the index already held, and the write behind them missed the commit win
 The lookup-ordering half is fixed (that is what the sticky pointer and the tier reordering did), and
 the structural half is untouched: *any* removal that must wait out its grace still stalls every later
 event on its shard. Two directions, from
-[`attribution-branch-findings.md`](attribution-branch-findings.md):
+[`../spec/attribution.md`](../spec/attribution.md#the-wait):
 
 1. **Bound the removal's extra wait separately from the grace.** Once a fallback is in hand the fact
    stream for that scope is demonstrably live, so what is outstanding is an audit-batch interval
@@ -473,7 +546,7 @@ likely first-run support ticket.
 **The aggregated create: decide, and the decision is small either way.** The name tier reaches an
 aggregated update, patch and single delete. It cannot reach a create: the `objectRef` carries no name
 and there is no response body to recover one from, so nothing is published for any tier to join. Two
-non-exclusive options, from [`attribution-branch-findings.md`](attribution-branch-findings.md) —
+non-exclusive options, from [`../spec/attribution.md`](../spec/attribution.md) —
 **accept it** (document that per-object attribution does not apply, and let it ship
 committer-authored, which makes the guarantee type-dependent in a way a user cannot predict from the
 API surface), or **stop paying for it** (recognize the shape at publish time and skip the grace, which
@@ -497,13 +570,21 @@ defects.
 
 ## What this commits us to
 
-1. A `feat(api)!` sequence for Tier 2, landed together, with one `docs/UPGRADING.md` entry.
-2. A behavior change (inference removal) that needs its own UPGRADING entry and a decision on the
-   fall-back-to-canonical Event.
-3. Rewriting Option C's sections in
-   [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md). That
-   document binds the code, so the ladder cannot be deleted from one and left in the other. The
-   kustomize-root fallback keeps its section; P1–P10 become history rather than live risks.
+1. A `feat(api)!` sequence for Tier 2, landed together, with one `docs/UPGRADING.md` entry — **and
+   not in this release.** It is tracked as [#294](https://github.com/ConfigButler/gitops-reverser/issues/294)
+   with the layout model as [#293](https://github.com/ConfigButler/gitops-reverser/issues/293). The
+   commitment this sweep adds is the negative one: 0.41.0 ships the attribution model and the
+   placement break, the wave waits, and no half of the wave is allowed to land on its own — because
+   the reason to batch it was never only the consumer's bump, it was that four of the items are one
+   decision and deciding it four times is how the object stops reading as one idea.
+2. ~~A behavior change (inference removal) that needs its own UPGRADING entry and a decision on the
+   fall-back-to-canonical Event.~~ **Done for the removal and the entry**; the Event is still
+   undecided, and the metric now carries the actionable part in the meantime.
+3. ~~Rewriting Option C's sections in
+   [`gittarget-new-file-placement-rules.md`](../spec/gittarget-new-file-placement-rules.md).~~
+   **Done**: the ladder is documented as three steps, the kustomize-root fallback keeps its section
+   and gained the namespace-match rule, and P1–P10 are annotated one by one with which are retired by
+   the deletion and which (P7, P9, P10) are facts about the code that remains.
 4. Telling the gitops-api team which two of their asks we are answering differently, before they
    build against the shapes they proposed — and that **#23 is fixed**, that the fix has a name
    (`delete_sticky` on `attribution_resolutions_total{tier}`) they can assert on, and that the
@@ -514,8 +595,18 @@ defects.
    ~~Specifying it in transport-neutral terms before the stream work starts~~ — the stream landed
    first, which makes this cheaper rather than harder.
 6. ~~Retiring §5 and §8 of the expander spec when the expander goes~~ — **done**: §5, §6 and §8 of
-   [`deletecollection-attribution-expander.md`](../spec/deletecollection-attribution-expander.md)
-   now say what replaced them, and §2's deletion-as-intent rule is kept, which the collection join
-   and the sticky pointer both depend on.
+   the expander spec are gone with the spec itself, folded into
+   [`../spec/attribution.md`](../spec/attribution.md). Its deletion-as-intent rule is kept as §1, which
+   the collection join and the sticky pointer both depend on.
 7. Deciding the removal-wait question (F, then C) with a measurement rather than by argument, since
    the one number on the table came from a single e2e run whose population is not a workload.
+8. Keeping attribution documented in **one** place. Six design records described one part each while
+   it was being built; they are folded into [`../spec/attribution.md`](../spec/attribution.md), which
+   binds, and the only reasoning trail kept in full is
+   [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md). The commitment is that a
+   change to attribution behaviour changes that spec, rather than adding a seventh record.
+9. Not letting a decided-but-unbuilt list read as imminent. The placement work is filed as
+   [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) (correctness) and
+   [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) (visibility);
+   [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md)
+   now says which of its eight items shipped, which is **none of them**.

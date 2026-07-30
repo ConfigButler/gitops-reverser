@@ -350,6 +350,12 @@ func (w *BranchWorker) applyResyncToWorktree(
 		target.Placement,
 		scoped.writeSubdir,
 	)
+	// The resync's events are synthesised from the desired snapshot and carry no GitTarget
+	// identity of their own, so the placement metrics take it from the resolved metadata. A
+	// resync creates resources exactly as the live path does, and its placements must land in
+	// the same series — otherwise a fall-back to canonical would be visible for a live create
+	// and invisible for the reconcile that produced the same file.
+	batch.target = placementTarget{namespace: target.Namespace, name: target.Name}
 	// First materialization is the adoption gate: refuse a subtree that holds content the
 	// operator cannot safely manage (unsupported kustomization, duplicate identity, impure
 	// or non-KRM files, foreign content, a catastrophic .gittargetignore) and commit nothing,

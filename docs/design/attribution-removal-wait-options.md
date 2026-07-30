@@ -191,8 +191,9 @@ a route has produced a long run of unresolved events. Extend that to `(route, gr
 use it to decide the wait: a type that has never once produced a fact on this route is not going to
 start, so a removal on it should take its fallback immediately.
 
-This is the [circuit breaker](attribution-wait-poll-vs-push.md#option-c-circuit-break-a-route-that-has-never-resolved-anything)
-the earlier record already proposed, applied to the case that turns out to need it.
+This is the circuit breaker an earlier record already proposed for a route that has never resolved
+anything, applied to the case that turns out to need it. The loud-route warning it extends is in
+[the attribution spec](../spec/attribution.md#the-scope-is-an-audit-route-and-a-type).
 
 - **For**: it targets situation 5 exactly, and for the dominant cause — a type the audit policy
   drops — it is not a heuristic but a fact about the configuration: the type is excluded, so it

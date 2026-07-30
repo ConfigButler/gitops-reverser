@@ -7,9 +7,9 @@
 > below maps to a stage in [Common Flows](../architecture.md#common-flows). The live baseline and the
 > documentation bar come from [interpreting-metrics.md](../interpreting-metrics.md). This doc is the
 > single canonical metrics plan — it supersedes the per-feature metric notes now in `finished/`, and
-> it now **absorbs** the attribution surface designed in
-> [attribution-metrics-proposal.md](attribution-metrics-proposal.md), which stays as the reasoning
-> trail for why that surface has the shape it does.
+> it now **absorbs** the attribution surface that was designed in a separate proposal, since
+> consolidated into [the attribution spec](../spec/attribution.md#what-is-observable). This document
+> owns the plan; that one owns the shipped surface.
 
 ## 1. Why now
 
@@ -30,7 +30,7 @@ uniformly dark. What is left is a sharper, smaller list:
 - **The delay between an event arriving and being processed** is unmeasured, and it is a proven
   failure mode rather than a theoretical one: a slow resolution head-of-line blocks its shard, which
   is what broke a CommitRequest e2e spec (see
-  [attribution-publish-and-join.md → what that cost](attribution-publish-and-join.md#what-that-cost-and-the-fix)).
+  [the attribution spec → the wait](../spec/attribution.md#the-wait)).
 - **Attribution was instrumented but mislabelled**, and Phase 1 has now fixed it: `result` crammed a
   tier and an actor kind into one label, `weak` covered two different kinds of evidence, and the wait
   histogram could not tell a write from a removal — exactly the distinction the removal-wait design
@@ -101,6 +101,7 @@ to it is [interpreting-metrics.md](../interpreting-metrics.md).
 | Audit ingress | `audit_eventlists_total`, `_eventlist_events_total`, `_eventlist_duration_seconds`, `audit_events_total{outcome,category,group,version,resource,verb}` | ✅ good |
 | Attribution publish & join | `attribution_resolutions_total{tier,actor_kind,…}`, `attribution_resolution_wait_seconds{tier,event_kind,…}`, `attribution_facts_total{op}`, `attribution_fact_index_entries`, `_index_evictions_total{reason}`, `_stream_gaps_total{stream}`, `_stream_decode_errors_total{transport}`, `_fact_follower_errors_total{transport}`, `_fact_follower_last_success_timestamp_seconds`, `_collection_without_uidset_total{reason}`, `attribution_transport_info{transport}` | ✅ good (Phase 1 shipped) |
 | Git write | `commits_total{provider_*,branch,author_kind}`, `git_operations_total`, `objects_written_total`, `prune_retained_documents_total`, `branch_worker_queue_depth`, `resync_sweep_deletes_total` | 🟡 no push latency / conflict |
+| New-file placement | `placements_total{source,disposition,gittarget_*,group,version,resource}`, `placement_refusals_total{reason,…}`, `placement_kustomization_entries_total{outcome,gittarget_*}` | ✅ good — shipped with the Option C deletion |
 | Control plane / reconcile | `target_reconcile_completed_total`, `resync_background_failures_total`, `watched_types` | ✅ good |
 | Secret encryption | `secret_encryption_{attempts,success,failures,cache_hits,marker_skips}_total` | ✅ good |
 
@@ -185,6 +186,15 @@ records the metric at the smallest honest boundary.
 |---|---|---|---|
 | `git_push_duration_seconds` | histogram | `provider_*`, `branch` | push latency (re-added with a recording site and doc row) |
 | `git_push_conflicts_total` | counter | `provider_*`, `branch` | non-fast-forward → fetch/reset/replay retries ([PushAtomic](../../internal/git/git_atomic_push.go) detects a moved remote; [BranchWorker](../../internal/git/branch_worker.go) fetches, rebuilds, and retries) |
+| `placements_total` | counter | `source`, `disposition`, `gittarget_*`, `group`, `version`, `resource` | ✅ shipped — "why did this file land here?", and which (target, type) needs a `placement.byType` line (`source="canonical"`) |
+| `placement_refusals_total` | counter | `reason`, `gittarget_*`, `group`, `version`, `resource` | ✅ shipped — which resources are **not** in the mirror, and why. Replaces a log line plus `ResyncStats.PlacementSkipped` |
+| `placement_kustomization_entries_total` | counter | `outcome`, `gittarget_*` | ✅ shipped — `failed` is a file committed outside every render: in Git, looks mirrored, applied by nothing |
+
+**Note on `placements_total`, since this plan argued the other way.** An earlier revision of the
+priority queue said to argue *against* leading with a `placement_fell_back_total`, because "it happened
+somewhere" is not actionable. That objection was to the **labels**, not to the counter: with the
+GitTarget and the type key on it, one series reads directly as the `byType` line that is missing. The
+per-resource detail (path, name) deliberately stays in the log line.
 
 ### 4.6 Catalog, reconcile, secrets
 
@@ -196,7 +206,7 @@ rules/CRDs change (pairs with `target_reconcile_completed_total{trigger=rule_cha
 
 This is the subsystem to keep glass-box, and it is the one that changed most. The model is now two
 halves that never call each other, meeting only through the keys a fact was filed under
-([attribution-publish-and-join.md](attribution-publish-and-join.md)):
+([the attribution spec](../spec/attribution.md)):
 
 ```text
 kube-apiserver --POST--> /audit-webhook --gate--> append one entry per type to the fact stream
@@ -257,7 +267,7 @@ that found the window race had to *infer* "these were `latest` matches held as f
 distribution, because the label could not say it.
 
 The tier ladder itself, strongest first, is documented in
-[attribution-publish-and-join.md → the tiers](attribution-publish-and-join.md#the-tiers-strongest-first);
+[the attribution spec → the tiers](../spec/attribution.md#the-tiers-strongest-first);
 the operator-facing reading of each value is in
 [interpreting-metrics.md](../interpreting-metrics.md#audit-attribution-optional).
 
@@ -323,8 +333,10 @@ before it can carry that meaning.
 | `resolvers_waiting` | queue delay (§4.2) proves insufficient, **and** it is incremented around the blocking `select` alone — `Await` registers *before* its first lookup on purpose, so a gauge at registration counts resolutions in flight rather than resolvers blocked |
 | `fact_index_expired_total` | wanted when tuning the TTL or the caps; low risk, low urgency |
 
-The full record of what an earlier draft of this surface got wrong, and why each mistake was
-invisible, is in [attribution-metrics-proposal.md](attribution-metrics-proposal.md#what-the-first-draft-got-wrong).
+What an earlier draft of this surface got wrong, and why each mistake was invisible, is recorded in
+`git log` on the proposal that has since been folded into
+[the attribution spec](../spec/attribution.md#what-is-observable); the three things that surface
+deliberately cannot answer are listed there.
 
 ## 6. The reference dashboard
 
@@ -511,10 +523,8 @@ those rules are written from, not shipped rules.
 - [architecture.md](../architecture.md) — leading source of truth (esp. *Common Flows*,
   *Optional Attribution*, *State Ingestion*, *Observability*).
 - [interpreting-metrics.md](../interpreting-metrics.md) — the live baseline + the per-metric doc bar.
-- [attribution-metrics-proposal.md](attribution-metrics-proposal.md) — the reasoning trail for §4.4
-  and §5, including what an earlier draft got wrong.
-- [attribution-publish-and-join.md](attribution-publish-and-join.md) — how the two halves work, and
-  the tier ladder the `tier` label names.
+- [spec/attribution.md](../spec/attribution.md) — the shipped attribution surface behind §4.4 and
+  §5, how the two halves work, and the tier ladder the `tier` label names.
 - [attribution-fact-stream.md](../finished/attribution-fact-stream.md) — the shipped transport, the
   in-process index, and the follower these metrics watch.
 - [watch-first-ingestion-architecture.md](../finished/watch-first-ingestion-architecture.md) — the

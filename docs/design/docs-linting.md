@@ -128,7 +128,7 @@ The committed configuration brings that to **723**. Running `markdownlint-cli2 -
 them, leaving **257**: 119 `MD013` plus **138 that need a human**. That is the entire manual backlog
 for structure, and it is concentrated in a handful of files, led by `docs/architecture.md`,
 `docs/spec/gitpath-foreign-content-stringency.md`, and
-`docs/spec/deletecollection-attribution-expander.md`.
+`docs/spec/attribution.md`.
 
 Three configuration choices needed a decision rather than an inference.
 

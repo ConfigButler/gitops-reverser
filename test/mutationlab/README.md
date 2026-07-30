@@ -54,7 +54,7 @@ The finding is in the last column: the human's `delete` and the controller's fin
 return a body, and both bodies carry the resourceVersion the DELETION stamped, so the two facts they
 produce collide on one key. `LAB_FINALIZER_HOLD` tunes the gap between the phases, which is what
 decides whether both land in one audit batch. See
-[attribution-deletion-intent-actor.md](../../docs/design/attribution-deletion-intent-actor.md).
+[the attribution spec](../../docs/spec/attribution.md).
 
 All seventeen catalogued scenarios are now captured. Rows 15a and 15b are not catalog
 rows: they extend row 15 to the removal verbs, because the create alone could not say
