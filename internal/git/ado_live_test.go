@@ -13,6 +13,10 @@ package git
 //	export E2E_ADO_PAT='<personal access token>'   # scope: Code (read & write)
 //	go test ./internal/git/ -run TestADOLive -v
 //
+// E2E_ADO_EMPTY_REPO_URL optionally names a second, commit-less repository, which is the only way to
+// cover the empty-repository contract repeatedly: the test below seeds whatever repository it is
+// given, so it only ever sees "empty" once.
+//
 // E2E_ADO_USERNAME is optional; ADO ignores the username when a PAT is the password, and the default
 // (empty) is the form ADO documents.
 //
@@ -26,9 +30,13 @@ package git
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,4 +319,87 @@ func requireRemoteTracking(tb testing.TB, repo *git.Repository, branch, why stri
 
 	_, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
 	require.NoError(tb, err, why)
+}
+
+// TestADOLive_EmptyRepository covers the empty-repository contract against a real ADO remote: no
+// default branch, no branches, and a fetch that reports nothing rather than failing.
+//
+// It needs a repository that stays empty, which TestADOLive_BranchResolutionOrder's cannot be — that
+// one seeds itself on first run. Point E2E_ADO_EMPTY_REPO_URL at a repository you never write to.
+func TestADOLive_EmptyRepository(t *testing.T) {
+	target := adoLiveFromEnv(t)
+
+	url := strings.TrimSpace(os.Getenv("E2E_ADO_EMPTY_REPO_URL"))
+	if url == "" {
+		t.Skip("set E2E_ADO_EMPTY_REPO_URL to a commit-less ADO repository to run this")
+	}
+	ctx := context.Background()
+
+	info, err := CheckRepo(ctx, url, target.Auth)
+	require.NoError(t, err, "an empty repository is a valid state, not an error")
+	assert.Nil(t, info.DefaultBranch, "an empty repository has no default branch to report")
+	assert.Zero(t, info.RemoteBranchCount)
+
+	repo := adoLiveRepo(t, filepath.Join(t.TempDir(), "empty"), url)
+	resolved, err := SmartFetch(ctx, repo, plumbing.NewBranchReferenceName("main"), target.Auth)
+	require.NoError(t, err)
+	assert.Empty(t, resolved, "an empty remote resolves to no branch")
+}
+
+// TestADOLive_StillRequiresMultiAck is a canary rather than a regression test.
+//
+// It asserts that Azure DevOps STILL rejects an upload-pack request whose capability list omits
+// multi_ack. That is the premise the whole go-git v6 migration rests on, it is a premise about someone
+// else's server, and it can stop being true without anyone telling us.
+//
+// The request shape matters, and getting it wrong produces a confidently wrong answer: a want line
+// carrying NO capability list is answered 200, while `want <sha> side-band-64k` is answered 400. Real
+// clients always send a capability list, so that is the case to probe. The full measured matrix, and
+// the sources, are in docs/facts/azure-devops-multi-ack-requirement.md.
+//
+// If this test fails, nothing is broken: Microsoft has fixed their end, and the constraint behind #288
+// no longer exists. The failure message says so, because a red test that means good news is otherwise
+// deeply confusing.
+func TestADOLive_StillRequiresMultiAck(t *testing.T) {
+	target := adoLiveFromEnv(t)
+	ctx := context.Background()
+
+	info, err := CheckRepo(ctx, target.URL, target.Auth)
+	require.NoError(t, err)
+	require.NotNil(t, info.DefaultBranch, "the canary needs a repository with at least one commit")
+
+	want := fmt.Sprintf("want %s side-band-64k ofs-delta agent=gitops-reverser-canary\n",
+		info.DefaultBranch.Sha)
+	body := fmt.Sprintf("%04x%s0000%04x%s", len(want)+4, want, len("done\n")+4, "done\n")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		target.URL+"/git-upload-pack", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-git-upload-pack-request")
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString(
+		[]byte(os.Getenv("E2E_ADO_USERNAME")+":"+os.Getenv("E2E_ADO_PAT"))))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Skipf("skipping canary, request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	require.NoError(t, err)
+
+	if resp.StatusCode == http.StatusBadRequest {
+		t.Logf("Azure DevOps still rejects a multi_ack-less fetch: HTTP 400, %q",
+			strings.TrimSpace(string(payload)))
+		assert.Contains(t, string(payload), "TF401041",
+			"the rejection should still carry ADO's documented error code")
+		return
+	}
+
+	t.Fatalf(
+		"GOOD NEWS, NOT A BUG: Azure DevOps accepted an upload-pack request whose capability list "+
+			"omits multi_ack (HTTP %d). The constraint behind #288 appears to be gone, so go-git v6 is "+
+			"no longer forced by ADO and this canary has done its job. Re-check "+
+			"docs/facts/azure-devops-multi-ack-requirement.md and delete this test. Response: %q",
+		resp.StatusCode, strings.TrimSpace(string(payload)))
 }

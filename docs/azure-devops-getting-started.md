@@ -106,8 +106,8 @@ Microsoft Entra ID (OAuth) access tokens go under `bearerToken` instead of `pass
 TF401041: Clients must support multi-ack.
 ```
 
-ADO rejects any Git fetch whose capability list omits `multi_ack`. The Git library the operator uses
-only implements that capability from v6, so releases before
+ADO rejects a Git fetch whose capability list omits `multi_ack` (and `multi_ack_detailed`). The Git
+library the operator uses only implements that capability from v6, so releases before
 [#297](https://github.com/ConfigButler/gitops-reverser/pull/297) cannot fetch from ADO at all and no
 configuration will change that. Upgrade.
 
@@ -134,12 +134,21 @@ The two credentialed layers are opt-in and skip themselves without configuration
 ```bash
 export E2E_ADO_REPO_URL='https://dev.azure.com/<org>/<project>/_git/<repo>'
 export E2E_ADO_PAT='<your PAT>'
+# optional: a second repository that stays empty, for the empty-repository case
+export E2E_ADO_EMPTY_REPO_URL='https://dev.azure.com/<org>/<project>/_git/empty'
 
 go test ./internal/git/ -run TestADOLive -v   # library level
 task test-e2e-ado                             # operator level, needs a prepared e2e cluster
 ```
 
-Both write to the repository and do not clean it up. Point them at a scratch repo.
+`E2E_ADO_REPO_URL` is written to and not cleaned up, so point it at a scratch repository.
+`E2E_ADO_EMPTY_REPO_URL` must stay empty — nothing writes to it, and it is the only way to cover the
+empty-repository contract repeatedly, since the main fixture seeds itself on first run.
+
+One of those tests is a canary rather than a regression test: `TestADOLive_StillRequiresMultiAck`
+asserts Azure DevOps *still* rejects a fetch without the capability. If it ever fails, Microsoft has
+fixed their end and the constraint behind all of this is gone — see
+[`facts/azure-devops-multi-ack-requirement.md`](facts/azure-devops-multi-ack-requirement.md).
 
 Background on the capability and why v6 was the fix:
 [`design/azure-devops-multi-ack.md`](design/azure-devops-multi-ack.md).
