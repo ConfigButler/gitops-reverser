@@ -92,44 +92,6 @@ spec:
     - main
 ```
 
-### Azure DevOps repositories
-
-Azure DevOps works with no special configuration. A **Personal Access Token over HTTPS** is the
-credential to reach for. ADO sends PATs as HTTP basic auth with the token as the *password* and
-ignores the username, so leave `username` out (or empty) and set only `password`:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ado-creds
-type: Opaque
-stringData:
-  password: <your personal access token>   # scope: Code (read & write)
----
-apiVersion: configbutler.ai/v1alpha3
-kind: GitProvider
-metadata:
-  name: ado-provider
-spec:
-  url: https://dev.azure.com/<org>/<project>/_git/<repo>
-  secretRef:
-    name: ado-creds
-```
-
-A step-by-step walkthrough, including how this is tested, is in
-[`azure-devops-getting-started.md`](azure-devops-getting-started.md).
-
-Microsoft Entra ID (OAuth) access tokens go under `bearerToken` instead. SSH works too, with the
-`ssh://git@ssh.dev.azure.com/v3/<org>/<project>/<repo>` URL form and the usual `ssh-privatekey` plus
-`known_hosts` keys.
-
-> **Why this needed saying:** ADO rejects any Git fetch whose capability list omits `multi_ack`, with
-> HTTP 400 `TF401041: Clients must support multi-ack.` go-git only implements that capability from v6,
-> which is why ADO did not work before
-> [#297](https://github.com/ConfigButler/gitops-reverser/pull/297). If you are on an older release,
-> ADO fetches fail with that 400 and no configuration will fix it. Upgrade instead.
-
 ### `GitProvider.spec.secretRef`: the credentials Secret
 
 The referenced Secret holds the Git credentials. The examples use the **Kubernetes-native** keys,
@@ -141,6 +103,11 @@ which match the built-in Secret types and the tooling around them (`kubectl crea
 | SSH | `ssh-privatekey` (+ optional `ssh-password` passphrase, `known_hosts`) |
 | HTTP basic | `username` + `password` |
 | HTTP bearer token | `bearerToken` (GitHub fine-grained PAT, GitLab access token; no username) |
+
+> **Azure DevOps is the one provider whose Secret looks wrong.** It sends a Personal Access Token as
+> HTTP basic auth with the token as the *password* and ignores the username, so an ADO Secret carries
+> `password` and no `username` at all. See
+> [azure-devops-getting-started.md](azure-devops-getting-started.md).
 
 #### Reusing a Flux or Argo CD credentials Secret
 
@@ -1236,4 +1203,5 @@ The chart value reference for the starter `quickstart` block lives in
 
 - [commit-signing.md](commit-signing.md) for signing behavior on Git hosting platforms
 - [github-setup-guide.md](github-setup-guide.md) for GitHub auth setup
+- [azure-devops-getting-started.md](azure-devops-getting-started.md) for Azure DevOps auth and setup
 - [sops-age-guide.md](sops-age-guide.md) for `GitTarget.spec.encryption`

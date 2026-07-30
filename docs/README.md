@@ -15,6 +15,7 @@ If you only want the supported product docs, start with the files below.
   document: Flux `HelmRelease`, Argo CD `Application`, KRO, and core resources all mirror and edit alike
 - [`commit-signing.md`](commit-signing.md): how valid Git signatures map to platform verification
 - [`github-setup-guide.md`](github-setup-guide.md): GitHub repository and credential setup
+- [`azure-devops-getting-started.md`](azure-devops-getting-started.md): Azure DevOps repository and credential setup
 - [`attribution-setup-guide.md`](attribution-setup-guide.md): naming real Kubernetes users as commit
   authors via kube-apiserver audit delivery
 - [`sops-age-guide.md`](sops-age-guide.md): Secret encryption with SOPS + age
