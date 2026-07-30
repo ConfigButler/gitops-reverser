@@ -76,15 +76,16 @@ Two consequences follow, and **both are smaller than an earlier draft of this do
 Freezing the built-in path per target is arguably a feature rather than a cost: placement is already
 create-time and non-retroactive, so a long-lived target keeping its established layout for new types
 is the stability we already promise, and a value in the spec is visible and editable in a way a
-built-in is not. And "indistinguishable from a declaration" is too strong: `metadata.managedFields`
-records that the API server set the field, not the applier. Nothing in our controller reads
-managedFields, and placement behavior should not depend on field-ownership metadata, but the
-information is there. What is left is spec bloat: every GitTarget carries a template string whether
+built-in is not. "Indistinguishable from a declaration" is close to true, and an earlier draft's
+escape from it was wrong: `metadata.managedFields` is field-management bookkeeping rather than
+durable provenance, so it cannot separate "the user declared this" from "the schema supplied it".
+What is left is spec bloat: every GitTarget carries a template string whether
 its owner cares about layout or not. That alone would not decide anything.
 
-**F5b. Defaulting a map is a floor that vanishes when you stand on it.** Kubernetes defaulting
-applies to an **absent** field and never merges, so a defaulted
-`byType: {"v1/secrets": "..."}` disappears the moment a user writes any `byType` entry of their own.
+**F5b. Defaulting a map is a floor that vanishes when you stand on it.** A CRD default applies to an
+**absent** field; it is not an additive base and is never re-merged per key. So a defaulted
+`byType: {"v1/secrets": "..."}` is gone as soon as that field is present at all, which is the moment a
+user writes any `byType` entry of their own.
 Their unrelated ConfigMap entry would silently drop the Secret route, leaving a defaulted bundling
 `default` unguarded, and the object would go `Validated=False` on an edit that had nothing to do with
 Secrets. This is why "default the Secret route too" (the obvious repair for F3) is worse than
@@ -122,9 +123,8 @@ landing beside the `kustomization.yaml`, with no `resources:` entry: committed, 
 rendered by nothing. That is exactly the bug the kustomize-root step was added to prevent.
 
 The repairs are worse than the defect. Reordering so the render root beats `default` makes a user's
-real declaration lose to the folder, which inverts the precedence the whole feature rests on. Reading
-`managedFields` to tell a defaulted value from a declared one makes placement depend on
-field-ownership metadata. Neither is defensible later.
+real declaration lose to the folder, which inverts the precedence the whole feature rests on.
+And there is no sound way to distinguish a defaulted value from a declared one at read time.
 
 **F10. And that failure is reachable today, from a declaration, which makes it a live bug rather
 than an argument about defaulting.** Review found this, and it is the most useful thing on the page.
@@ -196,9 +196,9 @@ itself wrong (F4): the versionless canonical template cannot collide two identit
 GitOps-managed cluster that is continuous. But freezing the built-in path per target is arguably
 *desirable*: placement is already create-time and non-retroactive, so a long-lived target keeping its
 established layout for new types is the stability we already promise, and a string in the spec is
-visible and editable where a built-in is neither. `metadata.managedFields` even records that the
-server set it, so "we could never tell a default from a declaration" was too strong. What is left is
-spec bloat, which decides nothing.
+visible and editable where a built-in is neither. `metadata.managedFields` is not a way around
+it either: field management is bookkeeping, not provenance. What is left is spec bloat, which decides
+nothing.
 
 ### Why not also default the Secret route?
 
@@ -228,8 +228,8 @@ and builds. So the honest form of the objection is smaller and structural:
   the ladder that cannot be written down as a path would become unreachable by construction.
 
 The repairs still invert something load-bearing. Putting the render root ahead of `default` makes a
-user's real declaration lose to the folder. Reading `managedFields` to distinguish a defaulted value
-from a declared one makes where files land depend on field-ownership metadata.
+user's real declaration lose to the folder. And there is no sound way to tell a defaulted value from a
+declared one at read time, so "treat a declared default differently" is not implementable.
 
 ### What we do instead
 
@@ -259,22 +259,34 @@ status:
     renderRoot: overlays/production        # empty unless exactly one supported kustomization
     renderRootReason: SingleKustomization  # SingleKustomization | Ambiguous | None
     # where new files are decided FROM
-    defaultSource: BuiltInCanonical        # BuiltInCanonical | Declared
+    effectiveFallbackSource: KustomizeRoot # DeclaredDefault | KustomizeRoot | Canonical
     declaredTypes: 2                       # count of placement.byType entries in force
     # what actually happened, bounded
-    newFiles: 14                           # documents placed since this watch epoch
-    fallbackTypes: 1                       # distinct types that took the built-in path
+    placedResources: 14                    # resources placed since observedRevision, appends included
+    canonicalTypes: 1                      # distinct types that took the built-in path
     refusedResources: 0                    # resources NOT mirrored (see reasons below)
     examples:                              # <= 3, most recent first
       - type: apps/v1/deployments
         path: team-a/apps/deployments/api.yaml
         source: Canonical                  # ByType | Default | KustomizeRoot | Canonical
+    observedRevision: 9f3c1ab              # the scanned commit the current half came from
     observedTime: "2026-07-30T09:14:22Z"
 ```
 
-`renderRootReason` and `defaultSource` are the two fields that make the operator's judgement
-inspectable per target rather than only aggregated in a metric. `examples` is what makes it
-actionable: a type plus the path it landed on is the `byType` line to write, spelled out.
+`renderRootReason` and `effectiveFallbackSource` are the two fields that make the operator's judgement
+inspectable per target rather than only aggregated in a metric, and `effectiveFallbackSource` answers
+"what happens to a type I have not named?" in one word. An earlier draft called it `defaultSource`
+with values `BuiltInCanonical | Declared`, which was wrong: it read `BuiltInCanonical` for a folder
+whose files were going to the kustomize root, contradicting the `source` on its own example.
+
+**Two halves with different freshness, which must not be confused.** `renderRoot`,
+`renderRootReason`, `effectiveFallbackSource` and `declaredTypes` are the **current** answer, derived
+from the last repository scan and stamped with `observedRevision`. `placedResources`,
+`canonicalTypes`, `refusedResources` and `examples` are **historical**, accumulated since that
+revision. Placement is sparse, so a stable target may place nothing for weeks: a status built only
+from write events would be empty for exactly the folder someone is asking about. The current half has
+to come from the scan rather than from a placement having happened. `examples` is what makes the
+historical half actionable: a type plus the path it landed on is the `byType` line to write.
 
 ### Case 1: greenfield, nothing declared
 
@@ -285,10 +297,10 @@ fallback here, it is the layout, and status says so without implying a problem.
 status:
   layout:
     renderRootReason: None
-    defaultSource: BuiltInCanonical
+    effectiveFallbackSource: Canonical
     declaredTypes: 0
-    newFiles: 23
-    fallbackTypes: 4
+    placedResources: 23
+    canonicalTypes: 4
     refusedResources: 0
     examples:
       - type: v1/configmaps
@@ -297,7 +309,7 @@ status:
     observedTime: "2026-07-30T09:14:22Z"
 ```
 
-Nothing to do. `fallbackTypes: 4` with `renderRootReason: None` is a tidy canonical folder.
+Nothing to do. `canonicalTypes: 4` with `renderRootReason: None` is a tidy canonical folder.
 
 ### Case 2: a kustomize overlay, nothing declared
 
@@ -309,10 +321,10 @@ status:
   layout:
     renderRoot: overlays/production
     renderRootReason: SingleKustomization
-    defaultSource: BuiltInCanonical
+    effectiveFallbackSource: KustomizeRoot
     declaredTypes: 0
-    newFiles: 6
-    fallbackTypes: 0
+    placedResources: 6
+    canonicalTypes: 0
     refusedResources: 0
     examples:
       - type: v1/configmaps
@@ -321,7 +333,7 @@ status:
     observedTime: "2026-07-30T09:15:02Z"
 ```
 
-This is the case a metric alone reads ambiguously. `fallbackTypes: 0` plus a named `renderRoot` says
+This is the case a metric alone reads ambiguously. `canonicalTypes: 0` plus a named `renderRoot` says
 the folder decided, and that the operator agrees with it.
 
 ### Case 3: brownfield, one type still missing a rule
@@ -333,10 +345,10 @@ the folder, so they went to the built-in path.
 status:
   layout:
     renderRootReason: None
-    defaultSource: BuiltInCanonical
+    effectiveFallbackSource: Canonical
     declaredTypes: 1
-    newFiles: 9
-    fallbackTypes: 1
+    placedResources: 9
+    canonicalTypes: 1
     refusedResources: 0
     examples:
       - type: apps/v1/deployments
@@ -368,10 +380,10 @@ look mirrored, and nothing applies them.
 status:
   layout:
     renderRootReason: Ambiguous
-    defaultSource: BuiltInCanonical
+    effectiveFallbackSource: Canonical
     declaredTypes: 0
-    newFiles: 3
-    fallbackTypes: 2
+    placedResources: 3
+    canonicalTypes: 2
     refusedResources: 0
     examples:
       - type: v1/configmaps
@@ -394,10 +406,10 @@ and a resync counter; here it is on the object.
 status:
   layout:
     renderRootReason: None
-    defaultSource: Declared
+    effectiveFallbackSource: DeclaredDefault
     declaredTypes: 0
-    newFiles: 4
-    fallbackTypes: 0
+    placedResources: 4
+    canonicalTypes: 0
     refusedResources: 1
     refusedReason: SensitiveAppend      # most recent, from the counter's closed set
     examples:
@@ -449,12 +461,18 @@ obligation is identical, and that is what `renderRoot` plus `renderRootReason` d
 judgement becomes a field an operator can read, instead of a behavior they infer from where files
 appeared.
 
-For the ambiguous case (F8) the choice was between refusing the write and writing it loudly. Refusing
-protects nothing: the resource is watched, the user asked for it to be mirrored, and an unrendered
-file in Git is still a better record than no file. So we keep writing, and we make it impossible to
-miss: `renderRootReason: Ambiguous` on the object, and a third value on the entries counter
-(`outcome="no_root"`) so the case that currently attempts no entry is counted like every other
-failure to register one.
+For the ambiguous case (F8), whether to refuse the write or write it loudly is **open**, and an
+earlier draft calling it settled was a mistake. "An unrendered file is a better record than no file"
+is a policy claim, and the opposite is at least as strong: a committed manifest nothing applies
+manufactures a false appearance of convergence, which is the failure class this project ranks first.
+The layout model probably decides it, because refusing is principled once a user has *asserted* a
+single-root folder and the folder disagrees.
+
+What is not open: the signal does not belong on `placement_kustomization_entries_total`. That counter
+counts **attempts** to register an entry
+([placement_metrics.go](../../internal/git/placement_metrics.go)), and this is the case where no
+attempt is made. It needs its own value on the refusal counter (if we refuse) or its own series (if we
+write), never a third outcome on a counter about attempts.
 
 ## What we build, in this PR
 
@@ -481,15 +499,15 @@ Ordered by risk, smallest first.
 6. **`status.layout`**, in the shape above, over the `MarkTargetRetention` seam: an epoch-scoped
    per-target roll-up marked from the write path, enqueued on change, projected by the controller,
    asserted by an envtest (F6).
-7. **The ambiguous render root**: `renderRootReason: Ambiguous` plus `outcome="no_root"` on the
-   entries counter (F8).
+7. **The ambiguous render root**: publish `renderRootReason: Ambiguous` now, and leave the
+   refuse-or-write policy to the layout model. Whatever it decides, the signal gets its own series
+   rather than a third outcome on a counter that counts entry *attempts* (F8).
 8. **Docs**: the spec's resolution-ladder section, `configuration.md`, `interpreting-metrics.md` for
    the new label values, and the `UPGRADING.md` entry extended with the metric-value split.
 
 **Not now, with the trigger written down:** a CRD default for `placement.default`. Revisit only once
-F9 has an answer that does not invert declaration precedence or read `managedFields`, and only after
-items 4 and 5 land. The freezing question (F5) is a trade we could take; the shadowing question is
-not.
+F9 has an answer that does not invert declaration precedence, and only after items 4 and 5 land. The
+freezing question (F5) is a trade we could take; the shadowing question is not.
 `spec.expect.layout` stays out too, on the config-surface doc's own rule: publish the observation
 before inventing the assertion.
 
