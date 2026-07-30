@@ -2,13 +2,9 @@
 
 > **facts** — durable reference. Index: [`../INDEX.md`](../INDEX.md)
 >
-> Azure DevOps rejects Git fetches from clients that do not advertise `multi_ack`. This page records
-> the measurement rather than the folklore, because the folklore is nearly right in a way that makes
-> it easy to reproduce the wrong thing and draw a confident wrong conclusion. That happened here; the
-> [retraction](#a-wrong-turn-worth-recording) is kept deliberately.
->
-> Measured 2026-07-30 against `dev.azure.com`, with a Personal Access Token, on a repository created
-> that day.
+> Measured 2026-07-30 against `dev.azure.com` with a Personal Access Token. The folklore is nearly
+> right, in a way that makes it easy to reproduce the wrong thing; the
+> [wrong turn](#a-wrong-turn-worth-recording) is recorded so nobody repeats it.
 
 ## The rule
 
@@ -65,17 +61,11 @@ CLONE FAILED: unexpected client error: unexpected requesting
 "https://dev.azure.com/<org>/<project>/_git/<repo>/git-upload-pack" status code: 400
 ```
 
-**Not even the clone works.** That is worth stating plainly, because upstream's own workaround note
-says the initial clone succeeds — it does, but only *after* trimming `UnsupportedCapabilities`, which
-is what makes the client advertise the capability again. Untrimmed v5 cannot clone from ADO at all.
-
-Trimming the list is the four-line workaround Flux applies. It gets the *request* accepted; upstream
-then warns that "additional fetches will yield issues", because v5 still cannot decode the multi-ACK
-*responses* the server is then entitled to send (`plumbing/protocol/packp/srvresp.go` carries a
-`TODO: Implement support for multi_ack or multi_ack_detailed responses`). Flux escapes that second
-half by never fetching — its go-git client only ever clones.
-
-go-git v6 implements the capability properly, which is why the migration fixes this outright.
+**Not even the clone works.** Upstream's note that the initial clone succeeds holds only *after*
+trimming `UnsupportedCapabilities`, which makes the client advertise the capability again. That trim
+is Flux's four-line workaround; it fixes the request, but v5 still cannot decode the multi-ACK
+*responses* the server may then send (`srvresp.go` carries a `TODO` for exactly that), which is why
+Flux only ever clones. v6 implements the capability properly.
 
 ## Why canonical git never notices
 
@@ -104,20 +94,12 @@ So **pushing to Azure DevOps was never affected**, on any version.
 
 ## A wrong turn worth recording
 
-Partway through this investigation I probed ADO with a bare `want <sha>` and no capability list, got
-HTTP 200, and concluded that the six-year-old bug reports were wrong — that ADO did not reject
-`multi_ack`-less requests at all, and that the real mechanism was something else. I wrote that up
-confidently before checking it against a real client.
+A bare `want <sha>` with no capability list returns 200, which briefly looked like evidence that the
+six-year-old bug reports were wrong. It is the one row above ADO accepts, and no client sends it.
+Running go-git v5 against the same repository produced the reported 400 immediately.
 
-It was wrong. The bare-`want` shape is the one row in the table above that ADO accepts, and no client
-sends it. Running actual go-git v5 against the same repository produced the reported 400 immediately.
-
-Two lessons, both cheap:
-
-- **Probe with the shape the real client sends.** A hand-rolled request tests the request you built,
-  not the behaviour you are attributing to it.
-- **A long-standing external bug report is evidence.** Contradicting one is possible, but the bar is a
-  reproduction with the real client, not a curl that disagrees.
+Probe with the shape the real client sends: a hand-rolled request tests the request you built, not
+the behaviour you are attributing to it.
 
 ## Sources
 
