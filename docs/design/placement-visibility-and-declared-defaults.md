@@ -18,7 +18,7 @@ states the findings behind each, the options, and the call.
 | Question | Call | Why in one line |
 |---|---|---|
 | Rename `source="canonical"` to `default`? | **No.** Keep `canonical`, split `declared` into `byType` and `default`, and fix the prose | `placement.default` is a *declared* template; reusing the word for the built-in path makes one name mean both a declaration and the absence of one |
-| Default `placement.default` in the CRD? | **Not now**, and the blocker is concrete | The default we would ship fails our own `Validated` gate today, and a persisted default is indistinguishable from a user's declaration forever |
+| Default `placement.default` in the CRD? | **No**, and the reason is structural | A defaulted default is never empty, so it shadows the kustomize-root step and new files in an overlay would land where nothing renders them (F9) |
 | Publish the effective layout in status? | **Yes, now** | It gives the clarity the CRD default was reaching for, without freezing anything, and the seam it needs already exists |
 | `{kindLower}` or a `toLower` function? | **`{kindLower}`** | A function syntax is a language; one variable answers the actual need |
 | Is the kustomize root "still a little bit inference"? | **Yes, and it earns its keep anyway** | Its answer changes only when a `kustomization.yaml` changes, and ignoring it produces a file nothing renders. It gets the same visibility obligation as everything else |
@@ -38,8 +38,8 @@ one series, so a catch-all quietly swallowing a type you meant to name explicitl
 a rule working as intended. For a metric whose job is "is a rule missing?", that is the wrong place
 to lose resolution.
 
-**F3. A CRD default for `placement.default` fails our own validation today.** This is the decisive
-one.
+**F3. A CRD default for `placement.default` fails our own validation today.** Not the decisive
+objection (F9 is), and not unfixable (F4 is the fix), but it is where the idea stops today.
 [`validateSecretSafety`](../../internal/controller/gittarget_placement_validation.go) rejects a
 `default` that is not identity-complete unless the target also declares an identity-complete
 `byType["v1/secrets"]` entry. And `IdentityCompletePlacementTemplate(tmpl, false)` requires
@@ -61,13 +61,33 @@ without a version. So the requirement rejects safe templates: a user who writes 
 versionless canonical layout by hand is told it is a bundling path. That is a bug independent of
 anything else here, and fixing it is a precondition for F3 ever being reconsidered.
 
-**F5. A persisted default becomes the user's data.** CRD defaulting fills the field in the API
-request and stores it, so a target created after the change carries the string in etcd
-indistinguishably from one the user typed. Three consequences, and the second is the one that
-decided it: we could never improve the built-in path for existing targets (two targets in one
-cluster would then have different built-in layouts); we could never again tell "the user asked for
-exactly this" from "we suggested it"; and every GitTarget's spec grows a template string whether
-its owner cares about layout or not.
+**F5. Defaulting semantics, precisely, because a first draft of this document got them wrong.**
+A CRD default is applied to the request object on create, update and patch, and is therefore
+**persisted**. It is also applied **in memory when reading from etcd**, using the storage version's
+schema, so the controller sees the value even for an object stored before the default existed. It is
+**not** persisted by our own status writes: `GitTarget` has a status subresource
+([gittarget_types.go](../../api/v1alpha3/gittarget_types.go)), so a status update writes only the
+status stanza and leaves the stored spec alone. In a GitOps-managed cluster the answer is
+nevertheless "yes, quickly", because the user's own Flux or Argo re-applies the object continuously
+and each apply persists it.
+
+Two consequences follow, and **both are smaller than an earlier draft of this document claimed**.
+Freezing the built-in path per target is arguably a feature rather than a cost: placement is already
+create-time and non-retroactive, so a long-lived target keeping its established layout for new types
+is the stability we already promise, and a value in the spec is visible and editable in a way a
+built-in is not. And "indistinguishable from a declaration" is too strong: `metadata.managedFields`
+records that the API server set the field, not the applier. Nothing in our controller reads
+managedFields, and placement behavior should not depend on field-ownership metadata, but the
+information is there. What is left is spec bloat: every GitTarget carries a template string whether
+its owner cares about layout or not. That alone would not decide anything.
+
+**F5b. Defaulting a map is a floor that vanishes when you stand on it.** Kubernetes defaulting
+applies to an **absent** field and never merges, so a defaulted
+`byType: {"v1/secrets": "..."}` disappears the moment a user writes any `byType` entry of their own.
+Their unrelated ConfigMap entry would silently drop the Secret route, leaving a defaulted bundling
+`default` unguarded, and the object would go `Validated=False` on an edit that had nothing to do with
+Secrets. This is why "default the Secret route too" (the obvious repair for F3) is worse than
+fixing F4.
 
 **F6. The data-plane to status seam already exists, and it enqueues.**
 [`retention_rollup.go`](../../internal/watch/retention_rollup.go) is the pattern:
@@ -86,6 +106,24 @@ template functions except safe path-segment sanitization").
 Ambiguity declines to the canonical path, which no root's `resources:` graph reaches. No entry is
 attempted, so `placement_kustomization_entries_total` never sees it. It is the exact failure that
 counter exists for, in the one case it cannot observe.
+
+**F9. A defaulted `default` would make the kustomize-root step unreachable.** This is the objection
+that decides Question 2, and it is structural rather than a trade.
+[`LocateNew`](../../internal/manifestanalyzer/placement.go) resolves in this order:
+
+```text
+byType -> default -> kustomize root -> canonical
+```
+
+`resolveDeclared` returns on any non-empty `policy.Default`, so a default that is *always* set means
+step 3 never runs. Every new file in a kustomize overlay would take the canonical path instead of
+landing beside the `kustomization.yaml`, with no `resources:` entry: committed, looking mirrored, and
+rendered by nothing. That is exactly the bug the kustomize-root step was added to prevent.
+
+The repairs are worse than the defect. Reordering so the render root beats `default` makes a user's
+real declaration lose to the folder, which inverts the precedence the whole feature rests on. Reading
+`managedFields` to tell a defaulted value from a declared one makes placement depend on
+field-ownership metadata. Neither is defensible later.
 
 ## Question 1: `canonical` or `default`?
 
@@ -107,38 +145,64 @@ the resolution gains the distinction that was missing (F2):
 
 `default` then means one thing everywhere: the user's catch-all.
 
-## Question 2: why a CRD default for `placement.default` is *not* clearer
+## Question 2: a CRD default for `placement.default`
 
-The idea is that if the built-in path were the CRD's default for `placement.default`, then every
-GitTarget would show its own layout, "canonical" would stop being a hidden fourth mechanism, and
-`source` would collapse to `byType` and `default`. That reasoning is sound, and for a reader of one
-object it *is* clearer. Two prices, though, and the first is a wall rather than a trade.
+The idea: if the built-in path were the CRD's default for `placement.default`, every GitTarget would
+show its own layout, "canonical" would stop being a hidden fourth mechanism, and `source` would
+collapse to `byType` and `default`. That reasoning is sound, and for a reader of one object it **is**
+clearer. This section was rewritten after review, because the first version of it led with the wrong
+objection.
 
-**It does not pass our own gate (F3).** The versionless template we would default to is classified
-as a bundling path, so defaulting it turns `Validated=False` on for every target without an explicit
-Secret route. Fixing that means relaxing the identity rule to stop demanding `{version}`, which we
-should do anyway (F4). Until it is done, this option is not available at all.
+### What is not the reason
 
-**And a default that is persisted stops being ours (F5).** This is the part that decided it. Today
-"the built-in path" is a behavior we own: we changed it once, deliberately, when we dropped the
-version segment, and every target moved with us. As a stored default it becomes a string in the
-user's spec that we may not touch, so a fleet ends up with per-target built-in layouts distinguished
-only by the release each target was created under. The clarity would be bought by giving up the
-ability to improve the thing being clarified.
+**Not "it fails validation" on its own (F3).** It does today, but the rule doing the rejecting is
+itself wrong (F4): the versionless canonical template cannot collide two identities, and demanding
+`{version}` of it contradicts the decision that removed the version segment. One line fixes it.
 
-There is a smaller version of the same objection worth naming: a defaulted spec is not a *declared*
-spec. Any future advice we want to give ("your default cannot express this layout") depends on
-knowing whether the user chose the value, and after defaulting we cannot know.
+**Not "the value gets persisted" (F5).** It does get persisted, on every spec-writing apply, and in a
+GitOps-managed cluster that is continuous. But freezing the built-in path per target is arguably
+*desirable*: placement is already create-time and non-retroactive, so a long-lived target keeping its
+established layout for new types is the stability we already promise, and a string in the spec is
+visible and editable where a built-in is neither. `metadata.managedFields` even records that the
+server set it, so "we could never tell a default from a declaration" was too strong. What is left is
+spec bloat, which decides nothing.
 
-**What we do instead.** Publish the *effective* placement in status. It answers the same question
-("what will happen to a new Deployment in this folder?") from a field that is derived rather than
-stored, so it cannot fork from the code, it improves when the code improves, and it can say things a
-spec field structurally cannot: what the operator **found in the folder**, which types fell
-back, and which resources it refused to place.
+### Why not also default the Secret route?
 
-**If we still want the spec default later**, the order is now written down: fix F4, pin the
-canonical template against `ToGitPath()` byte-for-byte, then default the field. Status stays
-worth having either way, so nothing built here is wasted.
+The obvious repair for F3 is to default `byType["v1/secrets"]` as well: narrowed to one type, it only
+needs `{name}` plus scope to be identity-complete, `secretRouteComplete` goes true, and the
+bundling-default check stops objecting. It does work, and it is still the wrong move, because
+**defaulting a map is a floor that vanishes when you stand on it** (F5b). A user who writes any
+`byType` entry of their own replaces the whole map, silently dropping the Secret route and leaving a
+defaulted bundling `default` unguarded, so an edit about ConfigMaps flips the object to
+`Validated=False`. Fixing F4 removes the need for the workaround entirely.
+
+### The objection that decides it
+
+**A defaulted `default` is never empty, so it shadows the kustomize-root step (F9).** `resolveDeclared`
+returns on any non-empty declared template, and the render-root step runs after it. Default the field
+and every new file in a kustomize overlay takes the canonical path instead of landing beside the
+`kustomization.yaml` with a `resources:` entry: in Git, looking mirrored, rendered by nothing. That is
+the exact failure the render-root step exists to prevent, reintroduced by the mechanism meant to make
+placement clearer.
+
+And the repairs invert something load-bearing. Putting the render root ahead of `default` makes a
+user's real declaration lose to the folder. Reading `managedFields` to distinguish a defaulted value
+from a declared one makes where files land depend on field-ownership metadata. Neither is a rule worth
+defending in a year.
+
+### What we do instead
+
+Publish the **effective** placement in status. It answers the same question ("what will happen to a
+new Deployment in this folder?") from a derived field, so it cannot fork from the code and improves
+when the code improves. Crucially it can show the ladder **without collapsing it**: the declared half,
+the render root the operator found, and what happened, all at once. A spec default can only
+express the ladder by flattening it, which is what F9 is.
+
+**If we want the spec default later**, the order is written down: fix F4, pin the canonical template
+against `ToGitPath()` byte-for-byte, and solve F9 first, because nothing else on this page matters
+until a defaulted value can coexist with the render-root step. Status is worth having either way, so
+nothing built now is wasted.
 
 ## `status.layout`
 
@@ -376,8 +440,10 @@ Ordered by risk, smallest first.
 7. **Docs**: the spec's resolution-ladder section, `configuration.md`, `interpreting-metrics.md` for
    the new label values, and the `UPGRADING.md` entry extended with the metric-value split.
 
-**Not now, with the trigger written down:** a CRD default for `placement.default`. Revisit only if we
-decide we are willing to freeze the built-in path per target, and only after items 3 and 4 land.
+**Not now, with the trigger written down:** a CRD default for `placement.default`. Revisit only once
+F9 has an answer that does not invert declaration precedence or read `managedFields`, and only after
+items 3 and 4 land. The freezing question (F5) is a trade we could take; the shadowing question is
+not.
 `spec.expect.layout` stays out too, on the config-surface doc's own rule: publish the observation
 before inventing the assertion.
 
