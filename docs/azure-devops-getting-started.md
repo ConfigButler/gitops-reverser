@@ -26,9 +26,8 @@ kubectl create secret generic ado-creds \
   --from-literal=password='<your PAT>'
 ```
 
-> **The step people get wrong.** Adding `username: ""` is not equivalent: an empty value is
-> indistinguishable from an absent key, and such a Secret used to be rejected with *"does not contain
-> valid authentication data"*. Supply only `password`. A username with no password is still an error.
+A `username` is optional here and ADO ignores whatever you set, so leaving it out is simplest. What
+does not work is a `username` with no `password`: the password is what selects basic auth.
 
 ## 3. The resources
 

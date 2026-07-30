@@ -101,13 +101,16 @@ which match the built-in Secret types and the tooling around them (`kubectl crea
 | Auth | Keys |
 |---|---|
 | SSH | `ssh-privatekey` (+ optional `ssh-password` passphrase, `known_hosts`) |
-| HTTP basic | `username` + `password` |
+| HTTP basic | `password` (+ optional `username`) |
 | HTTP bearer token | `bearerToken` (GitHub fine-grained PAT, GitLab access token; no username) |
 
-> **Azure DevOps is the one provider whose Secret looks wrong.** It sends a Personal Access Token as
-> HTTP basic auth with the token as the *password* and ignores the username, so an ADO Secret carries
-> `password` and no `username` at all. See
-> [azure-devops-getting-started.md](azure-devops-getting-started.md).
+**`password` is what selects HTTP basic auth**, and `username` is optional: a Secret with only
+`password` authenticates with an empty username, which is what Azure DevOps expects for a Personal
+Access Token. ADO ignores the username entirely; measured, any value including none is accepted.
+A `username` with no `password` is an error, because that one is a real mistake.
+
+Note that an empty value and an absent key are the same thing to the credential reader, so
+`username: ""` behaves exactly like omitting it.
 
 #### Reusing a Flux or Argo CD credentials Secret
 

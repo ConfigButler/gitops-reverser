@@ -328,6 +328,23 @@ func TestCredentialFromSecretData_AzureDevOpsPATForm(t *testing.T) {
 		})
 	}
 
+	// The rule is general, not an Azure DevOps carve-out: a username is simply optional, and is passed
+	// through untouched when supplied. Azure DevOps ignores it server-side (measured), but nothing in
+	// the credential reader knows or cares which provider it is talking to.
+	t.Run("a supplied username is still honoured", func(t *testing.T) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "basic", Namespace: "ns"},
+			Data:       map[string][]byte{"username": []byte("alice"), "password": []byte("pw")},
+		}
+
+		cred, err := CredentialFromSecretData(
+			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
+		require.NoError(t, err)
+		require.NotNil(t, cred.Basic)
+		assert.Equal(t, "alice", cred.Basic.Username, "a username must not be dropped")
+		assert.Equal(t, "pw", cred.Basic.Password)
+	})
+
 	t.Run("a username with no password is still a mistake", func(t *testing.T) {
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "half", Namespace: "ns"},
