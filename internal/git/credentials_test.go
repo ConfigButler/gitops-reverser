@@ -296,3 +296,47 @@ func TestCredentialFromSecretData_BearerToken(t *testing.T) {
 		context.Background(), c, &configv1alpha3.GitProvider{}, empty, SSHHostKeyConfig{})
 	require.Error(t, err)
 }
+
+// Azure DevOps documents its Personal Access Tokens as an empty username with the PAT as the
+// password — the https://:PAT@dev.azure.com/... form. firstSecretValue treats an empty value as an
+// absent key, so keying the basic-auth branch off the username refused exactly that Secret with
+// "does not contain valid authentication data". The password is what carries the credential, so it
+// is what we branch on.
+func TestCredentialFromSecretData_AzureDevOpsPATForm(t *testing.T) {
+	c := credTestClient(t)
+
+	for _, tc := range []struct {
+		name string
+		data map[string][]byte
+	}{
+		{"empty username with a PAT", map[string][]byte{"username": []byte(""), "password": []byte("pat")}},
+		{"no username key at all", map[string][]byte{"password": []byte("pat")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "ado", Namespace: "ns"},
+				Data:       tc.data,
+			}
+
+			cred, err := CredentialFromSecretData(
+				context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
+			require.NoError(t, err)
+			require.NotNil(t, cred.Basic, "an ADO PAT must resolve to HTTP basic auth")
+			assert.Empty(t, cred.Basic.Username)
+			assert.Equal(t, "pat", cred.Basic.Password)
+			assert.Len(t, cred.Options(), 1)
+		})
+	}
+
+	t.Run("a username with no password is still a mistake", func(t *testing.T) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "half", Namespace: "ns"},
+			Data:       map[string][]byte{"username": []byte("someone")},
+		}
+
+		_, err := CredentialFromSecretData(
+			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "contains username but no password")
+	})
+}

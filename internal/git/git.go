@@ -121,6 +121,13 @@ func PrepareBranch(
 		}
 	}
 
+	// Both paths, not just the fresh one: a repository from a persistent volume, or one created
+	// before this pin existed, needs the same policy or its next commit fails under an ambient
+	// commit.gpgSign. See PinExplicitSigningPolicy.
+	if err := PinExplicitSigningPolicy(repo); err != nil {
+		return nil, err
+	}
+
 	// Ensure the remote origin is set correctly
 	if err := ensureRemoteOrigin(ctx, repo, repoURL); err != nil {
 		return nil, fmt.Errorf("failed to ensure remote origin: %w", err)
@@ -635,10 +642,6 @@ func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Reposi
 	repo, err := git.PlainInit(repoPath, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize repository: %w", err)
-	}
-
-	if err := PinExplicitSigningPolicy(repo); err != nil {
-		return nil, err
 	}
 
 	return repo, nil

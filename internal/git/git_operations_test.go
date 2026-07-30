@@ -1112,3 +1112,40 @@ func BenchmarkPrepareBranch_ShallowClone(b *testing.B) {
 }
 
 // Benchmark for writing the first commit to an empty repository.
+
+// PrepareBranch must pin the signing policy on repositories it REUSES, not only on ones it creates.
+// The controller keeps worker clones on a volume across restarts, and repositories created before the
+// pin existed are the common case on upgrade — either would otherwise hit go-git v6's
+// "cannot auto-sign commit" the first time an ambient commit.gpgSign is true.
+func TestPrepareBranch_PinsSigningPolicyOnReusedRepository(t *testing.T) {
+	tempDir := t.TempDir()
+
+	remotePath := filepath.Join(tempDir, "remote.git")
+	createBareRepo(t, remotePath)
+	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "README.md", "init")
+
+	repoPath := filepath.Join(tempDir, "worker")
+
+	// First call creates the repository.
+	_, err := PrepareBranch(context.Background(), "file://"+remotePath, repoPath, "main", nil)
+	require.NoError(t, err)
+
+	// Simulate a repository that predates the pin, or an ambient setting arriving later.
+	reopened, err := git.PlainOpen(repoPath)
+	require.NoError(t, err)
+	cfg, err := reopened.Config()
+	require.NoError(t, err)
+	cfg.Commit.GpgSign = config.NewOptBool(true)
+	require.NoError(t, reopened.SetConfig(cfg))
+
+	// Second call reuses it, and must re-pin.
+	_, err = PrepareBranch(context.Background(), "file://"+remotePath, repoPath, "main", nil)
+	require.NoError(t, err)
+
+	reopened, err = git.PlainOpen(repoPath)
+	require.NoError(t, err)
+	cfg, err = reopened.Config()
+	require.NoError(t, err)
+	assert.Equal(t, config.OptBoolFalse, cfg.Commit.GpgSign,
+		"a reused repository must have the signing policy pinned too")
+}

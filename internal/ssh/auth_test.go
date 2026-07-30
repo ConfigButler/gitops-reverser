@@ -147,8 +147,15 @@ func TestKeyAuth_AlwaysSetsHostKeyAlgorithms(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, cfg.HostKeyAlgorithms,
 			"an empty list sends go-git to the default known_hosts files, which do not exist in the image")
+		t.Logf("pinned algorithms: %v", cfg.HostKeyAlgorithms)
 		assert.Contains(t, cfg.HostKeyAlgorithms, gossh.KeyAlgoRSASHA256,
 			"the pinned RSA key's algorithms must be offered")
+		// Without this the subtest cannot tell a pin hit from the default fallback, because the
+		// default set also contains the RSA algorithms.
+		assert.NotEqual(t, defaultHostKeyAlgorithms(), cfg.HostKeyAlgorithms,
+			"a list identical to the default set means the pin was never consulted")
+		assert.NotContains(t, cfg.HostKeyAlgorithms, gossh.KeyAlgoED25519,
+			"the pin holds only an RSA key, so offering ed25519 would mean the default set was used")
 	})
 
 	t.Run("with host key verification disabled the modern set is offered", func(t *testing.T) {

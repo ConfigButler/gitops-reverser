@@ -37,7 +37,14 @@ func getPushSession(
 		return nil, fmt.Errorf("failed to get remote: %w", err)
 	}
 
-	endpoint, err := transport.ParseURL(remote.Config().URLs[0])
+	// go-git's own config validation rejects a remote with no URL, but a hand-edited or truncated
+	// .git/config can still present one, and indexing it would panic rather than fail.
+	urls := remote.Config().URLs
+	if len(urls) == 0 {
+		return nil, errors.New("remote origin has no URL configured")
+	}
+
+	endpoint, err := transport.ParseURL(urls[0])
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse remote URL: %w", err)
 	}

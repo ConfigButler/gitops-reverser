@@ -156,19 +156,19 @@ func CredentialFromSecretData(
 	}
 
 	// HTTP basic auth: username + password — already identical across all three ecosystems.
-	if username, ok := firstSecretValue(secret, "username"); ok {
-		password, hasPassword := firstSecretValue(secret, "password")
-		if !hasPassword {
-			return Credential{}, fmt.Errorf(
-				"secret %s/%s contains username but no password for HTTP basic auth", secret.Namespace, secret.Name)
-		}
-		if username == "" {
-			return Credential{}, errors.New("username cannot be empty")
-		}
-		if password == "" {
-			return Credential{}, errors.New("password cannot be empty")
-		}
+	//
+	// The password is what carries the credential, so it is what we branch on. Azure DevOps
+	// documents its Personal Access Tokens as an EMPTY username with the PAT as the password
+	// (the https://:PAT@dev.azure.com/... form), and firstSecretValue treats an empty value as
+	// an absent key — so keying off the username would refuse the very Secret ADO tells people
+	// to create. A username without a password stays an error: that one is a real mistake.
+	username, hasUsername := firstSecretValue(secret, "username")
+	if password, ok := firstSecretValue(secret, "password"); ok {
 		return Credential{Basic: &gogithttp.BasicAuth{Username: username, Password: password}}, nil
+	}
+	if hasUsername {
+		return Credential{}, fmt.Errorf(
+			"secret %s/%s contains username but no password for HTTP basic auth", secret.Namespace, secret.Name)
 	}
 
 	// HTTP bearer token: bearerToken — the common token path in both Flux and Argo.
