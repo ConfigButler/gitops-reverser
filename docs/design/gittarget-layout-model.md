@@ -52,6 +52,8 @@ spec:
   path: clusters/prod
   layout:
     kind: Kustomize            # Auto | Kustomize | Tree | Flat | Template
+    scope: SingleNamespace     # SingleNamespace | MultiNamespace
+    writeNamespace: Never      # FromContext | Always | Never
     kustomize:
       root: .                  # relative to spec.path; where the kustomization.yaml lives
       create: true             # write it if absent, so an empty repo becomes a buildable folder
@@ -62,7 +64,7 @@ spec:
 
 | `kind` | Where a new document goes | Exists because |
 |---|---|---|
-| `Auto` (default) | one supported kustomization in the subtree: behave as `Kustomize`; otherwise `Tree` | it is what most folders want, and it is honest about reading the repository |
+| `Auto` (default) | one supported kustomization in the subtree: `Kustomize`; else exactly one namespace in scope: `Flat`; else `Tree`. Resolved once and pinned (see below) | it is what most folders want, and it is honest about reading the repository |
 | `Kustomize` | beside the declared root, registered in its `resources:` list | a file that root cannot reach is never applied |
 | `Tree` | the built-in `{namespaceOrCluster}/{groupPath}/{resource}/{name}` path | identity-complete by construction; right for a fleet folder |
 | `Flat` | `{kindLower}-{name}.yaml` at the root of `spec.path` | the legible single-namespace folder people hand-author |
@@ -95,6 +97,104 @@ tried to default a **path**, and a path is the one thing that cannot say "look a
 `kind: Auto` is a safe CRD default precisely because it is a mode: it declares that the folder will be
 read, which is the difference between this and the sibling inference we deleted. That inference was
 undeclared. This one has a name, appears in the spec, and reports what it resolved to.
+
+## Namespace scope belongs to the layout
+
+A folder that omits the namespace from its paths is a folder for **one** namespace. That is what makes
+`Flat` legible, and it is an assumption the layout has to carry, because the thing that would otherwise
+carry it lives somewhere else.
+
+```yaml
+spec:
+  allowedSourceNamespaces:        # AUTHORIZATION: who may be mirrored here
+    names: [team-a]
+  layout:
+    kind: Flat
+    scope: SingleNamespace        # STRUCTURE: what shape this folder has
+```
+
+**These are two different questions and they must agree.** `allowedSourceNamespaces` is a permission
+bound owned by the destination
+([`gittarget_types.go`](../../api/v1alpha3/gittarget_types.go)); `layout.scope` is a structural claim.
+Validation checks the direction it can, at admission: a matcher that admits more than one namespace
+alongside `scope: SingleNamespace` is refused.
+
+**Why the layout cannot derive it.** Two reasons, and the second is the one that matters:
+
+- `allowedSourceNamespaces` is an upper bound and may be **absent**, which
+  [`NamespaceMatcher`](../../api/v1alpha3/namespace_matcher.go) defines as "no policy declared" rather
+  than as "one namespace". There is often nothing to derive from.
+- the namespaces that do arrive come from **N WatchRule objects that do not own the folder**. A
+  derived single-namespace assumption could be invalidated later by a rule created in another object,
+  which would turn a layout guarantee into a path collision. Declaring the scope makes that
+  invalidation a **refusal** instead: a document from a second namespace is declined with a message
+  naming both namespaces and counted as a placement refusal, rather than landing on a path another
+  object already occupies.
+
+That is the same distinction the whole redesign rests on. Reading the world is fine when the reading
+is declared and its failure is loud; it is not fine when it silently re-decides.
+
+## Whether the namespace is written into the file
+
+Today this is **inferred**, and it cannot be inferred in the case bootstrapping cares about most.
+`namespaceIsInheritedFromContext` omits `metadata.namespace` exactly when the governing kustomization's
+`namespace:` equals the resource's own. An empty folder has no kustomization to read, so a folder we
+are about to create cannot inherit a convention that does not exist yet.
+
+```yaml
+layout:
+  writeNamespace: FromContext     # FromContext (default, today's behavior) | Always | Never
+```
+
+| Value | Meaning | When it is valid |
+|---|---|---|
+| `FromContext` | omit when the governing kustomization sets this resource's namespace | always; today's behavior |
+| `Always` | always write `metadata.namespace` | always; the only safe choice when nothing downstream supplies it |
+| `Never` | never write it | only when something guarantees the namespace: a kustomization we control with `namespace:` set, or a declared downstream supplier such as a Flux `Kustomization.spec.targetNamespace` |
+
+`Never` needs that guard because omitting the namespace hands the object to whatever namespace the
+applier happens to be pointed at, which is a different object with the same name.
+
+**And this is where bootstrapping closes its own loop.** `kind: Kustomize` with `create: true` and
+`scope: SingleNamespace` lets the operator write `namespace: team-a` into the `kustomization.yaml` it
+creates, and then legitimately omit `metadata.namespace` from every file it places. The convention is
+**established** rather than guessed, which is the thing inference structurally cannot do on an empty
+folder.
+
+## The layout is immutable, with one widening exception
+
+An earlier draft of the wave document put `layout` with `prune` as a mutable field. That was wrong.
+
+**Existing files never move**, so a mutable `kind` leaves a folder that is permanently half one layout
+and half another, with nothing in the folder recording which file came from which. The structure of a
+folder should be a property of the folder, not of the last edit to an object.
+
+**The cost of immutability is lower than it looks, and this is the fact that decides it:** `GitTarget`
+has **no finalizer**, so deleting one leaves the folder in Git untouched, and re-creating it at the same
+path re-adopts every document by identity (match-first). Changing a layout by recreating the object
+costs the object's status and a moment of mirroring. It does not cost data. That is a materially
+different bargain from `spec.prune`, where the review's argument for mutability was that a
+delete-and-recreate would destroy the one thing that cannot be rebuilt.
+
+**The exception is widening.** `Flat` to `Tree` cannot break the folder: old flat files stay and remain
+match-first, new files get identity-complete paths, and nothing collides. Narrowing (`Tree` to `Flat`)
+is what can put two namespaces' objects on one path. So the CEL rule is "immutable except a transition
+that cannot lose the identity-completeness the folder already had", which in practice means you may
+widen and may not narrow.
+
+### `Auto` resolves once and is then pinned
+
+Immutability of the *field* does not pin the *resolution*, because `Auto` says "look at the folder". If
+someone deletes the `kustomization.yaml`, `Auto` would silently become `Tree` and the folder would grow
+a second layout without any object changing. That is the defect this project spent a release deleting,
+re-entering through the default value.
+
+So `Auto` resolves on first observation, `status.layout.kind` records what it became, and a later
+folder state that would resolve differently raises a condition rather than re-laying-out the folder.
+Declared inference is fine. Silent re-decision is not.
+
+That also settles the earlier open question about whether `Auto` should be the default at all: it can
+be, because pinning removes the harm, and it keeps the quickstart to four fields.
 
 ## Examples
 
@@ -172,17 +272,21 @@ rather than what is left when nothing matched.
 
 ```yaml
 spec:
+  allowedSourceNamespaces:
+    names: [team-a]
   layout:
     kind: Flat
+    scope: SingleNamespace
+    writeNamespace: Never      # the build supplies it, or the applier does
 ```
 
 `clusters/prod/deployment-simon.yaml`. Legible, and the reason it cannot be the built-in is that it is
 **not identity-complete**: two namespaces with a Deployment named `simon` render one path.
 
-As a *kind* rather than a template, that is checkable instead of a caveat in prose. The `Validated`
-gate can require the target to be single-namespace (its rules' `sourceNamespace` scope says so) and
-refuse otherwise, with a message naming the two namespaces that would collide. A template can only
-document the hazard; a kind can decline it.
+As a *kind* rather than a template, that is checkable instead of a caveat in prose. `Flat` requires
+`scope: SingleNamespace`, admission refuses it beside an `allowedSourceNamespaces` matcher that admits
+more than one namespace, and a document arriving from a second namespace is refused at the write
+boundary with a message naming both. A template can only document the hazard; a kind can decline it.
 
 ### 5. `Template`, the escape hatch, with the invariant still in force
 
@@ -386,13 +490,17 @@ Nothing already planned is wasted, and one item should wait:
 
 ## Open questions
 
-- Is `Auto` the right default, or should a new GitTarget be required to say what its folder is? `Auto`
-  is friendlier and matches today's behavior; requiring a choice is more honest and would make every
-  target's layout self-evident. My inclination is `Auto`, because the alternative fails a target that
-  is pointed at a repository nobody has decided about yet.
-- Should `Flat` be refused outright for a multi-namespace target, or accepted with a warning
-  condition? Refusing is consistent with "no silently wrong output", but it turns an ordinary
-  scope-widening edit (adding a second namespace to a rule) into a broken target.
+- ~~Is `Auto` the right default?~~ **Yes**, given that it resolves once and pins the result. Pinning
+  is what removes the harm, and the quickstart stays four fields.
+- ~~Should `Flat` be refused for a multi-namespace target?~~ **Refuse the writes, not the target.** A
+  scope-widening edit in another object must not break a folder; the second namespace's documents are
+  declined with a counted refusal naming both namespaces, and the fix is a widening layout change.
+- Should `scope` be **derived and materialized** at creation (write `SingleNamespace` into the spec
+  when exactly one namespace is admitted) rather than declared? It would make the common case
+  zero-config, at the price of a mutating webhook writing spec, which this project has deliberately
+  avoided outside identity capture.
+- Does `writeNamespace: Never` need to name its supplier (`Kustomize`, `FluxTargetNamespace`,
+  `Asserted`) so validation can check the guarantee rather than trust it?
 - Does `kind: Kustomize` imply `create: true`? Asserting a folder is a kustomize folder arguably
   asserts the file exists, and requiring both feels like ceremony. The argument for keeping them
   separate is that creating a file in someone's repository should always be something they asked for.

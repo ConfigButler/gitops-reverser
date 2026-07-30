@@ -90,22 +90,43 @@ the Event is now: emit when `status.layout` changes in a way a human should know
 `renderRootReason` becoming `Ambiguous`, or a type falling back for the first time. One Event per
 persisted change, the pattern F7 already established for `Ready`.
 
-### 5. Layout is mutable, and that has to be stated beside the immutable fields
+### 5. Layout is immutable, which puts it with `path` rather than with `prune`
 
 `providerRef`, `branch`, `path` and `clusterProviderRef` are immutable because a folder's meaning is
 constituted by them (review §3 defends this well). `spec.prune` is deliberately mutable because
 freezing it would destroy the one thing that cannot be rebuilt.
 
-`spec.layout` belongs with `prune`: mutable, because it only affects documents that do not exist yet.
-Existing files never move, so changing `kind` cannot break the mirror; it changes where the *next*
-new document goes. That needs to be in the field doc, and status needs to make the consequence
-visible, since a folder can legitimately hold files placed under two layouts. `observedRevision`
-already carries "when", and it is worth recording which layout generation produced the historical
-half.
+An earlier draft of this document put `spec.layout` with `prune`. That was wrong, and the reason is a
+fact worth checking before designing around it: **`GitTarget` has no finalizer**, so deleting one
+leaves the folder in Git untouched, and re-creating it at the same path re-adopts every document by
+identity. Changing a layout by recreating the object costs status and a moment of mirroring, not data,
+which is a different bargain from `prune` entirely. Meanwhile a mutable layout leaves a folder
+permanently half one structure and half another, because existing files never move and nothing records
+which file came from which.
 
-This also connects to **#6** (a movable destination via `status.observedDestination`): if `path` ever
-becomes movable, the layout has to move with it, because a new folder may have a different structure.
-Deciding layout mutability now keeps #6 from having to reopen it.
+So: immutable, with a CEL exception for a **widening** transition (`Flat` to `Tree`) that cannot lose
+the identity-completeness the folder already had. And `Auto` resolves once and is pinned in status,
+because immutability of a field that says "look at the folder" pins nothing. The reasoning is in
+[`gittarget-layout-model.md`](gittarget-layout-model.md).
+
+This settles a question **#6** would otherwise have to reopen: if `path` ever becomes movable
+(`status.observedDestination`), the layout moves with it, because a new folder may have a different
+structure, and an immutable layout means that transition is one deliberate act rather than two
+independent edits.
+
+### 6. Namespace scope makes `allowedSourceNamespaces` and the layout answer to each other
+
+The layout's `scope: SingleNamespace` is a structural claim, and `spec.allowedSourceNamespaces` is an
+authorization bound. They are different questions about the same folder, and after this wave they are
+checked against each other at admission: a matcher admitting more than one namespace beside a
+single-namespace layout is refused.
+
+This is the connection the wave makes available, and it is not one either item asks for alone.
+Authorization already exists and already has a two-party delegation the review praises; the layout is
+what turns "who may write here" into "and therefore what this folder looks like", including whether
+`metadata.namespace` is written into the files at all. The namespace-in-file question is inference
+today, and it is the one piece of inference an empty folder cannot perform, which is why bootstrapping
+needs it declared.
 
 ## The GitTarget after the wave
 
@@ -124,8 +145,10 @@ spec:
   path: clusters/prod
 
   # --- what the folder is ---
-  layout:
+  layout:                           # immutable, except a widening transition
     kind: Kustomize                 # Auto | Kustomize | Tree | Flat | Template
+    scope: SingleNamespace          # must agree with allowedSourceNamespaces
+    writeNamespace: Never           # the created kustomization carries namespace:
     kustomize:
       create: true
     byType:
