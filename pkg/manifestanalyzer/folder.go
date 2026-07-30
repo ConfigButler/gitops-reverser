@@ -76,6 +76,21 @@ const (
 // who is often not the person reading the message: rendering an out-of-scope refusal as
 // "fix your repository" to a repository author who cannot is the failure this half
 // prevents.
+//
+// # Which scan can report which value
+//
+// [ScanFolder] and [ScanRepo] are STRUCTURE-ONLY: they read files and never a cluster. They
+// report [ActorUnknown] or [ActorRepositoryAuthor], and never [ActorPlatformOperator] —
+// not as an accident of the current code, but because the two refusals that name the
+// platform operator both need something only a cluster can supply. [IssueOutOfScope] needs
+// a GitTarget's declared scope, and an unfollowable-type refusal needs a type registry that
+// has seen the API server. A structure-only scan has neither, and a scan that cannot see the
+// cluster has no business claiming a CRD is missing.
+//
+// So a consumer's platform-operator branch is unreachable for these two entry points. That
+// is a guarantee rather than a gap: it is what makes it safe to render a refusal from a repo
+// scan as "the repository author can fix this, or nobody can". Only the operator's own live
+// write path names the platform operator.
 type Actor string
 
 const (

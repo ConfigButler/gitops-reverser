@@ -10,12 +10,9 @@ status:
   issues:
   - documentIndex: 0
     kind: unsupported-kustomize
-    message: kustomization kustomization.yaml uses an unsupported feature (generators/components/helm/replacements/transformers/namePrefix/nameSuffix/remote
-      bases, or a patch that is not a strategic-merge document named by path), declares
-      malformed images/replicas overrides, or is a render root kustomize cannot build;
-      the operator cannot map it back to editable source documents and will not write
-      into this folder (a kustomize-build-failed diagnostic on this path carries the
-      build error)
+    message: 'kustomization.yaml: kustomization uses unsupported feature(s): helmCharts,
+      render-failed; the operator will not write into this folder (a kustomize-build-failed
+      diagnostic on this path carries the build error)'
     path: kustomization.yaml
     solvable: false
   - actor: repository-author

@@ -6,15 +6,20 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] **High availability (near-term priority).** Support running more than one controller replica;
   `replicaCount > 1` is currently hard-rejected by the chart. Redis/Valkey is already the shared store
-  for watch resume cursors and command-author facts, so the data plane is HA-oriented. The remaining
+  for watch resume cursors, command-author facts, and — since the fact-stream switchover — the
+  per-`(route, group/resource)` attribution fact streams, whose independent cursors are the primitive
+  HA needs for an audit POST and a watch shard that land on different replicas. The remaining
   work is leader/ownership coordination so two replicas never write the same `GitTarget`, plus the
-  durable worker queue below. Redis becomes required (not just advised) in this mode.
+  durable worker queue below, plus one small ordering call: whether a replica warms its fact index
+  before starting a watch it has taken over. Redis becomes required (not just advised) in this mode.
 
 - [ ] Optional: capture CommitRequest authors without Redis in single-pod mode.
   The admission webhook is on by default but no-ops author capture without Redis (it writes the author
   to Redis and the controller reads it back). Since both run in one process today (`replicaCount=1`),
-  an in-memory `CommandAuthorStore` fallback would make capture work with no Redis. Only useful until
-  HA lands (HA needs the shared Redis store); low priority.
+  an in-memory `CommandAuthorStore` fallback would make capture work with no Redis. Now the *only*
+  thing that still forces Redis on a single replica, since `--author-attribution-transport=memory`
+  runs attribution in-process. Only useful until HA lands (HA needs the shared Redis store); low
+  priority.
 
 - [ ] Prevent same-repository write collisions across multiple `GitProvider` objects.
   Decide whether the fix should be validation, a shared queue/lock per repo, or both.

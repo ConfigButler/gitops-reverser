@@ -724,38 +724,22 @@ func reachedResourceFiles(kusts map[string]*kustomizationDoc) map[string]struct{
 // agreeing, and it follows the rule the whole table follows — describe the folder, not the
 // rule.
 func refusedStructuralReason(doc *kustomizationDoc, content []byte) RefusalReason {
-	reason := RefusalReason{
-		Code:     ReasonRefusedStructural,
-		Detail:   refusedStructuralDetail(doc, content),
-		Solvable: false,
-	}
-	if doc == nil {
-		return reason
-	}
-	class := classifyKustomizeFeatures(doc.features)
-	reason.Solvable, reason.Actor = class.Solvable, class.Actor
-	return reason
-}
-
-// refusedStructuralDetail names the specific unsupported kustomize features so the
-// refusal is actionable, not a bare "refused". The features come off the parsed doc, which is
-// the same judgement the acceptance gate reads, so the scan and the operator cannot drift.
-func refusedStructuralDetail(doc *kustomizationDoc, content []byte) string {
 	var features []string
 	if doc != nil {
 		features = doc.features
 	}
-	if len(features) == 0 {
-		return "kustomization uses an unsupported feature the operator cannot map back to editable source"
+	// One classification, used twice: it sets Solvable and it picks the prose stem. The
+	// detail cannot contradict the field when neither is computed independently of the other.
+	class := classifyKustomizeFeatures(features)
+	if doc == nil {
+		class = Classification{}
 	}
-	detail := "kustomization uses unsupported feature(s): " + strings.Join(features, ", ")
-	// "unparseable" on its own says nothing a user can act on. kustomize's decoder
-	// knows exactly what is wrong — that a resources: is a string, or that the file
-	// is a Flux Kustomization CR rather than a build file — so quote it.
-	if err := kustomizationDecodeError(content); err != "" {
-		detail += " (" + err + ")"
+	return RefusalReason{
+		Code:     ReasonRefusedStructural,
+		Detail:   unsupportedKustomizeDetail(class, features, kustomizationDecodeError(content)),
+		Solvable: class.Solvable,
+		Actor:    class.Actor,
 	}
-	return detail
 }
 
 // renderRootNamespace resolves the namespace a render root renders under: the

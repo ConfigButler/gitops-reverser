@@ -3,10 +3,10 @@
 package manifestedit
 
 import (
-	"bytes"
-
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/ConfigButler/gitops-reverser/internal/yamlstyle"
 )
 
 // PatchDocument updates one document inside a file to match the desired object,
@@ -28,20 +28,11 @@ func PatchDocument(
 	return Apply(c, Decide(c))
 }
 
-// yamlIndent is the indentation used when re-encoding an edited document. It
-// matches common manifest style rather than yaml.v3's 4-space default.
-const yamlIndent = 2
-
-// encodeNode serializes a node with two-space indentation.
+// encodeNode serializes a node in the house style.
+//
+// The style lives in [yamlstyle] rather than here because the writer's create path encodes
+// through the same package: an UPDATE that re-indents what a CREATE wrote makes the mirror's
+// git diff unreadable, and one shared constant is what stops the two drifting again.
 func encodeNode(node *yaml.Node) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(yamlIndent)
-	if err := enc.Encode(node); err != nil {
-		return nil, err
-	}
-	if err := enc.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return yamlstyle.Encode(node)
 }

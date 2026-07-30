@@ -45,7 +45,7 @@ Reading rules:
 | 3-expanded/flux-resourceset-pull-requests | 0 | All reported candidates accepted | 1 | 0 | plain=1 | - | None |
 | 4-machine-written/flux-image-automation | 0 | All reported candidates accepted | 3 | 0 | kustomize-single=3 | - | None |
 | 5-opaque/sops-encrypted | 0 | All reported candidates accepted | 3 | 0 | kustomize-single=2, plain=1 | - | None |
-| 6-hostile/mixed-and-hostile | 0 | Partial | 3 | 2 | plain=4, refused-structural=1 | unparseable | refused-structural [solvable]: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec")<br>impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file [solvable]: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |
+| 6-hostile/mixed-and-hostile | 0 | Partial | 3 | 2 | plain=4, refused-structural=1 | unparseable | refused-structural [solvable]: kustomization has a fault that can be fixed in the repository: unparseable (invalid Kustomization: json: unknown field "spec")<br>impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file [solvable]: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |
 
 ## 1-desired-state/argocd-app-of-apps
 
@@ -277,7 +277,7 @@ Unsupported constructs: `unparseable`.
 
 | Candidate | Layout | Accepted today | Namespace | rendered/editable/non-KRM | Refusal reasons |
 |---|---|---|---|---|---|
-| `.` | `refused-structural` | false | `backend` | 0/0/5 | refused-structural [solvable]: kustomization uses unsupported feature(s): unparseable (invalid Kustomization: json: unknown field "spec") |
+| `.` | `refused-structural` | false | `backend` | 0/0/5 | refused-structural [solvable]: kustomization has a fault that can be fixed in the repository: unparseable (invalid Kustomization: json: unknown field "spec") |
 | `crossplane` | `plain` | true | `-` | 1/1/0 | none |
 | `kro` | `plain` | true | `-` | 1/1/0 | none |
 | `mixed` | `plain` | false | `-` | 3/3/2 | impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #1 is a non-KRM document<br>impure-managed-file [solvable]: bundle.yaml: a file with managed resources may contain only valid KRM documents; document #2 is an empty document<br>foreign-file [solvable]: deployment.json: foreign file deployment.json is not a managed manifest; remove it or name it in .gittargetignore |

@@ -285,17 +285,20 @@ func unsupportedKustomizeRefusals(store *ManifestStore) []AcceptanceIssue {
 		// The construct that raised the refusal is the only thing that knows which, so
 		// the classification is computed from the retention's own feature set here rather
 		// than looked up per code.
+		class := classifyKustomizeFeatures(rd.UnsupportedFeatures)
 		out = append(out, AcceptanceIssue{
 			Kind:          IssueUnsupportedKustomize,
 			Path:          rd.Location.Path,
 			DocumentIndex: rd.Location.DocumentIndex,
-			Message: "kustomization " + rd.Location.Path + " uses an unsupported feature " +
-				"(generators/components/helm/replacements/transformers/namePrefix/nameSuffix/remote bases, " +
-				"or a patch that is not a strategic-merge document named by path), " +
-				"declares malformed images/replicas overrides, or is a render root kustomize cannot build; " +
-				"the operator cannot map it back to editable source documents and will not write into this folder " +
+			// Same stem as the render-root refusal in scan_repo, from the same
+			// classification: the two surfaces describe one directory and must not hand a
+			// consumer two different answers about it. The tail differs because only this
+			// one can point at a build-error diagnostic.
+			Message: rd.Location.Path + ": " +
+				unsupportedKustomizeDetail(class, rd.UnsupportedFeatures, "") +
+				"; the operator will not write into this folder " +
 				"(a kustomize-build-failed diagnostic on this path carries the build error)",
-		}.classified(classifyKustomizeFeatures(rd.UnsupportedFeatures)))
+		}.classified(class))
 	}
 	return out
 }

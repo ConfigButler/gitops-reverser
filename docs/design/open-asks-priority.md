@@ -2,21 +2,29 @@
 
 > **design**: a priority call, not a plan of record. Nothing here binds until scheduled.
 > Index: [`../INDEX.md`](../INDEX.md)
-> Date: 2026-07-28. Written against `v0.40.1` / `main`.
+> Date: 2026-07-29. Written against `v0.40.1` / `main` plus the attribution branch
+> (`feat/attribution-sticky-removal-pointer`), which is where the largest item on this page went.
+>
+> **The queue was built bottom-up rather than top-down.** Tier 0 and Tier 1 are still unbuilt, and
+> the Tier 2 item nobody scheduled — the attribution fact stream — shipped anyway, together with a
+> consumer ask (#23) that arrived after this page was first written and was fixed before it was ever
+> ranked. That is recorded in [already shipped](#already-shipped-and-struck-from-the-queue) rather
+> than smoothed over: the ordering rule below is still the argument, and the deviation from it is
+> a fact about the last week, not a revision of the rule.
 >
 > Three backlogs are open at once and they overlap: the gitops-api consumer asks (revision 11,
-> 2026-07-28), the maintainer review's unbuilt block in
+> 2026-07-28, which is the revision that filed #23), the maintainer review's unbuilt block in
 > [`flux-maintainer-review-status-and-config-model.md`](../future/flux-maintainer-review-status-and-config-model.md)
 > (F6, F9, F10), and the config-surface proposal in
 > [`config-surface-for-a-structured-repository.md`](../future/config-surface-for-a-structured-repository.md)
 > (B1–B6). This page merges them into one queue and says where we deliberately do **not** do
 > what was asked.
 >
-> One of the queue's entries is already specified rather than merely wanted:
-> [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) picks and details the replacement for
-> the attribution keyspace. It is ranked here like everything else, and it changes how the
+> The entry that used to be "already specified rather than merely wanted" is now built:
+> [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) has moved to `finished/`.
+> What it leaves behind is smaller and differently shaped, and it still changes how the
 > highest-priority consumer ask should be built. See
-> [attribution facts as a stream](#attribution-facts-as-a-stream-tier-2-and-it-answers-15s-hard-part).
+> [what the stream work left open](#what-the-stream-work-left-open-tier-2).
 
 ## The ordering rule
 
@@ -36,11 +44,13 @@ Four tests, applied in order. They are what produced the queue in
    make the diff unreadable are not cosmetic here, whatever they would be elsewhere.
 
 Test 3 is why this document exists rather than a straight re-ranking of the asks, and it lands
-on sibling inference. It has a second instance, arrived at independently:
-[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) deletes the fact keyspace and the
-`deletecollection` expander rather than optimizing either, and ends up with less code doing more.
-Two of these in one quarter is a pattern worth naming: the parts of this system that hurt are the
-parts that reconstruct something from state they do not own.
+on sibling inference. It has a second instance, arrived at independently and since **measured**:
+[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) deleted the fact keyspace, the
+150ms poll loop and the `deletecollection` expander rather than optimizing any of them, and ended up
+with less code answering *more* cases than before — a collection delete the API server sent no
+response body for used to lose its author entirely. Two of these in one quarter is a pattern worth
+naming: the parts of this system that hurt are the parts that reconstruct something from state they
+do not own.
 
 ---
 
@@ -133,9 +143,36 @@ inference already fell to canonical there. It is a behavior change for existing 
 needs a `docs/UPGRADING.md` entry, and it is cheapest now, while the user count makes "one
 `byType` line" a sentence in a release note rather than a migration.
 
-**Open, and worth deciding before writing code:** whether the deletion lands with a
-`PlacementFellBackToCanonical`-style Event on the first new type per target, so the user learns
-they need a `byType` line at the moment it matters rather than by noticing a file.
+**Open, and worth deciding before writing code:** how the user learns they need a `byType` line at
+the moment it matters, rather than by noticing a file. The earlier wording here — "a
+`PlacementFellBackToCanonical`-style Event on the first new type per target" — hid three decisions,
+and the word *Event* meant a real `corev1.Event` through
+`mgr.GetEventRecorderFor(...)`, the same recorder
+[`status.go`](../../internal/controller/status.go) uses to announce a persisted `Ready` transition.
+
+- **It is not nearly free here, because placement is not a controller.** `LocateNew` is called on the
+  branch worker's write path in [`plan_flush.go`](../../internal/git/plan_flush.go) — no reconcile
+  context and no recorder in `internal/git` at all. The two surfaces that exist today are a log line
+  at the skip site and `ResyncStats.PlacementSkipped`, which is a field in a resync summary rather
+  than a Prometheus counter. Neither is user-visible.
+- **Which object it attaches to is the actual question.** Not the watched resource: since the
+  config-plane split that object may live in a remote source cluster, so an Event on it lands in a
+  cluster the user does not read. The right `involvedObject` is the **GitTarget** — local, and the
+  object whose `byType` line is the fix — which means the write path has to hand the fact back rather
+  than emit it. That seam already exists as the `pathRefusal` →
+  `GitPathAccepted=False` projection in
+  [`git_path_refusal.go`](../../internal/git/git_path_refusal.go).
+- **That seam has a timing flaw which undercuts "at the moment it matters".** A refusal recorded on
+  the data plane does not enqueue the GitTarget; it surfaces on the next requeue, up to ten minutes
+  later. Good enough for a durable condition, weak for a notification. Events are also
+  deduplicated and expire (`--event-ttl` defaults to 1h), so an Event is never the record.
+
+**The shape that follows is a split, not one of the three.** An **Event on the GitTarget** for
+timeliness, over the existing refusal seam plus an enqueue; and **`status.layout` (B2)** for
+durability, because "what the operator understood about this folder" is where someone looks a day
+later. The log line stays. A Prometheus counter is the one to argue *against* leading with:
+`placement_fell_back_total` says it happened somewhere, not which type in which target, which is the
+only actionable part.
 
 ---
 
@@ -143,28 +180,87 @@ they need a `byType` line at the moment it matters rather than by noticing a fil
 
 | # | Ask | Source | Tier |
 |---|---|---|---|
-| 22 | `ReasonRefusedStructural` doc says "permanent"; refusal-detail stem; `Actor` reachability | gitops-api | **0** |
-| 15 | A declared `auditRoute` with zero facts must say so | gitops-api | **1** |
+| 15 | A declared `auditRoute` with zero facts must say so, and a route losing them with it | gitops-api | **1** |
+| n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** |
 | n/a | Delete sibling inference (answers #10) | this doc | **1** |
-| n/a | Attribution facts become a stream; the keyspace and the expander are deleted | [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) | **2** |
 | F6 | `spec.suspend`, `spec.interval`, `requestedAt` | maintainer review | **2** |
 | 5 | `CommitRequest.spec.author`, SAR-guarded | gitops-api (#220) | **2** |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** |
 | B1 | `GitTarget.spec.mode: Observe\|Write` | config surface | **2** |
 | 6 | Movable destination via `status.observedDestination` | gitops-api (#220) | **2** |
 | F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** |
-| 11 | One encoder for `[CREATE]` and `[UPDATE]` bodies | gitops-api | **3** |
+| n/a | The blocking resolve is head-of-line on the shard goroutine | [`attribution-branch-findings.md`](attribution-branch-findings.md) | **2** |
 | B2 | `GitTarget.status.layout` | config surface | **3** |
 | F9 | The `scope: Namespaced` status-write envtest | maintainer review | **3** |
 | B6 | The `default` ClusterProvider not-found message | config surface | **3** |
+| n/a | An aggregated create carries no name and no body: accept it, or stop waiting for it | [`attribution-branch-findings.md`](attribution-branch-findings.md) | **3** |
+| n/a | Entry-size ceiling and per-type stream count under a few hundred watched types | [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) | **3** |
 | 10 | Namespace-aware sibling inference *as asked* | gitops-api | **declined** |
 | B3 | `spec.placement.mode` enum | config surface | **declined** |
 
-### Tier 0: correct what is false, this week
+### Already shipped, and struck from the queue
 
-**#22 is three separate things and all three claims check out against `main` today.** They are
-worth doing immediately because each one is a sentence and each one is currently misleading a
-consumer that reads our source as the contract.
+Four things left this page between 2026-07-28 and 2026-07-29, all on
+`feat/attribution-sticky-removal-pointer`. They are listed rather than deleted because two of them
+change what the *remaining* entries should be.
+
+- **The attribution fact stream** (was the largest Tier 2 entry). Built as #283, #284, #286 and #287:
+  the audit receiver appends one batched entry per type to a per-`(route, group/resource)` stream,
+  every process follows only the types it watches, and the facts live in one bounded, TTL'd in-memory
+  index. The fact keys, the poll loop and the `deletecollection` expander are gone;
+  `exact_deletecollection_item` is replaced by `deletecollection_body_uid` and
+  `deletecollection_scope`, and `--author-attribution-transport=memory` runs attribution with no
+  Redis on one replica. Record: [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md).
+  §5, §6 and §8 of [`deletecollection-attribution-expander.md`](../spec/deletecollection-attribution-expander.md)
+  have been rewritten to say what took their place, which discharges commitment 6 below.
+- **#23 — deletion-as-intent picked the cleanup controller, not the deleter.** Filed in revision 11
+  and fixed before it was ranked, because the reproduction fell out of the switchover's own corpus:
+  the human's `delete` and the controller's finalizer `patch` both return a body carrying the
+  resourceVersion the deletion stamped, so both facts were filed under the same `(uid, resourceVersion)`
+  key and the index was last-writer-wins. The deleter's fact was not outranked, it was *replaced*.
+  Built as a **sticky removal pointer**: a fact about a deletion may not be overwritten by a fact
+  about a write, keyed strictly by uid, consulted ahead of the exact tier for a removal, bounded by
+  the index's caps rather than the join TTL. Ships `delete_sticky` on
+  `attribution_resolutions_total{tier}`. Record:
+  [`attribution-deletion-intent-actor.md`](attribution-deletion-intent-actor.md).
+- **A name tier**, which was not asked for by anyone. An aggregated-API write or single delete is
+  audited with a name but no uid and no resourceVersion, so every stronger tier misses it and it used
+  to ship committer-authored. Facts carrying neither identifier are now filed under
+  `(namespace, name)` and consulted last. Record:
+  [`attribution-branch-findings.md`](attribution-branch-findings.md) §4.
+- **Phase 1 of the attribution metric surface.** `result` split into `tier` and `actor_kind`, the
+  `no_attribution_fact` audit outcome, and the loss-path counters — including the stream decode
+  error, which had no symptom at all. Record:
+  [`attribution-metrics-proposal.md`](attribution-metrics-proposal.md), migration in
+  [`UPGRADING.md`](../UPGRADING.md).
+
+- **#22 — the analyzer contract's three false sentences**, all three fixed:
+  `ReasonRefusedStructural` no longer calls itself permanent and points at `Solvable`; the refusal
+  detail derives its stem from the same classification that sets `Solvable`, so a solvable refusal
+  is described as a fault that can be fixed rather than as an unsupported feature (the corpus
+  baseline moved on exactly the one refusal that was lying, and on nothing else); and `Actor`
+  states which scans can report which values, pinned by a corpus test. The nested-kustomization
+  message shares the new stem, which also replaced a catch-all listing every construct it might
+  have been with the constructs it actually found.
+- **#11 — one encoder.** `internal/yamlstyle` now owns the single style everything committed to
+  Git is written in, and a source-scanning test refuses a second encoder in the write path. The
+  create path had been rendering sequences at the parent key's column (JSON→YAML) while an
+  in-place edit rendered them two columns deeper (yaml.v3), so the first update after a create
+  rewrote every list line in the file.
+
+**What that changes for the entries above.** #15 gets cheaper and gains a second half (a route that
+is *losing* facts is the same user-visible failure as one that never had any, so it is the same
+condition, not a second surface). And two new Tier 1/2 entries exist that did not before, because the
+stream made the cost of waiting measurable for the first time: a removal that no delete fact will
+ever arrive for spends the whole grace to return the answer it already had at t=0, measured at ~3.1s
+against ~70ms when evidence is present, and it does that on the shard's own goroutine.
+
+### Tier 0: correct what is false — SHIPPED
+
+**#22 was three separate things and all three claims checked out against `main`.** They were worth
+doing immediately because each one was a sentence and each one was misleading a consumer that reads
+our source as the contract. What each one turned into is below; the queue table no longer carries
+them.
 
 - **The doc comment.** `ReasonRefusedStructural` is documented as "the permanent support
   boundary" in [`pkg/manifestanalyzer/repo.go`](../../pkg/manifestanalyzer/repo.go), while
@@ -182,13 +278,18 @@ consumer that reads our source as the contract.
   branch; the better shape is to derive the stem from the same classification that sets
   `Solvable`, so the two cannot drift the way the doc comment did. One function, two stems, one
   input.
-- **The `Actor` question, answered: yes, it is structural.** `AcceptancePolicy.InScope` is
-  assigned in exactly two places in the tree, both tests. `folderScanPolicy` leaves it nil and
-  `ScanRepo` never sets it, and `mappingRefusal`'s `IssueOutOfScope` is gated on it being
-  non-nil, so neither `ScanFolder` nor `ScanRepo` can emit `ActorPlatformOperator`. A consumer's
-  platform-operator branch is dead code today. The right fix is not only the doc line they asked
-  for: `Actor`'s doc should state which scan kinds can produce which values, so the guarantee is
-  written where it is read rather than reconstructed from a nil check three files away.
+- **The `Actor` question, answered: yes, it is structural — and their trace found one of the two
+  gates.** The conclusion holds, the reasoning was half of it. `IssueOutOfScope` is gated on
+  `AcceptancePolicy.InScope`, which is assigned in exactly two places in the tree, both tests. But
+  `ActorPlatformOperator` has a second acceptance raise site they did not reach:
+  `IssueUnresolvedKRM` carries it when the type registry has never heard of the GVK
+  (`resolveMapping` in [`store.go`](../../internal/manifestanalyzer/store.go)), and that one is
+  gated on something else entirely — a not-ready registry resolves every document to
+  `MappingNoSource`, so `MappingNotFollowable` never happens on a structure-only path.
+  **Cluster-awareness is the real gate, not `InScope`**, which is a better answer than the one
+  asked for: it says *why* the branch is unreachable, and it is what makes the guarantee safe to
+  state. The doc line lands on `Actor` in both the internal and the exported copy, and a test over
+  the layout corpus pins that no structure-only scan names the platform operator.
 
 ### Tier 1: silent wrongness
 
@@ -209,19 +310,46 @@ Design notes, going slightly beyond the ask:
   on this route, and how many have. Zero-with-a-timestamp is the whole signal.
 - The Event recorder landed with F7, so the Event is nearly free.
 
-**Do not wait for the stream work to build it, and do not build it twice.** The obvious trap is to
-defer #15 until the transport changes, because the stream design makes the signal so much easier
-to produce. The right move is the opposite: ship the condition now, and define it in terms that
-both transports can answer, which is "how many facts has this route contributed, and when was the
-last one". Today that is a counter incremented where
-`RecordFact` writes; after the change it is the same
-counter incremented where the receiver appends. The condition never learns which transport it has,
-which is the same seam rule the stream design argues for one level down.
+**The transport question is settled, and it settled in #15's favour.** This section used to warn
+against deferring #15 until the transport changed. The transport changed first anyway — and the
+signal the condition needs is now a directly observable property rather than a statistic we choose
+to keep: a per-`(route, group/resource)` stream either has entries or it does not, and the
+`attribution_fact_stream_gaps_total` and `attribution_fact_index_evictions_total` counters that
+shipped with it already say when a follower is losing facts. Two consequences:
+
+- **Build it against the stream, not against a transport-neutral counter.** The seam still exists
+  (`memory` and `redis` both answer "how many facts, and when was the last one"), so define the
+  condition on the seam — but there is no longer a keyspace whose counter has to be kept in step.
+- **The trim-gap counter folds into this condition rather than growing a second one.** A route
+  losing facts and a route that never had any are the same user-visible failure: commits authored
+  `unknown (attribution unresolved)`. One condition, two messages.
 
 Where `auditRoute` came from is [`attribution-fact-identity.md`](attribution-fact-identity.md).
-The related open question about *how the watch waits* is no longer open in the way it was: the six
-options in [`attribution-wait-poll-vs-push.md`](attribution-wait-poll-vs-push.md) are superseded by
-[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md), which picks one and specifies it.
+The related question about *how the watch waits* is answered for the transport and reopened one
+level down: the six options in
+[`attribution-wait-poll-vs-push.md`](attribution-wait-poll-vs-push.md) are superseded by
+[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md), and what remains is *when a
+removal should stop waiting*, immediately below.
+
+**Stop paying a full grace for a delete fact that will never arrive.**
+[`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) enumerates the eight
+situations a resolution can be in and shows the cost is concentrated in exactly one: a removal for
+which no delete fact will *ever* arrive — a graceful pod delete, a status-only removal, a type the
+audit policy excludes — spends the whole grace to return the answer it held at t=0. It recommends
+**F then C**, and they are complementary rather than alternatives:
+
+- **F, a per-`(route, type)` circuit breaker**: stop waiting for a fact that has never once arrived.
+  It is in this tier and not a lower one because it is not only a latency fix — a watched type the
+  audit policy excludes is a *misconfiguration nobody currently learns about*, which is #15's failure
+  mode one level down. **Build it with #15, from the same counters, or it becomes a third surface
+  saying the same thing.**
+- **C, a per-route watermark**: stop waiting once the fact stream has demonstrably moved past this
+  event. It removes the transient case using data already in the index, and it is the only option
+  that answers "is a fact still coming?" rather than guessing with a timeout.
+
+What is explicitly *not* measured yet, and should be before either lands: how common the
+never-resolved population is outside the e2e suite, and whether a quiet route's watermark advances
+often enough to be worth having. The one number we do have came from a single run.
 
 **The inference deletion** sits in this tier for the reason argued above: repo state changing
 operator behavior invisibly is the same class of defect as an audit route that silently resolves
@@ -232,64 +360,67 @@ nothing.
 These all add or change a spec field. Doing them as one `feat(api)!` sequence costs the consumer
 one coordinated bump; doing them one at a time costs six.
 
-#### Attribution facts as a stream: Tier 2, and it answers #15's hard part
+#### What the stream work left open (Tier 2)
 
-[`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) is the only item in this queue that
-arrives already specified, and it is the largest. It is in Tier 2 rather than Tier 1 for an honest
-reason: today's keyspace is *slow*, not *wrong*. The poll loop runs to completion on essentially
-every attributable event, which is waste, and waste does not outrank a silent misconfiguration.
+The stream itself is built, and the only two decisions this section used to hold — whether to do it,
+and whether the in-memory transport ships in the first cut — were both taken: yes, and yes (guarded
+by a conformance suite both transports pass, and refused by the chart for `replicaCount > 1`). What
+is left is one structural item and two capacity questions.
 
-What lifts it above the rest of Tier 2 is that it retires three things at once instead of adding a
-fourth. The per-key `SET`/`GET` and the poll loop go; the `deletecollection` expander, which
-rebuilds N per-object facts by parsing a response body that truncation removes exactly when the
-collection is large, goes with them; and a collection delete becomes one fact that removals join by
-scope, which resolves the aggregated-API and truncated cases that degrade to committer-authored
-today. That is test 3 again, and it is why this ranks above the spec-field work rather than beside
-it.
+**The blocking resolve is head-of-line on the shard goroutine.** This was measured, not reasoned:
+three removals ahead of a write each sat out most of a ten-second grace — 20.2s between them — for
+evidence the index already held, and the write behind them missed the commit window it belonged to.
+The lookup-ordering half is fixed (that is what the sticky pointer and the tier reordering did), and
+the structural half is untouched: *any* removal that must wait out its grace still stalls every later
+event on its shard. Two directions, from
+[`attribution-branch-findings.md`](attribution-branch-findings.md):
 
-Three things it settles that this queue had left open:
+1. **Bound the removal's extra wait separately from the grace.** Once a fallback is in hand the fact
+   stream for that scope is demonstrably live, so what is outstanding is an audit-batch interval
+   rather than a full grace. Small; needs a number chosen with evidence. This is the same measurement
+   the F-then-C work in Tier 1 needs, so the two share their evidence.
+2. **Stop blocking the shard.** Resolve attribution off the event loop and reassemble in order. The
+   real answer, and the larger one; it fixes every other cause of a slow resolve too. It is in Tier 2
+   rather than Tier 1 because nothing is *wrong* — commits are correct and correctly attributed, they
+   are late.
 
-- **#15's signal gets cheaper and more honest.** A per-`(route, group/resource)` stream makes "this
-  route has contributed nothing" a directly observable fact rather than a statistic we choose to
-  keep. The design already proposes a trim-gap counter and asks, in its own open questions, whether
-  that counter should feed a condition. It should, and it should feed *the same* condition #15
-  creates: a route that is losing facts and a route that never had any are the same user-visible
-  failure (commits authored `unknown`), and they should not be two unrelated surfaces.
-- **The circuit breaker keeps its separate justification.** The stream design is explicit that a
-  status subresource update and a graceful pod delete produce no audit event at all, so no
-  transport can name their author. That population is why "a route that has never resolved
-  anything" is a distinct signal from "this event did not resolve", and it is what #15 is really
-  asking us to expose.
-- **It is a prerequisite for HA, not a detour from it.** Under multiple replicas the audit POST and
-  the watch shard land on different replicas by construction. A per-type stream with independent
-  cursors is the primitive for that; an in-process channel would work today and have to be thrown
-  away on the second replica. The ownership problem in
-  [`ha-gittarget-distribution-plan.md`](../future/ha-gittarget-distribution-plan.md) is untouched
-  by it, and remains the real blocker.
+One test-environment note for whoever picks this up: the e2e default of
+`--author-attribution-grace=10s` makes the blocking three times worse than the product default of
+3s. That amplifies a product behaviour; it is not a setting anyone runs.
 
-The sequencing that follows: **#15 first** (small, and specified above so it survives the
-transport change), **then the stream work**, and the trim-gap counter joins #15's condition when it
-lands rather than arriving as a second one.
+**Two capacity questions, both Tier 3 and both unanswered by design rather than by oversight**
+(the stream doc's own remaining open questions): nothing bounds a single stream entry's size today —
+`DefaultFactStreamMaxLen` bounds a stream in entries — and one `XREAD` across a few dozen streams is
+ordinary but a cluster watching several hundred types wants checking before it is assumed.
 
-The one thing to decide before code, beyond that document's own open questions: whether the
-in-memory transport ships in the first cut at all. It is argued well, and the conformance-suite
-condition is right, but it is a second implementation of the piece that carries attribution
-correctness, in service of an install shape (single pod, attribution on, no Redis) we have not been
-asked for. Shipping the seam and one implementation is the smaller first commit.
+**HA is closer, and the ownership problem is still the blocker.** A per-type stream with independent
+cursors is the primitive multiple replicas need, and it exists now. What remains, beyond
+[`ha-gittarget-distribution-plan.md`](../future/ha-gittarget-distribution-plan.md)'s ownership work,
+is one small ordering decision with a visible effect: whether a replica warms its index before
+starting a watch it has taken over. Replaying the type's window is cheap; starting the watch first
+loses attribution for the handover window. That belongs with the ownership work, not here.
 
 **F6: `spec.suspend` first.** The maintainer review's bottom line stands: this controller writes
 to a Git repository and there is no way to make it stop that is not deleting the object.
 `spec.interval` on GitProvider (a real `ls-remote` per pass, hardcoded at 5 min, no jitter) and
 the `requestedAt` annotation ride along.
 
-**#5: `CommitRequest.spec.author`, SAR-guarded.** Two arguments, and the second is the one that
-cannot be worked around: attribution needs an audit webhook, which a hosted control plane will
-not give you; and *audit cannot attribute a finalized delete at all*: the human's delete is
-recorded as an update setting `deletionTimestamp`, and the real delete names whichever controller
-cleared the last finalizer. Most operator-managed CRs have finalizers. No audit stream carries
-that answer, so no amount of work on the audit path fixes it. The `#220` shape (honored only
-against an admission record carrying an authorized verdict, fail-closed independent of the
-webhook's `failurePolicy`) is the right one.
+**#5: `CommitRequest.spec.author`, SAR-guarded — and #23 has retired one of its two
+arguments.** This section used to claim that *audit cannot attribute a finalized delete at all*, because
+the human's delete is recorded as an update setting `deletionTimestamp` while the real delete names
+whichever controller cleared the last finalizer. **That claim is now false, and it is worth saying so
+here rather than quietly dropping it**: the sticky removal pointer attributes exactly that case from
+the audit path, from the fact the human's own delete request published, and it is pinned by a
+two-actor corpus scenario. The argument was right about the *shape* of the problem and wrong about
+its being unfixable on the audit path.
+
+What still stands is the first argument, which is the one that never depended on the audit
+semantics: **attribution needs an audit webhook, and a hosted control plane will not give you one.**
+Two smaller populations survive as well, and neither is a finalizer race: an event the API server
+never logs (a status-subresource update, a graceful pod delete) has no fact for any transport to
+carry, and an aggregated-API create is logged with no name and no response body (Tier 3, below). The
+`#220` shape — honored only against an admission record carrying an authorized verdict, fail-closed
+independent of the webhook's `failurePolicy` — remains the right one, on the first argument alone.
 
 **B4, B1, #6, F10** as written in their source documents. #6 is explicitly a lower priority than
 when it was filed: the consumer downgraded it themselves, because branch and folder are now
@@ -298,22 +429,60 @@ It rides the wave because it is in the wave, not because it is urgent.
 
 ### Tier 3: legibility
 
-**#11: one encoder, and we should not accept the "cosmetic" label.** The consumer filed this as
-cosmetic. For a product whose entire output is a Git diff, a create that renders list items at
-2-space indent and an update that renders them at 4 means every install rewrites all 19
-`repositories` lines to carry one changed field. That does not make the diff ugly; it makes it
-*unreadable*, which defeats the mirror. The two paths reach different encoders: `contract.go`
-and `render.go` go through JSON→YAML, `manifestedit/patch.go` uses `yaml.v3` with its own indent,
-which is the shape that produces it. Unverified since v0.35.0, so step one is a test that pins
-create and update output byte-for-byte against each other; the fix follows from wherever that
-fails.
+**#11: one encoder — SHIPPED, and the "cosmetic" label was wrong.** The consumer filed this as
+cosmetic. For a product whose entire output is a Git diff, a create rendering list items at one
+indentation and an update at another means every install rewrites all 19 `repositories` lines to
+carry one changed field. That does not make the diff ugly; it makes it *unreadable*, which defeats
+the mirror.
+
+It was built the way this entry said to: a test pinning create and update byte-for-byte first, then
+the fix wherever it failed. Three things that came out of doing it —
+
+- **The direction was forced.** yaml.v3 always indents a sequence under its mapping key, so the
+  create style (dashes at the key's own column, which is what a JSON→YAML round-trip emits) cannot
+  be produced by the encoder that edits documents in place. Create moved to yaml.v3, not the
+  reverse. It is also the style every already-updated file in a repository is in.
+- **The fix is a package, not a constant.** Sharing an indent width would have left two encoders
+  one refactor from diverging again, silently, because both produce valid YAML and nothing fails.
+  `internal/yamlstyle` is the only place the write path constructs an encoder, and a test walking
+  the source refuses another.
+- **One behaviour difference had to be absorbed.** yaml.v3 panics with a bare string on a value it
+  cannot marshal, and that panic escapes the library's own recover, where the JSON path returned an
+  error. The shared encoder contains it, because a write path that returns an error retries and a
+  write path that panics takes the process down.
+
+The other `sigs.k8s.io/yaml` uses stay: they parse, or they serialize Go structs through their JSON
+tags (the analyzer report, the in-memory kustomization copies handed to kustomize), and none of those
+bytes reach a mirror. One style authority for Git output, not one library for the tree.
 
 **B2: `status.layout`.** Highest value per line of code in the config-surface doc, and more so
 after the inference deletion. `ambiguousDocuments` in particular is a correctness-relevant
 fallback that is currently a debug-level store diagnostic.
 
+It also carries the durable half of the inference deletion's notification question, argued above:
+**the Event says a fall-back to canonical happened, `status.layout` says what the operator
+understood.** An Event is deduplicated and expires; a status field is what someone reads a day later,
+and it is the only one of the two a `kubectl get -o yaml` in a bug report will contain. So the two are
+not alternatives, and B2 should carry the per-target record of which types resolved by declaration and
+which fell back — which is why this is worth doing in the same change as the deletion rather than
+after it.
+
 **F9, B6** as filed. F9 is one envtest; B6 is one error message that will otherwise be the most
 likely first-run support ticket.
+
+**The aggregated create: decide, and the decision is small either way.** The name tier reaches an
+aggregated update, patch and single delete. It cannot reach a create: the `objectRef` carries no name
+and there is no response body to recover one from, so nothing is published for any tier to join. Two
+non-exclusive options, from [`attribution-branch-findings.md`](attribution-branch-findings.md) —
+**accept it** (document that per-object attribution does not apply, and let it ship
+committer-authored, which makes the guarantee type-dependent in a way a user cannot predict from the
+API surface), or **stop paying for it** (recognize the shape at publish time and skip the grace, which
+attributes nothing but stops waiting for evidence that cannot arrive). The second is the same
+mechanism as Tier 1's F, so if F lands this is a case it should already cover.
+
+**The stream's two capacity questions** as listed under Tier 2: an entry-size ceiling, and the
+per-type stream count at a few hundred watched types. Both are "check before assuming", not known
+defects.
 
 ### Declined, with the reason
 
@@ -336,11 +505,17 @@ likely first-run support ticket.
    document binds the code, so the ladder cannot be deleted from one and left in the other. The
    kustomize-root fallback keeps its section; P1–P10 become history rather than live risks.
 4. Telling the gitops-api team which two of their asks we are answering differently, before they
-   build against the shapes they proposed.
-5. Specifying #15's condition in transport-neutral terms *before* the stream work starts, so it is
-   not built twice, and folding the stream design's trim-gap counter into that same condition
-   rather than adding a second surface.
-6. Retiring §5 and §8 of
+   build against the shapes they proposed — and that **#23 is fixed**, that the fix has a name
+   (`delete_sticky` on `attribution_resolutions_total{tier}`) they can assert on, and that the
+   reproduction they offered was not needed because their own report matched a corpus scenario we
+   could build.
+5. Building #15's condition **once, on the stream**, with the trim-gap counter and the F circuit
+   breaker feeding the same surface rather than three that say "attribution is not resolving".
+   ~~Specifying it in transport-neutral terms before the stream work starts~~ — the stream landed
+   first, which makes this cheaper rather than harder.
+6. ~~Retiring §5 and §8 of the expander spec when the expander goes~~ — **done**: §5, §6 and §8 of
    [`deletecollection-attribution-expander.md`](../spec/deletecollection-attribution-expander.md)
-   when the expander goes, and keeping §2's deletion-as-intent rule, which the collection join
-   depends on. That spec binds the code, like the placement one.
+   now say what replaced them, and §2's deletion-as-intent rule is kept, which the collection join
+   and the sticky pointer both depend on.
+7. Deciding the removal-wait question (F, then C) with a measurement rather than by argument, since
+   the one number on the table came from a single e2e run whose population is not a workload.

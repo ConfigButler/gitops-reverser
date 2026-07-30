@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -515,4 +516,143 @@ func TestRefusedStructuralIsClassified(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUnsupportedKustomizeDetailAgreesWithClassification pins the half of the ask that is
+// prose. A refusal carries two answers about one folder — the Solvable field and the
+// sentence a consumer renders verbatim — and for the solvable branch they used to
+// contradict each other: "solvable: true" beside "uses unsupported feature(s):
+// unparseable". Either alone is fine; together they tell the author both that they can fix
+// it and that they cannot.
+//
+// The rule pinned here is one-directional on purpose: the phrase "unsupported feature" may
+// appear only where nothing can be done about it.
+func TestUnsupportedKustomizeDetailAgreesWithClassification(t *testing.T) {
+	const unsupportedPhrase = "unsupported feature"
+
+	cases := map[string]struct {
+		class        Classification
+		features     []string
+		decodeErr    string
+		wantContains string
+	}{
+		"a solvable fault does not call itself unsupported": {
+			class:        Classification{Solvable: true, Actor: ActorRepositoryAuthor},
+			features:     []string{featureUnparseable},
+			decodeErr:    `invalid Kustomization: json: unknown field "spec"`,
+			wantContains: `can be fixed in the repository: unparseable (invalid Kustomization: json: unknown field "spec")`,
+		},
+		"a solvable fault with no decoder detail still reads as fixable": {
+			class:        Classification{Solvable: true, Actor: ActorRepositoryAuthor},
+			features:     []string{featurePatchOutsideTree},
+			wantContains: "can be fixed in the repository: patches-outside-tree",
+		},
+		"an unsupported construct keeps the stem it always had": {
+			class:        Classification{Solvable: false},
+			features:     []string{"configMapGenerator", "namePrefix"},
+			wantContains: "kustomization uses unsupported feature(s): configMapGenerator, namePrefix",
+		},
+		"no features at all is the conservative sentence": {
+			class:        Classification{},
+			wantContains: "kustomization uses an unsupported feature the operator cannot map back to editable source",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := unsupportedKustomizeDetail(tc.class, tc.features, tc.decodeErr)
+			if !strings.Contains(got, tc.wantContains) {
+				t.Errorf("detail = %q, want it to contain %q", got, tc.wantContains)
+			}
+			if tc.class.Solvable && strings.Contains(got, unsupportedPhrase) {
+				t.Errorf("a solvable refusal describes itself as an %q: %q", unsupportedPhrase, got)
+			}
+		})
+	}
+}
+
+// TestRefusedStructuralDetailNeverContradictsSolvable is the same rule enforced where a
+// consumer meets it: through a real scan, over every fixture in the layout corpus, on the
+// value the report actually carries. The unit test above pins the function; this pins that
+// the function is the only thing producing these sentences.
+func TestRefusedStructuralDetailNeverContradictsSolvable(t *testing.T) {
+	var checked int
+	for _, dir := range corpusFixtureDirs(t) {
+		rep := scanRepoFS(context.Background(), os.DirFS(dir))
+		for _, cand := range rep.Candidates {
+			for _, reason := range cand.RefusalReasons {
+				if reason.Code != ReasonRefusedStructural {
+					continue
+				}
+				checked++
+				if reason.Solvable && strings.Contains(reason.Detail, "unsupported feature") {
+					t.Errorf("%s %s: solvable refusal describes an unsupported feature: %q",
+						dir, cand.Path, reason.Detail)
+				}
+			}
+		}
+	}
+	// The corpus holds seven of these, six not solvable and one solvable. A refactor that
+	// stops emitting them would pass the loop above vacuously.
+	if checked == 0 {
+		t.Fatal("no refused-structural refusals in the corpus; this test proved nothing")
+	}
+}
+
+// TestStructureOnlyScanNeverNamesThePlatformOperator pins the guarantee the Actor doc
+// comment now states: a scan that cannot see a cluster never names the person whose fix
+// requires one.
+//
+// It is worth a test rather than a sentence because the guarantee is negative and holds for
+// two unrelated reasons — AcceptancePolicy.InScope is nil on this path, and a not-ready type
+// registry resolves every document to MappingNoSource rather than MappingNotFollowable — so
+// either one being weakened would make a consumer's dead branch suddenly live, with no
+// compile error anywhere.
+func TestStructureOnlyScanNeverNamesThePlatformOperator(t *testing.T) {
+	var refusals int
+	for _, dir := range corpusFixtureDirs(t) {
+		rep := scanRepoFS(context.Background(), os.DirFS(dir))
+		for _, cand := range rep.Candidates {
+			for _, reason := range cand.RefusalReasons {
+				refusals++
+				if reason.Actor == ActorPlatformOperator {
+					t.Errorf("%s %s: structure-only scan named the platform operator: %+v",
+						dir, cand.Path, reason)
+				}
+			}
+		}
+	}
+	if refusals == 0 {
+		t.Fatal("no refusals in the corpus; this test proved nothing")
+	}
+}
+
+// corpusFixtureDirs lists the layout corpus's fixture directories: every directory two
+// levels below the corpus root (tier/fixture), each of which is one repository to scan.
+func corpusFixtureDirs(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Join("..", "..", "test", "fixtures", "gitops-layouts")
+	tiers, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read corpus root: %v", err)
+	}
+	var out []string
+	for _, tier := range tiers {
+		if !tier.IsDir() {
+			continue
+		}
+		fixtures, err := os.ReadDir(filepath.Join(root, tier.Name()))
+		if err != nil {
+			t.Fatalf("read corpus tier %s: %v", tier.Name(), err)
+		}
+		for _, fixture := range fixtures {
+			if fixture.IsDir() {
+				out = append(out, filepath.Join(root, tier.Name(), fixture.Name()))
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("no fixtures under %s", root)
+	}
+	return out
 }

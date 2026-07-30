@@ -2,7 +2,10 @@
 
 package manifestanalyzer
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // Actor names who can solve a refusal. It is empty unless the refusal is Solvable —
 // naming someone for a refusal they cannot act on is worse than naming nobody.
@@ -11,6 +14,22 @@ import "sort"
 // who is usually not the person reading the message. Rendering an out-of-scope refusal as
 // "fix your repository" to a repository author who cannot is the failure this half
 // prevents.
+//
+// # Which scan can report which value
+//
+// CLUSTER-AWARENESS is the gate, and it is structural rather than incidental. A
+// STRUCTURE-ONLY scan — one whose [typeset.Lookup] is not ready, which is every
+// ScanFolder and ScanRepo — reports only [ActorUnknown] or [ActorRepositoryAuthor]. It
+// cannot reach [ActorPlatformOperator] through either of that value's two acceptance
+// sites: [IssueOutOfScope] needs a declared AcceptancePolicy.InScope, and
+// [IssueUnresolvedKRM] needs MappingNotFollowable, which a not-ready registry never
+// produces because it resolves every document to MappingNoSource instead.
+//
+// So a consumer of a structure-only report has a platform-operator branch that never
+// fires, and that is by design: a scan that cannot see the cluster cannot know a CRD is
+// missing or a GitTarget's scope is narrow. Only a cluster-aware scan and the live write
+// path name the platform operator. TestStructureOnlyScanNeverNamesThePlatformOperator
+// pins it.
 type Actor string
 
 const (
@@ -122,6 +141,40 @@ func classifyKustomizeFeatures(features []string) Classification {
 		out = c
 	}
 	return out
+}
+
+// unsupportedKustomizeDetail describes an unsupported kustomization with a stem that AGREES
+// with the classification beside it.
+//
+// It takes the classification rather than recomputing one because the two sentences a reader
+// gets — "solvable: true" and the prose — came from one input and must not drift. They did
+// drift: one stem served both branches, so a folder whose only fault was a typo in its
+// kustomization.yaml was told it "uses unsupported feature(s): unparseable", which is the
+// opposite of what Solvable said about it, and it is the sentence a consumer shipped to real
+// users as "this can never be synced".
+//
+// The not-solvable stem is unchanged, deliberately: it is the one that was true, it is what
+// the corpus baseline records for a dozen fixtures, and leaving it alone keeps the diff of
+// this change to exactly the refusals that were lying.
+func unsupportedKustomizeDetail(class Classification, features []string, decodeErr string) string {
+	if len(features) == 0 {
+		return "kustomization uses an unsupported feature the operator cannot map back to editable source"
+	}
+	stem := "kustomization uses unsupported feature(s): "
+	if class.Solvable {
+		// Every solvable construct is a fault in the file or a path reaching out of the
+		// tree, so "fixed in the repository" holds for all five without naming a person
+		// the classification may not have named.
+		stem = "kustomization has a fault that can be fixed in the repository: "
+	}
+	detail := stem + strings.Join(features, ", ")
+	if decodeErr != "" {
+		// "unparseable" on its own says nothing a user can act on. kustomize's decoder
+		// knows exactly what is wrong — that a resources: is a string, or that the file
+		// is a Flux Kustomization CR rather than a build file — so quote it.
+		detail += " (" + decodeErr + ")"
+	}
+	return detail
 }
 
 // retainedUnsupportedFeatures names the constructs behind one unsupported retention: the

@@ -3,89 +3,75 @@
 package sanitize
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"sort"
 
+	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/yaml"
+
+	"github.com/ConfigButler/gitops-reverser/internal/yamlstyle"
 )
 
 // MarshalToOrderedYAML converts an unstructured object to YAML with guaranteed field order.
 // Field order: apiVersion, kind, metadata, then payload (spec, data, rules, etc.)
+//
+// It encodes through [yamlstyle], which is the same encoder that re-serializes a document
+// edited in place. That is not an implementation detail: this function produces the bytes a
+// CREATE commits, manifestedit produces the bytes an UPDATE commits, and when the two
+// styles differ the first update after a create rewrites every sequence line in the file to
+// carry one changed field. TestCreateAndUpdateAgreeByteForByte pins them together.
 func MarshalToOrderedYAML(obj *unstructured.Unstructured) ([]byte, error) {
 	if obj == nil {
 		return nil, errors.New("object is nil")
 	}
 
-	var buf bytes.Buffer
-
-	// Header: apiVersion, kind, metadata
-	if err := marshalHeader(&buf, obj); err != nil {
-		return nil, err
-	}
-
-	// Payload: everything except apiVersion, kind, metadata, status
-	payload := extractPayload(obj)
-	if err := marshalPayload(&buf, payload); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
-// marshalHeader writes apiVersion, kind, and metadata in order.
-func marshalHeader(buf *bytes.Buffer, obj *unstructured.Unstructured) error {
-	if err := writeYAMLMap(buf, map[string]interface{}{"apiVersion": obj.GetAPIVersion()}); err != nil {
-		return fmt.Errorf("failed to marshal apiVersion: %w", err)
-	}
-	if err := writeYAMLMap(buf, map[string]interface{}{"kind": obj.GetKind()}); err != nil {
-		return fmt.Errorf("failed to marshal kind: %w", err)
-	}
+	// One mapping node, built in the order we want the keys emitted, encoded once. The
+	// previous shape — four independent Marshal calls concatenated into a buffer — is why
+	// the style was easy to diverge in the first place: nothing about it was one encoder.
+	root := &yaml.Node{Kind: yaml.MappingNode}
 
 	var metadata PartialObjectMeta
 	metadata.FromUnstructured(obj)
-	metadataMap := buildMetadataMap(metadata)
 
-	if err := writeYAMLMap(buf, map[string]interface{}{"metadata": metadataMap}); err != nil {
-		return fmt.Errorf("failed to marshal metadata: %w", err)
+	if err := appendField(root, "apiVersion", obj.GetAPIVersion()); err != nil {
+		return nil, err
 	}
-	return nil
-}
-
-// marshalPayload writes the payload map if present, with keys sorted for consistency.
-func marshalPayload(buf *bytes.Buffer, payload map[string]interface{}) error {
-	if len(payload) == 0 {
-		return nil
+	if err := appendField(root, "kind", obj.GetKind()); err != nil {
+		return nil, err
+	}
+	if err := appendField(root, "metadata", buildMetadataMap(metadata)); err != nil {
+		return nil, err
 	}
 
-	// Sort keys for consistent ordering
-	sortedPayload := make(map[string]interface{})
+	// Payload: everything except apiVersion, kind, metadata, status, keys sorted so the
+	// same object always renders the same way.
+	payload := extractPayload(obj)
 	keys := make([]string, 0, len(payload))
 	for k := range payload {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		sortedPayload[k] = payload[k]
+		if err := appendField(root, k, payload[k]); err != nil {
+			return nil, err
+		}
 	}
 
-	b, err := yaml.Marshal(sortedPayload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
-	}
-	buf.Write(b)
-	return nil
+	return yamlstyle.Encode(root)
 }
 
-// writeYAMLMap marshals a map to YAML and writes it to the buffer.
-func writeYAMLMap(buf *bytes.Buffer, m map[string]interface{}) error {
-	b, err := yaml.Marshal(m)
+// appendField adds one key/value pair to a mapping node, encoding the value with the same
+// encoder that will write it.
+func appendField(root *yaml.Node, key string, value any) error {
+	valueNode, err := yamlstyle.NodeFor(value)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal %s: %w", key, err)
 	}
-	buf.Write(b)
+	root.Content = append(root.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		valueNode,
+	)
 	return nil
 }
 
