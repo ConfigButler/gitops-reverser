@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.40.1...v0.41.0) (2026-07-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **placement:** repository state must not move where we write, and a refused resource must not be registered ([#291](https://github.com/ConfigButler/gitops-reverser/issues/291))
+* **analyzer:** the refusal detail for a solvable render-root refusal and the message on an unsupported-kustomize issue are reworded. Both are documented as unstable strings; no code switches on them.
+* **attribution:** the exact_deletecollection_item result label is replaced by collection_uid and collection_scope. The match is now two-tiered and the tiers carry different confidence: collection_uid is a removal whose uid was in the set the API server said it deleted, and collection_scope is one matched by namespace, selector, and window alone. Dashboards selecting result=~"exact_.*|weak" for match coverage should select result!="absent" instead, or they will read the collection tiers as misses.
+
+### Features
+
+* **attribution:** index facts in memory and publish them per type ([#286](https://github.com/ConfigButler/gitops-reverser/issues/286)) ([7ece731](https://github.com/ConfigButler/gitops-reverser/commit/7ece731031d0c198e6918a3d65da67dc4fcf4f65))
+* **attribution:** switch the resolver to the fact index and relabel the metric surface ([#287](https://github.com/ConfigButler/gitops-reverser/issues/287)) ([928df2d](https://github.com/ConfigButler/gitops-reverser/commit/928df2d9f9b1ea6951d049c46a54d7076eadf282))
+* **git:** go-git v6, so Azure DevOps is now also supported ([#297](https://github.com/ConfigButler/gitops-reverser/issues/297)) ([b811706](https://github.com/ConfigButler/gitops-reverser/commit/b8117064a35b3ad53e6926476ce5c1bbb2b7b4be))
+* **queue:** add the attribution fact transport seam ([#284](https://github.com/ConfigButler/gitops-reverser/issues/284)) ([80e711f](https://github.com/ConfigButler/gitops-reverser/commit/80e711ff14c95ddd6c50b88fe02ab130b0cdc090))
+
+
+### Bug Fixes
+
+* **analyzer:** a refusal that can be fixed must not call itself unsupported, and one encoder for the mirror ([#290](https://github.com/ConfigButler/gitops-reverser/issues/290)) ([aed4af9](https://github.com/ConfigButler/gitops-reverser/commit/aed4af9f0e81fa45c713371bfff7eb42567bc58d))
+* **attribution:** a fact about a write may not replace the fact about a deletion ([#289](https://github.com/ConfigButler/gitops-reverser/issues/289)) ([fcdc3bc](https://github.com/ConfigButler/gitops-reverser/commit/fcdc3bcde5f65f071dcd0f551c84b57dd78ccaf6))
+* **placement:** repository state must not move where we write, and a refused resource must not be registered ([#291](https://github.com/ConfigButler/gitops-reverser/issues/291)) ([b5d15d9](https://github.com/ConfigButler/gitops-reverser/commit/b5d15d988d91e56e2f9cc0dced189ae668470c0e))
+
+
+### Documentation
+
+* **design:** attribution facts as a stream, not a keyspace ([#283](https://github.com/ConfigButler/gitops-reverser/issues/283)) ([3753575](https://github.com/ConfigButler/gitops-reverser/commit/37535755193365514c84e285cc3cdcb5a3c403ef))
+
 ## [0.40.1](https://github.com/ConfigButler/gitops-reverser/compare/v0.40.0...v0.40.1) (2026-07-28)
 
 
