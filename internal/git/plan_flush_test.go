@@ -39,7 +39,7 @@ func cmEvent(op, name, color string) Event {
 func TestPlanFlush_CreatesNewResourceAtCanonicalPath(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	event := cmEvent("CREATE", "fresh", "green")
 	changed := applyEventsViaPlanFlush(t, writer, worktree, event)
@@ -59,7 +59,7 @@ func TestPlanFlush_CreatesNewResourceAtCanonicalPath(t *testing.T) {
 func TestPlanFlush_DeleteOneDocFromMultiDocKeepsSiblings(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	keep := "apiVersion: v1\nkind: ConfigMap\n" +
 		"metadata:\n  name: keep\n  namespace: default\n" +
@@ -146,7 +146,7 @@ func TestPlanFlush_SensitiveMovedResourceRewritesInPlaceNotCanonical(t *testing.
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	writer.setEncryptor(enc, "test-scope")
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	// A Secret moved off its canonical .sops path. It carries a cleartext identity and a
 	// sops key, so the store indexes it as an encrypted managed document. The encrypted
@@ -187,7 +187,7 @@ func TestPlanFlush_SensitiveMovedResourceRewritesInPlaceNotCanonical(t *testing.
 func TestPlanFlush_BatchDeleteThenUpdateSiblingTargetsCorrectDoc(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	rel := "apps/multi.yaml"
 	first := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: first\n  namespace: default\ndata:\n  k: v\n"

@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -41,7 +41,7 @@ const placedManifestBlue = "apiVersion: v1\nkind: ConfigMap\n" +
 // absolute path so callers can assert on the file afterwards.
 func seedPlacedManifest(t *testing.T, worktree *gogit.Worktree, relPath, content string) string {
 	t.Helper()
-	full := filepath.Join(worktree.Filesystem.Root(), relPath)
+	full := filepath.Join(worktree.Filesystem().Root(), relPath)
 	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 	require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
 	_, err := worktree.Add(relPath)
@@ -66,7 +66,7 @@ func TestPlanFlush_UpdateFollowsExistingPlacement(t *testing.T) {
 	assert.Contains(t, string(placedAfter), "color: green",
 		"the update must land in the existing manifest at apps/foo.yaml")
 
-	canonicalFull := filepath.Join(worktree.Filesystem.Root(), writer.filePathForIdentifier(event.Identifier))
+	canonicalFull := filepath.Join(worktree.Filesystem().Root(), writer.filePathForIdentifier(event.Identifier))
 	_, statErr := os.Stat(canonicalFull)
 	assert.Truef(t, os.IsNotExist(statErr),
 		"no duplicate copy must be created at the canonical path %s", canonicalFull)
@@ -98,7 +98,7 @@ func TestPlanFlush_DeleteFollowsExistingPlacement(t *testing.T) {
 func TestPlanFlush_NoOpInMultiDocReportsNoChange(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	event := inplaceCMEvent("blue")
 	full := filepath.Join(root, placedManifestPath)
@@ -135,7 +135,7 @@ func TestPlanFlush_NoOpInMultiDocReportsNoChange(t *testing.T) {
 func TestPlanFlush_MultiDocCanonicalDoesNotDropSiblings(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	event := inplaceCMEvent("green")
 	relPath := writer.filePathForIdentifier(event.Identifier)

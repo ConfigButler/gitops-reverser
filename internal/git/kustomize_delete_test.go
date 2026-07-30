@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -100,7 +100,7 @@ func mergedMapper() typeset.Lookup {
 func TestPlanFlush_DeletingOneDocumentOfAFileKeepsTheFileAndItsResourcesEntry(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedDeleteWorktree(t, worktree, deleteKustomizationYAML)
 
 	changed, err := flushEventsForTest(t, writer, worktree, configMapMapper(),
@@ -125,7 +125,7 @@ func TestPlanFlush_DeletingOneDocumentOfAFileKeepsTheFileAndItsResourcesEntry(t 
 func TestPlanFlush_DeletingTheLastDocumentAlsoRemovesTheResourcesEntry(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedDeleteWorktree(t, worktree, deleteKustomizationYAML)
 
 	changed, err := flushEventsForTest(t, writer, worktree, configMapMapper(),
@@ -157,7 +157,7 @@ func TestPlanFlush_DeletingTheLastDocumentAlsoRemovesTheResourcesEntry(t *testin
 func TestPlanFlush_DeleteInsideARenderRootIsVerified(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedDeleteWorktree(t, worktree, deleteKustomizationYAML)
 
 	scan, err := scanWorktreeSubtree(root)
@@ -175,7 +175,7 @@ func TestPlanFlush_DeleteInsideARenderRootIsVerified(t *testing.T) {
 func TestPlanFlush_DeleteAndGovernedWriteInOneFlush(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedDeleteWorktree(t, worktree, deleteKustomizationYAML+`images:
   - name: ghcr.io/example/shared
     newTag: "1.0.0"

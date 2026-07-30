@@ -251,7 +251,7 @@ tasks:
         # E2E_REPORT_NAME keeps each shard's Ginkgo JSON report distinct.
         go run github.com/onsi/ginkgo/v2/ginkgo \
           --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
-          --label-filter='{{.E2E_LABEL_FILTER | default "!image-refresh && !bi-directional && !source-cluster"}}' \
+          --label-filter='{{.E2E_LABEL_FILTER | default "!image-refresh && !bi-directional && !source-cluster && !ado"}}' \
           --output-dir="{{.CS}}/{{.NAMESPACE}}" \
           --json-report=ginkgo-report-{{.E2E_REPORT_NAME | default "full"}}.json \
           ./test/e2e/
@@ -464,6 +464,21 @@ tasks:
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
         go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh \
           -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-image-refresh.json"
+
+  test-e2e-ado:
+    desc: 'Mirror into a real Azure DevOps repository (needs E2E_ADO_REPO_URL and E2E_ADO_PAT)'
+    cmds:
+      - |
+        if [ -z "${E2E_ADO_REPO_URL:-}" ] || [ -z "${E2E_ADO_PAT:-}" ]; then
+          echo "E2E_ADO_REPO_URL and E2E_ADO_PAT must be set; see docs/azure-devops-getting-started.md" >&2
+          exit 1
+        fi
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=ado \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-ado.json"
 
   test-e2e-quickstart-helm:
     desc: Run quickstart install validation with Helm install

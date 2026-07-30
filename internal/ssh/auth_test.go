@@ -3,13 +3,16 @@
 package ssh
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"net/url"
 	"os"
 	"testing"
 
+	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gossh "golang.org/x/crypto/ssh"
@@ -117,4 +120,51 @@ func TestGetAuthMethod_UnparseableKnownHostsIsHardErrorEvenWithOptOut(t *testing
 	require.Error(t, err)
 	assert.Nil(t, auth)
 	assert.Contains(t, err.Error(), "failed to parse known_hosts")
+}
+
+// TestKeyAuth_AlwaysSetsHostKeyAlgorithms pins the fix for a go-git v6 behaviour that broke every
+// SSH remote in the controller image.
+//
+// v6's SSH transport reads the process's default known_hosts files whenever ClientConfig returns an
+// empty HostKeyAlgorithms — even when a HostKeyCallback was supplied — purely to derive the algorithm
+// list, and fails the connection with "unable to find any valid known_hosts file" when neither
+// ~/.ssh/known_hosts nor /etc/ssh/ssh_known_hosts exists. The controller runs distroless with
+// neither, so the e2e SSH spec failed against a real Gitea while every unit test passed: the
+// fallback lives in the transport's connect, not in ClientConfig.
+//
+// Both host-key policies must therefore yield a non-empty algorithm list.
+func TestKeyAuth_AlwaysSetsHostKeyAlgorithms(t *testing.T) {
+	privateKey, knownHostsLine := generateTestSSHKey(t)
+	u, err := url.Parse("ssh://git@example.com/org/repo.git")
+	require.NoError(t, err)
+	req := &transport.Request{URL: u}
+
+	t.Run("with a pinned known_hosts the algorithms come from the pin", func(t *testing.T) {
+		auth, err := NewPublicKeyAuth(privateKey, "", knownHostsLine, false)
+		require.NoError(t, err)
+
+		cfg, err := auth.ClientConfig(context.Background(), req)
+		require.NoError(t, err)
+		require.NotEmpty(t, cfg.HostKeyAlgorithms,
+			"an empty list sends go-git to the default known_hosts files, which do not exist in the image")
+		t.Logf("pinned algorithms: %v", cfg.HostKeyAlgorithms)
+		assert.Contains(t, cfg.HostKeyAlgorithms, gossh.KeyAlgoRSASHA256,
+			"the pinned RSA key's algorithms must be offered")
+		// Without this the subtest cannot tell a pin hit from the default fallback, because the
+		// default set also contains the RSA algorithms.
+		assert.NotEqual(t, defaultHostKeyAlgorithms(), cfg.HostKeyAlgorithms,
+			"a list identical to the default set means the pin was never consulted")
+		assert.NotContains(t, cfg.HostKeyAlgorithms, gossh.KeyAlgoED25519,
+			"the pin holds only an RSA key, so offering ed25519 would mean the default set was used")
+	})
+
+	t.Run("with host key verification disabled the modern set is offered", func(t *testing.T) {
+		auth, err := NewPublicKeyAuth(privateKey, "", "", true)
+		require.NoError(t, err)
+
+		cfg, err := auth.ClientConfig(context.Background(), req)
+		require.NoError(t, err)
+		assert.Equal(t, defaultHostKeyAlgorithms(), cfg.HostKeyAlgorithms)
+		require.NotNil(t, cfg.HostKeyCallback)
+	})
 }

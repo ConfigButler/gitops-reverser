@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -37,7 +37,7 @@ const cmYAML = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: seeded\n  na
 func TestPlanFlush_RefusesUnsupportedKustomizeFolder(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	seedPlacedManifest(t, worktree, "kustomization.yaml", hardKustomizeYAML)
 
@@ -91,7 +91,7 @@ func TestPlanFlush_DoesNotRefuseOwnSopsConfig(t *testing.T) {
 func TestResyncRefusal_DoesNotStageSOPSBootstrap(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	repo, err := gogit.PlainOpen(root)
 	require.NoError(t, err)
 

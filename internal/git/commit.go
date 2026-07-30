@@ -11,8 +11,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"

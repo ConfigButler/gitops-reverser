@@ -63,7 +63,7 @@ func seedPatchedWorktree(t *testing.T, root string) (string, string, string) {
 func TestPlanFlush_PatchedFolderStillRoutesAnImageBumpToTheEntry(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, patchPath, kustPath := seedPatchedWorktree(t, worktree.Filesystem.Root())
+	deployPath, patchPath, kustPath := seedPatchedWorktree(t, worktree.Filesystem().Root())
 
 	// The live object is what the folder renders: the patch's 5 replicas, the entry's 6.4.0 tag —
 	// with the tag bumped to 6.5.0, which is the user's edit.
@@ -88,7 +88,7 @@ func TestPlanFlush_PatchedFolderStillRoutesAnImageBumpToTheEntry(t *testing.T) {
 func TestPlanFlush_PatchedFolderInSyncIsANoOp(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, patchPath, kustPath := seedPatchedWorktree(t, worktree.Filesystem.Root())
+	deployPath, patchPath, kustPath := seedPatchedWorktree(t, worktree.Filesystem().Root())
 
 	changed, err := flushEventsForTest(t, writer, worktree, deploymentMapper(),
 		overridesDeploymentEvent("ghcr.io/example/podinfo:6.4.0", 5))
@@ -112,7 +112,7 @@ func TestPlanFlush_PatchedFolderInSyncIsANoOp(t *testing.T) {
 func TestPlanFlush_RefusesAnEditToAFieldThePatchOwns(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, patchPath, kustPath := seedPatchedWorktree(t, worktree.Filesystem.Root())
+	deployPath, patchPath, kustPath := seedPatchedWorktree(t, worktree.Filesystem().Root())
 
 	_, err := flushEventsForTest(t, writer, worktree, deploymentMapper(),
 		overridesDeploymentEvent("ghcr.io/example/podinfo:6.4.0", 9))

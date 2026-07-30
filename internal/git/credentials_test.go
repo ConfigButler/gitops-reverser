@@ -10,8 +10,6 @@ import (
 	"encoding/pem"
 	"testing"
 
-	gogithttp "github.com/go-git/go-git/v5/plumbing/transport/http"
-	gogitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gossh "golang.org/x/crypto/ssh"
@@ -58,10 +56,10 @@ func TestAuthFromSecretData_SSHKeyDialects(t *testing.T) {
 				keyName:       privateKey,
 				"known_hosts": []byte(knownHosts),
 			}}
-			auth, err := AuthFromSecretData(
+			auth, err := CredentialFromSecretData(
 				context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 			require.NoError(t, err)
-			assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+			assert.NotNil(t, auth.SSH)
 		})
 	}
 }
@@ -76,9 +74,10 @@ func TestAuthFromSecretData_PasswordIsSSHPassphraseWhenKeyPresent(t *testing.T) 
 		"password":       []byte(""), // unencrypted key: ignored, but must not divert to basic auth
 		"known_hosts":    []byte(knownHosts),
 	}}
-	auth, err := AuthFromSecretData(context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
+	auth, err := CredentialFromSecretData(
+		context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 	require.NoError(t, err)
-	assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+	assert.NotNil(t, auth.SSH)
 }
 
 func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
@@ -89,10 +88,10 @@ func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
 			"username": []byte("u"),
 			"password": []byte("p"),
 		}}
-		auth, err := AuthFromSecretData(
+		auth, err := CredentialFromSecretData(
 			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		basic, ok := auth.(*gogithttp.BasicAuth)
+		basic, ok := auth.Basic, auth.Basic != nil
 		require.True(t, ok)
 		assert.Equal(t, "u", basic.Username)
 		assert.Equal(t, "p", basic.Password)
@@ -100,17 +99,17 @@ func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
 
 	t.Run("bearer token", func(t *testing.T) {
 		secret := &corev1.Secret{Data: map[string][]byte{"bearerToken": []byte("gho_token")}}
-		auth, err := AuthFromSecretData(
+		auth, err := CredentialFromSecretData(
 			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		token, ok := auth.(*gogithttp.TokenAuth)
+		token, ok := auth.Bearer, auth.Bearer != nil
 		require.True(t, ok)
 		assert.Equal(t, "gho_token", token.Token)
 	})
 
 	t.Run("username without password", func(t *testing.T) {
 		secret := &corev1.Secret{Data: map[string][]byte{"username": []byte("u")}}
-		_, err := AuthFromSecretData(
+		_, err := CredentialFromSecretData(
 			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no password")
@@ -118,17 +117,18 @@ func TestAuthFromSecretData_HTTPBasicAndBearer(t *testing.T) {
 
 	t.Run("no recognizable credentials", func(t *testing.T) {
 		secret := &corev1.Secret{Data: map[string][]byte{"random": []byte("x")}}
-		_, err := AuthFromSecretData(
+		_, err := CredentialFromSecretData(
 			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "does not contain valid authentication data")
 	})
 
 	t.Run("nil secret is anonymous", func(t *testing.T) {
-		auth, err := AuthFromSecretData(
+		auth, err := CredentialFromSecretData(
 			context.Background(), c, &configv1alpha3.GitProvider{}, nil, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		assert.Nil(t, auth)
+		assert.Equal(t, Credential{}, auth, "no secret means anonymous")
+		assert.Nil(t, auth.Options(), "anonymous renders no transport options")
 	})
 }
 
@@ -153,9 +153,9 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 			},
 		}
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
-		auth, err := AuthFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
+		auth, err := CredentialFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.NotNil(t, auth.SSH)
 	})
 
 	t.Run("knownHostsRef ConfigMap (Argo ssh_known_hosts key)", func(t *testing.T) {
@@ -167,9 +167,9 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 			},
 		}
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
-		auth, err := AuthFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
+		auth, err := CredentialFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.NotNil(t, auth.SSH)
 	})
 
 	t.Run("knownHostsRef Secret", func(t *testing.T) {
@@ -185,9 +185,9 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 			},
 		}
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
-		auth, err := AuthFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
+		auth, err := CredentialFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.NotNil(t, auth.SSH)
 	})
 
 	t.Run("knownHostsRef missing object is an error", func(t *testing.T) {
@@ -199,7 +199,7 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 			},
 		}
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
-		_, err := AuthFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
+		_, err := CredentialFromSecretData(context.Background(), c, provider, secret, SSHHostKeyConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "absent")
 	})
@@ -208,16 +208,16 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 		c := credTestClient(t, khConfigMap("cluster-hosts", "known_hosts"))
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
 		hostKeys := SSHHostKeyConfig{ControllerNamespace: "ns", DefaultKnownHostsConfigMap: "cluster-hosts"}
-		auth, err := AuthFromSecretData(context.Background(), c, &configv1alpha3.GitProvider{}, secret, hostKeys)
+		auth, err := CredentialFromSecretData(context.Background(), c, &configv1alpha3.GitProvider{}, secret, hostKeys)
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.NotNil(t, auth.SSH)
 	})
 
 	t.Run("absent install-level default falls through to fail-closed", func(t *testing.T) {
 		c := credTestClient(t)
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
 		hostKeys := SSHHostKeyConfig{ControllerNamespace: "ns", DefaultKnownHostsConfigMap: "missing"}
-		_, err := AuthFromSecretData(context.Background(), c, &configv1alpha3.GitProvider{}, secret, hostKeys)
+		_, err := CredentialFromSecretData(context.Background(), c, &configv1alpha3.GitProvider{}, secret, hostKeys)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "known_hosts is required")
 	})
@@ -225,7 +225,8 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 	t.Run("no source and no opt-out fails closed", func(t *testing.T) {
 		c := credTestClient(t)
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
-		_, err := AuthFromSecretData(context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
+		_, err := CredentialFromSecretData(
+			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "known_hosts is required")
 	})
@@ -233,11 +234,11 @@ func TestResolveKnownHosts_Priority(t *testing.T) {
 	t.Run("opt-out permits missing known_hosts", func(t *testing.T) {
 		c := credTestClient(t)
 		secret := &corev1.Secret{Data: map[string][]byte{"ssh-privatekey": privateKey}}
-		auth, err := AuthFromSecretData(
+		auth, err := CredentialFromSecretData(
 			context.Background(), c, &configv1alpha3.GitProvider{}, secret,
 			SSHHostKeyConfig{AllowMissingKnownHosts: true})
 		require.NoError(t, err)
-		assert.IsType(t, &gogitssh.PublicKeys{}, auth)
+		assert.NotNil(t, auth.SSH)
 	})
 }
 
@@ -247,9 +248,10 @@ func TestGetAuthFromSecret_FetchPaths(t *testing.T) {
 	t.Run("no secretRef is anonymous", func(t *testing.T) {
 		c := credTestClient(t)
 		provider := &configv1alpha3.GitProvider{ObjectMeta: metav1.ObjectMeta{Namespace: "ns"}}
-		auth, err := getAuthFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
+		auth, err := credentialFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		assert.Nil(t, auth)
+		assert.Equal(t, Credential{}, auth, "no secretRef means anonymous")
+		assert.Nil(t, auth.Options(), "anonymous renders no transport options")
 	})
 
 	t.Run("present secret resolves", func(t *testing.T) {
@@ -262,9 +264,9 @@ func TestGetAuthFromSecret_FetchPaths(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
 			Spec:       configv1alpha3.GitProviderSpec{SecretRef: &configv1alpha3.LocalSecretReference{Name: "creds"}},
 		}
-		auth, err := getAuthFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
+		auth, err := credentialFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
 		require.NoError(t, err)
-		assert.IsType(t, &gogithttp.BasicAuth{}, auth)
+		assert.NotNil(t, auth.Basic)
 	})
 
 	t.Run("missing referenced secret errors", func(t *testing.T) {
@@ -273,16 +275,85 @@ func TestGetAuthFromSecret_FetchPaths(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns"},
 			Spec:       configv1alpha3.GitProviderSpec{SecretRef: &configv1alpha3.LocalSecretReference{Name: "absent"}},
 		}
-		_, err := getAuthFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
+		_, err := credentialFromSecret(context.Background(), c, provider, SSHHostKeyConfig{})
 		require.Error(t, err)
 	})
 }
 
-func TestGetHTTPTokenAuthMethod(t *testing.T) {
-	auth, err := GetHTTPTokenAuthMethod("abc")
-	require.NoError(t, err)
-	assert.Equal(t, "abc", auth.(*gogithttp.TokenAuth).Token)
+func TestCredentialFromSecretData_BearerToken(t *testing.T) {
+	c := credTestClient(t)
 
-	_, err = GetHTTPTokenAuthMethod("")
+	secret := &corev1.Secret{Data: map[string][]byte{"bearerToken": []byte("abc")}}
+	auth, err := CredentialFromSecretData(
+		context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
+	require.NoError(t, err)
+	require.NotNil(t, auth.Bearer)
+	assert.Equal(t, "abc", auth.Bearer.Token)
+	assert.Len(t, auth.Options(), 1, "a bearer credential must render as one transport option")
+
+	empty := &corev1.Secret{Data: map[string][]byte{"bearerToken": []byte("")}}
+	_, err = CredentialFromSecretData(
+		context.Background(), c, &configv1alpha3.GitProvider{}, empty, SSHHostKeyConfig{})
 	require.Error(t, err)
+}
+
+// Azure DevOps documents its Personal Access Tokens as an empty username with the PAT as the
+// password — the https://:PAT@dev.azure.com/... form. firstSecretValue treats an empty value as an
+// absent key, so keying the basic-auth branch off the username refused exactly that Secret with
+// "does not contain valid authentication data". The password is what carries the credential, so it
+// is what we branch on.
+func TestCredentialFromSecretData_AzureDevOpsPATForm(t *testing.T) {
+	c := credTestClient(t)
+
+	for _, tc := range []struct {
+		name string
+		data map[string][]byte
+	}{
+		{"empty username with a PAT", map[string][]byte{"username": []byte(""), "password": []byte("pat")}},
+		{"no username key at all", map[string][]byte{"password": []byte("pat")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "ado", Namespace: "ns"},
+				Data:       tc.data,
+			}
+
+			cred, err := CredentialFromSecretData(
+				context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
+			require.NoError(t, err)
+			require.NotNil(t, cred.Basic, "an ADO PAT must resolve to HTTP basic auth")
+			assert.Empty(t, cred.Basic.Username)
+			assert.Equal(t, "pat", cred.Basic.Password)
+			assert.Len(t, cred.Options(), 1)
+		})
+	}
+
+	// The rule is general, not an Azure DevOps carve-out: a username is simply optional, and is passed
+	// through untouched when supplied. Azure DevOps ignores it server-side (measured), but nothing in
+	// the credential reader knows or cares which provider it is talking to.
+	t.Run("a supplied username is still honoured", func(t *testing.T) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "basic", Namespace: "ns"},
+			Data:       map[string][]byte{"username": []byte("alice"), "password": []byte("pw")},
+		}
+
+		cred, err := CredentialFromSecretData(
+			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
+		require.NoError(t, err)
+		require.NotNil(t, cred.Basic)
+		assert.Equal(t, "alice", cred.Basic.Username, "a username must not be dropped")
+		assert.Equal(t, "pw", cred.Basic.Password)
+	})
+
+	t.Run("a username with no password is still a mistake", func(t *testing.T) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "half", Namespace: "ns"},
+			Data:       map[string][]byte{"username": []byte("someone")},
+		}
+
+		_, err := CredentialFromSecretData(
+			context.Background(), c, &configv1alpha3.GitProvider{}, secret, SSHHostKeyConfig{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "contains username but no password")
+	})
 }

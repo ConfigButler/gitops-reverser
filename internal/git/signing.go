@@ -4,6 +4,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
@@ -12,7 +13,7 @@ import (
 	"io"
 	"strings"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 
@@ -110,7 +111,9 @@ func loadSSHSigner(secret *corev1.Secret) (ssh.Signer, error) {
 	return signer, nil
 }
 
-func (s *sshCommitSigner) Sign(message io.Reader) ([]byte, error) {
+// Sign implements go-git v6's Signer, which passes a context so a signer can reach an external
+// agent or KMS. Our signing is in-process, so the context is unused.
+func (s *sshCommitSigner) Sign(_ context.Context, message io.Reader) ([]byte, error) {
 	payload, err := io.ReadAll(message)
 	if err != nil {
 		return nil, fmt.Errorf("read commit payload: %w", err)

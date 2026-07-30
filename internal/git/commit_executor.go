@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -118,7 +118,7 @@ func (w *BranchWorker) executePendingWrite(
 	}
 
 	target := pendingWrite.Target()
-	encryptionPath := filepath.Join(worktree.Filesystem.Root(), sanitizePath(pendingWrite.path()))
+	encryptionPath := filepath.Join(worktree.Filesystem().Root(), sanitizePath(pendingWrite.path()))
 	if err := configureSecretEncryptionWriter(
 		w.contentWriter,
 		encryptionPath,

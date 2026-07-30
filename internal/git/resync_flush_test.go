@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -83,7 +83,7 @@ func applyResyncViaWorktree(
 func TestResync_CreatesMissingResource(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	stats, changed := applyResyncViaWorktree(t, writer, configMapMapper(), worktree, desiredCM("api", "green"))
 	require.True(t, changed, "a missing resource must be created")
@@ -268,7 +268,7 @@ func TestResync_StructureOnlyNeverDrops(t *testing.T) {
 func TestResync_FoldsCreateUpdateDropTogether(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	keepFull := seedPlacedManifest(t, worktree, "apps/keep.yaml", cmManifest("keep", "blue"))
 	dropFull := seedPlacedManifest(t, worktree, "apps/drop.yaml", cmManifest("drop", "blue"))
 
@@ -407,7 +407,7 @@ func TestResync_SensitiveUpdateCountsAsUpdatedNotSkipped(t *testing.T) {
 func TestResync_DropsOneDocFromMultiDocKeepsSiblings(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	rel := "apps/multi.yaml"
 	full := filepath.Join(root, rel)
 	seedPlacedManifest(t, worktree, rel, cmManifest("keep", "blue")+"---\n"+cmManifest("drop", "blue"))

@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,7 +43,7 @@ func initLocalRepo(
 	tb.Helper()
 
 	// --- 1. Clone or Init ---
-	repo, err := git.PlainClone(localPath, false, &git.CloneOptions{
+	repo, err := git.PlainClone(localPath, &git.CloneOptions{
 		URL: remoteURL,
 	})
 
@@ -61,6 +61,11 @@ func initLocalRepo(
 		// Any other error is a real failure
 		require.NoError(tb, err)
 	}
+
+	// go-git v6 refuses to commit when an ambient commit.gpgSign is true and no signer is
+	// registered, and a developer machine commonly sets it globally. Production pins the same
+	// setting when it initialises a repository; do it here so tests are hermetic.
+	require.NoError(tb, PinExplicitSigningPolicy(repo))
 
 	worktree, err := repo.Worktree()
 	require.NoError(tb, err)
@@ -130,7 +135,6 @@ func commitFileChange(tb testing.TB, worktree *git.Worktree, repoFolder, file, c
 	_, err = worktree.Add(file)
 	require.NoError(tb, err)
 
-	// Commit
 	createdHash, err := worktree.Commit("Client commit", &git.CommitOptions{
 		Author: &object.Signature{Name: "Client", Email: "client@example.com", When: time.Now()},
 	})
@@ -178,6 +182,7 @@ func createBareRepo(tb testing.TB, path string) *git.Repository {
 
 	repo, err := git.PlainInit(path, true) // true = bare
 	require.NoError(tb, err)
+	require.NoError(tb, PinExplicitSigningPolicy(repo))
 
 	setHeadToMain(repo)
 
@@ -257,10 +262,11 @@ func simulateSimpleMerge(tb testing.TB, repoURL, srcBranchShort, dstBranchShort 
 	sourceFilesDir := filepath.Join(tempDir, "source-files")
 
 	// Clone the repository
-	repo, err := git.PlainClone(localPath, false, &git.CloneOptions{
+	repo, err := git.PlainClone(localPath, &git.CloneOptions{
 		URL: repoURL,
 	})
 	require.NoError(tb, err)
+	require.NoError(tb, PinExplicitSigningPolicy(repo))
 
 	worktree, err := repo.Worktree()
 	require.NoError(tb, err)

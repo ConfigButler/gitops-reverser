@@ -13,13 +13,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	billyutil "github.com/go-git/go-billy/v5/util"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/format/index"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
+	billyutil "github.com/go-git/go-billy/v6/util"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/format/index"
+	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -35,34 +35,8 @@ var (
 	ErrRemoteRefNotFoundEmptyRepo = errors.New("remote ref not found (empty repo)")
 )
 
-// GetHTTPAuthMethod returns an HTTP basic authentication method from username and password.
-func GetHTTPAuthMethod(username, password string) (transport.AuthMethod, error) {
-	if username == "" {
-		return nil, errors.New("username cannot be empty")
-	}
-	if password == "" {
-		return nil, errors.New("password cannot be empty")
-	}
-
-	return &http.BasicAuth{
-		Username: username,
-		Password: password,
-	}, nil
-}
-
-// GetHTTPTokenAuthMethod returns an HTTP bearer-token authentication method. Both Flux and Argo
-// CD store token credentials (GitHub fine-grained PATs, GitLab project/group access tokens) under
-// a "bearerToken" Secret key and authenticate without a username; go-git's TokenAuth sends the
-// token as an Authorization: Bearer header.
-func GetHTTPTokenAuthMethod(token string) (transport.AuthMethod, error) {
-	if token == "" {
-		return nil, errors.New("bearer token cannot be empty")
-	}
-	return &http.TokenAuth{Token: token}, nil
-}
-
 // CheckRepo performs lightweight connectivity checks and gathers repository metadata.
-func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (*RepoInfo, error) {
+func CheckRepo(ctx context.Context, repoURL string, auth []gitclient.Option) (*RepoInfo, error) {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("Checking repository connectivity and metadata", "url", repoURL)
 
@@ -73,7 +47,7 @@ func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (
 	})
 
 	refs, err := remote.List(&git.ListOptions{
-		Auth: auth,
+		ClientOptions: auth,
 	})
 	if err != nil {
 		// Check if this is an empty repository error
@@ -121,7 +95,7 @@ func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (
 func PrepareBranch(
 	ctx context.Context,
 	repoURL, repoPath, targetBranchName string,
-	auth transport.AuthMethod,
+	auth []gitclient.Option,
 ) (*PullReport, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Preparing branch for operations", "url", repoURL, "path", repoPath, "branch", targetBranchName)
@@ -145,6 +119,13 @@ func PrepareBranch(
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	// Both paths, not just the fresh one: a repository from a persistent volume, or one created
+	// before this pin existed, needs the same policy or its next commit fails under an ambient
+	// commit.gpgSign. See PinExplicitSigningPolicy.
+	if err := PinExplicitSigningPolicy(repo); err != nil {
+		return nil, err
 	}
 
 	// Ensure the remote origin is set correctly
@@ -382,7 +363,7 @@ func syncToRemote(
 	ctx context.Context,
 	repo *git.Repository,
 	branch plumbing.ReferenceName,
-	auth transport.AuthMethod,
+	auth []gitclient.Option,
 ) (*PullReport, error) {
 	_, currentHash, err := GetCurrentBranch(repo)
 	if err != nil {
@@ -470,7 +451,7 @@ func cleanWorktree(r *git.Repository) error {
 		return fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	entries, err := w.Filesystem.ReadDir(".")
+	entries, err := w.Filesystem().ReadDir(".")
 	if err != nil {
 		return fmt.Errorf("failed to read worktree root: %w", err)
 	}
@@ -481,7 +462,7 @@ func cleanWorktree(r *git.Repository) error {
 			continue
 		}
 
-		if err := billyutil.RemoveAll(w.Filesystem, name); err != nil {
+		if err := billyutil.RemoveAll(w.Filesystem(), name); err != nil {
 			return fmt.Errorf("failed to remove %q from worktree: %w", name, err)
 		}
 	}
@@ -664,4 +645,34 @@ func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Reposi
 	}
 
 	return repo, nil
+}
+
+// PinExplicitSigningPolicy records in the repository's own config that commits are not signed
+// unless this operator signs them.
+//
+// go-git v6 consults commit.gpgSign — merged across system, global and local scope — whenever
+// CommitOptions.Signer is nil, and refuses the commit outright when the setting is true and no
+// signer is registered ("cannot auto-sign commit"). v5 ignored the setting entirely.
+//
+// Our signing policy comes from the GitProvider's signing Secret and is passed as
+// CommitOptions.Signer, so an ambient commit.gpgSign — a developer's ~/.gitconfig, a mounted
+// config, a future base image — must not be able to decide it for us. Writing the local value
+// false makes the intent explicit and takes precedence over the wider scopes. Where we do sign,
+// Signer is non-nil and this setting is never consulted.
+func PinExplicitSigningPolicy(repo *git.Repository) error {
+	cfg, err := repo.Config()
+	if err != nil {
+		return fmt.Errorf("read repository config: %w", err)
+	}
+
+	if cfg.Commit.GpgSign == config.OptBoolFalse {
+		return nil
+	}
+
+	cfg.Commit.GpgSign = config.NewOptBool(false)
+	if err := repo.SetConfig(cfg); err != nil {
+		return fmt.Errorf("pin commit signing policy: %w", err)
+	}
+
+	return nil
 }

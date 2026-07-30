@@ -14,7 +14,7 @@ import (
 	"strings"
 	"text/template"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 )
 
 const (
@@ -86,7 +86,7 @@ func stageBootstrapTemplateInPath(worktree *gogit.Worktree, targetPath string, o
 }
 
 func bootstrapTargetDirectory(worktree *gogit.Worktree, targetPath string) (string, error) {
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	if targetPath == "" {
 		return root, nil
 	}

@@ -134,8 +134,8 @@ names so an existing GitOps Secret works unchanged (see
 
 | Key | Required | Notes |
 |---|---|---|
-| `username` | yes | Git username. |
-| `password` | yes | Token or password. |
+| `username` | no | Git username. Omit it for Azure DevOps, which ignores the username and reads the PAT from `password`. |
+| `password` | yes | Token or password. It is what selects basic auth: a `username` with no `password` is an error. |
 
 ### HTTPS (bearer token)
 

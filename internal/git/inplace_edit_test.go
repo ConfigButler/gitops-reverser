@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -41,6 +41,7 @@ func newWorktreeForTest(t *testing.T) *gogit.Worktree {
 	t.Helper()
 	repo, err := gogit.PlainInit(t.TempDir(), false)
 	require.NoError(t, err)
+	require.NoError(t, PinExplicitSigningPolicy(repo))
 	worktree, err := repo.Worktree()
 	require.NoError(t, err)
 	return worktree
@@ -79,7 +80,7 @@ func applyEventsViaPlanFlushWithMapper(
 func TestPlanFlush_PreservesHandAuthoredFormatting(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	event := inplaceCMEvent("green")
 	relPath := writer.filePathForIdentifier(event.Identifier)
@@ -106,7 +107,7 @@ func TestPlanFlush_PreservesHandAuthoredFormatting(t *testing.T) {
 func TestPlanFlush_PreservesKustomizeNamespaceStyle(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	relPath := "apps/bundle.yaml"
 	full := filepath.Join(root, relPath)
@@ -148,7 +149,7 @@ func TestPlanFlush_PreservesKustomizeNamespaceStyle(t *testing.T) {
 func TestPlanFlush_AppliesChangeToCanonicalFile(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	event := inplaceCMEvent("green")
 	relPath := writer.filePathForIdentifier(event.Identifier)
@@ -176,7 +177,7 @@ func TestPlanFlush_AppliesChangeToCanonicalFile(t *testing.T) {
 func TestPlanFlush_IdenticalUpdateIsNoOp(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	event := inplaceCMEvent("blue")
 	relPath := writer.filePathForIdentifier(event.Identifier)

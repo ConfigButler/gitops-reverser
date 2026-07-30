@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -975,7 +975,7 @@ func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.
 
 	commit, err := serverRepo.CommitObject(remoteHeadRef.Hash())
 	require.NoError(t, err)
-	assert.Contains(t, commit.PGPSignature, "-----BEGIN SSH SIGNATURE-----")
+	assert.Contains(t, commit.Signature, "-----BEGIN SSH SIGNATURE-----")
 
 	signingPublicKey, err := SSHAuthorizedPublicKeyFromSecret(signingSecret)
 	require.NoError(t, err)

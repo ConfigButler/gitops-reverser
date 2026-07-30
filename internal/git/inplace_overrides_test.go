@@ -120,7 +120,7 @@ func assertFileBytes(t *testing.T, path, want, msg string) {
 func TestPlanFlush_RoutesImageTagToKustomizationEntry(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem.Root())
+	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem().Root())
 
 	changed := applyEventsViaPlanFlushWithMapper(t, writer, worktree, deploymentMapper(),
 		overridesDeploymentEvent("ghcr.io/example/podinfo:6.5.0", 3))
@@ -141,7 +141,7 @@ func TestPlanFlush_RoutesImageTagToKustomizationEntry(t *testing.T) {
 func TestPlanFlush_LiveMatchingOverlayRenderIsNoOp(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem.Root())
+	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem().Root())
 
 	changed := applyEventsViaPlanFlushWithMapper(t, writer, worktree, deploymentMapper(),
 		overridesDeploymentEvent("ghcr.io/example/podinfo:6.4.0", 3))
@@ -157,7 +157,7 @@ func TestPlanFlush_LiveMatchingOverlayRenderIsNoOp(t *testing.T) {
 func TestPlanFlush_RoutesReplicaCountToKustomizationEntry(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem.Root())
+	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem().Root())
 
 	changed := applyEventsViaPlanFlushWithMapper(t, writer, worktree, deploymentMapper(),
 		overridesDeploymentEvent("ghcr.io/example/podinfo:6.4.0", 5))
@@ -177,7 +177,7 @@ func TestPlanFlush_RoutesReplicaCountToKustomizationEntry(t *testing.T) {
 func TestPlanFlush_RoutesScaleFieldPatchToKustomizationEntry(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem.Root())
+	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem().Root())
 
 	scale := Event{
 		Identifier: types.ResourceIdentifier{
@@ -237,7 +237,7 @@ func TestApplyOverrideEdits_SkipLeavesBuffersUntouched(t *testing.T) {
 func TestResync_GovernedFolderInSyncIsNoOp(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem.Root())
+	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem().Root())
 
 	stats, changed := applyResyncViaWorktree(t, writer, deploymentMapper(), worktree,
 		desiredOverridesDeployment("ghcr.io/example/podinfo:6.4.0", 3))
@@ -252,7 +252,7 @@ func TestResync_GovernedFolderInSyncIsNoOp(t *testing.T) {
 func TestResync_GovernedDriftRoutesToKustomizationEntry(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem.Root())
+	deployPath, kustPath := seedOverridesWorktree(t, worktree.Filesystem().Root())
 
 	stats, changed := applyResyncViaWorktree(t, writer, deploymentMapper(), worktree,
 		desiredOverridesDeployment("ghcr.io/example/podinfo:6.5.0", 3))
@@ -277,7 +277,7 @@ func desiredOverridesDeployment(image string, replicas int64) manifestanalyzer.D
 func TestPlanFlush_UngovernedChangeStillPatchesSourceFile(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	deployPath, kustPath := seedOverridesWorktree(t, root)
 	// Repoint the images entry at an image this Deployment does not use.
 	ungoverned := "apiVersion: kustomize.config.k8s.io/v1beta1\n" +

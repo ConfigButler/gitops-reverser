@@ -9,44 +9,50 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/format/packfile"
-	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
-	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
-	"github.com/go-git/go-git/v5/plumbing/revlist"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/plumbing/transport/client"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/format/packfile"
+	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v6/plumbing/revlist"
+	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// getPushSession creates and returns a receive-pack session for pushing.
+// getPushSession opens a single receive-pack session for pushing.
+//
+// go-git v6 replaced v5's transport.NewEndpoint + client.NewClient + NewReceivePackSession with
+// transport.ParseURL + client.New(opts...).Handshake. The property PushAtomic depends on is
+// unchanged and now explicit in the interface: one Session serves both GetRemoteRefs (the
+// advertisement) and Push, so the remote state we validate against is read on the same connection
+// we then write to.
 func getPushSession(
-	_ context.Context,
+	ctx context.Context,
 	repo *git.Repository,
-	auth transport.AuthMethod,
-) (transport.ReceivePackSession, error) {
-	// Get remote configuration
+	auth []gitclient.Option,
+) (transport.Session, error) {
 	remote, err := repo.Remote("origin")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get remote: %w", err)
 	}
 
-	// Establish transport endpoint
-	endpoint, err := transport.NewEndpoint(remote.Config().URLs[0])
-	if err != nil {
-		return nil, fmt.Errorf("failed to create endpoint: %w", err)
+	// go-git's own config validation rejects a remote with no URL, but a hand-edited or truncated
+	// .git/config can still present one, and indexing it would panic rather than fail.
+	urls := remote.Config().URLs
+	if len(urls) == 0 {
+		return nil, errors.New("remote origin has no URL configured")
 	}
 
-	// Get the transport client
-	transportClient, err := client.NewClient(endpoint)
+	endpoint, err := transport.ParseURL(urls[0])
 	if err != nil {
-		return nil, fmt.Errorf("failed to create transport client: %w", err)
+		return nil, fmt.Errorf("failed to parse remote URL: %w", err)
 	}
 
-	// Create receive-pack session (single session for verification and push)
-	session, err := transportClient.NewReceivePackSession(endpoint, auth)
+	session, err := gitclient.New(auth...).Handshake(ctx, &transport.Request{
+		URL:     endpoint,
+		Command: transport.ReceivePackService,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create receive-pack session: %w", err)
 	}
@@ -54,10 +60,23 @@ func getPushSession(
 	return session, nil
 }
 
+// advertisedHashes indexes a v6 advertisement by reference name. v5 handed back a
+// map[string]plumbing.Hash directly; v6's transport.RemoteRefs carries a []*plumbing.Reference so
+// that fields can be added without breaking the interface, so the lookup is built here.
+func advertisedHashes(refs *transport.RemoteRefs) map[plumbing.ReferenceName]plumbing.Hash {
+	out := make(map[plumbing.ReferenceName]plumbing.Hash, len(refs.References))
+	for _, ref := range refs.References {
+		if ref.Type() == plumbing.HashReference {
+			out[ref.Name()] = ref.Hash()
+		}
+	}
+	return out
+}
+
 // validatePushState checks if the push can proceed based on remote state.
 func validatePushState(
 	ctx context.Context,
-	session transport.ReceivePackSession,
+	session transport.Session,
 	repo *git.Repository,
 	rootHash plumbing.Hash,
 	rootBranch plumbing.ReferenceName,
@@ -71,16 +90,17 @@ func validatePushState(
 
 	branchName := branch.Short()
 
-	// Phase 1: Get advertised references (remote state)
-	refs, err := session.AdvertisedReferences()
+	// Phase 1: Get advertised references (remote state) on this same session.
+	remoteRefs, err := session.GetRemoteRefs(ctx, nil)
 	if err != nil {
 		return plumbing.ZeroHash, plumbing.ZeroHash, fmt.Errorf("failed to get advertised references: %w", err)
 	}
+	refs := advertisedHashes(remoteRefs)
 
 	// Determine the "old" hash for the push command and validate state
 	var oldHash = plumbing.ZeroHash
-	remoteHash, found := refs.References[string(branch)]
-	currentRootHash, rootFound := refs.References[string(rootBranch)]
+	remoteHash, found := refs[branch]
+	currentRootHash, rootFound := refs[rootBranch]
 	if !rootFound && !rootHash.IsZero() {
 		return plumbing.ZeroHash, plumbing.ZeroHash, errors.New("remote went missing")
 	}
@@ -108,7 +128,7 @@ func validatePushState(
 // performPush executes the packfile creation and push operation.
 func performPush(
 	ctx context.Context,
-	session transport.ReceivePackSession,
+	session transport.Session,
 	repo *git.Repository,
 	rootHash, localHash, oldHash plumbing.Hash,
 	branch plumbing.ReferenceName,
@@ -147,44 +167,32 @@ func performPush(
 		return fmt.Errorf("failed to create packfile: %w", err)
 	}
 
-	// Create reference update request
-	req := packp.NewReferenceUpdateRequest()
-	if err := req.Capabilities.Set(capability.ReportStatus); err != nil {
-		return fmt.Errorf("failed to set capability: %w", err)
-	}
-	req.Packfile = packfileData
-
-	// Use oldHash (either remoteHash or ZeroHash) as the expected "old" value
-	// This tells Git what we expect the current state to be
-	cmd := &packp.Command{
-		Name: branch,
-		Old:  oldHash,
-		New:  localHash,
-	}
-	req.Commands = []*packp.Command{cmd}
-
-	// Send request via session
-	logger.Info("Sending packfile via ReceivePack", "objects", len(objectsToSend))
-	rs, err := session.ReceivePack(ctx, req)
-	if err != nil {
-		logger.Error(err, "ReceivePack failed")
-		return fmt.Errorf("failed to receive pack: %w", err)
+	// Build the push request. The compare-and-swap that makes this push atomic is unchanged from
+	// v5: packp.Command carries the Old hash we expect the ref to be at, and the server refuses the
+	// update if it has moved. v6 takes the same *packp.Command type, and negotiates report-status
+	// itself in buildUpdateRequests, so the capability no longer has to be set by hand.
+	//
+	// Atomic asks for the receive-pack `atomic` capability when the server offers it. We send a
+	// single command, so it changes nothing today; it is set because the guarantee this function
+	// promises is exactly what the capability names, and it becomes load-bearing the moment a
+	// second command is added.
+	req := &transport.PushRequest{
+		Packfile: packfileData,
+		Commands: []*packp.Command{{
+			Name: branch,
+			Old:  oldHash,
+			New:  localHash,
+		}},
+		Atomic: true,
 	}
 
-	// Check for errors in response
-	if err := rs.Error(); err != nil {
-		logger.Error(err, "Push rejected by server")
-		return fmt.Errorf("push rejected: %w", err)
-	}
-
-	// Check command status
-	if len(rs.CommandStatuses) > 0 {
-		status := rs.CommandStatuses[0]
-		if err := status.Error(); err != nil {
-			logger.Error(err, "Command status indicates failure", "ref", status.ReferenceName)
-			return fmt.Errorf("push failed for ref %s: %w", status.ReferenceName, err)
-		}
-		logger.Info("Command status OK", "ref", status.ReferenceName)
+	// Push on the same session the advertisement was read from.
+	logger.Info("Sending packfile via receive-pack", "objects", len(objectsToSend))
+	if err := session.Push(ctx, repo.Storer, req); err != nil {
+		// v6's SendPack decodes report-status and returns the per-command rejection as this error,
+		// so a refused compare-and-swap arrives here rather than in a separate status struct.
+		logger.Error(err, "push rejected or failed", "ref", branch)
+		return fmt.Errorf("push failed for ref %s: %w", branch, err)
 	}
 
 	logger.Info("Push successful via single session", "branch", branch.Short(), "from", oldHash, "to", localHash)
@@ -199,7 +207,7 @@ func PushAtomic(
 	repo *git.Repository,
 	rootHash plumbing.Hash,
 	rootBranch plumbing.ReferenceName, // only pushes if this branch is in exact same state, e.g. refs/heads/main (HEAD not allowed since a ReceivePackSession never returns it)
-	auth transport.AuthMethod,
+	auth []gitclient.Option,
 ) error {
 	if !rootBranch.IsBranch() {
 		return errors.New("rootBranch is not a branch")

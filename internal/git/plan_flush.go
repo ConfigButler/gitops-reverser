@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -73,7 +73,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 	policy *manifestanalyzer.PlacementPolicy,
 	pruneMode v1alpha3.PruneMode,
 ) (bool, error) {
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	scoped, err := scanRenderScope(root, base)
 	if err != nil {
 		return false, err

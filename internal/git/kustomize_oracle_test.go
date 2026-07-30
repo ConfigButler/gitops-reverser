@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -129,7 +129,7 @@ func sharedImageEvent(name, image string) Event { //nolint:unparam // image vari
 func TestPlanFlush_RefusesAWriteThatDragsASiblingAlong(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	webPath, apiPath, kustPath := seedSharedEntryWorktree(t, worktree.Filesystem.Root())
+	webPath, apiPath, kustPath := seedSharedEntryWorktree(t, worktree.Filesystem().Root())
 
 	_, err := flushEventsForTest(t, writer, worktree, deploymentMapper(),
 		sharedImageEvent("web", "ghcr.io/example/shared:2.0.0"))
@@ -164,7 +164,7 @@ func TestPlanFlush_RefusesAWriteThatDragsASiblingAlong(t *testing.T) {
 func TestPlanFlush_NewResourceInANamespaceInheritingDirIsNotCollateralDamage(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	// FLAT on purpose: the kustomization sits beside the manifests it lists, so a new
 	// document lands in the same directory AND gets a resources: entry — which is what puts
@@ -234,7 +234,7 @@ func findFileContaining(t *testing.T, root, needle string) string {
 func TestPlanFlush_RefusesANewResourceAnEntryWouldOverride(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	require.NoError(t, os.WriteFile(filepath.Join(root, "web.yaml"),
 		[]byte(sharedImageDeploymentYAML("web")), 0o600))
@@ -293,7 +293,7 @@ func newCacheDeploymentEvent(image string) Event {
 func TestPlanFlush_AllowsTheSharedEntryWriteWhenEverySiblingAgrees(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	webPath, apiPath, kustPath := seedSharedEntryWorktree(t, worktree.Filesystem.Root())
+	webPath, apiPath, kustPath := seedSharedEntryWorktree(t, worktree.Filesystem().Root())
 
 	changed := applyEventsViaPlanFlushWithMapper(t, writer, worktree, deploymentMapper(),
 		sharedImageEvent("web", "ghcr.io/example/shared:2.0.0"),

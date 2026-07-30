@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -80,7 +80,7 @@ func TestRenderFidelityRefusal_BlocksLiveAndResyncWrites(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			worktree := newWorktreeForTest(t)
-			path := seedPostBuildTokenManifest(t, worktree.Filesystem.Root())
+			path := seedPostBuildTokenManifest(t, worktree.Filesystem().Root())
 			worker := &BranchWorker{
 				contentWriter: newContentWriter(types.SensitiveResourcePolicy{}),
 				mapper:        configMapMapper(),

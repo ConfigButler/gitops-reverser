@@ -4,6 +4,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha512"
 	"encoding/binary"
 	"encoding/pem"
@@ -60,7 +61,7 @@ func TestLoadSSHCommitSigner_ProducesVerifiableSSHSig(t *testing.T) {
 	require.NoError(t, err)
 
 	message := []byte("tree deadbeef\nauthor Test <test@example.com> 1 +0000\n\nsigned commit\n")
-	signature, err := signer.Sign(bytes.NewReader(message))
+	signature, err := signer.Sign(context.Background(), bytes.NewReader(message))
 	require.NoError(t, err)
 
 	assert.Contains(t, string(signature), "-----BEGIN SSH SIGNATURE-----")
@@ -102,7 +103,7 @@ func TestLoadSSHCommitSigner_SSHKeygenVerify(t *testing.T) {
 	const identity = "test@example.com"
 	payload := []byte("tree deadbeef\nauthor Test <test@example.com> 1 +0000\n\nsigned commit\n")
 
-	sig, err := signer.Sign(bytes.NewReader(payload))
+	sig, err := signer.Sign(context.Background(), bytes.NewReader(payload))
 	require.NoError(t, err)
 
 	tmpDir := t.TempDir()
@@ -181,7 +182,7 @@ func TestLoadSSHCommitSigner_PassphraseProtectedKey(t *testing.T) {
 	signer, err := LoadSSHCommitSigner(secret)
 	require.NoError(t, err)
 
-	signature, err := signer.Sign(bytes.NewReader([]byte("example commit payload")))
+	signature, err := signer.Sign(context.Background(), bytes.NewReader([]byte("example commit payload")))
 	require.NoError(t, err)
 	assert.Contains(t, string(signature), "BEGIN SSH SIGNATURE")
 

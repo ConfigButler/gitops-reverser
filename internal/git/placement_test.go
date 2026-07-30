@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -49,7 +49,7 @@ func applyEventsWithPolicy(
 
 func TestPlacement_DeclaredPolicy_NewFile(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	policy := &manifestanalyzer.PlacementPolicy{
 		ByType: map[string]string{"v1/configmaps": "{namespace}/configmaps.yaml"},
 	}
@@ -70,7 +70,7 @@ func TestPlacement_DeclaredPolicy_NewFile(t *testing.T) {
 // it if the repository wants it in the overlay.
 func TestPlacement_ExistingSiblingFile_DoesNotAttractTheNewFile(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedPlacedManifest(t, worktree, "overlays/test/configmap-existing.yaml",
 		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: existing\n  namespace: podinfo-test\ndata:\n  k: v\n")
 
@@ -180,7 +180,7 @@ func TestPlacement_SensitiveCollision_SkipsWithoutCrashing(t *testing.T) {
 
 func TestPlacement_KustomizeEntryAppended_SameCommit(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	kustYAML := "# overlay for test\n" +
 		"namespace: podinfo-test\n" +
 		"resources:\n" +
@@ -206,7 +206,7 @@ func TestPlacement_KustomizeEntryAppended_SameCommit(t *testing.T) {
 
 func TestPlacement_KustomizeEntryIdempotent_OnRepeatedApply(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	kustYAML := "namespace: podinfo-test\nresources:\n  - deployment.yaml\n"
 	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml", kustYAML)
 	seedPlacedManifest(t, worktree, "overlays/test/deployment.yaml",
@@ -230,7 +230,7 @@ func TestPlacement_KustomizeEntryIdempotent_OnRepeatedApply(t *testing.T) {
 // was for a human to complete.
 func TestPlacement_KustomizeEntryAppendSkipped_NoResourcesSequence(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	kustYAML := "namespace: app\n"
 	seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml", kustYAML)
 
@@ -275,7 +275,7 @@ func TestPlacement_UndecodableKustomization_RefusesTheFlush(t *testing.T) {
 // resources: entry" row of render-root-scoping.md §4.
 func TestPlacement_ExternalBaseOverlay_NewObject(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	// The read-only base, outside the overlay's own subtree.
 	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - deployment.yaml\n")
@@ -371,7 +371,7 @@ func flushOverlayDeployment(t *testing.T, worktree *gogit.Worktree, event Event)
 // verified by the re-render oracle. Before this the flush was refused for escaping the write jail.
 func TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage(t *testing.T) {
 	worktree := overlayBaseDeploymentWorktree(t, "nginx:1.0", "")
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:2.0", -1)),
 		"an image bump must be authored as an overlay images: entry, not refused")
@@ -391,7 +391,7 @@ func TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage(t *testing.T) {
 // overlay: the overlay authors a replicas: entry over the base's count, base untouched.
 func TestOverlayAuthors_ReplicaEntry_ForBaseSuppliedCount(t *testing.T) {
 	worktree := overlayBaseDeploymentWorktree(t, "nginx:1.0", "2")
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:1.0", 5)),
 		"a scale must be authored as an overlay replicas: entry, not refused")
@@ -411,7 +411,7 @@ func TestOverlayAuthors_ReplicaEntry_ForBaseSuppliedCount(t *testing.T) {
 // authored: the store now sees the entry, so the change routes to it (no duplicate entry).
 func TestOverlayAuthors_Idempotent_OnResync(t *testing.T) {
 	worktree := overlayBaseDeploymentWorktree(t, "nginx:1.0", "")
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	require.NoError(t, flushOverlayDeployment(t, worktree, liveDeployment("nginx:2.0", -1)))
 	// A second flush of the same live state must not append a second entry.
@@ -428,7 +428,7 @@ func TestOverlayAuthors_Idempotent_OnResync(t *testing.T) {
 // re-render oracle proves the object leaves the render, and the read-only base is untouched.
 func TestOverlayAuthors_DeletePatch_ForInheritedObject(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - cm.yaml\n")
 	seedPlacedManifest(t, worktree, "base/cm.yaml",
 		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n  namespace: podinfo-test\ndata:\n  k: v\n")
@@ -473,7 +473,7 @@ func TestOverlayAuthors_DeletePatch_ForInheritedObject(t *testing.T) {
 // the delete and leaves the existing file byte-for-byte, rather than overwriting it.
 func TestOverlayAuthors_DeletePatch_SkipsOnPathCollision(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedPlacedManifest(t, worktree, "base/kustomization.yaml", "resources:\n  - cm.yaml\n")
 	seedPlacedManifest(t, worktree, "base/cm.yaml",
 		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n  namespace: podinfo-test\ndata:\n  k: v\n")
@@ -571,13 +571,13 @@ func TestPlacement_ColdBundleCollision_BothSurviveRegardlessOfOrder(t *testing.T
 	forward := newWorktreeForTest(t)
 	changed := applyEventsWithPolicy(t, forward, policy, first, second)
 	require.True(t, changed)
-	forwardBody, err := os.ReadFile(filepath.Join(forward.Filesystem.Root(), "all.yaml"))
+	forwardBody, err := os.ReadFile(filepath.Join(forward.Filesystem().Root(), "all.yaml"))
 	require.NoError(t, err)
 
 	reversed := newWorktreeForTest(t)
 	changed = applyEventsWithPolicy(t, reversed, policy, second, first)
 	require.True(t, changed)
-	reversedBody, err := os.ReadFile(filepath.Join(reversed.Filesystem.Root(), "all.yaml"))
+	reversedBody, err := os.ReadFile(filepath.Join(reversed.Filesystem().Root(), "all.yaml"))
 	require.NoError(t, err)
 
 	assert.Contains(t, string(forwardBody), "name: alpha", "the first resource must survive")
@@ -600,7 +600,7 @@ func TestPlacement_ColdBundleCollision_ThreeResourcesAllSurvive(t *testing.T) {
 	)
 	require.True(t, changed)
 
-	got, err := os.ReadFile(filepath.Join(worktree.Filesystem.Root(), "all.yaml"))
+	got, err := os.ReadFile(filepath.Join(worktree.Filesystem().Root(), "all.yaml"))
 	require.NoError(t, err)
 	body := string(got)
 	assert.Equal(t, 3, strings.Count(body, "kind: ConfigMap"))
@@ -644,7 +644,7 @@ func TestPlacement_ColdBundleCollision_SensitiveNeverMerged(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, changed, "the first secret must still be written")
 
-	got, readErr := os.ReadFile(filepath.Join(worktree.Filesystem.Root(), "secrets/app.sops.yaml"))
+	got, readErr := os.ReadFile(filepath.Join(worktree.Filesystem().Root(), "secrets/app.sops.yaml"))
 	require.NoError(t, readErr)
 	assert.Equal(t, 1, strings.Count(string(got), "kind: Secret"),
 		"the second secret must be skipped, never merged into the first's file")
@@ -685,7 +685,7 @@ func TestPlacement_ColdBundleCollision_SensitiveAndPlaintextNeverMix(t *testing.
 		context.Background(), secretFirst, "", []Event{secretEvent, configMapEvent}, policy, v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err)
-	secretFirstBody, readErr := os.ReadFile(filepath.Join(secretFirst.Filesystem.Root(), "all.yaml"))
+	secretFirstBody, readErr := os.ReadFile(filepath.Join(secretFirst.Filesystem().Root(), "all.yaml"))
 	require.NoError(t, readErr)
 	assert.Contains(t, string(secretFirstBody), "kind: Secret")
 	assert.NotContains(t, string(secretFirstBody), "kind: ConfigMap",
@@ -698,7 +698,7 @@ func TestPlacement_ColdBundleCollision_SensitiveAndPlaintextNeverMix(t *testing.
 		context.Background(), configMapFirst, "", []Event{configMapEvent, secretEvent}, policy, v1alpha3.PruneOnEvent,
 	)
 	require.NoError(t, err)
-	configMapFirstBody, readErr := os.ReadFile(filepath.Join(configMapFirst.Filesystem.Root(), "all.yaml"))
+	configMapFirstBody, readErr := os.ReadFile(filepath.Join(configMapFirst.Filesystem().Root(), "all.yaml"))
 	require.NoError(t, readErr)
 	assert.Contains(t, string(configMapFirstBody), "kind: ConfigMap")
 	assert.NotContains(t, string(configMapFirstBody), "kind: Secret",
@@ -741,7 +741,7 @@ func TestPlacement_ColdBundleCollision_ViaResync(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, changed)
 
-	got, readErr := os.ReadFile(filepath.Join(worktree.Filesystem.Root(), "all.yaml"))
+	got, readErr := os.ReadFile(filepath.Join(worktree.Filesystem().Root(), "all.yaml"))
 	require.NoError(t, readErr)
 	assert.Equal(t, 2, strings.Count(string(got), "kind: ConfigMap"), "both resync creates must survive")
 }
