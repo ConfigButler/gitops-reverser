@@ -14,6 +14,15 @@
 > **F6** (`spec.suspend`, `spec.interval`, reconcile-request annotation), **F9** (the stored
 > `scope: Namespaced` status-write question), **F10** (CommitRequest lifecycle). Those are §4's
 > "Then (API surface)" block and are a separate change.
+>
+> **That change now has a shape.** F6, F10, F12's reference-type nit and §3's pushbacks are sequenced
+> together with the new-file-placement redesign in
+> [`gittarget-api-wave.md`](../design/gittarget-api-wave.md), on the principle that the folder is
+> described on the GitTarget and the connection describes only the connection. Two of this review's
+> findings change that design rather than accompanying it: `spec.mode: Observe` (config-surface B1)
+> becomes the way a layout is adopted safely, and `spec.interval` is what keeps the layout's
+> scan-derived status fresh. F9 is deliberately kept **outside** the wave, because its answer
+> constrains the enum work and should be known before anything is planned around it.
 > Stance: reviewed as if this API were proposed for the GitOps Toolkit, with Flux's own
 > source (`external-sources/flux/`) and kstatus (`sigs.k8s.io/cli-utils/pkg/kstatus`) as ground
 > truth rather than recollection.

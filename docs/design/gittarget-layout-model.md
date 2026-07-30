@@ -8,6 +8,10 @@
 > wrong primitive to be defaulting.
 >
 > This is a `feat(api)!` change to `GitTarget`. It does not fit in PR #291 and is not proposed for it.
+> How it sequences with the other breaking work on the same object (`spec.suspend`, `spec.mode`, the
+> `commitWindow` move, CommitRequest lifecycle) is in
+> [`gittarget-api-wave.md`](gittarget-api-wave.md), which also records the two places where those
+> items change this design rather than merely accompanying it.
 
 ## Why the current shape keeps producing dead ends
 
