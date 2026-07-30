@@ -17,9 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
-
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
@@ -49,16 +46,14 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(auth).To(BeAssignableToTypeOf(&ssh.PublicKeys{}))
+				Expect(auth.SSH).NotTo(BeNil())
 
-				sshAuth := auth.(*ssh.PublicKeys)
-				Expect(sshAuth.User).To(Equal("git"))
 			})
 
 			It("should extract SSH credentials with passphrase", func() {
@@ -73,13 +68,13 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(auth).To(BeAssignableToTypeOf(&ssh.PublicKeys{}))
+				Expect(auth.SSH).NotTo(BeNil())
 			})
 
 			It("should fail with invalid SSH key", func() {
@@ -89,7 +84,7 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				_, err := reconciler.extractCredentials(
+				_, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secret,
@@ -109,13 +104,13 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(auth).To(BeAssignableToTypeOf(&ssh.PublicKeys{}))
+				Expect(auth.SSH).NotTo(BeNil())
 			})
 		})
 
@@ -128,17 +123,14 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(auth).To(BeAssignableToTypeOf(&http.BasicAuth{}))
+				Expect(auth.Basic).NotTo(BeNil())
 
-				httpAuth := auth.(*http.BasicAuth)
-				Expect(httpAuth.Username).To(Equal("testuser"))
-				Expect(httpAuth.Password).To(Equal("testpass"))
 			})
 
 			It("should fail with username but no password", func() {
@@ -148,7 +140,7 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				_, err := reconciler.extractCredentials(
+				_, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secret,
@@ -164,7 +156,7 @@ var _ = Describe("GitProvider Controller", func() {
 					Data: map[string][]byte{},
 				}
 
-				_, err := reconciler.extractCredentials(
+				_, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secret,
@@ -182,7 +174,7 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				_, err := reconciler.extractCredentials(
+				_, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secret,

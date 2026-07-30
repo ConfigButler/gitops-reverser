@@ -7,7 +7,7 @@ import (
 	"io/fs"
 	"strings"
 
-	gitignore "github.com/go-git/go-git/v5/plumbing/format/gitignore"
+	gitignore "github.com/go-git/go-git/v6/plumbing/format/gitignore"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )

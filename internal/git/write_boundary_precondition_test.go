@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -142,7 +142,7 @@ func seedDiamond(t *testing.T, root string) {
 func TestFanInPrecondition_RefusesAmbiguousOverrideWriteThrough(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedDiamond(t, root)
 
 	w := &BranchWorker{contentWriter: writer, mapper: deploymentMapper()}

@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -138,7 +138,7 @@ func flushAtBase(
 // under the common ancestor, and reports the overlay itself as the write jail.
 func TestScanRenderScope_ResolvesOverlayBase(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedOverlayWorktree(t, root)
 
 	scoped, err := scanRenderScope(root, overlayGitPath)
@@ -165,7 +165,7 @@ func TestScanRenderScope_ResolvesOverlayBase(t *testing.T) {
 // spec.path and writeSubdir is empty, so nothing downstream changes.
 func TestScanRenderScope_SelfContainedIsIdentity(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	seedOverridesWorktree(t, root) // kustomization + apps/deployment.yaml, all in-subtree
 
 	scoped, err := scanRenderScope(root, "")
@@ -180,7 +180,7 @@ func TestScanRenderScope_SelfContainedIsIdentity(t *testing.T) {
 func TestPlanFlush_Overlay_RoutesImageTagToOverlayEntry(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	baseDeployPath, overlayKustPath := seedOverlayWorktree(t, worktree.Filesystem.Root())
+	baseDeployPath, overlayKustPath := seedOverlayWorktree(t, worktree.Filesystem().Root())
 
 	changed, err := flushAtBase(t, writer, worktree, deploymentMapper(), overlayGitPath,
 		overlayDeploymentEvent("ghcr.io/example/podinfo:6.5.0"))
@@ -200,7 +200,7 @@ func TestPlanFlush_Overlay_RoutesImageTagToOverlayEntry(t *testing.T) {
 func TestPlanFlush_Overlay_InSyncIsNoOp(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	baseDeployPath, overlayKustPath := seedOverlayWorktree(t, worktree.Filesystem.Root())
+	baseDeployPath, overlayKustPath := seedOverlayWorktree(t, worktree.Filesystem().Root())
 
 	changed, err := flushAtBase(t, writer, worktree, deploymentMapper(), overlayGitPath,
 		overlayDeploymentEvent("ghcr.io/example/podinfo:6.4.0"))
@@ -218,7 +218,7 @@ func TestPlanFlush_Overlay_InSyncIsNoOp(t *testing.T) {
 func TestPlanFlush_Overlay_BaseFieldEditRefused(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	baseDeployPath, overlayKustPath := seedOverlayWorktree(t, worktree.Filesystem.Root())
+	baseDeployPath, overlayKustPath := seedOverlayWorktree(t, worktree.Filesystem().Root())
 
 	event := overlayDeploymentEvent("ghcr.io/example/podinfo:6.4.0")
 	// Add a base-owned field the images/replicas entries do not govern.
@@ -240,7 +240,7 @@ func TestPlanFlush_Overlay_BaseFieldEditRefused(t *testing.T) {
 // outside the repository it manages.
 func TestScanRenderScope_RefusesBaseEscapingRepoRoot(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	// spec.path is a single-level directory; ../../base climbs to ../base, above the root.
 	kust := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n"
 	full := filepath.Join(root, "app", "kustomization.yaml")
@@ -276,7 +276,7 @@ func deploymentAndConfigMapMapper() typeset.Lookup {
 func TestPlanFlush_Overlay_NewObjectLandsInOverlayAndRenders(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	_, overlayKustPath := seedOverlayWorktree(t, root)
 
 	cm := &unstructured.Unstructured{Object: map[string]interface{}{
@@ -311,7 +311,7 @@ func TestPlanFlush_Overlay_NewObjectLandsInOverlayAndRenders(t *testing.T) {
 // it by reading only the first.
 func TestScanRenderScope_DualKustomizationFilesImportedBoth(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	write := func(rel, content string) {
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
@@ -339,7 +339,7 @@ func TestScanRenderScope_DualKustomizationFilesImportedBoth(t *testing.T) {
 // not read outside the worktree during scope resolution.
 func TestScanRenderScope_DoesNotFollowKustomizationSymlink(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	write := func(rel, content string) {
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
@@ -372,7 +372,7 @@ func TestScanRenderScope_DoesNotFollowKustomizationSymlink(t *testing.T) {
 // contributes only its manifests to the render).
 func TestScanRenderScope_TransitiveBaseAndForeignRekey(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	write := func(rel, content string) {
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
@@ -426,7 +426,7 @@ func TestScanRenderScope_TransitiveBaseAndForeignRekey(t *testing.T) {
 // could not load the file and the target was refused.
 func TestScanRenderScope_ExternalResourceFile(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	write := func(rel, content string) {
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
@@ -458,7 +458,7 @@ func TestScanRenderScope_ExternalResourceFile(t *testing.T) {
 // reference is left out, so it cannot wrongly refuse the target.
 func TestScanRenderScope_UnrelatedBaseContentNotPulled(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	write := func(rel, content string) {
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
@@ -490,7 +490,7 @@ func TestScanRenderScope_UnrelatedBaseContentNotPulled(t *testing.T) {
 // directory to scan — while a local base beside it is still followed.
 func TestScanRenderScope_SkipsRemoteBase(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	write := func(rel, content string) {
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
@@ -543,7 +543,7 @@ func TestRenderScopePathHelpers(t *testing.T) {
 func TestFanInPrecondition_RefusesSharedBaseWriteThroughWithoutOverrides(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 
 	plainOverlay := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
 		"namespace: shared\nresources:\n  - ../base\n"

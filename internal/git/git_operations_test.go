@@ -7,15 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -63,6 +64,7 @@ func TestCheckRepo_ConnectivityAndMetadata(t *testing.T) {
 	repoPath := filepath.Join(tempDir, "test-repo")
 	repo, err := git.PlainInit(repoPath, false)
 	require.NoError(t, err)
+	require.NoError(t, PinExplicitSigningPolicy(repo))
 
 	worktree, err := repo.Worktree()
 	require.NoError(t, err)
@@ -213,6 +215,7 @@ func TestCheckRepo_OrphanBranches(t *testing.T) {
 	// Initialize as bare repository
 	repo, err := git.PlainInit(repoPath, true) // true = bare
 	require.NoError(t, err)
+	require.NoError(t, PinExplicitSigningPolicy(repo))
 
 	// Create two orphan branches by directly creating branch references
 	// This simulates branches that exist but have no commits
@@ -359,6 +362,7 @@ func TestMakeHeadUnborn_CleansWorktreeIncludingTrackedFiles(t *testing.T) {
 
 	repo, err := git.PlainInit(repoPath, false)
 	require.NoError(t, err)
+	require.NoError(t, PinExplicitSigningPolicy(repo))
 
 	worktree, err := repo.Worktree()
 	require.NoError(t, err)
@@ -480,15 +484,25 @@ func TestBranchWorker_ConflictResolution(t *testing.T) {
 
 func TestBranchWorker_ConcurrentOperations(t *testing.T) {
 	// Test concurrent worker writes to simulate multiple GitDestinations.
+	//
+	// This must run against a REAL git server, not `file://`. The whole point of the test is that
+	// racing pushes are rejected by the Old/New compare-and-swap so our retry serialises them, and
+	// go-git v6's in-process receive-pack (which now backs `file://`, where v5 spawned the real git
+	// binary) never compares cmd.Old — it just sets the reference. Over `file://` all three pushes
+	// would "succeed", last write wins, and this test would pass vacuously with 2 commits.
+	// See startRealGitServer.
 	tempDir := t.TempDir()
 
 	// Create shared bare remote repository
 	remotePath := filepath.Join(tempDir, "remote.git")
 	createBareRepo(t, remotePath)
+	require.NoError(t, exec.Command("git", "-C", remotePath, "config", "http.receivepack", "true").Run())
 
 	// Simulate client creating initial commit. README.md is a recognized operator artifact,
 	// so it does not trip the operator-exclusive-subtree refusal.
 	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "README.md", "init")
+
+	remoteURL := startRealGitServer(t, tempDir, remotePath).RepoURL
 
 	// Number of concurrent operations
 	numWorkers := 3
@@ -499,7 +513,7 @@ func TestBranchWorker_ConcurrentOperations(t *testing.T) {
 		go func(workerID int) {
 			// Each worker gets its own clone
 			worker, err := newTestBranchWorker(
-				"file://"+remotePath,
+				remoteURL,
 				fmt.Sprintf("test-repo-%d", workerID),
 				"main",
 			)

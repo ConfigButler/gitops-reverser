@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -126,7 +126,7 @@ func TestPrune_NeverSuppressesBothPaths(t *testing.T) {
 // the same pass. Sweeping without upserting would be a different, much worse bug.
 func TestPrune_AlwaysReproducesMarkAndSweep(t *testing.T) {
 	worktree := newWorktreeForTest(t)
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	orphan := seedPlacedManifest(t, worktree, "apps/orphan.yaml", cmManifest("orphan", "blue"))
 
 	stats := resyncUnder(t, worktree, v1alpha3.PruneAlways, desiredCM("keep", "green"))

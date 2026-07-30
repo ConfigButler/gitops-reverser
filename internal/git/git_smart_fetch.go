@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/transport"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -25,7 +26,7 @@ func SmartFetch(
 	ctx context.Context,
 	repo *git.Repository,
 	target plumbing.ReferenceName, // e.g. "refs/heads/feature" or "HEAD"
-	auth transport.AuthMethod,
+	auth []gitclient.Option,
 ) (plumbing.ReferenceName, error) {
 	remoteName := "origin"
 	remote, err := repo.Remote(remoteName)
@@ -62,12 +63,12 @@ func SmartFetch(
 	// 4. Execute: Fetch
 	if len(refSpecs) > 0 {
 		err = repo.Fetch(&git.FetchOptions{
-			RemoteName: remoteName,
-			Auth:       auth,
-			RefSpecs:   refSpecs,
-			Depth:      1,
-			Force:      true,
-			Prune:      true,
+			RemoteName:    remoteName,
+			ClientOptions: auth,
+			RefSpecs:      refSpecs,
+			Depth:         1,
+			Force:         true,
+			Prune:         true,
 		})
 		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return "", fmt.Errorf("smart fetch failed: %w", err)
@@ -80,8 +81,8 @@ func SmartFetch(
 	return result, nil
 }
 
-func listRemoteRefs(remote *git.Remote, auth transport.AuthMethod) ([]*plumbing.Reference, error) {
-	refs, err := remote.List(&git.ListOptions{Auth: auth})
+func listRemoteRefs(remote *git.Remote, auth []gitclient.Option) ([]*plumbing.Reference, error) {
+	refs, err := remote.List(&git.ListOptions{ClientOptions: auth})
 	if errors.Is(err, transport.ErrEmptyRemoteRepository) {
 		return nil, nil // Valid state, not an error
 	}

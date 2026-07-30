@@ -112,7 +112,7 @@ func seedLabelledWorktree(t *testing.T, root string) (string, string) {
 func TestPlanFlush_InjectedMetadataIsNeverWrittenIntoTheSourceManifest(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, kustPath := seedLabelledWorktree(t, worktree.Filesystem.Root())
+	deployPath, kustPath := seedLabelledWorktree(t, worktree.Filesystem().Root())
 
 	changed, err := flushEventsForTest(t, writer, worktree, deploymentMapper(),
 		labelledLiveDeployment("prod"))
@@ -129,7 +129,7 @@ func TestPlanFlush_InjectedMetadataIsNeverWrittenIntoTheSourceManifest(t *testin
 func TestPlanFlush_UngovernedFieldStillLandsInTheSourceManifest(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, _ := seedLabelledWorktree(t, worktree.Filesystem.Root())
+	deployPath, _ := seedLabelledWorktree(t, worktree.Filesystem().Root())
 
 	event := labelledLiveDeployment("prod")
 	containers, _, err := unstructured.NestedSlice(event.Object.Object, "spec", "template", "spec", "containers")
@@ -163,7 +163,7 @@ func TestPlanFlush_UngovernedFieldStillLandsInTheSourceManifest(t *testing.T) {
 func TestPlanFlush_RefusesAChangeToABuildSuppliedField(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
-	deployPath, kustPath := seedLabelledWorktree(t, worktree.Filesystem.Root())
+	deployPath, kustPath := seedLabelledWorktree(t, worktree.Filesystem().Root())
 
 	_, err := flushEventsForTest(t, writer, worktree, deploymentMapper(),
 		labelledLiveDeployment("staging"))

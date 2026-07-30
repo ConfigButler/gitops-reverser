@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -235,7 +235,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		return 0, err
 	}
 
-	encryptionPath := filepath.Join(worktree.Filesystem.Root(), base)
+	encryptionPath := filepath.Join(worktree.Filesystem().Root(), base)
 	if err := configureSecretEncryptionWriter(w.contentWriter, encryptionPath, target.EncryptionConfig); err != nil {
 		return 0, fmt.Errorf("configure secret encryptor: %w", err)
 	}
@@ -287,7 +287,7 @@ func (w *BranchWorker) refuseUnsafeWorktree(
 	worktree *gogit.Worktree,
 	base, clusterID string,
 ) error {
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	scoped, err := scanRenderScope(root, base)
 	if err != nil {
 		return err
@@ -336,7 +336,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 	// "Never" to all of them while meaning "OnEvent". Doing it at the single entry point is why no
 	// individual reader has to remember.
 	target.PruneMode = target.PruneMode.OrDefault()
-	root := worktree.Filesystem.Root()
+	root := worktree.Filesystem().Root()
 	scoped, err := scanRenderScope(root, base)
 	if err != nil {
 		return ResyncStats{}, false, err

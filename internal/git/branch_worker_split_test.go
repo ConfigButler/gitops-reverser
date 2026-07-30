@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -525,7 +525,7 @@ func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T)
 		_ *git.Repository,
 		_ plumbing.Hash,
 		_ plumbing.ReferenceName,
-		_ transport.AuthMethod,
+		_ []gitclient.Option,
 	) error {
 		return pushErr
 	}
@@ -533,7 +533,7 @@ func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T)
 		_ context.Context,
 		_ *git.Repository,
 		_ plumbing.ReferenceName,
-		_ transport.AuthMethod,
+		_ []gitclient.Option,
 	) (plumbing.Hash, error) {
 		return rootHashBefore, nil
 	}
@@ -541,7 +541,7 @@ func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T)
 		_ context.Context,
 		_ *git.Repository,
 		_ plumbing.ReferenceName,
-		_ transport.AuthMethod,
+		_ []gitclient.Option,
 	) (*PullReport, error) {
 		syncCalled = true
 		return &PullReport{}, nil
@@ -604,7 +604,7 @@ func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T)
 		_ *git.Repository,
 		_ plumbing.Hash,
 		_ plumbing.ReferenceName,
-		_ transport.AuthMethod,
+		_ []gitclient.Option,
 	) error {
 		return pushErr
 	}
@@ -612,7 +612,7 @@ func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T)
 		_ context.Context,
 		_ *git.Repository,
 		_ plumbing.ReferenceName,
-		_ transport.AuthMethod,
+		_ []gitclient.Option,
 	) (plumbing.Hash, error) {
 		return plumbing.ZeroHash, fetchErr
 	}
@@ -620,7 +620,7 @@ func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T)
 		_ context.Context,
 		_ *git.Repository,
 		_ plumbing.ReferenceName,
-		_ transport.AuthMethod,
+		_ []gitclient.Option,
 	) (*PullReport, error) {
 		syncCalled = true
 		return &PullReport{}, nil

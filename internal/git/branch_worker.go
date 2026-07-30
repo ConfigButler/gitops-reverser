@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/transport"
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -1347,7 +1347,7 @@ func fetchRemoteBranchHash(
 	ctx context.Context,
 	repo *gogit.Repository,
 	branch plumbing.ReferenceName,
-	auth transport.AuthMethod,
+	auth []gitclient.Option,
 ) (plumbing.Hash, error) {
 	if _, err := SmartFetch(ctx, repo, branch, auth); err != nil {
 		return plumbing.ZeroHash, err

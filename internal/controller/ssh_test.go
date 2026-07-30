@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 	corev1 "k8s.io/api/core/v1"
@@ -81,20 +83,18 @@ var _ = Describe("SSH Authentication", func() {
 	Describe("extractCredentials", func() {
 		Context("with valid SSH secret", func() {
 			It("should successfully create SSH authentication", func() {
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					validSSHSecret,
 				)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(auth).NotTo(BeNil())
-				Expect(auth).To(BeAssignableToTypeOf(&ssh.PublicKeys{}))
+				Expect(auth.SSH).NotTo(BeNil())
 
-				sshAuth := auth.(*ssh.PublicKeys)
-				Expect(sshAuth.User).To(Equal("git"))
-				Expect(sshAuth.Signer).NotTo(BeNil())
-				Expect(sshAuth.HostKeyCallback).NotTo(BeNil())
+				Expect(auth.SSH.User).To(Equal("git"))
+				Expect(auth.SSH.Signer).NotTo(BeNil())
+				Expect(auth.SSH.HostKeyCallback).NotTo(BeNil())
 			})
 		})
 
@@ -110,7 +110,7 @@ var _ = Describe("SSH Authentication", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secretWithoutKnownHosts,
@@ -118,7 +118,7 @@ var _ = Describe("SSH Authentication", func() {
 
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("known_hosts is required"))
-				Expect(auth).To(BeNil())
+				Expect(auth).To(Equal(gitpkg.Credential{}), "a failed credential resolution must yield no credential")
 			})
 		})
 
@@ -135,18 +135,16 @@ var _ = Describe("SSH Authentication", func() {
 				}
 
 				reconciler.SSHHostKeys.AllowMissingKnownHosts = true
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					secret,
 				)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(auth).NotTo(BeNil())
-				Expect(auth).To(BeAssignableToTypeOf(&ssh.PublicKeys{}))
+				Expect(auth.SSH).NotTo(BeNil())
 
-				sshAuth := auth.(*ssh.PublicKeys)
-				Expect(sshAuth.HostKeyCallback).NotTo(BeNil())
+				Expect(auth.SSH.HostKeyCallback).NotTo(BeNil())
 			})
 		})
 
@@ -160,7 +158,7 @@ var _ = Describe("SSH Authentication", func() {
 
 		Context("with invalid SSH secret", func() {
 			It("should return error for malformed private key", func() {
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					invalidSSHSecret,
@@ -168,7 +166,7 @@ var _ = Describe("SSH Authentication", func() {
 
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("failed to create SSH public keys"))
-				Expect(auth).To(BeNil())
+				Expect(auth).To(Equal(gitpkg.Credential{}), "a failed credential resolution must yield no credential")
 			})
 		})
 
@@ -185,27 +183,29 @@ var _ = Describe("SSH Authentication", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					httpSecret,
 				)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(auth).NotTo(BeNil())
+				Expect(auth.Basic).NotTo(BeNil())
+				Expect(auth.Basic.Username).To(Equal("testuser"))
+				Expect(auth.Basic.Password).To(Equal("testpass"))
 			})
 		})
 
 		Context("with empty secret", func() {
 			It("should return nil auth for anonymous access", func() {
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					nil,
 				)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(auth).To(BeNil())
+				Expect(auth).To(Equal(gitpkg.Credential{}), "a failed credential resolution must yield no credential")
 			})
 		})
 
@@ -222,7 +222,7 @@ var _ = Describe("SSH Authentication", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					incompleteSecret,
@@ -230,7 +230,7 @@ var _ = Describe("SSH Authentication", func() {
 
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("contains username but no password"))
-				Expect(auth).To(BeNil())
+				Expect(auth).To(Equal(gitpkg.Credential{}), "a failed credential resolution must yield no credential")
 			})
 		})
 
@@ -244,7 +244,7 @@ var _ = Describe("SSH Authentication", func() {
 					Data: map[string][]byte{},
 				}
 
-				auth, err := reconciler.extractCredentials(
+				auth, err := reconciler.extractCredential(
 					context.Background(),
 					&configbutleraiv1alpha3.GitProvider{},
 					emptySecret,
@@ -254,7 +254,7 @@ var _ = Describe("SSH Authentication", func() {
 				Expect(
 					err.Error(),
 				).To(ContainSubstring("does not contain valid authentication data"))
-				Expect(auth).To(BeNil())
+				Expect(auth).To(Equal(gitpkg.Credential{}), "a failed credential resolution must yield no credential")
 			})
 		})
 	})
@@ -318,15 +318,13 @@ func TestSSHCredentials(t *testing.T) {
 			},
 		}
 
-		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha3.GitProvider{}, secret)
+		auth, err := reconciler.extractCredential(context.Background(), &configbutleraiv1alpha3.GitProvider{}, secret)
 		if err != nil {
 			t.Errorf("Expected no error, got: %v", err)
 		}
-		if auth == nil {
-			t.Error("Expected auth object, got nil")
-		}
-		if _, ok := auth.(*ssh.PublicKeys); !ok {
-			t.Errorf("Expected *ssh.PublicKeys, got %T", auth)
+
+		if auth.SSH == nil {
+			t.Error("Expected an SSH credential")
 		}
 	})
 
@@ -338,16 +336,21 @@ func TestSSHCredentials(t *testing.T) {
 			},
 		}
 
-		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha3.GitProvider{}, secret)
+		auth, err := reconciler.extractCredential(context.Background(), &configbutleraiv1alpha3.GitProvider{}, secret)
 		if err == nil {
 			t.Error("Expected error for invalid SSH key")
 		}
-		if auth != nil {
-			t.Error("Expected nil auth for invalid key")
+		if auth.SSH != nil {
+			t.Error("Expected no SSH credential for an invalid key")
 		}
 	})
+}
 
-	// Test with HTTP credentials
+// TestCredentials_HTTPAndAnonymous covers the non-SSH credential shapes. Split out of
+// TestSSHCredentials to keep that function under the cognitive-complexity gate.
+func TestCredentials_HTTPAndAnonymous(t *testing.T) {
+	reconciler := &GitProviderReconciler{}
+
 	t.Run("HTTP Credentials", func(t *testing.T) {
 		secret := &corev1.Secret{
 			Data: map[string][]byte{
@@ -356,24 +359,19 @@ func TestSSHCredentials(t *testing.T) {
 			},
 		}
 
-		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha3.GitProvider{}, secret)
-		if err != nil {
-			t.Errorf("Expected no error, got: %v", err)
-		}
-		if auth == nil {
-			t.Error("Expected auth object, got nil")
-		}
+		auth, err := reconciler.extractCredential(context.Background(), &configbutleraiv1alpha3.GitProvider{}, secret)
+		require.NoError(t, err)
+		require.NotNil(t, auth.Basic, "expected HTTP basic credentials")
+		assert.Equal(t, "testuser", auth.Basic.Username)
+		assert.Equal(t, "testpass", auth.Basic.Password)
+		assert.Len(t, auth.Options(), 1, "a basic credential renders as one transport option")
 	})
 
-	// Test with nil secret (anonymous access)
 	t.Run("Anonymous Access", func(t *testing.T) {
-		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha3.GitProvider{}, nil)
-		if err != nil {
-			t.Errorf("Expected no error, got: %v", err)
-		}
-		if auth != nil {
-			t.Error("Expected nil auth for anonymous access")
-		}
+		auth, err := reconciler.extractCredential(context.Background(), &configbutleraiv1alpha3.GitProvider{}, nil)
+		require.NoError(t, err)
+		assert.Equal(t, gitpkg.Credential{}, auth, "no secret means anonymous")
+		assert.Nil(t, auth.Options(), "anonymous renders no transport options")
 	})
 }
 

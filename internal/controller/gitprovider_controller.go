@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,7 +20,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -243,13 +243,28 @@ func (r *GitProviderReconciler) extractCredentials(
 	ctx context.Context,
 	gitProvider *configbutleraiv1alpha3.GitProvider,
 	secret *corev1.Secret,
-) (transport.AuthMethod, error) {
-	return gitpkg.AuthFromSecretData(ctx, r.Client, gitProvider, secret, r.SSHHostKeys)
+) ([]gitclient.Option, error) {
+	cred, err := r.extractCredential(ctx, gitProvider, secret)
+	if err != nil {
+		return nil, err
+	}
+	return cred.Options(), nil
+}
+
+// extractCredential is extractCredentials before the options wrapper. go-git v6 credentials are
+// opaque closures, so this returns the concrete credential for callers — and tests — that need to
+// see which kind was produced and how it was configured.
+func (r *GitProviderReconciler) extractCredential(
+	ctx context.Context,
+	gitProvider *configbutleraiv1alpha3.GitProvider,
+	secret *corev1.Secret,
+) (gitpkg.Credential, error) {
+	return gitpkg.CredentialFromSecretData(ctx, r.Client, gitProvider, secret, r.SSHHostKeys)
 }
 
 // checkRemoteConnectivity performs a lightweight check of repository connectivity and returns branch count.
 func (r *GitProviderReconciler) checkRemoteConnectivity(
-	ctx context.Context, repoURL string, auth transport.AuthMethod,
+	ctx context.Context, repoURL string, auth []gitclient.Option,
 ) (int, error) {
 	log := logf.FromContext(ctx).WithName("checkRemoteConnectivity")
 
