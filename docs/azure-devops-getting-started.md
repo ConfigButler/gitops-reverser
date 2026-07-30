@@ -142,8 +142,9 @@ task test-e2e-ado                             # operator level, needs a prepared
 ```
 
 `E2E_ADO_REPO_URL` is written to and not cleaned up, so point it at a scratch repository.
-`E2E_ADO_EMPTY_REPO_URL` must stay empty — nothing writes to it, and it is the only way to cover the
-empty-repository contract repeatedly, since the main fixture seeds itself on first run.
+The repository `E2E_ADO_EMPTY_REPO_URL` names must stay empty — nothing writes to it, and it is the
+only way to cover the empty-repository contract repeatedly, since the main fixture seeds itself on
+first run.
 
 One of those tests is a canary rather than a regression test: `TestADOLive_StillRequiresMultiAck`
 asserts Azure DevOps *still* rejects a fetch without the capability. If it ever fails, Microsoft has

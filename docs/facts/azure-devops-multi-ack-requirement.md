@@ -145,6 +145,7 @@ Two lessons, both cheap:
 | [`internal/git/ado_live_test.go`](../../internal/git/ado_live_test.go) | yes — including `TestADOLive_StillRequiresMultiAck`, the canary that fails if Microsoft ever fixes this |
 | [`test/e2e/ado_e2e_test.go`](../../test/e2e/ado_e2e_test.go) | yes — the operator mirroring into a real ADO repository |
 
-The simulator is deliberately stricter than ADO: it rejects any `upload-pack` POST without
-`multi_ack`, including the bare-`want` shape ADO accepts. That difference does not matter for what it
+The simulator is deliberately stricter than ADO: it rejects any `upload-pack` POST carrying neither
+`multi_ack` nor `multi_ack_detailed` — its check matches the `multi_ack` prefix, so either satisfies
+it, exactly as ADO does — including the bare-`want` shape ADO accepts. That difference does not matter for what it
 gates, and the strictness is what keeps it simple.

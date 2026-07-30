@@ -185,6 +185,9 @@ func TestADOLive_BranchResolutionOrder(t *testing.T) {
 	t.Logf("phase 4: negotiated fetch advanced origin/%s to %s", defaultBranch, ref.Hash())
 }
 
+// adoCanaryTimeout bounds the canary's round trip against a remote nobody here controls.
+const adoCanaryTimeout = 30 * time.Second
+
 // liveBranchName returns a branch name unlikely to collide with anything in the repository.
 func liveBranchName(kind string) string {
 	return fmt.Sprintf("reverser-live-%s-%d", kind, os.Getpid())
@@ -362,7 +365,11 @@ func TestADOLive_EmptyRepository(t *testing.T) {
 // deeply confusing.
 func TestADOLive_StillRequiresMultiAck(t *testing.T) {
 	target := adoLiveFromEnv(t)
-	ctx := context.Background()
+
+	// Both halves need a deadline: http.DefaultClient has none, so an unreachable or mid-response
+	// Azure DevOps would hang the test rather than skipping it the way the error path below intends.
+	ctx, cancel := context.WithTimeout(context.Background(), adoCanaryTimeout)
+	defer cancel()
 
 	info, err := CheckRepo(ctx, target.URL, target.Auth)
 	require.NoError(t, err)
