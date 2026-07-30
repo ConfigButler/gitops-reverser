@@ -18,10 +18,11 @@ states the findings behind each, the options, and the call.
 | Question | Call | Why in one line |
 |---|---|---|
 | Rename `source="canonical"` to `default`? | **No.** Keep `canonical`, split `declared` into `byType` and `default`, and fix the prose | `placement.default` is a *declared* template; reusing the word for the built-in path makes one name mean both a declaration and the absence of one |
-| Default `placement.default` in the CRD? | **No**, and the reason is structural | A defaulted default is never empty, so it shadows the kustomize-root step and new files in an overlay would land where nothing renders them (F9) |
+| Default `placement.default` in the CRD? | **No**, on narrower grounds than the first draft claimed | A defaulted default consumes the slot ahead of the one step no template can express ("beside the folder's one kustomization"). Once F10 is fixed this is a legibility trade rather than a correctness wall |
 | Publish the effective layout in status? | **Yes, now** | It gives the clarity the CRD default was reaching for, without freezing anything, and the seam it needs already exists |
 | `{kindLower}` or a `toLower` function? | **`{kindLower}`** | A function syntax is a language; one variable answers the actual need |
 | Is the kustomize root "still a little bit inference"? | **Yes, and it earns its keep anyway** | Its answer changes only when a `kustomization.yaml` changes, and ignoring it produces a file nothing renders. It gets the same visibility obligation as everything else |
+| A declared path in a subdirectory of a kustomize folder | **Bug, fix it**: walk up to the nearest kustomization | Today it is registered only when render-root scoping happens to be in force, so a `byType` entry into a subdirectory silently produces a file nothing renders (F10) |
 | Two kustomize roots (ambiguous) | **Keep writing, make it loud** | The file is currently unreachable *and* uncounted. Refusing would protect nothing that mirroring does not |
 
 ## Findings
@@ -125,6 +126,38 @@ real declaration lose to the folder, which inverts the precedence the whole feat
 `managedFields` to tell a defaulted value from a declared one makes placement depend on
 field-ownership metadata. Neither is defensible later.
 
+**F10. And that failure is reachable today, from a declaration, which makes it a live bug rather
+than an argument about defaulting.** Review found this, and it is the most useful thing on the page.
+[`governingKustomization`](../../internal/manifestanalyzer/placement.go) decides whether a new file
+gets a `resources:` entry by looking in exactly two places: the kustomization in the file's **own**
+directory, and (only when render-root scoping is in force) the write scope's root. So:
+
+| Folder shape | Declared path | Registered? |
+|---|---|---|
+| overlay reading a base (`writeScope != ""`) | `configmaps/app.yaml` | yes, in the overlay root, by accident of a branch added for another reason |
+| self-contained folder that IS the kustomize root | `configmaps/app.yaml` | **no** |
+
+One line of user config reproduces it: a kustomize folder plus
+`byType: {v1/configmaps: "configmaps/{name}.yaml"}`. The file lands in a directory with no
+kustomization of its own, no entry is added, and kustomize never builds it. Because no entry is
+attempted, `placement_kustomization_entries_total` cannot see it either.
+
+**The fix**: `governingKustomization` walks **up** from the resolved path to the nearest kustomization
+within the write jail, replacing the own-directory check and the write-scope special case with one
+rule. An ancestor walk cannot escape the jail by construction, the relative entry it produces is what
+`appendKustomizationResource` already computes, and the already-listed check is path-based, so it
+stays idempotent. A nearest ancestor that is *unsupported* still cannot be edited; that becomes a
+counted `failed` instead of silence.
+
+**What this does to F9**: it weakens it, and the page should say so rather than keep an argument that
+has been undercut. With the ancestor walk a defaulted `default` no longer produces unrendered files,
+because the nested tree would be registered in the root and would build. What survives is narrower.
+The built-in path is the wrong *layout* for a kustomize folder, and **no template can express "beside
+the folder's one root"**, which is why that step is a step rather than a template. Defaulting
+`default` consumes the slot ahead of a step that exists precisely because a template cannot say what
+it says. That is a legibility and structure argument, not a correctness one, so the CRD default moves
+from "no" to "a trade available to us". The recommendation does not change; its grounds do.
+
 ## Question 1: `canonical` or `default`?
 
 The pull toward `default` is real: it is the word for "what happens when you say nothing", and
@@ -180,16 +213,23 @@ defaulted bundling `default` unguarded, so an edit about ConfigMaps flips the ob
 ### The objection that decides it
 
 **A defaulted `default` is never empty, so it shadows the kustomize-root step (F9).** `resolveDeclared`
-returns on any non-empty declared template, and the render-root step runs after it. Default the field
-and every new file in a kustomize overlay takes the canonical path instead of landing beside the
-`kustomization.yaml` with a `resources:` entry: in Git, looking mirrored, rendered by nothing. That is
-the exact failure the render-root step exists to prevent, reintroduced by the mechanism meant to make
-placement clearer.
+returns on any non-empty declared template, and the render-root step runs after it, so defaulting the
+field makes step 3 unreachable.
 
-And the repairs invert something load-bearing. Putting the render root ahead of `default` makes a
+The first version of this section claimed the consequence was unrendered files. **That claim does not
+survive F10**: the same gap is reachable from a plain declaration today, it is a bug we are fixing,
+and once `governingKustomization` walks up to the nearest kustomization a nested path is registered
+and builds. So the honest form of the objection is smaller and structural:
+
+- a nested canonical tree registered inside an overlay **renders**, and no one would choose it over a
+  file beside the `kustomization.yaml`. Defaulting would make the worse layout the layout;
+- **no template can express "beside the folder's one supported kustomization"**, which is why that
+  step exists as a step. A defaulted template consumes the slot in front of it, so the one part of
+  the ladder that cannot be written down as a path would become unreachable by construction.
+
+The repairs still invert something load-bearing. Putting the render root ahead of `default` makes a
 user's real declaration lose to the folder. Reading `managedFields` to distinguish a defaulted value
-from a declared one makes where files land depend on field-ownership metadata. Neither is a rule worth
-defending in a year.
+from a declared one makes where files land depend on field-ownership metadata.
 
 ### What we do instead
 
@@ -420,29 +460,35 @@ failure to register one.
 
 Ordered by risk, smallest first.
 
-1. **Metric values.** Split `declared` into `byType` and `default`; keep `canonical`. Unify the prose
+1. **Register a declared path with the kustomization that governs it (F10).** Replace
+   `governingKustomization`'s own-directory check plus write-scope special case with a walk up to the
+   nearest kustomization inside the write jail, so a `byType` or `default` path into a subdirectory of
+   a kustomize folder joins the root's `resources:` list instead of being committed outside every
+   render. A correctness fix, so it goes first, and the two cases stop differing by whether
+   render-root scoping happens to be in force.
+2. **Metric values.** Split `declared` into `byType` and `default`; keep `canonical`. Unify the prose
    on "canonical" and drop "built-in default" from [`architecture.md`](../architecture.md) and the
    CRD comments (F1, F2).
-2. **`{kindLower}`**, plus the single-namespace recipe and its identity caveat in
+3. **`{kindLower}`**, plus the single-namespace recipe and its identity caveat in
    [`configuration.md`](../configuration.md) (F7).
-3. **Drop the `{version}` requirement** from `IdentityCompletePlacementTemplate` for a non-narrowed
+4. **Drop the `{version}` requirement** from `IdentityCompletePlacementTemplate` for a non-narrowed
    template, with a test for the versionless canonical shape being accepted. This is a bug fix on its
    own terms and it unblocks any future spec default (F3, F4).
-4. **Express the canonical path as a template constant** rendered through
+5. **Express the canonical path as a template constant** rendered through
    `RenderPlacementTemplate`, and pin it byte-for-byte against `ResourceIdentifier.ToGitPath()`
    across cluster-scoped, core, grouped and sensitive identities. Removes the hand-written
    `canonicalPath` duplication and is what a future default would reuse.
-5. **`status.layout`**, in the shape above, over the `MarkTargetRetention` seam: an epoch-scoped
+6. **`status.layout`**, in the shape above, over the `MarkTargetRetention` seam: an epoch-scoped
    per-target roll-up marked from the write path, enqueued on change, projected by the controller,
    asserted by an envtest (F6).
-6. **The ambiguous render root**: `renderRootReason: Ambiguous` plus `outcome="no_root"` on the
+7. **The ambiguous render root**: `renderRootReason: Ambiguous` plus `outcome="no_root"` on the
    entries counter (F8).
-7. **Docs**: the spec's resolution-ladder section, `configuration.md`, `interpreting-metrics.md` for
+8. **Docs**: the spec's resolution-ladder section, `configuration.md`, `interpreting-metrics.md` for
    the new label values, and the `UPGRADING.md` entry extended with the metric-value split.
 
 **Not now, with the trigger written down:** a CRD default for `placement.default`. Revisit only once
 F9 has an answer that does not invert declaration precedence or read `managedFields`, and only after
-items 3 and 4 land. The freezing question (F5) is a trade we could take; the shadowing question is
+items 4 and 5 land. The freezing question (F5) is a trade we could take; the shadowing question is
 not.
 `spec.expect.layout` stays out too, on the config-surface doc's own rule: publish the observation
 before inventing the assertion.
