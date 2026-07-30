@@ -1,13 +1,20 @@
 # Placement, made visible: naming, a declared default, and `status.layout`
 
-> **design**: a decision record for work in flight, not a plan of record.
-> Index: [`../INDEX.md`](../INDEX.md)
-> Date: 2026-07-30. Written against `feat/delete-sibling-inference` (PR #291), which deleted
-> Option C sibling inference and shipped the placement counters.
+> **design**: decided, mostly **not built**. Index: [`../INDEX.md`](../INDEX.md)
+> Date: 2026-07-30, reconciled 2026-07-30 against what PR #291 actually contains.
 >
-> Everything decided here lands in **that same PR**. There is no follow-up sequence below; a
-> section marked "not now" is a decision not to build it, with the trigger for revisiting written
-> down, not a deferral to another branch.
+> **The decisions below stand. The build list does not.** An earlier revision of this page said
+> "everything decided here lands in that same PR", and that turned out to be wrong: PR #291 shipped
+> the sibling-inference deletion, the three placement counters, and the namespace-transformer safety
+> fix, and **none of the eight items** this page had queued behind them. What is decided and unbuilt
+> is now tracked as GitHub issues rather than asserted here as imminent; see
+> [what is built and what is filed](#what-is-built-and-what-is-filed).
+>
+> Reading it in order matters, because the two halves have different standing. The **findings** are
+> checkable facts about the tree and they are why the calls are what they are. The **calls** are still
+> the calls. Question 2 (a CRD default for `placement.default`) has since been superseded outright by
+> [`gittarget-layout-model.md`](gittarget-layout-model.md), which argues that a path template is the
+> wrong primitive to be defaulting at all.
 
 Three questions came out of reviewing #291, and one of them (a CRD default for
 `placement.default`) is a better idea than my first answer to it gave credit for. This document
@@ -474,7 +481,32 @@ counts **attempts** to register an entry
 attempt is made. It needs its own value on the refusal counter (if we refuse) or its own series (if we
 write), never a third outcome on a counter about attempts.
 
-## What we build, in this PR
+## What is built, and what is filed
+
+PR #291 shipped three things, and they are the ones that did not depend on any decision on this page:
+the sibling-inference deletion, the `placements_total` / `placement_refusals_total` /
+`placement_kustomization_entries_total` counters, and the namespace-transformer safety fix (a
+kustomization naming a namespace other than the resource's own no longer renders the document as a
+different object). `source="canonical"` kept its name, which is this page's Question 1 answered by
+doing nothing.
+
+Everything else below is **decided and unbuilt**. It is filed as GitHub issues so it is legible
+without reading this page, and the two correctness items are separated from the legibility ones
+because they are worth different urgency:
+
+| Item | State | Why it is where it is |
+|---|---|---|
+| F10: register a declared path with the kustomization that governs it | **filed, correctness** | One `byType` line into a subdirectory silently produces a file nothing renders. Reachable today |
+| Drop the `{version}` requirement from `IdentityCompletePlacementTemplate` | **filed, correctness** | It contradicts the versionless-path decision, and it is what makes any future spec default fail our own gate |
+| `status.layout` | **filed** | The durable half of "what did the operator understand about this folder". Wants the layout model's vocabulary, so it follows it |
+| Split `declared` into `byType` and `default`; unify the prose on "canonical" | **filed, legibility** | A catch-all quietly swallowing a type you meant to name looks identical to a rule working |
+| `{kindLower}` | **filed, legibility** | Small, self-contained |
+| Canonical path as a template constant | **filed, cleanup** | Removes the hand-written duplication; what a future default would reuse |
+| `renderRootReason: Ambiguous` | **filed** | Belongs with `status.layout`, and the layout model decides the refuse-or-write policy |
+| A CRD default for `placement.default` | **superseded** | [`gittarget-layout-model.md`](gittarget-layout-model.md): the primitive is wrong. `layout.kind` is the defaultable thing, because it names the structural rule instead of standing in front of it |
+
+The original build list follows, because each entry says *how* to build the thing and that is the part
+an issue should not have to restate.
 
 Ordered by risk, smallest first.
 
@@ -505,11 +537,13 @@ Ordered by risk, smallest first.
 8. **Docs**: the spec's resolution-ladder section, `configuration.md`, `interpreting-metrics.md` for
    the new label values, and the `UPGRADING.md` entry extended with the metric-value split.
 
-**Not now, with the trigger written down:** a CRD default for `placement.default`. Revisit only once
-F9 has an answer that does not invert declaration precedence, and only after items 4 and 5 land. The
-freezing question (F5) is a trade we could take; the shadowing question is not.
-`spec.expect.layout` stays out too, on the config-surface doc's own rule: publish the observation
-before inventing the assertion.
+**Not now, with the trigger written down:** a CRD default for `placement.default`. This was already
+"not now" when the page was written, and it has since become "not this shape at all", because
+[`gittarget-layout-model.md`](gittarget-layout-model.md) replaces the template with a declared
+`layout.kind` and `Auto` is a safe default where a path never was. The freezing question (F5) is a
+trade we could take; the shadowing question is not, and the layout model dissolves it rather than
+answering it. `spec.expect.layout` stays out too, on the config-surface doc's own rule: publish the
+observation before inventing the assertion.
 
 ## Open questions
 

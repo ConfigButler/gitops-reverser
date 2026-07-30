@@ -614,8 +614,8 @@ per-mutation change log.
 - **Fact transport (per-type stream)**: [internal/queue/fact_stream.go](../internal/queue/fact_stream.go)
 - **In-process fact index**: [internal/queue/fact_index.go](../internal/queue/fact_index.go)
 - **Resolver (grace window join)**: [internal/watch/author_resolver.go](../internal/watch/author_resolver.go)
-- **Design**: [attribution-publish-and-join.md](design/attribution-publish-and-join.md),
-  [attribution-fact-stream.md](finished/attribution-fact-stream.md)
+- **Spec**: [spec/attribution.md](spec/attribution.md) (the single reference)
+- **Design record**: [attribution-fact-stream.md](finished/attribution-fact-stream.md)
 
 Attribution runs only when `--author-attribution=true`. A normal
 source posts audit `EventList` payloads to `/audit-webhook/<audit-route>`, where the route is
@@ -734,8 +734,8 @@ TTL does not bound: a uid is unique across space and time, so the statement cann
 and its horizon is the index's caps instead. It is still in-memory: a restart re-warms the index
 from one TTL of stream retention like everything else. Without the slot, a finalizer patch's fact
 overwrites the deleter's, because both carry the resourceVersion the *deletion* stamped
-([attribution-deletion-intent-actor.md](design/attribution-deletion-intent-actor.md)). **A removal
-never returns on a write fact without looking further:** the per-object tiers are last-writer-wins,
+([spec/attribution.md](spec/attribution.md)). **A removal never returns on a write fact
+without looking further:** the per-object tiers are last-writer-wins,
 so for a removal they hold whoever last *edited* the object, which is not who deleted it; such a
 match is held as a fallback while the wait continues for evidence about the deletion itself. And
 **an exact-capable event may not fall through to the removal tiers:** a create or update presents
@@ -1388,7 +1388,7 @@ Deeper dives live under [docs/design/](design/):
 
 - [Watch-first ingestion design record](finished/watch-first-ingestion-architecture.md): historical context
   for the current watch-only object-state model and optional audit attribution.
-- [How attribution works: the publish side and the join side](design/attribution-publish-and-join.md):
+- [Attribution: how a commit gets its author](spec/attribution.md):
   the two halves, the tier ladder, and the wait.
 - [Attribution facts as a stream, not a keyspace](finished/attribution-fact-stream.md): the shipped
   transport seam, the in-process index, and what running without Redis costs.

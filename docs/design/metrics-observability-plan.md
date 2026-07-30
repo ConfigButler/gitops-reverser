@@ -7,9 +7,9 @@
 > below maps to a stage in [Common Flows](../architecture.md#common-flows). The live baseline and the
 > documentation bar come from [interpreting-metrics.md](../interpreting-metrics.md). This doc is the
 > single canonical metrics plan — it supersedes the per-feature metric notes now in `finished/`, and
-> it now **absorbs** the attribution surface designed in
-> [attribution-metrics-proposal.md](attribution-metrics-proposal.md), which stays as the reasoning
-> trail for why that surface has the shape it does.
+> it now **absorbs** the attribution surface that was designed in a separate proposal, since
+> consolidated into [the attribution spec](../spec/attribution.md#what-is-observable). This document
+> owns the plan; that one owns the shipped surface.
 
 ## 1. Why now
 
@@ -30,7 +30,7 @@ uniformly dark. What is left is a sharper, smaller list:
 - **The delay between an event arriving and being processed** is unmeasured, and it is a proven
   failure mode rather than a theoretical one: a slow resolution head-of-line blocks its shard, which
   is what broke a CommitRequest e2e spec (see
-  [attribution-publish-and-join.md → what that cost](attribution-publish-and-join.md#what-that-cost-and-the-fix)).
+  [the attribution spec → the wait](../spec/attribution.md#the-wait)).
 - **Attribution was instrumented but mislabelled**, and Phase 1 has now fixed it: `result` crammed a
   tier and an actor kind into one label, `weak` covered two different kinds of evidence, and the wait
   histogram could not tell a write from a removal — exactly the distinction the removal-wait design
@@ -206,7 +206,7 @@ rules/CRDs change (pairs with `target_reconcile_completed_total{trigger=rule_cha
 
 This is the subsystem to keep glass-box, and it is the one that changed most. The model is now two
 halves that never call each other, meeting only through the keys a fact was filed under
-([attribution-publish-and-join.md](attribution-publish-and-join.md)):
+([the attribution spec](../spec/attribution.md)):
 
 ```text
 kube-apiserver --POST--> /audit-webhook --gate--> append one entry per type to the fact stream
@@ -267,7 +267,7 @@ that found the window race had to *infer* "these were `latest` matches held as f
 distribution, because the label could not say it.
 
 The tier ladder itself, strongest first, is documented in
-[attribution-publish-and-join.md → the tiers](attribution-publish-and-join.md#the-tiers-strongest-first);
+[the attribution spec → the tiers](../spec/attribution.md#the-tiers-strongest-first);
 the operator-facing reading of each value is in
 [interpreting-metrics.md](../interpreting-metrics.md#audit-attribution-optional).
 
@@ -333,8 +333,10 @@ before it can carry that meaning.
 | `resolvers_waiting` | queue delay (§4.2) proves insufficient, **and** it is incremented around the blocking `select` alone — `Await` registers *before* its first lookup on purpose, so a gauge at registration counts resolutions in flight rather than resolvers blocked |
 | `fact_index_expired_total` | wanted when tuning the TTL or the caps; low risk, low urgency |
 
-The full record of what an earlier draft of this surface got wrong, and why each mistake was
-invisible, is in [attribution-metrics-proposal.md](attribution-metrics-proposal.md#what-the-first-draft-got-wrong).
+What an earlier draft of this surface got wrong, and why each mistake was invisible, is recorded in
+`git log` on the proposal that has since been folded into
+[the attribution spec](../spec/attribution.md#what-is-observable); the three things that surface
+deliberately cannot answer are listed there.
 
 ## 6. The reference dashboard
 
@@ -521,10 +523,8 @@ those rules are written from, not shipped rules.
 - [architecture.md](../architecture.md) — leading source of truth (esp. *Common Flows*,
   *Optional Attribution*, *State Ingestion*, *Observability*).
 - [interpreting-metrics.md](../interpreting-metrics.md) — the live baseline + the per-metric doc bar.
-- [attribution-metrics-proposal.md](attribution-metrics-proposal.md) — the reasoning trail for §4.4
-  and §5, including what an earlier draft got wrong.
-- [attribution-publish-and-join.md](attribution-publish-and-join.md) — how the two halves work, and
-  the tier ladder the `tier` label names.
+- [spec/attribution.md](../spec/attribution.md) — the shipped attribution surface behind §4.4 and
+  §5, how the two halves work, and the tier ladder the `tier` label names.
 - [attribution-fact-stream.md](../finished/attribution-fact-stream.md) — the shipped transport, the
   in-process index, and the follower these metrics watch.
 - [watch-first-ingestion-architecture.md](../finished/watch-first-ingestion-architecture.md) — the

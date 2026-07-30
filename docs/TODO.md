@@ -64,9 +64,14 @@ This file is meant to track the smaller current backlog, not historical notes.
   Secrets and CozyStack `tenantsecrets`; resources with sensitive fields under shapes such as
   `spec.credentials` need an explicit field policy or full-file encryption decision.
 
-- [ ] Revisit output layout.
-  Think about better control over target folders and whether some use cases should support multiple
-  resources per file.
+- [ ] Revisit output layout. **Now designed and postponed, not open-ended.** The answer is to declare
+  what the folder *is* rather than a path template: `GitTarget.spec.layout`, designed in
+  [gittarget-layout-model.md](design/gittarget-layout-model.md) and filed as
+  [#293](https://github.com/ConfigButler/gitops-reverser/issues/293), sequenced with the rest of the
+  breaking `GitTarget` work as [#294](https://github.com/ConfigButler/gitops-reverser/issues/294).
+  Deliberately **not** in 0.41.0, which already carries the new attribution model and the
+  sibling-inference removal. Multiple resources per file is bundle support, which exists for
+  match-first today and is a separate question from where a *new* file goes.
 
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 

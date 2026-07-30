@@ -29,7 +29,7 @@ import (
 // source_namespace_e2e_test.go creates dedicated in-cluster providers but asserts Git paths, not
 // commit authors. The gap between them is exactly where the loss lived.
 //
-// See docs/design/attribution-fact-identity.md.
+// See docs/spec/attribution.md.
 var _ = Describe("Audit route attribution", Label("manager"), Ordered, func() {
 	const (
 		// The apiserver's webhook-config.yaml posts to /audit-webhook/default, so this is the only
