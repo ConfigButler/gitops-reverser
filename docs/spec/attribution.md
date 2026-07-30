@@ -46,9 +46,9 @@ Deletion is two distinct facts, and conflating them is what made an earlier desi
 - **Final removal.** The object disappeared from the API after grace and finalization
   completed. That is runtime cleanup, and it can take five seconds or three days.
 
-The applyable Git manifest already strips `deletionTimestamp` and `deletionGracePeriodSeconds`
-([`sanitize.go`](../../internal/sanitize/sanitize.go)) because they are server-owned runtime
-metadata, not desired state. If those fields are not desired state, then an object that *only*
+The Git manifest we commit is meant to be re-applied, and it already strips `deletionTimestamp`
+and `deletionGracePeriodSeconds` ([`sanitize.go`](../../internal/sanitize/sanitize.go)) because they
+are server-owned runtime metadata, not desired state. If those fields are not desired state, then an object that *only*
 differs by having them is, as desired state, gone.
 
 > **A resource with `deletionTimestamp` set is treated as logically absent from the intent tree.**

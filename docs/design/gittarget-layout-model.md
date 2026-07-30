@@ -277,11 +277,19 @@ spec:
   layout:
     kind: Flat
     scope: SingleNamespace
-    writeNamespace: Never      # the build supplies it, or the applier does
+    writeNamespace: Always     # nothing here supplies the namespace, so the file must carry it
 ```
 
 `clusters/prod/deployment-simon.yaml`. Legible, and the reason it cannot be the built-in is that it is
 **not identity-complete**: two namespaces with a Deployment named `simon` render one path.
+
+**`Flat` is also the kind that may not omit the namespace**, and this is the table above applied rather
+than an exception to it. `Never` is legal only when something guarantees the namespace, and under
+`kind: Flat` there is no kustomization for us to write `namespace:` into: a flat directory has no build
+step at all. So the only guarantor left would be a downstream applier pointed at the right namespace,
+which is a promise made outside this object and invisible to it. `Always` is the honest setting here.
+An earlier draft of this example wrote `Never` with the comment "the build supplies it, or the applier
+does", which is exactly the hand-wave the `Never` guard exists to refuse.
 
 As a *kind* rather than a template, that is checkable instead of a caveat in prose. `Flat` requires
 `scope: SingleNamespace`, admission refuses it beside an `allowedSourceNamespaces` matcher that admits
@@ -501,6 +509,15 @@ Nothing already planned is wasted, and one item should wait:
   avoided outside identity capture.
 - Does `writeNamespace: Never` need to name its supplier (`Kustomize`, `FluxTargetNamespace`,
   `Asserted`) so validation can check the guarantee rather than trust it?
+- **Where does the namespace VALUE come from?** `scope: SingleNamespace` constrains cardinality; it
+  does not say *which* namespace, and the bootstrap case is exactly the one that cannot read it off
+  existing resources. Writing `namespace: team-a` into a `kustomization.yaml` we create presupposes
+  knowing `team-a`. The obvious source is `allowedSourceNamespaces.names` when it admits exactly one,
+  which every example here implicitly assumes, and that is worth making explicit rather than implied:
+  it would mean `create: true` plus `SingleNamespace` is refused when the admitted set is a selector
+  or is empty, because there is no name to write. The alternative — take it from the first document
+  that arrives — makes the folder's convention depend on arrival order, which is the failure mode this
+  whole model exists to remove.
 - Does `kind: Kustomize` imply `create: true`? Asserting a folder is a kustomize folder arguably
   asserts the file exists, and requiring both feels like ceremony. The argument for keeping them
   separate is that creating a file in someone's repository should always be something they asked for.

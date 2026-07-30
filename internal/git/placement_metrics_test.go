@@ -4,6 +4,7 @@ package git
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -301,4 +302,48 @@ func TestPlacementMetrics_ResyncPlacementsCarryTheTargetLabels(t *testing.T) {
 	})
 	require.True(t, ok, "a resync's create must be counted with the target labels")
 	assert.Equal(t, int64(1), got)
+}
+
+// The ordering guard behind that counter. `appendKustomizationResource` used to run BEFORE
+// `placeNewDocument`, so a placement the writer then REFUSED still gained a resources: entry.
+// The reachable shape is a declared path onto an existing multi-document file the writer will
+// not overwrite (it holds a document we cannot account for): we decline to own the file, and
+// registering it anyway puts foreign content into the folder's render on our say-so, counted as
+// outcome="added" -- the value that is supposed to mean "the file we just wrote will build".
+func TestPlacementMetrics_RefusedPlacementLeavesTheKustomizationAlone(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	worktree := newWorktreeForTest(t)
+	kustomization := seedPlacedManifest(t, worktree, "overlays/test/kustomization.yaml",
+		"namespace: app\nresources:\n  - listed.yaml\n")
+	seedPlacedManifest(t, worktree, "overlays/test/listed.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: listed\n  namespace: app\ndata:\n  k: v\n")
+	// Two documents. Document 1 is the incoming resource (app/cache) written with a merge key,
+	// which manifestedit refuses to edit, so it does not claim its identity for an in-place
+	// match and the file stays multi-document: the writer will not rewrite it wholesale,
+	// because that would drop document 0.
+	seedPlacedManifest(t, worktree, "overlays/test/multi.yaml",
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: other\n  namespace: app\ndata:\n  k: v\n"+
+			"---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cache\n  namespace: app\n"+
+			"data: &d\n  color: blue\nextra:\n  <<: *d\n")
+
+	before, err := os.ReadFile(kustomization)
+	require.NoError(t, err)
+
+	policy := &manifestanalyzer.PlacementPolicy{
+		ByType: map[string]string{"v1/configmaps": "overlays/test/multi.yaml"},
+	}
+	flushWithPolicy(t, worktree, policy, targetedConfigMapEvent())
+
+	after, err := os.ReadFile(kustomization)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after),
+		"a refused placement must not register a resources: entry for a file it declined to own")
+
+	added, _ := telemetry.CollectInt64Sum(reader, kustomizationEntriesMetric, map[string]string{
+		"gittarget_namespace": metricsTestGitTargetNamespace,
+		"gittarget_name":      metricsTestGitTargetName,
+		"outcome":             "added",
+	})
+	assert.Zero(t, added, "a refused resource must never count as an added resources: entry")
 }

@@ -207,8 +207,8 @@ sum by (reason, gittarget_namespace, gittarget_name, resource) (
 | `unclassified` | a refusal shape newer than this table — report it |
 
 **The one that looks fine in the folder.** A new file whose `resources:` entry could not be added is
-committed and never built by kustomize: it is in Git, it looks mirrored, and nothing applies it. Should
-be zero:
+committed and never built by kustomize: it is in Git, it looks mirrored, and nothing applies it. This
+should be zero:
 
 ```promql
 sum by (gittarget_namespace, gittarget_name) (

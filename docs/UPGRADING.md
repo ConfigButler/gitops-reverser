@@ -15,7 +15,10 @@ things that applies, and nothing else:
 1. the GitTarget's `spec.placement.byType` entry for its type, or `spec.placement.default`;
 2. the folder's one supported `kustomization.yaml`, when the whole folder has exactly one — the file
    lands beside it and joins its `resources:` list;
-3. the built-in canonical path `{namespace}/{group}/{resource}/{name}.yaml`.
+3. the built-in canonical path, `{namespaceOrCluster}/{groupPath}/{resource}/{name}{sensitiveSuffix}`:
+   a cluster-scoped resource uses the literal `_cluster/` in place of the namespace, a core resource
+   omits the group segment, there is no version segment, and a sensitive resource gets `.sops.yaml`
+   instead of `.yaml`.
 
 Before this, a folder with no declared placement was read for its layout: a new ConfigMap was appended
 to the bundle the other ConfigMaps shared, or written beside them one-per-file. That is what changes.

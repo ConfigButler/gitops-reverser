@@ -1301,7 +1301,8 @@ catch-all layout.
    - write or append multi-document YAML only for accepted plaintext files.
 9. Add sensitive collision checks before rendering encrypted bytes; this is a
    runtime backstop behind the static identity-completeness validation.
-10. Surface placement outcomes. **Implemented as:** every resolution increments
+10. Surface placement outcomes. **Implemented as:** every **successful** placement — one new
+    document actually in the mirror — increments
     `gitopsreverser_placements_total{source, disposition, gittarget_namespace,
     gittarget_name, group, version, resource}` and every refusal
     `gitopsreverser_placement_refusals_total{reason, …}` with the same target/type labels;

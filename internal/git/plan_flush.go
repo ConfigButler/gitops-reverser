@@ -375,10 +375,6 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	// still holds both — see intentFor.
 	live := event.Object
 
-	if placement.Kustomization != nil {
-		wb.appendKustomizationResource(ctx, event, placement)
-	}
-
 	// A destination that infers its namespace from build context (a kustomization's
 	// namespace: transformer) must keep metadata.namespace out of the written bytes,
 	// exactly as patchExisting already does for an in-place edit of an existing
@@ -404,6 +400,17 @@ func (wb *writeBatch) createNew(ctx context.Context, event Event) (upsertOutcome
 	// partition every new resource instead of double-counting the ones that resolved and
 	// then could not be written.
 	recordPlacement(ctx, wb.target, event.Identifier, placement.Source, placement.Append)
+
+	// AFTER the write, for the same reason the placement is counted here. placeNewDocument can
+	// still decline — a multi-document target it will not overwrite, or a new file that would
+	// mix sensitive and plaintext documents — and registering the entry first meant a resource we
+	// REFUSED still put its file into the folder's render. For the multi-document case that is
+	// foreign content we declined to own, added to resources: on our say-so; and either way it
+	// counted as outcome="added", the value that is supposed to mean "the file we just wrote will
+	// build". Pinned by TestPlacementMetrics_RefusedPlacementLeavesTheKustomizationAlone.
+	if placement.Kustomization != nil {
+		wb.appendKustomizationResource(ctx, event, placement)
+	}
 
 	// A new document that joins a kustomization's resources: list is INSIDE a render root, so
 	// the folder's images:/replicas: entries govern it from the moment it lands — and we do not

@@ -470,8 +470,8 @@ The important fields are:
   want the repository root
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
 - `spec.placement`: optional policy for where **new** resources are written (see
-  [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it to follow
-  the repository's existing layout
+  [Where new resources are written](#where-new-resources-are-written-specplacement)); omit it and a new
+  resource takes the folder's one kustomization root, or the built-in canonical path
 - `spec.prune`: which deletion paths may remove documents from this target's folder (see
   [Deletion policy](#deletion-policy-specprunemode)); omit it for the safe default
 
@@ -665,8 +665,9 @@ mirrored.
 
 #### Declaring a layout (`byType` / `default`)
 
-Set `spec.placement` when you want to **prescribe** a layout rather than follow the repo (for example a
-greenfield repo, or a per-namespace layout the built-in path does not match):
+Set `spec.placement` when the layout you want is neither of the two things the operator can work out
+for itself (a folder's single kustomization root, or the canonical path). For example, a bundle every
+ConfigMap joins, or a per-namespace layout:
 
 ```yaml
 spec:

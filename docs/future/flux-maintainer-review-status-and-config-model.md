@@ -638,7 +638,9 @@ criticism.
 3. **F4** — delete `Reconciling`/`Stalled` rather than writing them False.
 4. **F7** — wire an `EventRecorder`; emit on every terminal outcome and every push failure.
 
-**Then** (API surface — do the breaking ones while still `v1alpha3`):
+**Then** (API surface — do the breaking ones while still `v1alpha3`). These are the wave, and they
+are now sequenced with the layout model in
+[`gittarget-api-wave.md`](../design/gittarget-api-wave.md) rather than scheduled from here:
 
 1. **F6** — `spec.suspend` on GitTarget/WatchRule/ClusterWatchRule/GitProvider; `spec.interval` on
    GitProvider at minimum; jitter the requeue; `reconcile.configbutler.ai/requestedAt` +
@@ -646,8 +648,10 @@ criticism.
 2. **F12** — ~~decide `PruneMode` casing **now**~~ (done, pre-release); trim printer columns; unify
    ObjectMeta tags.
 3. **F10** — CommitRequest lifecycle (TTL or ownerRef) and the `delete` verb.
-4. **F9** — verify the `scope: Namespaced` status-write path on the minimum supported Kubernetes
-    version.
+4. ~~**F9**~~ — **not in this block.** F9 is deliberately kept OUTSIDE the wave, because its answer
+    constrains the enum work and should be known before anything is planned around it. Verify the
+    `scope: Namespaced` status-write path on the minimum supported Kubernetes version as its own
+    change, ahead of the wave.
 
 ---
 
