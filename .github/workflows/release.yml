@@ -163,7 +163,7 @@ jobs:
         run: cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${{ steps.digest.outputs.digest }}"
 
       - name: Attest SLSA build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.digest.outputs.digest }}
@@ -196,7 +196,7 @@ jobs:
 
       - name: Attest SLSA provenance for the SBOM asset
         id: attest-sbom-asset
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: sbom.spdx.json
 
@@ -355,7 +355,7 @@ jobs:
 
       - name: Attest SLSA provenance for install.yaml
         id: attest-install-yaml
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/install.yaml
 
@@ -364,7 +364,7 @@ jobs:
 
       - name: Attest SLSA provenance for crds.yaml
         id: attest-crds-yaml
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/crds.yaml
 
@@ -472,7 +472,7 @@ jobs:
 
       - name: Attest SLSA provenance for the analyzer binaries
         id: attest-analyzer
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/analyzer/manifest-analyzer_*
 
