@@ -10,13 +10,13 @@ require (
 	github.com/go-git/go-billy/v6 v6.0.0-alpha.2
 	github.com/go-git/go-git/v6 v6.0.0-alpha.5
 	github.com/go-logr/logr v1.4.4
-	github.com/onsi/ginkgo/v2 v2.32.0
+	github.com/onsi/ginkgo/v2 v2.32.1
 	github.com/onsi/gomega v1.42.1
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/common v0.70.1
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.67.0
 	go.opentelemetry.io/otel/metric v1.45.0
@@ -94,7 +94,6 @@ require (
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xlab/treeprint v1.2.0 // indirect
 	github.com/yuin/gopher-lua v1.1.2 // indirect
