@@ -1,7 +1,7 @@
 # Build the manager binary
 # Base images are pinned by digest (Scorecard "pinned dependencies");
 # Dependabot's docker ecosystem keeps version + digest current together.
-FROM golang:1.26.7@sha256:45a5f7a810238aabcbad211d70b9ae082022d96f7c7259e94041ad1b933575ac AS builder
+FROM golang:1.27.0@sha256:65b6f280bf050ec5af12716857e8ea8439d694dbba8f31ceeb7630670071f2bb AS builder
 
 # Automatic platform arguments provided by Docker BuildKit
 ARG TARGETOS
@@ -65,7 +65,7 @@ RUN case "${TARGETARCH}" in \
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:debug@sha256:e741251ccc55dd6cec4a99ff21c0766df31891fabb4a50727104619a7e6ff4f2
+FROM gcr.io/distroless/static:debug@sha256:53cd815b916ffc1751285f307bdaa728f459224296e97af342e73e4cebeb41e8
 WORKDIR /
 COPY --from=builder /workspaces/manager .
 COPY --from=sops-downloader /usr/local/bin/sops /usr/local/bin/sops
