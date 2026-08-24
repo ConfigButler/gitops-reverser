@@ -65,23 +65,23 @@ RUN apt-get update \
 # VALE_VERSION -> https://github.com/vale-cli/vale/releases
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
-    KUBECTL_VERSION=v1.36.2 \
+    KUBECTL_VERSION=v1.36.4 \
     KUSTOMIZE_VERSION=5.8.1 \
     KUBEBUILDER_VERSION=4.15.0 \
-    GOLANGCI_LINT_VERSION=v2.12.2 \
-    HELM_VERSION=v4.2.3 \
+    GOLANGCI_LINT_VERSION=v2.13.1 \
+    HELM_VERSION=v4.2.4 \
     K3D_VERSION=v5.9.0 \
-    FLUX_VERSION=2.9.2 \
-    FLUX_OPERATOR_VERSION=0.55.0 \
-    TASK_VERSION=v3.52.0 \
+    FLUX_VERSION=2.9.4 \
+    FLUX_OPERATOR_VERSION=0.58.1 \
+    TASK_VERSION=v3.53.1 \
     ACTIONLINT_VERSION=1.7.12 \
-    HADOLINT_VERSION=2.14.0 \
-    VALKEY_VERSION=9.1.0 \
-    COSIGN_VERSION=v3.1.2 \
+    HADOLINT_VERSION=2.15.1 \
+    VALKEY_VERSION=9.1.1 \
+    COSIGN_VERSION=v3.1.3 \
     ORAS_VERSION=1.3.3 \
-    NODE_MAJOR=22 \
-    MARKDOWNLINT_CLI2_VERSION=0.23.1 \
-    VALE_VERSION=3.15.1
+    NODE_MAJOR=24 \
+    MARKDOWNLINT_CLI2_VERSION=0.23.2 \
+    VALE_VERSION=3.18.0
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -149,14 +149,17 @@ RUN asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
     && install -m 0755 actionlint /usr/local/bin/actionlint \
     && rm -rf "${tmpdir}"
 
-# Install hadolint (static linter for Dockerfiles)
+# Install hadolint (static linter for Dockerfiles). Since 2.15.0 the release no
+# longer ships a per-asset .sha256 file, only one combined checksums.sha256 in
+# `sha256sum *filename` format (space-asterisk, not the two-space format the
+# other combined-checksum tools below use).
 RUN asset="hadolint-linux-x86_64" \
     && base="https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}" \
     && tmpdir="$(mktemp -d)" \
     && curl -fsSL "${base}/${asset}" -o "${tmpdir}/${asset}" \
-    && curl -fsSL "${base}/${asset}.sha256" -o "${tmpdir}/${asset}.sha256" \
+    && curl -fsSL "${base}/checksums.sha256" -o "${tmpdir}/checksums.sha256" \
     && cd "${tmpdir}" \
-    && sha256sum -c "${asset}.sha256" \
+    && grep " \*${asset}$" checksums.sha256 | sha256sum -c - \
     && install -m 0755 "${asset}" /usr/local/bin/hadolint \
     && rm -rf "${tmpdir}"
 
@@ -254,10 +257,10 @@ RUN chgrp -R godev /go && \
 
 # Install Go tools used by the project (using @version doesn't need go.mod)
 # These run AFTER permissions are set to ensure proper group ownership
-RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
-    && go install github.com/onsi/ginkgo/v2/ginkgo@v2.28.1 \
-    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20260318145839-6c9615a2a166 \
-    && go install golang.org/x/tools/cmd/goimports@v0.43.0 \
+RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0 \
+    && go install github.com/onsi/ginkgo/v2/ginkgo@v2.32.1 \
+    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1 \
+    && go install golang.org/x/tools/cmd/goimports@v0.49.0 \
     && go install github.com/boyter/scc/v3@v3.7.0
 
 # Initialize golangci-lint cache by running it once on an empty directory
@@ -318,10 +321,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # DLV_VERSION -> https://github.com/go-delve/delve/releases
 # GOPLS_VERSION -> https://github.com/golang/tools/releases
 # STATICCHECK_VERSION -> https://github.com/dominikh/go-tools/releases
-ENV TILT_VERSION=v0.37.4 \
-    DLV_VERSION=v1.27.0 \
+ENV TILT_VERSION=v0.37.7 \
+    DLV_VERSION=v1.27.1 \
     GOPLS_VERSION=v0.23.0 \
-    STATICCHECK_VERSION=v0.7.0
+    STATICCHECK_VERSION=v0.8.1
 
 # Kind is already installed in the ci stage above.
 RUN apt-get update \

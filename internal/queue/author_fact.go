@@ -143,7 +143,7 @@ const (
 // carries, so a fact without it could not be joined at all for that whole population. "No code reads
 // it" and "nothing could ever read it" are different claims, and only the second justifies dropping a
 // field.
-type AuthorFact struct { //nolint:recvcheck // UnmarshalJSON must take a pointer; every other method only reads.
+type AuthorFact struct {
 	Namespace string `json:"namespace,omitempty"`
 	UID       string `json:"uid,omitempty"`
 	// Name is the object's name, and it feeds one tier only: the (namespace, name) join a fact with
