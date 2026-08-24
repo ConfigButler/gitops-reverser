@@ -1,7 +1,7 @@
 # Build the manager binary
 # Base images are pinned by digest (Scorecard "pinned dependencies");
 # Dependabot's docker ecosystem keeps version + digest current together.
-FROM golang:1.26.5@sha256:3aff6657219a4d9c14e27fb1d8976c49c29fddb70ba835014f477e1c70636647 AS builder
+FROM golang:1.26.7@sha256:45a5f7a810238aabcbad211d70b9ae082022d96f7c7259e94041ad1b933575ac AS builder
 
 # Automatic platform arguments provided by Docker BuildKit
 ARG TARGETOS
