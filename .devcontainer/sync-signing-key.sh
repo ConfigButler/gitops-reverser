@@ -15,7 +15,13 @@
 # and never has to fail a lifecycle hook to keep signing mandatory.
 #
 # What it adds on top is verification data: allowed_signers, which Git cannot
-# derive on its own.
+# derive on its own -- for whichever signing key is actually in play. Two are
+# supported, in this order:
+#
+#   1. a user.signingkey the environment configured (a platform that manages
+#      its own key file, a developer who chose one). It is preserved as-is and
+#      needs no SSH agent.
+#   2. a key from a forwarded SSH agent, the usual VS Code flow.
 #
 # Idempotent and platform-neutral: safe on create, on every start and by hand,
 # and it leaves identity and credentials to whatever created the container.
@@ -60,7 +66,7 @@ if [ "$(git config --global --get user.signingkey || true)" = "${legacy_key_file
   rm -f "${legacy_key_file}"
 fi
 
-# --- Verification data. Needs both an identity and an agent. -----------------
+# --- Verification data. Needs an identity and a key source. ------------------
 
 git_email="$(git config --get user.email || true)"
 if [ -z "${git_email}" ]; then
@@ -69,56 +75,128 @@ if [ -z "${git_email}" ]; then
   exit 0
 fi
 
-agent_keys_file="$(mktemp)"
-trap 'rm -f "${agent_keys_file}"' EXIT
+# --- Resolve the public key(s) to trust ---------------------------------------
 
-if [ -n "${SSH_AUTH_SOCK:-}" ]; then
-  # ssh-add -L exits 1 when the agent holds no keys and 2 when it cannot be
-  # reached; neither is fatal here.
-  ssh-add -L >"${agent_keys_file}" 2>/dev/null || true
-fi
+# public_key_for_signingkey prints the public key line for a configured
+# user.signingkey, or nothing when it cannot be derived. Only ever reads public
+# key material: for a private key path it reads the sibling .pub, never the key.
+public_key_for_signingkey() {
+  local value="$1"
 
-if ! grep -qE '^ssh-' "${agent_keys_file}"; then
-  warn "No SSH key is available from an agent, so commits cannot be signed yet."
-  warn "Signing stays mandatory: git commit will fail until a key is loaded."
-  warn "Load one on your machine (ssh-add ~/.ssh/id_ed25519) and attach a session that forwards"
-  warn "the agent; refresh sooner with: bash .devcontainer/sync-signing-key.sh"
-  exit 0
-fi
+  # A literal key, which is what this script pins for an agent key.
+  if [ "${value#key::}" != "${value}" ]; then
+    printf '%s\n' "${value#key::}"
+    return 0
+  fi
 
-# Deterministic selection when the developer has expressed intent: a key whose
-# comment contains the Git email wins over agent order. index() is a literal
-# substring search -- an email used as a regex would treat its dots as
-# wildcards. With no match, gpg.ssh.defaultKeyCommand picks, which is both
-# simpler and immune to going stale.
-#
-# The pin is a literal key rather than a path, so there is no key file to
-# manage, and it is only ever written over an empty setting or a previous pin
-# of ours ("key::..."). A signing key configured by the developer or by the
-# platform that created this container is left alone.
-matched_key="$(awk -v email="${git_email}" '/^ssh-/ && index($0, email) { print; exit }' "${agent_keys_file}")"
+  # A path to a public key.
+  case "${value}" in
+    *.pub)
+      if [ -r "${value}" ]; then
+        head -n 1 "${value}"
+        return 0
+      fi
+      return 1
+      ;;
+  esac
+
+  # A path to a private key: the public half sits beside it by convention.
+  if [ -r "${value}.pub" ]; then
+    head -n 1 "${value}.pub"
+    return 0
+  fi
+
+  return 1
+}
+
+# Ownership is recorded explicitly rather than inferred from the value. "key::"
+# is the documented way for ANYONE to configure a literal signing key, so
+# treating that prefix as a signature of this script would let it replace or
+# unset a key a platform deliberately configured.
+managed_key_marker="devcontainer.managedSigningKey"
+
 configured_key="$(git config --global --get user.signingkey || true)"
+managed_key="$(git config --global --get "${managed_key_marker}" || true)"
 own_pin=false
-if [ -z "${configured_key}" ] || [ "${configured_key#key::}" != "${configured_key}" ]; then
+if [ -z "${configured_key}" ] || [ "${configured_key}" = "${managed_key}" ]; then
+  # Unset, or the exact value this script last wrote: ours to manage.
   own_pin=true
 fi
 
+trusted_keys_file="$(mktemp)"
+trap 'rm -f "${trusted_keys_file}"' EXIT
+
+# keep_public_keys filters a key listing down to well-formed public key lines.
+# Matching on the base64 blob rather than on a "ssh-" prefix keeps ecdsa-*,
+# sk-ssh-* and sk-ecdsa-* keys, which are valid for both signing and
+# allowed_signers.
+keep_public_keys() {
+  local file="$1" tmp
+  tmp="$(mktemp)"
+  awk '$2 ~ /^AAAA/' "${file}" >"${tmp}"
+  mv "${tmp}" "${file}"
+}
+
 if [ "${own_pin}" = false ]; then
-  log "user.signingkey is set to something this script did not write; leaving it alone"
-elif [ -n "${matched_key}" ]; then
-  git config --global user.signingkey "key::${matched_key}"
-  log "Signing with the agent key whose comment matches ${git_email}"
-else
-  if [ -n "${configured_key}" ]; then
-    # A previous run matched, this one does not. Drop our pin rather than keep
-    # signing with a key the agent may no longer hold.
-    git config --global --unset user.signingkey
+  # An externally configured signing key wins over the agent. A platform may
+  # deliberately configure a key before invoking this script, and the whole
+  # point of that is for it to be used -- so it is never replaced here, and no
+  # agent is required. Only verification is added.
+  public_key_for_signingkey "${configured_key}" >"${trusted_keys_file}" || true
+  keep_public_keys "${trusted_keys_file}"
+  if [ -s "${trusted_keys_file}" ]; then
+    log "Using the signing key already configured at ${configured_key}"
+  else
+    warn "user.signingkey is ${configured_key}, but no public key could be derived from it."
+    warn "Expected either a readable *.pub, or a sibling <key>.pub next to a private key."
+    warn "Signing is left exactly as configured; local verification is not set up."
+    exit 0
   fi
-  key_count="$(grep -cE '^ssh-' "${agent_keys_file}")"
-  if [ "${key_count}" -gt 1 ]; then
-    warn "No agent key comment matches ${git_email} and ${key_count} keys are loaded;"
-    warn "the first one from ssh-add -L will sign. To choose deliberately, give the intended key a"
-    warn "comment containing ${git_email}: ssh-keygen -c -C \"${git_email}\" -f ~/.ssh/id_ed25519"
+else
+  if [ -n "${SSH_AUTH_SOCK:-}" ]; then
+    # ssh-add -L exits 1 when the agent holds no keys and 2 when it cannot be
+    # reached; neither is fatal here.
+    ssh-add -L >"${trusted_keys_file}" 2>/dev/null || true
+  fi
+
+  keep_public_keys "${trusted_keys_file}"
+  if [ ! -s "${trusted_keys_file}" ]; then
+    warn "No signing key is available: no user.signingkey is configured and no SSH agent key was found."
+    warn "Signing stays mandatory: git commit will fail until a key is available."
+    warn "Either load one on your machine (ssh-add ~/.ssh/id_ed25519) and attach a session that"
+    warn "forwards the agent, or configure user.signingkey; then re-run:"
+    warn "  bash .devcontainer/sync-signing-key.sh"
+    exit 0
+  fi
+
+  # Deterministic selection when the developer has expressed intent: a key whose
+  # comment contains the Git email wins over agent order. index() is a literal
+  # substring search -- an email used as a regex would treat its dots as
+  # wildcards. With no match, gpg.ssh.defaultKeyCommand picks, which is both
+  # simpler and immune to going stale.
+  #
+  # The pin is a literal key rather than a path, so there is no key file to
+  # manage, and it is only ever written over an empty setting or a previous pin
+  # of ours ("key::..."). A signing key configured by the developer or by the
+  # platform that created this container is left alone.
+  matched_key="$(awk -v email="${git_email}" 'index($0, email) { print; exit }' "${trusted_keys_file}")"
+  if [ -n "${matched_key}" ]; then
+    git config --global user.signingkey "key::${matched_key}"
+    git config --global "${managed_key_marker}" "key::${matched_key}"
+    log "Signing with the agent key whose comment matches ${git_email}"
+  else
+    if [ -n "${configured_key}" ]; then
+      # A previous run of OURS matched, this one does not. Drop the pin rather
+      # than keep signing with a key the agent may no longer hold.
+      git config --global --unset user.signingkey
+      git config --global --unset "${managed_key_marker}" 2>/dev/null || true
+    fi
+    key_count="$(wc -l <"${trusted_keys_file}" | tr -d ' ')"
+    if [ "${key_count}" -gt 1 ]; then
+      warn "No agent key comment matches ${git_email} and ${key_count} keys are loaded;"
+      warn "the first one from ssh-add -L will sign. To choose deliberately, give the intended key a"
+      warn "comment containing ${git_email}: ssh-keygen -c -C \"${git_email}\" -f ~/.ssh/id_ed25519"
+    fi
   fi
 fi
 
@@ -128,12 +206,13 @@ fi
 # signed commit fails to verify. The trailing key comment is valid and useful,
 # and is kept.
 #
-# Every key in the agent is listed, not just the signing one: they are all the
-# same developer's keys, and this keeps verification working for commits signed
-# before the pin above existed, or by whichever key the key command picks.
+# For the agent case every loaded key is listed, not just the signing one:
+# they are all the same developer's keys, and it keeps verification working
+# whichever one the key command picks. For an externally configured key it is
+# that one key, which is the only thing that can sign.
 allowed_signers_path="${HOME}/.config/git/allowed_signers"
 mkdir -p "${HOME}/.config/git"
-awk -v email="${git_email}" '/^ssh-/ { print email, $0 }' "${agent_keys_file}" >"${allowed_signers_path}"
+awk -v email="${git_email}" '{ print email, $0 }' "${trusted_keys_file}" >"${allowed_signers_path}"
 chmod 600 "${allowed_signers_path}"
 
 configured_signers="$(git config --global --get gpg.ssh.allowedSignersFile || true)"
@@ -144,4 +223,4 @@ else
   warn "Refreshed ${allowed_signers_path}, which is currently unused."
 fi
 
-log "Signing ready: $(grep -c '^ssh-' "${agent_keys_file}") agent key(s) trusted for ${git_email}"
+log "Signing ready: $(wc -l <"${allowed_signers_path}" | tr -d ' ') key(s) trusted for ${git_email}"

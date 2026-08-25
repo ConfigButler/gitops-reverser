@@ -86,8 +86,13 @@ keys currently in the agent so `git log --show-signature` can verify. It runs fr
 
 If one of the agent keys has a comment containing your Git email, that key is pinned as
 `user.signingkey` so selection does not depend on agent order. With no such key the pin is left
-unset, which is both simpler and immune to going stale. A signing key you configured yourself is
-never overwritten.
+unset, which is both simpler and immune to going stale.
+
+A `user.signingkey` that something else configured takes precedence over the agent and is never
+replaced — a platform that manages its own key file did that deliberately. In that case the helper
+needs no SSH agent at all: it derives the public key (a `*.pub` path directly, or the `<key>.pub`
+beside a private key — the private key is never read) and writes `allowed_signers` for it, so an
+already-signing setup gains local verification without its signing key changing.
 
 [`post-create.sh`](./post-create.sh) does not configure signing. Creating the environment,
 personalizing Git, and having credentials available are three separate things, and only the first
