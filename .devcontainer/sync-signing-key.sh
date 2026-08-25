@@ -109,22 +109,42 @@ public_key_for_signingkey() {
   return 1
 }
 
+# Ownership is recorded explicitly rather than inferred from the value. "key::"
+# is the documented way for ANYONE to configure a literal signing key, so
+# treating that prefix as a signature of this script would let it replace or
+# unset a key a platform deliberately configured.
+managed_key_marker="devcontainer.managedSigningKey"
+
 configured_key="$(git config --global --get user.signingkey || true)"
+managed_key="$(git config --global --get "${managed_key_marker}" || true)"
 own_pin=false
-if [ -z "${configured_key}" ] || [ "${configured_key#key::}" != "${configured_key}" ]; then
-  # Unset, or a literal pin this script wrote: ours to manage from the agent.
+if [ -z "${configured_key}" ] || [ "${configured_key}" = "${managed_key}" ]; then
+  # Unset, or the exact value this script last wrote: ours to manage.
   own_pin=true
 fi
 
 trusted_keys_file="$(mktemp)"
 trap 'rm -f "${trusted_keys_file}"' EXIT
 
+# keep_public_keys filters a key listing down to well-formed public key lines.
+# Matching on the base64 blob rather than on a "ssh-" prefix keeps ecdsa-*,
+# sk-ssh-* and sk-ecdsa-* keys, which are valid for both signing and
+# allowed_signers.
+keep_public_keys() {
+  local file="$1" tmp
+  tmp="$(mktemp)"
+  awk '$2 ~ /^AAAA/' "${file}" >"${tmp}"
+  mv "${tmp}" "${file}"
+}
+
 if [ "${own_pin}" = false ]; then
   # An externally configured signing key wins over the agent. A platform may
   # deliberately configure a key before invoking this script, and the whole
   # point of that is for it to be used -- so it is never replaced here, and no
   # agent is required. Only verification is added.
-  if public_key_for_signingkey "${configured_key}" >"${trusted_keys_file}"; then
+  public_key_for_signingkey "${configured_key}" >"${trusted_keys_file}" || true
+  keep_public_keys "${trusted_keys_file}"
+  if [ -s "${trusted_keys_file}" ]; then
     log "Using the signing key already configured at ${configured_key}"
   else
     warn "user.signingkey is ${configured_key}, but no public key could be derived from it."
@@ -139,7 +159,8 @@ else
     ssh-add -L >"${trusted_keys_file}" 2>/dev/null || true
   fi
 
-  if ! grep -qE '^ssh-' "${trusted_keys_file}"; then
+  keep_public_keys "${trusted_keys_file}"
+  if [ ! -s "${trusted_keys_file}" ]; then
     warn "No signing key is available: no user.signingkey is configured and no SSH agent key was found."
     warn "Signing stays mandatory: git commit will fail until a key is available."
     warn "Either load one on your machine (ssh-add ~/.ssh/id_ed25519) and attach a session that"
@@ -158,17 +179,19 @@ else
   # manage, and it is only ever written over an empty setting or a previous pin
   # of ours ("key::..."). A signing key configured by the developer or by the
   # platform that created this container is left alone.
-  matched_key="$(awk -v email="${git_email}" '/^ssh-/ && index($0, email) { print; exit }' "${trusted_keys_file}")"
+  matched_key="$(awk -v email="${git_email}" 'index($0, email) { print; exit }' "${trusted_keys_file}")"
   if [ -n "${matched_key}" ]; then
     git config --global user.signingkey "key::${matched_key}"
+    git config --global "${managed_key_marker}" "key::${matched_key}"
     log "Signing with the agent key whose comment matches ${git_email}"
   else
     if [ -n "${configured_key}" ]; then
-      # A previous run matched, this one does not. Drop our pin rather than keep
-      # signing with a key the agent may no longer hold.
+      # A previous run of OURS matched, this one does not. Drop the pin rather
+      # than keep signing with a key the agent may no longer hold.
       git config --global --unset user.signingkey
+      git config --global --unset "${managed_key_marker}" 2>/dev/null || true
     fi
-    key_count="$(grep -cE '^ssh-' "${trusted_keys_file}")"
+    key_count="$(wc -l <"${trusted_keys_file}" | tr -d ' ')"
     if [ "${key_count}" -gt 1 ]; then
       warn "No agent key comment matches ${git_email} and ${key_count} keys are loaded;"
       warn "the first one from ssh-add -L will sign. To choose deliberately, give the intended key a"
@@ -189,7 +212,7 @@ fi
 # that one key, which is the only thing that can sign.
 allowed_signers_path="${HOME}/.config/git/allowed_signers"
 mkdir -p "${HOME}/.config/git"
-awk -v email="${git_email}" '/^ssh-/ { print email, $0 }' "${trusted_keys_file}" >"${allowed_signers_path}"
+awk -v email="${git_email}" '{ print email, $0 }' "${trusted_keys_file}" >"${allowed_signers_path}"
 chmod 600 "${allowed_signers_path}"
 
 configured_signers="$(git config --global --get gpg.ssh.allowedSignersFile || true)"

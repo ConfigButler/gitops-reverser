@@ -194,10 +194,18 @@ grep -q "Good \"git\" signature for ${TEST_EMAIL}" "${sandbox}/verify3-out" \
   || fail "the matched-key signature did not verify"
 
 echo
+echo "The pin this script writes is recognised as its own on a later run"
+check "a pin was written" "key::$(ssh-add -L | grep "${TEST_EMAIL}" | sed 's/ *$//')" \
+  "$(git_cfg "${home_p}" user.signingkey)"
+check "ownership is recorded explicitly" "$(git_cfg "${home_p}" user.signingkey)" \
+  "$(git_cfg "${home_p}" devcontainer.managedSigningKey)"
+
+echo
 echo "The matching key is unloaded again"
 ssh-add -qd "${sandbox}/k3" 2>/dev/null
 check "exits 0" "0" "$(run_sync "${home_p}" env SSH_AUTH_SOCK="${sock}")"
 check "our stale pin is dropped" "" "$(git_cfg "${home_p}" user.signingkey)"
+check "and its ownership marker with it" "" "$(git_cfg "${home_p}" devcontainer.managedSigningKey)"
 check "commits still work via the key command" "0" \
   "$(try_commit "${home_p}" unpinned env SSH_AUTH_SOCK="${sock}")"
 
@@ -278,6 +286,39 @@ check "signing stays mandatory" "true" "$(git_cfg "${home_xb}" commit.gpgsign)"
 [ -f "${home_xb}/.config/git/allowed_signers" ] \
   && fail "wrote allowed_signers for an underivable key" \
   || pass "writes no bogus allowed_signers"
+
+echo
+echo "An external key given as a literal key:: value, with an agent present"
+# key:: is the documented way for ANYONE to configure a literal key, so it must
+# not be mistaken for a pin this script wrote.
+home_kl="$(new_home keyliteral with-identity)"
+ssh-keygen -q -t ed25519 -N '' -C 'platform-literal' -f "${sandbox}/kl"
+HOME="${home_kl}" git config --global user.signingkey "key::$(cat "${sandbox}/kl.pub")"
+check "exits 0" "0" "$(run_sync "${home_kl}" env SSH_AUTH_SOCK="${sock}")"
+check "the external literal key is preserved" "key::$(cat "${sandbox}/kl.pub" | sed 's/ *$//')" \
+  "$(git_cfg "${home_kl}" user.signingkey)"
+check "allowed_signers trusts it" "platform-literal" \
+  "$(awk 'NR==1 {print $4}' "${home_kl}/.config/git/allowed_signers")"
+
+echo
+echo "An ECDSA key is not dropped for lacking an ssh- prefix"
+home_ec="$(new_home ecdsa with-identity)"
+mkdir -p "${home_ec}/.ssh"
+ssh-keygen -q -t ecdsa -b 256 -N '' -C 'ecdsa-key' -f "${home_ec}/.ssh/ec"
+HOME="${home_ec}" git config --global user.signingkey "${home_ec}/.ssh/ec"
+check "exits 0" "0" "$(run_sync "${home_ec}" env -u SSH_AUTH_SOCK)"
+check "allowed_signers is not empty" "1" \
+  "$(wc -l <"${home_ec}/.config/git/allowed_signers" | tr -d ' ')"
+check "the ecdsa key type is preserved" "ecdsa-sha2-nistp256" \
+  "$(awk 'NR==1 {print $2}' "${home_ec}/.config/git/allowed_signers")"
+check "an ecdsa commit signs" "0" "$(try_commit "${home_ec}" ecdsa env -u SSH_AUTH_SOCK)"
+(
+  cd "${sandbox}/repo-ecdsa"
+  HOME="${home_ec}" env -u SSH_AUTH_SOCK git log -1 --show-signature
+) >"${sandbox}/verify-ec" 2>&1 || true
+grep -q "Good \"git\" signature for ${TEST_EMAIL}" "${sandbox}/verify-ec" \
+  && pass "and it verifies" \
+  || { fail "ecdsa signature did not verify"; sed 's/^/        /' "${sandbox}/verify-ec" >&2; }
 
 echo
 echo "Configuration this script does not own is left alone"
