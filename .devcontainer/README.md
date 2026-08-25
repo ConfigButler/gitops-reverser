@@ -196,6 +196,10 @@ Recommended token scopes:
 
 The repo-root `.env` must stay local. It is already gitignored.
 
+Alternatively just run `gh auth login` once. `~/.config/gh` is a named volume (`ghconfig`), so the
+login survives container rebuilds; the first rebuild after this mount was added starts from an
+empty volume and needs one more login.
+
 ## Troubleshooting
 
 ### Commit Signing Fails

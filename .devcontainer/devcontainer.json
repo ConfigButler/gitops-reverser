@@ -97,6 +97,9 @@
     "source=codexconfig,target=/home/vscode/.codex,type=volume",
     "source=claudeconfig,target=/home/vscode/.claude,type=volume",
     "source=dotkube,target=/home/vscode/.kube,type=volume",
+    // Keeps the gh CLI logged in across rebuilds. Without it every rebuild drops
+    // ~/.config/gh and gh asks for `gh auth login` again.
+    "source=ghconfig,target=/home/vscode/.config/gh,type=volume",
     "source=persisted-home,target=/home/vscode/persisted-home,type=volume"
   ],
   "containerEnv": {
