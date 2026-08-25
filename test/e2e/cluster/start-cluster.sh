@@ -76,11 +76,11 @@ cluster_is_healthy() {
         return 1
     fi
 
-    kubectl --context "${context_name}" --request-timeout=10s get ns >/dev/null 2>&1 || return 1
+    kubectl --context "${context_name}" --request-timeout=5s get ns >/dev/null 2>&1 || return 1
 
     local expected_nodes
     expected_nodes="$((K3D_AGENT_COUNT + 1))"
-    kubectl --context "${context_name}" --request-timeout=10s get nodes \
+    kubectl --context "${context_name}" --request-timeout=5s get nodes \
         -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' \
         2>/dev/null \
         | awk -v expected="${expected_nodes}" '
@@ -352,7 +352,7 @@ main() {
         exit 1
     fi
 
-    kubectl --context "$(cluster_context_name)" --request-timeout=30s get ns >/dev/null
+    kubectl --context "$(cluster_context_name)" --request-timeout=5s get ns >/dev/null
 
     echo "⏳ Waiting for full API discovery to be healthy (aggregated APIServices ready)..."
     if ! wait_discovery_healthy; then

@@ -822,6 +822,32 @@ tasks:
 
   _cluster-ready:
     method: timestamp
+    # The stamps below only prove a PAST run succeeded; they say nothing about
+    # the cluster right now. A cluster left wedged by a host suspend/resume or
+    # OOM (clock-skewed node certs, agents NotReady) keeps its stamp, so every
+    # task depending on this one reads "up to date" and the run sails straight
+    # into the suite, which then hangs until the 30m ginkgo timeout. Probe the
+    # live cluster instead, and abort with the cleanup instructions.
+    #
+    # Preconditions are evaluated before status, and unlike a status entry a
+    # failing one stops the run instead of re-running start-cluster.sh — which
+    # would only re-derive the same verdict, slowly, inside its retry loop.
+    # `test -f .../ready || exit 0` keeps the very first run (nothing stamped,
+    # no cluster yet) out of the way. 5s is a generous budget for one GET
+    # against a healthy apiserver; if it cannot answer in that time the cluster
+    # is not fit to run e2e against.
+    preconditions:
+      - sh: |
+          test -f "{{.CS}}/ready" || exit 0
+          kubectl --context "{{.CTX}}" --request-timeout=5s get nodes \
+            -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null \
+            | awk 'BEGIN{n=0;t=0} {t++; if ($0=="True") n++} END{exit !(t>0 && n==t)}'
+        msg: |
+          Cluster '{{.CLUSTER_NAME}}' is stamped as ready but did not report all nodes Ready within 5s.
+          It is wedged (host suspend/resume, OOM, or a killed run) — a fresh cluster answers instantly.
+
+          Cleanup and retry:
+            task clean-cluster
     deps:
       # Probe ghcr.io reachability before building the cluster (see _ghcr-preflight).
       - _ghcr-preflight
@@ -843,7 +869,7 @@ tasks:
         export CLUSTER_NAME="{{.CLUSTER_NAME}}"
         export AUDIT_DIR_REL="{{.AUDIT_ASSET_DIR}}"
         bash test/e2e/cluster/start-cluster.sh
-        kubectl --context "{{.CTX}}" get ns >/dev/null
+        kubectl --context "{{.CTX}}" --request-timeout=5s get ns >/dev/null
         touch "{{.CS}}/ready"
 
   _flux-installed:
