@@ -385,19 +385,24 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
 		return true
 	}
+	// Insert the entry and queue its marker in ONE critical section. Releasing the
+	// lock between them would let a concurrent enqueue for the same key coalesce
+	// into an entry whose marker does not exist yet -- and which this call is
+	// about to remove on a full queue. That caller would be told enqueued=true
+	// while its request never ran and its drain waited for a reply that never
+	// came. The send is non-blocking, so holding the lock across it cannot
+	// deadlock against the loop's takePendingResync.
 	w.pendingResyncs[key] = request
-	w.pendingResyncsMu.Unlock()
-
 	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Resync: request}:
+		w.pendingResyncsMu.Unlock()
 		w.Log.V(1).Info("Resync request enqueued",
 			"resources", len(request.Desired),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
 		return true
 	default:
 		w.inflightItems.Add(-1)
-		w.pendingResyncsMu.Lock()
 		delete(w.pendingResyncs, key)
 		w.pendingResyncsMu.Unlock()
 		w.Log.Error(nil, "Event queue full, resync request dropped",

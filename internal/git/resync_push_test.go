@@ -3,6 +3,8 @@
 package git
 
 import (
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,6 +91,78 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 		Result: make(chan ResyncResult, 1),
 	}))
 	assert.Len(t, w.eventQueue, 1, "a scope taken off the queue can be queued again")
+}
+
+// TestEnqueueResync_AcceptedRequestAlwaysRuns pins the atomicity of insert-and-queue
+// under a full queue. The invariant: a request told enqueued=true must either have
+// the FIFO marker for its scope, or have been superseded by a later one. Anything
+// else is a caller that believes its resync is queued -- and so advances the
+// per-type coverage watermark -- for work that will never run, while its drain
+// waits for a reply that never comes.
+//
+// The failure needed the entry to be visible to a concurrent enqueue before its
+// marker existed, so this drives the window concurrently and repeatedly rather
+// than asserting a single interleaving.
+func TestEnqueueResync_AcceptedRequestAlwaysRuns(t *testing.T) {
+	for range 200 {
+		acceptedCount, supersededCount, markers := raceEnqueuesOnOneScope(t)
+		require.Equal(t, acceptedCount, supersededCount+markers,
+			"every accepted resync must own the marker or have been superseded")
+	}
+}
+
+// raceEnqueuesOnOneScope drives concurrent enqueues for a single scope against a
+// full queue, and reports how many were accepted, how many of those were
+// superseded, and whether a marker survives for the scope.
+func raceEnqueuesOnOneScope(t *testing.T) (int, int, int) {
+	t.Helper()
+	const enqueuers = 8
+
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1)}
+	// Occupy the only slot with an unrelated scope, so every request below races
+	// on the same key against a full queue.
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "filler",
+		Result: make(chan ResyncResult, 1),
+	}))
+
+	acceptedCount, supersededCount, markers := 0, 0, 0
+	results := make([]chan ResyncResult, enqueuers)
+	accepted := make([]bool, enqueuers)
+	var wg sync.WaitGroup
+	for i := range enqueuers {
+		results[i] = make(chan ResyncResult, 1)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			accepted[i] = w.EnqueueResync(&ResyncRequest{
+				GitTargetNamespace: "ns", GitTargetName: "contended",
+				Result: results[i],
+			})
+		}()
+	}
+	wg.Wait()
+
+	for len(w.eventQueue) > 0 {
+		if item := <-w.eventQueue; item.Resync != nil && item.Resync.GitTargetName == "contended" {
+			markers++
+		}
+	}
+
+	for i := range enqueuers {
+		if !accepted[i] {
+			continue
+		}
+		acceptedCount++
+		select {
+		case res := <-results[i]:
+			if errors.Is(res.Err, ErrResyncSuperseded) {
+				supersededCount++
+			}
+		default:
+		}
+	}
+	return acceptedCount, supersededCount, markers
 }
 
 // TestEnqueueResync_DistinctScopesDoNotCoalesce guards the other half: coalescing
