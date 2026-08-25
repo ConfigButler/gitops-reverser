@@ -22,12 +22,18 @@ import (
 func TestEnqueueResync_ReportsEnqueueOutcome(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1)}
 
-	require.True(t, w.EnqueueResync(&ResyncRequest{Result: make(chan ResyncResult, 1)}),
-		"a resync that fits the empty queue reports enqueued=true")
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "first",
+		Result: make(chan ResyncResult, 1),
+	}), "a resync that fits the empty queue reports enqueued=true")
 
+	// A DIFFERENT scope, so it needs a FIFO slot of its own rather than coalescing
+	// into the queued one — which is what makes this the queue-full path.
 	dropped := make(chan ResyncResult, 1)
-	require.False(t, w.EnqueueResync(&ResyncRequest{Result: dropped}),
-		"a full queue drops the resync and reports enqueued=false")
+	require.False(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "second",
+		Result: dropped,
+	}), "a full queue drops the resync and reports enqueued=false")
 	select {
 	case res := <-dropped:
 		require.ErrorIs(t, res.Err, ErrFinalizeQueueFull,
@@ -35,6 +41,78 @@ func TestEnqueueResync_ReportsEnqueueOutcome(t *testing.T) {
 	default:
 		t.Fatal("expected a queue-full result on the dropped resync's channel")
 	}
+}
+
+// TestEnqueueResync_CoalescesSameScope pins the starvation fix. A resync is
+// state-based — "make Git match this desired set for this scope" — so a newer
+// request for the same GitTarget and scope wholly supersedes one still queued.
+// Coalescing them bounds queue depth by the number of distinct scopes instead of
+// by the request rate, so a storm of resyncs for ONE target can no longer fill a
+// branch worker's shared queue and starve every other GitTarget on that branch.
+// In the CI failure that motivated this, 595 dropped resyncs were all for a
+// single GitTarget.
+func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1)}
+
+	superseded := make(chan ResyncResult, 1)
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "1",
+		Result: superseded,
+	}))
+
+	// The queue now has no free slot, yet a second request for the SAME scope is
+	// accepted: it replaces the queued one rather than being dropped.
+	newest := make(chan ResyncResult, 1)
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "2",
+		Result: newest,
+	}), "a resync for an already-queued scope coalesces instead of being dropped")
+
+	select {
+	case res := <-superseded:
+		require.ErrorIs(t, res.Err, ErrResyncSuperseded,
+			"the superseded caller is told a newer resync replaced it, not that it failed")
+	default:
+		t.Fatal("expected the superseded resync's channel to be answered")
+	}
+
+	// Exactly one marker is queued, and taking it yields the NEWEST request.
+	require.Len(t, w.eventQueue, 1, "coalescing must not consume a second FIFO slot")
+	item := <-w.eventQueue
+	require.NotNil(t, item.Resync)
+	current := w.takePendingResync(item.Resync)
+	assert.Equal(t, "2", current.Revision, "the marker runs the newest request for its scope")
+
+	// The key is cleared, so the next resync for that scope queues a fresh marker.
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "3",
+		Result: make(chan ResyncResult, 1),
+	}))
+	assert.Len(t, w.eventQueue, 1, "a scope taken off the queue can be queued again")
+}
+
+// TestEnqueueResync_DistinctScopesDoNotCoalesce guards the other half: coalescing
+// must key on the scope, so two different types of the same GitTarget stay two
+// independent resyncs. Merging them would sweep one type's scope with the other
+// type's desired set, which deletes managed documents.
+func TestEnqueueResync_DistinctScopesDoNotCoalesce(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
+
+	configMaps := ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}}
+	secrets := ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}}
+	sameTypeOtherNS := ResyncScope{
+		GVR:       schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+		Namespace: "other",
+	}
+
+	for _, scope := range []ResyncScope{configMaps, secrets, sameTypeOtherNS} {
+		require.True(t, w.EnqueueResync(&ResyncRequest{
+			GitTargetNamespace: "ns", GitTargetName: "target",
+			Scope:  &scope,
+			Result: make(chan ResyncResult, 1),
+		}))
+	}
+	assert.Len(t, w.eventQueue, 3, "each distinct scope holds its own FIFO slot")
 }
 
 // TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync pins the
