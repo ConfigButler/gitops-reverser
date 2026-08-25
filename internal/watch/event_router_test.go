@@ -156,7 +156,7 @@ func TestDrainScopedResync_TreatsSupersededAsSuccess(t *testing.T) {
 		router.drainScopedResync(
 			types.NewResourceReference("team-a-config", "team-a"),
 			targetWatchKey{GVR: configmapsGVR},
-			"reconcile",
+			"sweep",
 			0,
 			resultCh,
 		)

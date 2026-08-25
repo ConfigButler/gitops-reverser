@@ -6,13 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
