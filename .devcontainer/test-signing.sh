@@ -103,7 +103,7 @@ check "gpg.format is ssh" "ssh" "$(git_cfg "${home_c}" gpg.format)"
 check "the key comes from the agent, not a pinned file" "ssh-add -L" \
   "$(git_cfg "${home_c}" gpg.ssh.defaultKeyCommand)"
 check "no signing key is invented" "" "$(git_cfg "${home_c}" user.signingkey)"
-grep -q "commits cannot be signed yet" "${sandbox}/out" \
+grep -q "No signing key is available" "${sandbox}/out" \
   && pass "says signing credentials are unavailable" \
   || fail "no diagnostic about missing credentials"
 
@@ -126,6 +126,9 @@ check "allowed_signers is wired up" "${allowed_signers}" \
   "$(git_cfg "${home_e}" gpg.ssh.allowedSignersFile)"
 check "principal is the bare Git email" "${TEST_EMAIL}" "$(awk 'NR==1 {print $1}' "${allowed_signers}")"
 check "the key comment is preserved" "first-key" "$(awk 'NR==1 {print $4}' "${allowed_signers}")"
+grep -q "Signing ready: 1 key(s) trusted for ${TEST_EMAIL}" "${sandbox}/out" \
+  && pass "reports how many keys are trusted" \
+  || { fail "wrong trusted-key count"; grep "Signing ready" "${sandbox}/out" | sed 's/^/        /' >&2; }
 grep -q '<' "${allowed_signers}" \
   && fail "allowed_signers still contains a 'Name <email>' principal" \
   || pass "no 'Name <email>' principal"
@@ -210,6 +213,73 @@ check "the file it pinned is gone" "absent" \
   "$([ -e "${home_l}/.ssh/devcontainer_signing_key.pub" ] && echo present || echo absent)"
 
 echo
+echo "An externally configured signing key, private-key path, no agent"
+home_x="$(new_home external with-identity)"
+mkdir -p "${home_x}/.ssh/managed"
+ssh-keygen -q -t ed25519 -N '' -C 'platform-managed' -f "${home_x}/.ssh/managed/platform"
+HOME="${home_x}" git config --global user.signingkey "${home_x}/.ssh/managed/platform"
+check "exits 0" "0" "$(run_sync "${home_x}" env -u SSH_AUTH_SOCK)"
+check "the external signing key is preserved" "${home_x}/.ssh/managed/platform" \
+  "$(git_cfg "${home_x}" user.signingkey)"
+check "allowedSignersFile is configured" "${home_x}/.config/git/allowed_signers" \
+  "$(git_cfg "${home_x}" gpg.ssh.allowedSignersFile)"
+check "gpg.format is ssh" "ssh" "$(git_cfg "${home_x}" gpg.format)"
+check "signing stays mandatory" "true" "$(git_cfg "${home_x}" commit.gpgsign)"
+check "allowed_signers principal is the bare Git email" "${TEST_EMAIL}" \
+  "$(awk 'NR==1 {print $1}' "${home_x}/.config/git/allowed_signers")"
+check "it trusts the .pub beside the private key" "platform-managed" \
+  "$(awk 'NR==1 {print $4}' "${home_x}/.config/git/allowed_signers")"
+
+# The real-world check: signs with no agent at all, and now verifies too.
+check "a commit signs with no agent" "0" "$(try_commit "${home_x}" external env -u SSH_AUTH_SOCK)"
+(
+  cd "${sandbox}/repo-external"
+  HOME="${home_x}" env -u SSH_AUTH_SOCK git log -1 --show-signature
+) >"${sandbox}/verify-ext" 2>&1 || true
+grep -q "Good \"git\" signature for ${TEST_EMAIL}" "${sandbox}/verify-ext" \
+  && pass "and git log --show-signature verifies it" \
+  || { fail "external-key signature did not verify"; sed 's/^/        /' "${sandbox}/verify-ext" >&2; }
+
+echo
+echo "An externally configured signing key given as a .pub path"
+home_xp="$(new_home externalpub with-identity)"
+mkdir -p "${home_xp}/.ssh"
+ssh-keygen -q -t ed25519 -N '' -C 'pub-path' -f "${home_xp}/.ssh/direct"
+HOME="${home_xp}" git config --global user.signingkey "${home_xp}/.ssh/direct.pub"
+check "exits 0" "0" "$(run_sync "${home_xp}" env -u SSH_AUTH_SOCK)"
+check "the .pub path is preserved" "${home_xp}/.ssh/direct.pub" "$(git_cfg "${home_xp}" user.signingkey)"
+check "it is used directly" "pub-path" \
+  "$(awk 'NR==1 {print $4}' "${home_xp}/.config/git/allowed_signers")"
+
+echo
+echo "An external key wins over a present SSH agent"
+home_xa="$(new_home externalagent with-identity)"
+mkdir -p "${home_xa}/.ssh"
+ssh-keygen -q -t ed25519 -N '' -C 'external-wins' -f "${home_xa}/.ssh/ext"
+HOME="${home_xa}" git config --global user.signingkey "${home_xa}/.ssh/ext"
+check "exits 0" "0" "$(run_sync "${home_xa}" env SSH_AUTH_SOCK="${sock}")"
+check "the external key is not replaced by an agent key" "${home_xa}/.ssh/ext" \
+  "$(git_cfg "${home_xa}" user.signingkey)"
+check "allowed_signers trusts the external key" "external-wins" \
+  "$(awk 'NR==1 {print $4}' "${home_xa}/.config/git/allowed_signers")"
+check "only the external key is trusted" "1" \
+  "$(wc -l <"${home_xa}/.config/git/allowed_signers" | tr -d ' ')"
+before_ext="$(cat "${home_xa}/.config/git/allowed_signers")"
+check "re-running is idempotent" "0" "$(run_sync "${home_xa}" env SSH_AUTH_SOCK="${sock}")"
+check "allowed_signers is unchanged" "${before_ext}" "$(cat "${home_xa}/.config/git/allowed_signers")"
+
+echo
+echo "An external signing key whose public half cannot be found"
+home_xb="$(new_home externalbroken with-identity)"
+HOME="${home_xb}" git config --global user.signingkey "/nonexistent/key"
+check "exits 0" "0" "$(run_sync "${home_xb}" env -u SSH_AUTH_SOCK)"
+check "the configured key is still preserved" "/nonexistent/key" "$(git_cfg "${home_xb}" user.signingkey)"
+check "signing stays mandatory" "true" "$(git_cfg "${home_xb}" commit.gpgsign)"
+[ -f "${home_xb}/.config/git/allowed_signers" ] \
+  && fail "wrote allowed_signers for an underivable key" \
+  || pass "writes no bogus allowed_signers"
+
+echo
 echo "Configuration this script does not own is left alone"
 home_o="$(new_home owned with-identity)"
 HOME="${home_o}" git config --global gpg.format openpgp
@@ -217,9 +287,6 @@ HOME="${home_o}" git config --global user.signingkey "SOMEONE-ELSES-KEY"
 check "exits 0" "0" "$(run_sync "${home_o}" env SSH_AUTH_SOCK="${sock}")"
 check "an existing gpg.format is kept" "openpgp" "$(git_cfg "${home_o}" gpg.format)"
 check "a foreign signing key is kept" "SOMEONE-ELSES-KEY" "$(git_cfg "${home_o}" user.signingkey)"
-grep -q "did not write; leaving it alone" "${sandbox}/out" \
-  && pass "says why it left the key alone" \
-  || fail "no diagnostic about the foreign key"
 
 echo
 if [ "${failures}" -eq 0 ]; then
