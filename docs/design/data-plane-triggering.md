@@ -349,7 +349,8 @@ Two findings from this document survive intact and are load-bearing for the plan
 - **§4's ordering constraint.** A snapshot cannot be separated from the events
   behind it, which is why the plan needs an explicit fence rather than an
   assumption. That section also surfaced a live regression in the shipped
-  coalescing, specified in [TargetWatchPlan](target-watch-plan.md) §4.1.
+  coalescing, diagnosed in [TargetWatchPlan](target-watch-plan.md) §4.1 and since
+  fenced by its §4.3.
 - **§2's finding** that the stream set is already declarative and only the diff
   is missing, which is what made an incremental plan a small change rather than
   a rewrite.
@@ -456,11 +457,13 @@ be read from. In outline: fence the coalescing regression, add provenance to
 queued items, settle the cell identity question, then diff the plan so unrelated
 replays stop. The semantics of removal come after, deliberately.
 
-One thing shipped already, in
-[#312](https://github.com/ConfigButler/gitops-reverser/pull/312): resyncs are
-keyed and coalesced, and the storm source is fixed. That was a backstop rather
-than a cure, and it introduced the ordering hazard the plan's first step now
-fences.
+Two things have shipped already. In
+[#312](https://github.com/ConfigButler/gitops-reverser/pull/312) resyncs became
+keyed and coalesced, and the storm source is fixed; that was a backstop rather
+than a cure, and it introduced an ordering hazard. That hazard is now fenced —
+coalescing stops at the first write queued into the snapshot's scope
+([TargetWatchPlan](target-watch-plan.md) §4.3) — which retires step 1 of the
+build order. The rest of the plan is unbuilt.
 
 The writes stay a log throughout. Only the resync half of the queue is in
 question, and the answer is to make the stream set incremental rather than to

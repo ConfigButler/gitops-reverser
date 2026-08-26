@@ -269,9 +269,12 @@ ordering were purely intra-stream. It is not:
 - **A restart re-enters the same scope.** The principal `restart` case produces a
   second snapshot for a scope whose earlier events may still be queued.
 
-### 4.1 A live hazard in the current coalescing
+### 4.1 A live hazard in the coalescing, since fenced
 
-Verified in the code as it stands on `main`. `ResourceVersion` is carried on
+**Status: fixed.** The hazard is described below as it stood, because the fence
+only holds while the reason for it is legible. What shipped is in §4.3.
+
+`ResourceVersion` is carried on
 written content and used for the sensitive-content marker, but **no worker-side
 fence compares it before applying a write**. Ordering rests entirely on FIFO
 position.
@@ -298,7 +301,7 @@ Before coalescing, the second snapshot took its own position at the tail and the
 order was correct. This is a regression introduced with the coalescing fix, it is
 self-healing on the next event for that object, and it is narrow: it needs a
 restart while events for the same scope are still queued. It is nevertheless a
-stale write and must be fenced.
+stale write and had to be fenced.
 
 ### 4.2 What the design must guarantee
 
@@ -322,12 +325,57 @@ Exactly one of these has to be chosen, stated, and tested:
    across its streams, which is the largest change and the only one that removes
    the class rather than the instance.
 
-Option 3 is the only one available without new provenance, and it is the
-recommended **immediate** fix: coalescing only during replay, before any live
-event for the scope has been admitted, needs no per-item source. Option 1 is the
-better steady state once §5.1 lands, and option 2 or 4 is the target if
-overlapping streams are to be ordered rather than merely fenced. Neither 1 nor 3
-addresses overlapping streams; that gap is recorded, not assumed away.
+Option 3 was drafted here as the immediate fix, on the grounds that it needs no
+provenance. It does not hold as stated: whether the **arriving** request is a
+replay says nothing about whether writes were queued behind the **existing
+marker**, and the marker's position is the one coalescing reuses. The condition
+has to be a property of the pending entry. §4.3 is what shipped instead — option
+1, made available without provenance by over-matching.
+
+Option 1 remains the better steady state once §5.1 lands, because provenance
+lets the boundary be tracked per producing cell rather than approximated. Option
+2 or 4 is the target if overlapping streams are to be ordered rather than merely
+fenced. None of 1, 3, or the shipped fence addresses overlapping streams; that
+gap is recorded, not assumed away.
+
+### 4.3 The shipped fence
+
+Option 1 — never coalesce past a tail — turns out not to be gated on provenance,
+provided the tail test is allowed to over-match. `BranchWorker.pendingResyncs`
+holds, per `(GitTarget, scope)`, the request that will run and a flag recording
+whether anything for that scope has been queued **behind its marker**:
+
+- enqueuing a write marks every pending entry whose GitTarget and scope `Matches`
+  one of the write's events. The target is read from the **event**, not from the
+  `WriteRequest`: the live path wraps one event per request and leaves the
+  request-level fields empty, so a fence reading the request would never trip on
+  the only path it exists for;
+- enqueuing a CommitRequest attach marks every pending entry of that GitTarget,
+  since an attach decides which commit window later work joins and carries no
+  resource identity to match on;
+- a resync arriving at a marked entry does not coalesce. It releases the key and
+  takes a fresh marker at the tail, and the earlier marker runs the payload it
+  carried, at its own position — the pre-coalescing behavior, restored exactly
+  for the case that needs it.
+
+The match is by object identity, not by producing cell: with a cluster-wide and a
+namespaced stream both delivering one object, the cell cannot be recovered from
+the event. Over-matching is the safe direction, because it can only forgo a
+coalesce, never wrongly permit one. Coalescing therefore still absorbs the storm
+that motivated it — a deleted GitTarget replaying with no writes of its own marks
+nothing — while writes into a scope bound how far its snapshot can move.
+
+The mark and the FIFO send are **one critical section**, on the same mutex
+`EnqueueResync` holds across its own send. Marking before an unlocked send leaves
+a window in which a resync sees the mark, declines to coalesce, and takes its tail
+position before the write it is fencing against has entered the queue — the same
+inversion, one step removed. Both sends are non-blocking, so holding the lock
+across them cannot deadlock.
+
+Entries are identified by their marker pointer, not by the key alone. Once a key
+has been released and reclaimed by a later request, the older marker must run
+what it carried rather than pick up the newer entry, which is the same
+stale-write bug reached from the other side.
 
 ---
 
@@ -438,8 +486,8 @@ not a well-defined operation, and this is the dependency that gates §3.
 
 Each step is independently shippable and leaves the system correct.
 
-1. **Fence the coalescing regression** (§4.1) using option 3, replay-only
-   coalescing. It needs no provenance and removes a live stale-write path today.
+1. ~~**Fence the coalescing regression** (§4.1).~~ **Done**, as §4.3: option 1
+   with an over-matching tail test, which needs no provenance.
 2. **Add provenance to queued items** (§5.1). It is the prerequisite for every
    later fence and for lease enforcement, and it is independently useful: it
    makes "which cell produced this write" answerable in logs and metrics.

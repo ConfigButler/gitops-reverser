@@ -4,7 +4,9 @@ package git
 
 import (
 	"errors"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // TestEnqueueResync_ReportsEnqueueOutcome pins the contract the per-target coverage watermark relies
@@ -236,4 +240,213 @@ func TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync(t *testing.T
 	require.NoError(t, err)
 	assert.NotEqual(t, initialHash, afterRef.Hash(),
 		"the held edit's commit must reach the remote even though the resync was a no-op")
+}
+
+// TestEnqueueResync_DoesNotCoalescePastQueuedWrites pins the ordering fence on
+// coalescing (docs/design/target-watch-plan.md §4.1). Coalescing reuses the queued
+// marker's FIFO POSITION, and that position is only correct while nothing for the
+// scope sits behind it. Once a write inside the scope is queued, running a newer
+// snapshot at the older position applies it BEFORE writes it already contains, and
+// those older writes then overwrite it with stale content. So a resync arriving
+// after such a write takes its own position at the tail instead.
+//
+// The write goes in through Enqueue, the live path, with the target on the EVENT
+// and the request-level fields empty — exactly as GitTargetEventStream.OnWatchEvent
+// produces it. A fence that reads the request's target instead would pass a test
+// that set those fields by hand and never trip in production.
+func TestEnqueueResync_DoesNotCoalescePastQueuedWrites(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
+	scope := &ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, Namespace: "app"}
+
+	first := make(chan ResyncResult, 1)
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "100",
+		Scope: scope, Result: first,
+	}))
+
+	// A live write for an object INSIDE that scope now sits behind the marker.
+	require.True(t, w.Enqueue(liveEvent("target", "app")))
+
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "103",
+		Scope: scope, Result: make(chan ResyncResult, 1),
+	}))
+
+	select {
+	case res := <-first:
+		t.Fatalf("the earlier resync must still run at its own position, got %v", res.Err)
+	default:
+	}
+
+	// FIFO order is snapshot(100), write, snapshot(103): every write lands between
+	// the two snapshots it belongs between, and neither snapshot is overwritten by
+	// an older event.
+	require.Len(t, w.eventQueue, 3, "the later resync takes its own slot rather than coalescing")
+	firstMarker := <-w.eventQueue
+	require.NotNil(t, firstMarker.Resync)
+	assert.Equal(t, "100", w.takePendingResync(firstMarker.Resync).Revision,
+		"the earlier marker runs the snapshot it carried, not the newer one")
+	assert.NotNil(t, (<-w.eventQueue).Request, "the write keeps its position between the snapshots")
+	lastMarker := <-w.eventQueue
+	require.NotNil(t, lastMarker.Resync)
+	assert.Equal(t, "103", w.takePendingResync(lastMarker.Resync).Revision)
+}
+
+// TestEnqueueResync_DoesNotCoalescePastQueuedAttach pins the same fence for a
+// CommitRequest attach, which carries no resource identity of its own but decides
+// which commit window later work joins.
+func TestEnqueueResync_DoesNotCoalescePastQueuedAttach(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
+
+	first := make(chan ResyncResult, 1)
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "100",
+		Result: first,
+	}))
+	w.EnqueueAttach(&AttachCommitRequest{
+		Namespace: "ns", Name: "cr", GitTargetNamespace: "ns", GitTargetName: "target",
+	})
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "103",
+		Result: make(chan ResyncResult, 1),
+	}))
+
+	select {
+	case res := <-first:
+		t.Fatalf("the earlier resync must still run at its own position, got %v", res.Err)
+	default:
+	}
+	assert.Len(t, w.eventQueue, 3, "the later resync takes its own slot rather than coalescing")
+}
+
+// TestEnqueueResync_CoalescesPastUnrelatedWrites keeps the fence from undoing the
+// starvation fix it is layered on. Only a write the pending snapshot's scope
+// CONTAINS can be reordered by coalescing, so a write for another scope — or
+// another GitTarget on this shared branch — must leave coalescing intact. The
+// storm shape that motivated coalescing (a deleted GitTarget replaying with no
+// writes of its own) stays fully coalesced.
+func TestEnqueueResync_CoalescesPastUnrelatedWrites(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 4)}
+	scope := &ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, Namespace: "app"}
+
+	superseded := make(chan ResyncResult, 1)
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "100",
+		Scope: scope, Result: superseded,
+	}))
+
+	// A different namespace of the same type, and a different GitTarget entirely.
+	require.True(t, w.Enqueue(liveEvent("target", "other")))
+	require.True(t, w.Enqueue(liveEvent("elsewhere", "app")))
+
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "103",
+		Scope: scope, Result: make(chan ResyncResult, 1),
+	}))
+
+	select {
+	case res := <-superseded:
+		require.ErrorIs(t, res.Err, ErrResyncSuperseded)
+	default:
+		t.Fatal("an unrelated write must not stop coalescing")
+	}
+	require.Len(t, w.eventQueue, 3, "coalescing still costs no extra FIFO slot")
+	marker := <-w.eventQueue
+	require.NotNil(t, marker.Resync)
+	assert.Equal(t, "103", w.takePendingResync(marker.Resync).Revision)
+}
+
+// TestEnqueueResync_FenceHoldsUnderConcurrentWrites drives writes and resyncs for one
+// scope concurrently. The fence's mark and its FIFO send have to be one critical
+// section: if they are not, a resync can observe the mark, decline to coalesce, and
+// take its tail position before the write it is fencing against actually enters the
+// queue — the same inversion, one step removed.
+//
+// The observable invariant here is the FIFO's own: every accepted item is present
+// exactly once, resync markers included, and the queue never holds two markers for a
+// scope whose earlier one was also coalesced into. Run under -race, this also covers
+// the map access the fence added to the write path.
+func TestEnqueueResync_FenceHoldsUnderConcurrentWrites(t *testing.T) {
+	for range 100 {
+		acceptedWrites, acceptedResyncs, superseded := raceWritesAndResyncsOnOneScope(t)
+		require.Equal(t, acceptedWrites.writes, acceptedWrites.queued,
+			"every accepted write is on the FIFO once")
+		require.Equal(t, acceptedResyncs, acceptedWrites.markers+superseded,
+			"every accepted resync owns a marker or was superseded into one")
+	}
+}
+
+// fifoTally is what a drain of the queue found, alongside what was accepted onto it.
+type fifoTally struct {
+	queued  int // writes accepted by Enqueue
+	writes  int // write items drained from the FIFO
+	markers int // resync markers drained from the FIFO
+}
+
+// raceWritesAndResyncsOnOneScope drives writes and resyncs for one scope concurrently
+// against a queue with room for all of them, then drains it. It reports the write
+// tally, how many resyncs were accepted, and how many of those were superseded.
+func raceWritesAndResyncsOnOneScope(t *testing.T) (fifoTally, int, int) {
+	t.Helper()
+	const producers = 8
+	scope := &ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, Namespace: "app"}
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 64)}
+
+	var wg sync.WaitGroup
+	var writes, resyncs atomic.Int64
+	replies := make([]chan ResyncResult, producers)
+	for i := range producers {
+		replies[i] = make(chan ResyncResult, 1)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if w.Enqueue(liveEvent("target", "app")) {
+				writes.Add(1)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if w.EnqueueResync(&ResyncRequest{
+				GitTargetNamespace: "ns", GitTargetName: "target",
+				Revision: strconv.Itoa(i), Scope: scope, Result: replies[i],
+			}) {
+				resyncs.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	superseded := 0
+	for _, reply := range replies {
+		select {
+		case res := <-reply:
+			require.ErrorIs(t, res.Err, ErrResyncSuperseded,
+				"the only reply an enqueue-time resync may get here is supersession")
+			superseded++
+		default:
+		}
+	}
+
+	tally := fifoTally{queued: int(writes.Load())}
+	for len(w.eventQueue) > 0 {
+		if item := <-w.eventQueue; item.Resync != nil {
+			tally.markers++
+		} else {
+			tally.writes++
+		}
+	}
+	return tally, int(resyncs.Load()), superseded
+}
+
+// liveEvent builds an event shaped like the live watch path: the GitTarget is carried
+// on the event, not on the WriteRequest that wraps it. Every GitTarget in these tests
+// lives in namespace "ns", and the object is always the same ConfigMap: only the
+// GitTarget it belongs to and the namespace it sits in decide whether a fence trips.
+func liveEvent(targetName, namespace string) Event {
+	return Event{
+		Operation:          "UPDATE",
+		Identifier:         types.NewResourceIdentifier("", "v1", "configmaps", namespace, "cm"),
+		GitTargetNamespace: "ns",
+		GitTargetName:      targetName,
+	}
 }

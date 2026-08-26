@@ -172,8 +172,16 @@ type BranchWorker struct {
 	// therefore bounded by the number of distinct scopes, not by the request
 	// rate, so a storm of resyncs for one target can no longer fill the queue
 	// and starve every other GitTarget on this branch.
+	//
+	// Coalescing reuses the marker's FIFO POSITION, so it is only sound while
+	// nothing for that scope was queued behind the marker. Once a write inside
+	// the scope has been enqueued, running the newer snapshot at the older
+	// position would apply it before writes it already contains, and those
+	// older writes would then overwrite it (target-watch-plan.md §4.1). The
+	// entry's tail flag records that boundary, and an arriving resync past it
+	// takes its own position at the tail instead of coalescing.
 	pendingResyncsMu sync.Mutex
-	pendingResyncs   map[resyncKey]*ResyncRequest
+	pendingResyncs   map[resyncKey]*pendingResync
 
 	// crOutcomes holds resolved CommitRequest outcomes for the controller to poll
 	// via LookupCommitRequestOutcome. The event loop is the only writer (on its
@@ -243,7 +251,7 @@ func NewBranchWorker(
 		),
 		contentWriter:        writer,
 		eventQueue:           make(chan WorkItem, branchWorkerQueueSize),
-		pendingResyncs:       make(map[resyncKey]*ResyncRequest),
+		pendingResyncs:       make(map[resyncKey]*pendingResync),
 		branchBufferMaxBytes: branchBufferMaxBytes,
 	}
 }
@@ -334,8 +342,15 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	// Increment before the send so inflightItems can never lag the loop's
 	// receive; roll back if the queue is full and the item is dropped.
 	w.inflightItems.Add(1)
+	// An attach decides which commit window subsequent work joins, so a resync
+	// must not be moved across one either. Attaches are controller-driven and
+	// rare, so blocking a coalesce on them costs no storm protection. The mark
+	// and the send are ONE critical section: see enqueueRequest.
+	w.pendingResyncsMu.Lock()
+	w.markResyncTailForTargetLocked(req.GitTargetNamespace, req.GitTargetName)
 	select {
 	case w.eventQueue <- WorkItem{Attach: req}:
+		w.pendingResyncsMu.Unlock()
 		w.Log.Info("CommitRequest attach enqueued",
 			"request", req.Namespace+"/"+req.Name,
 			"author", req.Author,
@@ -346,6 +361,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		// the loop republishes on every received item, so the gauge converges
 		// without an enqueue-side write that could latch a stale value.
 	default:
+		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.Log.Error(nil, "Event queue full, CommitRequest attach dropped (controller will re-send)")
 	}
@@ -369,12 +385,15 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 
 	w.pendingResyncsMu.Lock()
 	if w.pendingResyncs == nil {
-		w.pendingResyncs = make(map[resyncKey]*ResyncRequest)
+		w.pendingResyncs = make(map[resyncKey]*pendingResync)
 	}
-	if superseded, queued := w.pendingResyncs[key]; queued {
-		// A marker for this key is already in the FIFO. Swap in the newer
-		// request; the loop reads whatever is current when the marker comes up.
-		w.pendingResyncs[key] = request
+	if pending, queued := w.pendingResyncs[key]; queued && !pending.tailPassed {
+		// A marker for this key is already in the FIFO and nothing for this scope
+		// was queued behind it, so the marker's position is still the right place
+		// for a newer snapshot. Swap in the newer request; the loop reads whatever
+		// is current when the marker comes up.
+		superseded := pending.request
+		pending.request = request
 		w.pendingResyncsMu.Unlock()
 		// The superseded request's caller is waiting on its reply channel. Answer
 		// it so its drain ends, with a sentinel that says "a newer resync for the
@@ -384,6 +403,16 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 			"resources", len(request.Desired),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
 		return true
+	} else if queued {
+		// A write inside this scope was queued behind the marker. Coalescing here
+		// would run this snapshot ahead of those writes and let them overwrite it
+		// with older state. Release the key instead: the queued marker finds no
+		// entry and runs the payload it carries, at its own position, and this
+		// request takes a fresh marker at the tail below.
+		delete(w.pendingResyncs, key)
+		w.Log.V(1).Info("Resync request not coalesced: writes are queued behind the pending marker",
+			"scope", request.Scope.String(),
+			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
 	}
 	// Insert the entry and queue its marker in ONE critical section. Releasing the
 	// lock between them would let a concurrent enqueue for the same key coalesce
@@ -392,7 +421,7 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	// while its request never ran and its drain waited for a reply that never
 	// came. The send is non-blocking, so holding the lock across it cannot
 	// deadlock against the loop's takePendingResync.
-	w.pendingResyncs[key] = request
+	w.pendingResyncs[key] = &pendingResync{marker: request, request: request}
 	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Resync: request}:
@@ -412,6 +441,60 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	}
 }
 
+// markResyncTailForWriteLocked records, on every pending resync whose GitTarget and
+// scope contain one of this write's events, that work for that scope is now queued
+// behind its marker. A pending resync with a nil scope covers the whole GitTarget, so
+// any write for that target marks it. The caller must hold pendingResyncsMu.
+//
+// The target is read from the EVENT, not from the request. The live path
+// (BranchWorker.Enqueue, one event per request) leaves the request-level fields empty
+// and carries the target on the event, which GitTargetEventStream.OnWatchEvent sets;
+// only the atomic/reconcile paths populate the request. Reading the request alone would
+// silently never match the live path, which is the only path this fence exists for.
+//
+// The scope match is by object identity rather than by producing stream: a cluster-wide
+// and a namespaced stream both deliver one object, so the cell that produced an event
+// cannot be recovered from it today. Over-matching is deliberate — it can only forgo a
+// coalesce, never wrongly permit one.
+func (w *BranchWorker) markResyncTailForWriteLocked(request *WriteRequest) {
+	for key, pending := range w.pendingResyncs {
+		if pending.tailPassed {
+			continue
+		}
+		for i := range request.Events {
+			namespace, name := writeEventTarget(request, i)
+			if key.namespace != namespace || key.name != name {
+				continue
+			}
+			if pending.request.Scope.Matches(request.Events[i].Identifier) {
+				pending.tailPassed = true
+				break
+			}
+		}
+	}
+}
+
+// writeEventTarget resolves the GitTarget one event of a write belongs to: the event's
+// own fields when set, falling back to the request's for the atomic paths that carry the
+// target once for the whole request.
+func writeEventTarget(request *WriteRequest, i int) (string, string) {
+	if request.Events[i].GitTargetName != "" {
+		return request.Events[i].GitTargetNamespace, request.Events[i].GitTargetName
+	}
+	return request.GitTargetNamespace, request.GitTargetName
+}
+
+// markResyncTailForTargetLocked records the same boundary for every pending resync of one
+// GitTarget, regardless of scope. It is used for queued items that carry no resource
+// identity of their own. The caller must hold pendingResyncsMu.
+func (w *BranchWorker) markResyncTailForTargetLocked(namespace, name string) {
+	for key, pending := range w.pendingResyncs {
+		if key.namespace == namespace && key.name == name {
+			pending.tailPassed = true
+		}
+	}
+}
+
 // takePendingResync returns the current request for a marker's key, which may be
 // newer than the one the marker carried, and clears the key so the next enqueue
 // queues a fresh marker.
@@ -420,13 +503,16 @@ func (w *BranchWorker) takePendingResync(marker *ResyncRequest) *ResyncRequest {
 	w.pendingResyncsMu.Lock()
 	defer w.pendingResyncsMu.Unlock()
 	current, ok := w.pendingResyncs[key]
-	if !ok {
-		// No entry: this marker was queued before coalescing tracked it, or the
-		// key was already taken. Run what the marker carried.
+	if !ok || current.marker != marker {
+		// No entry for this marker: it was queued before coalescing tracked it, the
+		// key was already taken, or coalescing released it because writes were
+		// queued behind this marker and a later request has since claimed the key.
+		// Run what the marker carried, at this position. Any entry present belongs
+		// to a marker still on the FIFO, so it is left alone.
 		return marker
 	}
 	delete(w.pendingResyncs, key)
-	return current
+	return current.request
 }
 
 // enqueueRequest places a write request on the FIFO and reports whether it was
@@ -441,8 +527,19 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	// Increment before the send so inflightItems can never lag the loop's
 	// receive; roll back if the queue is full and the item is dropped.
 	w.inflightItems.Add(1)
+	// Mark the pending resyncs this write falls inside, and send, in ONE critical
+	// section. Marking before an unlocked send would leave a window in which a
+	// concurrent EnqueueResync sees the mark, declines to coalesce, and takes its
+	// own tail position BEFORE this write reaches the FIFO -- the same inversion
+	// the fence exists to prevent, one step removed. EnqueueResync holds the same
+	// lock across its own send, so the two orderings agree. Both sends are
+	// non-blocking, so holding the lock across them cannot deadlock. Marking a
+	// write the full queue then drops only forgoes a coalesce, the safe direction.
+	w.pendingResyncsMu.Lock()
+	w.markResyncTailForWriteLocked(request)
 	select {
 	case w.eventQueue <- item:
+		w.pendingResyncsMu.Unlock()
 		w.Log.V(1).Info("Write request enqueued",
 			"events", len(request.Events),
 			"mode", request.CommitMode,
@@ -452,6 +549,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		// without an enqueue-side write that could latch a stale value.
 		return true
 	default:
+		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
 		w.Log.Error(nil, "Event queue full, request dropped",
 			"events", len(request.Events),

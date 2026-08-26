@@ -417,6 +417,22 @@ type resyncKey struct {
 	scope     string
 }
 
+// pendingResync is the coalescing entry for one resyncKey: the current request for
+// that key, and whether anything for its scope has been queued behind the marker
+// that represents it in the FIFO. Once tailPassed is set the marker's position is
+// no longer a safe place to run a newer snapshot — see the pendingResyncs field on
+// BranchWorker, and docs/design/target-watch-plan.md §4.1.
+type pendingResync struct {
+	// marker is the request whose pointer sits on the FIFO for this key. It is fixed
+	// for the entry's life: coalescing swaps request, never marker. Identifying the
+	// entry by its marker is what keeps a released key unambiguous — once a later
+	// request re-inserts the same key, the older marker must run the payload it
+	// carried rather than pick up the newer entry.
+	marker     *ResyncRequest
+	request    *ResyncRequest
+	tailPassed bool
+}
+
 func resyncKeyFor(request *ResyncRequest) resyncKey {
 	key := resyncKey{namespace: request.GitTargetNamespace, name: request.GitTargetName}
 	if request.Scope != nil {
