@@ -28,6 +28,10 @@ folder by **lifecycle**, not by topic.
 5. [`design/support-boundary/support-contract.md`](design/support-boundary/support-contract.md)
    — **what the operator edits, what it refuses, and why.**
 
+Beside `architecture.md`: [`components.md`](components.md) is the component map. It names every
+package by plane, and answers which components observe a Kubernetes API server (five do, and only
+two of them observe types).
+
 Provider-specific setup that needed writing down:
 [`azure-devops-getting-started.md`](azure-devops-getting-started.md) — Azure DevOps end to end, why its
 credential Secret is shaped differently from every other provider's, and the three test layers that
