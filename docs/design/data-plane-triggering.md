@@ -14,7 +14,7 @@ related:
 # Data-plane triggering: from an event pipe to a dirty set
 
 > **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
-
+>
 > **Not a specification.** This document is incident analysis, rationale, and
 > ordering research. The implementable plan for this refactor is
 > [TargetWatchPlan](target-watch-plan.md); policy semantics live in its parent,
