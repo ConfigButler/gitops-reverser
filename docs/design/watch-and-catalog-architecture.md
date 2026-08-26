@@ -239,6 +239,14 @@ ReconcileForRuleChange  (manager.go:740)
    └─ completeReconciliationForTargets      → flush buffered events
 ```
 
+> **Part 2 predates the watch-first rewrite and is a survey, not a current map.** The snapshot
+> path it describes — `currentRuleSetSnapshots`, `emitSnapshotForRuleChange`, `RequestClusterState`,
+> the `compareGVRs` informer diff — no longer exists: object state comes from target watches, one
+> stream per cell, replaying under a scoped mark-and-sweep
+> ([data-plane-triggering.md](data-plane-triggering.md), [target-watch-plan.md](target-watch-plan.md)).
+> The REQUIREMENTS in Part 1 and the target model in Part 3 stand; read 2.3 and 2.4 as the reasoning
+> that led here rather than as a description of the tree.
+
 ## 2.3 What already works in our favor
 
 - **Dynamic surface reaction exists.** The CRD/APIService triggers + reconcile

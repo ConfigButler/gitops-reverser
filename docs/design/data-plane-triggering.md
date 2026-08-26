@@ -153,8 +153,10 @@ treatment.
 This is the finding that reframes the rest of this document.
 
 `targetWatchSpecs(table)` already computes the desired stream set as a map from
-`(GVR, namespace)` to that stream's operation filter. The model is there. What is
-missing is a **per-key** diff:
+one cell — a type and a namespace — to that stream's operation filter. (It keyed
+that map on the full GVR when this was written; the served version has since
+moved out of the identity, [TargetWatchPlan](target-watch-plan.md) §1.1.) The
+model is there. What is missing is a **per-key** diff:
 
 ```go
 func (m *Manager) prepareTargetWatchSetReplacementLocked(...) bool {

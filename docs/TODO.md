@@ -77,8 +77,9 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Collapse wildcard source-namespace stream fan-out.
   `WatchRule.spec.rules[].sourceNamespace: "*"` expands to one selection per admitted namespace, and
-  `targetWatchSpecs` opens one stream per `(GVR, namespace)` while `git.ResyncScope` names a single
-  namespace — so a wildcard over N admitted namespaces and M matched types costs N×M informers and
+  `targetWatchSpecs` opens one stream per cell — one type in one namespace — while
+  `git.ResyncScope` names a single namespace, so a wildcard over N admitted namespaces and M
+  matched types costs N×M informers and
   N×M resync scopes, where a cluster-wide ClusterWatchRule costs M. Expansion is deliberate (it is
   what keeps the mark-and-sweep scope narrow, per
   [pr1-namespace-scoped-resync.md](design/watchrule-source-namespace/pr1-namespace-scoped-resync.md)),

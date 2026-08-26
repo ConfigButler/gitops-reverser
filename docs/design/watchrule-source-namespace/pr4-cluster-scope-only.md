@@ -507,9 +507,9 @@ policy actually asking. An install with no selector policies never lists a names
 
 ## 7. Wildcard fan-out is an accepted cost
 
-`targetWatchSpecs` opens one stream per `(GVR, namespace)` scope
-([target_watch.go:230-243](../../../internal/watch/target_watch.go#L230-L243)) and `ResyncScope` is
-single-namespace ([git/types.go:334](../../../internal/git/types.go#L334)). So a `"*"` item over **N**
+`targetWatchSpecs` opens one stream per cell — one type in one namespace
+([target_watch.go](../../../internal/watch/target_watch.go)) — and `ResyncScope` is single-namespace
+([git/types.go](../../../internal/git/types.go)). So a `"*"` item over **N**
 admitted namespaces and **M** matched types opens **N×M** informers and produces **N×M** resync scopes,
 where today's cluster-wide ClusterWatchRule uses M.
 

@@ -109,7 +109,8 @@ Retention becomes a fourth reader beside them. The full path:
    `Plan.RetainedOrphans` in `applyResyncPlan`. It rides the existing `ResyncResult` reply channel —
    no new transport.
 2. **Record it per scope.** [`drainScopedResync`](../../../internal/watch/event_router.go) already
-   receives the result, the `targetWatchKey` (GVR + namespace) and the render-fidelity epoch, and
+   receives the result, the cell (type + namespace; it took a versioned watch key when this was
+   written) and the render-fidelity epoch, and
    already calls `MarkTargetGitPathAccepted` and `MarkTargetRenderFidelityScopeClean` there. A
    `MarkTargetRetention(gitDest, key, epoch, stats.Retained)` sits beside them.
 3. **Roll up per target.** The `Manager` keeps per-(target, scope) counts and sums them;
@@ -127,9 +128,11 @@ It does not need writing. [`RenderFidelityGate`](../../../internal/watch/render_
 solves the identical problem for an identical key, and it does so with an **epoch** rather than with
 eviction: records carry the watch epoch they were produced under, the epoch bumps when the watch plan
 is reinstalled, and records from an older epoch are ignored — "a stale cancellation tail is ignored by
-the gate and cannot reopen a failed target." Retention should reuse `RenderFidelityEpochForGitTarget`
-verbatim. A scope that vanishes from the plan takes its count with it at the next epoch, with no
-per-key deletion logic to get wrong.
+the gate and cannot reopen a failed target." Retention should reuse the same epoch verbatim — it
+now travels on the stream, captured when the stream starts rather than read when a result is
+ready, so a cancelled stream cannot report into an epoch it never replayed for. A scope that
+vanishes from the plan takes its count with it at the next epoch, with no per-key deletion logic
+to get wrong.
 
 This is the most important reuse decision in the plan: writing a second, independent scope-lifecycle
 tracker next to the one that already exists is how the two drift apart.

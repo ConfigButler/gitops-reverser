@@ -12,6 +12,13 @@
 > operation set, and `snapshotGVRsFromTable` emits one `snapshotGVR` per scope (its `namespaces`
 > slice became a single `namespace`, matching `targetWatchKey`). The old assertion was deleted and
 > replaced; the three replacements fail against the pre-fix collapse.
+>
+> **Later changes, neither of which touches this fix.** The snapshot read site
+> (`snapshotGVRsFromTable`) was deleted with the snapshot path itself in the watch-first rewrite, so
+> `targetWatchSpecs` is now the only projection. And a stream is keyed by CELL — one type in one
+> namespace, no served version — so two versions of one resource collapse to one stream
+> ([TargetWatchPlan](../target-watch-plan.md) §1.1). A cluster-wide scope and a named namespace stay
+> two cells, which is precisely what this page forbids collapsing.
 
 ## The defect
 
