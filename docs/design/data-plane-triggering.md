@@ -369,13 +369,23 @@ flowchart TD
     WR2["WatchRule B<br/>(secrets, ns=team-b)"] --> GT
     WR3["WatchRule C<br/>(deployments, ns=team-c)"] --> GT
 
-    WR2 -.->|"edit"| D["dirty:<br/>(GitTarget, secrets, team-b)"]
+    WR2 -.->|"edit"| D["invalidate:<br/>(GitTarget, secrets, team-b)"]
     D --> N["other scopes untouched"]
 ```
 
-An event pipe quietly encourages "resync everything, it is easier." A dirty set
-keyed by `(target, GVR, namespace)` makes precise invalidation the natural thing
-to express instead.
+An event pipe quietly encourages "resync everything, it is easier." Invalidation
+keyed by `(target, GVR, namespace)` makes precision the natural thing to express
+instead.
+
+One subtlety the diagram flattens: when a rule **moves** rather than changes in
+place, both scopes are invalidated, not just the new one. Editing WatchRule B's
+`sourceNamespace` from `team-b` to `team-c` produces a `stop` for
+`(secrets, team-b)` and a `start` for `(secrets, team-c)`, and deleting the rule
+outright produces the `stop` alone. Invalidating only the arriving scope leaves
+the departing one's managed documents in Git with nothing watching them. What
+should happen to those documents is not a granularity question, which is why it
+is decided by [TargetWatchPlan](target-watch-plan.md) §3's cause table (this is
+the *intent* row) rather than here.
 
 The relationship graph needed for this already half-exists in the control plane:
 `gitTargetToWatchRules`, `gitProviderToWatchRules`, `clusterProviderToWatchRules`

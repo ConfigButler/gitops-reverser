@@ -111,8 +111,13 @@ keep    = key in both, StreamSpec equal        leave the handle running
 restart = key in both, StreamSpec differs      cancel, then start fresh
 start   = key only in new plan                 start fresh
 stop    = key only in old plan                 cancel, then classify by cause (§3)
-force   = operator or recovery override        restart every key
 ```
+
+`force` is not a fifth outcome. It is an **override** that skips the diff
+entirely, applied by an operator or a recovery path, and its effect is to
+classify every key as `restart` regardless of what the diff would have said. It
+therefore has no cause to classify (§3) and no bearing on the mirror: nothing
+left the plan.
 
 `restart` is not a rare case. `targetWatchSpecs` already keys on `(GVR,
 namespace)` with the **operation filter as the value**, so an edit that changes
