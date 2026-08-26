@@ -15,17 +15,30 @@ related:
 
 > **design** — open, not yet built. Index: [`../INDEX.md`](../INDEX.md)
 
+> **Not a specification.** This document is incident analysis, rationale, and
+> ordering research. The implementable plan for this refactor is
+> [TargetWatchPlan](target-watch-plan.md); policy semantics live in its parent,
+> [Watch and catalog architecture](watch-and-catalog-architecture.md). Where this
+> page and either of those disagree, they win. Sections 5 to 8 record proposals
+> that were superseded during review and are kept only as the reasoning that led
+> to the plan.
+
+The reading order for this refactor:
+
+1. [Watch and catalog architecture](watch-and-catalog-architecture.md), the
+   parent architecture and policy semantics.
+2. [TargetWatchPlan](target-watch-plan.md), the canonical implementable plan.
+3. This document, for why any of it is necessary.
+
 [`reconcile-triggering.md`](./reconcile-triggering.md) asks how the **control
-plane** wakes up. This document asks the same question one layer down, about the
-**data plane**: the branch worker's event queue, what travels on it, and which of
-those things should not be travelling on a queue at all.
+plane** wakes up. This asks the same question one layer down, about the **data
+plane**: the branch worker's event queue, what travels on it, and which of those
+things should not be travelling on a queue at all.
 
 It starts from a concrete production failure, walks the pipeline as it works
-today, separates the two jobs the queue is doing, and proposes moving one of them
-to a level-triggered dirty set while leaving the other exactly where it is. It
-also records why the current shape is not accidental: the snapshot and its FIFO
-position together solve a real double-apply problem, and any replacement has to
-solve it again.
+today, separates the two jobs the queue is doing, and records why the current
+shape is not accidental: the snapshot and its FIFO position together solve a real
+double-apply problem, and any replacement has to solve it again.
 
 ---
 
@@ -305,307 +318,31 @@ free. It is the boundary that makes "snapshot, then deltas" well defined.
 
 ---
 
-## 5. The coalescing map is already a dirty set
+## 5. What was proposed here, and where it went
 
-This is the tell. What #312 added is:
+Three proposals were drafted in this document and are **not** reproduced, because
+[TargetWatchPlan](target-watch-plan.md) carries their successors in implementable
+form. They are recorded here only so the path is legible:
 
-```go
-pendingResyncs map[resyncKey]*ResyncRequest   // key: (GitTarget, GVR, namespace)
-```
+| Drafted here | Outcome |
+|---|---|
+| A dirty set replacing the resync payload | Superseded. It moved the ordering problem of §4 rather than avoiding it |
+| Diffing the stream set into `start` / `stop` / `keep` | Adopted, and **corrected**: it omitted `restart`, the case where a key survives and its operation filter changes. See [TargetWatchPlan](target-watch-plan.md) §2 |
+| A folder-wide coverage sweep of anything no live stream covers | Superseded. It collapsed three different removal causes into one action, and one of them (an incomplete or degraded view) must never delete. See [TargetWatchPlan](target-watch-plan.md) §3 |
 
-That is a dirty set, with a pre-gathered payload still bolted to each entry.
-Depth is bounded by *state cardinality* (how many distinct scopes exist) rather
-than by *event rate*, which is exactly the property a dirty set has and a queue
-does not.
+Two findings from this document survive intact and are load-bearing for the plan:
 
-It is worth naming, because it shows the resync half was already drifting toward
-level-triggered. But it treats the symptom. The question §6 asks instead is why a
-configuration change produces a fan-out of resyncs at all.
-
----
-
-## 6. Proposal: diff the stream set
-
-Treat a configuration change as a **transition between two stream sets**. Compute
-the set before and the set after, take the difference, and act only on it:
-
-```text
-keep    = same key, same StreamSpec     leave the handle running
-restart = same key, different StreamSpec  cancel, then start fresh
-start   = key only in the new plan      start fresh
-stop    = key only in the old plan      cancel, then classify by cause
-```
-
-The `restart` row is easy to miss and was missing from the first draft of this
-section. `targetWatchSpecs` keys on `(GVR, namespace)` with the **operation
-filter as the value**, so an edit that changes only which verbs a rule follows
-keeps its key and changes its spec. A diff that compares keys alone would keep a
-stream that must be replaced.
-
-```mermaid
-flowchart LR
-    subgraph Now["Today"]
-        N1["config change"] --> N2{"set identical?"}
-        N2 -->|"yes"| N3["no-op"]
-        N2 -->|"no"| N4["cancel all,<br/>replay all,<br/>resync all"]
-    end
-    subgraph Next["Proposed"]
-        X1["config change"] --> X2["diff the sets"]
-        X2 --> X3["start: replay only<br/>the added scopes"]
-        X2 --> X4["stop: close only<br/>the removed scopes"]
-        X2 --> X5["keep: untouched,<br/>no replay, no resync"]
-    end
-```
-
-Two properties make this work, and both are already true.
-
-**The stream is the gather.** In the primary path there is no separate LIST: a
-stream opened with `sendInitialEvents=true` replays current state as `ADDED`
-events terminated by the `initial-events-end` bookmark, and *that replay is the
-desired set*. So "avoid querying the apiserver directly" is already how it works,
-and the LIST in `targetWatchListAndStream` is the compatibility fallback for
-apiservers that refuse `sendInitialEvents`, not the normal route.
-
-**Ordering is intra-stream, for a single stream.** Replay and live events arrive
-on one stream in one goroutine, so for an added scope the boundary §4 requires is
-defined *by the apiserver*, at the bookmark. That is the property to lean on, and
-it is why this is better than the dirty-set sketch that previously occupied this
-section: that one moved the ordering problem, this one avoids it for the common
-case.
-
-It does **not** hold in two cases, and the first draft of this section overstated
-the guarantee by omitting them. Overlapping streams (a cluster-wide and a
-named-namespace stream on one GVR) are concurrent peers delivering the same
-object on two goroutines. And a `restart` produces a second snapshot for a scope
-whose earlier events may still be queued. Both need an explicit fence, specified
-in [TargetWatchPlan](target-watch-plan.md) §4.
-
-The blast radius becomes proportional to the change. Adding a WatchRule replays
-one scope. Removing one closes one scope. Editing an unrelated field on a
-GitTarget touches nothing at all.
-
-### 6.1 What this does to the queue question
-
-Most of §5 stops mattering. If a declaration change no longer fans out N replays,
-the resync storm has no fuel, and each remaining resync is the natural tail of a
-single stream's replay rather than an independently gathered snapshot competing
-for FIFO slots.
-
-The coalescing added in #312 stays useful as a backstop, but it stops being the
-thing standing between one busy GitTarget and everyone else on the branch.
+- **§4's ordering constraint.** A snapshot cannot be separated from the events
+  behind it, which is why the plan needs an explicit fence rather than an
+  assumption. That section also surfaced a live regression in the shipped
+  coalescing, specified in [TargetWatchPlan](target-watch-plan.md) §4.1.
+- **§2's finding** that the stream set is already declarative and only the diff
+  is missing, which is what made an incremental plan a small change rather than
+  a rewrite.
 
 ---
 
-## 7. What has to be answered first
-
-### 7.1 Per-stream epoch and pending state (decided)
-
-**Decision: state is kept per stream.** A stream is `running`, `new`, or
-`deleted`, and a running stream carries its own epoch and pending state forward
-across a declaration change.
-
-This is the enabling change. Render fidelity is tracked per **target**
-(`m.targetRenderFidelity[target.Key()]`) and an epoch is opened over the whole
-scope set, which is precisely why an unchanged scope cannot resume today: it
-would stay pending in the new epoch forever. Moving that fact to the scope is
-what lets a kept stream survive a declaration change untouched.
-
-### 7.2 What closing a stream means for Git (decided, with one conflict)
-
-**Decision: removing a WatchRule deletes the documents that scope owned.** The
-source cluster is the source of truth, Git is the ledger, and the ledger is kept
-in sync as closely as possible. Nothing is left lying around.
-
-**Removing the GitTarget does not.** The asymmetry is deliberate and coherent:
-narrowing a scope edits a mirror that remains live and must stay accurate, while
-deleting the GitTarget ends the mirroring relationship altogether. Sweeping is an
-obligation only while we are responsible for the folder's accuracy; once we stop
-mirroring, what is already written stands as a record.
-
-```mermaid
-flowchart TB
-    A["remove a WatchRule"] --> B["mirror stays live<br/>and must stay accurate"]
-    B --> C["<b>sweep</b> that scope's documents"]
-    D["delete the GitTarget"] --> E["mirroring relationship ends"]
-    E --> F["<b>retain</b> what is written"]
-```
-
-**The conflict to resolve.** `spec.prune.mode` defaults to `OnEvent`: observed
-deletes are mirrored, deletions *inferred* from a desired snapshot are not. A
-scope-close sweep would be suppressed under that default, which is the opposite
-of the decision above.
-
-The way out is that a scope-close is neither of the two existing categories. [GitTarget deletion safety](watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
-separates **source evidence** (an observed DELETE) from
-**inference** (mark-and-sweep against a snapshot, unsafe when the snapshot was
-gathered against a wrong boundary). Removing a WatchRule is a third thing: an
-explicit configuration act, stating intent directly rather than inferring it. It
-carries no risk of a mis-scoped snapshot, because nothing is being compared.
-
-That argues for scope-close deleting regardless of `prune.mode`. It should be
-settled explicitly, because a user who set `mode: Never` may reasonably expect it
-to mean never. Whatever is decided, a suppressed sweep is already observable
-through [retention visibility](watchrule-source-namespace/pr5-retention-visibility.md).
-
-### 7.2.1 Coverage, not per-scope close sweeps
-
-The first draft of this section proposed sweeping a closed stream's scope. That
-is the wrong shape. Two problems kill it, and both dissolve under a different
-question.
-
-**Problem one: overlapping scopes are real and deliberate.** A cluster-wide
-stream (`namespace: ""`) is a peer of a named-namespace stream on the same GVR,
-never a replacement for it, as
-[stream scope collapse](watchrule-source-namespace/pr2-stream-scope-collapse.md)
-records. `ResyncScope.Matches` treats an empty namespace as
-*every* namespace, so an empty-desired sweep at `(configmaps, "")` would delete
-documents a surviving `(configmaps, team-a)` stream still owns. Sweeping a closed
-scope would need to subtract the survivors' scopes, which is fiddly and easy to
-get wrong in exactly the direction that deletes user data.
-
-**Problem two, as first written, was wrong.** This section originally claimed that
-a vanished type has no scope to close, so per-scope sweeping could never reach its
-documents. That is not true. The signal exists, it is authoritative, and it
-already accounts for the wait before calling a type gone:
-
-- CRDs are **already watched**. `crdTriggerGVR` watches
-  `customresourcedefinitions`, with `get;list;watch` RBAC, and an APIService
-  trigger beside it. A CRD delete is observed, not inferred from discovery going
-  quiet.
-- The **registry emits a per-type lifecycle**, implemented in
-  [`internal/typeset/lifecycle.go`](../../internal/typeset/lifecycle.go):
-  `TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`.
-- `RemovalGrace` (60 s) is what separates a wobble from a removal, so
-  `TypeRemoved` fires only once absence has settled. The waiting is already part
-  of the abstraction.
-
-So a vanished type **does** name its scope, after the grace, through an
-authoritative event. Per-scope closing reaches it.
-
-The real gap is narrower and is a wiring one: `Registry.Subscribe` has no
-production caller today. `Materializer.OnLifecycleEvent` handles `TypeRemoved`
-(force-release the checkpoint, keep the claim so a reappearance re-syncs), and its
-own comment describes it as the observer "the future driver wires onto
-`Registry.Subscribe`". The vocabulary is built; nothing consumes it yet.
-
-That changes the conclusion. The fix is to **wire the existing lifecycle to a
-per-type untracking sweep**, which
-[type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)
-already specifies, rather than to invent a folder-wide coverage walk to
-compensate for a signal that was assumed missing.
-
-**The better question is coverage.** Instead of "which documents did the closed
-stream own", ask, of every managed document in the folder:
-
-> Is there any live stream that still covers this?
-
-```mermaid
-flowchart TB
-    W["walk the GitTarget subtree"] --> D["for each managed document"]
-    D --> Q{"covered by any<br/>live stream?"}
-    Q -->|"yes"| K["keep"]
-    Q -->|"no"| S["<b>sweep</b>"]
-
-    R1["rule removed"] -.->|"stream gone"| Q
-    R2["CRD uninstalled"] -.->|"type left the table"| Q
-    R3["overlapping peer<br/>still live"] -.->|"still covers it"| Q
-```
-
-One rule handles all three cases: a removed rule, an uninstalled type, and an
-overlapping peer that keeps a document alive. No scope subtraction, no close
-event required, nothing accumulating silently.
-
-### 7.2.2 The check is cheap, and the data is already there
-
-`WatchedType` already carries both identities:
-
-```go
-type WatchedType struct {
-    GVK          schema.GroupVersionKind
-    GVR          schema.GroupVersionResource
-    NamespaceOps map[string]OperationSet   // "" key = cluster-wide
-}
-```
-
-So coverage is a map lookup per document, keyed on **GVK**, with the namespace
-rule that already exists:
-
-```text
-covered(doc) := some WatchedType wt where
-    wt.GVK.Group == doc.group && wt.GVK.Kind == doc.kind
-    && (wt.NamespaceOps has "" || wt.NamespaceOps has doc.namespace)
-```
-
-Keying on GVK rather than the resolved GVR is what makes the uninstalled-CRD case
-work **without discovery and without provenance markers**. The document carries
-its own `apiVersion` and `kind`; the table carries the Kind recorded when the
-stream was declared. Nothing has to be resolved at sweep time, so a type that no
-longer exists matches nothing and is swept.
-
-This matters because we deliberately write **no provenance marker** into mirrored
-documents: the mirror is meant to read as hand-authored YAML, and a committed
-tracking annotation is actively harmful. Coverage-by-GVK gets the same answer
-without writing anything into the user's files.
-
-`ResyncScope.Matches` is already the single-scope form of this predicate. What is
-missing is the any-of form over the whole live set.
-
-### 7.2.3 The risk this creates, and the gate it needs
-
-"Delete every managed document no live stream covers" is the most destructive
-operation in the system. Its blast radius is the entire GitTarget folder, and it
-is wrong in the dangerous direction whenever the stream table is **incomplete**
-rather than narrower by intent: a controller still starting, discovery not yet
-ready, rules not yet loaded, a source cluster briefly unreachable.
-
-This is the same hazard
-[GitTarget deletion safety](watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
-already names, one level up: a set that is complete-looking but gathered against
-the wrong boundary. There, the protection is that an incomplete gather enqueues
-no resync at all, so an outage stops a sweep rather than shrinking one.
-
-Part of the protection already exists for the type-level case.
-[Type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)
-gives the registry a `RemovalGrace` (60 s) before a type that vanished from
-discovery is treated as removed, so a discovery wobble does not empty the table
-underneath a sweep. That covers types blinking out. It does **not** cover the
-other ways the table can be incomplete: rules not yet loaded, a controller still
-starting, a source cluster briefly unreachable.
-
-So coverage sweeping needs the property stated explicitly, on top of that grace:
-
-- the sweep runs only when the declared stream table is **known complete** for the
-  target (discovery ready, rules resolved, source cluster reachable);
-- anything less runs no sweep, rather than a sweep against a partial table.
-
-That gate, not the matching, is the real work in this proposal. The matching is a
-map lookup.
-
-### 7.3 Changes that are not stream-shaped (already answered)
-
-The destination fields are **immutable**, enforced by CEL on the type:
-
-```text
-spec.providerRef        is immutable
-spec.branch             is immutable
-spec.path               is immutable
-spec.clusterProviderRef is immutable
-```
-
-with the message "delete and recreate the GitTarget to change its destination".
-So there is no path-change transition to design for: changing a destination means
-a new GitTarget, and the old one's folder is retained under §7.2. The class of
-problem was removed by the API rather than solved by the data plane.
-
-### 7.4 The scope invariant still holds
-
-`ResyncScope` carries the invariant that the sweep scope must be exactly the
-scope the desired set was gathered over: a narrower desired set than its sweep
-scope **deletes managed documents**. Per-stream replay preserves this by
-construction, because a stream's replay and its sweep are the same scope by
-definition. That is a strengthening, not a risk.
-
-## 8. One level up: invalidation granularity
+## 6. One level up: invalidation granularity
 
 The same argument applies to the config surface. A small change to one WatchRule
 among many should not imply a full resync of its GitTarget.
@@ -635,7 +372,7 @@ events for both of its jobs.
 
 ---
 
-## 9. Related work
+## 7. Related work
 
 Everything below already exists. This note sits on top of it rather than beside
 it.
@@ -659,7 +396,8 @@ has the worked examples behind the ordering claims.
 [Namespace-scoped resync](watchrule-source-namespace/pr1-namespace-scoped-resync.md)
 and [stream scope collapse](watchrule-source-namespace/pr2-stream-scope-collapse.md)
 established the per-scope stream model and why a cluster-wide scope is a peer of a
-named one rather than a replacement. That is the overlap §7.2.1 has to handle.
+named one rather than a replacement. That is the overlap
+[TargetWatchPlan](target-watch-plan.md) §3 has to handle.
 
 **Deletion and retention.**
 [GitTarget deletion safety](watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
@@ -670,12 +408,13 @@ makes a suppressed sweep observable.
 
 **Types and identity.**
 [Type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)
-gives `RemovalGrace`, which is the existing half of §7.2.3's gate.
+gives `RemovalGrace`, which the plan consumes rather than re-deciding.
 [Typeset owns discovery grace](../spec/typeset-owns-discovery-grace.md) is where
 that grace lives. [Type followability](../spec/type-followability.md) defines what
 may be mirrored at all, and
 [the GVK/GVR mapping layer](../spec/gvk-gvr-mapping-layer.md) is the identity
-resolution §7.2.2 deliberately avoids depending on at sweep time.
+resolution the plan's cell identity question turns on
+([TargetWatchPlan](target-watch-plan.md) §1.1).
 [Unsupported folder refusal](../spec/unsupported-folder-refusal-plan.md) is the
 acceptance gate that decides what a folder may contain before any of this runs.
 
@@ -685,39 +424,20 @@ model for how rules become concrete watched types.
 
 ---
 
-## 10. Where we are
+## 8. Where we are
 
-```mermaid
-flowchart LR
-    S1["<b>1. Coalesce</b><br/>keyed resyncs<br/><i>shipped in #312</i>"]
-    S2["<b>2. Per-stream epoch</b><br/>pending becomes per-scope<br/><i>enabling change</i>"]
-    S3["<b>3. Diff the stream set</b><br/>start / stop / keep<br/><i>the payoff</i>"]
-    S4["<b>4. Close semantics</b><br/>sweep the scope,<br/>retain on target delete"]
-    S1 --> S2 --> S3
-    S3 -.->|"needs"| S4
+The build order for this refactor lives in
+[TargetWatchPlan](target-watch-plan.md) §7, which is the single place it should
+be read from. In outline: fence the coalescing regression, add provenance to
+queued items, settle the cell identity question, then diff the plan so unrelated
+replays stop. The semantics of removal come after, deliberately.
 
-    classDef done stroke-width:3px;
-    class S1 done;
-```
+One thing shipped already, in
+[#312](https://github.com/ConfigButler/gitops-reverser/pull/312): resyncs are
+keyed and coalesced, and the storm source is fixed. That was a backstop rather
+than a cure, and it introduced the ordering hazard the plan's first step now
+fences.
 
-1. **Shipped.** Resyncs are keyed and coalesced; the storm source is fixed. This
-   was a backstop, not the cure.
-2. **Enabling change.** Make epoch and pending state per-scope, so a kept stream
-   can carry its own forward (§7.1).
-3. **The payoff.** Diff the stream set on a declaration change, so blast radius is
-   proportional to the edit (§6).
-4. **Decided, two details open.** A removed WatchRule sweeps what it owned; a
-   deleted GitTarget retains its folder (§7.2). The sweep is expressed as
-   coverage over the whole folder rather than per closed scope (§7.2.1), which
-   needs a completeness gate (§7.2.3) and an answer on `spec.prune.mode`, whose
-   `OnEvent` default would suppress it.
-
-The writes stay a log throughout. The dirty-set sketch that earlier occupied §6
-is superseded: leaning on `sendInitialEvents` keeps the gather inside the stream,
-where its ordering is already guaranteed for the single-stream case.
-
-**The implementable form of steps 2 and 3 is
-[TargetWatchPlan](target-watch-plan.md)**, which carries the precise cell
-lifecycle, the four-way classification, the cause table that decides what a
-removal does to Git, the ordering fence, and the build order. This document is
-the motivation; that one is the specification.
+The writes stay a log throughout. Only the resync half of the queue is in
+question, and the answer is to make the stream set incremental rather than to
+replace the queue.

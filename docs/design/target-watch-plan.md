@@ -34,32 +34,69 @@ so rather than implying one.
 ## 1. Types
 
 ```go
-// CellKey identifies one watched slice of one GitTarget. It is the identity that
-// ResyncScope already uses, and the two MUST agree: a cell's key and the scope
-// its sweep runs under are the same value viewed from two layers.
+// CellKey identifies one watched slice of one GitTarget.
 type CellKey struct {
     GVR       schema.GroupVersionResource
     Namespace string // "" is cluster-wide, a PEER of any named namespace
 }
 
 // StreamSpec is everything about a cell that, when changed, invalidates the
-// running stream. It is immutable and compared by value.
+// running stream. It MUST be comparable with ==, which rules out holding an
+// OperationSet directly: that is a map[string]struct{}, so it is both mutable
+// and not comparable. Hold the canonical rendering instead, which
+// targetWatchSpecs already produces as its map value.
 type StreamSpec struct {
-    Operations OperationSet
-    // Add here, never elsewhere, anything else that changes what the stream
-    // delivers. A field that belongs here but is stored outside it is a silent
-    // "keep" for a stream that should have restarted.
+    Operations string // canonical, sorted; the existing spec value
+}
+
+// ActiveCell is a running stream. The lease, not the plan generation, is what
+// fences its effects.
+type ActiveCell struct {
+    Spec   StreamSpec
+    Lease  uint64 // advances ONLY on start and restart of this cell
+    Cancel context.CancelFunc
 }
 
 type TargetWatchPlan struct {
-    Generation uint64                    // monotonic per GitTarget
+    Generation uint64                 // advances on every plan change
     Cells      map[CellKey]StreamSpec
 }
 ```
 
-`CellKey` deliberately reuses `ResyncScope`'s identity semantics. A cell whose key
-does not round-trip to the scope its sweep runs under is a defect, because the
-sweep boundary and the gather boundary would differ.
+**Plan generation and cell lease are different things, and conflating them is a
+bug.** If every plan change advanced a single target-wide generation, a `keep`
+stream that was never touched would start producing effects tagged with a stale
+generation the moment an unrelated cell changed, and a generation-based fence
+would reject its perfectly valid work.
+
+So: the plan generation orders **plan transitions**; a cell's lease fences **that
+cell's effects**, and advances only when that cell is started or restarted. A
+`stop` leaves a **tombstone** (the key with its retired lease) for long enough to
+reject work that is still queued from the canceled stream. A tombstone is
+retired once no work carrying that lease can remain in flight.
+
+### 1.1 `CellKey` and `ResyncScope` are not identical today
+
+The intent is that a cell's key and the scope its sweep runs under are one
+boundary. They are not yet:
+
+- `ResyncScope` holds a full `GVR`, **including version**.
+- `ResyncScope.Matches` compares group, resource, and namespace, and **ignores
+  version**.
+
+So two cells differing only in served version are distinct keys but one sweep
+boundary. Before either type claims to reuse the other's identity, pick one:
+
+1. **Enforce one active served version per logical resource**, making the version
+   in the key redundant but harmless; or
+2. **Make the key group/resource/namespace**, matching what `Matches` actually
+   compares, and carry the served version as data on the cell rather than as
+   identity.
+
+Option 2 is the smaller change and removes the discrepancy at its source. Either
+way this must be settled before a cell removal is translated into a sweep scope,
+because a key that does not round-trip to its scope means a sweep with the wrong
+boundary, which is the one class of error that deletes user data.
 
 ---
 
@@ -107,7 +144,7 @@ removals into one coverage sweep.
 | Cause | Example | Authoritative? | Action on the mirror |
 |---|---|---|---|
 | **Intent** | WatchRule deleted or narrowed, namespace deselected, label revoked | yes | Remove the cell's managed projection (subject to §3.1) |
-| **Confirmed withdrawal** | `TypeRemoved` after `RemovalGrace` settles | yes | Per-type untracking, on the settled event only |
+| **Confirmed withdrawal** | `TypeRemoved` after `RemovalGrace` settles | yes | Per-type untracking, on the settled event only. **What untracking does to the files is open: see §3.2** |
 | **Observability** | discovery wobble, list failure, RBAC denial, source cluster unreachable | **no** | **Hold.** Keep the handle and the files. Never delete |
 
 The third row is the one that must never be got wrong, and it is why a
@@ -119,31 +156,6 @@ walk. Coverage is a useful *invariant to assert*, not a safe *action to take*.
 already encodes the middle row: `TypeWobbling` must not sweep, and only a settled
 `TypeRemoved` triggers untracking for that type. This plan does not re-decide
 that. It consumes it.
-
-### 3.2 The withdrawal signal exists; it has no consumer
-
-Worth being precise, because it is a build dependency rather than a design gap.
-
-**Already built.** CRDs and APIServices are watched as catalog triggers
-(`crdTriggerGVR`, `apiServiceTriggerGVR`, with `get;list;watch` RBAC), so a CRD
-delete is *observed*, not inferred from discovery going quiet. The registry emits
-a per-type lifecycle in [`internal/typeset/lifecycle.go`](../../internal/typeset/lifecycle.go)
-(`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`),
-and `RemovalGrace` is what separates a wobble from a removal, so the waiting
-before calling a type gone is part of the abstraction rather than something this
-plan has to add.
-
-**Not yet wired.** `Registry.Subscribe` has no production caller.
-`Materializer.OnLifecycleEvent` handles `TypeRemoved` by force-releasing the
-checkpoint while keeping the claim, so a reappearance re-syncs, and its comment
-describes itself as the observer "the future driver wires onto
-`Registry.Subscribe`".
-
-So the confirmed-withdrawal row of the table above is implementable by
-**connecting an existing producer to a consumer**, not by building a detector.
-The plan's `stop` classification is the natural consumer: a settled `TypeRemoved`
-is one authoritative cause of a cell leaving the plan, and it arrives already
-graced.
 
 ### 3.1 Intent-driven removal and `prune.mode`: an open API question
 
@@ -183,6 +195,62 @@ because every option below assumes the watch layer has already decided the
 deletion policy before any work reaches the worker.
 
 ---
+
+### 3.2 What "untracking" does to the files is not yet decided
+
+The table says a settled `TypeRemoved` untracks that type. It deliberately does
+not say whether untracking **deletes** the files, **retains** them, or **follows
+`prune.mode`**, because the existing material points two ways:
+
+- [Watch and catalog architecture](watch-and-catalog-architecture.md) proposes
+  **retaining** files on CRD withdrawal, while treating intent-driven
+  deselection as a separate decision.
+- The product intent recorded in §3.1 is that the ledger tracks the cluster, and
+  a type that no longer exists arguably has nothing left to track.
+
+They are reconcilable, and the argument for retaining is stronger than it first
+looks: a withdrawn CRD is frequently an operator upgrade in progress, and its
+custom resources are the thing a user would most regret losing. Retention is also
+recoverable, deletion is not.
+
+**Recommendation, not a decision:** retain on confirmed withdrawal, delete on
+intent. The asymmetry is the same one §3.1 draws for GitTarget deletion: we sweep
+when the user narrowed what we mirror, and hold when the world changed under us.
+
+This must be written down before §6's `ProjectionDelta` carries a `Cause`, since
+the cause is only useful if each value maps to a decided action.
+
+### 3.3 The withdrawal signal exists; it has no consumer
+
+Worth being precise, because it is a build dependency rather than a design gap.
+
+**Already built.** The registry emits
+a per-type lifecycle in [`internal/typeset/lifecycle.go`](../../internal/typeset/lifecycle.go)
+(`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`),
+and `RemovalGrace` is what separates a wobble from a removal, so the waiting
+before calling a type gone is part of the abstraction rather than something this
+plan has to add.
+
+The guarantee to rely on is that settled `TypeRemoved`, **not** direct
+observation of a CRD delete. Local CRD and APIService informers exist as catalog
+triggers, but they run in the operator's own control plane; a **remote** source
+cluster's API surface is learned through discovery refresh and the registry's
+judgement across scans, where a failed group keeps serving last known facts
+rather than looking like an empty surface. Treating "we watch CRDs" as the
+mechanism would be right for the local cluster and wrong for every mirrored
+one.
+
+**Not yet wired.** `Registry.Subscribe` has no production caller.
+`Materializer.OnLifecycleEvent` handles `TypeRemoved` by force-releasing the
+checkpoint while keeping the claim, so a reappearance re-syncs, and its comment
+describes itself as the observer "the future driver wires onto
+`Registry.Subscribe`".
+
+So the confirmed-withdrawal row of the table above is implementable by
+**connecting an existing producer to a consumer**, not by building a detector.
+The plan's `stop` classification is the natural consumer: a settled `TypeRemoved`
+is one authoritative cause of a cell leaving the plan, and it arrives already
+graced.
 
 ## 4. Ordering: the fence this design requires
 
@@ -234,10 +302,13 @@ stale write and must be fenced.
 Exactly one of these has to be chosen, stated, and tested:
 
 1. **Never coalesce past a tail.** Coalesce only while no work item for that
-   scope has been enqueued after the marker. Requires a per-scope enqueue
-   sequence: record the sequence at which the marker was placed, track the last
-   event sequence per scope, and coalesce only when no event followed. This is
-   the smallest change and preserves today's semantics exactly.
+   scope has been enqueued after the marker. This needs a per-scope enqueue
+   sequence, and therefore needs **provenance on queued items** (§5.1): today a
+   queued `Event` carries the object's identity but not the cell that produced
+   it, and with a cluster-wide and a namespaced stream both delivering one
+   object, the producing cell cannot be recovered from the object's namespace.
+   So this option is smallest in concept but is gated on provenance, and the two
+   should be built together.
 2. **Carry a monotonic fence.** A snapshot records the revision it covers, and
    the worker suppresses any event for that scope at or below it. Stronger, and
    it also fixes the overlapping-stream case, but it needs a revision comparison
@@ -248,9 +319,12 @@ Exactly one of these has to be chosen, stated, and tested:
    across its streams, which is the largest change and the only one that removes
    the class rather than the instance.
 
-Option 1 is recommended for the immediate fix and option 2 for the target state.
-Option 1 does not address overlapping streams; that gap should be recorded rather
-than assumed away.
+Option 3 is the only one available without new provenance, and it is the
+recommended **immediate** fix: coalescing only during replay, before any live
+event for the scope has been admitted, needs no per-item source. Option 1 is the
+better steady state once §5.1 lands, and option 2 or 4 is the target if
+overlapping streams are to be ordered rather than merely fenced. Neither 1 nor 3
+addresses overlapping streams; that gap is recorded, not assumed away.
 
 ---
 
@@ -288,6 +362,35 @@ with three properties that are easy to get wrong:
   resyncs.
 
 ---
+
+### 5.1 The lease has to reach the branch worker
+
+A lease that only the manager knows is not a fence. Once an item is on the FIFO,
+the manager cannot withdraw it, and the worker has nothing to check it against:
+neither `Event` nor `ResyncRequest` carries a source cell or lease today, and
+there is no validation hook on the way in.
+
+So every queued item needs provenance:
+
+```go
+type Provenance struct {
+    Target types.ResourceReference
+    Cell   CellKey
+    Lease  uint64
+}
+```
+
+attached to write requests, resync requests, and projection deltas alike, with
+one defined checkpoint: **the worker validates provenance when it dequeues an
+item, before applying it**, and drops anything whose lease is not current for its
+cell (including anything matching a tombstone). Dropping must be counted, not
+silent, because a nonzero rate means streams are being restarted more than the
+plan intends.
+
+This is also what makes §4.2 option 1 possible at all, and what lets a coalescing
+decision be made per producing cell rather than guessed from an object's
+namespace. It is a prerequisite for the ordering fence, not an optimization of
+it.
 
 ## 6. Removing a cell is a worker operation
 
@@ -332,24 +435,29 @@ not a well-defined operation, and this is the dependency that gates §3.
 
 Each step is independently shippable and leaves the system correct.
 
-1. **Fence the coalescing regression** (§4.1, option 1). Small, and it removes a
-   live stale-write path. No plan work required.
-2. **Introduce the types** (§1) and compute the plan without acting on it. Log
+1. **Fence the coalescing regression** (§4.1) using option 3, replay-only
+   coalescing. It needs no provenance and removes a live stale-write path today.
+2. **Add provenance to queued items** (§5.1). It is the prerequisite for every
+   later fence and for lease enforcement, and it is independently useful: it
+   makes "which cell produced this write" answerable in logs and metrics.
+3. **Settle the identity question** (§1.1) so a cell key round-trips to a sweep
+   scope. Cheap now, expensive after anything depends on the wrong answer.
+4. **Introduce the types** (§1) and compute the plan without acting on it. Log
    the classification. This validates the diff against real workloads with zero
    behavior change.
-3. **`BeginDelta` and the generation lease** (§5). Still no incremental
-   application: prove that a kept scope can carry its result and that stale
-   effects are rejected.
-4. **Apply `keep` / `restart` / `start`** (§2). At this point unrelated replays
+5. **`BeginDelta` and per-cell leases** (§5). Still no incremental application:
+   prove that a kept cell carries its result forward and that stale effects are
+   rejected by lease.
+6. **Apply `keep` / `restart` / `start`** (§2). At this point unrelated replays
    stop, which is the performance goal. `stop` continues to behave as today.
-5. **Wire the lifecycle** (§3.2): subscribe to the registry so a settled
+7. **Wire the lifecycle** (§3.3): subscribe to the registry so a settled
    `TypeRemoved` reaches the plan as an authoritative `stop` cause. The producer
    and the grace already exist.
-6. **Decide §3.1**, then build the managed projection and `ProjectionDelta` (§6),
-   then enable `stop` for intent-driven removal.
-7. **Revisit the ordering fence** for overlapping streams (§4.2 option 2 or 4).
+8. **Decide §3.1 and §3.2**, then build the managed projection and
+   `ProjectionDelta` (§6), then enable `stop`.
+9. **Revisit the ordering fence** for overlapping streams (§4.2 option 2 or 4).
 
-Steps 1 through 4 deliver the speed and reliability improvement. Steps 5 through 7
+Steps 1 through 6 deliver the speed and reliability improvement. Steps 7 through 9
 are where the semantics live, and none of them should be rushed to reach them.
 
 ---
