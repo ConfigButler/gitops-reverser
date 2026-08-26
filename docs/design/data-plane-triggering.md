@@ -229,20 +229,28 @@ flowchart TD
 
 ```go
 type Event struct {
-    Operation     string // CREATE / UPDATE / DELETE
-    AuditStreamID string // "<rv>-<seq>" on the per-type audit stream
+    Operation   string // CREATE / UPDATE / DELETE
+    Identifier  types.ResourceIdentifier
+    Attribution AttributionOutcome // whether an actor was sought, and found
     …
 }
 ```
 
 An `Event` is an *observation of something that happened*. "alice deleted this
-ConfigMap at stream position X" cannot be recomputed from cluster state: the
-object is gone, and the author exists only in the audit fact stream. Commit
-windows are keyed per `(author, GitTarget)`, and the coverage watermark `Hc`
-decides historical-versus-live suppression by stream position.
+ConfigMap" cannot be recomputed from cluster state: the object is gone, and the
+author exists only in the attribution fact stream, joined within a bounded grace
+window. Commit windows are keyed per `(author, GitTarget)`, so the author is part
+of what decides where the write lands, not decoration on top of it.
 
 Order matters, attribution matters, and both are destroyed by collapsing this to
 "something changed." **This half must stay a log.**
+
+> This snippet described `Event.AuditStreamID` when it was written: a Redis stream
+> position `"<rv>-<seq>"` that a per-target coverage watermark compared against to
+> suppress an audit-log entry a reconcile had already folded. That field and that
+> gate belonged to the splice model and were deleted in August 2026. The argument
+> above does not depend on them, so it is restated on the fields the `Event`
+> carries today.
 
 ### 3.2 A resync is level-triggered and recomputable
 
@@ -305,13 +313,19 @@ mark-and-sweep reverts them. The events are not merely redundant, they are
 unapplyable out of order: an event may already be included in the snapshot, so
 its value is only defined relative to the snapshot boundary.
 
-A second gate exists for the same hazard on the attribution side. The per-target
-coverage head `Hc` records how far a target's reconcile covered, so an
-audit-log entry at or below `Hc` is **historical** for that target (already
-folded into the reconcile) and one above it is **live** (apply as its own commit).
-Without that gate, entries get applied twice: once by the reconcile, once by the
-tail. The full account is in
+A second gate used to exist for the same hazard on the attribution side, and it is
+worth knowing why it is gone rather than rediscovering the hazard. Under the splice
+model the audit log was itself a source of object content, so a per-target coverage
+head `Hc` had to mark how far a reconcile had covered: an entry at or below it was
+historical (already folded) and one above it was live. Without that gate, entries
+applied twice, once by the reconcile and once by the tail. The full account is in
 [the snapshot tail replay investigation](../finished/signing-snapshot-tail-replay-failure-investigation.md).
+
+Watch-first ingestion removed the hazard at its root rather than fixing the gate.
+Audit never carries content now: it supplies an author for an event the watch
+already delivered. There is nothing on that side left to apply twice, so the only
+ordering constraint that survives is the one above, between a snapshot and the
+deltas that follow it.
 
 So the FIFO position is not an implementation detail a dirty set can discard for
 free. It is the boundary that makes "snapshot, then deltas" well defined.
