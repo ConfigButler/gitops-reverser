@@ -5,8 +5,8 @@ related:
   - target-watch-plan.md
   - reconcile-triggering.md
   - watch-and-catalog-architecture.md
-  - watchrule-source-namespace/pr2-stream-scope-collapse.md
-  - watchrule-source-namespace/pr5-gittarget-deletion-safety.md
+  - ../finished/watchrule-source-namespace/pr2-stream-scope-collapse.md
+  - ../finished/watchrule-source-namespace/pr5-gittarget-deletion-safety.md
   - ../spec/reconcile-via-watchlist-mark-and-sweep.md
   - ../spec/type-lifecycle-events-and-wobble-settling.md
 ---
@@ -420,17 +420,17 @@ is the mechanism this note's §4 depends on.
 has the worked examples behind the ordering claims.
 
 **Scopes and streams.**
-[Namespace-scoped resync](watchrule-source-namespace/pr1-namespace-scoped-resync.md)
-and [stream scope collapse](watchrule-source-namespace/pr2-stream-scope-collapse.md)
+[Namespace-scoped resync](../finished/watchrule-source-namespace/pr1-namespace-scoped-resync.md)
+and [stream scope collapse](../finished/watchrule-source-namespace/pr2-stream-scope-collapse.md)
 established the per-scope stream model and why a cluster-wide scope is a peer of a
 named one rather than a replacement. That is the overlap
 [TargetWatchPlan](target-watch-plan.md) §3 has to handle.
 
 **Deletion and retention.**
-[GitTarget deletion safety](watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
+[GitTarget deletion safety](../finished/watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
 draws the line between observed evidence and inferred deletion, which is the line
 a scope close has to be placed against.
-[Retention visibility](watchrule-source-namespace/pr5-retention-visibility.md)
+[Retention visibility](../finished/watchrule-source-namespace/pr5-retention-visibility.md)
 makes a suppressed sweep observable.
 
 **Types and identity.**

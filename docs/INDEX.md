@@ -95,7 +95,6 @@ Seventeen other open items:
 | [`sensitive-resource-diagnostics-follow-up.md`](design/sensitive-resource-diagnostics-follow-up.md) | deferred diagnostics |
 | [`e2e-git-server-choice.md`](design/e2e-git-server-choice.md) | stay on Gitea or move to Forgejo — the `_csrf` pin is fixable in place on both, so the migration is now a preference call, not a fix; also why we adopt no SDK either way |
 | [`azure-devops-multi-ack.md`](design/azure-devops-multi-ack.md) | **decided and built: go-git v6** — why Azure DevOps rejects our fetches, and what to do instead of PR [#292](https://github.com/ConfigButler/gitops-reverser/pull/292)'s bundled `git` binary. The capability filter fails in two independent halves: advertising `multi_ack` is a four-line change, but v5 then cannot parse the multi-ACK **response**, which only a fetch with `have` lines provokes. That is why **Flux ships ADO support on v5 with no git binary — it never fetches**, only `CloneContext`, so it never enters the path v5 cannot serve; our persistent-clone-plus-incremental-fetch design is the opposite, which makes the trim alone insufficient for us. **go-git v6 already implements `multi_ack`** (PR #1204, in every v6 tag; upstream then deleted their ADO example saying it "works out of the box"), and its churn in the packages we import runs 96 → 39 → **1** → **9** removals per alpha, so it is one settled breaking wave rather than a moving target; the migration is four known API removals over two rewritten files, `transport.AuthMethod` being the invasive one. Prices PR #292 as measured rather than argued: the image goes **217 MB → 940 MB**, of which 723 MB is a `cp -rL` that dereferences 165 hardlinks to one binary (a one-character fix), arm64 is unaffected and native, but **Trivy reports zero findings on both images** while the new one carries git 2.54.0, OpenSSH 10.3p1 and OpenSSL 3.5.7 as loose files no package database describes — so the CRITICAL gate is blind to a third of the runtime. Also catches an unflagged non-ADO regression (`Depth: 1` dropped, so every provider full-fetches) and 10% patch coverage on an untestable path. The unlock is that **canonical `git upload-pack` advertises `multi_ack`** (verified), so the Gitea already in the e2e lab plus a 400-injecting proxy is a faithful ADO simulator — no tenant needed, and the only way any option becomes CI-testable. Four options priced, and Option A (v6) is the one shipped. Carries a measured **capability matrix** over our three network calls with two diagrams, which narrows the blast radius to **one call, `repo.Fetch`**: `receive-pack` never advertises `multi_ack` (measured), so **the atomic push is out of scope for every option** — its safety rests on the same-session advertisement plus the server-side `Old`/`New` compare-and-swap in `packp.Command`, neither of which touches `upload-pack`, and we already push from a shallow store today. v6 keeps that pattern 1:1 (`Handshake` → `GetRemoteRefs`/`Push`, same `[]*packp.Command`), which is an argument *for* migrating. Records what the migration actually cost, including the four v6 behaviour changes it surfaced — two of them settings v6 reads from the environment and fails closed on, invisible to unit tests |
-| [`watchrule-source-namespace/`](design/watchrule-source-namespace/README.md) | letting a WatchRule address differently-named namespaces on its source cluster — a deny-by-default `allowedSourceNamespaces` on the **GitTarget** (so scope is per-tenant, not a provider-wide union), unlocked by a false-by-default delegation flag on the ClusterProvider. Five PRs: three landed prerequisite scope fixes (the namespace-blind resync sweep that would delete other namespaces' manifests, the cluster-wide/named stream collapse, and ClusterWatchRule's unchecked GitTarget attachment), then the breaking **scope-by-kind** change — `WatchRule.spec.rules[].sourceNamespace` (a name or `"*"` for the target's admitted set) and a cluster-scope-only ClusterWatchRule — and a GitTarget `prune.mode` that makes the resync sweep opt-in, released together with it |
 
 ## Deferred, but still wanted — [`future/`](future/)
 
@@ -114,11 +113,22 @@ Five more ideas sit beside them.
 
 ## History — [`finished/`](finished/)
 
-Twenty-two shipped plans and closed investigations. **Nothing here binds.** Read one
+Twenty-three shipped plans and closed investigations. **Nothing here binds.** Read one
 only when you want to know *why* something is the way it is; the answer to *what it
 is* always lives in `spec/`.
 
-The newest is
+[`watchrule-source-namespace/`](finished/watchrule-source-namespace/README.md) is the newest
+arrival: five PRs, all landed, that let a WatchRule address differently-named namespaces on its
+source cluster — a deny-by-default `allowedSourceNamespaces` on the **GitTarget**, unlocked by a
+false-by-default delegation flag on the ClusterProvider. Three prerequisite scope fixes (the
+namespace-blind resync sweep that would delete other namespaces' manifests, the cluster-wide/named
+stream collapse, and ClusterWatchRule's unchecked GitTarget attachment), then the breaking
+**scope-by-kind** change and the `prune.mode` that makes the resync sweep opt-in, released
+together. It stays readable because open work still rests on it: the sweep-scope invariant, the
+peer-scope rule, and the retention-versus-deletion recommendation are all cited by
+[`target-watch-plan.md`](design/target-watch-plan.md).
+
+The newest closed investigation is
 [`attribution-fact-stream.md`](finished/attribution-fact-stream.md): why attribution facts stopped
 being a keyspace the watch side polls and became a per-type log it follows into a bounded in-memory
 index. It deleted the `SET`/`GET` fact keys, the 150ms poll loop, and the `deletecollection`

@@ -98,7 +98,7 @@ default would reintroduce the retarget hazard directly.
 > `GitTarget.IsLocalSource()` — despite the name — **is a name test** that only seeds the
 > pre-discovery `SourceClusterReachable` default. It is not a locality predicate. A later design
 > took the further step of not deriving *permissions* from locality at all: see
-> [`../design/watchrule-source-namespace/`](../design/watchrule-source-namespace/README.md), whose
+> [`watchrule-source-namespace/`](watchrule-source-namespace/README.md), whose
 > PR 3 page restates this trap verbatim.
 
 ### Namespace authorization enforced once, on reconcile

@@ -44,7 +44,7 @@ present at both ends and discarded in the middle.
 > **Since superseded in shape, not in substance.** The scope's two halves are now one
 > `types.CellKey` (group, resource, namespace) with the served version carried beside it as data,
 > because the version was in the key while the match predicate ignored it —
-> [TargetWatchPlan](../target-watch-plan.md) §1.1. Everything below still holds: the scope travels
+> [TargetWatchPlan](../../design/target-watch-plan.md) §1.1. Everything below still holds: the scope travels
 > as one value and the sweep boundary is exactly what the gather covered.
 
 The scope travels end to end as one value:

@@ -1,11 +1,17 @@
 # Source-namespace addressing and per-target source scope
 
-> **Design in five PRs.** PRs 1–3 are landed. The current branch becomes **PR 4**, the selected
-> scope-by-kind design. **PR 5** is the deletion-safety change, implemented in the PR immediately
-> after it. **No release may be cut between the two merges** — the first release containing PR 4 also
-> contains PR 5. Review findings still open against PR 4 are tracked in
-> [PR 4 review follow-ups](pr4-review-followups.md), and against PR 5 in
-> [PR 5 review follow-ups](pr5-review-followups.md). Index: [INDEX.md](../../INDEX.md).
+> **Closed: all five PRs landed, and the release gate they shared is behind us** — PR 4 and PR 5
+> shipped in the same release, as required. Both review follow-up lists
+> ([PR 4](pr4-review-followups.md), [PR 5](pr5-review-followups.md)) are fully landed too. This
+> folder is history: nothing here binds, and the pages are past-tense by design so a regression is
+> recognisable against them.
+>
+> It is kept rather than deleted because open work still rests on it — the sweep-scope invariant
+> (PR 1), the cluster-wide/named peer rule (PR 2) and the retain-versus-delete recommendation
+> (PR 1, PR 5) are cited by [TargetWatchPlan](../../design/target-watch-plan.md), which has to
+> supersede the last of those explicitly rather than silently.
+>
+> Index: [INDEX.md](../../INDEX.md).
 
 ## Decision
 

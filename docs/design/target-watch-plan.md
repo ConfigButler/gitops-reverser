@@ -5,9 +5,9 @@ related:
   - watch-and-catalog-architecture.md
   - data-plane-triggering.md
   - ../spec/type-lifecycle-events-and-wobble-settling.md
-  - watchrule-source-namespace/pr1-namespace-scoped-resync.md
-  - watchrule-source-namespace/pr2-stream-scope-collapse.md
-  - watchrule-source-namespace/pr5-gittarget-deletion-safety.md
+  - ../finished/watchrule-source-namespace/pr1-namespace-scoped-resync.md
+  - ../finished/watchrule-source-namespace/pr2-stream-scope-collapse.md
+  - ../finished/watchrule-source-namespace/pr5-gittarget-deletion-safety.md
 ---
 
 # TargetWatchPlan: incremental stream reconciliation
@@ -186,7 +186,7 @@ Two things stand in the way, and both need an explicit decision rather than an
 implementation choice.
 
 **It contradicts a shipped recommendation.**
-[Namespace-scoped resync](watchrule-source-namespace/pr1-namespace-scoped-resync.md)
+[Namespace-scoped resync](../finished/watchrule-source-namespace/pr1-namespace-scoped-resync.md)
 states, under "Revocation leaves prior content, a decision, not an oversight":
 *"Recommended: retain, and make it visible."* If intent-driven removal now
 deletes, this document supersedes that recommendation and must say so in the same
@@ -277,7 +277,7 @@ ordering were purely intra-stream. It is not:
 - **Overlapping streams are concurrent peers.** A cluster-wide stream and a
   named-namespace stream on one GVR both deliver the same object, on two
   goroutines, as
-  [stream scope collapse](watchrule-source-namespace/pr2-stream-scope-collapse.md)
+  [stream scope collapse](../finished/watchrule-source-namespace/pr2-stream-scope-collapse.md)
   records. Their relative order is not guaranteed by the apiserver.
 - **A restart re-enters the same scope.** The principal `restart` case produces a
   second snapshot for a scope whose earlier events may still be queued.
