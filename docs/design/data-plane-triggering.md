@@ -426,6 +426,60 @@ That argues for scope-close deleting regardless of `prune.mode`. It should be
 settled explicitly, because a user who set `mode: Never` may reasonably expect it
 to mean never.
 
+### 7.2.1 Which documents belong to a closed stream
+
+The mechanism exists and needs no inventory. Membership is **content-derived at
+sweep time**: the planner reads the documents present in the GitTarget's subtree,
+resolves each one's identity, and asks the scope:
+
+```go
+func (s *ResyncScope) Matches(ri types.ResourceIdentifier) bool {
+    if ri.Group != s.GVR.Group || ri.Resource != s.GVR.Resource { return false }
+    return s.Namespace == "" || ri.Namespace == s.Namespace
+}
+```
+
+Nothing is remembered between syncs, so objects added or deleted while the stream
+was running do not have to be tracked: the sweep reads the tree as it is at the
+moment it runs. A stream close is therefore a scoped resync with an **empty
+desired set**, which the type already anticipates: "empty = pure sweep of a
+removed type".
+
+Followability does not get in the way either. `MappingFollowable` is a
+**discovery** property (the GVK resolves to a single served resource with the
+needed verbs), not a rule-membership one, so a document does not become
+unsweepable merely because the rule that mirrored it was removed.
+
+**The trap is overlapping scopes.** A cluster-wide stream (`namespace: ""`) is a
+peer of a named-namespace stream on the same GVR, never a replacement for it, so
+both can be live at once. `Matches` treats an empty namespace as *every*
+namespace, so an empty-desired sweep at scope `(configmaps, "")` matches
+documents that a surviving `(configmaps, team-a)` stream still owns:
+
+```mermaid
+flowchart TB
+    subgraph Before["Before"]
+        A["stream: configmaps @ *cluster-wide*"]
+        B["stream: configmaps @ team-a"]
+    end
+    C["close the cluster-wide stream"] --> D{"sweep scope<br/>(configmaps, &quot;&quot;)<br/>desired = empty"}
+    D --> E["matches team-a documents too"]
+    E --> F["<b>deletes documents a live<br/>stream still owns</b>"]
+```
+
+So a close sweep cannot use the closed stream's scope naively. It has to sweep
+the closed scope **minus what the surviving streams still cover**, either by
+subtracting the remaining scopes or by passing the survivors' desired sets rather
+than an empty one. This is the sharpest edge in §7.2 and needs to be explicit in
+the implementation, with a test that keeps a narrower stream alive while a wider
+one closes.
+
+**A second edge**: a document whose GVK no longer resolves (its CRD was
+uninstalled in the same change) is not followable, so it is not swept. It stays
+in Git as unmanaged content. That is consistent with acceptance never pruning
+what it cannot resolve, but it does mean "nothing is left lying around" has an
+exception when a type disappears at the same time as its rule.
+
 ### 7.3 Changes that are not stream-shaped (already answered)
 
 The destination fields are **immutable**, enforced by CEL on the type:
