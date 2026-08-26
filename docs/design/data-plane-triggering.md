@@ -2,6 +2,7 @@
 status: design
 date: 2026-08-25
 related:
+  - target-watch-plan.md
   - reconcile-triggering.md
   - watch-and-catalog-architecture.md
   - watchrule-source-namespace/pr2-stream-scope-collapse.md
@@ -329,10 +330,17 @@ Treat a configuration change as a **transition between two stream sets**. Comput
 the set before and the set after, take the difference, and act only on it:
 
 ```text
-start  = after \ before      open these streams
-stop   = before \ after      close these streams
-keep   = before ∩ after      leave these completely alone
+keep    = same key, same StreamSpec     leave the handle running
+restart = same key, different StreamSpec  cancel, then start fresh
+start   = key only in the new plan      start fresh
+stop    = key only in the old plan      cancel, then classify by cause
 ```
+
+The `restart` row is easy to miss and was missing from the first draft of this
+section. `targetWatchSpecs` keys on `(GVR, namespace)` with the **operation
+filter as the value**, so an edit that changes only which verbs a rule follows
+keeps its key and changes its spec. A diff that compares keys alone would keep a
+stream that must be replaced.
 
 ```mermaid
 flowchart LR
@@ -358,12 +366,19 @@ desired set*. So "avoid querying the apiserver directly" is already how it works
 and the LIST in `targetWatchListAndStream` is the compatibility fallback for
 apiservers that refuse `sendInitialEvents`, not the normal route.
 
-**Ordering is intra-stream.** Because replay and live events arrive on one stream
-in one goroutine, the boundary that §4 says must be defined is defined *by the
-apiserver*, at the bookmark. There is no cross-channel ordering to reconcile for
-an added scope. This is the property to lean on, and it is why this proposal is
-better than the dirty-set sketch that previously occupied this section: that one
-moved the ordering problem, this one avoids having it.
+**Ordering is intra-stream, for a single stream.** Replay and live events arrive
+on one stream in one goroutine, so for an added scope the boundary §4 requires is
+defined *by the apiserver*, at the bookmark. That is the property to lean on, and
+it is why this is better than the dirty-set sketch that previously occupied this
+section: that one moved the ordering problem, this one avoids it for the common
+case.
+
+It does **not** hold in two cases, and the first draft of this section overstated
+the guarantee by omitting them. Overlapping streams (a cluster-wide and a
+named-namespace stream on one GVR) are concurrent peers delivering the same
+object on two goroutines. And a `restart` produces a second snapshot for a scope
+whose earlier events may still be queued. Both need an explicit fence, specified
+in [TargetWatchPlan](target-watch-plan.md) §4.
 
 The blast radius becomes proportional to the change. Adding a WatchRule replays
 one scope. Removing one closes one scope. Editing an unrelated field on a
@@ -453,6 +468,13 @@ its stream disappears without any close event naming it, and its documents resol
 to nothing. Per-scope sweeping can never reach them, so they accumulate as
 unmanaged content. That is not a small edge: it is a silent, permanent leak in a
 ledger whose whole promise is that it matches the cluster.
+
+> **Superseded.** The coverage rule below is retained as the reasoning that led
+> here, but it is not the design. Treating every uncovered document as sweepable
+> conflates three materially different causes, one of which (an incomplete or
+> degraded view) must never delete. The normative rule is the cause table in
+> [TargetWatchPlan](target-watch-plan.md) §3. Coverage remains a useful
+> **invariant to assert**, not a safe **action to take**.
 
 **The better question is coverage.** Instead of "which documents did the closed
 stream own", ask, of every managed document in the folder:
@@ -674,4 +696,10 @@ flowchart LR
 
 The writes stay a log throughout. The dirty-set sketch that earlier occupied §6
 is superseded: leaning on `sendInitialEvents` keeps the gather inside the stream,
-where its ordering is already guaranteed.
+where its ordering is already guaranteed for the single-stream case.
+
+**The implementable form of steps 2 and 3 is
+[TargetWatchPlan](target-watch-plan.md)**, which carries the precise cell
+lifecycle, the four-way classification, the cause table that decides what a
+removal does to Git, the ordering fence, and the build order. This document is
+the motivation; that one is the specification.
