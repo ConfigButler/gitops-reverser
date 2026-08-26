@@ -62,6 +62,33 @@ type targetWatchKey struct {
 	Namespace string
 }
 
+// nextStreamLease hands out the next stream lease. It is process-wide and monotonic, so a
+// lease identifies one incarnation of one stream and never coincides with another cell's.
+func (m *Manager) nextStreamLease() uint64 {
+	return m.streamLeases.Add(1)
+}
+
+// targetWatchStream is one running target watch: the cell it covers, the operation filter it
+// applies, and the lease that stamps everything it queues.
+//
+// The lease is what makes a queued item traceable to the incarnation of the stream that
+// produced it. A cancelled stream's goroutine can still be in flight with an event or a
+// snapshot, and once that work is on the branch worker's FIFO the manager cannot withdraw it,
+// so the item has to carry enough to be judged on arrival. Leases are unique across the
+// process and advance only when a stream is started, so a stale effect can never coincide with
+// a live cell (docs/design/target-watch-plan.md §5.1).
+type targetWatchStream struct {
+	key   targetWatchKey
+	ops   OperationSet
+	lease uint64
+}
+
+// provenance is what this stream stamps on the work it queues: which cell produced it, and
+// which incarnation of that cell.
+func (s targetWatchStream) provenance() git.Provenance {
+	return git.Provenance{Cell: s.key.Cell(), Lease: s.lease}
+}
+
 // Cell is this stream's identity everywhere it crosses a subsystem boundary: the sweep scope
 // its replay runs under, the render-fidelity scope it reports into, and the provenance stamped
 // on the work it queues. The served version stays on the key — a stream has to open a watch
@@ -160,7 +187,12 @@ func (m *Manager) replaceGitTargetWatches(
 
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 	for _, watchKey := range keys {
-		go m.runTargetWatch(childCtx, log, table.GitDest, watchKey, streams[watchKey])
+		// Each started stream takes a fresh lease, which stamps every item it queues. A
+		// replacement therefore queues work under a lease its predecessor never used, which
+		// is what lets an item still in flight from the cancelled stream be told apart from
+		// the live one's (docs/design/target-watch-plan.md §5.1).
+		stream := targetWatchStream{key: watchKey, ops: streams[watchKey], lease: m.nextStreamLease()}
+		go m.runTargetWatch(childCtx, log, table.GitDest, stream)
 	}
 	// Name every declared stream, not just the count. A GVR appearing twice — once
 	// cluster-wide ("") and once under a named namespace — means the same object is
@@ -352,15 +384,14 @@ func (m *Manager) runTargetWatch(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
-	ops OperationSet,
+	stream targetWatchStream,
 ) {
 	// Follow this type's attribution facts for exactly as long as this watch runs. The release is
 	// idempotent, so calling it here and on any error path below cannot unfollow a type another
 	// watch still needs. Acquiring before the first session opens is deliberate: the follower reads
 	// a newly followed stream from the TTL horizon, so the index is warm with the whole retention
 	// window before the first event of this watch needs an author.
-	releaseFacts := m.followFactsForWatch(gitDest, key)
+	releaseFacts := m.followFactsForWatch(gitDest, stream.key)
 	defer releaseFacts()
 
 	// A target-watch declaration defines the fidelity epoch. Its first session must replay even
@@ -369,7 +400,7 @@ func (m *Manager) runTargetWatch(
 	// resume from their cursors because they stay within the same declaration and epoch.
 	resumeFromCursor := false
 	for ctx.Err() == nil {
-		err := m.targetWatchReplayAndStream(ctx, log, gitDest, key, ops, resumeFromCursor)
+		err := m.targetWatchReplayAndStream(ctx, log, gitDest, stream, resumeFromCursor)
 		resumeFromCursor = true
 		if ctx.Err() != nil {
 			return
@@ -380,13 +411,13 @@ func (m *Manager) runTargetWatch(
 			// declaration teardown removes this stream; stopping now just means
 			// not burning the branch worker's shared queue until it does.
 			log.Info("target watch stopping; its GitTarget is gone",
-				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace)
+				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace)
 			return
 		}
 		if err != nil {
-			m.markTargetStreamState(gitDest, key, StreamStateBlocked, StreamReasonWatchError, err.Error())
+			m.markTargetStreamState(gitDest, stream.key, StreamStateBlocked, StreamReasonWatchError, err.Error())
 			log.Info("target watch session ended; reconnecting",
-				"gvr", key.GVR.String(), "namespace", key.Namespace, "err", err.Error())
+				"gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace, "err", err.Error())
 		}
 		if !sleepOrDone(ctx, targetWatchBackoff) {
 			return
@@ -413,20 +444,19 @@ func (m *Manager) targetWatchReplayAndStream(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
-	ops OperationSet,
+	stream targetWatchStream,
 	resumeFromCursor bool,
 ) error {
 	cursorExpired := false
-	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, key); resumeFromCursor && ok {
-		err := m.targetWatchResumeAndStream(ctx, log, gitDest, key, ops, cursor)
+	if cursor, ok := m.lookupTargetWatchCursor(ctx, gitDest, stream.key); resumeFromCursor && ok {
+		err := m.targetWatchResumeAndStream(ctx, log, gitDest, stream, cursor)
 		if !errors.Is(err, errTargetWatchExpired) {
 			return err
 		}
 		cursorExpired = true
 		m.markTargetStreamState(
 			gitDest,
-			key,
+			stream.key,
 			StreamStateReplaying,
 			StreamReasonExpiredResourceVersion,
 			"stored watch cursor expired; rebuilding from a fresh replay",
@@ -435,7 +465,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		// fresh replay, which rebuilds from current state and overwrites the stale
 		// cursor — no explicit delete needed.
 		log.Info("watch cursor expired; rebuilding from a fresh replay",
-			"gvr", key.GVR.String(), "namespace", key.Namespace, "resourceVersion", cursor)
+			"gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace, "resourceVersion", cursor)
 	}
 
 	opts := metav1.ListOptions{
@@ -449,30 +479,30 @@ func (m *Manager) targetWatchReplayAndStream(
 	}
 	m.markTargetStreamState(
 		gitDest,
-		key,
+		stream.key,
 		StreamStateReplaying,
 		reason,
 		"target watch replay in progress",
 	)
 	replaying := true
-	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), key.GVR, key.Namespace, opts)
+	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, stream.key.Namespace, opts)
 	if err != nil {
 		if watchListUnsupported(err) {
 			log.Error(err, "WARNING: sendInitialEvents unsupported; falling back to LIST plus buffered WATCH",
-				"gvr", key.GVR.String(), "namespace", key.Namespace, "err", err.Error())
-			return m.targetWatchListAndStream(ctx, log, gitDest, key, ops)
+				"gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace, "err", err.Error())
+			return m.targetWatchListAndStream(ctx, log, gitDest, stream)
 		}
 		if ctx.Err() != nil {
 			return nil
 		}
 		m.markTargetStreamState(
 			gitDest,
-			key,
+			stream.key,
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
 		)
-		return fmt.Errorf("open target watch %s/%q: %w", key.GVR.String(), key.Namespace, err)
+		return fmt.Errorf("open target watch %s/%q: %w", stream.key.GVR.String(), stream.key.Namespace, err)
 	}
 	defer w.Stop()
 
@@ -486,7 +516,7 @@ func (m *Manager) targetWatchReplayAndStream(
 				return targetWatchClosedErr(ctx)
 			}
 			nextReplaying, err := m.handleTargetWatchSessionEvent(
-				ctx, log, gitDest, key, ops, ev, replaying, &replay,
+				ctx, log, gitDest, stream, ev, replaying, &replay,
 			)
 			if err != nil {
 				return err
@@ -500,14 +530,15 @@ func (m *Manager) targetWatchResumeAndStream(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
-	ops OperationSet,
+	stream targetWatchStream,
 	cursor string,
 ) error {
-	w, err := m.openTargetWatch(ctx, m.clusterIDForGitTarget(gitDest), key.GVR, key.Namespace, metav1.ListOptions{
-		ResourceVersion:     cursor,
-		AllowWatchBookmarks: true,
-	})
+	w, err := m.openTargetWatch(
+		ctx, m.clusterIDForGitTarget(gitDest), stream.key.GVR, stream.key.Namespace,
+		metav1.ListOptions{
+			ResourceVersion:     cursor,
+			AllowWatchBookmarks: true,
+		})
 	if err != nil {
 		if watchOpenExpired(err) {
 			return errTargetWatchExpired
@@ -517,37 +548,38 @@ func (m *Manager) targetWatchResumeAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			key,
+			stream.key,
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
 		)
-		return fmt.Errorf("open target watch %s/%q from cursor %q: %w", key.GVR.String(), key.Namespace, cursor, err)
+		return fmt.Errorf("open target watch %s/%q from cursor %q: %w",
+			stream.key.GVR.String(), stream.key.Namespace, cursor, err)
 	}
 	defer w.Stop()
 
 	log.V(1).Info("target watch resumed from cursor",
-		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace, "resourceVersion", cursor)
+		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
+		"namespace", stream.key.Namespace, "resourceVersion", cursor)
 	m.markTargetStreamState(
 		gitDest,
-		key,
+		stream.key,
 		StreamStateStreaming,
 		StreamReasonAllStreamsReady,
 		"target watch resumed from durable cursor",
 	)
 	m.recordTargetReconcileCompleted(gitDest, "cursor_resume")
-	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, ops, w.ResultChan())
+	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, stream, w.ResultChan())
 }
 
 func (m *Manager) targetWatchListAndStream(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
-	ops OperationSet,
+	stream targetWatchStream,
 ) error {
 	clusterID := m.clusterIDForGitTarget(gitDest)
-	w, err := m.openTargetWatch(ctx, clusterID, key.GVR, key.Namespace, metav1.ListOptions{
+	w, err := m.openTargetWatch(ctx, clusterID, stream.key.GVR, stream.key.Namespace, metav1.ListOptions{
 		AllowWatchBookmarks: true,
 	})
 	if err != nil {
@@ -556,84 +588,84 @@ func (m *Manager) targetWatchListAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			key,
+			stream.key,
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
 		)
-		return fmt.Errorf("open target watch %s/%q for list fallback: %w", key.GVR.String(), key.Namespace, err)
+		return fmt.Errorf("open target watch %s/%q for list fallback: %w",
+			stream.key.GVR.String(), stream.key.Namespace, err)
 	}
 	defer w.Stop()
 
 	buffered := make(chan watch.Event, targetWatchBufferCapacity)
 	go bufferTargetWatchEvents(ctx, w.ResultChan(), buffered)
 
-	list, err := m.openTargetList(ctx, clusterID, key.GVR, key.Namespace, metav1.ListOptions{})
+	list, err := m.openTargetList(ctx, clusterID, stream.key.GVR, stream.key.Namespace, metav1.ListOptions{})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
 		m.markTargetStreamState(
 			gitDest,
-			key,
+			stream.key,
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
 		)
-		return fmt.Errorf("list target watch snapshot %s/%q: %w", key.GVR.String(), key.Namespace, err)
+		return fmt.Errorf("list target watch snapshot %s/%q: %w", stream.key.GVR.String(), stream.key.Namespace, err)
 	}
-	desired := desiredFromList(key.GVR, list)
+	desired := desiredFromList(stream.key.GVR, list)
 	revision := list.GetResourceVersion()
-	if err := m.enqueueReplayResync(ctx, log, gitDest, key, desired, revision); err != nil {
+	if err := m.enqueueReplayResync(ctx, log, gitDest, stream, desired, revision); err != nil {
 		return err
 	}
-	if err := m.recordTargetWatchCursor(ctx, gitDest, key, revision); err != nil {
+	if err := m.recordTargetWatchCursor(ctx, gitDest, stream.key, revision); err != nil {
 		return err
 	}
 	log.Info("target watch list fallback complete",
-		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace,
+		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace,
 		"count", len(desired), "resourceVersion", revision)
 	m.markTargetStreamState(
 		gitDest,
-		key,
+		stream.key,
 		StreamStateStreaming,
 		StreamReasonAllStreamsReady,
 		"target watch list fallback complete",
 	)
-	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, key, ops, buffered, revision)
+	return m.streamLiveTargetWatchEvents(ctx, log, gitDest, stream, buffered, revision)
 }
 
 func (m *Manager) handleTargetWatchSessionEvent(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
-	ops OperationSet,
+	stream targetWatchStream,
 	ev watch.Event,
 	replaying bool,
 	replay *[]manifestanalyzer.DesiredResource,
 ) (bool, error) {
 	if !replaying {
-		rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev)
+		rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, stream, ev)
 		if err != nil {
 			return false, err
 		}
-		return false, m.recordTargetWatchCursor(ctx, gitDest, key, rv)
+		return false, m.recordTargetWatchCursor(ctx, gitDest, stream.key, rv)
 	}
-	done, rv, err := m.foldTargetReplayEvent(log, gitDest, key, ev, replay)
+	done, rv, err := m.foldTargetReplayEvent(log, gitDest, stream, ev, replay)
 	if err != nil || !done {
 		return true, err
 	}
-	if err := m.enqueueReplayResync(ctx, log, gitDest, key, *replay, rv); err != nil {
+	if err := m.enqueueReplayResync(ctx, log, gitDest, stream, *replay, rv); err != nil {
 		return true, err
 	}
-	if err := m.recordTargetWatchCursor(ctx, gitDest, key, rv); err != nil {
+	if err := m.recordTargetWatchCursor(ctx, gitDest, stream.key, rv); err != nil {
 		return true, err
 	}
 	*replay = nil
 	m.markTargetStreamState(
 		gitDest,
-		key,
+		stream.key,
 		StreamStateStreaming,
 		StreamReasonAllStreamsReady,
 		"target watch replay complete",
@@ -644,7 +676,7 @@ func (m *Manager) handleTargetWatchSessionEvent(
 func (m *Manager) foldTargetReplayEvent(
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
+	stream targetWatchStream,
 	ev watch.Event,
 	replay *[]manifestanalyzer.DesiredResource,
 ) (bool, string, error) {
@@ -652,28 +684,28 @@ func (m *Manager) foldTargetReplayEvent(
 	case watch.Bookmark:
 		u, ok := ev.Object.(*unstructured.Unstructured)
 		if !ok {
-			return false, "", fmt.Errorf("target replay bookmark carried %T for %s", ev.Object, key.GVR.String())
+			return false, "", fmt.Errorf("target replay bookmark carried %T for %s", ev.Object, stream.key.GVR.String())
 		}
 		if u.GetAnnotations()[metav1.InitialEventsAnnotationKey] != "true" {
 			return false, "", nil
 		}
 		log.Info("target watch replay complete",
-			"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace,
+			"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace,
 			"count", len(*replay), "resourceVersion", u.GetResourceVersion())
 		return true, u.GetResourceVersion(), nil
 	case watch.Added, watch.Modified:
 		u, ok := ev.Object.(*unstructured.Unstructured)
 		if !ok {
-			return false, "", fmt.Errorf("target replay event carried %T for %s", ev.Object, key.GVR.String())
+			return false, "", fmt.Errorf("target replay event carried %T for %s", ev.Object, stream.key.GVR.String())
 		}
-		if desired, ok := desiredFromObject(key.GVR, u); ok {
+		if desired, ok := desiredFromObject(stream.key.GVR, u); ok {
 			*replay = append(*replay, desired)
 		}
 		return false, "", nil
 	case watch.Deleted:
 		return false, "", nil
 	case watch.Error:
-		return false, "", fmt.Errorf("target replay watch error for %s: %v", key.GVR.String(), ev.Object)
+		return false, "", fmt.Errorf("target replay watch error for %s: %v", stream.key.GVR.String(), ev.Object)
 	default:
 		return false, "", nil
 	}
@@ -683,7 +715,7 @@ func (m *Manager) enqueueReplayResync(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
+	stream targetWatchStream,
 	desired []manifestanalyzer.DesiredResource,
 	revision string,
 ) error {
@@ -692,20 +724,20 @@ func (m *Manager) enqueueReplayResync(
 	}
 	epoch := m.RenderFidelityEpochForGitTarget(gitDest)
 	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
-		ctx, gitDest, resyncScopeForWatchKey(key), desired, revision, false)
+		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.provenance(), desired, revision, false)
 	if err != nil {
 		return err
 	}
 	if !enqueued {
 		return fmt.Errorf("target replay resync for %s on %s dropped: %w",
-			key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
+			stream.key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
 	}
-	// The key (GVR + namespace) is threaded to the drain for diagnostics. A refused
+	// The stream.key (GVR + namespace) is threaded to the drain for diagnostics. A refused
 	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather
 	// than mutating this stream's watch readiness.
-	go m.EventRouter.drainScopedResync(gitDest, key, "reconcile", epoch, resultCh)
+	go m.EventRouter.drainScopedResync(gitDest, stream.key, "reconcile", epoch, resultCh)
 	log.V(1).Info("target replay resync enqueued",
-		"gitDest", gitDest.String(), "gvr", key.GVR.String(), "revision", revision, "count", len(desired))
+		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "revision", revision, "count", len(desired))
 	return nil
 }
 
@@ -730,8 +762,7 @@ func (m *Manager) streamLiveTargetWatchEvents(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
-	ops OperationSet,
+	stream targetWatchStream,
 	events <-chan watch.Event,
 	floors ...string,
 ) error {
@@ -750,7 +781,7 @@ func (m *Manager) streamLiveTargetWatchEvents(
 			if targetWatchEventAtOrBeforeFloor(ev, floor) {
 				continue
 			}
-			if err := m.processLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev); err != nil {
+			if err := m.processLiveTargetWatchEvent(ctx, log, gitDest, stream, ev); err != nil {
 				return err
 			}
 		}
@@ -761,8 +792,7 @@ func (m *Manager) processLiveTargetWatchEvent(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
-	ops OperationSet,
+	stream targetWatchStream,
 	ev watch.Event,
 ) error {
 	if targetWatchExpired(ev) {
@@ -771,19 +801,18 @@ func (m *Manager) processLiveTargetWatchEvent(
 		// fresh replay (overwriting the stale cursor); no explicit delete needed.
 		return errTargetWatchExpired
 	}
-	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, key, ops, ev)
+	rv, err := m.routeLiveTargetWatchEvent(ctx, log, gitDest, stream, ev)
 	if err != nil {
 		return err
 	}
-	return m.recordTargetWatchCursor(ctx, gitDest, key, rv)
+	return m.recordTargetWatchCursor(ctx, gitDest, stream.key, rv)
 }
 
 func (m *Manager) routeLiveTargetWatchEvent(
 	ctx context.Context,
 	log logr.Logger,
 	gitDest types.ResourceReference,
-	key targetWatchKey,
-	ops OperationSet,
+	stream targetWatchStream,
 	ev watch.Event,
 ) (string, error) {
 	rv := targetWatchEventResourceVersion(ev)
@@ -794,14 +823,18 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		u, ok := ev.Object.(*unstructured.Unstructured)
 		if !ok {
 			log.V(1).Info("target watch non-unstructured event skipped",
-				"gvr", key.GVR.String(), "type", string(ev.Type))
+				"gvr", stream.key.GVR.String(), "type", string(ev.Type))
 			return rv, nil
 		}
 		op := operationForLiveTargetWatchEvent(ev.Type, u)
-		if !ops.Match(op) {
+		if !stream.ops.Match(op) {
 			return rv, nil
 		}
-		event := targetWatchGitEvent(key.GVR, u, op)
+		event := targetWatchGitEvent(stream.key.GVR, u, op)
+		// Stamp the producing cell and stream incarnation before the event leaves the stream.
+		// It is the only place both are known: downstream, a cluster-wide and a namespaced
+		// stream deliver the same object and the cell can no longer be recovered from it.
+		event.Provenance = stream.provenance()
 		// Carry the source cluster so the git writer resolves this document's GVK->GVR
 		// against the cluster it was watched on, never a union of all clusters.
 		event.SourceCluster = m.clusterIDForGitTarget(gitDest)
@@ -809,21 +842,21 @@ func (m *Manager) routeLiveTargetWatchEvent(
 		// sanitizes to identical git content but ships unattributed (its /status audit
 		// is dropped), so routing it would split an open commit window on the author
 		// flip. CREATE/DELETE always route and refresh/clear the dedup cache.
-		if m.skipUnchangedLiveUpdate(gitDest, key.GVR, u, &event, op) {
+		if m.skipUnchangedLiveUpdate(gitDest, stream.key.GVR, u, &event, op) {
 			log.V(1).Info("target watch skipped unchanged update (no git content change)",
-				"gitDest", gitDest.String(), "gvr", key.GVR.String(),
+				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(),
 				"resource", event.Identifier.String())
 			return rv, nil
 		}
-		m.attachAuthor(ctx, &event, key.GVR, u)
+		m.attachAuthor(ctx, &event, stream.key.GVR, u)
 		if err := m.EventRouter.RouteToGitTargetEventStream(event, gitDest); err != nil {
 			log.V(1).Info("target watch route failed",
-				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "err", err.Error())
+				"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "err", err.Error())
 			return rv, err
 		}
 		return rv, nil
 	case watch.Error:
-		return rv, fmt.Errorf("target watch error for %s: %v", key.GVR.String(), ev.Object)
+		return rv, fmt.Errorf("target watch error for %s: %v", stream.key.GVR.String(), ev.Object)
 	default:
 		return rv, nil
 	}

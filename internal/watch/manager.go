@@ -190,6 +190,9 @@ type Manager struct {
 	// the replay, or from the buffered LIST fallback when sendInitialEvents is unsupported.
 	targetWatchesMu sync.Mutex
 	targetWatches   map[string]*targetWatchSet
+	// streamLeases hands out one lease per started target-watch stream. See
+	// targetWatchStream.lease.
+	streamLeases atomic.Uint64
 	// targetStreamStates is the readiness surface for targetWatches. It is keyed
 	// by GitTarget and watch key, and projected into status by controllers.
 	targetStreamStates map[string]map[targetWatchKey]targetStreamStatus

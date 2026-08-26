@@ -401,7 +401,8 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		superseded.reply(ResyncResult{Err: ErrResyncSuperseded})
 		w.Log.V(1).Info("Resync request coalesced into the one already queued",
 			"resources", len(request.Desired),
-			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
+			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
+			"provenance", request.Provenance.String())
 		return true
 	} else if queued {
 		// A write inside this scope was queued behind the marker. Coalescing here
@@ -428,14 +429,16 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 		w.pendingResyncsMu.Unlock()
 		w.Log.V(1).Info("Resync request enqueued",
 			"resources", len(request.Desired),
-			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
+			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
+			"provenance", request.Provenance.String())
 		return true
 	default:
 		w.inflightItems.Add(-1)
 		delete(w.pendingResyncs, key)
 		w.pendingResyncsMu.Unlock()
 		w.Log.Error(nil, "Event queue full, resync request dropped",
-			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
+			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName,
+			"provenance", request.Provenance.String())
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
 		return false
 	}
@@ -543,7 +546,8 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 		w.Log.V(1).Info("Write request enqueued",
 			"events", len(request.Events),
 			"mode", request.CommitMode,
-			"gitTarget", request.GitTargetName)
+			"gitTarget", request.GitTargetName,
+			"provenance", request.provenance().String())
 		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
 		// the loop republishes on every received item, so the gauge converges
 		// without an enqueue-side write that could latch a stale value.
@@ -551,10 +555,14 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) bool {
 	default:
 		w.pendingResyncsMu.Unlock()
 		w.inflightItems.Add(-1)
+		// Name the producing cell on a drop. A saturated queue is diagnosed from what was
+		// dropped and by whom: the 595-in-16-seconds storm was one GitTarget, and the next
+		// one may be one CELL of one GitTarget (docs/design/data-plane-triggering.md §1).
 		w.Log.Error(nil, "Event queue full, request dropped",
 			"events", len(request.Events),
 			"mode", request.CommitMode,
-			"gitTarget", request.GitTargetName)
+			"gitTarget", request.GitTargetName,
+			"provenance", request.provenance().String())
 		return false
 	}
 }

@@ -25,6 +25,13 @@ func itemScope(namespaces ...string) [][]string {
 	return [][]string{namespaces}
 }
 
+// testStream is a running stream with a fixed lease, for the tests that drive one stream
+// directly. The lease value only has to be non-zero: it is what a queued item's provenance
+// carries, and zero means "no cell claimed this".
+func testStream(key targetWatchKey, ops OperationSet) targetWatchStream {
+	return targetWatchStream{key: key, ops: ops, lease: 1}
+}
+
 func TestNormalizeResource(t *testing.T) {
 	got := normalizeResource("  Deployments  ")
 	if got != "deployments" {

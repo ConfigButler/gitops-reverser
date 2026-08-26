@@ -414,6 +414,9 @@ type ResyncRequest struct {
 	// so it never starves and, when it runs, has no window to steal. A first-sync backfill is NOT
 	// a heal: it must establish initial state promptly.
 	Heal bool
+	// Provenance names the target-watch cell and stream incarnation that gathered this
+	// snapshot. Zero for a whole-GitTarget resync, which speaks for no single cell.
+	Provenance Provenance
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult
@@ -553,6 +556,10 @@ type Event struct {
 
 	// BootstrapOptions controls path-scoped bootstrap file staging for this event.
 	BootstrapOptions pathBootstrapOptions
+
+	// Provenance names the target-watch cell and stream incarnation that produced this
+	// event. Zero for every non-stream producer (reconcile, bootstrap, the admission path).
+	Provenance Provenance
 }
 
 // IsFieldPatch reports whether the event carries a bounded field patch instead of

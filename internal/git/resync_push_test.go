@@ -97,6 +97,32 @@ func TestEnqueueResync_CoalescesSameScope(t *testing.T) {
 	assert.Len(t, w.eventQueue, 1, "a scope taken off the queue can be queued again")
 }
 
+// Coalescing swaps the whole request, so the provenance that reaches the worker is the
+// SURVIVING snapshot's — not the marker's. A restart is exactly the case that produces two
+// snapshots for one cell, and reading the retired stream's provenance off the applied one
+// would misreport which incarnation the mirror now reflects.
+func TestEnqueueResync_CoalescingCarriesTheSurvivingProvenance(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1)}
+	cell := types.CellKeyFor(configmapsGVRForScope, "team-a")
+	scope := ResyncScopeFor(configmapsGVRForScope, "team-a")
+
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "1", Scope: &scope,
+		Provenance: Provenance{Cell: cell, Lease: 1}, Result: make(chan ResyncResult, 1),
+	}))
+	require.True(t, w.EnqueueResync(&ResyncRequest{
+		GitTargetNamespace: "ns", GitTargetName: "target", Revision: "2", Scope: &scope,
+		Provenance: Provenance{Cell: cell, Lease: 2}, Result: make(chan ResyncResult, 1),
+	}))
+
+	item := <-w.eventQueue
+	require.NotNil(t, item.Resync)
+	current := w.takePendingResync(item.Resync)
+	assert.Equal(t, uint64(2), current.Provenance.Lease,
+		"the restarted stream's snapshot is the one that runs, and it says so")
+	assert.Equal(t, cell, current.Provenance.Cell)
+}
+
 // TestEnqueueResync_AcceptedRequestAlwaysRuns pins the atomicity of insert-and-queue
 // under a full queue. The invariant: a request told enqueued=true must either have
 // the FIFO marker for its scope, or have been superseded by a later one. Anything

@@ -195,8 +195,7 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"CREATE": struct{}{}},
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
 		watch.Event{Type: watch.Added, Object: obj},
 	)
 
@@ -209,6 +208,52 @@ func TestRouteLiveTargetWatchEvent_ForwardsObjectEventsAsCommitter(t *testing.T)
 	assert.Empty(t, event.UserInfo.Username, "configured-author watch events leave the actor empty")
 	assert.NotNil(t, event.Object)
 	assert.Empty(t, event.Object.GetResourceVersion(), "live events are sanitized before entering Git")
+}
+
+// Provenance is stamped where both halves are known. Downstream it cannot be reconstructed: a
+// cluster-wide and a namespaced stream deliver the same object, so the producing cell is not
+// recoverable from the event, and the incarnation is not recoverable at all.
+func TestRouteLiveTargetWatchEvent_StampsTheProducingCellAndLease(t *testing.T) {
+	gitDest := types.NewResourceReference("target", "default")
+	enqueuer := &recordingEnqueuer{}
+	stream := reconcile.NewGitTargetEventStream(gitDest.Name, gitDest.Namespace, enqueuer, logr.Discard())
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{gitDest.Key(): stream},
+	}
+	manager := &Manager{EventRouter: router}
+	watching := targetWatchStream{
+		key:   targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
+		ops:   OperationSet{"CREATE": struct{}{}},
+		lease: 42,
+	}
+
+	_, err := manager.routeLiveTargetWatchEvent(
+		context.Background(),
+		logr.Discard(),
+		gitDest,
+		watching,
+		watch.Event{Type: watch.Added, Object: configMapObject("12")},
+	)
+
+	require.NoError(t, err)
+	require.Len(t, enqueuer.events, 1)
+	assert.Equal(t, git.Provenance{Cell: types.CellKeyFor(configmapsGVR, "apps"), Lease: 42},
+		enqueuer.events[0].Provenance)
+}
+
+// Every started stream takes its own lease, so two incarnations of one cell — and two cells of
+// one GitTarget — never stamp the same provenance.
+func TestReplaceGitTargetWatches_LeasesAreUniquePerStartedStream(t *testing.T) {
+	manager := &Manager{}
+	seen := map[uint64]struct{}{}
+	for range 4 {
+		lease := manager.nextStreamLease()
+		assert.NotZero(t, lease, "zero means unclaimed; a started stream always claims")
+		_, repeated := seen[lease]
+		assert.False(t, repeated, "a lease identifies one incarnation and is never reused")
+		seen[lease] = struct{}{}
+	}
 }
 
 func TestRouteLiveTargetWatchEvent_RespectsOperationFilters(t *testing.T) {
@@ -225,8 +270,7 @@ func TestRouteLiveTargetWatchEvent_RespectsOperationFilters(t *testing.T) {
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"DELETE": struct{}{}},
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"DELETE": struct{}{}}),
 		watch.Event{Type: watch.Modified, Object: configMapObject("13")},
 	)
 
@@ -259,8 +303,7 @@ func TestRouteLiveTargetWatchEvent_AttributesAuthorFromResolver(t *testing.T) {
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"CREATE": struct{}{}},
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"CREATE": struct{}{}}),
 		watch.Event{Type: watch.Added, Object: configMapObject("12")},
 	)
 
@@ -288,8 +331,7 @@ func TestRouteLiveTargetWatchEvent_DeletionTimestampRendersAsDelete(t *testing.T
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"DELETE": struct{}{}},
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"DELETE": struct{}{}}),
 		watch.Event{Type: watch.Modified, Object: terminatingConfigMapObject("20")},
 	)
 
@@ -317,8 +359,7 @@ func TestRouteLiveTargetWatchEvent_ModifiedWithoutDeletionTimestampRendersAsUpda
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-		OperationSet{"UPDATE": struct{}{}},
+		testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, OperationSet{"UPDATE": struct{}{}}),
 		watch.Event{Type: watch.Modified, Object: configMapObject("21")},
 	)
 
@@ -344,10 +385,10 @@ func TestRouteLiveTargetWatchEvent_TerminatingThenDeletedAreIdenticalRemovals(t 
 	key := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 	ops := OperationSet{"DELETE": struct{}{}}
 
-	_, err := manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, key, ops,
+	_, err := manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, testStream(key, ops),
 		watch.Event{Type: watch.Modified, Object: terminatingConfigMapObject("20")})
 	require.NoError(t, err)
-	_, err = manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, key, ops,
+	_, err = manager.routeLiveTargetWatchEvent(context.Background(), logr.Discard(), gitDest, testStream(key, ops),
 		watch.Event{Type: watch.Deleted, Object: configMapObject("22")})
 	require.NoError(t, err)
 
@@ -368,8 +409,7 @@ func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		key,
-		nil,
+		testStream(key, nil),
 		watch.Event{Type: watch.Added, Object: configMapObject("10")},
 		true,
 		&replay,
@@ -385,8 +425,7 @@ func TestHandleTargetWatchSessionEvent_CompletesReplayWithoutRouter(t *testing.T
 		context.Background(),
 		logr.Discard(),
 		gitDest,
-		key,
-		nil,
+		testStream(key, nil),
 		watch.Event{Type: watch.Bookmark, Object: bookmark},
 		true,
 		&replay,
@@ -416,8 +455,7 @@ func TestTargetWatchReplayAndStream_ReturnsWhenContextCancels(t *testing.T) {
 			ctx,
 			logr.Discard(),
 			types.NewResourceReference("target", "default"),
-			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-			nil,
+			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil),
 			false,
 		)
 	}()
@@ -470,8 +508,7 @@ func TestTargetWatchReplayAndStream_FallsBackWhenReplayWatchIsForbidden(t *testi
 			ctx,
 			logr.Discard(),
 			gitDest,
-			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-			nil,
+			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil),
 			true,
 		)
 	}()
@@ -531,8 +568,7 @@ func TestTargetWatchReplayAndStream_ResumesFromStoredCursor(t *testing.T) {
 			ctx,
 			logr.Discard(),
 			gitDest,
-			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"},
-			nil,
+			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil),
 			true,
 		)
 	}()
@@ -623,7 +659,7 @@ func TestFoldTargetReplayEvent_AccumulatesUntilInitialEventsBookmark(t *testing.
 	done, rv, err := manager.foldTargetReplayEvent(
 		logr.Discard(),
 		gitDest,
-		key,
+		testStream(key, nil),
 		watch.Event{Type: watch.Added, Object: configMapObject("10")},
 		&desired,
 	)
@@ -638,7 +674,7 @@ func TestFoldTargetReplayEvent_AccumulatesUntilInitialEventsBookmark(t *testing.
 	done, rv, err = manager.foldTargetReplayEvent(
 		logr.Discard(),
 		gitDest,
-		key,
+		testStream(key, nil),
 		watch.Event{Type: watch.Bookmark, Object: bookmark},
 		&desired,
 	)
@@ -708,7 +744,7 @@ func TestTargetWatchReplayAndStream_ExpiredCursorFallsBackToFreshReplay(t *testi
 	go func() {
 		done <- manager.targetWatchReplayAndStream(
 			ctx, logr.Discard(), gitDest,
-			targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil, true,
+			testStream(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}, nil), true,
 		)
 	}()
 
