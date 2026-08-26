@@ -130,6 +130,64 @@ treatment.
 
 ---
 
+### 2.1 The stream set is already declarative, but the diff is all or nothing
+
+This is the finding that reframes the rest of this document.
+
+`targetWatchSpecs(table)` already computes the desired stream set as a map from
+`(GVR, namespace)` to that stream's operation filter. The model is there. What is
+missing is a **per-key** diff:
+
+```go
+func (m *Manager) prepareTargetWatchSetReplacementLocked(...) bool {
+    prior := m.targetWatches[key]
+    if prior == nil { return false }
+    if !force && equalTargetWatchSpecs(prior.specs, specs) {
+        return true          // identical set: leave everything running
+    }
+    prior.cancel()           // ANY difference: cancel EVERY stream for this GitTarget
+    return false
+}
+```
+
+`equalTargetWatchSpecs` is whole-set equality. So a declaration is either
+untouched or replaced wholesale: adding one WatchRule cancels every stream the
+GitTarget has and restarts all of them, and each restarted stream replays and
+enqueues its own resync.
+
+That is the storm shape from §1, reached by ordinary configuration change rather
+than by deletion.
+
+The reason is structural, and the code says so: the render-fidelity **epoch is
+per-target**, not per-stream. `beginTargetRenderFidelityEpochLocked(target, keys)`
+opens one epoch covering every scope, so a scope that resumed from its cursor
+instead of replaying "would otherwise leave that scope pending in the new epoch
+forever."
+
+```mermaid
+flowchart TB
+    C["add one WatchRule<br/>(configmaps @ team-d)"] --> D{"specs equal?"}
+    D -->|"yes"| K["keep everything running"]
+    D -->|"no"| X["cancel the whole set"]
+    X --> R1["restart: configmaps@team-a<br/>replay + resync"]
+    X --> R2["restart: secrets@team-b<br/>replay + resync"]
+    X --> R3["restart: deployments@team-c<br/>replay + resync"]
+    X --> R4["start: configmaps@team-d<br/>replay + resync"]
+
+    R1 --> Q["shared FIFO"]
+    R2 --> Q
+    R3 --> Q
+    R4 --> Q
+
+    classDef want stroke-width:3px;
+    class R4 want;
+```
+
+Only the bold one is new work. The other three are a full re-replay of state that
+never changed.
+
+---
+
 ## 3. The queue is doing two unrelated jobs
 
 `WorkItem` carries three shapes. They do not have the same nature.
@@ -254,106 +312,112 @@ Depth is bounded by *state cardinality* (how many distinct scopes exist) rather
 than by *event rate*, which is exactly the property a dirty set has and a queue
 does not.
 
-Having reached a dirty set with a payload, the question is whether the payload
-earns its place.
+It is worth naming, because it shows the resync half was already drifting toward
+level-triggered. But it treats the symptom. The question §6 asks instead is why a
+configuration change produces a fan-out of resyncs at all.
 
 ---
 
-## 6. Proposal: drop the payload, gather at execution
+## 6. Proposal: diff the stream set
 
-Mark `(GitTarget, scope)` dirty. Gather when the worker acts, not when the
-trigger fires.
+Treat a configuration change as a **transition between two stream sets**. Compute
+the set before and the set after, take the difference, and act only on it:
+
+```text
+start  = after \ before      open these streams
+stop   = before \ after      close these streams
+keep   = before ∩ after      leave these completely alone
+```
 
 ```mermaid
 flowchart LR
-    subgraph Today["Today — gather at enqueue"]
-        T1["trigger"] --> T2["gather<br/>(list live cluster)"]
-        T2 --> T3["enqueue payload"]
-        T3 --> T4["FIFO"]
-        T4 --> T5["worker applies"]
+    subgraph Now["Today"]
+        N1["config change"] --> N2{"set identical?"}
+        N2 -->|"yes"| N3["no-op"]
+        N2 -->|"no"| N4["cancel all,<br/>replay all,<br/>resync all"]
     end
-    subgraph Proposed["Proposed — gather at execution"]
-        P1["trigger"] --> P2["mark scope dirty"]
-        P2 --> P3["dirty set"]
-        P3 --> P4["worker takes scope"]
-        P4 --> P5["gather<br/>(list live cluster)"]
-        P5 --> P6["worker applies"]
+    subgraph Next["Proposed"]
+        X1["config change"] --> X2["diff the sets"]
+        X2 --> X3["start: replay only<br/>the added scopes"]
+        X2 --> X4["stop: close only<br/>the removed scopes"]
+        X2 --> X5["keep: untouched,<br/>no replay, no resync"]
     end
 ```
 
-What this buys:
+Two properties make this work, and both are already true.
 
-| | Today | Proposed |
-|---|---|---|
-| Memory per pending item | a full snapshot (can be MBs) | one key |
-| Duplicate triggers | coalesced, with supersede bookkeeping | free: setting a bit twice is setting a bit |
-| Data freshness | as of enqueue time | as of apply time |
-| Storm behavior | 595 payloads, queue saturated | 595 sets of one bit |
-| Code | coalescing map, ownership marker, `ErrResyncSuperseded`, supersede replies | mostly deleted |
+**The stream is the gather.** In the primary path there is no separate LIST: a
+stream opened with `sendInitialEvents=true` replays current state as `ADDED`
+events terminated by the `initial-events-end` bookmark, and *that replay is the
+desired set*. So "avoid querying the apiserver directly" is already how it works,
+and the LIST in `targetWatchListAndStream` is the compatibility fallback for
+apiservers that refuse `sendInitialEvents`, not the normal route.
 
-The last row matters: this proposal **removes** most of what #312 added. That is
-the good kind of change: the coalescing machinery exists to make an event pipe
-behave like a dirty set, so a dirty set makes it redundant.
+**Ordering is intra-stream.** Because replay and live events arrive on one stream
+in one goroutine, the boundary that §4 says must be defined is defined *by the
+apiserver*, at the bookmark. There is no cross-channel ordering to reconcile for
+an added scope. This is the property to lean on, and it is why this proposal is
+better than the dirty-set sketch that previously occupied this section: that one
+moved the ordering problem, this one avoids having it.
 
-It is also the standard controller-runtime pattern, one layer down: dedup by key,
-read state at reconcile time. The control plane already works this way. The data
-plane does not.
+The blast radius becomes proportional to the change. Adding a WatchRule replays
+one scope. Removing one closes one scope. Editing an unrelated field on a
+GitTarget touches nothing at all.
 
-**What it does not do is remove the problem in §4.** Gathering later shrinks the
-window between snapshot and apply, but it cannot close it: events keep arriving
-during the gather. So a dirty-set design still has to define the "snapshot, then
-deltas" boundary, only in a different place. The honest summary is that
-this proposal simplifies **bookkeeping** (no payloads, no supersede protocol) and
-leaves **ordering** as hard as it is today.
+### 6.1 What this does to the queue question
+
+Most of §5 stops mattering. If a declaration change no longer fans out N replays,
+the resync storm has no fuel, and each remaining resync is the natural tail of a
+single stream's replay rather than an independently gathered snapshot competing
+for FIFO slots.
+
+The coalescing added in #312 stays useful as a backstop, but it stops being the
+thing standing between one busy GitTarget and everyone else on the branch.
 
 ---
 
 ## 7. What has to be answered first
 
-Three things, in descending order of risk.
+### 7.1 Per-stream epoch and pending state
 
-### 7.1 Ordering against live events (the real design work)
+The enabling change. Render fidelity is tracked per **target**
+(`m.targetRenderFidelity[target.Key()]`) and an epoch is opened over the whole
+scope set, which is precisely why an unchanged scope cannot resume: it would stay
+pending in the new epoch forever.
 
-[§4](#4-why-a-resync-carries-both-a-snapshot-and-a-position) is the constraint. A
-dirty bit has no position in the FIFO, so a design that replaces the payload must
-answer, explicitly:
+For a per-key diff to be safe, "pending in this epoch" has to become a
+**per-scope** fact that a kept stream carries forward, rather than a target-level
+one reset on every declaration. Everything else in this proposal is bookkeeping;
+this is the part that is load-bearing.
 
-1. **What is the boundary?** At the moment a scope's dirty bit is consumed, which
-   in-flight events for that scope are already reflected in the gather, and which
-   must be applied on top of it.
-2. **Who holds the deltas meanwhile?** Today the watch layer buffers them and
-   releases them behind the resync. Something has to keep doing that, or the
-   apiserver's ordering guarantee stops being usable.
-3. **How does the gather's revision relate to `Hc`?** The coverage head decides
-   historical versus live for the audit tail. A gather at a different moment
-   yields a different revision, and that value has to remain the one `Hc` is set
-   from, or entries get applied twice.
+### 7.2 What closing a stream means for Git
 
-**This is where a wrong answer loses managed documents rather than merely wasting
-work.** A snapshot applied after the edits it does not contain does not merely look
-stale: mark-and-sweep deletes those edits from Git.
+Opening a scope is well defined: replay, mark, sweep, stream. Closing one is a
+product decision that this document does not settle. When a WatchRule is removed,
+the documents that scope owned in Git either:
 
-Settle it in writing, with tests that fail on inversion, before any code moves.
+- **stay**, and become unmanaged content the acceptance gate must still tolerate; or
+- **go**, which is a delete of user-visible files driven by a configuration edit.
 
-### 7.2 Where the gather lives
+This interacts with existing retention work (`MarkTargetRetention` and the
+retention-visibility design). It must be decided explicitly, because "the streams
+diff cleanly" says nothing about which of these Git should do.
 
-The watch layer holds the informers; the branch worker holds the git checkout.
-Gather-at-execution either moves cluster reads into the worker, or keeps the pipe
-and moves only the **trigger** to a dirty set, with the watch layer gathering on
-demand. The second is much smaller and is the recommended first step.
+### 7.3 Changes that are not stream-shaped
 
-### 7.3 The scope invariant
+A stream-set diff answers "which sources do we follow". It does not answer
+changes to the **destination**: `spec.path`, branch, or provider. Those move where
+content is written rather than what is watched, and a path change still implies
+re-materialising the subtree. The model needs an explicit answer for that class
+rather than an implicit one.
+
+### 7.4 The scope invariant still holds
 
 `ResyncScope` carries the invariant that the sweep scope must be exactly the
 scope the desired set was gathered over: a narrower desired set than its sweep
-scope **deletes managed documents**. Today that is enforced by gathering and
-sweeping together.
-
-Gathering at execution keeps them together, so the invariant is preserved and
-arguably harder to violate: there is no window in which a stale `Desired` can be
-paired with a fresh scope.
-
----
+scope **deletes managed documents**. Per-stream replay preserves this by
+construction, because a stream's replay and its sweep are the same scope by
+definition. That is a strengthening, not a risk.
 
 ## 8. One level up: invalidation granularity
 
@@ -390,19 +454,26 @@ events for both of its jobs.
 ```mermaid
 flowchart LR
     S1["<b>1. Coalesce</b><br/>keyed resyncs<br/><i>shipped in #312</i>"]
-    S2["<b>2. Drop the payload</b><br/>gather at execution<br/><i>proposed here</i>"]
-    S3["<b>3. Precise invalidation</b><br/>relationship graph → dirty scopes<br/><i>later</i>"]
+    S2["<b>2. Per-stream epoch</b><br/>pending becomes per-scope<br/><i>enabling change</i>"]
+    S3["<b>3. Diff the stream set</b><br/>start / stop / keep<br/><i>the payoff</i>"]
+    S4["<b>4. Close semantics</b><br/>what a removed scope<br/>means for Git"]
     S1 --> S2 --> S3
+    S3 -.->|"needs"| S4
 
     classDef done stroke-width:3px;
     class S1 done;
 ```
 
-1. **Shipped.** Resyncs are keyed and coalesced; the storm source is fixed. The
-   dirty set exists, carrying payloads.
-2. **Proposed.** Drop the payload. Contained, and deletes more than it adds.
-   Blocked on §7.1 being written down.
-3. **Later.** Express invalidation as the relationship graph so a rule change
-   dirties exactly the scopes it affects.
+1. **Shipped.** Resyncs are keyed and coalesced; the storm source is fixed. This
+   was a backstop, not the cure.
+2. **Enabling change.** Make epoch and pending state per-scope, so a kept stream
+   can carry its own forward (§7.1).
+3. **The payoff.** Diff the stream set on a declaration change, so blast radius is
+   proportional to the edit (§6).
+4. **Parallel decision.** What closing a scope means for the documents it owned
+   in Git (§7.2). Needed before step 3 can remove streams, though not before it
+   can add them.
 
-The writes stay a log throughout. Only the resync half moves.
+The writes stay a log throughout. The dirty-set sketch that earlier occupied §6
+is superseded: leaning on `sendInitialEvents` keeps the gather inside the stream,
+where its ordering is already guaranteed.
