@@ -94,6 +94,7 @@ this GitTarget claim". Every source cluster gets its own instance of the whole s
 | `WatchedTypeTable` | [`internal/watch/watched_type_table.go`](../internal/watch/watched_type_table.go) | the per-GitTarget resident set of claimed and followable `(GVR, scope)` with its operation filter |
 | Source-namespace scope | [`internal/watch/source_namespace_scope.go`](../internal/watch/source_namespace_scope.go) | Namespace label snapshots for `allowedSourceNamespaces` selectors, refreshed on the manager's cadence rather than by an informer |
 | `clusterContext` | [`internal/watch/cluster_context.go`](../internal/watch/cluster_context.go) | one per distinct cluster: catalog, registry, dynamic client, discovery client, reachability |
+| Type lifecycle | [`internal/typeset/lifecycle.go`](../internal/typeset/lifecycle.go) | names each verdict transition (`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`) so a consumer reacts to an edge instead of diffing tables. `Registry.Subscribe` has no observer yet: it is the withdrawal signal [`design/target-watch-plan.md`](design/target-watch-plan.md) §3.3 is built to consume |
 
 ### Data plane
 
@@ -255,36 +256,6 @@ Three gates can stop a type before it reaches a stream:
    must be admitted by the `ClusterProvider`.
 3. **The acceptance gate.** The Git folder must be one the operator can own. A refusal is recorded
    as `GitPathAccepted=False` and nothing is committed.
-
-## What the splice model left behind
-
-The codebase pivoted from an earlier "splice" model (a per-type Redis checkpoint spliced with the
-audit log, holding no long-lived watches) to watch-first ingestion. The code moved; some comments
-and two types did not, and they were the main reason the system read as though it still had two
-ingestion components. They are now removed:
-
-- `typeset.Materializer` and its materialization lifecycle are deleted. They were the demand axis
-  of the splice model, constructed nowhere outside their own tests. Demand is applied in the
-  watched-type table instead, which intersects the followable set with what each GitTarget claims.
-- The type **lifecycle** in [`internal/typeset/lifecycle.go`](../internal/typeset/lifecycle.go) is
-  deliberately kept, even though `Registry.Subscribe` now has no production observer at all. It
-  produces the one signal that separates a genuinely withdrawn type (a settled `TypeRemoved`, past
-  the removal grace) from a discovery wobble, and confusing those two is what deletes a user's
-  manifests. [`design/target-watch-plan.md`](design/target-watch-plan.md) §3.3 names it a build
-  dependency of the `stop` classification, blocked on the open policy decisions in §3.1 and §3.2
-  rather than on the code.
-- `watch.ClusterSnapshot` is deleted. It described a revision-pinned desired set anchored at a
-  checkpoint, and nothing referenced it.
-- The comments that described splicing, per-type checkpoints, `mirrorTypeObjects`, or "no
-  long-lived object watch" now describe the watch. The package doc on
-  [`internal/watch/manager.go`](../internal/watch/manager.go) and the doc comment on
-  [`internal/reconcile/`](../internal/reconcile/) were the two that contradicted the code most
-  directly.
-
-`architecture.md` also claimed that a control-plane CRD or APIService change reaches a GitTarget
-through the GitTarget controller, "which `Watches` those objects". It does not, and that section
-now describes the two real paths: rule and target changes through the controller, API-surface
-changes through the watch manager's trigger informers.
 
 ## Where to read next
 

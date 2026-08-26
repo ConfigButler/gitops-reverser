@@ -52,9 +52,8 @@ The pipeline is `discovery scan → APIResourceCatalog → Observations → type
 (watched-type table, …)`.
 
 The boundary is already fairly clean — outside
-[api_resource_catalog.go](../../internal/watch/api_resource_catalog.go),
-[manager_catalog.go](../../internal/watch/manager_catalog.go) and
-catalog_observe.go, no component reads the
+[api_resource_catalog.go](../../internal/watch/api_resource_catalog.go) and
+[manager_catalog.go](../../internal/watch/manager_catalog.go), no component reads the
 catalog directly; everything consumes the registry (or a projection of it, like the
 watched-type table). But the catalog is **not** a thin wrapper: it holds cross-scan state
 and makes retention decisions of its own:
@@ -79,15 +78,15 @@ unexported):
 |---|---|---|
 | **`Lookup`** (the minimal cross-package contract) | `Ready()`, `ByGVK(gvk) (TypeRecord, bool)` | `internal/git` (`worker_manager.go`, `plan_flush.go` — resolve manifest GVKs on the write path), `internal/manifestanalyzer` (`store.go`, `scan.go`, `analyzer.go`) |
 | **Registry queries** | `ByGVR`, `Followable()`, `All()`, `Ready()`, `Generation()`, `Revision()` | `internal/watch` only: `manager_catalog.go` (refresh + refusal logging + status projections), `watched_type_resolver.go` / `watched_type_table.go` (rule matching → per-GitTarget watched-type table), `scope_resolve.go` (`VerdictRetained` = the wobble check) |
-| **Registry feed** | `Update(observations, generation)`, `Entry`, `ObservationsFromEntries` | the catalog bridge only (`catalog_observe.go` → `refreshTypeRegistry`) |
+| **Registry feed** | `Update(observations, generation)`, `Entry`, `ObservationsFromEntries` | the catalog bridge only (`APIResourceCatalog.Scan` → `refreshTypeRegistry`) |
 | **Lifecycle** | `Subscribe(Observer)`, `LifecycleEvent` (`TypeActivated` / `TypeWobbling` / `TypeRecovered` / `TypeRemoved` / `TypeRefused`) | none in production; `Subscribe` has no caller |
 | **Fixtures / static** | `NewSnapshotRegistry(Snapshot)`, `BuiltinScale`, `SplitFieldPath` | tests, `internal/auditutil/subresource_policy.go` |
 
 Two observations worth pinning:
 
 - **Controllers never touch typeset directly** — `GitTargetReconciler` & co. read
-  `watch.Manager` projections (`MaterializationSummaryForGitTarget`,
-  `FollowableTypeRecords`, rule resolution). The typeset blast radius of any change here
+  `watch.Manager` projections (`StreamSummaryForGitTarget`, `FollowableTypeRecords`,
+  rule resolution). The typeset blast radius of any change here
   is `internal/watch` + the two `Lookup` consumers, nothing wider.
 - **Every consumer call is already version-complete.** `ByGVK`/`ByGVR` take a full
   group/version/kind-or-resource and return one `TypeRecord` whose `Identity` carries the
