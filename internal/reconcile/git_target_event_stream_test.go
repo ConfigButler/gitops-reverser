@@ -20,10 +20,10 @@ func TestGitTargetEventStream(t *testing.T) {
 	RunSpecs(t, "GitTargetEventStream Suite")
 }
 
-// With the R3 pivot the stream is a thin pass-through to the branch worker: no buffering, no
-// state machine, no content-hash dedup. "Newer?" is the audit RV order and "changed?" is the
-// writer's no-op detection at the commit boundary, so the only behaviour left to assert is that
-// an event is forwarded with the GitTarget identity stamped on it (and that an empty-payload
+// The stream is a thin pass-through to the branch worker: no buffering, no state machine, no
+// content-hash dedup. "Newer?" is the watch's resourceVersion order and "changed?" is the
+// writer's no-op detection at the commit boundary, so the only behaviour to assert is that an
+// event is forwarded with the GitTarget identity stamped on it (and that an empty-payload
 // control event is dropped).
 var _ = Describe("GitTargetEventStream", func() {
 	var (

@@ -16,28 +16,11 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
-// This file resolves the per-GitTarget watched-type scope the api-source-of-truth splice
-// reconciles against, with the fail-closed discipline that protects the mark-and-sweep: an
-// unobserved API surface, or a type currently held `retained` (a discovery wobble), refuses
-// rather than reconciling a reduced view (R11, §7). The desired set itself is no longer
-// gathered live — it is the spliced materialization (splice_snapshot.go) — so this file holds
-// only scope resolution and the object→DesiredResource projection both the splice and the
-// demand Declare share. See docs/architecture.md.
-
-// ClusterSnapshot is one type's revision-pinned desired set for a GitTarget: Desired is the
-// scoped object set the worker folds over the git folder; Revision is the checkpoint
-// resourceVersion the set is anchored at (it stays the commit-message {{.Revision}} and the
-// resync request revision); CoverageHead is the splice coverage head Hc — a FULL Redis stream
-// position "<rv>-<seq>" (the last folded entry's ID, or "<Revision>-<maxseq>" when nothing was
-// folded), the value the per-(GitTarget, GVR) freshness watermark gates the audit tail on. It is a
-// stream position, not a bare rv, because distinct audit entries can share an rv; comparing
-// positions is what keeps the gate from dropping a legitimate same-rv live entry. See
-// signing-snapshot-tail-replay-failure-investigation.md §5/§7.
-type ClusterSnapshot struct {
-	Desired      []manifestanalyzer.DesiredResource
-	Revision     string
-	CoverageHead string
-}
+// This file resolves the per-GitTarget watched-type scope, with the fail-closed discipline that
+// protects the mark-and-sweep: an unobserved API surface, or a type currently held `retained` (a
+// discovery wobble), refuses rather than reconciling a reduced view. The desired set itself is
+// never gathered here. It is the target watch's `sendInitialEvents` replay. This file holds only
+// scope resolution and the object to DesiredResource projection. See docs/architecture.md.
 
 // retainedWatchedTypes returns the GVKs of the target's watched types the registry currently
 // holds as `retained` (followable under the grace, but not served right now), resolved against
@@ -81,9 +64,9 @@ func gvkListSummary(gvks []schema.GroupVersionKind) string {
 }
 
 // desiredFromObject converts a materialized object into a desired resource, pairing the
-// GVR-derived API identity with the sanitized object the writer will materialise. It is shared
-// by the splice's scope projection (splice_snapshot.go) so a reconcile's desired set is shaped
-// identically however the object was sourced.
+// GVR-derived API identity with the sanitized object the writer will materialise. Both paths
+// that build a desired set go through it (the `sendInitialEvents` replay fold and the LIST
+// fallback), so the set is shaped identically however the objects were sourced.
 func desiredFromObject(
 	gvr schema.GroupVersionResource,
 	obj interface{},

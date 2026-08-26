@@ -11,7 +11,9 @@ operator's short-lived coordination state.** Read the [Ground Rules](#ground-rul
 [Mental Model](#mental-model), and [Data Sources](#data-sources) for the shape of the system, then the
 [Configuration Model](#configuration-model) and [Common Flows](#common-flows) for how the pieces move
 together. The later sections give the reference detail behind each piece. If a detail here ever disagrees
-with the source, the source wins; deeper design records live under [docs/design/](design/).
+with the source, the source wins; deeper design records live under [docs/design/](design/). For the
+inventory rather than the mechanics, which package holds which responsibility and which components
+observe a Kubernetes API server, see [components.md](components.md).
 
 Source and destination connections deliberately have different scopes. A namespaced `GitProvider` is a
 team's Git write boundary: its credential, branch policy, and targets usually belong together.
@@ -944,8 +946,9 @@ refreshes that source.
 `internal/typeset` is the single decision surface for "can this type be followed?" Each `TypeRecord`
 carries GVK/GVR identity, scope and preferred version facts, origin classification, subresource facts
 (including usable `/scale` bindings), sensitivity policy, and one `Followability` verdict. Manifest
-analysis and delete/scale resolution with only GVR all read it. The registry also owns the second, demand
-axis via the **Materializer**: a type is materialized only when it is **Followable ∩ claimed**.
+analysis and delete/scale resolution with only GVR all read it. Demand is applied one layer up: the
+watched type table intersects the followable set with what each `GitTarget` claims, and only that
+intersection gets a watch.
 
 ### WatchedTypeTable
 
@@ -1003,13 +1006,19 @@ or triggers a Git sweep.
 
 ### Rule change reconcile
 
-A WatchRule / ClusterWatchRule / GitTarget change, or a **control-plane** CRD / APIService change, reaches
-a GitTarget through the **GitTarget controller**, which `Watches` those objects (generation change
-predicates) and queues the affected GitTarget again. On reconcile the GitTarget refreshes its own source
-catalog and resolves its claimed `(GVR, scope)` set again; a type a new rule starts watching gets a new
-watch opened (with a `sendInitialEvents` replay) and a type no longer claimed has its watch closed. A remote
-CRD / APIService change has no trigger informer; the next periodic source-catalog refresh performs the same
-re-resolution. The watch manager then refreshes the watched type tables.
+A rule or target change and an API-surface change arrive on two different paths.
+
+A WatchRule / ClusterWatchRule / GitTarget change reaches a GitTarget through the **GitTarget
+controller**, which `Watches` those objects (generation change predicates) and queues the affected
+GitTarget again. On reconcile the GitTarget refreshes its own source catalog and resolves its claimed
+`(GVR, scope)` set again; a type a new rule starts watching gets a new watch opened (with a
+`sendInitialEvents` replay) and a type no longer claimed has its watch closed.
+
+A **control-plane** CRD / APIService change reaches the same re-resolution through the watch manager
+instead. Its trigger informers wake a catalog refresh, which re-resolves the watched type tables and
+brings the running watches into line. The GitTarget controller does not watch those objects. A remote
+CRD / APIService change has no trigger informer at all; the next periodic source-catalog refresh
+performs the same re-resolution.
 
 ### Mark and sweep resync
 

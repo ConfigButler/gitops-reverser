@@ -37,7 +37,7 @@ func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
 
 // stashDeferredHeal parks a heal resync until the commit window is idle (applyDeferredHeals drains
 // it). It keeps one heal per (GitTarget, scope): a newer heal for the same key folds a fresher
-// checkpoint, so the older one is superseded and its caller replied to immediately — otherwise the
+// desired set, so the older one is superseded and its caller replied to immediately — otherwise the
 // drainScopedResync goroutine waiting on the old request's channel would leak.
 func (l *branchWorkerEventLoop) stashDeferredHeal(req *ResyncRequest) {
 	key := resyncHealKey(req)

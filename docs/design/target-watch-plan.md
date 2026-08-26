@@ -240,17 +240,15 @@ rather than looking like an empty surface. Treating "we watch CRDs" as the
 mechanism would be right for the local cluster and wrong for every mirrored
 one.
 
-**Not yet wired.** `Registry.Subscribe` has no production caller.
-`Materializer.OnLifecycleEvent` handles `TypeRemoved` by force-releasing the
-checkpoint while keeping the claim, so a reappearance re-syncs, and its comment
-describes itself as the observer "the future driver wires onto
-`Registry.Subscribe`".
+**Not yet wired.** `Registry.Subscribe` has no production caller. The registry
+computes and dispatches the events on every scan, and nothing receives them. The
+one consumer that existed, the `Materializer`'s demand axis, was deleted in
+August 2026 once the watch-first rewrite left it unreachable.
 
-So the confirmed-withdrawal row of the table above is implementable by
-**connecting an existing producer to a consumer**, not by building a detector.
-The plan's `stop` classification is the natural consumer: a settled `TypeRemoved`
-is one authoritative cause of a cell leaving the plan, and it arrives already
-graced.
+So the confirmed-withdrawal row of the table above needs a consumer built, not a
+detector: the producer is already correct and already graced. The plan's `stop`
+classification is the natural consumer, because a settled `TypeRemoved` is one
+authoritative cause of a cell leaving the plan.
 
 ## 4. Ordering: the fence this design requires
 
@@ -466,7 +464,7 @@ are where the semantics live, and none of them should be rushed to reach them.
 
 A scenario list, not a test plan. Each needs a failing-first test.
 
-**Classification**
+### Classification
 
 - An operation-filter edit on an existing key restarts that stream and only that
   stream.
@@ -475,34 +473,34 @@ A scenario list, not a test plan. Each needs a failing-first test.
 - A no-op edit (a status write, an unrelated spec field) classifies everything as
   `keep` and starts nothing.
 
-**Overlap**
+### Overlap
 
 - A cluster-wide stream and a named-namespace stream on one GVR coexist; stopping
   the wider one does not remove documents the narrower one still covers.
 - An object in the overlapping namespace, delivered on both streams, converges to
   one state.
 
-**Cancellation and staleness**
+### Cancellation and staleness
 
 - A canceled stream's in-flight replay result is rejected by lease.
 - A canceled stream's cursor write does not resurrect a stale resume point.
 - A canceled stream's queued resync does not apply after its replacement's.
 
-**Ordering**
+### Ordering
 
 - A restart while events for that scope are queued does not apply an older event
   after a newer snapshot (§4.1).
 - Queue saturation drops or coalesces without any accepted request failing to
   run.
 
-**Cause and policy**
+### Cause and policy
 
 - A discovery wobble holds every cell: no stream stops, nothing is deleted.
 - A settled `TypeRemoved` untracks that type only.
 - An unreachable source cluster holds; it never presents as deselection.
 - Each `prune.mode` behaves as §3.1 decides, including the default.
 
-**Render fidelity**
+### Render fidelity
 
 - A diverged scope stays diverged across an unrelated plan change; writes do not
   reopen.

@@ -10,16 +10,13 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// GitTargetEventStream forwards a GitTarget's live field-patch events to its branch worker.
+// GitTargetEventStream forwards a GitTarget's live events to its branch worker. Every event a
+// target watch routes after the replay (a full object write, or a /scale subresource translated
+// into a parent-manifest field patch) travels this route.
 //
-// With the api-source-of-truth pivot (R3) the resource mirror is the per-type splice reconcile,
-// not a live per-event stream: the long-lived object informers, the RECONCILING handover buffer,
-// and the content-hash deduplication this type used to own are all gone. What remains is a thin
-// route for the events the splice deliberately does not own — the /scale subresource translated
-// into a parent-manifest field patch (redis_audit_consumer.routeScaleFieldPatch). "Newer?" is now
-// answered by the audit stream's RV ordering and "changed?" by the writer's no-op detection
-// (manifestedit.Decide at the commit boundary), so no hash is computed here. See
-// docs/architecture.md (DEC-6, DEC-7).
+// It is deliberately thin, holding no buffer and no content hash. "Newer?" is answered by the
+// watch's own resourceVersion ordering, and "changed?" by the writer's no-op detection
+// (manifestedit.Decide at the commit boundary). See docs/architecture.md.
 type GitTargetEventStream struct {
 	gitTargetName      string
 	gitTargetNamespace string

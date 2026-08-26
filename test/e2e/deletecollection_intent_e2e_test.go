@@ -92,8 +92,8 @@ var _ = Describe("DeleteCollection intent & attribution", Label("manager"), Orde
 		Expect(err).NotTo(HaveOccurred(), "failed to apply WatchRule")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
-		// Attribution flows only once the configmaps type is live; a write made while
-		// the type is still building its first checkpoint would land unattributed.
+		// Attribution flows only once the configmaps stream is live; a write made while
+		// the stream is still replaying would land unattributed.
 		waitForStreamsRunning(gitTargetName, testNs)
 
 		By("building impersonated clients for the actor and a separate finalizer-clearing identity")

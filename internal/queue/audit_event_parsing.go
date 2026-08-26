@@ -10,9 +10,8 @@ import (
 )
 
 // This file is the audit-event → author-identity interpretation used by the
-// attribution index. Watch carries the object body now, so the audit body is no
-// longer parsed into Git-writable objects (the per-type splice/tail that did that
-// was retired with the watch-first rewrite); only the user identity is extracted.
+// attribution index. The watch carries the object body, so the audit body is never
+// parsed into Git-writable objects; only the user identity is extracted.
 
 const (
 	// displayNameExtraKey is the audit-event user.extra key carrying the OIDC

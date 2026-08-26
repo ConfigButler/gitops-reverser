@@ -13,8 +13,8 @@ import (
 
 var configMapGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
 
-// streamedCM is an unstructured ConfigMap a materialization fold would carry, used across the
-// splice / checkpoint tests.
+// streamedCM is an unstructured ConfigMap a replay fold would carry, used across the
+// scope-resolution tests.
 func streamedCM(namespace, name, rv string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": "v1",

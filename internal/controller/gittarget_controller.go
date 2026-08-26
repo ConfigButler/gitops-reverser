@@ -995,8 +995,8 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	r.EventRouter.UnregisterGitTargetEventStream(gitDest)
 
 	// Forget the diff-wake's last-Declared cache so a GitTarget recreated with the same name is a
-	// fresh claim and re-drives its initial backfill splice (otherwise the recreate inherits the
-	// dead one's declaration and never snapshots).
+	// fresh claim and re-drives its initial replay (otherwise the recreate inherits the
+	// dead one's declaration and never replays).
 	if r.EventRouter.WatchManager != nil {
 		r.EventRouter.WatchManager.ForgetGitTargetDeclaration(gitDest)
 	}
@@ -1091,7 +1091,7 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicate.LabelChangedPredicate{}),
 		).
 		// React to a GitTarget's WatchRule/ClusterWatchRule set changing so it re-reconciles and
-		// re-Declares its watched-type set promptly (the R3 replacement for the deleted whole-target
+		// re-Declares its watched-type set promptly (the replacement for the deleted whole-target
 		// rule-change resync). Without this a rule added after the GitTarget went Ready would not be
 		// claimed — and so never materialised/mirrored — until the next ~10m periodic reconcile.
 		// GenerationChangedPredicate ignores the status-only updates the rule controllers write.

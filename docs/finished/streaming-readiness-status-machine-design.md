@@ -350,7 +350,7 @@ now:**
   `waitForStreamsReady`.
 
 **Bigger collapse — evaluate, don't blind-delete:** the `Materializer` `Phase` enum
-([materializer.go:57-78](../../internal/typeset/materializer.go#L57-L78)) has six
+(`materializer.go`, since deleted) has six
 checkpoint phases. The **demand/claim/followability** half is still needed (it decides
 *which* types to watch and feeds the `Blocked` state); the **checkpoint** half
 (`Syncing`/`Resyncing`/`Failing` + `checkpointRV` + `RestoreSynced`) maps onto the

@@ -16,6 +16,13 @@
   per §3.1's allowance: it is the change fingerprint (generation bumps only on changed
   facts, so registry revisions don't churn on steady rescans) and the re-derive source
   for `refreshTypeRegistry`'s lazy callers (rule status, watched-type tables).
+- **The demand axis is gone (2026-08-26).** `typeset.Materializer` and its
+  materialization lifecycle were deleted: the watch-first rewrite left them with no
+  production caller, and the demand intersection ("followable AND claimed") now lives in
+  the watched-type table in `internal/watch`. Every passage below that names the
+  `Materializer`, its inventory, or its `TypeWobbling` freeze describes code that no
+  longer exists. `Registry.Subscribe` and `LifecycleEvent` survive with no production
+  consumer.
 - `Stats()`/`DegradedGroupVersions()` survive as per-scan facts (gauge/log surfaces
   unchanged); registry tests for the relocated semantics live in
   `internal/typeset/scan_test.go`.
@@ -42,7 +49,7 @@ This document records the target shape, the trade-offs, and a staged plan.
 ## 2. Where the state lives today
 
 The pipeline is `discovery scan → APIResourceCatalog → Observations → typeset.Registry →
-(watched-type table, Materializer, …)`.
+(watched-type table, …)`.
 
 The boundary is already fairly clean — outside
 [api_resource_catalog.go](../../internal/watch/api_resource_catalog.go),
@@ -73,8 +80,7 @@ unexported):
 | **`Lookup`** (the minimal cross-package contract) | `Ready()`, `ByGVK(gvk) (TypeRecord, bool)` | `internal/git` (`worker_manager.go`, `plan_flush.go` — resolve manifest GVKs on the write path), `internal/manifestanalyzer` (`store.go`, `scan.go`, `analyzer.go`) |
 | **Registry queries** | `ByGVR`, `Followable()`, `All()`, `Ready()`, `Generation()`, `Revision()` | `internal/watch` only: `manager_catalog.go` (refresh + refusal logging + status projections), `watched_type_resolver.go` / `watched_type_table.go` (rule matching → per-GitTarget watched-type table), `scope_resolve.go` (`VerdictRetained` = the wobble check) |
 | **Registry feed** | `Update(observations, generation)`, `Entry`, `ObservationsFromEntries` | the catalog bridge only (`catalog_observe.go` → `refreshTypeRegistry`) |
-| **Lifecycle** | `Subscribe(Observer)`, `LifecycleEvent` (`TypeActivated` / `TypeWobbling` / `TypeRecovered` / `TypeRemoved` / `TypeRefused`) | `internal/watch/type_lifecycle.go` (drain → git actions + Materializer) |
-| **Materializer** (demand axis) | `Declare`, `OnLifecycleEvent`, `BeginSync`, `SyncSucceeded`, `SyncFailed`, `RestoreSynced`, `RequestResync`, `Sweep`, `Phase`, `Checkpoint`, `Claimants`, `PendingSyncs`, `Inventory`, `Subscribe` | `internal/watch/materialization.go` (driver, declare, sweep, status roll-up, late-event nudge) |
+| **Lifecycle** | `Subscribe(Observer)`, `LifecycleEvent` (`TypeActivated` / `TypeWobbling` / `TypeRecovered` / `TypeRemoved` / `TypeRefused`) | none in production; `Subscribe` has no caller |
 | **Fixtures / static** | `NewSnapshotRegistry(Snapshot)`, `BuiltinScale`, `SplitFieldPath` | tests, `internal/auditutil/subresource_policy.go` |
 
 Two observations worth pinning:
