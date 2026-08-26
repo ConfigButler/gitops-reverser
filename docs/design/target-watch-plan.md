@@ -34,9 +34,11 @@ so rather than implying one.
 ## 1. Types
 
 ```go
-// CellKey identifies one watched slice of one GitTarget.
+// CellKey identifies one watched slice of one GitTarget. BUILT, in internal/types:
+// group/resource/namespace, with the served version carried as data beside it (§1.1).
 type CellKey struct {
-    GVR       schema.GroupVersionResource
+    Group     string
+    Resource  string
     Namespace string // "" is cluster-wide, a PEER of any named namespace
 }
 
@@ -93,10 +95,21 @@ boundary. Before either type claims to reuse the other's identity, pick one:
    compares, and carry the served version as data on the cell rather than as
    identity.
 
-Option 2 is the smaller change and removes the discrepancy at its source. Either
-way this must be settled before a cell removal is translated into a sweep scope,
-because a key that does not round-trip to its scope means a sweep with the wrong
-boundary, which is the one class of error that deletes user data.
+**Settled: option 2.** `types.CellKey` is group/resource/namespace, and the
+served version travels as data on whatever carries the cell — on `ResyncScope`,
+which still renders `{{.APIVersion}}` in a reconcile commit message, and on the
+watch key, which has to open a watch at a concrete version. It is the shared
+identity of the three things that must agree: the stream, the render-fidelity
+scope it reports into, and the sweep boundary its resync runs under.
+`RenderFidelityScope` is gone; it was the same fields under a third name.
+
+The producer now guarantees what the identity assumes: `targetWatchStreams`
+declares **one stream per cell**, choosing the served version once (the preferred
+record, else the higher-sorting version, stable across declaration order) and
+unioning the collapsed record's operation filter so no rule loses coverage. Two
+streams over one cell would have been two snapshots sweeping each other's
+documents. A cluster-wide scope stays a peer of any named namespace: those are
+different cells, and both stream.
 
 ---
 
@@ -332,11 +345,16 @@ marker**, and the marker's position is the one coalescing reuses. The condition
 has to be a property of the pending entry. §4.3 is what shipped instead — option
 1, made available without provenance by over-matching.
 
-Option 1 remains the better steady state once §5.1 lands, because provenance
-lets the boundary be tracked per producing cell rather than approximated. Option
-2 or 4 is the target if overlapping streams are to be ordered rather than merely
-fenced. None of 1, 3, or the shipped fence addresses overlapping streams; that
-gap is recorded, not assumed away.
+Provenance (§5.1) does **not** narrow this test, and an earlier draft here was
+wrong to suggest it would. Matching a queued write against the pending snapshot
+by *producing cell* would let a write from an overlapping peer — the cluster-wide
+stream delivering an object the named cell also covers — pass the fence and be
+overwritten by that cell's next snapshot. The tail test stays identity-based and
+over-matching for as long as two cells can deliver one object. What provenance
+buys the fence is the lease, which no identity match can recover. Option 2 or 4
+is the target if overlapping streams are to be ordered rather than merely fenced.
+None of 1, 3, or the shipped fence addresses overlapping streams; that gap is
+recorded, not assumed away.
 
 ### 4.3 The shipped fence
 
@@ -425,11 +443,15 @@ So every queued item needs provenance:
 
 ```go
 type Provenance struct {
-    Target types.ResourceReference
-    Cell   CellKey
-    Lease  uint64
+    Cell  types.CellKey
+    Lease uint64
 }
 ```
+
+The GitTarget is deliberately absent: every item that carries provenance already
+names its target, and a second copy is a second answer waiting to disagree — the
+coalescing fence had to choose between a request-level and an event-level target,
+and reading the wrong one made it silently never fire (§4.3).
 
 attached to write requests, resync requests, and projection deltas alike, with
 one defined checkpoint: **the worker validates provenance when it dequeues an
@@ -438,10 +460,12 @@ cell (including anything matching a tombstone). Dropping must be counted, not
 silent, because a nonzero rate means streams are being restarted more than the
 plan intends.
 
-This is also what makes §4.2 option 1 possible at all, and what lets a coalescing
-decision be made per producing cell rather than guessed from an object's
-namespace. It is a prerequisite for the ordering fence, not an optimization of
-it.
+What this does **not** do is let the coalescing tail test key on the producing
+cell: while a cluster-wide and a namespaced stream can both deliver one object, a
+write from the peer cell must still fence the named cell's snapshot, so that test
+stays identity-based and over-matching (§4.3). Provenance is what a *lease* fence
+needs, and a lease is the one thing an item's content can never yield — an
+object's identity is unchanged by the restart that retired the stream.
 
 ## 6. Removing a cell is a worker operation
 
@@ -488,11 +512,13 @@ Each step is independently shippable and leaves the system correct.
 
 1. ~~**Fence the coalescing regression** (§4.1).~~ **Done**, as §4.3: option 1
    with an over-matching tail test, which needs no provenance.
-2. **Add provenance to queued items** (§5.1). It is the prerequisite for every
-   later fence and for lease enforcement, and it is independently useful: it
-   makes "which cell produced this write" answerable in logs and metrics.
-3. **Settle the identity question** (§1.1) so a cell key round-trips to a sweep
-   scope. Cheap now, expensive after anything depends on the wrong answer.
+2. ~~**Add provenance to queued items** (§5.1).~~ **Done.** Every live event and
+   every replay snapshot carries the cell and the lease of the stream that
+   produced it; an enqueue, a coalesce and a queue-full drop name them. Nothing
+   enforces a lease yet — that is step 5 — but the field cannot be added to items
+   already in flight, which is why it lands first.
+3. ~~**Settle the identity question** (§1.1)~~ **Done**, as option 2, with one
+   stream per cell at the producer.
 4. **Introduce the types** (§1) and compute the plan without acting on it. Log
    the classification. This validates the diff against real workloads with zero
    behavior change.

@@ -457,7 +457,13 @@ be read from. In outline: fence the coalescing regression, add provenance to
 queued items, settle the cell identity question, then diff the plan so unrelated
 replays stop. The semantics of removal come after, deliberately.
 
-Two things have shipped already. In
+Steps 2 and 3 of that order have since shipped too: queued work now carries the
+cell and stream lease that produced it, and the cell identity question is settled
+as versionless group/resource/namespace, with the producer declaring one stream
+per cell. The stream set is still replaced wholesale, so the unrelated replays
+this document is about remain — that is step 4 onward.
+
+Two things had shipped before that. In
 [#312](https://github.com/ConfigButler/gitops-reverser/pull/312) resyncs became
 keyed and coalesced, and the storm source is fixed; that was a backstop rather
 than a cure, and it introduced an ordering hazard. That hazard is now fenced —
