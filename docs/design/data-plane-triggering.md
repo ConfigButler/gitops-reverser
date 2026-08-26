@@ -4,6 +4,10 @@ date: 2026-08-25
 related:
   - reconcile-triggering.md
   - watch-and-catalog-architecture.md
+  - watchrule-source-namespace/pr2-stream-scope-collapse.md
+  - watchrule-source-namespace/pr5-gittarget-deletion-safety.md
+  - ../spec/reconcile-via-watchlist-mark-and-sweep.md
+  - ../spec/type-lifecycle-events-and-wobble-settling.md
 ---
 
 # Data-plane triggering: from an event pipe to a dirty set
@@ -292,7 +296,8 @@ coverage head `Hc` records how far a target's reconcile covered, so an
 audit-log entry at or below `Hc` is **historical** for that target (already
 folded into the reconcile) and one above it is **live** (apply as its own commit).
 Without that gate, entries get applied twice: once by the reconcile, once by the
-tail.
+tail. The full account is in
+[the snapshot tail replay investigation](../finished/signing-snapshot-tail-replay-failure-investigation.md).
 
 So the FIFO position is not an implementation detail a dirty set can discard for
 free. It is the boundary that makes "snapshot, then deltas" well defined.
@@ -415,8 +420,8 @@ deletes are mirrored, deletions *inferred* from a desired snapshot are not. A
 scope-close sweep would be suppressed under that default, which is the opposite
 of the decision above.
 
-The way out is that a scope-close is neither of the two existing categories. The
-deletion-safety design separates **source evidence** (an observed DELETE) from
+The way out is that a scope-close is neither of the two existing categories. [GitTarget deletion safety](watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
+separates **source evidence** (an observed DELETE) from
 **inference** (mark-and-sweep against a snapshot, unsafe when the snapshot was
 gathered against a wrong boundary). Removing a WatchRule is a third thing: an
 explicit configuration act, stating intent directly rather than inferring it. It
@@ -424,7 +429,8 @@ carries no risk of a mis-scoped snapshot, because nothing is being compared.
 
 That argues for scope-close deleting regardless of `prune.mode`. It should be
 settled explicitly, because a user who set `mode: Never` may reasonably expect it
-to mean never.
+to mean never. Whatever is decided, a suppressed sweep is already observable
+through [retention visibility](watchrule-source-namespace/pr5-retention-visibility.md).
 
 ### 7.2.1 Coverage, not per-scope close sweeps
 
@@ -434,7 +440,9 @@ question.
 
 **Problem one: overlapping scopes are real and deliberate.** A cluster-wide
 stream (`namespace: ""`) is a peer of a named-namespace stream on the same GVR,
-never a replacement for it. `ResyncScope.Matches` treats an empty namespace as
+never a replacement for it, as
+[stream scope collapse](watchrule-source-namespace/pr2-stream-scope-collapse.md)
+records. `ResyncScope.Matches` treats an empty namespace as
 *every* namespace, so an empty-desired sweep at `(configmaps, "")` would delete
 documents a surviving `(configmaps, team-a)` stream still owns. Sweeping a closed
 scope would need to subtract the survivors' scopes, which is fiddly and easy to
@@ -510,11 +518,21 @@ is wrong in the dangerous direction whenever the stream table is **incomplete**
 rather than narrower by intent: a controller still starting, discovery not yet
 ready, rules not yet loaded, a source cluster briefly unreachable.
 
-This is the same hazard the deletion-safety design already names, one level up: a
-set that is complete-looking but gathered against the wrong boundary. There, the
-protection is that an incomplete gather enqueues no resync at all, so an outage
-stops a sweep rather than shrinking one. Coverage sweeping needs the equivalent
-property, stated explicitly:
+This is the same hazard
+[GitTarget deletion safety](watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
+already names, one level up: a set that is complete-looking but gathered against
+the wrong boundary. There, the protection is that an incomplete gather enqueues
+no resync at all, so an outage stops a sweep rather than shrinking one.
+
+Part of the protection already exists for the type-level case.
+[Type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)
+gives the registry a `RemovalGrace` (60 s) before a type that vanished from
+discovery is treated as removed, so a discovery wobble does not empty the table
+underneath a sweep. That covers types blinking out. It does **not** cover the
+other ways the table can be incomplete: rules not yet loaded, a controller still
+starting, a source cluster briefly unreachable.
+
+So coverage sweeping needs the property stated explicitly, on top of that grace:
 
 - the sweep runs only when the declared stream table is **known complete** for the
   target (discovery ready, rules resolved, source cluster reachable);
@@ -577,7 +595,57 @@ events for both of its jobs.
 
 ---
 
-## 9. Where we are
+## 9. Related work
+
+Everything below already exists. This note sits on top of it rather than beside
+it.
+
+**The layer above.** [Reconcile triggering](reconcile-triggering.md) asks the same
+question for the control plane: how controllers wake up, why a periodic requeue is
+a safety net rather than a mechanism, and which dependency edges are missing. This
+document is its data-plane counterpart.
+
+**How ingestion works.**
+[Architecture](../architecture.md) is the reference, in particular "State
+ingestion and not losing deletes", "Watch event ordering", and "Mark and sweep
+resync". [Watch-first ingestion](../finished/watch-first-ingestion-architecture.md)
+is how the watch-first model was arrived at, and
+[Reconcile via WatchList and mark-and-sweep](../spec/reconcile-via-watchlist-mark-and-sweep.md)
+is the mechanism this note's §4 depends on.
+[Watch event ordering under the attribution grace window](../facts/watch-event-ordering-and-attribution-grace.md)
+has the worked examples behind the ordering claims.
+
+**Scopes and streams.**
+[Namespace-scoped resync](watchrule-source-namespace/pr1-namespace-scoped-resync.md)
+and [stream scope collapse](watchrule-source-namespace/pr2-stream-scope-collapse.md)
+established the per-scope stream model and why a cluster-wide scope is a peer of a
+named one rather than a replacement. That is the overlap §7.2.1 has to handle.
+
+**Deletion and retention.**
+[GitTarget deletion safety](watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
+draws the line between observed evidence and inferred deletion, which is the line
+a scope close has to be placed against.
+[Retention visibility](watchrule-source-namespace/pr5-retention-visibility.md)
+makes a suppressed sweep observable.
+
+**Types and identity.**
+[Type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)
+gives `RemovalGrace`, which is the existing half of §7.2.3's gate.
+[Typeset owns discovery grace](../spec/typeset-owns-discovery-grace.md) is where
+that grace lives. [Type followability](../spec/type-followability.md) defines what
+may be mirrored at all, and
+[the GVK/GVR mapping layer](../spec/gvk-gvr-mapping-layer.md) is the identity
+resolution §7.2.2 deliberately avoids depending on at sweep time.
+[Unsupported folder refusal](../spec/unsupported-folder-refusal-plan.md) is the
+acceptance gate that decides what a folder may contain before any of this runs.
+
+**The longer-range picture.**
+[Watch and catalog architecture](watch-and-catalog-architecture.md) is the target
+model for how rules become concrete watched types.
+
+---
+
+## 10. Where we are
 
 ```mermaid
 flowchart LR
