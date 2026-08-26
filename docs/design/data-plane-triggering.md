@@ -378,38 +378,69 @@ thing standing between one busy GitTarget and everyone else on the branch.
 
 ## 7. What has to be answered first
 
-### 7.1 Per-stream epoch and pending state
+### 7.1 Per-stream epoch and pending state (decided)
 
-The enabling change. Render fidelity is tracked per **target**
+**Decision: state is kept per stream.** A stream is `running`, `new`, or
+`deleted`, and a running stream carries its own epoch and pending state forward
+across a declaration change.
+
+This is the enabling change. Render fidelity is tracked per **target**
 (`m.targetRenderFidelity[target.Key()]`) and an epoch is opened over the whole
-scope set, which is precisely why an unchanged scope cannot resume: it would stay
-pending in the new epoch forever.
+scope set, which is precisely why an unchanged scope cannot resume today: it
+would stay pending in the new epoch forever. Moving that fact to the scope is
+what lets a kept stream survive a declaration change untouched.
 
-For a per-key diff to be safe, "pending in this epoch" has to become a
-**per-scope** fact that a kept stream carries forward, rather than a target-level
-one reset on every declaration. Everything else in this proposal is bookkeeping;
-this is the part that is load-bearing.
+### 7.2 What closing a stream means for Git (decided, with one conflict)
 
-### 7.2 What closing a stream means for Git
+**Decision: removing a WatchRule deletes the documents that scope owned.** The
+source cluster is the source of truth, Git is the ledger, and the ledger is kept
+in sync as closely as possible. Nothing is left lying around.
 
-Opening a scope is well defined: replay, mark, sweep, stream. Closing one is a
-product decision that this document does not settle. When a WatchRule is removed,
-the documents that scope owned in Git either:
+**Removing the GitTarget does not.** The asymmetry is deliberate and coherent:
+narrowing a scope edits a mirror that remains live and must stay accurate, while
+deleting the GitTarget ends the mirroring relationship altogether. Sweeping is an
+obligation only while we are responsible for the folder's accuracy; once we stop
+mirroring, what is already written stands as a record.
 
-- **stay**, and become unmanaged content the acceptance gate must still tolerate; or
-- **go**, which is a delete of user-visible files driven by a configuration edit.
+```mermaid
+flowchart TB
+    A["remove a WatchRule"] --> B["mirror stays live<br/>and must stay accurate"]
+    B --> C["<b>sweep</b> that scope's documents"]
+    D["delete the GitTarget"] --> E["mirroring relationship ends"]
+    E --> F["<b>retain</b> what is written"]
+```
 
-This interacts with existing retention work (`MarkTargetRetention` and the
-retention-visibility design). It must be decided explicitly, because "the streams
-diff cleanly" says nothing about which of these Git should do.
+**The conflict to resolve.** `spec.prune.mode` defaults to `OnEvent`: observed
+deletes are mirrored, deletions *inferred* from a desired snapshot are not. A
+scope-close sweep would be suppressed under that default, which is the opposite
+of the decision above.
 
-### 7.3 Changes that are not stream-shaped
+The way out is that a scope-close is neither of the two existing categories. The
+deletion-safety design separates **source evidence** (an observed DELETE) from
+**inference** (mark-and-sweep against a snapshot, unsafe when the snapshot was
+gathered against a wrong boundary). Removing a WatchRule is a third thing: an
+explicit configuration act, stating intent directly rather than inferring it. It
+carries no risk of a mis-scoped snapshot, because nothing is being compared.
 
-A stream-set diff answers "which sources do we follow". It does not answer
-changes to the **destination**: `spec.path`, branch, or provider. Those move where
-content is written rather than what is watched, and a path change still implies
-re-materialising the subtree. The model needs an explicit answer for that class
-rather than an implicit one.
+That argues for scope-close deleting regardless of `prune.mode`. It should be
+settled explicitly, because a user who set `mode: Never` may reasonably expect it
+to mean never.
+
+### 7.3 Changes that are not stream-shaped (already answered)
+
+The destination fields are **immutable**, enforced by CEL on the type:
+
+```text
+spec.providerRef        is immutable
+spec.branch             is immutable
+spec.path               is immutable
+spec.clusterProviderRef is immutable
+```
+
+with the message "delete and recreate the GitTarget to change its destination".
+So there is no path-change transition to design for: changing a destination means
+a new GitTarget, and the old one's folder is retained under §7.2. The class of
+problem was removed by the API rather than solved by the data plane.
 
 ### 7.4 The scope invariant still holds
 
@@ -456,7 +487,7 @@ flowchart LR
     S1["<b>1. Coalesce</b><br/>keyed resyncs<br/><i>shipped in #312</i>"]
     S2["<b>2. Per-stream epoch</b><br/>pending becomes per-scope<br/><i>enabling change</i>"]
     S3["<b>3. Diff the stream set</b><br/>start / stop / keep<br/><i>the payoff</i>"]
-    S4["<b>4. Close semantics</b><br/>what a removed scope<br/>means for Git"]
+    S4["<b>4. Close semantics</b><br/>sweep the scope,<br/>retain on target delete"]
     S1 --> S2 --> S3
     S3 -.->|"needs"| S4
 
@@ -470,9 +501,9 @@ flowchart LR
    can carry its own forward (§7.1).
 3. **The payoff.** Diff the stream set on a declaration change, so blast radius is
    proportional to the edit (§6).
-4. **Parallel decision.** What closing a scope means for the documents it owned
-   in Git (§7.2). Needed before step 3 can remove streams, though not before it
-   can add them.
+4. **Decided, one detail open.** A removed WatchRule sweeps its scope; a deleted
+   GitTarget retains its folder (§7.2). What remains is how that sweep relates to
+   `spec.prune.mode`, whose `OnEvent` default would suppress it.
 
 The writes stay a log throughout. The dirty-set sketch that earlier occupied §6
 is superseded: leaning on `sendInitialEvents` keeps the gather inside the stream,
