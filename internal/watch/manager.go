@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package watch drives the api-source-of-truth reconcile: it keeps the followability
-// registry and the demand-driven materialization axis fresh, fills per-type checkpoints,
-// and reconciles each watched type into Git by SPLICING the per-type Redis materialization
-// (checkpoint + audit log) into a desired set — no long-lived object watch is held (R3).
+// Package watch drives the api-source-of-truth reconcile: it keeps the followability registry
+// and the per-GitTarget watched-type tables fresh, and mirrors each watched type into Git from a
+// long-lived Kubernetes watch per claimed (GitTarget, GVR, scope). The live watch is the only
+// source of ongoing object state, and its events are the writes. The INITIAL desired set the
+// mark-and-sweep folds over the Git folder comes from the same watch's sendInitialEvents replay,
+// or, on an apiserver that does not serve it, from a LIST with the watch's events buffered behind
+// it (targetWatchListAndStream). See docs/architecture.md.
 package watch
 
 import (
@@ -48,11 +51,10 @@ import (
 // be denied every other object in the cluster. See docs/rbac.md.
 
 // Manager is a controller-runtime Runnable that keeps the followability registry and the
-// demand-driven materialization axis fresh and drives the per-type splice reconcile. It
-// holds NO long-lived object informers: the only always-on resource intake is the
-// audit-webhook push (mirrored into the per-type :audit:stream); the only API touch on a
-// schedule is the brief checkpoint fill (mirrorTypeObjects) the materialization driver runs
-// for claimed types. See docs/architecture.md.
+// per-GitTarget watched-type tables fresh, and owns every target watch. It holds no object
+// informers and no object cache: each stream is a raw watch, opened per claimed (GVR, scope)
+// against the GitTarget's own source cluster. The only API touch on a schedule is the discovery
+// refresh that keeps the catalogs current. See docs/architecture.md.
 type Manager struct {
 	// Client provides cluster access.
 	Client client.Client
@@ -177,15 +179,15 @@ type Manager struct {
 
 	// watchedTypes is the resident, per-GitTarget watched-type table set: the single
 	// source of "what each GitTarget watches", a projection of the type registry's
-	// followable set onto each target's rules, read by the splice scope resolution and
-	// the demand Declare instead of each re-resolving inline. watchedTypeInit guards its
-	// lazy construction for zero-value Managers in tests.
+	// followable set onto each target's rules, read by scope resolution and the Declare
+	// path instead of each re-resolving inline. watchedTypeInit guards its lazy
+	// construction for zero-value Managers in tests.
 	watchedTypeInit sync.Once
 	watchedTypes    *watchedTypeStore
 
-	// targetWatches is the watch-first data plane: one raw watch per
-	// (GitTarget, GVR, namespace scope). It replaces the materialized Redis
-	// checkpoint/audit-tail pipeline as the source of object state.
+	// targetWatches is the data plane: one raw watch per (GitTarget, GVR, namespace
+	// scope), and the only source of live object state. Its initial desired set comes from
+	// the replay, or from the buffered LIST fallback when sendInitialEvents is unsupported.
 	targetWatchesMu sync.Mutex
 	targetWatches   map[string]*targetWatchSet
 	// targetStreamStates is the readiness surface for targetWatches. It is keyed
@@ -327,12 +329,10 @@ func (m *Manager) NeedLeaderElection() bool {
 }
 
 // ReconcileForRuleChange refreshes the trusted API catalog and the resident watched-type
-// tables when rules change or a CRD is installed/removed. It no longer starts object
-// informers or gathers a whole-GitTarget snapshot (R3): the catalog refresh drives the
-// followability registry, whose transitions gate the materialization axis (which types get
-// a checkpoint) and fan per-type reconciles; the splice off that checkpoint is the only
-// resource-mirror path. Called by the WatchRule/ClusterWatchRule controllers after rule
-// modifications, by the periodic ticker, and by the API-surface trigger.
+// tables when rules change or a CRD is installed/removed. The catalog refresh drives the
+// followability registry; the tables are re-resolved from it, and the running target watches
+// are brought into line with what the tables now say. Called by the WatchRule/ClusterWatchRule
+// controllers after rule modifications, by the periodic ticker, and by the API-surface trigger.
 func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	log := m.Log.WithName("reconcile")
 	log.V(1).Info("Reconciling watch manager for rule change")

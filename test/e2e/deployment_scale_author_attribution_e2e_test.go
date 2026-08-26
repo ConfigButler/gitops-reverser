@@ -70,9 +70,9 @@ var _ = Describe("Deployment scale author attribution", Label("manager", "subres
 		applyDeploymentWatchRule(testNs, watchRuleName, targetName)
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Succeeded", "")
 
-		// Authorship only flows through the per-event audit tail. A scale issued
-		// before the live stream is running would land in the unattributed baseline
-		// splice, so gate on StreamsRunning before producing the attributed write.
+		// Authorship is joined onto LIVE watch events only. A scale issued before the
+		// stream is running would land in the unattributed baseline, so gate on
+		// StreamsRunning before producing the attributed write.
 		waitForStreamsRunning(targetName, testNs)
 
 		By("creating a Deployment with replicas=1 and waiting for it to land in git")

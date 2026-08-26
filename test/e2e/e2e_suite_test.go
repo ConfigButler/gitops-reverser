@@ -86,7 +86,8 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 // where the event never reached the per-type log). It asserts on the operator-facing
 // gitopsreverser_audit_events_total counter (the same signal you would alert on) rather than
 // poking Redis. dropped/diverted outcomes (e.g. older_than_high_water — inherent out-of-order
-// audit delivery, recovered by the next checkpoint) are expected and deliberately NOT gated. The
+// audit delivery, which costs an author and never the state) are expected and deliberately NOT
+// gated. The
 // counter resets when the controller restarts (the restart-reconcile spec does this), but
 // Prometheus retains the pre-restart samples, so max_over_time over the run window catches any
 // error that ever happened, on any pod. See docs/architecture.md.

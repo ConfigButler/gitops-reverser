@@ -16,6 +16,14 @@
   per §3.1's allowance: it is the change fingerprint (generation bumps only on changed
   facts, so registry revisions don't churn on steady rescans) and the re-derive source
   for `refreshTypeRegistry`'s lazy callers (rule status, watched-type tables).
+- **The demand axis is gone (2026-08-26).** `typeset.Materializer` and its
+  materialization lifecycle were deleted: the watch-first rewrite left them with no
+  production caller, and the demand intersection ("followable AND claimed") now lives in
+  the watched-type table in `internal/watch`. Every passage below is written to stand on
+  its own: where the plan still refers to that axis it says explicitly that the axis is
+  deleted, so nothing here has to be mentally subtracted. `Registry.Subscribe` and
+  `LifecycleEvent` survive with no production consumer, deliberately: see
+  [target-watch-plan.md](../design/target-watch-plan.md) §3.3.
 - `Stats()`/`DegradedGroupVersions()` survive as per-scan facts (gauge/log surfaces
   unchanged); registry tests for the relocated semantics live in
   `internal/typeset/scan_test.go`.
@@ -42,12 +50,11 @@ This document records the target shape, the trade-offs, and a staged plan.
 ## 2. Where the state lives today
 
 The pipeline is `discovery scan → APIResourceCatalog → Observations → typeset.Registry →
-(watched-type table, Materializer, …)`.
+(watched-type table, …)`.
 
 The boundary is already fairly clean — outside
-[api_resource_catalog.go](../../internal/watch/api_resource_catalog.go),
-[manager_catalog.go](../../internal/watch/manager_catalog.go) and
-catalog_observe.go, no component reads the
+[api_resource_catalog.go](../../internal/watch/api_resource_catalog.go) and
+[manager_catalog.go](../../internal/watch/manager_catalog.go), no component reads the
 catalog directly; everything consumes the registry (or a projection of it, like the
 watched-type table). But the catalog is **not** a thin wrapper: it holds cross-scan state
 and makes retention decisions of its own:
@@ -60,8 +67,10 @@ and makes retention decisions of its own:
 | Carries `generation`, `ready`, and the merged `byGVR` index across scans | cross-scan state |
 
 The registry then applies its *own* time-based judgement on top: `RemovalGrace = 60 s`
-(absent → `Retained` → `Refused`), the `SettleWindow` activation debounce, and the
-`TypeWobbling` freeze that the Materializer honours.
+(absent → `Retained` → `Refused`) and the `SettleWindow` activation debounce. The
+`TypeWobbling` transition is emitted for a consumer to honour; there is none today,
+and [target-watch-plan.md](../design/target-watch-plan.md) §3.3 is where one is
+specified.
 
 ### 2.1 The exact typeset surface today, and who reads it
 
@@ -72,25 +81,25 @@ unexported):
 |---|---|---|
 | **`Lookup`** (the minimal cross-package contract) | `Ready()`, `ByGVK(gvk) (TypeRecord, bool)` | `internal/git` (`worker_manager.go`, `plan_flush.go` — resolve manifest GVKs on the write path), `internal/manifestanalyzer` (`store.go`, `scan.go`, `analyzer.go`) |
 | **Registry queries** | `ByGVR`, `Followable()`, `All()`, `Ready()`, `Generation()`, `Revision()` | `internal/watch` only: `manager_catalog.go` (refresh + refusal logging + status projections), `watched_type_resolver.go` / `watched_type_table.go` (rule matching → per-GitTarget watched-type table), `scope_resolve.go` (`VerdictRetained` = the wobble check) |
-| **Registry feed** | `Update(observations, generation)`, `Entry`, `ObservationsFromEntries` | the catalog bridge only (`catalog_observe.go` → `refreshTypeRegistry`) |
-| **Lifecycle** | `Subscribe(Observer)`, `LifecycleEvent` (`TypeActivated` / `TypeWobbling` / `TypeRecovered` / `TypeRemoved` / `TypeRefused`) | `internal/watch/type_lifecycle.go` (drain → git actions + Materializer) |
-| **Materializer** (demand axis) | `Declare`, `OnLifecycleEvent`, `BeginSync`, `SyncSucceeded`, `SyncFailed`, `RestoreSynced`, `RequestResync`, `Sweep`, `Phase`, `Checkpoint`, `Claimants`, `PendingSyncs`, `Inventory`, `Subscribe` | `internal/watch/materialization.go` (driver, declare, sweep, status roll-up, late-event nudge) |
+| **Registry feed** | `Update(observations, generation)`, `Entry`, `ObservationsFromEntries` | the catalog bridge only (`APIResourceCatalog.Scan` → `refreshTypeRegistry`) |
+| **Lifecycle** | `Subscribe(Observer)`, `LifecycleEvent` (`TypeActivated` / `TypeWobbling` / `TypeRecovered` / `TypeRemoved` / `TypeRefused`) | none in production; `Subscribe` has no caller |
 | **Fixtures / static** | `NewSnapshotRegistry(Snapshot)`, `BuiltinScale`, `SplitFieldPath` | tests, `internal/auditutil/subresource_policy.go` |
 
 Two observations worth pinning:
 
 - **Controllers never touch typeset directly** — `GitTargetReconciler` & co. read
-  `watch.Manager` projections (`MaterializationSummaryForGitTarget`,
-  `FollowableTypeRecords`, rule resolution). The typeset blast radius of any change here
+  `watch.Manager` projections (`StreamSummaryForGitTarget`, `FollowableTypeRecords`,
+  rule resolution). The typeset blast radius of any change here
   is `internal/watch` + the two `Lookup` consumers, nothing wider.
 - **Every consumer call is already version-complete.** `ByGVK`/`ByGVR` take a full
   group/version/kind-or-resource and return one `TypeRecord` whose `Identity` carries the
   version. Nobody asks "what versions exist?" today; rule planning matches a rule's
   `apiVersions` selector by iterating records, which already works per version. The only
-  *version-less* questions in the codebase are `(group, resource) → GVR` resolutions
-  (the per-type stream keys drop the version): the late-event nudge's
-  `claimedGVRForGroupResource` (scans Materializer inventory) and the catalog-side
-  preferred-version data that rule planning reads indirectly.
+  *version-less* question left in the codebase is the catalog-side preferred-version data
+  that rule planning reads indirectly. `Registry.ByGroupResource` (S1) answers the other
+  one, `(group, resource) → GVR`, but its intended caller was the late-event nudge's
+  `claimedGVRForGroupResource`, which the watch-first rewrite deleted, so the index ships
+  with no production consumer.
 
 So today the "removals" story is split across two layers with different rules: an
 **errored** group is retained indefinitely by the catalog, while an **omitted** group is
@@ -131,10 +140,9 @@ facts (entries + failed group/versions + completeness) and applies **one** unifi
 - **Incomplete scan** → no removal judgement at all (fail-safe, as today).
 
 The wobble tolerance then comes for free: a complete-scan blink shorter than the grace
-never leaves the `Retained` band, so the Materializer's `TypeWobbling` freeze (keep the
-checkpoint, keep the tail) is the only consumer-visible effect — no force-release, no
-`snapshot cleared`, no lost CR. Tuning happens in exactly one place (grace, settle,
-wobble) instead of two.
+never leaves the `Retained` band, so a `TypeWobbling` transition (hold the streams and
+the files) is the only consumer-visible effect — no force-release, no `snapshot cleared`,
+no lost CR. Tuning happens in exactly one place (grace, settle, wobble) instead of two.
 
 ### 3.3 Served versions: one narrow index, no version plumbing
 
@@ -160,8 +168,9 @@ No `VersionInfo` type, no `ServedVersions`/`PreferredGVR` pair, no change to the
 that wants "the GVR to use" picks the `Preferred` record (or the single followable one);
 a caller that wants "is any version served" checks `len > 0`. The two known users:
 
-- the late-event nudge's `(group, resource) → GVR` resolution (replaces the
-  Materializer-inventory scan in `claimedGVRForGroupResource`);
+- the late-event nudge's `(group, resource) → GVR` resolution. **This user is gone:** the
+  nudge and the inventory scan it replaced were both deleted with the watch-first rewrite,
+  so the index built for it has no caller today;
 - whatever S3 needs when the catalog's `byGroupVer`/preferred data stops being readable
   directly.
 
@@ -179,19 +188,19 @@ migration, and version deprecation are all out of scope today), it composes on t
 
 End state: the only code that touches the catalog is the refresh path
 (`RefreshAPIResourceCatalog` → `Registry.Update`). Everything else — rule planning,
-splice scope resolution, the watched-type table, status/metrics surfaces, the late-event
-nudge's `(group, resource) → GVR` resolution — reads `typeset` (`Registry` lookups,
-`Materializer` inventory). The catalog stops being an API other components may grow
-dependencies on.
+scope resolution, the watched-type table, status/metrics surfaces, the late-event
+nudge's `(group, resource) → GVR` resolution — reads `typeset` (`Registry` lookups).
+The catalog stops being an API other components may grow dependencies on.
 
 ## 4. Pros and cons
 
 ### Pros
 
-- **One policy, one place.** "Additions fast, removals slow" currently has three
-  implementations (catalog retain-on-error, registry grace, materializer freeze) with a
-  gap between the first two. Unifying removes the gap that the e2e wobble exploits and
-  makes the behaviour testable in one leaf package with an injectable clock.
+- **One policy, one place.** "Additions fast, removals slow" had three implementations
+  when this was written (catalog retain-on-error, registry grace, and the materializer
+  freeze that has since been deleted), with a gap between the first two. Unifying removes
+  the gap that the e2e wobble exploits and makes the behaviour testable in one leaf
+  package with an injectable clock.
 - **The catalog becomes trivially correct.** A per-scan normalizer needs no locking
   subtleties, no cross-scan invariants, and barely any tests beyond "does it translate a
   scan faithfully".
@@ -227,14 +236,16 @@ Each stage is independently shippable and e2e-validated; later stages only start
 stage proves out.
 
 **What never changes, at any stage:** the `Lookup` interface (`Ready` + `ByGVK`), the
-`TypeRecord` shape, the lifecycle vocabulary and `Subscribe`, the whole Materializer
-surface, and every consumer outside `internal/watch`. The churn is confined to the
+`TypeRecord` shape, the lifecycle vocabulary and `Subscribe`, and every consumer outside
+`internal/watch`. (This list named the Materializer surface too; that axis was deleted in
+August 2026, which is a change from outside this plan rather than one it caused.) The churn is confined to the
 catalog→registry *feed* and the catalog's own innards.
 
 1. **S1 — `Registry.ByGroupResource(group, resource) []TypeRecord`.** One new index in
-   `rebuildIndexesLocked` + one query (§3.3). Move the late-event nudge's GVR resolution
-   (`watch.Manager.claimedGVRForGroupResource`) onto it. Additive; no behaviour change;
-   no other signature touched.
+   `rebuildIndexesLocked` + one query (§3.3). Additive; no behaviour change; no other
+   signature touched. **Shipped, and its caller since removed:** the move of
+   `watch.Manager.claimedGVRForGroupResource` onto it never happened, because the
+   watch-first rewrite deleted the late-event nudge first.
 2. **S2 — Raw-scan feed.** The registry gains one method and one input type; the catalog
    bridge stops pre-merging:
 
@@ -265,9 +276,9 @@ catalog→registry *feed* and the catalog's own innards.
    catalog type — per §2.1 that is already true; the audit pins it.
 4. **S4 — Re-evaluate the remaining wobble surface.** With omission-grace unified, rerun
    the crd-lifecycle wobble analysis: if a blink can still exceed 60 s under load, decide
-   *in typeset* whether the grace for freshly-settled CRDs needs staging (the old B3),
-   and whether the materializer's force-release on `Refused` needs its own short
-   confirmation (the old B2) — both now single-layer decisions.
+   *in typeset* whether the grace for freshly-settled CRDs needs staging (the old B3) —
+   now a single-layer decision. The old B2 half of this step (whether the materializer's
+   force-release on `Refused` needed its own confirmation) is moot: that axis is deleted.
 
 ## 6. Relationship to existing docs
 

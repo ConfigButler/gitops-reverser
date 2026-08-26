@@ -25,19 +25,20 @@ type EventKind string
 
 const (
 	// TypeActivated fires when a type has been continuously Followable for the settle
-	// window: it is healthy and stable, so M12 may schedule its (re)reconcile.
+	// window: it is healthy and stable, so its stream may be opened or re-anchored.
 	TypeActivated EventKind = "TypeActivated"
 	// TypeWobbling fires on Followable -> Retained: a transient unserved blip. Do NOT sweep;
-	// postpone the type's reconcile and keep its informers up until it settles or drops.
+	// hold the type's streams and files until it settles or drops.
 	TypeWobbling EventKind = "TypeWobbling"
 	// TypeRecovered fires on Retained -> Followable: the wobble resolved. It collapses into
 	// a fresh TypeActivated once the settle window elapses again.
 	TypeRecovered EventKind = "TypeRecovered"
 	// TypeRemoved fires when a previously-live type leaves the live set because its removal
-	// grace elapsed (absence-expired): it is genuinely gone, so M12 sweeps THIS type only.
+	// grace elapsed (absence-expired): it is genuinely gone, so untracking is scoped to THIS
+	// type only.
 	TypeRemoved EventKind = "TypeRemoved"
 	// TypeRefused fires when a previously-live type fails a permanent check: never watch it,
-	// drop its informers, surface it in status.
+	// stop its streams, surface it in status.
 	TypeRefused EventKind = "TypeRefused"
 )
 
@@ -65,6 +66,18 @@ type Observer func(LifecycleEvent)
 // before the first Update to observe cold-start activations. Observers are invoked outside the
 // registry's read/write lock (so they may read the registry) but under the updater's
 // serialization, so a slow observer stalls the updater — keep them non-blocking.
+//
+// There is no production observer today, so the events computed on every Update are currently
+// dispatched to nobody. That is deliberate rather than abandoned: this is the producer of the
+// only signal that can tell a type genuinely withdrawn (a settled TypeRemoved, past
+// RemovalGrace) from a discovery wobble, and mistaking the second for the first is what deletes
+// a user's manifests. Its consumer is the `stop` classification in
+// docs/design/target-watch-plan.md §3.3. Subscribing and classifying is step 7 of that plan's
+// build order and needs nothing decided first; only the projection that follows (what a `stop`
+// does to the files) waits on the open policy decisions in §3.1 and §3.2. Do not delete this as
+// dead: rebuilding the settle window and the grace correctly is the expensive half, and it is
+// already written and tested here. The Materializer, which consumed these events before the
+// watch-first rewrite, is gone.
 func (r *Registry) Subscribe(obs Observer) {
 	if obs == nil {
 		return

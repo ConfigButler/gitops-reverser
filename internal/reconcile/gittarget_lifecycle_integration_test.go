@@ -149,9 +149,9 @@ func TestGitTargetEventStream_EventConvergence(t *testing.T) {
 	assert.True(t, pathsFound["team-c"], "Events from team-c should converge")
 }
 
-// TestGitTargetEventStream_ForwardsWithoutDeduplication confirms the R3 pivot dropped
-// content-hash dedup: the stream forwards every call, leaving "did it change?" to the
-// writer's no-op detection at the commit boundary.
+// TestGitTargetEventStream_ForwardsWithoutDeduplication confirms the stream holds no
+// content-hash dedup: it forwards every call, leaving "did it change?" to the writer's
+// no-op detection at the commit boundary.
 func TestGitTargetEventStream_ForwardsWithoutDeduplication(t *testing.T) {
 	mockWorker := &mockEventEnqueuer{events: make([]git.Event, 0)}
 	stream := NewGitTargetEventStream("target1", "default", mockWorker, logr.Discard())

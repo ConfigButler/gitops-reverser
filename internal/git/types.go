@@ -109,14 +109,14 @@ const (
 	// DefaultEventCommitMessageTemplate reproduces the current per-event commit message shape.
 	DefaultEventCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
 	// DefaultReconcileCommitMessageTemplate is the default reconcile commit message shape.
-	// It names the synced type for a per-type splice (e.g. "reconciled 6 secrets (last
+	// It names the synced type for a per-type reconcile (e.g. "reconciled 6 secrets (last
 	// resourceVersion: 1331)"), so the otherwise-indistinguishable per-type reconciles a single
 	// GitTarget produces become self-describing — and the pinned resourceVersion shows exactly
 	// how fresh the reconcile is, which is useful for demos and first-user trust. The plural
 	// resource alone (no group/version) is chosen for readability; a custom template can add
 	// {{.APIVersion}} when cross-group plural collisions matter. The {{if .Resource}} and
 	// {{if .Revision}} guards fall back to "reconciled N resources" for a whole-target reconcile
-	// (nil ScopeGVR) or the events-based atomic path, where the type/revision fields are empty —
+	// (nil Scope) or the events-based atomic path, where the type/revision fields are empty —
 	// so the subject never degrades to a trailing-space, identity-less "reconciled N ".
 	DefaultReconcileCommitMessageTemplate = "reconciled {{.Count}} " +
 		"{{if .Resource}}{{.Resource}}{{else}}resources{{end}}" +
@@ -393,14 +393,14 @@ type ResyncRequest struct {
 	// removed type). Nil is a whole-GitTarget resync. See ResyncScope for the invariant
 	// binding this to Desired.
 	Scope *ResyncScope
-	// Heal marks a non-urgent drift-correcting resync (a periodic checkpoint re-anchor or a
+	// Heal marks a non-urgent drift-correcting resync (a watch re-establishment re-anchor or a
 	// removed-type sweep) that the worker DEFERS while a commit window is open, instead of
 	// force-finalizing it. Because one worker serves N GitTargets and the commit window is a
 	// worker singleton, a force-finalizing heal can steal a DIFFERENT GitTarget's held
 	// CommitRequest window — the 8f2ad84 regression. A heal therefore waits for the worker to be
 	// idle (no open window), a boundary that recurs on every silence timeout and identity switch,
 	// so it never starves and, when it runs, has no window to steal. A first-sync backfill is NOT
-	// a heal: it must establish initial state promptly and is ordered before the audit tail.
+	// a heal: it must establish initial state promptly.
 	Heal bool
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
@@ -415,6 +415,22 @@ type resyncKey struct {
 	namespace string
 	name      string
 	scope     string
+}
+
+// pendingResync is the coalescing entry for one resyncKey: the current request for
+// that key, and whether anything for its scope has been queued behind the marker
+// that represents it in the FIFO. Once tailPassed is set the marker's position is
+// no longer a safe place to run a newer snapshot — see the pendingResyncs field on
+// BranchWorker, and docs/design/target-watch-plan.md §4.1.
+type pendingResync struct {
+	// marker is the request whose pointer sits on the FIFO for this key. It is fixed
+	// for the entry's life: coalescing swaps request, never marker. Identifying the
+	// entry by its marker is what keeps a released key unambiguous — once a later
+	// request re-inserts the same key, the older marker must run the payload it
+	// carried rather than pick up the newer entry.
+	marker     *ResyncRequest
+	request    *ResyncRequest
+	tailPassed bool
 }
 
 func resyncKeyFor(request *ResyncRequest) resyncKey {
@@ -491,16 +507,6 @@ type Event struct {
 
 	// Operation is the admission operation (CREATE, UPDATE, DELETE).
 	Operation string
-
-	// AuditStreamID is the FULL Redis stream position "<rv>-<seq>" this change was recorded at
-	// on the per-type audit stream. It is set ONLY on the audit-tail path (ReadTypeAuditChanges)
-	// and read by the per-(GitTarget, GVR) coverage-watermark gate in applyAuditChangesForType to
-	// decide whether the entry is historical for a target (id <= Hc, suppress) or live (id > Hc,
-	// route). The sub-sequence is load-bearing: distinct entries can share an rv (an rv-less
-	// DELETE/Status rides the high-water, duplicate/same-rv writes get fresh seqs), so the gate
-	// compares full positions, not bare rvs. Empty on the live admission path; not used by the
-	// writer. See docs/finished/signing-snapshot-tail-replay-failure-investigation.md §7.
-	AuditStreamID string
 
 	// UserInfo contains user information for commit messages.
 	UserInfo UserInfo
@@ -602,9 +608,9 @@ type CommitMessageData struct {
 //
 // Group, Version, Resource, and APIVersion name the synced type, mirroring the per-event
 // CommitMessageData fields so a reconcile template can identify its type exactly as a per-event
-// template does. They are populated for a per-type splice (M12/R2 per-type reconcile, whose
-// ResyncRequest carries a non-nil ScopeGVR) and left empty for a whole-target reconcile or the
-// events-based atomic path. Revision is the cluster resourceVersion the desired set was pinned to
+// template does. They are populated for a per-type reconcile (whose ResyncRequest carries a
+// non-nil Scope) and left empty for a whole-target reconcile or the events-based atomic
+// path. Revision is the cluster resourceVersion the desired set was pinned to
 // (empty for a pure sweep or the events-based path). Any template that references these fields
 // must render cleanly when they are absent — the default guards both with {{if}}.
 type ReconcileCommitMessageData struct {

@@ -400,7 +400,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		watchRuleName := providerName + "-wr"
 		commitPath := "e2e/signing-reconcile"
 		// The reconcile template names the synced type ({{.APIVersion}}/{{.Resource}}) and pins the
-		// {{.Revision}} so the per-type splice commits are self-describing — the §9 "name the synced
+		// {{.Revision}} so the per-type reconcile commits are self-describing — the §9 "name the synced
 		// type" improvement in docs/finished/signing-snapshot-tail-replay-failure-investigation.md.
 		customReconcileTemplate := "e2e-reconcile: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
 			"@{{.Revision}} to {{.GitTarget}}"
@@ -482,7 +482,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(logOutput).NotTo(ContainSubstring("["),
 				"expected reconcile path %s not to contain per-event template subjects", commitPath)
-			// The per-type splice names its type, so the configmaps batch is committed as a
+			// The per-type reconcile names its type, so the configmaps batch is committed as a
 			// self-describing "synced N v1/configmaps" reconcile rather than an anonymous count.
 			g.Expect(logOutput).To(ContainSubstring("v1/configmaps"),
 				"expected reconcile subjects in %s to name the synced type (§9 improvement)", commitPath)

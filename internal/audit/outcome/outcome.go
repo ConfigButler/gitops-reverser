@@ -5,9 +5,9 @@
 // gitopsreverser_audit_events_total counter. Every successfully decoded,
 // converted, and validated audit event ends in exactly one Outcome, recorded
 // once by whichever layer terminates it (the webhook handler for pre-queue
-// outcomes, the per-type queue for queue outcomes). The Git-materialization fate
-// (read-time tail/splice skips) is deliberately NOT an Outcome — those are
-// repeatable per (GitTarget, GVR) and would multi-count the same stored entry.
+// outcomes, the per-type queue for queue outcomes). What Git later does with the
+// event is deliberately NOT an Outcome: those fates are repeatable per
+// (GitTarget, GVR) and would multi-count the same stored entry.
 // See docs/architecture.md.
 package outcome
 
@@ -34,8 +34,8 @@ const (
 	// Held — the event is kept for later (a parked additional body).
 	Held Category = "held"
 	// Dropped — the event did not reach the log; the "Recovered by" column in the
-	// plan says whether that is safe (genuinely not wanted vs. recovered by the
-	// next checkpoint).
+	// plan says whether that is safe. A dropped attribution fact costs an author,
+	// never the state: the watch is what carries the object.
 	Dropped Category = "dropped"
 	// Error — should never happen; the e2e invariant gates on this category == 0.
 	Error Category = "error"

@@ -61,12 +61,12 @@ func renderReconcileCommitMessageFromEvents(
 }
 
 // renderReconcileCommitMessage renders the reconcile commit message for a resync from the
-// provider's ReconcileTemplate, so a resync honours a custom reconcile template. count is
-// the number of resources the reconcile changed; scopeGVR names the synced type for a
-// per-type splice (the M12/R2 per-type reconcile) and a nil scopeGVR (whole-target
-// reconcile) leaves the type fields empty; revision is the cluster resourceVersion the
-// desired set was pinned to (empty for a pure sweep). The default template guards the
-// type and revision fields so it still renders cleanly when either is absent.
+// provider's ReconcileTemplate, so a resync honours a custom reconcile template. count is the
+// number of resources the reconcile changed; scopeGVR names the synced type for a per-type
+// reconcile, and a nil scopeGVR (whole-target reconcile) leaves the type fields empty; revision
+// is the cluster resourceVersion the desired set was pinned to (empty for a pure sweep). The
+// default template guards the type and revision fields so it still renders cleanly when either
+// is absent.
 func renderReconcileCommitMessage(
 	count int,
 	gitTarget string,
@@ -146,7 +146,7 @@ func ValidateCommitConfig(config CommitConfig) error {
 		return err
 	}
 
-	// Validate the per-type splice reconcile path with the type and revision fields populated,
+	// Validate the per-type reconcile path with the type and revision fields populated,
 	// so a custom reconcile template that names its synced type ({{.Resource}} / {{.APIVersion}})
 	// or pins the {{.Revision}} is exercised at admission exactly as a per-type reconcile renders it.
 	// The sample scope names a namespace so a template referencing {{.Namespace}} — populated

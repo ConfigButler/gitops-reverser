@@ -33,10 +33,9 @@ func makeScheme(t *testing.T) *runtime.Scheme {
 }
 
 // streamingManager builds a Manager wired with a fake k8s client (carrying gitTarget), a fake
-// dynamic client, and the common test catalog/discovery — the standing fixture the splice, scope-
-// resolution, and audit-tail tests resolve rules against. The api-source-of-truth reconcile no
-// longer streams objects from the API (the splice reads Redis), so this no longer installs a watch
-// reactor; the name is kept for the many call sites that build their Manager through it.
+// dynamic client, and the common test catalog/discovery — the standing fixture the scope-resolution
+// and watched-type tests resolve rules against. It installs no watch reactor: a test that needs
+// object events injects them through the manager's targetWatchOpen/targetWatchList seams instead.
 func streamingManager(
 	t *testing.T,
 	gitTarget *configv1alpha3.GitTarget,
@@ -64,7 +63,7 @@ func gitTargetFixture() *configv1alpha3.GitTarget {
 }
 
 // addSecretsWatchRule registers a namespaced WatchRule in ns-a for my-target watching secrets —
-// the standard single-namespaced-type fixture the splice/scope/audit-tail tests resolve against.
+// the standard single-namespaced-type fixture the scope-resolution tests resolve against.
 func addSecretsWatchRule(store *rulestore.RuleStore) {
 	rule := configv1alpha3.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{Name: "wr-secrets", Namespace: "ns-a"},

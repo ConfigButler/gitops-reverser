@@ -112,7 +112,7 @@ Followability flows: **kube discovery → API-resource catalog → typeset Regis
   ([internal/typeset/lifecycle.go](../../internal/typeset/lifecycle.go)):
   `Followable → Retained` ⇒ **`TypeWobbling`**; `Retained → Followable` ⇒ `TypeRecovered`;
   a full drop ⇒ `TypeRemoved` / `TypeRefused`.
-- **Materializer** ([internal/typeset/materializer.go](../../internal/typeset/materializer.go))
+- **Materializer** (`internal/typeset/materializer.go`, since deleted)
   reacts: `TypeWobbling` **freezes** the type (suspends re-anchor/sweep but **keeps the
   checkpoint served and the tail running**); `TypeRemoved`/`TypeRefused` **force-releases** the
   checkpoint, and the watch layer then stops the tail and clears `:objects`.

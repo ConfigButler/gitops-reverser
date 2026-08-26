@@ -14,7 +14,7 @@ import (
 )
 
 // clusterRuleForResource builds a "test-target" ClusterWatchRule for one core/v1 CLUSTER-SCOPED
-// resource. Shared by the watched-type-table and materialization tests. A ClusterWatchRule selects
+// resource. Shared by the watched-type-table and scope-resolution tests. A ClusterWatchRule selects
 // cluster-scoped types only, so the fixture's resources must be genuinely cluster-scoped for the
 // rule to resolve anything at all.
 func clusterRuleForResource(name, resource string) configv1alpha3.ClusterWatchRule {
@@ -52,7 +52,7 @@ func watchRuleForTarget(name, gitTargetName, namespace string) configv1alpha3.Wa
 // TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge stresses the serialized refresh
 // (refreshMu) from many goroutines while rules change, asserting it never deadlocks or races
 // (run with -race) and converges to the final rule set. The concurrent read is the resident
-// table set the splice scope resolution and demand Declare read.
+// table set scope resolution and the Declare path read.
 func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
