@@ -88,7 +88,7 @@ func (t WatchedType) ClusterWide() bool {
 // previously collapsed to a single cluster-wide scope, which silently widened the named
 // rule's stream to every namespace the credential could read and discarded its operation
 // set — a gate bypass once a WatchRule declares the source namespaces it is authorized
-// for. See docs/design/watchrule-source-namespace/pr2-stream-scope-collapse.md.
+// for.
 //
 // Every read site must project the same scope set, because a gather's scope becomes the
 // mark-and-sweep's scope: a gather wider than the stream that triggered it deletes

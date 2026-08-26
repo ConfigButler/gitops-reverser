@@ -15,8 +15,8 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// This spec is the end-to-end proof for GitTarget.spec.prune.mode (see
-// docs/design/watchrule-source-namespace/pr5-gittarget-deletion-safety.md). It exercises the two
+// This spec is the end-to-end proof for GitTarget.spec.prune.mode (documented in
+// docs/configuration.md, "Deletion policy"). It exercises the two
 // deletion paths SEPARATELY, because the whole design rests on them being independently
 // controlled — `onEvent`, the effective default, differs from `always` on exactly one of them.
 //

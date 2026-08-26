@@ -340,9 +340,9 @@ type WorkItem struct {
 // DESIRED SET WAS GATHERED OVER. A desired set narrower than its sweep scope deletes
 // managed documents that were never in scope; a desired set wider than its sweep scope
 // silently leaves documents unmanaged. The namespace lives inside the cell, next to the
-// type, precisely so a per-namespace replay cannot reach the sweep carrying only its type —
-// the defect fixed in docs/design/watchrule-source-namespace/pr1-namespace-scoped-resync.md,
-// where a replay of one namespace swept every other namespace's documents of the same type.
+// type, precisely so a per-namespace replay cannot reach the sweep carrying only its type. That
+// was a real defect: a replay of one namespace swept every other namespace's documents of the
+// same type, because the sweep knew the type and had lost the namespace.
 type ResyncScope struct {
 	// Cell is the sweep boundary and the scope's identity: group, resource, namespace.
 	Cell types.CellKey

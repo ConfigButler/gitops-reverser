@@ -34,8 +34,8 @@ func TestEffectivePruneMode_HonoursDeclaredMode(t *testing.T) {
 	}
 }
 
-// TestPruneMode_PathsMatchTheDocumentedTable pins the two-path table from
-// docs/design/watchrule-source-namespace/pr5-gittarget-deletion-safety.md. The two predicates are
+// TestPruneMode_PathsMatchTheDocumentedTable pins the two-path table published in
+// docs/configuration.md ("Deletion policy"). The two predicates are
 // deliberately independent: `onEvent` differs from `always` on ONE of them, and a change that
 // collapsed them into a single boolean would silently turn the safe default into full
 // convergence.

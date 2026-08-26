@@ -32,8 +32,9 @@ type CellKey struct {
 	// Resource is the plural resource name, e.g. "configmaps".
 	Resource string
 	// Namespace restricts the cell to one namespace. Empty is a genuinely cluster-wide
-	// (all-namespaces) cell, which is a PEER of any named namespace on the same type and
-	// never a replacement for it (docs/design/watchrule-source-namespace/pr2-stream-scope-collapse.md).
+	// (all-namespaces) cell, which is a PEER of any named namespace on the same type and never a
+	// replacement for it: collapsing the two widened the named rule's stream to every namespace
+	// its credential could read and discarded its operation filter.
 	Namespace string
 }
 
