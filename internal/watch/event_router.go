@@ -12,6 +12,7 @@ import (
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -147,6 +148,13 @@ func (r *EventRouter) recordBackgroundResyncFailure(gitDest types.ResourceRefere
 	))
 }
 
+// errGitTargetGone reports that a GitTarget no longer exists. It is terminal:
+// nothing that depends on the target can succeed again, so a supervisor loop must
+// stop rather than reconnect. Retrying instead is what let a deleted GitTarget's
+// streams re-enqueue resyncs every backoff, filling the branch worker's shared
+// queue and starving every other GitTarget on the same branch.
+var errGitTargetGone = errors.New("GitTarget no longer exists")
+
 // resolveWorkerForGitDest looks up the branch worker that owns a GitTarget's provider/branch.
 // A missing GitTarget (a rule briefly outliving its target during deletion) or a worker that
 // is not yet live is returned as an error, before anything is gathered or enqueued.
@@ -159,6 +167,12 @@ func (r *EventRouter) resolveWorkerForGitDest(
 		Name:      gitDest.Name,
 		Namespace: gitDest.Namespace,
 	}, &gitTarget); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Distinguished from any other lookup failure because it is terminal:
+			// the target is gone, so a caller retrying this forever is doing work
+			// that can never succeed. See errGitTargetGone.
+			return nil, fmt.Errorf("%w: %s", errGitTargetGone, gitDest.String())
+		}
 		return nil, fmt.Errorf("get GitTarget %s: %w", gitDest.String(), err)
 	}
 	worker, exists := r.WorkerManager.GetWorkerForTarget(
@@ -281,6 +295,13 @@ func (r *EventRouter) handleScopedResyncError(
 		if r.WatchManager != nil {
 			r.WatchManager.MarkTargetGitPathRefused(gitDest, gitPathRefusalReason(refused), refused.BlockMessage())
 		}
+		return
+	}
+	if errors.Is(err, git.ErrResyncSuperseded) {
+		// A newer resync for the same scope replaced this one while it was queued
+		// and runs in its place, so nothing was missed and nothing failed.
+		r.Log.V(1).Info("per-type "+kind+" superseded by a newer resync",
+			"gitDest", gitDest.String(), "gvr", key.GVR.String())
 		return
 	}
 	r.Log.Error(err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "gvr", key.GVR.String())

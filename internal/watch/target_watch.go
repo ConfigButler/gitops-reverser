@@ -318,6 +318,15 @@ func (m *Manager) runTargetWatch(
 		if ctx.Err() != nil {
 			return
 		}
+		if errors.Is(err, errGitTargetGone) {
+			// Terminal: reconnecting would replay and re-enqueue a resync for a
+			// GitTarget that no longer exists, every backoff, forever. The
+			// declaration teardown removes this stream; stopping now just means
+			// not burning the branch worker's shared queue until it does.
+			log.Info("target watch stopping; its GitTarget is gone",
+				"gitDest", gitDest.String(), "gvr", key.GVR.String(), "namespace", key.Namespace)
+			return
+		}
 		if err != nil {
 			m.markTargetStreamState(gitDest, key, StreamStateBlocked, StreamReasonWatchError, err.Error())
 			log.Info("target watch session ended; reconnecting",

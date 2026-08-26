@@ -110,6 +110,65 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	assert.Contains(t, err.Error(), "no worker")
 }
 
+// TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal pins the storm fix. A
+// GitTarget that no longer exists is terminal, not a transient lookup failure:
+// the target-watch supervisor stops on errGitTargetGone instead of reconnecting
+// every backoff. Retrying instead is what let a deleted GitTarget's streams
+// re-enqueue resyncs forever, filling the branch worker's shared queue and
+// starving every other GitTarget on the branch.
+func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build() // no GitTarget exists
+	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
+
+	_, enqueued, err := router.enqueueScopedResync(
+		context.Background(),
+		types.NewResourceReference("deleted-target", "team-a"),
+		git.ResyncScope{GVR: configmapsGVR},
+		nil,
+		"12",
+		false,
+	)
+
+	require.Error(t, err)
+	assert.False(t, enqueued)
+	assert.ErrorIs(t, err, errGitTargetGone,
+		"a missing GitTarget is distinguishable so its supervisor can stop rather than retry")
+}
+
+// TestDrainScopedResync_TreatsSupersededAsSuccess guards the coalescing contract
+// from the other side: a resync replaced by a newer one for the same scope did
+// not fail — the newer one runs in its place — so it must not be counted as a
+// background resync failure or logged as an error.
+func TestDrainScopedResync_TreatsSupersededAsSuccess(t *testing.T) {
+	scheme := eventRouterScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
+
+	resultCh := make(chan git.ResyncResult, 1)
+	resultCh <- git.ResyncResult{Err: git.ErrResyncSuperseded}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		router.drainScopedResync(
+			types.NewResourceReference("team-a-config", "team-a"),
+			targetWatchKey{GVR: configmapsGVR},
+			"sweep",
+			0,
+			resultCh,
+		)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("drain did not complete for a superseded resync")
+	}
+}
+
 func TestDrainScopedResync_CompletesSuccessfulResult(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()

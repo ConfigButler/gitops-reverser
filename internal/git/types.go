@@ -407,6 +407,24 @@ type ResyncRequest struct {
 	Result chan ResyncResult
 }
 
+// resyncKey identifies the slice of a mirror a resync reconciles: one GitTarget,
+// and the scope within it. Two requests sharing a key are interchangeable in the
+// sense that matters — the newer one's desired set wholly supersedes the older's —
+// which is what makes coalescing them safe.
+type resyncKey struct {
+	namespace string
+	name      string
+	scope     string
+}
+
+func resyncKeyFor(request *ResyncRequest) resyncKey {
+	key := resyncKey{namespace: request.GitTargetNamespace, name: request.GitTargetName}
+	if request.Scope != nil {
+		key.scope = request.Scope.GVR.String() + "|" + request.Scope.Namespace
+	}
+	return key
+}
+
 // ResyncResult is the reply to a ResyncRequest: the plan's change counts, or an
 // error if the resync could not be applied (in which case nothing was committed).
 type ResyncResult struct {

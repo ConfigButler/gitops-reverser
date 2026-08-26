@@ -11,6 +11,13 @@ import (
 // the worker's event queue is saturated.
 var ErrFinalizeQueueFull = errors.New("branch worker event queue full; item dropped")
 
+// ErrResyncSuperseded replies to a resync that a newer request for the same
+// GitTarget and scope replaced while it was still queued. It is NOT a failure:
+// the newer request carries at least as fresh a desired set and runs in the
+// superseded one's place, so a caller must not count it as a resync that did not
+// happen.
+var ErrResyncSuperseded = errors.New("resync superseded by a newer request for the same scope")
+
 // FinalizeOutcome is the terminal result of resolving a CommitRequest.
 type FinalizeOutcome string
 

@@ -164,6 +164,17 @@ type BranchWorker struct {
 	// handled and nothing is retained.
 	inflightItems atomic.Int64
 
+	// pendingResyncs coalesces queued resyncs by (GitTarget, scope). A resync is
+	// state-based and idempotent — "make Git match this desired set for this
+	// scope" — so a newer one wholly supersedes an older one still waiting. The
+	// map holds the current request per key; the FIFO holds one marker per key,
+	// which is what preserves ordering against live events. Queue depth is
+	// therefore bounded by the number of distinct scopes, not by the request
+	// rate, so a storm of resyncs for one target can no longer fill the queue
+	// and starve every other GitTarget on this branch.
+	pendingResyncsMu sync.Mutex
+	pendingResyncs   map[resyncKey]*ResyncRequest
+
 	// crOutcomes holds resolved CommitRequest outcomes for the controller to poll
 	// via LookupCommitRequestOutcome. The event loop is the only writer (on its
 	// goroutine), the controller the only reader (on a reconcile goroutine), so the
@@ -232,6 +243,7 @@ func NewBranchWorker(
 		),
 		contentWriter:        writer,
 		eventQueue:           make(chan WorkItem, branchWorkerQueueSize),
+		pendingResyncs:       make(map[resyncKey]*ResyncRequest),
 		branchBufferMaxBytes: branchBufferMaxBytes,
 	}
 }
@@ -353,20 +365,68 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	if request == nil {
 		return false
 	}
+	key := resyncKeyFor(request)
+
+	w.pendingResyncsMu.Lock()
+	if w.pendingResyncs == nil {
+		w.pendingResyncs = make(map[resyncKey]*ResyncRequest)
+	}
+	if superseded, queued := w.pendingResyncs[key]; queued {
+		// A marker for this key is already in the FIFO. Swap in the newer
+		// request; the loop reads whatever is current when the marker comes up.
+		w.pendingResyncs[key] = request
+		w.pendingResyncsMu.Unlock()
+		// The superseded request's caller is waiting on its reply channel. Answer
+		// it so its drain ends, with a sentinel that says "a newer resync for the
+		// same scope is queued", not "this failed".
+		superseded.reply(ResyncResult{Err: ErrResyncSuperseded})
+		w.Log.V(1).Info("Resync request coalesced into the one already queued",
+			"resources", len(request.Desired),
+			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
+		return true
+	}
+	// Insert the entry and queue its marker in ONE critical section. Releasing the
+	// lock between them would let a concurrent enqueue for the same key coalesce
+	// into an entry whose marker does not exist yet -- and which this call is
+	// about to remove on a full queue. That caller would be told enqueued=true
+	// while its request never ran and its drain waited for a reply that never
+	// came. The send is non-blocking, so holding the lock across it cannot
+	// deadlock against the loop's takePendingResync.
+	w.pendingResyncs[key] = request
 	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Resync: request}:
+		w.pendingResyncsMu.Unlock()
 		w.Log.V(1).Info("Resync request enqueued",
 			"resources", len(request.Desired),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
 		return true
 	default:
 		w.inflightItems.Add(-1)
+		delete(w.pendingResyncs, key)
+		w.pendingResyncsMu.Unlock()
 		w.Log.Error(nil, "Event queue full, resync request dropped",
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
 		return false
 	}
+}
+
+// takePendingResync returns the current request for a marker's key, which may be
+// newer than the one the marker carried, and clears the key so the next enqueue
+// queues a fresh marker.
+func (w *BranchWorker) takePendingResync(marker *ResyncRequest) *ResyncRequest {
+	key := resyncKeyFor(marker)
+	w.pendingResyncsMu.Lock()
+	defer w.pendingResyncsMu.Unlock()
+	current, ok := w.pendingResyncs[key]
+	if !ok {
+		// No entry: this marker was queued before coalescing tracked it, or the
+		// key was already taken. Run what the marker carried.
+		return marker
+	}
+	delete(w.pendingResyncs, key)
+	return current
 }
 
 // enqueueRequest places a write request on the FIFO and reports whether it was
@@ -703,7 +763,11 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	}
 
 	if item.Resync != nil {
-		l.handleResyncRequest(item.Resync)
+		// Take the CURRENT request for this scope: a newer one may have replaced
+		// it while this marker waited in the FIFO. Running it here keeps the
+		// original queue position, so a resync still lands before the live events
+		// buffered behind it.
+		l.handleResyncRequest(l.w.takePendingResync(item.Resync))
 		return
 	}
 
