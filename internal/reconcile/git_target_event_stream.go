@@ -11,8 +11,10 @@ import (
 )
 
 // GitTargetEventStream forwards a GitTarget's live events to its branch worker. Every event a
-// target watch routes after the replay (a full object write, or a /scale subresource translated
-// into a parent-manifest field patch) travels this route.
+// target watch routes after the replay travels this route: a full object write, a DELETE (which
+// carries no object payload, only the identity to remove), and a /scale subresource translated
+// into a parent-manifest field patch. Only a payload-less event that is none of those carries
+// nothing to write, and it is dropped here.
 //
 // It is deliberately thin, holding no buffer and no content hash. "Newer?" is answered by the
 // watch's own resourceVersion ordering, and "changed?" by the writer's no-op detection

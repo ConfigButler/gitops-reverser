@@ -72,10 +72,12 @@ type Observer func(LifecycleEvent)
 // only signal that can tell a type genuinely withdrawn (a settled TypeRemoved, past
 // RemovalGrace) from a discovery wobble, and mistaking the second for the first is what deletes
 // a user's manifests. Its consumer is the `stop` classification in
-// docs/design/target-watch-plan.md §3.3, which is blocked on two open policy decisions (§3.1,
-// §3.2), not on this code. Do not delete it as dead: rebuilding the settle window and the grace
-// correctly is the expensive half, and it is already written and tested here. The Materializer,
-// which consumed these events before the watch-first rewrite, is gone.
+// docs/design/target-watch-plan.md §3.3. Subscribing and classifying is step 7 of that plan's
+// build order and needs nothing decided first; only the projection that follows (what a `stop`
+// does to the files) waits on the open policy decisions in §3.1 and §3.2. Do not delete this as
+// dead: rebuilding the settle window and the grace correctly is the expensive half, and it is
+// already written and tested here. The Materializer, which consumed these events before the
+// watch-first rewrite, is gone.
 func (r *Registry) Subscribe(obs Observer) {
 	if obs == nil {
 		return

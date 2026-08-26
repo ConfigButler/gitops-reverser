@@ -5,9 +5,11 @@ What the operator is made of, plane by plane, and which components talk to a Kub
 narrower question of *what the pieces are* and where the boundaries between them fall. If a detail
 here disagrees with the source, the source wins.
 
-Everything below runs in **one binary** ([`cmd/main.go`](../cmd/main.go)), assembled onto a single
-controller-runtime manager. There is no second deployment and no sidecar. What makes the system feel
-like several programs is that the one process spans two clusters' worth of concerns:
+The operator is **one binary** ([`cmd/main.go`](../cmd/main.go)), assembled onto a single
+controller-runtime manager. There is no second deployment and no sidecar. Every plane below is part
+of that process, apart from the last: [support and tooling](#support-and-tooling) holds two separate
+command-line binaries that are never deployed with it. What makes the operator feel like several
+programs is that the one process spans two clusters' worth of concerns:
 
 - the **config plane**, the cluster the operator runs in, where its own custom resources live;
 - one or more **source clusters**, each named by a `ClusterProvider`, whose objects are mirrored

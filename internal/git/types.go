@@ -116,7 +116,7 @@ const (
 	// resource alone (no group/version) is chosen for readability; a custom template can add
 	// {{.APIVersion}} when cross-group plural collisions matter. The {{if .Resource}} and
 	// {{if .Revision}} guards fall back to "reconciled N resources" for a whole-target reconcile
-	// (nil ScopeGVR) or the events-based atomic path, where the type/revision fields are empty —
+	// (nil Scope) or the events-based atomic path, where the type/revision fields are empty —
 	// so the subject never degrades to a trailing-space, identity-less "reconciled N ".
 	DefaultReconcileCommitMessageTemplate = "reconciled {{.Count}} " +
 		"{{if .Resource}}{{.Resource}}{{else}}resources{{end}}" +
@@ -593,7 +593,7 @@ type CommitMessageData struct {
 // Group, Version, Resource, and APIVersion name the synced type, mirroring the per-event
 // CommitMessageData fields so a reconcile template can identify its type exactly as a per-event
 // template does. They are populated for a per-type reconcile (whose ResyncRequest carries a
-// non-nil ScopeGVR) and left empty for a whole-target reconcile or the events-based atomic
+// non-nil Scope) and left empty for a whole-target reconcile or the events-based atomic
 // path. Revision is the cluster resourceVersion the desired set was pinned to
 // (empty for a pure sweep or the events-based path). Any template that references these fields
 // must render cleanly when they are absent — the default guards both with {{if}}.

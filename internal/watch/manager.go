@@ -2,9 +2,11 @@
 
 // Package watch drives the api-source-of-truth reconcile: it keeps the followability registry
 // and the per-GitTarget watched-type tables fresh, and mirrors each watched type into Git from a
-// long-lived Kubernetes watch per claimed (GitTarget, GVR, scope). The watch is the only source of
-// object state: its sendInitialEvents replay is the desired set the mark-and-sweep folds over the
-// Git folder, and its live events are the writes. See docs/architecture.md.
+// long-lived Kubernetes watch per claimed (GitTarget, GVR, scope). The live watch is the only
+// source of ongoing object state, and its events are the writes. The INITIAL desired set the
+// mark-and-sweep folds over the Git folder comes from the same watch's sendInitialEvents replay,
+// or, on an apiserver that does not serve it, from a LIST with the watch's events buffered behind
+// it (targetWatchListAndStream). See docs/architecture.md.
 package watch
 
 import (
@@ -184,7 +186,8 @@ type Manager struct {
 	watchedTypes    *watchedTypeStore
 
 	// targetWatches is the data plane: one raw watch per (GitTarget, GVR, namespace
-	// scope), and the only source of object state.
+	// scope), and the only source of live object state. Its initial desired set comes from
+	// the replay, or from the buffered LIST fallback when sendInitialEvents is unsupported.
 	targetWatchesMu sync.Mutex
 	targetWatches   map[string]*targetWatchSet
 	// targetStreamStates is the readiness surface for targetWatches. It is keyed
