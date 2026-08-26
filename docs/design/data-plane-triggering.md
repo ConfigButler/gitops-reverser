@@ -463,18 +463,36 @@ documents a surviving `(configmaps, team-a)` stream still owns. Sweeping a close
 scope would need to subtract the survivors' scopes, which is fiddly and easy to
 get wrong in exactly the direction that deletes user data.
 
-**Problem two: a vanished type has no scope to close.** If a CRD is uninstalled,
-its stream disappears without any close event naming it, and its documents resolve
-to nothing. Per-scope sweeping can never reach them, so they accumulate as
-unmanaged content. That is not a small edge: it is a silent, permanent leak in a
-ledger whose whole promise is that it matches the cluster.
+**Problem two, as first written, was wrong.** This section originally claimed that
+a vanished type has no scope to close, so per-scope sweeping could never reach its
+documents. That is not true. The signal exists, it is authoritative, and it
+already accounts for the wait before calling a type gone:
 
-> **Superseded.** The coverage rule below is retained as the reasoning that led
-> here, but it is not the design. Treating every uncovered document as sweepable
-> conflates three materially different causes, one of which (an incomplete or
-> degraded view) must never delete. The normative rule is the cause table in
-> [TargetWatchPlan](target-watch-plan.md) §3. Coverage remains a useful
-> **invariant to assert**, not a safe **action to take**.
+- CRDs are **already watched**. `crdTriggerGVR` watches
+  `customresourcedefinitions`, with `get;list;watch` RBAC, and an APIService
+  trigger beside it. A CRD delete is observed, not inferred from discovery going
+  quiet.
+- The **registry emits a per-type lifecycle**, implemented in
+  [`internal/typeset/lifecycle.go`](../../internal/typeset/lifecycle.go):
+  `TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`.
+- `RemovalGrace` (60 s) is what separates a wobble from a removal, so
+  `TypeRemoved` fires only once absence has settled. The waiting is already part
+  of the abstraction.
+
+So a vanished type **does** name its scope, after the grace, through an
+authoritative event. Per-scope closing reaches it.
+
+The real gap is narrower and is a wiring one: `Registry.Subscribe` has no
+production caller today. `Materializer.OnLifecycleEvent` handles `TypeRemoved`
+(force-release the checkpoint, keep the claim so a reappearance re-syncs), and its
+own comment describes it as the observer "the future driver wires onto
+`Registry.Subscribe`". The vocabulary is built; nothing consumes it yet.
+
+That changes the conclusion. The fix is to **wire the existing lifecycle to a
+per-type untracking sweep**, which
+[type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)
+already specifies, rather than to invent a folder-wide coverage walk to
+compensate for a signal that was assumed missing.
 
 **The better question is coverage.** Instead of "which documents did the closed
 stream own", ask, of every managed document in the folder:

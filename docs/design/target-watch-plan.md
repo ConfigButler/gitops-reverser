@@ -120,6 +120,31 @@ already encodes the middle row: `TypeWobbling` must not sweep, and only a settle
 `TypeRemoved` triggers untracking for that type. This plan does not re-decide
 that. It consumes it.
 
+### 3.2 The withdrawal signal exists; it has no consumer
+
+Worth being precise, because it is a build dependency rather than a design gap.
+
+**Already built.** CRDs and APIServices are watched as catalog triggers
+(`crdTriggerGVR`, `apiServiceTriggerGVR`, with `get;list;watch` RBAC), so a CRD
+delete is *observed*, not inferred from discovery going quiet. The registry emits
+a per-type lifecycle in [`internal/typeset/lifecycle.go`](../../internal/typeset/lifecycle.go)
+(`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`),
+and `RemovalGrace` is what separates a wobble from a removal, so the waiting
+before calling a type gone is part of the abstraction rather than something this
+plan has to add.
+
+**Not yet wired.** `Registry.Subscribe` has no production caller.
+`Materializer.OnLifecycleEvent` handles `TypeRemoved` by force-releasing the
+checkpoint while keeping the claim, so a reappearance re-syncs, and its comment
+describes itself as the observer "the future driver wires onto
+`Registry.Subscribe`".
+
+So the confirmed-withdrawal row of the table above is implementable by
+**connecting an existing producer to a consumer**, not by building a detector.
+The plan's `stop` classification is the natural consumer: a settled `TypeRemoved`
+is one authoritative cause of a cell leaving the plan, and it arrives already
+graced.
+
 ### 3.1 Intent-driven removal and `prune.mode`: an open API question
 
 The product intent recorded during review is that the cluster is the source of
@@ -317,12 +342,15 @@ Each step is independently shippable and leaves the system correct.
    effects are rejected.
 4. **Apply `keep` / `restart` / `start`** (§2). At this point unrelated replays
    stop, which is the performance goal. `stop` continues to behave as today.
-5. **Decide §3.1**, then build the managed projection and `ProjectionDelta` (§6),
-   then enable `stop`.
-6. **Revisit the ordering fence** for overlapping streams (§4.2 option 2 or 4).
+5. **Wire the lifecycle** (§3.2): subscribe to the registry so a settled
+   `TypeRemoved` reaches the plan as an authoritative `stop` cause. The producer
+   and the grace already exist.
+6. **Decide §3.1**, then build the managed projection and `ProjectionDelta` (§6),
+   then enable `stop` for intent-driven removal.
+7. **Revisit the ordering fence** for overlapping streams (§4.2 option 2 or 4).
 
-Steps 1 through 4 deliver the speed and reliability improvement. Steps 5 and 6
-are where the semantics live, and neither should be rushed to reach them.
+Steps 1 through 4 deliver the speed and reliability improvement. Steps 5 through 7
+are where the semantics live, and none of them should be rushed to reach them.
 
 ---
 
