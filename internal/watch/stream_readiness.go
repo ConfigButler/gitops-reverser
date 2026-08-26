@@ -76,33 +76,39 @@ func (s StreamSummary) StreamsRunning() bool {
 
 func (m *Manager) markTargetStreamState(
 	gitDest types.ResourceReference,
-	key targetWatchKey,
+	cell types.CellKey,
 	state StreamState,
 	reason string,
 	message string,
 ) {
 	m.targetWatchesMu.Lock()
 	defer m.targetWatchesMu.Unlock()
-	m.markTargetStreamStateLocked(gitDest, key, state, reason, message)
+	m.markTargetStreamStateLocked(gitDest, cell, state, reason, message)
 }
 
+// markTargetStreamStateLocked records one stream's readiness under its CELL, not under the
+// (versioned) key the stream happens to run at. The rule-level roll-up resolves what it expects
+// from the type registry, which serves one record per version, while the declared stream set
+// runs one stream per cell. Keyed by version, a rule matching two served versions of one
+// resource would expect a stream that by construction never exists, and would report
+// permanently not-ready while its stream ran perfectly.
 func (m *Manager) markTargetStreamStateLocked(
 	gitDest types.ResourceReference,
-	key targetWatchKey,
+	cell types.CellKey,
 	state StreamState,
 	reason string,
 	message string,
 ) {
 	if m.targetStreamStates == nil {
-		m.targetStreamStates = map[string]map[targetWatchKey]targetStreamStatus{}
+		m.targetStreamStates = map[string]map[types.CellKey]targetStreamStatus{}
 	}
 	targetKey := gitDest.Key()
 	states := m.targetStreamStates[targetKey]
 	if states == nil {
-		states = map[targetWatchKey]targetStreamStatus{}
+		states = map[types.CellKey]targetStreamStatus{}
 		m.targetStreamStates[targetKey] = states
 	}
-	states[key] = targetStreamStatus{
+	states[cell] = targetStreamStatus{
 		state:   state,
 		reason:  reason,
 		message: message,
@@ -124,7 +130,7 @@ func (m *Manager) StreamSummaryForGitTarget(gitDest types.ResourceReference) Str
 	}
 	specs := targetWatchSpecs(table)
 	names := streamDisplayNamesForTable(table)
-	return m.streamSummaryForExpectedKeys(gitDest, sortedTargetWatchSpecKeys(specs), names)
+	return m.streamSummaryForExpectedKeys(gitDest, cellsForWatchKeys(sortedTargetWatchSpecKeys(specs)), names)
 }
 
 // StreamSummaryForWatchRule reports stream readiness for one namespaced WatchRule, resolved
@@ -155,19 +161,19 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 	reg := m.registryForGitTarget(gitDest)
 	m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
 	records := reg.Followable()
-	var keys []targetWatchKey
-	names := map[schema.GroupVersionResource]string{}
+	var cells []types.CellKey
+	names := map[schema.GroupResource]string{}
 	for _, rr := range compiled.ResourceRules {
 		matched := matchFollowableRecords(
 			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeNamespaced)
 		for _, rec := range matched {
 			for _, namespace := range rr.SourceNamespaces {
-				keys = append(keys, targetWatchKey{GVR: rec.Identity.GVR, Namespace: namespace})
+				cells = append(cells, types.CellKeyFor(rec.Identity.GVR, namespace))
 			}
-			names[rec.Identity.GVR] = streamDisplayName(rec.Identity.GVR)
+			names[rec.Identity.GVR.GroupResource()] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
-	return m.streamSummaryForExpectedKeys(gitDest, deduplicateTargetWatchKeys(keys), names)
+	return m.streamSummaryForExpectedKeys(gitDest, deduplicateCells(cells), names)
 }
 
 // StreamSummaryForClusterWatchRule reports stream readiness for one ClusterWatchRule, resolved
@@ -178,24 +184,23 @@ func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWa
 	reg := m.registryForGitTarget(gitDest)
 	m.refreshClusterTypeRegistry(m.cluster(m.clusterIDForGitTarget(gitDest)))
 	records := reg.Followable()
-	var keys []targetWatchKey
-	names := map[schema.GroupVersionResource]string{}
+	var cells []types.CellKey
+	names := map[schema.GroupResource]string{}
 	for _, rr := range rule.Spec.Rules {
 		matched := matchFollowableRecords(
 			records, rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha3.ResourceScopeCluster)
 		for _, rec := range matched {
-			key := targetWatchKey{GVR: rec.Identity.GVR}
-			keys = append(keys, key)
-			names[rec.Identity.GVR] = streamDisplayName(rec.Identity.GVR)
+			cells = append(cells, types.CellKeyFor(rec.Identity.GVR, ""))
+			names[rec.Identity.GVR.GroupResource()] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
-	return m.streamSummaryForExpectedKeys(gitDest, deduplicateTargetWatchKeys(keys), names)
+	return m.streamSummaryForExpectedKeys(gitDest, deduplicateCells(cells), names)
 }
 
 func (m *Manager) streamSummaryForExpectedKeys(
 	gitDest types.ResourceReference,
-	expected []targetWatchKey,
-	displayNames map[schema.GroupVersionResource]string,
+	expected []types.CellKey,
+	displayNames map[schema.GroupResource]string,
 ) StreamSummary {
 	m.targetWatchesMu.Lock()
 	states := copyTargetStreamStates(m.targetStreamStates[gitDest.Key()])
@@ -204,11 +209,11 @@ func (m *Manager) streamSummaryForExpectedKeys(
 }
 
 func streamSummaryForTypes(
-	expected []targetWatchKey,
-	states map[targetWatchKey]targetStreamStatus,
-	displayNames map[schema.GroupVersionResource]string,
+	expected []types.CellKey,
+	states map[types.CellKey]targetStreamStatus,
+	displayNames map[schema.GroupResource]string,
 ) StreamSummary {
-	byGVR := streamStatusesByGVR(expected, states)
+	byGVR := streamStatusesByType(expected, states)
 	out, blockedNames, replayingNames := streamSummaryCounts(byGVR, displayNames)
 	sort.Strings(blockedNames)
 	sort.Strings(replayingNames)
@@ -217,34 +222,38 @@ func streamSummaryForTypes(
 	return out
 }
 
-func streamStatusesByGVR(
-	expected []targetWatchKey,
-	states map[targetWatchKey]targetStreamStatus,
-) map[schema.GroupVersionResource]targetStreamStatus {
-	byGVR := map[schema.GroupVersionResource]targetStreamStatus{}
-	for _, key := range deduplicateTargetWatchKeys(expected) {
-		status, ok := states[key]
+// streamStatusesByType reduces the per-cell states to one row per TYPE: a rule watching one
+// resource in three namespaces reports one stream, in its weakest state, which is the ratio
+// users have always seen in status.
+func streamStatusesByType(
+	expected []types.CellKey,
+	states map[types.CellKey]targetStreamStatus,
+) map[schema.GroupResource]targetStreamStatus {
+	byType := map[schema.GroupResource]targetStreamStatus{}
+	for _, cell := range deduplicateCells(expected) {
+		status, ok := states[cell]
 		if !ok {
 			status = targetStreamStatus{state: StreamStateReplaying, reason: StreamReasonInitialReplay}
 		}
-		current, seen := byGVR[key.GVR]
+		gr := schema.GroupResource{Group: cell.Group, Resource: cell.Resource}
+		current, seen := byType[gr]
 		if !seen || strongerStreamStatus(status, current) {
-			byGVR[key.GVR] = status
+			byType[gr] = status
 		}
 	}
-	return byGVR
+	return byType
 }
 
 func streamSummaryCounts(
-	byGVR map[schema.GroupVersionResource]targetStreamStatus,
-	displayNames map[schema.GroupVersionResource]string,
+	byType map[schema.GroupResource]targetStreamStatus,
+	displayNames map[schema.GroupResource]string,
 ) (StreamSummary, []string, []string) {
-	out := StreamSummary{Total: len(byGVR)}
+	out := StreamSummary{Total: len(byType)}
 	var blockedNames, replayingNames []string
-	for gvr, status := range byGVR {
-		name := displayNames[gvr]
+	for gr, status := range byType {
+		name := displayNames[gr]
 		if name == "" {
-			name = streamDisplayName(gvr)
+			name = groupResourceDisplayName(gr)
 		}
 		switch status.state {
 		case StreamStateStreaming:
@@ -274,12 +283,12 @@ func pendingStreamSample(blockedNames, replayingNames []string) []string {
 
 func streamSummaryReasonAndMessage(
 	out StreamSummary,
-	byGVR map[schema.GroupVersionResource]targetStreamStatus,
+	byType map[schema.GroupResource]targetStreamStatus,
 	blockedNames, replayingNames []string,
 ) (string, string) {
 	switch {
 	case out.Blocked > 0:
-		return blockedReason(byGVR), streamSummaryMessage(out, "blocked", blockedNames)
+		return blockedReason(byType), streamSummaryMessage(out, "blocked", blockedNames)
 	case out.Replaying > 0:
 		return StreamReasonReplaying, streamSummaryMessage(out, "replaying", replayingNames)
 	case out.Total == 0:
@@ -306,7 +315,7 @@ func streamStateRank(state StreamState) int {
 	}
 }
 
-func blockedReason(statuses map[schema.GroupVersionResource]targetStreamStatus) string {
+func blockedReason(statuses map[schema.GroupResource]targetStreamStatus) string {
 	reason := StreamReasonWatchError
 	for _, status := range statuses {
 		if status.state != StreamStateBlocked {
@@ -334,44 +343,52 @@ func streamSummaryMessage(summary StreamSummary, label string, names []string) s
 	return msg + " (" + strings.Join(names, ", ") + ")"
 }
 
-func streamDisplayNamesForTable(table WatchedTypeTable) map[schema.GroupVersionResource]string {
-	out := map[schema.GroupVersionResource]string{}
+func streamDisplayNamesForTable(table WatchedTypeTable) map[schema.GroupResource]string {
+	out := map[schema.GroupResource]string{}
 	for _, wt := range table.Types {
-		out[wt.GVR] = streamDisplayName(wt.GVR)
+		out[wt.GVR.GroupResource()] = streamDisplayName(wt.GVR)
 	}
 	return out
 }
 
 func streamDisplayName(gvr schema.GroupVersionResource) string {
-	if gvr.Group == "" {
-		return gvr.Resource
-	}
-	return gvr.Resource + "." + gvr.Group
+	return groupResourceDisplayName(gvr.GroupResource())
 }
 
-func copyTargetStreamStates(in map[targetWatchKey]targetStreamStatus) map[targetWatchKey]targetStreamStatus {
-	out := make(map[targetWatchKey]targetStreamStatus, len(in))
+func groupResourceDisplayName(gr schema.GroupResource) string {
+	if gr.Group == "" {
+		return gr.Resource
+	}
+	return gr.Resource + "." + gr.Group
+}
+
+func copyTargetStreamStates(in map[types.CellKey]targetStreamStatus) map[types.CellKey]targetStreamStatus {
+	out := make(map[types.CellKey]targetStreamStatus, len(in))
 	for key, status := range in {
 		out[key] = status
 	}
 	return out
 }
 
-func deduplicateTargetWatchKeys(keys []targetWatchKey) []targetWatchKey {
-	seen := map[targetWatchKey]struct{}{}
-	out := make([]targetWatchKey, 0, len(keys))
+// cellsForWatchKeys projects a declared stream set onto the cells it covers.
+func cellsForWatchKeys(keys []targetWatchKey) []types.CellKey {
+	out := make([]types.CellKey, 0, len(keys))
 	for _, key := range keys {
-		if _, ok := seen[key]; ok {
+		out = append(out, key.Cell())
+	}
+	return out
+}
+
+func deduplicateCells(cells []types.CellKey) []types.CellKey {
+	seen := map[types.CellKey]struct{}{}
+	out := make([]types.CellKey, 0, len(cells))
+	for _, cell := range cells {
+		if _, ok := seen[cell]; ok {
 			continue
 		}
-		seen[key] = struct{}{}
-		out = append(out, key)
+		seen[cell] = struct{}{}
+		out = append(out, cell)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].GVR.String() == out[j].GVR.String() {
-			return out[i].Namespace < out[j].Namespace
-		}
-		return out[i].GVR.String() < out[j].GVR.String()
-	})
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out
 }

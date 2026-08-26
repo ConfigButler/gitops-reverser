@@ -81,6 +81,12 @@ type targetWatchStream struct {
 	key   targetWatchKey
 	ops   OperationSet
 	lease uint64
+	// epoch is the render-fidelity epoch this stream was started into. It is captured at
+	// start, not read when a replay result is ready: a cancelled stream that read the epoch
+	// on its way out would report its scope clean in an epoch it never replayed for. Since a
+	// fidelity scope is now a cell, a stream retired by a served-version change lands on the
+	// live cell's scope rather than missing it, so the capture is what keeps it out.
+	epoch uint64
 }
 
 // provenance is what this stream stamps on the work it queues: which cell produced it, and
@@ -155,31 +161,8 @@ func (m *Manager) replaceGitTargetWatches(
 		return nil
 	}
 	m.targetWatches[key] = &targetWatchSet{cancel: cancel, specs: specs}
-	if m.targetStreamStates == nil {
-		m.targetStreamStates = map[string]map[targetWatchKey]targetStreamStatus{}
-	}
-	states := m.targetStreamStates[key]
-	if states == nil {
-		states = map[targetWatchKey]targetStreamStatus{}
-		m.targetStreamStates[key] = states
-	}
-	for stateKey := range states {
-		if _, ok := specs[stateKey]; !ok {
-			delete(states, stateKey)
-		}
-	}
-	for _, watchKey := range keys {
-		if _, ok := states[watchKey]; force || !ok {
-			m.markTargetStreamStateLocked(
-				table.GitDest,
-				watchKey,
-				StreamStateReplaying,
-				StreamReasonInitialReplay,
-				"waiting for target watch replay to complete",
-			)
-		}
-	}
-	fidelityChanged := m.beginTargetRenderFidelityEpochLocked(table.GitDest, keys)
+	m.resetTargetStreamStatesLocked(table.GitDest, keys, force)
+	epoch, fidelityChanged := m.beginTargetRenderFidelityEpochLocked(table.GitDest, keys)
 	m.targetWatchesMu.Unlock()
 	if fidelityChanged {
 		m.enqueueGitPathChange(table.GitDest)
@@ -191,7 +174,12 @@ func (m *Manager) replaceGitTargetWatches(
 		// replacement therefore queues work under a lease its predecessor never used, which
 		// is what lets an item still in flight from the cancelled stream be told apart from
 		// the live one's (docs/design/target-watch-plan.md §5.1).
-		stream := targetWatchStream{key: watchKey, ops: streams[watchKey], lease: m.nextStreamLease()}
+		stream := targetWatchStream{
+			key:   watchKey,
+			ops:   streams[watchKey],
+			lease: m.nextStreamLease(),
+			epoch: epoch,
+		}
 		go m.runTargetWatch(childCtx, log, table.GitDest, stream)
 	}
 	// Name every declared stream, not just the count. A GVR appearing twice — once
@@ -201,6 +189,45 @@ func (m *Manager) replaceGitTargetWatches(
 	log.Info("watch-first target watch set reconciled",
 		"watchCount", len(keys), "streams", describeWatchKeys(keys, specs))
 	return nil
+}
+
+// resetTargetStreamStatesLocked makes the readiness surface match the declaration: cells that
+// left it are dropped, and every cell that is new (or every cell, on a forced recheck) goes back
+// to replaying. targetWatchesMu must be held.
+func (m *Manager) resetTargetStreamStatesLocked(
+	gitDest types.ResourceReference,
+	keys []targetWatchKey,
+	force bool,
+) {
+	if m.targetStreamStates == nil {
+		m.targetStreamStates = map[string]map[types.CellKey]targetStreamStatus{}
+	}
+	targetKey := gitDest.Key()
+	states := m.targetStreamStates[targetKey]
+	if states == nil {
+		states = map[types.CellKey]targetStreamStatus{}
+		m.targetStreamStates[targetKey] = states
+	}
+	declared := make(map[types.CellKey]struct{}, len(keys))
+	for _, watchKey := range keys {
+		declared[watchKey.Cell()] = struct{}{}
+	}
+	for cell := range states {
+		if _, ok := declared[cell]; !ok {
+			delete(states, cell)
+		}
+	}
+	for cell := range declared {
+		if _, ok := states[cell]; force || !ok {
+			m.markTargetStreamStateLocked(
+				gitDest,
+				cell,
+				StreamStateReplaying,
+				StreamReasonInitialReplay,
+				"waiting for target watch replay to complete",
+			)
+		}
+	}
 }
 
 // describeWatchKeys renders the declared streams as "<gvr>@<namespace|*cluster-wide*>=<ops>"
@@ -415,7 +442,7 @@ func (m *Manager) runTargetWatch(
 			return
 		}
 		if err != nil {
-			m.markTargetStreamState(gitDest, stream.key, StreamStateBlocked, StreamReasonWatchError, err.Error())
+			m.markTargetStreamState(gitDest, stream.key.Cell(), StreamStateBlocked, StreamReasonWatchError, err.Error())
 			log.Info("target watch session ended; reconnecting",
 				"gvr", stream.key.GVR.String(), "namespace", stream.key.Namespace, "err", err.Error())
 		}
@@ -456,7 +483,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		cursorExpired = true
 		m.markTargetStreamState(
 			gitDest,
-			stream.key,
+			stream.key.Cell(),
 			StreamStateReplaying,
 			StreamReasonExpiredResourceVersion,
 			"stored watch cursor expired; rebuilding from a fresh replay",
@@ -479,7 +506,7 @@ func (m *Manager) targetWatchReplayAndStream(
 	}
 	m.markTargetStreamState(
 		gitDest,
-		stream.key,
+		stream.key.Cell(),
 		StreamStateReplaying,
 		reason,
 		"target watch replay in progress",
@@ -497,7 +524,7 @@ func (m *Manager) targetWatchReplayAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			stream.key,
+			stream.key.Cell(),
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
@@ -548,7 +575,7 @@ func (m *Manager) targetWatchResumeAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			stream.key,
+			stream.key.Cell(),
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
@@ -563,7 +590,7 @@ func (m *Manager) targetWatchResumeAndStream(
 		"namespace", stream.key.Namespace, "resourceVersion", cursor)
 	m.markTargetStreamState(
 		gitDest,
-		stream.key,
+		stream.key.Cell(),
 		StreamStateStreaming,
 		StreamReasonAllStreamsReady,
 		"target watch resumed from durable cursor",
@@ -588,7 +615,7 @@ func (m *Manager) targetWatchListAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			stream.key,
+			stream.key.Cell(),
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
@@ -608,7 +635,7 @@ func (m *Manager) targetWatchListAndStream(
 		}
 		m.markTargetStreamState(
 			gitDest,
-			stream.key,
+			stream.key.Cell(),
 			StreamStateBlocked,
 			StreamReasonWatchError,
 			err.Error(),
@@ -628,7 +655,7 @@ func (m *Manager) targetWatchListAndStream(
 		"count", len(desired), "resourceVersion", revision)
 	m.markTargetStreamState(
 		gitDest,
-		stream.key,
+		stream.key.Cell(),
 		StreamStateStreaming,
 		StreamReasonAllStreamsReady,
 		"target watch list fallback complete",
@@ -665,7 +692,7 @@ func (m *Manager) handleTargetWatchSessionEvent(
 	*replay = nil
 	m.markTargetStreamState(
 		gitDest,
-		stream.key,
+		stream.key.Cell(),
 		StreamStateStreaming,
 		StreamReasonAllStreamsReady,
 		"target watch replay complete",
@@ -722,7 +749,11 @@ func (m *Manager) enqueueReplayResync(
 	if m.EventRouter == nil {
 		return nil
 	}
-	epoch := m.RenderFidelityEpochForGitTarget(gitDest)
+	// The epoch is the one this stream was STARTED into, never the epoch current at enqueue.
+	// A cancelled stream can still be in flight with a replay result, and reading the epoch
+	// here would let it report a scope clean in an epoch it never replayed for — reopening
+	// writes on the strength of a snapshot the new declaration never gathered. The gate
+	// already ignores a stale epoch; capturing it at start is what makes it stale.
 	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
 		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.provenance(), desired, revision, false)
 	if err != nil {
@@ -735,7 +766,7 @@ func (m *Manager) enqueueReplayResync(
 	// The stream.key (GVR + namespace) is threaded to the drain for diagnostics. A refused
 	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather
 	// than mutating this stream's watch readiness.
-	go m.EventRouter.drainScopedResync(gitDest, stream.key, "reconcile", epoch, resultCh)
+	go m.EventRouter.drainScopedResync(gitDest, stream.key.Cell(), "reconcile", stream.epoch, resultCh)
 	log.V(1).Info("target replay resync enqueued",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "revision", revision, "count", len(desired))
 	return nil

@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	retentionCMScope     = targetWatchKey{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}}
-	retentionSecretScope = targetWatchKey{GVR: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}}
+	retentionCMScope     = types.CellKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, "")
+	retentionSecretScope = types.CellKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "")
 )
 
 // TestRetentionRollup_SumsEveryScope: a resync fires per type and per namespace within a type, so

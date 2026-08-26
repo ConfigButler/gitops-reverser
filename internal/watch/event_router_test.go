@@ -157,7 +157,7 @@ func TestDrainScopedResync_TreatsSupersededAsSuccess(t *testing.T) {
 		defer close(done)
 		router.drainScopedResync(
 			types.NewResourceReference("team-a-config", "team-a"),
-			targetWatchKey{GVR: configmapsGVR},
+			types.CellKeyFor(configmapsGVR, ""),
 			"sweep",
 			0,
 			resultCh,
@@ -183,7 +183,7 @@ func TestDrainScopedResync_CompletesSuccessfulResult(t *testing.T) {
 	go func() {
 		router.drainScopedResync(
 			types.NewResourceReference("team-a-config", "team-a"),
-			targetWatchKey{GVR: configmapsGVR},
+			types.CellKeyFor(configmapsGVR, ""),
 			"reconcile",
 			0,
 			resultCh,
@@ -218,7 +218,7 @@ func TestDrainScopedResync_RefusalMarksGitPathRefused(t *testing.T) {
 	resultCh := make(chan git.ResyncResult, 1)
 	resultCh <- git.ResyncResult{Err: fmt.Errorf("execute pending writes: %w", refusal)}
 
-	router.drainScopedResync(gitDest, key, "reconcile", 0, resultCh)
+	router.drainScopedResync(gitDest, key.Cell(), "reconcile", 0, resultCh)
 
 	gitPath := mgr.GitPathAcceptanceForGitTarget(gitDest)
 

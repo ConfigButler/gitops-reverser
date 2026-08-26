@@ -193,9 +193,10 @@ type Manager struct {
 	// streamLeases hands out one lease per started target-watch stream. See
 	// targetWatchStream.lease.
 	streamLeases atomic.Uint64
-	// targetStreamStates is the readiness surface for targetWatches. It is keyed
-	// by GitTarget and watch key, and projected into status by controllers.
-	targetStreamStates map[string]map[targetWatchKey]targetStreamStatus
+	// targetStreamStates is the readiness surface for targetWatches. It is keyed by
+	// GitTarget and CELL — not by the served version the stream runs at — and projected into
+	// status by controllers. See markTargetStreamStateLocked for why the version is absent.
+	targetStreamStates map[string]map[types.CellKey]targetStreamStatus
 	// targetGitPathAcceptance is the target-side acceptance surface. It is keyed by
 	// GitTarget and projected into GitTarget status as GitPathAccepted.
 	targetGitPathAcceptance map[string]GitPathAcceptanceStatus

@@ -19,22 +19,20 @@ func (m *Manager) fidelityGate() *git.RenderFidelityGate {
 }
 
 func renderFidelityScopes(keys []targetWatchKey) []types.CellKey {
-	scopes := make([]types.CellKey, 0, len(keys))
-	for _, key := range keys {
-		scopes = append(scopes, key.Cell())
-	}
-	return scopes
+	return cellsForWatchKeys(keys)
 }
 
 // beginTargetRenderFidelityEpochLocked replaces the target's scope set. targetWatchesMu must be
-// held. The returned bool tells the caller to enqueue a status refresh after releasing the lock.
+// held. It returns the epoch the streams of this declaration must report into, and whether the
+// caller should enqueue a status refresh after releasing the lock. A zero epoch means no shared
+// gate is wired, which the mark path treats as the legacy data path.
 func (m *Manager) beginTargetRenderFidelityEpochLocked(
 	target types.ResourceReference,
 	keys []targetWatchKey,
-) bool {
+) (uint64, bool) {
 	gate := m.fidelityGate()
 	if gate == nil {
-		return false
+		return 0, false
 	}
 	status := gate.Begin(target, renderFidelityScopes(keys))
 	if m.targetRenderFidelity == nil {
@@ -42,15 +40,7 @@ func (m *Manager) beginTargetRenderFidelityEpochLocked(
 	}
 	prior, had := m.targetRenderFidelity[target.Key()]
 	m.targetRenderFidelity[target.Key()] = status
-	return !had || renderFidelityStatusChanged(prior, status)
-}
-
-// RenderFidelityEpochForGitTarget returns the epoch a replay result must carry. A zero epoch
-// means no shared gate is wired, so callers preserve the legacy data path.
-func (m *Manager) RenderFidelityEpochForGitTarget(target types.ResourceReference) uint64 {
-	m.targetWatchesMu.Lock()
-	defer m.targetWatchesMu.Unlock()
-	return m.targetRenderFidelity[target.Key()].Epoch
+	return status.Epoch, !had || renderFidelityStatusChanged(prior, status)
 }
 
 // RenderFidelityForGitTarget returns the latest condition projection. Missing state means the
@@ -69,7 +59,7 @@ func (m *Manager) RenderFidelityForGitTarget(target types.ResourceReference) Ren
 func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	target types.ResourceReference,
 	epoch uint64,
-	key targetWatchKey,
+	cell types.CellKey,
 ) {
 	gate := m.fidelityGate()
 	if gate == nil || epoch == 0 {
@@ -78,7 +68,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	status, applied := gate.RecordScopeClean(
 		target,
 		epoch,
-		key.Cell(),
+		cell,
 	)
 	if applied {
 		m.recordRenderFidelityStatus(target, status)
@@ -89,7 +79,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 	target types.ResourceReference,
 	epoch uint64,
-	key targetWatchKey,
+	cell types.CellKey,
 	divergence manifestanalyzer.RenderDivergence,
 ) {
 	gate := m.fidelityGate()
@@ -97,7 +87,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 		return
 	}
 	status, applied := gate.RecordScopeDivergence(
-		target, epoch, key.Cell(), divergence)
+		target, epoch, cell, divergence)
 	if applied {
 		m.recordRenderFidelityStatus(target, status)
 	}

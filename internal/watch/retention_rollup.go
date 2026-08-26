@@ -37,7 +37,7 @@ type RetentionSummary struct {
 // targetRetentionState is one GitTarget's per-scope counts, valid for a single watch epoch.
 type targetRetentionState struct {
 	epoch    uint64
-	scopes   map[targetWatchKey]int
+	scopes   map[types.CellKey]int
 	mode     v1alpha3.PruneMode
 	observed time.Time
 }
@@ -62,7 +62,7 @@ func (s targetRetentionState) total() int {
 // Zero is recorded as actively as any other number: it is the converged signal.
 func (m *Manager) MarkTargetRetention(
 	gitDest types.ResourceReference,
-	key targetWatchKey,
+	cell types.CellKey,
 	epoch uint64,
 	mode v1alpha3.PruneMode,
 	retained int,
@@ -81,9 +81,9 @@ func (m *Manager) MarkTargetRetention(
 	// change to them, and enqueueing for it would make every watch-set replacement reconcile twice.
 	priorTotal, priorMode := state.total(), state.mode
 	if !had || epoch > state.epoch {
-		state = targetRetentionState{epoch: epoch, scopes: map[targetWatchKey]int{}}
+		state = targetRetentionState{epoch: epoch, scopes: map[types.CellKey]int{}}
 	}
-	state.scopes[key] = retained
+	state.scopes[cell] = retained
 	state.mode = mode.OrDefault()
 	state.observed = time.Now()
 	m.targetRetention[gitDest.Key()] = state
