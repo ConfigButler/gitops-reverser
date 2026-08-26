@@ -111,7 +111,8 @@ func (m *Manager) replaceGitTargetWatches(
 	table WatchedTypeTable,
 	forceRecheck ...bool,
 ) error {
-	specs := targetWatchSpecs(table)
+	streams := targetWatchStreams(table)
+	specs := renderTargetWatchSpecs(streams)
 	keys := sortedTargetWatchSpecKeys(specs)
 	childCtx, cancel := context.WithCancel(ctx)
 	force := len(forceRecheck) > 0 && forceRecheck[0]
@@ -159,8 +160,7 @@ func (m *Manager) replaceGitTargetWatches(
 
 	log := m.Log.WithName("target-watch").WithValues("gitDest", table.GitDest.String())
 	for _, watchKey := range keys {
-		ops := table.operationsFor(watchKey)
-		go m.runTargetWatch(childCtx, log, table.GitDest, watchKey, ops)
+		go m.runTargetWatch(childCtx, log, table.GitDest, watchKey, streams[watchKey])
 	}
 	// Name every declared stream, not just the count. A GVR appearing twice — once
 	// cluster-wide ("") and once under a named namespace — means the same object is
@@ -238,17 +238,79 @@ func (m *Manager) forgetGitTargetWatches(gitDest types.ResourceReference) {
 	m.forgetTargetRetention(gitDest)
 }
 
-func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
-	out := map[targetWatchKey]string{}
-	// One stream per scope, each carrying that scope's own operation filters. A
-	// cluster-wide scope ("") is a peer of any named namespace on the same GVR, never a
-	// replacement for it: collapsing them widened the named rule's stream and dropped its
-	// operation set (pr2-stream-scope-collapse.md).
+// targetWatchStreams computes a GitTarget's declared stream set: ONE stream per cell, carrying
+// the served version it opens at and the union of the operation filters that selected it.
+//
+// One stream per cell is the invariant the whole sweep boundary rests on. A cell is
+// group/resource/namespace (types.CellKey), so two followable records of one logical resource
+// at different served versions, selected under the same scope, are ONE cell: one sweep
+// boundary, one render-fidelity scope, one coalescing key. Streaming both would mean two
+// snapshots of one boundary, each sweeping the documents the other gathered. So the version is
+// chosen once, deterministically, and the operation filters are unioned rather than dropped, so
+// no rule loses coverage to the collapse.
+//
+// A cluster-wide scope ("") stays a peer of any named namespace on the same type, never a
+// replacement for it: collapsing THOSE widened the named rule's stream and dropped its
+// operation set (pr2-stream-scope-collapse.md). They are different cells, and both stream.
+func targetWatchStreams(table WatchedTypeTable) map[targetWatchKey]OperationSet {
+	chosen := map[types.CellKey]targetWatchKey{}
+	chosenPreferred := map[types.CellKey]bool{}
+	ops := map[types.CellKey]OperationSet{}
 	for _, wt := range table.Types {
 		for _, ns := range wt.WatchScopes() {
-			key := targetWatchKey{GVR: wt.GVR, Namespace: ns}
-			out[key] = operationSpec(wt.NamespaceOps[ns])
+			cell := types.CellKeyFor(wt.GVR, ns)
+			candidate := targetWatchKey{GVR: wt.GVR, Namespace: ns}
+			if prior, seen := chosen[cell]; !seen ||
+				preferServedVersion(prior, chosenPreferred[cell], candidate, wt.Preferred) {
+				chosen[cell] = candidate
+				chosenPreferred[cell] = wt.Preferred
+			}
+			set, ok := ops[cell]
+			if !ok {
+				set = OperationSet{}
+				ops[cell] = set
+			}
+			for op := range wt.NamespaceOps[ns] {
+				set[op] = struct{}{}
+			}
 		}
+	}
+	out := make(map[targetWatchKey]OperationSet, len(chosen))
+	for cell, key := range chosen {
+		out[key] = ops[cell]
+	}
+	return out
+}
+
+// preferServedVersion reports whether the candidate should replace the currently chosen stream
+// for one cell. The API server's preferred version wins; between two non-preferred (or two
+// preferred) records the higher-sorting version wins, which is arbitrary but STABLE — a rule
+// edit or a rediscovery must not flap the served version, because every flap would cancel the
+// stream and replay the whole cell.
+func preferServedVersion(
+	prior targetWatchKey,
+	priorPreferred bool,
+	candidate targetWatchKey,
+	candidatePreferred bool,
+) bool {
+	if priorPreferred != candidatePreferred {
+		return candidatePreferred
+	}
+	return candidate.GVR.Version > prior.GVR.Version
+}
+
+// targetWatchSpecs renders the declared stream set as the comparable per-stream spec:
+// everything about a stream that, when it changes, invalidates the running one. The
+// operations are rendered to their canonical string because a map is neither comparable
+// nor safe to retain by reference.
+func targetWatchSpecs(table WatchedTypeTable) map[targetWatchKey]string {
+	return renderTargetWatchSpecs(targetWatchStreams(table))
+}
+
+func renderTargetWatchSpecs(streams map[targetWatchKey]OperationSet) map[targetWatchKey]string {
+	out := make(map[targetWatchKey]string, len(streams))
+	for key, ops := range streams {
+		out[key] = operationSpec(ops)
 	}
 	return out
 }
@@ -284,21 +346,6 @@ func equalTargetWatchSpecs(a, b map[targetWatchKey]string) bool {
 		}
 	}
 	return true
-}
-
-func (t WatchedTypeTable) operationsFor(key targetWatchKey) OperationSet {
-	for _, wt := range t.Types {
-		if wt.GVR != key.GVR {
-			continue
-		}
-		if ops := wt.NamespaceOps[key.Namespace]; ops != nil {
-			return ops
-		}
-		if key.Namespace != "" {
-			return wt.NamespaceOps[""]
-		}
-	}
-	return nil
 }
 
 func (m *Manager) runTargetWatch(

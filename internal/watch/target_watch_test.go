@@ -84,6 +84,46 @@ func TestTargetWatchSpecs_NamedAndClusterWideScopesStayDistinctStreams(t *testin
 		"the named stream keeps its own operation set instead of inheriting the cluster-wide one")
 }
 
+// Two served versions of one resource, selected under the same scope, are ONE cell: one sweep
+// boundary, one render-fidelity scope, one coalescing key. Streaming both would put two
+// snapshots on that boundary, each sweeping the documents the other gathered.
+func TestTargetWatchStreams_OneStreamPerCellAcrossServedVersions(t *testing.T) {
+	v1beta1 := schema.GroupVersionResource{Group: "apps", Version: "v1beta1", Resource: "deployments"}
+	v1 := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	table := WatchedTypeTable{
+		GitDest: types.NewResourceReference("target", "default"),
+		Types: []WatchedType{
+			{GVR: v1beta1, NamespaceOps: map[string]OperationSet{"team-a": {"CREATE": struct{}{}}}},
+			{GVR: v1, Preferred: true, NamespaceOps: map[string]OperationSet{"team-a": {"UPDATE": struct{}{}}}},
+		},
+	}
+
+	streams := targetWatchStreams(table)
+
+	require.Len(t, streams, 1, "one cell is one stream, whatever versions serve it")
+	ops, ok := streams[targetWatchKey{GVR: v1, Namespace: "team-a"}]
+	require.True(t, ok, "the preferred served version is the one streamed")
+	assert.True(t, ops.Match("CREATE"),
+		"the collapsed record's operation filter is unioned in, so no rule loses coverage")
+	assert.True(t, ops.Match("UPDATE"))
+	assert.False(t, ops.Match("DELETE"))
+}
+
+// The choice must be stable: a re-declare that flapped the served version would cancel the
+// stream and replay the whole cell every time.
+func TestTargetWatchStreams_ServedVersionChoiceIsStable(t *testing.T) {
+	v1 := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	v2 := schema.GroupVersionResource{Group: "apps", Version: "v2", Resource: "deployments"}
+	ops := map[string]OperationSet{"": {"*": struct{}{}}}
+	ascending := WatchedTypeTable{Types: []WatchedType{{GVR: v1, NamespaceOps: ops}, {GVR: v2, NamespaceOps: ops}}}
+	descending := WatchedTypeTable{Types: []WatchedType{{GVR: v2, NamespaceOps: ops}, {GVR: v1, NamespaceOps: ops}}}
+
+	assert.Equal(t, targetWatchSpecs(ascending), targetWatchSpecs(descending),
+		"neither declaration order nor map iteration may decide which version streams")
+	_, ok := targetWatchStreams(ascending)[targetWatchKey{GVR: v2}]
+	assert.True(t, ok, "with no preferred record the higher-sorting version wins, deterministically")
+}
+
 func TestReplaceGitTargetWatches_ReusesUnchangedSetAndRestartsOnSpecChange(t *testing.T) {
 	gitDest := types.NewResourceReference("target", "default")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -557,8 +597,10 @@ func TestTargetWatchOperationHelpers(t *testing.T) {
 		GVR:          configmapsGVR,
 		NamespaceOps: map[string]OperationSet{"": {"CREATE": struct{}{}}},
 	}}}
-	assert.True(t, table.operationsFor(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}).Match("CREATE"))
-	assert.False(t, table.operationsFor(targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}).Match("UPDATE"))
+	streams := targetWatchStreams(table)
+	require.Len(t, streams, 1)
+	assert.True(t, streams[targetWatchKey{GVR: configmapsGVR}].Match("CREATE"))
+	assert.False(t, streams[targetWatchKey{GVR: configmapsGVR}].Match("UPDATE"))
 	assert.True(t, OperationSet(nil).Match("DELETE"))
 	assert.True(t, OperationSet{"*": struct{}{}}.Match("UPDATE"))
 	assert.Equal(t, "DELETE", operationForWatchEvent(watch.Deleted))
