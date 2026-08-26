@@ -362,25 +362,56 @@ func TestEnqueueResync_CoalescesPastUnrelatedWrites(t *testing.T) {
 // take its tail position before the write it is fencing against actually enters the
 // queue — the same inversion, one step removed.
 //
-// The observable invariant here is the FIFO's own: every accepted item is present
-// exactly once, resync markers included, and the queue never holds two markers for a
-// scope whose earlier one was also coalesced into. Run under -race, this also covers
-// the map access the fence added to the write path.
+// The assertion that catches that is ORDER, not accounting: item counts balance either
+// way, so counting alone passes against the racy version (measured). A second marker for
+// one scope exists only because a write marked the entry, and that write's send happens
+// under the lock the mark is taken with, so the write must already sit between the two
+// markers. Two ADJACENT markers therefore mean a resync overtook the write that caused
+// it, which is exactly the inversion. The counts are kept as a supporting invariant.
+//
+// The contention is deliberately high because the window is a few instructions wide.
+// Verified by construction: with the unlock moved back before the send, 8 producers over
+// 100 rounds still passed, and these numbers fail on the first round. Lower them and this
+// test stops proving anything.
+//
+// Run under -race, this also covers the map access the fence added to the write path.
 func TestEnqueueResync_FenceHoldsUnderConcurrentWrites(t *testing.T) {
-	for range 100 {
-		acceptedWrites, acceptedResyncs, superseded := raceWritesAndResyncsOnOneScope(t)
-		require.Equal(t, acceptedWrites.writes, acceptedWrites.queued,
+	for range 400 {
+		fifo, acceptedResyncs, superseded := raceWritesAndResyncsOnOneScope(t)
+		assertWriteBetweenConsecutiveMarkers(t, fifo.order)
+		require.Equal(t, fifo.writes, fifo.queued,
 			"every accepted write is on the FIFO once")
-		require.Equal(t, acceptedResyncs, acceptedWrites.markers+superseded,
+		require.Equal(t, acceptedResyncs, fifo.markers+superseded,
 			"every accepted resync owns a marker or was superseded into one")
+	}
+}
+
+// assertWriteBetweenConsecutiveMarkers fails when two resync markers for the scope sit
+// next to each other on the FIFO with no write between them. See the ordering argument
+// on TestEnqueueResync_FenceHoldsUnderConcurrentWrites.
+func assertWriteBetweenConsecutiveMarkers(t *testing.T, order []WorkItem) {
+	t.Helper()
+	previousMarker := -1
+	for i, item := range order {
+		if item.Resync == nil {
+			continue
+		}
+		if previousMarker >= 0 {
+			require.Greater(t, i-previousMarker, 1,
+				"markers at FIFO positions %d and %d are adjacent: the second one only exists "+
+					"because a write marked the entry, so that write must sit between them",
+				previousMarker, i)
+		}
+		previousMarker = i
 	}
 }
 
 // fifoTally is what a drain of the queue found, alongside what was accepted onto it.
 type fifoTally struct {
-	queued  int // writes accepted by Enqueue
-	writes  int // write items drained from the FIFO
-	markers int // resync markers drained from the FIFO
+	queued  int        // writes accepted by Enqueue
+	writes  int        // write items drained from the FIFO
+	markers int        // resync markers drained from the FIFO
+	order   []WorkItem // the drained items, in FIFO order
 }
 
 // raceWritesAndResyncsOnOneScope drives writes and resyncs for one scope concurrently
@@ -388,9 +419,9 @@ type fifoTally struct {
 // tally, how many resyncs were accepted, and how many of those were superseded.
 func raceWritesAndResyncsOnOneScope(t *testing.T) (fifoTally, int, int) {
 	t.Helper()
-	const producers = 8
+	const producers = 64
 	scope := &ResyncScope{GVR: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, Namespace: "app"}
-	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 64)}
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 512)}
 
 	var wg sync.WaitGroup
 	var writes, resyncs atomic.Int64
@@ -429,7 +460,9 @@ func raceWritesAndResyncsOnOneScope(t *testing.T) (fifoTally, int, int) {
 
 	tally := fifoTally{queued: int(writes.Load())}
 	for len(w.eventQueue) > 0 {
-		if item := <-w.eventQueue; item.Resync != nil {
+		item := <-w.eventQueue
+		tally.order = append(tally.order, item)
+		if item.Resync != nil {
 			tally.markers++
 		} else {
 			tally.writes++
