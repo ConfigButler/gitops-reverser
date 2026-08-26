@@ -426,59 +426,102 @@ That argues for scope-close deleting regardless of `prune.mode`. It should be
 settled explicitly, because a user who set `mode: Never` may reasonably expect it
 to mean never.
 
-### 7.2.1 Which documents belong to a closed stream
+### 7.2.1 Coverage, not per-scope close sweeps
 
-The mechanism exists and needs no inventory. Membership is **content-derived at
-sweep time**: the planner reads the documents present in the GitTarget's subtree,
-resolves each one's identity, and asks the scope:
+The first draft of this section proposed sweeping a closed stream's scope. That
+is the wrong shape. Two problems kill it, and both dissolve under a different
+question.
 
-```go
-func (s *ResyncScope) Matches(ri types.ResourceIdentifier) bool {
-    if ri.Group != s.GVR.Group || ri.Resource != s.GVR.Resource { return false }
-    return s.Namespace == "" || ri.Namespace == s.Namespace
-}
-```
+**Problem one: overlapping scopes are real and deliberate.** A cluster-wide
+stream (`namespace: ""`) is a peer of a named-namespace stream on the same GVR,
+never a replacement for it. `ResyncScope.Matches` treats an empty namespace as
+*every* namespace, so an empty-desired sweep at `(configmaps, "")` would delete
+documents a surviving `(configmaps, team-a)` stream still owns. Sweeping a closed
+scope would need to subtract the survivors' scopes, which is fiddly and easy to
+get wrong in exactly the direction that deletes user data.
 
-Nothing is remembered between syncs, so objects added or deleted while the stream
-was running do not have to be tracked: the sweep reads the tree as it is at the
-moment it runs. A stream close is therefore a scoped resync with an **empty
-desired set**, which the type already anticipates: "empty = pure sweep of a
-removed type".
+**Problem two: a vanished type has no scope to close.** If a CRD is uninstalled,
+its stream disappears without any close event naming it, and its documents resolve
+to nothing. Per-scope sweeping can never reach them, so they accumulate as
+unmanaged content. That is not a small edge: it is a silent, permanent leak in a
+ledger whose whole promise is that it matches the cluster.
 
-Followability does not get in the way either. `MappingFollowable` is a
-**discovery** property (the GVK resolves to a single served resource with the
-needed verbs), not a rule-membership one, so a document does not become
-unsweepable merely because the rule that mirrored it was removed.
+**The better question is coverage.** Instead of "which documents did the closed
+stream own", ask, of every managed document in the folder:
 
-**The trap is overlapping scopes.** A cluster-wide stream (`namespace: ""`) is a
-peer of a named-namespace stream on the same GVR, never a replacement for it, so
-both can be live at once. `Matches` treats an empty namespace as *every*
-namespace, so an empty-desired sweep at scope `(configmaps, "")` matches
-documents that a surviving `(configmaps, team-a)` stream still owns:
+> Is there any live stream that still covers this?
 
 ```mermaid
 flowchart TB
-    subgraph Before["Before"]
-        A["stream: configmaps @ *cluster-wide*"]
-        B["stream: configmaps @ team-a"]
-    end
-    C["close the cluster-wide stream"] --> D{"sweep scope<br/>(configmaps, &quot;&quot;)<br/>desired = empty"}
-    D --> E["matches team-a documents too"]
-    E --> F["<b>deletes documents a live<br/>stream still owns</b>"]
+    W["walk the GitTarget subtree"] --> D["for each managed document"]
+    D --> Q{"covered by any<br/>live stream?"}
+    Q -->|"yes"| K["keep"]
+    Q -->|"no"| S["<b>sweep</b>"]
+
+    R1["rule removed"] -.->|"stream gone"| Q
+    R2["CRD uninstalled"] -.->|"type left the table"| Q
+    R3["overlapping peer<br/>still live"] -.->|"still covers it"| Q
 ```
 
-So a close sweep cannot use the closed stream's scope naively. It has to sweep
-the closed scope **minus what the surviving streams still cover**, either by
-subtracting the remaining scopes or by passing the survivors' desired sets rather
-than an empty one. This is the sharpest edge in §7.2 and needs to be explicit in
-the implementation, with a test that keeps a narrower stream alive while a wider
-one closes.
+One rule handles all three cases: a removed rule, an uninstalled type, and an
+overlapping peer that keeps a document alive. No scope subtraction, no close
+event required, nothing accumulating silently.
 
-**A second edge**: a document whose GVK no longer resolves (its CRD was
-uninstalled in the same change) is not followable, so it is not swept. It stays
-in Git as unmanaged content. That is consistent with acceptance never pruning
-what it cannot resolve, but it does mean "nothing is left lying around" has an
-exception when a type disappears at the same time as its rule.
+### 7.2.2 The check is cheap, and the data is already there
+
+`WatchedType` already carries both identities:
+
+```go
+type WatchedType struct {
+    GVK          schema.GroupVersionKind
+    GVR          schema.GroupVersionResource
+    NamespaceOps map[string]OperationSet   // "" key = cluster-wide
+}
+```
+
+So coverage is a map lookup per document, keyed on **GVK**, with the namespace
+rule that already exists:
+
+```text
+covered(doc) := some WatchedType wt where
+    wt.GVK.Group == doc.group && wt.GVK.Kind == doc.kind
+    && (wt.NamespaceOps has "" || wt.NamespaceOps has doc.namespace)
+```
+
+Keying on GVK rather than the resolved GVR is what makes the uninstalled-CRD case
+work **without discovery and without provenance markers**. The document carries
+its own `apiVersion` and `kind`; the table carries the Kind recorded when the
+stream was declared. Nothing has to be resolved at sweep time, so a type that no
+longer exists matches nothing and is swept.
+
+This matters because we deliberately write **no provenance marker** into mirrored
+documents: the mirror is meant to read as hand-authored YAML, and a committed
+tracking annotation is actively harmful. Coverage-by-GVK gets the same answer
+without writing anything into the user's files.
+
+`ResyncScope.Matches` is already the single-scope form of this predicate. What is
+missing is the any-of form over the whole live set.
+
+### 7.2.3 The risk this creates, and the gate it needs
+
+"Delete every managed document no live stream covers" is the most destructive
+operation in the system. Its blast radius is the entire GitTarget folder, and it
+is wrong in the dangerous direction whenever the stream table is **incomplete**
+rather than narrower by intent: a controller still starting, discovery not yet
+ready, rules not yet loaded, a source cluster briefly unreachable.
+
+This is the same hazard the deletion-safety design already names, one level up: a
+set that is complete-looking but gathered against the wrong boundary. There, the
+protection is that an incomplete gather enqueues no resync at all, so an outage
+stops a sweep rather than shrinking one. Coverage sweeping needs the equivalent
+property, stated explicitly:
+
+- the sweep runs only when the declared stream table is **known complete** for the
+  target (discovery ready, rules resolved, source cluster reachable);
+- anything less runs no sweep, rather than a sweep against a partial table.
+
+That gate, not the matching, is the real work in this proposal. The matching is a
+map lookup.
 
 ### 7.3 Changes that are not stream-shaped (already answered)
 
@@ -555,9 +598,11 @@ flowchart LR
    can carry its own forward (§7.1).
 3. **The payoff.** Diff the stream set on a declaration change, so blast radius is
    proportional to the edit (§6).
-4. **Decided, one detail open.** A removed WatchRule sweeps its scope; a deleted
-   GitTarget retains its folder (§7.2). What remains is how that sweep relates to
-   `spec.prune.mode`, whose `OnEvent` default would suppress it.
+4. **Decided, two details open.** A removed WatchRule sweeps what it owned; a
+   deleted GitTarget retains its folder (§7.2). The sweep is expressed as
+   coverage over the whole folder rather than per closed scope (§7.2.1), which
+   needs a completeness gate (§7.2.3) and an answer on `spec.prune.mode`, whose
+   `OnEvent` default would suppress it.
 
 The writes stay a log throughout. The dirty-set sketch that earlier occupied §6
 is superseded: leaning on `sendInitialEvents` keeps the gather inside the stream,
