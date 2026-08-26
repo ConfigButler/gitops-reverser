@@ -80,11 +80,11 @@ func renderReconcileCommitMessage(
 		Revision:  revision,
 	}
 	if scope != nil {
-		data.Group = scope.GVR.Group
-		data.Version = scope.GVR.Version
-		data.Resource = scope.GVR.Resource
-		data.APIVersion = buildAPIVersion(scope.GVR.Group, scope.GVR.Version)
-		data.Namespace = scope.Namespace
+		data.Group = scope.Cell.Group
+		data.Version = scope.Version
+		data.Resource = scope.Cell.Resource
+		data.APIVersion = buildAPIVersion(scope.Cell.Group, scope.Version)
+		data.Namespace = scope.Cell.Namespace
 	}
 	return renderCommitTemplate("reconcile", config.Message.ReconcileTemplate, data)
 }
@@ -151,10 +151,10 @@ func ValidateCommitConfig(config CommitConfig) error {
 	// or pins the {{.Revision}} is exercised at admission exactly as a per-type reconcile renders it.
 	// The sample scope names a namespace so a template referencing {{.Namespace}} — populated
 	// only by a namespace-scoped reconcile — is validated here too.
-	sampleScope := ResyncScope{
-		GVR:       schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
-		Namespace: "example-namespace",
-	}
+	sampleScope := ResyncScopeFor(
+		schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
+		"example-namespace",
+	)
 	if _, err := renderReconcileCommitMessage(1, "example-target", &sampleScope, "12345", config); err != nil {
 		return err
 	}

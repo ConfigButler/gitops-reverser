@@ -333,22 +333,40 @@ type WorkItem struct {
 }
 
 // ResyncScope restricts a resync's mark-and-sweep to the slice of the mirror the desired
-// snapshot was actually gathered over. GVR names the type; Namespace, when non-empty,
-// further restricts the sweep to that one namespace.
+// snapshot was actually gathered over: one cell, and the served version that cell was
+// gathered at.
 //
 // The invariant this type exists to hold: THE SWEEP SCOPE MUST BE EXACTLY THE SCOPE THE
 // DESIRED SET WAS GATHERED OVER. A desired set narrower than its sweep scope deletes
 // managed documents that were never in scope; a desired set wider than its sweep scope
-// silently leaves documents unmanaged. Namespace lives here, next to GVR, precisely so a
-// per-namespace replay cannot reach the sweep carrying only its type — the defect fixed in
-// docs/design/watchrule-source-namespace/pr1-namespace-scoped-resync.md, where a replay of
-// one namespace swept every other namespace's documents of the same type.
-//
-// An empty Namespace is a genuinely cluster-wide (all-namespaces) scope for the type, which
-// is what a ClusterWatchRule's cluster-wide stream gathers.
+// silently leaves documents unmanaged. The namespace lives inside the cell, next to the
+// type, precisely so a per-namespace replay cannot reach the sweep carrying only its type —
+// the defect fixed in docs/design/watchrule-source-namespace/pr1-namespace-scoped-resync.md,
+// where a replay of one namespace swept every other namespace's documents of the same type.
 type ResyncScope struct {
-	GVR       schema.GroupVersionResource
-	Namespace string
+	// Cell is the sweep boundary and the scope's identity: group, resource, namespace.
+	Cell types.CellKey
+	// Version is the served version the desired set was gathered at. It is DATA, not
+	// identity: it renders the reconcile commit message's {{.APIVersion}} and names the
+	// version a snapshot came from in logs, and it is deliberately absent from the cell
+	// key, so a scope always round-trips to the boundary it sweeps (types.CellKey).
+	Version string
+}
+
+// ResyncScopeFor builds a scope from the served GVR a snapshot was gathered with and the
+// namespace it was gathered in. It is the only constructor: going through it is what keeps
+// the version on the data side of the type and out of the identity.
+func ResyncScopeFor(gvr schema.GroupVersionResource, namespace string) ResyncScope {
+	return ResyncScope{Cell: types.CellKeyFor(gvr, namespace), Version: gvr.Version}
+}
+
+// GVR reconstructs the served GroupVersionResource this scope was gathered with, for the
+// callers that must talk to the API machinery in its own terms.
+func (s *ResyncScope) GVR() schema.GroupVersionResource {
+	if s == nil {
+		return schema.GroupVersionResource{}
+	}
+	return schema.GroupVersionResource{Group: s.Cell.Group, Version: s.Version, Resource: s.Cell.Resource}
 }
 
 // String renders the scope for logs and for the deferred-heal key. It is nil-safe: a nil
@@ -357,23 +375,17 @@ func (s *ResyncScope) String() string {
 	if s == nil {
 		return ""
 	}
-	if s.Namespace == "" {
-		return s.GVR.String()
-	}
-	return s.GVR.String() + " in " + s.Namespace
+	return s.Cell.String()
 }
 
 // Matches reports whether a resolved resource identity falls inside this scope. A nil scope
-// matches everything (whole-GitTarget resync). An empty Namespace matches every namespace
+// matches everything (whole-GitTarget resync). An empty namespace matches every namespace
 // for the type.
 func (s *ResyncScope) Matches(ri types.ResourceIdentifier) bool {
 	if s == nil {
 		return true
 	}
-	if ri.Group != s.GVR.Group || ri.Resource != s.GVR.Resource {
-		return false
-	}
-	return s.Namespace == "" || ri.Namespace == s.Namespace
+	return s.Cell.Matches(ri)
 }
 
 // ResyncRequest is a synchronous resync of one GitTarget against a complete,
@@ -436,7 +448,7 @@ type pendingResync struct {
 func resyncKeyFor(request *ResyncRequest) resyncKey {
 	key := resyncKey{namespace: request.GitTargetNamespace, name: request.GitTargetName}
 	if request.Scope != nil {
-		key.scope = request.Scope.GVR.String() + "|" + request.Scope.Namespace
+		key.scope = request.Scope.Cell.String()
 	}
 	return key
 }

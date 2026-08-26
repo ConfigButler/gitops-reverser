@@ -6,22 +6,9 @@ import (
 	"sort"
 	"sync"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
-
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
-
-// RenderFidelityScope is one independently replayed target-watch scope. Namespace is part of the
-// key: a namespaced GitTarget can watch the same GVR in more than one namespace.
-type RenderFidelityScope struct {
-	GVR       schema.GroupVersionResource
-	Namespace string
-}
-
-func (s RenderFidelityScope) key() string {
-	return s.GVR.String() + "|" + s.Namespace
-}
 
 // RenderFidelityState is the three-state result of a complete render-vs-live epoch.
 type RenderFidelityState string
@@ -70,11 +57,13 @@ func NewRenderFidelityGate() *RenderFidelityGate {
 	return &RenderFidelityGate{targets: map[string]renderFidelityTargetState{}}
 }
 
-// Begin starts a new epoch for target and replaces the complete scope set. It returns Unknown
+// Begin starts a new epoch for target and replaces the complete scope set. A scope is one
+// independently replayed target-watch cell, so the namespace is part of it: a GitTarget can
+// watch one type in more than one namespace, and each reports its own result. It returns Unknown
 // when scopes are pending, or True for the vacuous zero-scope case.
 func (g *RenderFidelityGate) Begin(
 	target types.ResourceReference,
-	scopes []RenderFidelityScope,
+	scopes []types.CellKey,
 ) RenderFidelityStatus {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -85,7 +74,7 @@ func (g *RenderFidelityGate) Begin(
 	state.epoch++
 	state.scopes = make(map[string]renderFidelityScopeResult, len(scopes))
 	for _, scope := range scopes {
-		state.scopes[scope.key()] = renderFidelityScopeResult{}
+		state.scopes[scope.String()] = renderFidelityScopeResult{}
 	}
 	g.targets[target.Key()] = state
 	return reduceRenderFidelity(state)
@@ -96,7 +85,7 @@ func (g *RenderFidelityGate) Begin(
 func (g *RenderFidelityGate) RecordScopeClean(
 	target types.ResourceReference,
 	epoch uint64,
-	scope RenderFidelityScope,
+	scope types.CellKey,
 ) (RenderFidelityStatus, bool) {
 	return g.recordScope(target, epoch, scope, nil)
 }
@@ -106,7 +95,7 @@ func (g *RenderFidelityGate) RecordScopeClean(
 func (g *RenderFidelityGate) RecordScopeDivergence(
 	target types.ResourceReference,
 	epoch uint64,
-	scope RenderFidelityScope,
+	scope types.CellKey,
 	divergence manifestanalyzer.RenderDivergence,
 ) (RenderFidelityStatus, bool) {
 	return g.recordScope(target, epoch, scope, &divergence)
@@ -115,7 +104,7 @@ func (g *RenderFidelityGate) RecordScopeDivergence(
 func (g *RenderFidelityGate) recordScope(
 	target types.ResourceReference,
 	epoch uint64,
-	scope RenderFidelityScope,
+	scope types.CellKey,
 	divergence *manifestanalyzer.RenderDivergence,
 ) (RenderFidelityStatus, bool) {
 	g.mu.Lock()
@@ -124,7 +113,7 @@ func (g *RenderFidelityGate) recordScope(
 	if !found || state.epoch != epoch {
 		return RenderFidelityStatus{}, false
 	}
-	result, found := state.scopes[scope.key()]
+	result, found := state.scopes[scope.String()]
 	if !found {
 		return RenderFidelityStatus{}, false
 	}
@@ -136,7 +125,7 @@ func (g *RenderFidelityGate) recordScope(
 	result.finished = true
 	result.clean = divergence == nil
 	result.divergence = divergence
-	state.scopes[scope.key()] = result
+	state.scopes[scope.String()] = result
 	g.targets[target.Key()] = state
 	return reduceRenderFidelity(state), true
 }

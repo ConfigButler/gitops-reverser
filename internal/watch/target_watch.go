@@ -62,6 +62,15 @@ type targetWatchKey struct {
 	Namespace string
 }
 
+// Cell is this stream's identity everywhere it crosses a subsystem boundary: the sweep scope
+// its replay runs under, the render-fidelity scope it reports into, and the provenance stamped
+// on the work it queues. The served version stays on the key — a stream has to open a watch
+// with a concrete version — but it is not part of the cell, so the key always round-trips to
+// the boundary it sweeps (docs/design/target-watch-plan.md §1.1).
+func (k targetWatchKey) Cell() types.CellKey {
+	return types.CellKeyFor(k.GVR, k.Namespace)
+}
+
 // EnsureGitTargetWatches makes the GitTarget's raw watch set match its current
 // claimed, followable (GVR, scope) table. Each watch resumes from its stored
 // cursor when possible; otherwise it initializes with sendInitialEvents and a

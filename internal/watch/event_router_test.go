@@ -98,7 +98,7 @@ func TestEnqueueScopedResync_ReportsMissingWorker(t *testing.T) {
 	resultCh, enqueued, err := router.enqueueScopedResync(
 		context.Background(),
 		types.NewResourceReference("team-a-config", "team-a"),
-		git.ResyncScope{GVR: configmapsGVR},
+		git.ResyncScopeFor(configmapsGVR, ""),
 		nil,
 		"12",
 		false,
@@ -125,7 +125,7 @@ func TestEnqueueScopedResync_ReportsGoneGitTargetAsTerminal(t *testing.T) {
 	_, enqueued, err := router.enqueueScopedResync(
 		context.Background(),
 		types.NewResourceReference("deleted-target", "team-a"),
-		git.ResyncScope{GVR: configmapsGVR},
+		git.ResyncScopeFor(configmapsGVR, ""),
 		nil,
 		"12",
 		false,

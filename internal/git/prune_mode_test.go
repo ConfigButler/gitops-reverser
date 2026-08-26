@@ -168,7 +168,7 @@ func worktreeHoldsDocumentNamed(t *testing.T, root, name string) bool {
 // would leave a live deletion path uncontrolled. Production only ever issues the scoped shape,
 // which is precisely why the unscoped one is the easy one to forget.
 func TestPrune_RetentionIsIdenticalUnderEveryResyncShape(t *testing.T) {
-	scope := &ResyncScope{GVR: configmapsGVRForScope, Namespace: "default"}
+	scope := resyncScopePtr(configmapsGVRForScope, "default")
 
 	for _, tc := range []struct {
 		name  string

@@ -223,7 +223,7 @@ func (r *EventRouter) enqueueScopedResync(
 // stream gathered, and the namespace its sweep may touch — are derived from ONE value and
 // cannot drift apart at a call site.
 func resyncScopeForWatchKey(key targetWatchKey) git.ResyncScope {
-	return git.ResyncScope{GVR: key.GVR, Namespace: key.Namespace}
+	return git.ResyncScopeFor(key.GVR, key.Namespace)
 }
 
 // drainScopedResync logs a per-type reconcile/sweep's outcome and, on failure or timeout,

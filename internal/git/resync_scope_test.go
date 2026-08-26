@@ -19,6 +19,13 @@ import (
 
 var configmapsGVRForScope = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
 
+// resyncScopePtr is the pointer form of ResyncScopeFor, for the many call sites that pass a
+// scope as the optional *ResyncScope a request carries.
+func resyncScopePtr(gvr schema.GroupVersionResource, namespace string) *ResyncScope {
+	scope := ResyncScopeFor(gvr, namespace)
+	return &scope
+}
+
 // cmManifestIn renders a ConfigMap in an explicit namespace, so a test can seed the same
 // type in two namespaces and prove a scoped sweep touches only one of them.
 func cmManifestIn(name, namespace, color string) string {
@@ -66,21 +73,21 @@ func TestResyncScope_MatchesRespectsTypeAndNamespace(t *testing.T) {
 		},
 		{
 			name:  "an empty namespace is an all-namespaces scope for the type",
-			scope: &ResyncScope{GVR: configmapsGVRForScope}, id: cmInTeamB, matches: true,
+			scope: resyncScopePtr(configmapsGVRForScope, ""), id: cmInTeamB, matches: true,
 		},
 		{
 			name:  "a named namespace matches its own namespace",
-			scope: &ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}, id: cmInTeamA, matches: true,
+			scope: resyncScopePtr(configmapsGVRForScope, "team-a"), id: cmInTeamA, matches: true,
 		},
 		{
 			name: "a named namespace does NOT match a sibling namespace",
 			// This single row is the defect: before the namespace half existed, this
 			// returned true and the sibling namespace's document was swept.
-			scope: &ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}, id: cmInTeamB, matches: false,
+			scope: resyncScopePtr(configmapsGVRForScope, "team-a"), id: cmInTeamB, matches: false,
 		},
 		{
 			name:  "a sibling type never matches, even in the scoped namespace",
-			scope: &ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}, id: secretInTeamA, matches: false,
+			scope: resyncScopePtr(configmapsGVRForScope, "team-a"), id: secretInTeamA, matches: false,
 		},
 	}
 	for _, tc := range cases {
@@ -94,10 +101,12 @@ func TestResyncScope_StringIsNilSafeAndNamesTheNamespace(t *testing.T) {
 	var nilScope *ResyncScope
 	assert.Empty(t, nilScope.String(), "a whole-GitTarget resync has no scope string")
 
-	allNamespaces := &ResyncScope{GVR: configmapsGVRForScope}
-	assert.Equal(t, configmapsGVRForScope.String(), allNamespaces.String())
+	allNamespaces := resyncScopePtr(configmapsGVRForScope, "")
+	assert.Equal(t, "configmaps", allNamespaces.String(),
+		"the scope renders its cell, which carries no served version: a version bump must not "+
+			"split the deferred-heal key or the coalescing key for one sweep boundary")
 
-	scoped := &ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}
+	scoped := resyncScopePtr(configmapsGVRForScope, "team-a")
 	assert.Contains(t, scoped.String(), "team-a",
 		"the namespace must appear in the scope string: it keys deferred heals, so two "+
 			"namespaces of one type sharing a key would silently drop one heal")
@@ -112,14 +121,14 @@ func TestResyncHealKey_SeparatesNamespacesOfTheSameType(t *testing.T) {
 		return &ResyncRequest{
 			GitTargetName:      "team-a-config",
 			GitTargetNamespace: "default",
-			Scope:              &ResyncScope{GVR: configmapsGVRForScope, Namespace: ns},
+			Scope:              resyncScopePtr(configmapsGVRForScope, ns),
 		}
 	}
 	assert.NotEqual(t, resyncHealKey(req("team-a")), resyncHealKey(req("team-b")),
 		"two namespaces of one type must key separately")
 	assert.Equal(t, healKey{
 		name: "team-a-config", namespace: "default",
-		scope: (&ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}).String(),
+		scope: (resyncScopePtr(configmapsGVRForScope, "team-a")).String(),
 	}, resyncHealKey(req("team-a")),
 		"the key is stable for the same scope, so a re-stashed heal replaces rather than duplicates")
 }
@@ -136,7 +145,7 @@ func TestResync_NamespaceScopedSweepLeavesSiblingNamespacesAlone(t *testing.T) {
 
 	// team-a replays and finds nothing: its namespace is empty at the pinned revision.
 	w := &BranchWorker{contentWriter: writer, mapper: configMapMapper()}
-	scope := &ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}
+	scope := resyncScopePtr(configmapsGVRForScope, "team-a")
 	stats, changed, err := w.applyResyncToWorktree(
 		context.Background(),
 		worktree,
@@ -166,7 +175,7 @@ func TestResync_NamespaceScopedSweepStillDropsOrphansInItsOwnNamespace(t *testin
 	goneFull := seedPlacedManifest(t, worktree, "team-a/gone.yaml", cmManifestIn("gone", "team-a", "green"))
 
 	w := &BranchWorker{contentWriter: writer, mapper: configMapMapper()}
-	scope := &ResyncScope{GVR: configmapsGVRForScope, Namespace: "team-a"}
+	scope := resyncScopePtr(configmapsGVRForScope, "team-a")
 	stats, changed, err := w.applyResyncToWorktree(
 		context.Background(), worktree, "",
 		ResolvedTargetMetadata{PruneMode: v1alpha3.PruneAlways},
@@ -193,7 +202,7 @@ func TestResync_ClusterWideScopeStillSweepsEveryNamespace(t *testing.T) {
 	teamBFull := seedPlacedManifest(t, worktree, "team-b/cm.yaml", cmManifestIn("cfg", "team-b", "green"))
 
 	w := &BranchWorker{contentWriter: writer, mapper: configMapMapper()}
-	scope := &ResyncScope{GVR: configmapsGVRForScope} // no namespace: all-namespaces
+	scope := resyncScopePtr(configmapsGVRForScope, "") // no namespace: all-namespaces
 	stats, changed, err := w.applyResyncToWorktree(
 		context.Background(),
 		worktree,
@@ -210,4 +219,31 @@ func TestResync_ClusterWideScopeStillSweepsEveryNamespace(t *testing.T) {
 	assert.True(t, os.IsNotExist(teamAErr))
 	_, teamBErr := os.Stat(teamBFull)
 	assert.True(t, os.IsNotExist(teamBErr))
+}
+
+// A scope's identity must round-trip to the boundary it sweeps. It did not: the scope carried
+// a full GVR while Matches compared group, resource and namespace only, so two served versions
+// of one resource were two coalescing keys, two deferred-heal keys and two render-fidelity
+// scopes — over one sweep boundary. The version is now data on the scope, and the cell is the
+// identity (docs/design/target-watch-plan.md §1.1).
+func TestResyncScope_ServedVersionIsDataNotIdentity(t *testing.T) {
+	v1 := ResyncScopeFor(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "team-a")
+	v1beta1 := ResyncScopeFor(
+		schema.GroupVersionResource{Group: "apps", Version: "v1beta1", Resource: "deployments"}, "team-a")
+
+	assert.Equal(t, v1.Cell, v1beta1.Cell, "one sweep boundary is one identity")
+	assert.Equal(t, "v1", v1.Version, "the served version survives as data")
+	assert.Equal(t, "v1beta1", v1beta1.Version)
+	assert.Equal(t,
+		schema.GroupVersionResource{Group: "apps", Version: "v1beta1", Resource: "deployments"},
+		v1beta1.GVR(),
+		"and reconstructs the GVR the snapshot was gathered with, for the API machinery")
+
+	request := func(scope ResyncScope) *ResyncRequest {
+		return &ResyncRequest{GitTargetName: "app", GitTargetNamespace: "default", Scope: &scope}
+	}
+	assert.Equal(t, resyncKeyFor(request(v1)), resyncKeyFor(request(v1beta1)),
+		"two snapshots of one boundary must coalesce, not queue two sweeps of each other's documents")
+	assert.Equal(t, resyncHealKey(request(v1)), resyncHealKey(request(v1beta1)),
+		"and park as one deferred heal")
 }

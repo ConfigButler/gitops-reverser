@@ -18,10 +18,10 @@ func (m *Manager) fidelityGate() *git.RenderFidelityGate {
 	return m.EventRouter.WorkerManager.RenderFidelityGate()
 }
 
-func renderFidelityScopes(keys []targetWatchKey) []git.RenderFidelityScope {
-	scopes := make([]git.RenderFidelityScope, 0, len(keys))
+func renderFidelityScopes(keys []targetWatchKey) []types.CellKey {
+	scopes := make([]types.CellKey, 0, len(keys))
 	for _, key := range keys {
-		scopes = append(scopes, git.RenderFidelityScope{GVR: key.GVR, Namespace: key.Namespace})
+		scopes = append(scopes, key.Cell())
 	}
 	return scopes
 }
@@ -78,7 +78,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	status, applied := gate.RecordScopeClean(
 		target,
 		epoch,
-		git.RenderFidelityScope{GVR: key.GVR, Namespace: key.Namespace},
+		key.Cell(),
 	)
 	if applied {
 		m.recordRenderFidelityStatus(target, status)
@@ -97,7 +97,7 @@ func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 		return
 	}
 	status, applied := gate.RecordScopeDivergence(
-		target, epoch, git.RenderFidelityScope{GVR: key.GVR, Namespace: key.Namespace}, divergence)
+		target, epoch, key.Cell(), divergence)
 	if applied {
 		m.recordRenderFidelityStatus(target, status)
 	}
