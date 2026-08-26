@@ -113,22 +113,11 @@ Five more ideas sit beside them.
 
 ## History — [`finished/`](finished/)
 
-Twenty-three shipped plans and closed investigations. **Nothing here binds.** Read one
+Twenty-two shipped plans and closed investigations. **Nothing here binds.** Read one
 only when you want to know *why* something is the way it is; the answer to *what it
 is* always lives in `spec/`.
 
-[`watchrule-source-namespace/`](finished/watchrule-source-namespace/README.md) is the newest
-arrival: five PRs, all landed, that let a WatchRule address differently-named namespaces on its
-source cluster — a deny-by-default `allowedSourceNamespaces` on the **GitTarget**, unlocked by a
-false-by-default delegation flag on the ClusterProvider. Three prerequisite scope fixes (the
-namespace-blind resync sweep that would delete other namespaces' manifests, the cluster-wide/named
-stream collapse, and ClusterWatchRule's unchecked GitTarget attachment), then the breaking
-**scope-by-kind** change and the `prune.mode` that makes the resync sweep opt-in, released
-together. It stays readable because open work still rests on it: the sweep-scope invariant, the
-peer-scope rule, and the retention-versus-deletion recommendation are all cited by
-[`target-watch-plan.md`](design/target-watch-plan.md).
-
-The newest closed investigation is
+The newest is
 [`attribution-fact-stream.md`](finished/attribution-fact-stream.md): why attribution facts stopped
 being a keyspace the watch side polls and became a per-type log it follows into a bounded in-memory
 index. It deleted the `SET`/`GET` fact keys, the 150ms poll loop, and the `deletecollection`

@@ -5,9 +5,6 @@ related:
   - watch-and-catalog-architecture.md
   - data-plane-triggering.md
   - ../spec/type-lifecycle-events-and-wobble-settling.md
-  - ../finished/watchrule-source-namespace/pr1-namespace-scoped-resync.md
-  - ../finished/watchrule-source-namespace/pr2-stream-scope-collapse.md
-  - ../finished/watchrule-source-namespace/pr5-gittarget-deletion-safety.md
 ---
 
 # TargetWatchPlan: incremental stream reconciliation
@@ -185,12 +182,22 @@ the ledger stands).
 Two things stand in the way, and both need an explicit decision rather than an
 implementation choice.
 
-**It contradicts a shipped recommendation.**
-[Namespace-scoped resync](../finished/watchrule-source-namespace/pr1-namespace-scoped-resync.md)
-states, under "Revocation leaves prior content, a decision, not an oversight":
-*"Recommended: retain, and make it visible."* If intent-driven removal now
-deletes, this document supersedes that recommendation and must say so in the same
-words, so a reader of the older page is not misled.
+**It reverses a decision already taken.** Stopping a stream does not remove what
+it already wrote: when a namespace leaves a watch set — a policy change, a rule
+deletion, a revoked label — its documents stay in Git unless the target selects
+sweep pruning. That was decided deliberately when namespace scoping shipped, and
+the reasons still hold. Deleting a tenant's manifests as a side effect of a
+policy edit is destructive, hard to undo in the moment, and a typo in a selector
+is enough to trigger it; retention is also the safe direction under the failure
+mode `prune.mode` exists for, because a selector that could not be read must
+never present as an empty allow-list that authorises a sweep. The cost was
+accepted with eyes open: after a revocation Git holds documents from a namespace
+the policy no longer admits, and removing them is a deliberate operator action.
+
+If intent-driven removal now deletes, this document reverses that, and the
+reversal has to be stated where users read it
+([`configuration.md`](../configuration.md), deletion policy) rather than only
+here.
 
 **It changes an API contract.** `spec.prune.mode` is documented as: `Never`
 suppresses all deletes, `OnEvent` (the default) mirrors only observed DELETE
@@ -275,10 +282,11 @@ the events behind it cannot be separated. That argument was stated as though
 ordering were purely intra-stream. It is not:
 
 - **Overlapping streams are concurrent peers.** A cluster-wide stream and a
-  named-namespace stream on one GVR both deliver the same object, on two
-  goroutines, as
-  [stream scope collapse](../finished/watchrule-source-namespace/pr2-stream-scope-collapse.md)
-  records. Their relative order is not guaranteed by the apiserver.
+  named-namespace stream on one GVR are separate cells and both run, each with
+  its own operation filter — collapsing them to one wide stream silently widened
+  the named rule and discarded its filter, so it may not be re-collapsed here.
+  Both therefore deliver the same object, on two goroutines, and their relative
+  order is not guaranteed by the apiserver.
 - **A restart re-enters the same scope.** The principal `restart` case produces a
   second snapshot for a scope whose earlier events may still be queued.
 

@@ -5,8 +5,6 @@ related:
   - target-watch-plan.md
   - reconcile-triggering.md
   - watch-and-catalog-architecture.md
-  - ../finished/watchrule-source-namespace/pr2-stream-scope-collapse.md
-  - ../finished/watchrule-source-namespace/pr5-gittarget-deletion-safety.md
   - ../spec/reconcile-via-watchlist-mark-and-sweep.md
   - ../spec/type-lifecycle-events-and-wobble-settling.md
 ---
@@ -419,19 +417,19 @@ is the mechanism this note's §4 depends on.
 [Watch event ordering under the attribution grace window](../facts/watch-event-ordering-and-attribution-grace.md)
 has the worked examples behind the ordering claims.
 
-**Scopes and streams.**
-[Namespace-scoped resync](../finished/watchrule-source-namespace/pr1-namespace-scoped-resync.md)
-and [stream scope collapse](../finished/watchrule-source-namespace/pr2-stream-scope-collapse.md)
-established the per-scope stream model and why a cluster-wide scope is a peer of a
-named one rather than a replacement. That is the overlap
-[TargetWatchPlan](target-watch-plan.md) §3 has to handle.
+**Scopes and streams.** The per-scope stream model is older than this note: a
+sweep is bounded by the exact slice its snapshot was gathered over, and a
+cluster-wide scope is a **peer** of a named namespace rather than a replacement
+for it, because collapsing the two widened the named rule's stream to every
+namespace the credential could read and discarded its operation filter. That
+overlap is what [TargetWatchPlan](target-watch-plan.md) §3 has to handle.
 
-**Deletion and retention.**
-[GitTarget deletion safety](../finished/watchrule-source-namespace/pr5-gittarget-deletion-safety.md)
-draws the line between observed evidence and inferred deletion, which is the line
-a scope close has to be placed against.
-[Retention visibility](../finished/watchrule-source-namespace/pr5-retention-visibility.md)
-makes a suppressed sweep observable.
+**Deletion and retention.** The line a scope close has to be placed against is
+already drawn by `spec.prune.mode`
+([`../configuration.md`](../configuration.md), deletion policy): an observed
+DELETE is source-cluster evidence, a mark-and-sweep drop is an inference, and
+only the second is gated. `status.retention` is what makes a suppressed sweep
+visible instead of silent.
 
 **Types and identity.**
 [Type lifecycle events and wobble settling](../spec/type-lifecycle-events-and-wobble-settling.md)

@@ -80,14 +80,12 @@ This file is meant to track the smaller current backlog, not historical notes.
   `targetWatchSpecs` opens one stream per cell — one type in one namespace — while
   `git.ResyncScope` names a single namespace, so a wildcard over N admitted namespaces and M
   matched types costs N×M informers and
-  N×M resync scopes, where a cluster-wide ClusterWatchRule costs M. Expansion is deliberate (it is
-  what keeps the mark-and-sweep scope narrow, per
-  [pr1-namespace-scoped-resync.md](finished/watchrule-source-namespace/pr1-namespace-scoped-resync.md)),
+  N×M resync scopes, where a cluster-wide ClusterWatchRule costs M. Expansion is deliberate — one
+  stream per namespace is what keeps each mark-and-sweep bounded by exactly the slice it gathered —
   but the cost grows with tenant count. The direction is a cluster-wide stream whose resync scope
   carries a namespace **set** rather than one name, so the gather stays exactly as narrow while the
   stream count drops to M. Also revisit `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap
-  stops being representative at N×M. Context:
-  [pr4-cluster-scope-only.md § wildcard fan-out](finished/watchrule-source-namespace/pr4-cluster-scope-only.md#7-wildcard-fan-out-is-an-accepted-cost).
+  stops being representative at N×M.
 
 - [ ] Re-enable the `goconst` linter with a path-scoped exclusion instead of the current repo-wide
   disable in [.golangci.yml](../.golangci.yml). Exempting `test/` and `internal/git/commit.go`
