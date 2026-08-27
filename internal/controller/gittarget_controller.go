@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"filippo.io/age"
@@ -102,6 +103,19 @@ const (
 	encryptionSecretBackupWarningValue = "REMOVE_AFTER_BACKUP"
 )
 
+// declareTraceAttempt numbers reconcile attempts for the temporary declare trace.
+//
+//nolint:gochecknoglobals // temporary diagnostic; removed with the trace itself.
+var declareTraceAttempt atomic.Uint64
+
+// errText renders an error for the temporary declare trace without a nil check at each site.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 // GitTargetReconciler reconciles a GitTarget object.
 type GitTargetReconciler struct {
 	client.Client
@@ -129,6 +143,16 @@ func newGitTargetReadiness() *readiness {
 // Reconcile validates GitTarget references and drives startup lifecycle gates.
 func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("GitTargetReconciler")
+
+	// TEMPORARY DIAGNOSTIC (see E2E-DECLARE-INVESTIGATION.md). A GitTarget was observed
+	// registering its event stream and then never declaring a watch plan, with no error and no
+	// log in between. These paired phase lines name every step of one reconcile ATTEMPT so a
+	// stuck one can be told from one that never ran. Delete once the cause is known.
+	attempt := declareTraceAttempt.Add(1)
+	trace := log.WithName("declare-trace").WithValues(
+		"attempt", attempt, "gitTarget", req.Namespace+"/"+req.Name)
+	trace.Info("phase", "at", "reconcile-begin")
+	defer trace.Info("phase", "at", "reconcile-return")
 
 	var target configbutleraiv1alpha3.GitTarget
 	if err := r.Get(ctx, req.NamespacedName, &target); err != nil {
@@ -179,7 +203,9 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Ensure the branch worker exists and register the GitTarget's event stream before declaring
 	// streams. The watch data plane can route live events as soon as it reaches Streaming, so the
 	// destination worker must already be wired.
+	trace.Info("phase", "at", "worker-wiring-begin")
 	wired, wiringMessage := r.evaluateWorkerWiringGate(&target, providerNS, log)
+	trace.Info("phase", "at", "worker-wiring-end", "wired", wired)
 	if !wired {
 		return r.stall(ctx, st, blockedGate{
 			reason:  GitTargetReadyReasonWorkerUnavailable,
@@ -190,12 +216,16 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// One read of the source ClusterProvider serves everything below it: the audit route captured on
 	// Declare and the ClusterProviderReady projection. Reading it twice invited the two to disagree.
+	trace.Info("phase", "at", "resolve-source-provider-begin")
 	sourceProvider, sourceProviderErr := r.resolveSourceClusterProvider(ctx, &target)
+	trace.Info("phase", "at", "resolve-source-provider-end", "err", errText(sourceProviderErr))
 	if sourceProviderErr != nil {
 		return ctrl.Result{}, sourceProviderErr
 	}
 
+	trace.Info("phase", "at", "observe-data-plane-begin")
 	observed := r.observeDataPlane(ctx, &target, sourceProvider, gitPathWasRefused, log)
+	trace.Info("phase", "at", "observe-data-plane-end", "declareFailed", observed.declareFailed)
 	st.setValue(GitTargetConditionStreamsRunning, observed.axes.Streams)
 	st.setValue(GitTargetConditionGitPathAccepted, observed.axes.GitPath)
 	st.setValue(GitTargetConditionRenderMatchesLive, observed.axes.Render)

@@ -4,6 +4,7 @@ package watch
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -245,8 +246,9 @@ func TestReplaceGitTargetWatches_LogsAnAllKeepReconcileAndTouchesNothing(t *test
 	require.NoError(t, manager.replaceGitTargetWatches(context.Background(), table))
 
 	require.Equal(t, 1, countContaining(*lines, "target watch plan reconciled"))
-	assert.Contains(t, (*lines)[0], `"keep"=1`)
-	assert.Contains(t, (*lines)[0], `"keepCells"="configmaps in apps=[CREATE]@v1"`)
+	planLine := firstContaining(t, *lines, "target watch plan reconciled")
+	assert.Contains(t, planLine, `"keep"=1`)
+	assert.Contains(t, planLine, `"keepCells"="configmaps in apps=[CREATE]@v1"`)
 	assert.False(t, cancelled, "a kept cell's stream must not be cancelled")
 }
 
@@ -301,4 +303,17 @@ func TestTargetWatchSet_StopCancelsOneCellAndStopAllTheRest(t *testing.T) {
 	set.stopAll()
 	assert.True(t, stopped["team-b"])
 	assert.Empty(t, set.streams)
+}
+
+// firstContaining returns the first recorded log line containing substr, so an assertion does not
+// depend on how many other lines the call emitted.
+func firstContaining(t *testing.T, lines []string, substr string) string {
+	t.Helper()
+	for _, line := range lines {
+		if strings.Contains(line, substr) {
+			return line
+		}
+	}
+	t.Fatalf("no log line containing %q", substr)
+	return ""
 }

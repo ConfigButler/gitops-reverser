@@ -151,10 +151,19 @@ func (m *Manager) EnsureGitTargetWatches(
 	// single GitTarget controller worker) blocks on an UNREACHABLE other cluster's full dial
 	// timeout, starving that healthy target's status. Cross-cluster catalog freshness and every
 	// cluster's SourceClusterReachable ride the background RefreshAPIResourceCatalog loop instead.
+	// TEMPORARY DIAGNOSTIC (see E2E-DECLARE-INVESTIGATION.md): the catalog refresh below is a
+	// synchronous discovery call, and for a LOCAL cluster it carries no request timeout
+	// (cluster_context.go applies one only when !isLocalLocked), so it can block unbounded.
+	trace := m.Log.WithName("declare-trace").WithValues("gitDest", gitDest.String())
+	trace.Info("phase", "at", "ensure-watches-begin")
+	trace.Info("phase", "at", "refresh-cluster-begin")
 	if err := m.refreshClusterForDeclare(ctx, m.clusterIDForGitTarget(gitDest)); err != nil {
+		trace.Info("phase", "at", "refresh-cluster-error", "err", err.Error())
 		return fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
 	}
+	trace.Info("phase", "at", "refresh-cluster-end")
 	m.refreshWatchedTypeTables()
+	trace.Info("phase", "at", "refresh-tables-end")
 	if !m.registryForGitTarget(gitDest).Ready() {
 		return fmt.Errorf("aborting watch setup for %s: the cluster API surface has not been observed yet",
 			gitDest.String())
@@ -166,6 +175,7 @@ func (m *Manager) EnsureGitTargetWatches(
 			gitDest.String(), gvkListSummary(retained))
 	}
 	force := len(forceRecheck) > 0 && forceRecheck[0]
+	trace.Info("phase", "at", "replace-watches-begin", "cells", len(table.Types))
 	return m.replaceGitTargetWatches(ctx, table, force)
 }
 
@@ -185,7 +195,13 @@ func (m *Manager) replaceGitTargetWatches(
 		return fmt.Errorf("build the watch plan for %s: %w", table.GitDest.String(), err)
 	}
 
+	// TEMPORARY DIAGNOSTIC (see E2E-DECLARE-INVESTIGATION.md): change 2 cancels streams and takes
+	// the render-fidelity gate's lock while holding targetWatchesMu, so contention here is a
+	// hypothesis worth being able to see rather than infer.
+	trace := m.Log.WithName("declare-trace").WithValues("gitDest", table.GitDest.String())
+	trace.Info("phase", "at", "watches-mutex-acquire")
 	m.targetWatchesMu.Lock()
+	trace.Info("phase", "at", "watches-mutex-held")
 	set := m.targetWatchSetLocked(table.GitDest)
 	previous := set.plan()
 	diff := diffTargetWatchPlans(previous, desired, force)
@@ -204,6 +220,7 @@ func (m *Manager) replaceGitTargetWatches(
 	revisions, fidelityChanged := m.reconcileTargetRenderFidelityLocked(table.GitDest, cells, starting)
 	started := m.startTargetWatchStreamsLocked(ctx, set, keysByCell(keys), streams, specs, revisions, starting)
 	m.targetWatchesMu.Unlock()
+	trace.Info("phase", "at", "watches-mutex-released")
 
 	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(cells, revisions))
 	if fidelityChanged {

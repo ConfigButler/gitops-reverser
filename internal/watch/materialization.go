@@ -31,6 +31,10 @@ func (m *Manager) DeclareForGitTarget(
 	// the data plane keys its resume cursors by GitTarget UID, resolves rules/opens watches against
 	// the captured cluster's context, and reads author facts under the captured route — none of
 	// which the rule-derived watch tables carry.
+	// TEMPORARY DIAGNOSTIC (see E2E-DECLARE-INVESTIGATION.md).
+	trace := m.Log.WithName("declare-trace").WithValues("gitDest", gitDest.String())
+	trace.Info("phase", "at", "declare-begin", "clusterID", describeCluster(clusterID))
+	defer trace.Info("phase", "at", "declare-return")
 	m.rememberGitTargetUID(gitDest)
 	m.rememberGitTargetCluster(gitDest, clusterID)
 	m.rememberClusterAuditRoute(clusterID, auditRoute)
