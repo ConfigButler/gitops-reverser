@@ -224,6 +224,14 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 	requeue := gitTargetRequeue(rd)
+	// A status write that lost a race leaves the object holding the WINNER's older answer, and
+	// nothing re-enqueues it: the For() predicate filters status-only updates by design. Coming
+	// back on the converged five-minute cadence is what left a converged GitTarget — and every
+	// WatchRule copying its Ready — reporting "Rechecking" long past any test or operator's
+	// patience (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+	if st.writeLost() {
+		requeue = RequeueStreamSettleInterval
+	}
 	// TEMPORARY at Info, while Failure A is open. The data plane can converge and this status not
 	// follow it: a run has shown the render gate reaching True and both this GitTarget and every
 	// WatchRule on it still publishing "Rechecking" two minutes later, with no dropped reconcile
@@ -231,6 +239,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// place that can say what it published and how long it intends to wait before saying anything
 	// again (docs/design/watch-plane-status-convergence-failures.md, §2.10).
 	log.Info("GitTarget status published",
+		"writeLost", st.writeLost(),
 		"gitTarget", target.Namespace+"/"+target.Name,
 		"render", string(observed.axes.Render.Status)+"/"+observed.axes.Render.Reason,
 		"streams", observed.streams.Summary(),

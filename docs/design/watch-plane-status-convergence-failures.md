@@ -1,6 +1,6 @@
 # Status convergence failures on the watch-plane rework
 
-**Open, and much better instrumented.** Two reproducible failures on
+**Failure A solved; Failure B open.** Two reproducible failures on
 `feat/target-watch-cell-identity` (PR #315), both in status the branch's own rework produces, plus
 an inventory of what is ambient and must not be confused with them. Written so a fresh context can
 continue without re-deriving anything.
@@ -26,7 +26,7 @@ about themselves than they did.
 
 | # | Symptom | Seen | Verdict |
 | --- | --- | --- | --- |
-| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 5× (CI 4×, local once) | **Shape solved (§2.9).** Not a streams failure, and NOT a stuck gate: the gate converges and the GitTarget is not reconciled to publish it. Mechanism narrowed to three candidates (§2.10) |
+| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 6× (CI 4×, local 2×) | **SOLVED (§2.12).** A status write that loses an optimistic-lock race is dropped, the reconcile reports success, and nothing re-enqueues it — the winning write is status-only and every `For()` filters those |
 | **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 3× (CI twice, local once) | **Open**, and narrowed to the roll-up's accept path. One hypothesis tried and withdrawn — see §3.3 |
 | C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | Unclassified, and probably unrelated |
 | D | Encryption-secret recreation spec times out | 1× (CI) | **Ambient, pre-existing** — see §5 |
@@ -343,7 +343,56 @@ each reconcile, and the requeue it chooses. That log is added in the commit foll
 Note that (3) is worth fixing on its own merits regardless, and has been: publishing the status a
 drain observed rather than the gate's current status is a race with no upside.
 
-### 2.11 The failure class
+## 2.12 SOLVED: a status write that loses a race is dropped, and nothing comes back
+
+Reproduced locally on `26cd36c3` — the build carrying the publish log — on a 61-scope wildcard
+target. Every link is now observed:
+
+```text
+23:32:13-17  66 "GitTarget status published" lines for ONE target, one per scope report
+             …  Unknown/Rechecking  converged=false  requeue=10s   (×65)
+23:32:17     True/RenderMatchesLive  converged=true   requeue=5m0s  ← the LAST one
+23:33:41     FAIL: gittarget "…-dest" RenderMatchesLive=Unknown(Rechecking: … owes revision 44)
+```
+
+The gate accepted every scope and reached `True`. No dropped reconcile requests. The controller
+computed `True` and logged that it published it. **And 84 seconds later the object still read
+`Unknown`.**
+
+The cause is in [`reconcileStatus.commit`](../../internal/controller/status.go):
+
+```go
+case apierrors.IsConflict(err):
+    log.V(1).Info("status write skipped; object changed during reconcile", …)
+    return nil          // ← the write is dropped AND the reconcile reports success
+```
+
+Dropping the write is right: by then the observation is stale. Dropping the reconcile with it was
+not. The comment justified it as *"The write that beat us enqueued us again"* — and that is **false
+by construction here**. The winning write is a STATUS-only update, and every `For()` in this
+package carries `predicate.GenerationChangedPredicate`, which exists precisely to filter those out
+and break the status-write-triggers-reconcile loop.
+
+So the sequence is:
+
+1. a 61-scope target produces ~66 reconciles in four seconds, one per scope report;
+2. reconcile *N* computes `Unknown` and wins the write;
+3. reconcile *N+1* computes `True`, loses the optimistic lock, and is silently discarded;
+4. it returns `converged=true`, so the caller picks **`RequeueAfter: 5m`**;
+5. the winning write was status-only, so the predicate re-enqueues nothing;
+6. the object holds `Rechecking` for five minutes, and every WatchRule copies it.
+
+That accounts for every observation, including the two that resisted explanation longest: why it is
+**load-dependent** (it needs concurrent reconciles to produce a conflict, which is why all eight
+focused low-load attempts passed) and why the staleness lasts **minutes rather than the 10s** a
+non-converged target would wait.
+
+**The fix** records the loss rather than returning it — a conflict is expected and must not become
+a reconcile error for every controller using this helper — and the GitTarget reconcile asks
+`writeLost()` before choosing its requeue, taking the 10s settle interval instead of the converged
+five minutes. The stale-observation protection is untouched.
+
+### 2.13 The failure class
 
 Every scope in `state.scopes` must reach `finished && clean` for the target to be Ready. A scope
 reports exactly once per revision, from

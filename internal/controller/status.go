@@ -75,7 +75,19 @@ type reconcileStatus struct {
 	beforeConditions []metav1.Condition
 	// conditions points at the live status condition slice of object, which set() rewrites.
 	conditions *[]metav1.Condition
+	// writeLostToRace records that commit() computed a status it could not persist because the
+	// object moved underneath it. The observation is discarded (publishing it would be stale), so
+	// what is left is an object whose PUBLISHED status is older than what this reconcile knew —
+	// and nothing re-enqueues it, because every For() here filters status-only updates. Callers
+	// ask writeLost() so they requeue promptly instead of on their converged cadence.
+	writeLostToRace bool
 }
+
+// writeLost reports whether the last commit() had its status write beaten by a concurrent one.
+// A reconcile whose status never landed must come back soon whatever it computed, or the object
+// keeps the loser's answer until its periodic requeue
+// (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+func (s *reconcileStatus) writeLost() bool { return s.writeLostToRace }
 
 // beginStatus opens the status session. Call it once, immediately after the object is read and
 // before any condition is written.
@@ -138,8 +150,24 @@ func (s *reconcileStatus) commit(ctx context.Context) error {
 
 	// Optimistic concurrency, deliberately WITHOUT a retry loop: a conflict means the object moved
 	// under this reconcile, so the status just computed describes a generation that is no longer
-	// current. The write that beat us enqueued us again, so dropping this one converges on fresh
-	// data instead of publishing a stale observation.
+	// current. Dropping the WRITE is right — publishing a stale observation is worse.
+	//
+	// Dropping the RECONCILE with it was not. The old code returned nil on conflict, on the
+	// reasoning that "the write that beat us enqueued us again". That is false by construction for
+	// every controller here: the winning write is a STATUS-only update, and each For() carries a
+	// GenerationChangedPredicate precisely to filter those out (it exists to break the
+	// status-write-triggers-reconcile loop). So nothing re-enqueued, the caller saw success and
+	// chose its converged requeue — five minutes for a GitTarget — and the object kept whatever
+	// the loser wrote.
+	//
+	// That is Failure A: a 61-scope target produced ~66 reconciles in four seconds, one per scope
+	// report; the last of them computed RenderMatchesLive=True, lost the race, was silently
+	// dropped, and left every WatchRule on that target reading "Rechecking" until the five-minute
+	// requeue (docs/design/watch-plane-status-convergence-failures.md, §2.12).
+	//
+	// So the loss is RECORDED and the caller asks writeLost() before choosing its requeue: a
+	// reconcile whose status never landed must come back soon, whatever it computed. It costs one
+	// extra reconcile on a race that is, by definition, rare.
 	patch := client.MergeFromWithOptions(s.before, client.MergeFromWithOptimisticLock{})
 	switch err := s.client.Status().Patch(ctx, s.object, patch); {
 	case err == nil:
@@ -148,8 +176,12 @@ func (s *reconcileStatus) commit(ctx context.Context) error {
 	case apierrors.IsNotFound(err):
 		return nil
 	case apierrors.IsConflict(err):
-		log.V(1).Info("status write skipped; object changed during reconcile",
-			"object", client.ObjectKeyFromObject(s.object))
+		// Recorded, not returned. Returning it would turn a benign, expected race into a reconcile
+		// error for every controller using this helper; what the caller actually needs is to come
+		// back promptly, which writeLost() tells it.
+		s.writeLostToRace = true
+		log.Info("status write lost a race; the published status is stale until this object is "+
+			"reconciled again", "object", client.ObjectKeyFromObject(s.object))
 		return nil
 	default:
 		return fmt.Errorf("write status for %s: %w", client.ObjectKeyFromObject(s.object), err)
