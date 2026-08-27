@@ -243,7 +243,26 @@ The e2e assertion now prints the referenced GitTarget's own `Ready`, `RenderMatc
 `StreamsRunning` and `GitPathAccepted` beside the rule's condition, so the next reproduction says
 which of the two it is without inference.
 
-### 2.8 The failure class
+### 2.8 What a HEALTHY target looks like mid-plan
+
+Worth knowing before watching a live cluster and misreading it: a target that has just been
+(re)planned briefly publishes `RenderMatchesLive=Unknown` naming its pending scopes, then converges
+within seconds. Observed repeatedly on passing runs, e.g.
+
+```text
+STUCK tilt-playground/playground-target :: Waiting for 3 of 5 render scopes …
+  configmaps in tilt-playground (owes revision 1), deployments.apps … (owes revision 4), …
+```
+
+— which read `RenderMatchesLive=True, 5/5 streams` moments later. Mixed revisions across scopes are
+normal too: a revision is issued per cell when that cell is first planned or restarted, so a
+long-lived target accumulates different numbers per scope.
+
+**The failure is not the pending state; it is the failure to leave it.** Any live watch on this
+condition must require the state to persist (60s+) before treating it as a reproduction, or it will
+fire on every ordinary replan.
+
+### 2.9 The failure class
 
 Every scope in `state.scopes` must reach `finished && clean` for the target to be Ready. A scope
 reports exactly once per revision, from
