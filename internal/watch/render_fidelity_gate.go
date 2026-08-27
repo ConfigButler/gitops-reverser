@@ -62,17 +62,45 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	cell types.CellKey,
 ) {
 	gate := m.fidelityGate()
-	if gate == nil || revision == 0 {
+	if gate == nil {
 		return
 	}
-	status, applied := gate.RecordScopeClean(
-		target,
-		revision,
-		cell,
-	)
-	if applied {
-		m.recordRenderFidelityStatus(target, status)
+	if revision == 0 {
+		// A wired gate always issues a non-zero revision, so a stream reporting under zero was
+		// started without one. Its result is unusable and its scope keeps owing a report.
+		m.logUnappliedFidelityReport(target, cell, revision, "clean (stream carries no revision)")
+		return
 	}
+	status, applied := gate.RecordScopeClean(target, revision, cell)
+	if !applied {
+		m.logUnappliedFidelityReport(target, cell, revision, "clean")
+		return
+	}
+	m.recordRenderFidelityStatus(target, status)
+}
+
+// logUnappliedFidelityReport names a scope result the gate would not take.
+//
+// This is the last silent branch in the roll-up. RecordScope* answers applied=false for three
+// different reasons — the target is unknown, the scope is not in the current plan, or the result
+// carries a superseded revision — and every caller used to drop that answer on the floor. A scope
+// then owes a report for ever with nothing to say why, which is Failure A's signature
+// (docs/design/watch-plane-status-convergence-failures.md, §2.5).
+//
+// The retention roll-up already logs its refusals, and that asymmetry is exactly why B had
+// evidence and A had none. Info, because it is rare by construction: a healthy plan produces one
+// accepted report per scope per revision, and a report nobody can accept means the target will not
+// converge on its own.
+func (m *Manager) logUnappliedFidelityReport(
+	target types.ResourceReference,
+	cell types.CellKey,
+	revision uint64,
+	kind string,
+) {
+	m.Log.WithName("render-fidelity").Info(
+		"a render scope result was not applied; this scope still owes a report and cannot converge alone",
+		"gitDest", target.String(), "cell", cell.String(), "reportedRevision", revision, "result", kind,
+		"status", m.RenderFidelityForGitTarget(target).Message)
 }
 
 // MarkTargetRenderFidelityScopeDiverged records a replay refusal caused by a rendered token.
@@ -83,14 +111,21 @@ func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 	divergence manifestanalyzer.RenderDivergence,
 ) {
 	gate := m.fidelityGate()
-	if gate == nil || revision == 0 {
+	if gate == nil {
 		return
 	}
-	status, applied := gate.RecordScopeDivergence(
-		target, revision, cell, divergence)
-	if applied {
-		m.recordRenderFidelityStatus(target, status)
+	if revision == 0 {
+		// A wired gate always issues a non-zero revision, so a stream reporting under zero was
+		// started without one. Its result is unusable and its scope keeps owing a report.
+		m.logUnappliedFidelityReport(target, cell, revision, "diverged (stream carries no revision)")
+		return
 	}
+	status, applied := gate.RecordScopeDivergence(target, revision, cell, divergence)
+	if !applied {
+		m.logUnappliedFidelityReport(target, cell, revision, "diverged")
+		return
+	}
+	m.recordRenderFidelityStatus(target, status)
 }
 
 // MarkTargetRenderFidelityDiverged closes normal writes immediately when a live window hits the
