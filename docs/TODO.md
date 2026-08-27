@@ -121,6 +121,10 @@ This file is meant to track the smaller current backlog, not historical notes.
   A shared-event-channel fix landed for that failure and is the more likely cause, but this path
   is **independent of it** and would produce the same symptom, so a green run does not retire it.
 
+  Full evidence, the controller-log timeline, and the diagnostics now armed for it are in
+  [watch-plane-status-convergence-failures.md](design/watch-plane-status-convergence-failures.md)
+  §3.
+
   **The question to answer:** widening `prune.mode` sets `force`, which classifies every cell as
   `restart` and issues fresh revisions, while the 30s periodic sweep also re-runs
   `retainTargetRetentionScopes` for every declared target. Can a pass landing *while a replay is
@@ -144,6 +148,10 @@ This file is meant to track the smaller current backlog, not historical notes.
   Recovery must stay polled; only the cadence is in question. Nor is a third widening of the
   budget the answer — it has already been raised twice, months apart, and is capped deliberately
   as the spec's implicit SLO.
+
+  Ambient-flake context, and the traps in reading CI for it, are inventoried in
+  [watch-plane-status-convergence-failures.md](design/watch-plane-status-convergence-failures.md)
+  §5.
 
   **Unconfirmed root cause, to verify first:** recreation rides the periodic requeue, and
   `gitTargetRequeue` returns `RequeueStreamSettleInterval` (10s) only for a NON-converged target
