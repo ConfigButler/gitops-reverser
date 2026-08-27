@@ -522,7 +522,31 @@ report and an absent one look identical from outside.
 That is the next thing to instrument, and it is the same asymmetry that left A blind: the roll-up
 reports what it rejects and stays silent about what it takes.
 
-### 3.5 Why every earlier diagnostic missed it
+### 3.5 Prediction: B is probably the SAME defect as A
+
+Stated before the evidence, so it can be wrong: **`8ad84416` may fix B as well.**
+
+B publishes through the same path A did. `MarkTargetRetention` accepts the post-widening report,
+publishes it into the watch-plane snapshot and enqueues a GitTarget reconcile; that reconcile
+computes the new `status.retention` and writes it with the same `commit()` that silently discarded
+A's write on a conflict — returning success, so the caller chose the converged five-minute requeue
+with nothing scheduled to correct it.
+
+That accounts for the one thing about B that never fit: §3.4 established that the report was
+neither dropped, nor refused, nor superseded, and that the roll-up therefore appeared to be
+working. It was. The loss was downstream of it, in the status write — exactly where A's was.
+
+It also fits B's shape. The widening resync lands in the same burst of scope reports that produces
+the concurrent reconciles a conflict needs, which is why B is load-dependent and why it has never
+reproduced on a quiet target.
+
+**How to falsify it:** B reproducing on a build that carries `8ad84416` refutes this outright, and
+the search returns to §3.4 with the roll-up's accept diagnostics. B *not* reproducing is weaker
+evidence — it is intermittent — so do not treat a few green runs as confirmation. What would
+confirm it is a reproduction whose logs show the retention report accepted, a reconcile computing
+the new count, and `writeLost=true` on that reconcile.
+
+### 3.6 Why every earlier diagnostic missed it
 
 The `resync retained managed documents` Info line is throttled to once per ten minutes per
 `gitTarget@base` by `shouldLogRetention`, and its unthrottled twin is `V(1)`, which CI does not run.
