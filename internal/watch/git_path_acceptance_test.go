@@ -204,3 +204,34 @@ func TestMarkRenderFidelityScopeClean_NamesAReportWithNoRevision(t *testing.T) {
 
 	assert.Contains(t, strings.Join(*lines, "\n"), "stream carries no revision")
 }
+
+// TestRenderFidelityStatus_PublishesTheCurrentStatusNotTheObservedOne pins the ordering fix.
+//
+// Sibling drains record concurrently and their publishes can reorder, so a drain that observed
+// "one scope still pending" could write that over the fresh "True" a later drain had already
+// published. Publishing what the GATE currently says instead of what this drain saw removes the
+// race (docs/design/watch-plane-status-convergence-failures.md, §2.10).
+func TestRenderFidelityStatus_PublishesTheCurrentStatusNotTheObservedOne(t *testing.T) {
+	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	manager := &Manager{Log: logr.Discard()}
+	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
+	target := types.NewResourceReference("podinfo-test", "team-a")
+	first := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
+	second := targetWatchKey{GVR: configmapsGVR, Namespace: "ops"}
+
+	revisions := manager.restartAllFidelityScopes(target, first, second)
+
+	// Complete the set, so the gate is True...
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[first.Cell()], first.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[second.Cell()], second.Cell())
+	require.Equal(t, git.RenderFidelityTrue, manager.RenderFidelityForGitTarget(target).State)
+
+	// ...then let a straggler re-report the scope it already reported. Under the old behaviour it
+	// published the status IT computed; the published projection must still describe a converged
+	// target, because that is what the gate says.
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[first.Cell()], first.Cell())
+
+	published := manager.watchPlane().fidelity[target.Key()]
+	assert.Equal(t, git.RenderFidelityTrue, published.State,
+		"the published projection must follow the gate, not one drain's snapshot of it")
+}

@@ -87,7 +87,11 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	m.Log.WithName("render-fidelity").Info("render scope result accepted",
 		"gitDest", target.String(), "cell", cell.String(), "revision", revision,
 		"state", string(status.State), "status", status.Message)
-	m.recordRenderFidelityStatus(target, status)
+	// Publish the gate's CURRENT status, not the one this drain observed. Sibling drains record
+	// concurrently and their publishes can reorder, so a drain that saw "1 of 4 pending" could
+	// write that over a fresh "True" written moments earlier by the drain that completed the set.
+	// Re-reading costs one RLock and removes a race with no upside.
+	m.recordRenderFidelityStatus(target, m.RenderFidelityForGitTarget(target))
 }
 
 // logUnappliedFidelityReport names a scope result the gate would not take.
@@ -131,12 +135,13 @@ func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 		m.logUnappliedFidelityReport(target, cell, revision, "diverged (stream carries no revision)")
 		return
 	}
-	status, applied := gate.RecordScopeDivergence(target, revision, cell, divergence)
+	_, applied := gate.RecordScopeDivergence(target, revision, cell, divergence)
 	if !applied {
 		m.logUnappliedFidelityReport(target, cell, revision, "diverged")
 		return
 	}
-	m.recordRenderFidelityStatus(target, status)
+	// Current status, for the same reason as the clean path above.
+	m.recordRenderFidelityStatus(target, m.RenderFidelityForGitTarget(target))
 }
 
 // MarkTargetRenderFidelityDiverged closes normal writes immediately when a live window hits the

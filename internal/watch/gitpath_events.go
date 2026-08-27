@@ -43,6 +43,20 @@ func (m *Manager) enqueueGitTargetReconcile(gitDest types.ResourceReference) {
 	select {
 	case ch <- evt:
 	default:
+		// A DROP here is load-bearing, and it was silent. This channel carries only the rare
+		// events (acceptance, render fidelity, retention) after 14eeef46 moved the high-volume
+		// stream transitions off it, so a full buffer is not routine -- and the consequence is
+		// that a GitTarget whose data plane just converged is never told to republish, leaving a
+		// stale condition standing until its periodic requeue, which for a CONVERGED target is
+		// five minutes (docs/design/watch-plane-status-convergence-failures.md, §2.10).
+		//
+		// The comment above says a dropped event is harmless because a reconcile is already
+		// pending. That is true only when the buffer is full BECAUSE this target is already
+		// queued; it is not true when another target's burst filled it.
+		m.Log.WithName("gitpath-events").Info(
+			"a GitTarget reconcile request was dropped; its published status may stay stale "+
+				"until the periodic requeue",
+			"gitDest", gitDest.String(), "buffer", gitPathEventsBuffer)
 	}
 }
 
