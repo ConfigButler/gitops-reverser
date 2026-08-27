@@ -236,8 +236,8 @@ So the isolation boundary is **per target**:
 
 - Every target's pass runs under **its own context with a deadline**. A discovery call
   that hangs fails that target's pass and leaves it dirty; the loop moves on.
-- The loop processes a **bounded number of targets per pass**, round-robin over the
-  dirty set, so one target that is slow but not hung cannot starve the rest.
+- The loop processes a **bounded number of targets per pass** — one per turn, always the one that
+  has been ready longest — so one target that is slow but not hung cannot starve the rest.
 - The unbounded discovery call named above is fixed regardless of this design. A
   deadline on the local-cluster path is correct today, and it is a precondition for
   trusting the owner loop tomorrow.
@@ -549,6 +549,46 @@ lock. The six mutexes named for deletion are deleted either way.
 
 `declaredGVRs` and `declaredGVRsMu` were deleted outright rather than converted. Nothing wrote the
 map; the only surviving reference was the delete in `ForgetGitTargetDeclaration`.
+
+### Isolation came from taking the I/O off the loop, not from a deadline
+
+The page says a per-target deadline is what stops one blocked target from taking the owner with
+it. A deadline BOUNDS a stall; it does not isolate one. A first cut kept two network calls on the
+loop — the shared refresh, and a discovery call for a target whose cluster had never been observed
+— and a single unreachable source cluster could therefore hold every healthy target, every
+teardown and every report for the full timeout. That is the availability failure this page exists
+to remove, relocated rather than fixed.
+
+What shipped removes the I/O instead:
+
+- **A pass never dials.** Not even for a cluster nothing has observed yet, which is where it is
+  most tempting. The declare capture has already put that cluster in the active set, so the pass
+  asks for a shared refresh and fails with "the surface has not been observed yet" until it lands.
+  A pass is now pure in-memory work over the tables, and `refreshClusterForDeclare` is deleted.
+- **The shared refresh runs on its own goroutine**, one at a time, and the loop does not wait for
+  it. A request arriving while one is in flight is held and served by the next.
+
+The per-target deadline stays, as the backstop it should have been: with no I/O in a pass, nothing
+should ever reach it. The alternative — per-target workers — was rejected because it would give
+`targetWatches` more than one writer again, which is the thing this page is about.
+
+### Deletion names an incarnation, and resolves it when it is queued
+
+The page says a trigger carries the UID and the owner drops one whose UID no longer matches. Both
+production callers of `ForgetGitTargetDeclaration` react to a **NotFound** and so carry no UID at
+all, and the rule-derived `matchesUID` treats an empty UID as matching everything — so a UID-less
+deletion matched every incarnation and could tear down the successor of a GitTarget deleted and
+recreated under the same namespace and name. It could also drop that successor's pending pass,
+because the dirty entry is keyed by name.
+
+So a queued deletion carries the incarnation it is FOR, resolved against the declare record when
+it is queued rather than taken from the caller:
+
+- a NotFound cleanup means whichever incarnation is on record at that instant;
+- a deletion naming a UID the record has already replaced is stale on arrival: it is queued, but it
+  clears neither the declare record nor the dirty entry;
+- at apply time it is dropped if either record of the current incarnation — the declare record, or
+  the watch-plane UID, which settle at different times — disagrees with it.
 
 ### Persistent failure surfaces as `WatchPlanFailing`
 

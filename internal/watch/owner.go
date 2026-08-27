@@ -114,11 +114,16 @@ func (d *dirtyTarget) readyAt() time.Time {
 	return at
 }
 
-// forgetAction is a deletion the owner must apply before it plans anything else. It carries the
-// UID it was issued for, so a delete-and-recreate under the same namespace and name cannot tear
-// down its successor's watches.
+// forgetAction is a deletion the owner must apply before it plans anything else.
+//
+// uid is the INCARNATION the deletion is for, resolved when it was queued rather than taken from
+// the caller: both production callers react to a NotFound and so carry no UID at all, and a
+// UID-less deletion that matched every incarnation would tear down the successor of a GitTarget
+// deleted and recreated under the same namespace and name. Empty means nothing was on record to
+// delete, which makes the teardown a no-op anyway.
 type forgetAction struct {
 	ref types.ResourceReference
+	uid string
 }
 
 // watchPlaneTriggers is the coalescing intake: the dirty set, the declare records, the pending
@@ -143,6 +148,9 @@ type watchPlaneTriggers struct {
 	// sweepDue asks additionally for every declared target to be marked dirty. It is the periodic
 	// floor, and the only path that still fans out to everything.
 	sweepDue bool
+	// sharedRefreshing is true while a shared refresh is in flight on its own goroutine. It is
+	// what keeps the loop from starting a second one, and from waiting on the first.
+	sharedRefreshing bool
 }
 
 func (m *Manager) triggers() *watchPlaneTriggers {
@@ -276,19 +284,32 @@ func (m *Manager) declareIntentFor(
 func (m *Manager) forgetIntent(gitDest types.ResourceReference) {
 	t := m.triggers()
 	t.mu.Lock()
-	delete(t.dirty, gitDest.Key())
-	if intent := t.declares[gitDest.Key()]; intent != nil && matchesUID(intent.ref, gitDest) {
-		delete(t.declares, gitDest.Key())
-	}
-	t.forgets = append(t.forgets, forgetAction{ref: gitDest})
-	t.mu.Unlock()
-	t.signal()
-}
+	defer t.mu.Unlock()
 
-// matchesUID reports whether two references name the same INCARNATION of a GitTarget. An empty
-// UID on either side matches, because the rule-derived paths carry none.
-func matchesUID(a, b types.ResourceReference) bool {
-	return a.UID == "" || b.UID == "" || a.UID == b.UID
+	// Which incarnation is this deletion for? The declare record is the authority, because it is
+	// what a recreation replaces. A caller that names a UID and disagrees with the record is a
+	// STALE delete: its object is already gone and a successor has declared, so it must not take
+	// the successor's pending pass with it.
+	record := t.declares[gitDest.Key()]
+	uid := gitDest.UID
+	switch {
+	case record == nil:
+	case gitDest.UID == "":
+		// A NotFound cleanup: it names no incarnation, so it means whichever one is on record now.
+		uid = record.ref.UID
+	case record.ref.UID != gitDest.UID:
+		t.forgets = append(t.forgets, forgetAction{ref: gitDest, uid: uid})
+		t.signal()
+		return
+	}
+
+	// Dropping the pending trigger happens HERE, synchronously in the caller, rather than on the
+	// loop: a trigger that outlived the delete would have the next pass re-create what the delete
+	// tore down.
+	delete(t.dirty, gitDest.Key())
+	delete(t.declares, gitDest.Key())
+	t.forgets = append(t.forgets, forgetAction{ref: gitDest, uid: uid})
+	t.signal()
 }
 
 // DeclareStatusForGitTarget reports whether the owner still owes this GitTarget a pass and how
@@ -376,10 +397,11 @@ func (m *Manager) ownerTurn(ctx context.Context, log logr.Logger) time.Duration 
 	m.refreshSharedSnapshotsIfDue(ctx, log)
 	m.publishDirtySetDepth()
 
-	// One target per turn, always the one that has been ready longest. Passes are in-memory work
-	// (the shared refresh above is what does the I/O), so this is not a throughput bottleneck —
-	// it is the bound that stops one slow target from starving the rest, and it keeps the reports
-	// and the deletions above from waiting behind a queue of passes.
+	// One target per turn, always the one that has been ready longest. A pass is pure in-memory
+	// work — every network call the watch plane makes is in the shared refresh above, which runs
+	// on its own goroutine — so this is not a throughput bottleneck. It is the bound that stops
+	// one slow target from starving the rest, and it keeps the deletions above from waiting
+	// behind a queue of passes.
 	entry, wait := m.nextReadyTarget()
 	if entry == nil {
 		return wait
@@ -405,17 +427,40 @@ func (m *Manager) applyPendingTeardowns(log logr.Logger) {
 	}
 
 	for _, action := range pending {
-		// The remembered UID is the authority. A forget issued for an incarnation that is no
-		// longer the one on record belongs to a predecessor whose state has already been
-		// replaced, and applying it would tear down its successor's watches.
-		if uid := m.watchPlane().uids[action.ref.Key()]; uid != "" && !matchesUID(
-			action.ref, types.ResourceReference{UID: uid}) {
+		if current, stale := m.staleTeardown(action); stale {
 			log.V(1).Info("dropping a stale GitTarget teardown; the name has been recreated",
-				"gitDest", action.ref.String(), "staleUID", action.ref.UID, "currentUID", uid)
+				"gitDest", action.ref.String(), "staleUID", action.uid, "currentUID", current)
 			continue
 		}
 		m.tearDownGitTarget(action.ref)
 	}
+}
+
+// matchesUID reports whether two references name the same INCARNATION of a GitTarget. An empty UID
+// on either side matches, because the rule-derived paths carry none — a WatchRule names a target
+// by namespace and name only. Deletion deliberately does NOT use it: see forgetAction.
+func matchesUID(a, b types.ResourceReference) bool {
+	return a.UID == "" || b.UID == "" || a.UID == b.UID
+}
+
+// staleTeardown reports whether a queued deletion belongs to an incarnation that has since been
+// replaced, and what replaced it. Applying such a deletion would tear down its successor.
+//
+// Two records can name the current incarnation and they settle at different times: a recreation
+// declares immediately, while the watch-plane UID only moves once that declaration's pass has run.
+// Either disagreeing with the queued deletion is enough to drop it.
+func (m *Manager) staleTeardown(action forgetAction) (string, bool) {
+	t := m.triggers()
+	t.mu.Lock()
+	record := t.declares[action.ref.Key()]
+	t.mu.Unlock()
+	if record != nil && record.ref.UID != action.uid {
+		return record.ref.UID, true
+	}
+	if uid := m.watchPlane().uids[action.ref.Key()]; uid != "" && action.uid != "" && uid != action.uid {
+		return uid, true
+	}
+	return "", false
 }
 
 // refreshSharedSnapshotsIfDue re-derives the state that is SHARED across targets — every active
@@ -425,16 +470,39 @@ func (m *Manager) applyPendingTeardowns(log logr.Logger) {
 // Keeping this apart from replanning a target is the point. A target's plan depends on three
 // inputs, two of them shared, and one rule edit used to re-derive all three and then walk every
 // target. Here a rule edit replans one target and rediscovers nothing.
+//
+// It runs on its OWN goroutine, and the loop does not wait for it. This is the only I/O the watch
+// plane does, so leaving it inline would mean an unreachable source cluster stalling every healthy
+// target, every teardown and every report for the full refresh timeout — the availability failure
+// this design exists to remove, relocated rather than fixed. One refresh runs at a time; a request
+// arriving while one is in flight is held and served by the next.
 func (m *Manager) refreshSharedSnapshotsIfDue(ctx context.Context, log logr.Logger) {
 	t := m.triggers()
 	t.mu.Lock()
-	shared, sweep := t.sharedDue, t.sweepDue
-	t.sharedDue, t.sweepDue = false, false
-	t.mu.Unlock()
-	if !shared && !sweep {
+	if t.sharedRefreshing || (!t.sharedDue && !t.sweepDue) {
+		t.mu.Unlock()
 		return
 	}
+	sweep := t.sweepDue
+	t.sharedDue, t.sweepDue = false, false
+	t.sharedRefreshing = true
+	t.mu.Unlock()
 
+	go func() {
+		defer func() {
+			t.mu.Lock()
+			t.sharedRefreshing = false
+			t.mu.Unlock()
+			// Wake the loop: the refresh has just marked its dirty set, and the targets it marked
+			// should start their settle window from now rather than from the next tick.
+			t.signal()
+		}()
+		m.refreshSharedSnapshots(ctx, log, sweep)
+	}()
+}
+
+// refreshSharedSnapshots is the refresh itself, under its own deadline.
+func (m *Manager) refreshSharedSnapshots(ctx context.Context, log logr.Logger, sweep bool) {
 	refreshCtx, cancel := context.WithTimeout(ctx, sharedRefreshTimeout)
 	defer cancel()
 
@@ -580,14 +648,13 @@ func (m *Manager) applyTargetPlan(ctx context.Context, intent declareIntent) err
 	force := intent.force || m.pruneModeRequiresReplay(intent.ref, intent.pruneMode)
 	m.rememberDeclareCapture(intent.ref, intent.clusterID, intent.auditRoute)
 
-	// Discovery is the SHARED job, done once per cluster by refreshSharedSnapshotsIfDue. The one
-	// case a pass still has to do it itself is a cluster nothing has ever observed — a target
-	// declaring against a source cluster that just appeared — where waiting for the next tick
-	// would mean up to 30s before the first watch opens.
+	// A pass never dials anything, not even for a cluster nothing has observed yet. Discovery is
+	// the SHARED job: the capture above has just put this target's source cluster into the active
+	// set, so asking for a refresh is enough, and the pass below fails with "the surface has not
+	// been observed yet" until it lands. Doing that dial here instead would put the one unbounded
+	// thing the watch plane touches back on the loop that owns every other target.
 	if !m.registryForGitTarget(intent.ref).Ready() {
-		if err := m.refreshClusterForDeclare(ctx, m.clusterIDForGitTarget(intent.ref)); err != nil {
-			return err
-		}
+		m.signalSharedRefresh()
 	}
 
 	if err := m.EnsureGitTargetWatches(ctx, intent.ref, force); err != nil {

@@ -337,3 +337,88 @@ func TestDeclareStatus_DirtyIsNotPendingOnceAPassHasLanded(t *testing.T) {
 	assert.False(t, m.DeclareStatusForGitTarget(ref).Pending,
 		"a replan of a target that already mirrors is progress, not an unsettled declaration")
 }
+
+// Both production callers of ForgetGitTargetDeclaration react to a NotFound, so they carry no UID
+// at all. A UID-less deletion that matched every incarnation would tear down the successor of a
+// GitTarget deleted and recreated under the same namespace and name.
+func TestOwner_AUIDLessDeleteTearsDownTheIncarnationItWasQueuedFor(t *testing.T) {
+	m := ownerTestManager()
+	name, namespace := "target", "team-a"
+	first := types.NewResourceReference(name, namespace).WithUID("uid-1")
+	second := types.NewResourceReference(name, namespace).WithUID("uid-2")
+
+	m.DeclareForGitTarget(first, "prod-eu-1", "", v1alpha3.PruneOnEvent)
+	m.settle(first)
+	require.Equal(t, 1, m.runTurns(t, 4))
+
+	// The controller observes the delete and cleans up by name only.
+	m.ForgetGitTargetDeclaration(types.NewResourceReference(name, namespace))
+	// The recreate lands before the owner has drained the deletion, and its pass runs first —
+	// which is what moves the recorded UID to the successor.
+	m.DeclareForGitTarget(second, "prod-eu-1", "", v1alpha3.PruneOnEvent)
+	m.settle(second)
+	require.Equal(t, 1, m.runTurns(t, 4))
+
+	m.applyPendingTeardowns(logr.Discard())
+
+	assert.Equal(t, "uid-2", m.watchPlane().uids[second.Key()],
+		"a deletion queued for the predecessor must not take the successor's state with it")
+	assert.True(t, m.DeclareStatusForGitTarget(second).Declared)
+}
+
+// A delete that names an incarnation the record has already replaced is stale on arrival: its
+// object is gone and a successor has declared. It must not take the successor's pending pass.
+func TestOwner_AStaleDeleteDoesNotDropTheSuccessorsPendingPass(t *testing.T) {
+	m := ownerTestManager()
+	name, namespace := "target", "team-a"
+	first := types.NewResourceReference(name, namespace).WithUID("uid-1")
+	second := types.NewResourceReference(name, namespace).WithUID("uid-2")
+
+	m.DeclareForGitTarget(first, "prod-eu-1", "", v1alpha3.PruneOnEvent)
+	m.settle(first)
+	require.Equal(t, 1, m.runTurns(t, 4))
+
+	// The successor declares, and is owed a pass...
+	m.DeclareForGitTarget(second, "prod-eu-1", "", v1alpha3.PruneOnEvent)
+	require.Len(t, m.triggers().dirty, 1, "precondition: the recreation is owed a pass")
+
+	// ...and only then does the predecessor's delete arrive.
+	m.ForgetGitTargetDeclaration(first)
+
+	assert.Len(t, m.triggers().dirty, 1,
+		"the stale delete leaves the successor's pending pass alone")
+	assert.True(t, m.DeclareStatusForGitTarget(second).Declared,
+		"and leaves its declaration standing")
+
+	m.applyPendingTeardowns(logr.Discard())
+	assert.True(t, m.DeclareStatusForGitTarget(second).Declared,
+		"applying it must not tear the successor down either")
+}
+
+// Every network call the watch plane makes lives in the shared refresh, and the loop must not wait
+// for it. A pass therefore never dials — not even for a cluster nothing has observed yet, where it
+// would be most tempting.
+func TestOwner_APassNeverDialsForAnUnobservedCluster(t *testing.T) {
+	m := ownerTestManager()
+	dials := make(chan struct{}, 8)
+	m.discoveryClient = func() (apiResourceDiscovery, error) {
+		dials <- struct{}{}
+		// Slow enough that a synchronous dial on the loop would be unmistakable.
+		time.Sleep(200 * time.Millisecond)
+		return newCommonTestDiscovery(), nil
+	}
+	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
+
+	started := time.Now()
+	err := m.applyTargetPlan(context.Background(), declareIntent{ref: ref, clusterID: configPlaneClusterID})
+
+	require.NoError(t, err)
+	assert.Less(t, time.Since(started), 200*time.Millisecond, "the pass returned without dialling")
+	assert.Empty(t, dials, "it asked for a shared refresh instead of making the call itself")
+	assert.True(t, m.triggers().sharedDue, "and that request is queued for the refresh to serve")
+
+	// The refresh is what dials, and the caller does not wait for it either.
+	m.refreshSharedSnapshotsIfDue(context.Background(), logr.Discard())
+	assert.Eventually(t, func() bool { return len(dials) > 0 }, 2*time.Second, 10*time.Millisecond,
+		"the shared refresh dials on its own goroutine")
+}
