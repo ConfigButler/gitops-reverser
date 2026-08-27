@@ -61,14 +61,14 @@ func TestRefreshAPIResourceCatalog_RefreshMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// First refresh populates the empty catalog: it must report changed.
-	require.NoError(t, manager.RefreshAPIResourceCatalog(ctx))
+	require.NoError(t, manager.refreshAPIResourceCatalog(ctx))
 	changed, ok := telemetry.CollectInt64Sum(reader, catalogRefreshMetric,
 		map[string]string{"outcome": "changed"})
 	require.True(t, ok, "expected a changed api_catalog_refresh_total sample")
 	assert.Equal(t, int64(1), changed)
 
 	// Second refresh of identical discovery data must report unchanged.
-	require.NoError(t, manager.RefreshAPIResourceCatalog(ctx))
+	require.NoError(t, manager.refreshAPIResourceCatalog(ctx))
 	unchanged, ok := telemetry.CollectInt64Sum(reader, catalogRefreshMetric,
 		map[string]string{"outcome": "unchanged"})
 	require.True(t, ok, "expected an unchanged api_catalog_refresh_total sample")

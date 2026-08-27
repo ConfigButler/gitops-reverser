@@ -251,7 +251,11 @@ func waitForStreamsRunning(name, ns string) {
 	verifyResourceCondition("gittarget", name, ns, "StreamsRunning", "True", "", "", "120s")
 }
 
-func waitForWatchRuleStreamsRunning(name, ns string) { //nolint:unused // Helper for specs that need a rule-scoped gate.
+// waitForWatchRuleStreamsRunning blocks until ONE WatchRule reports StreamsRunning=True. It is the
+// right gate for a spec that adds a rule to a GitTarget that is already mirroring: the target's own
+// roll-up answers "is every stream this target has running", which such a target answers True to
+// before the new rule's cell has been planned.
+func waitForWatchRuleStreamsRunning(name, ns string) {
 	GinkgoHelper()
 	verifyResourceCondition("watchrule", name, ns, "StreamsRunning", "True", "", "", "120s")
 }

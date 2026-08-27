@@ -106,7 +106,7 @@ func (m *Manager) MarkTargetRetention(
 		return !priorReported || state.total() != priorTotal || state.mode != priorMode
 	})
 	if changed {
-		m.enqueueGitPathChange(gitDest)
+		m.enqueueGitTargetReconcile(gitDest)
 	}
 }
 

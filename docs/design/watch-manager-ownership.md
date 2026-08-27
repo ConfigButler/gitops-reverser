@@ -588,6 +588,27 @@ So the parent of a target watch is `Manager.watchLifetime`, set once by `Start`.
 stream is the owner's decision, made per cell through the plan diff — never a side effect of a
 context going out of scope. The pass deadline bounds the pass.
 
+### A rule change has to enqueue its GitTarget
+
+The other half of moving the plan off the controller worker, and the easy half to drop. It is a
+correctness bug rather than a latency one.
+
+A GitTarget has no watch edge on WatchRules. The only thing that re-reconciles it after a rule
+change is the acceptance-event channel, which the old synchronous path happened to fire from
+INSIDE the plan application — during the rule's own reconcile. Move the plan to a loop that runs a
+settle window later and that enqueue goes with it, so for two seconds the GitTarget's published
+`StreamsRunning` describes the plan from BEFORE the new rule. A target that was already mirroring
+therefore answers "all streams running" to a question about a rule whose stream does not exist
+yet, and anything gating on that condition proceeds too early. An e2e attribution spec caught it
+by adding a rule and immediately writing to the namespace it selects.
+
+So a trigger enqueues its target, and so does a shared refresh that changed a target's plan. The
+summary is computed against the current rules either way — it just has to be asked.
+
+Worth separating from the fix: a spec that adds a rule to a target that is already mirroring
+should gate on THAT RULE's `StreamsRunning`, not on the target's roll-up. The roll-up answers a
+different question, and answers it correctly.
+
 ### A failed shared refresh asks for another
 
 A target pass that fails carries its own retry, in its dirty entry. A shared refresh has none, so

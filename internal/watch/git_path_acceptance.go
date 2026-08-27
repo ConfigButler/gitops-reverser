@@ -66,7 +66,7 @@ func (m *Manager) reportGitPathAcceptance(gitDest types.ResourceReference, statu
 		return true
 	})
 	if changed {
-		m.enqueueGitPathChange(gitDest)
+		m.enqueueGitTargetReconcile(gitDest)
 	}
 }
 

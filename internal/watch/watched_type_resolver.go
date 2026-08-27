@@ -57,7 +57,7 @@ type watchedTypeStore struct {
 // what keeps the scan→registry→projection work off the hot path.
 //
 // Production callers refresh the catalog (and thus the registry) first via
-// RefreshAPIResourceCatalog, so this never rebuilds the registry itself; it only does so
+// refreshAPIResourceCatalog, so this never rebuilds the registry itself; it only does so
 // lazily the first time, for unit tests that drive the store directly. The whole
 // resolve-and-publish runs under refreshMu, so concurrent refreshes are serialized.
 func (m *Manager) refreshWatchedTypeTables() {
@@ -66,7 +66,7 @@ func (m *Manager) refreshWatchedTypeTables() {
 	defer m.watchedTypes.refreshMu.Unlock()
 
 	// Lazily populate each active cluster's registry the first time (unit tests drive this
-	// path without RefreshAPIResourceCatalog); in production the catalog refresh keeps them
+	// path without refreshAPIResourceCatalog); in production the catalog refresh keeps them
 	// current, so the heavy scan→registry rebuild stays off this path.
 	for _, id := range m.activeClusterIDs() {
 		cc := m.cluster(id)

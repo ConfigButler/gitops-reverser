@@ -200,13 +200,25 @@ func (t *watchPlaneTriggers) markDirtyLocked(ref types.ResourceReference, reason
 	entry.reasons[reason] = struct{}{}
 }
 
-// TriggerRuleChange marks the GitTarget a rule names as needing a new plan pass.
+// TriggerRuleChange marks the GitTarget a rule names as needing a new plan pass, and enqueues that
+// GitTarget for reconcile.
 //
 // It replaces the six inline ReconcileForRuleChange call sites. Those did the work — a discovery
 // call, a namespace list, a full re-projection, and then a replan of EVERY running GitTarget —
 // synchronously, on the controller worker that observed the rule. This posts intent and returns.
+//
+// The enqueue is the half that is easy to drop, and dropping it is a correctness bug rather than a
+// latency one. A GitTarget has no watch edge on WatchRules: the only thing that re-reconciles it
+// after a rule change is this channel, which the old synchronous path happened to fire from INSIDE
+// the plan application, during the rule's own reconcile. Without it here, the GitTarget's published
+// StreamsRunning describes the plan from BEFORE the new rule for as long as the settle window plus
+// a pass — so a rule can be added to a target whose status still reads "all streams running", and
+// anything gating on that condition proceeds before the new rule's stream exists. The summary
+// itself is computed against the current rules, so one reconcile is all it takes to tell the
+// truth; it just has to be asked.
 func (m *Manager) TriggerRuleChange(gitDest types.ResourceReference) {
 	m.trigger(gitDest, TriggerReasonRuleChange)
+	m.enqueueGitTargetReconcile(gitDest)
 }
 
 // TriggerAllRuleChange marks every declared GitTarget dirty. It is the deletion path only: a
@@ -216,11 +228,16 @@ func (m *Manager) TriggerAllRuleChange() {
 	t := m.triggers()
 	now := time.Now()
 	t.mu.Lock()
+	affected := make([]types.ResourceReference, 0, len(t.declares))
 	for _, intent := range t.declares {
 		t.markDirtyLocked(intent.ref, TriggerReasonRuleChange, now)
+		affected = append(affected, intent.ref)
 	}
 	t.mu.Unlock()
 	t.signal()
+	for _, ref := range affected {
+		m.enqueueGitTargetReconcile(ref)
+	}
 }
 
 func (m *Manager) trigger(gitDest types.ResourceReference, reason string) {
@@ -559,7 +576,7 @@ func (m *Manager) refreshSharedSnapshots(ctx context.Context, log logr.Logger, s
 	defer cancel()
 
 	gathered := true
-	if err := m.RefreshAPIResourceCatalog(refreshCtx); err != nil {
+	if err := m.refreshAPIResourceCatalog(refreshCtx); err != nil {
 		log.Error(err, "API resource catalog refresh failed; it will be retried")
 		gathered = false
 	}
@@ -588,14 +605,27 @@ func (m *Manager) markInvalidatedTargets(before, after map[string]uint64, sweep 
 	t := m.triggers()
 	now := time.Now()
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	invalidated := make([]types.ResourceReference, 0, len(t.declares))
 	for key, intent := range t.declares {
 		switch {
 		case sweep:
 			t.markDirtyLocked(intent.ref, TriggerReasonPeriodic, now)
 		case before[key] != after[key]:
 			t.markDirtyLocked(intent.ref, TriggerReasonSharedRefresh, now)
+		default:
+			continue
 		}
+		if before[key] != after[key] {
+			invalidated = append(invalidated, intent.ref)
+		}
+	}
+	t.mu.Unlock()
+
+	// A target whose PLAN moved has a stale StreamsRunning until it reconciles, for the same
+	// reason a rule change does. A periodic sweep that changed nothing is not a reason to wake
+	// every GitTarget controller, so only the ones the refresh actually invalidated are enqueued.
+	for _, ref := range invalidated {
+		m.enqueueGitTargetReconcile(ref)
 	}
 }
 

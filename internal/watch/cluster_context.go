@@ -617,7 +617,7 @@ func (m *Manager) applyClusterInvalidation(clusterID string) {
 	now := time.Now()
 	for _, gitDest := range affected {
 		m.forgetGitTargetWatches(gitDest)
-		m.enqueueGitPathChange(gitDest)
+		m.enqueueGitTargetReconcile(gitDest)
 	}
 	t := m.triggers()
 	t.mu.Lock()

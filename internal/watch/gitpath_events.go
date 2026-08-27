@@ -27,10 +27,10 @@ func (m *Manager) GitPathEvents() <-chan event.GenericEvent {
 	return m.gitPathEventsCh
 }
 
-// enqueueGitPathChange emits a non-blocking GenericEvent for the GitTarget. The send is
+// enqueueGitTargetReconcile emits a non-blocking GenericEvent for the GitTarget. The send is
 // best-effort: if no controller has wired the channel yet, or the buffer is full, it is a
 // no-op (a reconcile is already pending or will arrive via the periodic requeue).
-func (m *Manager) enqueueGitPathChange(gitDest types.ResourceReference) {
+func (m *Manager) enqueueGitTargetReconcile(gitDest types.ResourceReference) {
 	m.gitPathEventsMu.Lock()
 	ch := m.gitPathEventsCh
 	m.gitPathEventsMu.Unlock()

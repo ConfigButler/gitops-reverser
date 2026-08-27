@@ -109,7 +109,7 @@ func (m *Manager) MarkTargetRenderFidelityDiverged(
 // recordRenderFidelityStatus is a drain goroutine's report of a gate result.
 func (m *Manager) recordRenderFidelityStatus(target types.ResourceReference, status git.RenderFidelityStatus) {
 	if m.publishRenderFidelityStatus(target, status) {
-		m.enqueueGitPathChange(target)
+		m.enqueueGitTargetReconcile(target)
 	}
 }
 

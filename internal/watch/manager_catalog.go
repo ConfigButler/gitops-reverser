@@ -57,12 +57,12 @@ func apiServiceTriggerGVR() schema.GroupVersionResource {
 	}
 }
 
-// RefreshAPIResourceCatalog refreshes trusted catalog data from Kubernetes discovery, for the
+// refreshAPIResourceCatalog refreshes trusted catalog data from Kubernetes discovery, for the
 // local cluster and every source cluster a GitTarget currently mirrors from. It returns the
 // LOCAL cluster's error only: a remote that cannot be reached fails its OWN GitTargets (through
 // their unready registries and a SourceClusterReachable=False projection), never the local
 // cluster's reconcile. A remote rotation is also picked up here, on the refresh cadence.
-func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
+func (m *Manager) refreshAPIResourceCatalog(ctx context.Context) error {
 	var (
 		localErr error
 		remotes  []*clusterContext

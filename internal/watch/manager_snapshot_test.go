@@ -89,7 +89,7 @@ func TestRetainedWatchedTypes_NoneWhenAllServed(t *testing.T) {
 	store := rulestore.NewStore()
 	addSecretsWatchRule(store)
 	m := streamingManager(t, gitTargetFixture(), store)
-	require.NoError(t, m.RefreshAPIResourceCatalog(context.Background()))
+	require.NoError(t, m.refreshAPIResourceCatalog(context.Background()))
 	m.refreshWatchedTypeTables()
 	table := m.residentWatchedTypeTable(myTargetRef())
 	require.NotEmpty(t, table.Types)

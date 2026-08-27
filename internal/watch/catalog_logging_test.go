@@ -74,8 +74,8 @@ func TestLogCatalogTransitions_ReadyLoggedOnce(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	require.NoError(t, manager.RefreshAPIResourceCatalog(ctx))
-	require.NoError(t, manager.RefreshAPIResourceCatalog(ctx))
+	require.NoError(t, manager.refreshAPIResourceCatalog(ctx))
+	require.NoError(t, manager.refreshAPIResourceCatalog(ctx))
 
 	// The "ready" line is edge-triggered: emitted on the first build only,
 	// never repeated on a steady-state refresh.
@@ -94,22 +94,22 @@ func TestLogCatalogTransitions_DegradedAppearAndClear(t *testing.T) {
 	ctx := context.Background()
 
 	// Healthy: no degradation logged.
-	require.NoError(t, manager.RefreshAPIResourceCatalog(ctx))
+	require.NoError(t, manager.refreshAPIResourceCatalog(ctx))
 	assert.Equal(t, 0, countContaining(*lines, "API discovery degraded"))
 
 	// apps/v1 discovery fails: one degraded line naming the group/version.
 	appsGV := schema.GroupVersion{Group: "apps", Version: "v1"}
 	disco = degradedTestDiscovery(appsGV)
-	require.NoError(t, manager.RefreshAPIResourceCatalog(ctx))
+	require.NoError(t, manager.refreshAPIResourceCatalog(ctx))
 	require.Equal(t, 1, countContaining(*lines, "API discovery degraded"))
 
 	// A second refresh with the same failure must not re-log it.
-	require.NoError(t, manager.RefreshAPIResourceCatalog(ctx))
+	require.NoError(t, manager.refreshAPIResourceCatalog(ctx))
 	assert.Equal(t, 1, countContaining(*lines, "API discovery degraded"))
 
 	// Discovery recovers: one recovery line, and no further degraded lines.
 	disco = newCommonTestDiscovery()
-	require.NoError(t, manager.RefreshAPIResourceCatalog(ctx))
+	require.NoError(t, manager.refreshAPIResourceCatalog(ctx))
 	assert.Equal(t, 1, countContaining(*lines, "API discovery recovered"))
 	assert.Equal(t, 1, countContaining(*lines, "API discovery degraded"))
 }

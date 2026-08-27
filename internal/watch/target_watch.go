@@ -209,7 +209,7 @@ func (m *Manager) replaceGitTargetWatches(
 
 	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(cells, revisions))
 	if fidelityChanged {
-		m.enqueueGitPathChange(table.GitDest)
+		m.enqueueGitTargetReconcile(table.GitDest)
 	}
 	logTargetWatchPlanDiff(log, previous, desired, diff)
 	for _, stream := range started {
