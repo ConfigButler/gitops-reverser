@@ -277,9 +277,18 @@ func TestMarkTargetRetention_SaysWhenAnAcceptedReportPublishesNothing(t *testing
 	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
 	require.Equal(t, 2, m.RetentionForGitTarget(gitDest).RetainedDocuments)
 
-	// Identical re-report: accepted, but nothing an operator sees moves, so it is discarded.
+	// A re-report under the SAME revision is routine — every resync of a steady scope does it —
+	// and must stay quiet, or the diagnostic drowns in its own noise.
 	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
+	assert.NotContains(t, strings.Join(*lines, "\n"), "published nothing",
+		"a re-report under the revision already reported is routine and must not be Info")
+
+	// A RE-MEASUREMENT: the plan restarts the cell, the replacement stream reports under its new
+	// revision, and arrives at the number already published. The mutation is discarded and status
+	// does not move — the one shape a stale published count can hide behind.
+	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 8})
+	m.MarkTargetRetention(gitDest, cell, 8, v1alpha3.PruneOnEvent, 2)
 
 	assert.Contains(t, strings.Join(*lines, "\n"),
-		"retention report accepted but published nothing")
+		"a fresh measurement of this cell produced the count already published")
 }

@@ -39,6 +39,12 @@ type targetRetentionScope struct {
 	revision uint64
 	retained int
 	reported bool
+	// reportedRevision is the revision of the report that produced `retained`. It separates a
+	// stream RE-reporting under the revision it already reported (routine, every resync) from a
+	// NEW incarnation measuring the cell afresh and arriving at the same number. Only the second
+	// is interesting: it is the one an unchanged published count can be hiding
+	// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
+	reportedRevision uint64
 }
 
 // targetRetentionState is one GitTarget's per-cell counts, covering exactly the cells its
@@ -95,6 +101,7 @@ func (m *Manager) MarkTargetRetention(
 	// converged one.
 	var dropped string
 	var installed uint64
+	var remeasured bool
 	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		state := s.retention[gitDest.Key()]
 		scope, selected := state.scopes[cell]
@@ -110,8 +117,10 @@ func (m *Manager) MarkTargetRetention(
 		// status, not what the internal map did. A re-report of the same total is not a change to
 		// them, and enqueueing for it would make every watch-set replacement reconcile twice.
 		priorTotal, priorMode, priorReported := state.total(), state.mode, state.anyReported()
+		remeasured = scope.reported && scope.reportedRevision != revision
 		scope.retained = retained
 		scope.reported = true
+		scope.reportedRevision = revision
 		state.scopes[cell] = scope
 		state.mode = mode.OrDefault()
 		state.observed = time.Now()
@@ -132,18 +141,24 @@ func (m *Manager) MarkTargetRetention(
 	// is why B could be narrowed to this function and no further
 	// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
 	//
-	// V(1) for the ordinary case, because a healthy target reports once per scope per resync.
-	// Info only when the report moved nothing: that is rare, it is the ambiguous case, and it is
-	// the one a stale published count is hiding behind.
+	// Info is reserved for the one shape that is genuinely ambiguous: a cell RE-MEASURED under a
+	// new revision that arrived at the number already published, so the mutation was discarded and
+	// status did not move. A stream re-reporting under the revision it already reported is routine
+	// -- it happens on every resync of every steady scope, and logging it at Info put ~100 lines
+	// into a single e2e run, which is how a diagnostic becomes noise instead of evidence.
 	log := m.Log.WithName("retention").WithValues(
 		"gitDest", gitDest.String(), "cell", cell.String(),
 		"revision", revision, "mode", string(mode.OrDefault()), "retained", retained)
-	if !changed {
-		log.Info("retention report accepted but published nothing; the count and mode were already these values")
-		return
+	switch {
+	case !changed && remeasured:
+		log.Info("retention report accepted but published nothing; a fresh measurement of this " +
+			"cell produced the count already published")
+	case !changed:
+		log.V(1).Info("retention report accepted; nothing an operator sees moved")
+	default:
+		log.V(1).Info("retention report accepted")
+		m.enqueueGitTargetReconcile(gitDest)
 	}
-	log.V(1).Info("retention report accepted")
-	m.enqueueGitTargetReconcile(gitDest)
 }
 
 // retainTargetRetentionScopes installs the cells the current watch plan selects, and the stream
