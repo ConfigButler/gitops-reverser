@@ -12,18 +12,32 @@ this page to `docs/finished/` when both failures are named and fixed.
 ## 1. The short version
 
 The data plane is not implicated in either failure. Files land in Git correctly and on time in
-every case examined — what fails is the **status that describes them**. Both failures are
-intermittent, both survive a re-run, and both are new to this branch.
+every case examined — what fails is the **status that describes them**. The failures are
+intermittent in which spec catches them, but the same status mechanisms have now failed repeatedly
+under CI load and once locally.
 
 | # | Symptom | Seen | Verdict |
 | --- | --- | --- | --- |
-| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 2× (CI once, **local once**) | **Mechanism reproduced (A2); cause moved to the plan side — see §2.6** |
-| **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 2× (CI) | **Open, new** |
+| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 3× (CI twice, local once) | **Plan/status ordering defect remains open; diagnostic over-classified startup until the latest fix** |
+| **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 2× (CI) | **Open, new; latest run still reproduced it** |
 | C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | Unclassified |
 | D | Encryption-secret recreation spec times out | 1× (CI) | **Ambient, pre-existing** — see §5 |
 
 A green run is not evidence against A or B. Both have produced a fully green CI run on the same
 commit that failed locally.
+
+### 1.1 Latest run
+
+CI run `33103011476` on `9e4e3ce9` completed with Unit tests and `E2E (full-manager)` failed.
+The unit failure was the known ambient encryption-secret recreation test. The full-manager leg
+failed both the source-namespace wildcard readiness spec and the prune-mode retention spec. The
+other five e2e legs passed.
+
+The new diagnostics showed that the implementation was also logging many ordinary startup reads
+as A2: expected cells existed, but the target had no resident plan or reported cells yet. That is
+normal while the owner loop is applying the first plan, so the diagnostic itself needed a third
+classification. This is now called `plan not resident`; A2 is reserved for a non-empty plan whose
+cell set omits an expected cell.
 
 ---
 
@@ -140,6 +154,22 @@ That gives three-way evidence. Expected but absent from both reported and planne
 registry/compiled-rule mismatch; expected and planned but not reported identifies a stream that
 has not reached or has left `Streaming`; expected but not planned identifies the A2 race directly.
 
+There is one ordinary fourth state: expected cells exist while both planned and reported sets are
+empty. That is a pre-plan status read, not A2. It must be labelled `plan not resident` and treated
+as startup convergence, otherwise normal bootstrap noise obscures the failure signal.
+
+```mermaid
+flowchart TD
+  R[WatchRule status read] --> E[Resolve expected cells from registry]
+  E --> P{Resident plan has cells?}
+  P -->|No| S[Plan not resident\nnormal startup or missing plan]
+  P -->|Yes| M{Expected cells missing from plan?}
+  M -->|Yes| A2[A2 candidate\nplan and status snapshots disagree]
+  M -->|No| T{Expected cells reported Streaming?}
+  T -->|No| W[Wait for stream replay or recovery]
+  T -->|Yes| READY[StreamsRunning=True]
+```
+
 ### 2.5 Fix plan for A
 
 1. Add a deterministic unit test that freezes the plan table, advances the registry, and proves
@@ -197,6 +227,12 @@ not mark the target dirty, or why did the replanned table not contain the cell t
 requires?** Answering that is what §2.4's diagnostic is for, and it must come before any change
 to what a rule is allowed to expect. Landing the narrowing first would have converted a visible
 failure into an invisible one.
+
+The latest CI evidence does not yet answer that question. In the failed wildcard spec, the
+diagnostic was absent for the exact rule name in the extracted log, while many neighboring rules
+were reported during normal bootstrap. That makes the current instrumentation useful for future
+runs, but it does not prove whether the failed rule missed a plan invalidation, read a stale
+compiled rule, or failed before its diagnostic path ran.
 
 ---
 
@@ -301,6 +337,37 @@ is either accepted or dropped.
   rather than weakening stale-report protection.
 5. Only after these tests pass, rerun the focused prune e2e spec. Treat a green full suite without
   the sequencing tests as insufficient evidence for B.
+
+### 3.6 Status-reporting flow
+
+Failure B has a different shape from A. A sweep can mutate Git successfully while its report is
+lost before status publication. The report path is independent of the file-write path:
+
+```mermaid
+sequenceDiagram
+  participant W as Watch stream
+  participant Q as Branch-worker queue
+  participant G as Git resync
+  participant R as Retention roll-up
+  participant C as GitTarget controller
+
+  W->>Q: enqueue scoped replay/resync
+  Q->>G: gather and sweep
+  G-->>W: result retained=0
+  alt result superseded
+    W-->>R: no retention report
+  else revision no longer installed
+    W->>R: report rejected and logged
+  else accepted
+    W->>R: MarkTargetRetention(0)
+    R->>C: enqueue status refresh
+    C-->>R: publish retainedDocuments=0
+  end
+```
+
+This explains why a file assertion can pass while the status assertion fails. The next B fix must
+restore an accepted report or a deterministic retry, while preserving rejection of stale stream
+revisions.
 
 ---
 

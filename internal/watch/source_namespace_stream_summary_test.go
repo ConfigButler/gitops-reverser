@@ -230,6 +230,21 @@ func TestStreamSummaryForWatchRule_ExplainsAnEmptyExpectation(t *testing.T) {
 	assert.Contains(t, joined, "plannedCells")
 }
 
+func TestStreamSummaryForWatchRule_DoesNotCallPrePlanStateA2(t *testing.T) {
+	log, lines := recordingLogger()
+	m := srcnsSummaryManager(t)
+	m.Log = log
+	rule := srcnsOverrideRule("")
+	compileForSummary(m, rule, ownNamespaceScope(rule))
+
+	summary := m.StreamSummaryForWatchRule(rule)
+
+	assert.False(t, summary.StreamsRunning())
+	joined := strings.Join(*lines, "\n")
+	assert.Contains(t, joined, "plan not resident")
+	assert.NotContains(t, joined, "A2: the rule expects a cell the plan never opened")
+}
+
 // TestStreamSummaryForWatchRule_LegacyRuleUnchanged: with no override the watched namespace IS the
 // rule's own, so the legacy path is unaffected.
 func TestStreamSummaryForWatchRule_LegacyRuleUnchanged(t *testing.T) {

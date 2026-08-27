@@ -249,10 +249,11 @@ func (m *Manager) explainNotRunning(
 		// next report settles it. Nothing to say.
 		return
 	}
+	hypothesis := notRunningHypothesis(expected, unplanned, len(planned))
 	m.Log.WithName("stream-readiness").Info(
 		"a rule is not running for a reason waiting will not fix",
 		"kind", kind, "rule", name, "gitDest", gitDest.String(),
-		"hypothesis", notRunningHypothesis(expected, unplanned),
+		"hypothesis", hypothesis,
 		"expectedCells", cellNames(expected),
 		"expectedButNeverPlanned", unplanned,
 		// The reported cells are named, with their states, not counted. A count cannot say WHICH
@@ -265,9 +266,12 @@ func (m *Manager) explainNotRunning(
 
 // notRunningHypothesis labels the disagreement with the hypothesis it matches, so the log says
 // which of the two it is rather than leaving the reader to compare the sets.
-func notRunningHypothesis(expected []types.CellKey, unplanned []string) string {
+func notRunningHypothesis(expected []types.CellKey, unplanned []string, plannedCount int) string {
 	if len(expected) == 0 {
 		return "A1: the rule resolved no cells at all, and 0/0 reads as not-running"
+	}
+	if plannedCount == 0 {
+		return "plan not resident: the rule was read before the target had a watch plan"
 	}
 	if len(unplanned) > 0 {
 		return "A2: the rule expects a cell the plan never opened"
