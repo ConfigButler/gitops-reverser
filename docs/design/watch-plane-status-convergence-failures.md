@@ -346,7 +346,13 @@ Reading the next B reproduction:
 | --- | --- |
 | `retention report accepted but published nothing` | the report landed and matched the previous values — so the count was already what the sweep produced, and the bug is upstream of the roll-up |
 | `retention report dropped` | the revision gate or the plan membership refused it |
+| `superseded by a newer resync` | the coalescing path skipped this scope's reports; check that the REPLACEMENT then reported |
 | neither, count still stale | `MarkTargetRetention` was never called; the search moves to the drain |
+
+The supersession line is at Info **while B is open**. It was lowered to `V(1)` once, on the
+assumption the fidelity condition had made every lost report visible; it had not — that path skips
+the retention report too, and lowering it re-blinded the path in the very local reproduction that
+followed. Zero occurrences of it in a run built after that lowering therefore proves nothing.
 
 Do not treat a green full run as evidence at any step. Both failures have produced fully green CI
 on a commit that failed locally, and vice versa — and §3.3 records a fix that passed the very spec

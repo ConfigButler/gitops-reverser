@@ -306,11 +306,13 @@ func (r *EventRouter) handleScopedResyncError(
 		// the replacement's own report is then accepted, and a report is refused when it arrives
 		// under a revision the plan has moved past.
 		//
-		// V(1) because coalescing is routine under exactly the load it protects against, so an
-		// Info line per superseded request is noise. What makes a lost report visible now is the
-		// GitTarget's own RenderMatchesLive condition, which names the scopes still owing a report
-		// and the revision each owes it under -- see reduceRenderFidelity.
-		r.Log.V(1).Info("per-type "+kind+" superseded by a newer resync; its roll-up reports were skipped",
+		// TEMPORARY at Info, restored. It is normally V(1) because coalescing is routine under
+		// exactly the load it protects against, and it was lowered once on the assumption that the
+		// render-fidelity condition had made every lost report visible. It has not: this path
+		// skips the RETENTION report too, and lowering it re-blinded that path in the very local
+		// reproduction of Failure B that followed. Lower it again only when B is closed
+		// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
+		r.Log.Info("per-type "+kind+" superseded by a newer resync; its roll-up reports were skipped",
 			"gitDest", gitDest.String(), "cell", cell.String())
 		return
 	}
