@@ -9,7 +9,8 @@ related:
 
 # One owner for the watch plane: triggers in, work coalesced
 
-> **design**: open, nothing built.
+> **design**: decided, not built. The open questions below do not block step 0 or step 1;
+> see "Implementation order".
 > Index: [`../INDEX.md`](../INDEX.md)
 
 **The short version.** A rule edit is applied by the controller worker that observed
@@ -199,9 +200,9 @@ the user wrote.
 
 ## The contract
 
-> A trigger marks a target dirty. The owner waits for two seconds of silence, then
-> reconciles the latest coherent configuration once. New triggers during a pass are
-> retained and cause another pass. A failed pass stays dirty and retries with backoff.
+> After the latest trigger, the owner starts one reconciliation after two seconds of
+> silence. The reconciliation uses the latest configuration snapshot, has a per-target
+> deadline, and preserves newer triggers or failures for later retry.
 
 The word doing the work is **once**, and it means *one settled configuration adjustment*,
 not *one function invocation*. A pass can fail, time out, or find that the world moved
@@ -213,13 +214,17 @@ function exactly once.
 
 "Eventually" is not a design. The bound this page commits to:
 
+**What is promised is when work STARTS.** End-to-end readiness is not on this table and
+must not be, because discovery, replay, the Git write and the controller's own status
+update all sit downstream of the pass and none of them is bounded by the debounce.
+
 | Event | Bound |
 | --- | --- |
-| A target goes quiet after any change, including its first | its pass starts **2s** later |
-| A target under continuous change | its pass starts at the **max wait**, about 10s |
-| A pass that fails | target stays dirty, retried with backoff |
+| A target goes quiet after any change, including its first | its pass **starts** 2s later |
+| A target under continuous change | its pass **starts** at the max wait, about 10s |
+| A pass that fails or times out | target stays dirty, retried with backoff |
+| Retry backoff | 2s, 5s, 10s, 30s, capped at 1 minute |
 | Nothing triggering at all | the existing 30s periodic sweep is the floor |
-| Status freshness after a change | the settle window plus the controller's requeue |
 
 ## Failure isolation is the point, not a detail
 
@@ -239,6 +244,22 @@ So the isolation boundary is **per target**:
 - A target whose pass exceeds its deadline stays dirty and is retried, so a deadline is
   a yield rather than a drop.
 
+**A timeout must never install an empty plan.** A pass that could not gather is not a
+pass that found nothing, and the difference is the whole of "What a cell leaving means"
+in [target-watch-plan.md](target-watch-plan.md): an ungatherable cell must never present
+as an absent one. So a deadline produces exactly this and nothing else:
+
+```text
+pass failed
+target remains dirty
+failure and backoff recorded
+owner continues with other targets
+```
+
+The failure is recorded where an operator looks, not only in a log: a target whose passes
+keep timing out must not read as idle. A permanently unreachable source cluster looks the
+same as a healthy quiet one unless the retry state is published.
+
 **A settle window bounds when work STARTS, never when it finishes.** The plan still
 depends on discovery and on source-namespace state, and both are I/O. Two seconds of
 silence says nothing about how long the pass then takes. That is why the deadline and the
@@ -247,6 +268,38 @@ the debounce would be a promise the system cannot keep.
 
 Without those three, the honest description of this proposal would be "the same
 availability failure, in a different goroutine".
+
+## The dirty set has to be observable from the start
+
+A queue that grows silently is what made the resync storm hard to see, and an owner loop
+is a queue. These are part of the first implementation rather than a follow-up:
+
+| Signal | Why |
+| --- | --- |
+| **Oldest dirty-target age** | the single most useful operational number: it goes up and stays up exactly when something is stuck |
+| Dirty target count | depth, for saturation |
+| Passes started / completed / failed / timed out | separates "not running" from "running and failing" |
+| Pass duration | the input to choosing the deadline |
+| Triggers by reason | shows which source is noisy |
+| Coalesced trigger count | proves the debounce is doing what it claims |
+
+## Refreshing shared state is not the same job as replanning a target
+
+A target's plan depends on three inputs: the API catalog for its cluster, the
+source-namespace scopes, and the compiled rules. Two of those are **shared** across
+targets, and today one rule edit re-derives all of them and then walks every target.
+
+The owner keeps the two jobs apart:
+
+- **Refresh shared snapshots** (catalog per cluster, namespace scopes) on their own
+  cadence and on their own invalidation, with their own deadlines.
+- **Replan one target** against whatever snapshots are current, which is pure work over
+  in-memory state.
+
+A rule edit therefore replans one target and rediscovers nothing. A catalog change
+refreshes that cluster's snapshot once and then marks the targets on that cluster whose
+tables reference the changed types. This is what stops "one edit, N discovery calls" from
+coming back through a different door.
 
 ## Invalidation is scoped to what changed
 
@@ -281,7 +334,12 @@ triggers name a target that the owner resolves against its own record.
 
 **Deletion invalidates before it forgets.** `ForgetGitTargetDeclaration` must drop any
 pending trigger for that target in the same step that drops the state, or the next pass
-re-creates what the delete just tore down.
+re-creates what the delete tore down.
+
+This needs a test of its own, and the case to write is **delete and recreate under the
+same namespace and name**, with a trigger for the old UID still pending. That is the
+sequence where a stale trigger resurrects watches for an object that no longer exists,
+and it is not covered by testing delete alone.
 
 ## Status is eventually consistent, and says so
 
@@ -400,20 +458,84 @@ are deliberately not merged into the trigger queue, and
 - **Leader election.** The manager already runs only on the elected leader
   (`NeedLeaderElection`), so a single owner loop adds no new assumption.
 
+## Implementation order
+
+Staged so the first change is reviewable on its own. The full message conversion is the
+destination, not the first commit.
+
+### Step 0: bound the discovery call
+
+Independent of everything else, and worth landing first because it is small, it is a real
+defect today, and every later stage trusts it.
+
+`clusterDiscovery` copies the REST config and sets `sourceClusterDialTimeout` only when
+the cluster is remote. Do it unconditionally. The discovery client is a separate client
+from the ones that open watches, which is exactly why the existing comment says a copy is
+safe: a deadline on the discovery copy cannot deadline a watch. On the local cluster today
+`discoCfg = cfg` with no timeout, so the legacy non-context `ServerGroupsAndResources()`
+can hang forever on a controller worker.
+
+**Proves it:** a unit test that the discovery config carries a timeout for a local
+cluster, and that the config used for watches does not.
+
+### Step 1: the owner loop
+
+The behavioral change, and the one that removes the erratic replanning.
+
+- one owner loop, sole writer of the watch-plane state it already reaches;
+- target-level triggers replacing the six inline `ReconcileForRuleChange` call sites and
+  the synchronous `DeclareForGitTarget`;
+- the 2s rolling silence window, per target, with a ~10s max wait;
+- the dirty sequence, so a trigger arriving mid-pass is never lost;
+- a per-target context deadline, with a timeout leaving the target dirty and installing
+  nothing;
+- retry with the 2s/5s/10s/30s/1m backoff, recorded where an operator can see it;
+- **no synchronous watch-manager work on any controller worker**;
+- the metrics table above.
+
+**Deletes:** `refreshRunningTargetWatches` and its running-set filter,
+`signalCatalogRefresh` and `catalogRefreshCh`, and the six inline call sites.
+
+**Proves it:** one `kubectl apply` of a GitTarget plus four WatchRules produces exactly
+one plan pass for that target; a trigger arriving during a pass causes a second pass; a
+pass that times out leaves the target dirty and its plan untouched; a delete-and-recreate
+under the same name does not resurrect the old target's watches; and an edit to one
+target produces no pass for any other.
+
+### Step 2: reports become messages
+
+Once the loop exists, move the writers off the shared maps: `markTargetStreamState`,
+`MarkTargetGitPathAccepted` / `MarkTargetGitPathRefused`, `recordRenderFidelityStatus` and
+`MarkTargetRetention` post reports instead of taking `targetWatchesMu` and
+`targetRetentionMu`. Reads become a published snapshot.
+
+**Deletes:** `targetWatchesMu`, `targetRetentionMu`, and the four
+write-once-read-many locks named under "What this deletes".
+
+**Proves it:** the existing readiness, retention and fidelity tests pass unchanged, which
+is the point: this stage changes who writes, not what is written.
+
+### Step 3: scope the catalog invalidation
+
+Split shared-snapshot refresh from per-target replanning, so a catalog change refreshes
+one cluster and marks only the targets that reference the changed types. This is the last
+place a global fan-out survives, and it is worth doing separately because it needs the
+type-to-target index that steps 1 and 2 do not.
+
 ## Open questions
 
-1. **What bounds the retry of a permanently failing target?** Staying dirty and
-   retrying with backoff is right for a transient failure. A source cluster that is gone
-   for a day should not be re-attempted every interval forever, and whatever it does
-   instead has to be visible in status rather than only in logs.
-2. **What does a repeated per-target deadline mean for status?** A target whose pass
-   times out has no fresh plan, which is not the same as a target with an empty one.
-   That distinction is the same "unobservable is not empty" rule the sweep already
-   rests on, and it needs a condition rather than silence.
-3. **How is the dirty set observable?** A queue that silently grows is what made the
-   resync storm hard to see. A depth gauge and a per-pass count of targets re-planned
-   would make this legible from metrics rather than from log volume.
-4. **How far does the migration go?** Locks-first gets the fan-out and the isolation
-   with a small diff and leaves the manager partly shared. The full message model
-   removes the shared writers. The second is the destination; whether it is worth doing
-   in one step is open.
+Most of what stood here has been decided and moved into the design above: the retry
+ladder, the deadline semantics, the metrics, the migration depth, the snapshot
+consistency rule and the deletion ordering. What is left:
+
+1. **Where does persistent failure surface?** A target whose passes keep timing out needs
+   to be visible as a condition on the GitTarget, not only as a metric and a log line. The
+   condition and its reason are not chosen yet, and the choice interacts with
+   `StreamsRunning`, which today means "the streams are running" rather than "the plan is
+   fresh".
+2. **Does the settle window ever need to be configurable?** It is fixed on purpose. If a
+   large installation finds 2s wrong, the question is whether it becomes a flag or whether
+   the max wait absorbs it.
+3. **How far does step 3 go?** A type-to-target index is a new structure with its own
+   staleness. If the measured cost of re-planning every target on a catalog change is low
+   once steps 1 and 2 land, the index may not be worth its own bug surface.
