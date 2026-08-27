@@ -657,7 +657,7 @@ func (m *Manager) applyTargetPlan(ctx context.Context, intent declareIntent) err
 		m.signalSharedRefresh()
 	}
 
-	if err := m.EnsureGitTargetWatches(ctx, intent.ref, force); err != nil {
+	if err := m.ensureGitTargetWatches(ctx, intent.ref, force); err != nil {
 		return err
 	}
 	// Only once the watches are actually in place: a failed pass must leave the pending force

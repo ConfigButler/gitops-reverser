@@ -134,7 +134,7 @@ func (k targetWatchKey) Cell() types.CellKey {
 	return types.CellKeyFor(k.GVR, k.Namespace)
 }
 
-// EnsureGitTargetWatches makes the GitTarget's raw watch set match its current claimed,
+// ensureGitTargetWatches makes the GitTarget's raw watch set match its current claimed,
 // followable (GVR, scope) table. Each watch resumes from its stored cursor when possible;
 // otherwise it initializes with sendInitialEvents and a scoped mark-and-sweep before streaming
 // live object events.
@@ -143,7 +143,7 @@ func (k targetWatchKey) Cell() types.CellKey {
 // scopes are SHARED state, refreshed once per cluster on their own cadence, and a rule edit
 // replans one target against whatever snapshots are current rather than rediscovering the world.
 // That split is what stops "one edit, N discovery calls" from coming back through another door.
-func (m *Manager) EnsureGitTargetWatches(
+func (m *Manager) ensureGitTargetWatches(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	forceRecheck ...bool,

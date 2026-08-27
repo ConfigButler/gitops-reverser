@@ -19,7 +19,7 @@ import (
 )
 
 // ownerTestManager is a Manager the owner loop can drive with no cluster behind it: discovery is
-// stubbed so a pass never reaches the network, and EventRouter is nil so EnsureGitTargetWatches
+// stubbed so a pass never reaches the network, and EventRouter is nil so ensureGitTargetWatches
 // succeeds without opening anything. These tests are about WHEN and HOW OFTEN a pass runs, not
 // about what it installs.
 func ownerTestManager() *Manager {
