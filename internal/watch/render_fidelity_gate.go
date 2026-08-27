@@ -18,29 +18,30 @@ func (m *Manager) fidelityGate() *git.RenderFidelityGate {
 	return m.EventRouter.WorkerManager.RenderFidelityGate()
 }
 
-func renderFidelityScopes(keys []targetWatchKey) []types.CellKey {
-	return cellsForWatchKeys(keys)
-}
-
-// beginTargetRenderFidelityEpochLocked replaces the target's scope set. targetWatchesMu must be
-// held. It returns the epoch the streams of this declaration must report into, and whether the
-// caller should enqueue a status refresh after releasing the lock. A zero epoch means no shared
-// gate is wired, which the mark path treats as the legacy data path.
-func (m *Manager) beginTargetRenderFidelityEpochLocked(
+// reconcileTargetRenderFidelityLocked installs the target's current scope set and returns the
+// revision each scope's stream must report under. targetWatchesMu must be held.
+//
+// Only the cells in restarted go back to pending; a cell whose stream was left running keeps
+// its revision and its result, so an unrelated plan change neither closes writes on it nor
+// clears a divergence nothing re-measured. The second return says whether the caller should
+// enqueue a status refresh after releasing the lock. A nil map means no shared gate is wired,
+// which the mark path treats as the legacy data path.
+func (m *Manager) reconcileTargetRenderFidelityLocked(
 	target types.ResourceReference,
-	keys []targetWatchKey,
-) (uint64, bool) {
+	cells []types.CellKey,
+	restarted []types.CellKey,
+) (map[types.CellKey]uint64, bool) {
 	gate := m.fidelityGate()
 	if gate == nil {
-		return 0, false
+		return nil, false
 	}
-	status := gate.Begin(target, renderFidelityScopes(keys))
+	status, revisions := gate.Reconcile(target, cells, restarted)
 	if m.targetRenderFidelity == nil {
 		m.targetRenderFidelity = map[string]git.RenderFidelityStatus{}
 	}
 	prior, had := m.targetRenderFidelity[target.Key()]
 	m.targetRenderFidelity[target.Key()] = status
-	return status.Epoch, !had || renderFidelityStatusChanged(prior, status)
+	return revisions, !had || renderFidelityStatusChanged(prior, status)
 }
 
 // RenderFidelityForGitTarget returns the latest condition projection. Missing state means the
@@ -54,20 +55,21 @@ func (m *Manager) RenderFidelityForGitTarget(target types.ResourceReference) Ren
 	return gate.Status(target)
 }
 
-// MarkTargetRenderFidelityScopeClean records one complete clean replay result from the current
-// epoch. A stale cancellation tail is ignored by the gate and cannot reopen a failed target.
+// MarkTargetRenderFidelityScopeClean records one complete clean replay result from the cell's
+// current stream. A stale cancellation tail carries the retired stream's revision, so the gate
+// ignores it and it cannot reopen a failed target.
 func (m *Manager) MarkTargetRenderFidelityScopeClean(
 	target types.ResourceReference,
-	epoch uint64,
+	revision uint64,
 	cell types.CellKey,
 ) {
 	gate := m.fidelityGate()
-	if gate == nil || epoch == 0 {
+	if gate == nil || revision == 0 {
 		return
 	}
 	status, applied := gate.RecordScopeClean(
 		target,
-		epoch,
+		revision,
 		cell,
 	)
 	if applied {
@@ -78,23 +80,23 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 // MarkTargetRenderFidelityScopeDiverged records a replay refusal caused by a rendered token.
 func (m *Manager) MarkTargetRenderFidelityScopeDiverged(
 	target types.ResourceReference,
-	epoch uint64,
+	revision uint64,
 	cell types.CellKey,
 	divergence manifestanalyzer.RenderDivergence,
 ) {
 	gate := m.fidelityGate()
-	if gate == nil || epoch == 0 {
+	if gate == nil || revision == 0 {
 		return
 	}
 	status, applied := gate.RecordScopeDivergence(
-		target, epoch, cell, divergence)
+		target, revision, cell, divergence)
 	if applied {
 		m.recordRenderFidelityStatus(target, status)
 	}
 }
 
 // MarkTargetRenderFidelityDiverged closes normal writes immediately when a live window hits the
-// same boundary outside a scoped replay. A fresh watch epoch is the only recovery route.
+// same boundary outside a scoped replay. Restarting every scope is the only recovery route.
 func (m *Manager) MarkTargetRenderFidelityDiverged(
 	target types.ResourceReference,
 	divergence manifestanalyzer.RenderDivergence,
@@ -121,7 +123,7 @@ func (m *Manager) recordRenderFidelityStatus(target types.ResourceReference, sta
 }
 
 func renderFidelityStatusChanged(before, after git.RenderFidelityStatus) bool {
-	return before.Epoch != after.Epoch || before.State != after.State || before.Reason != after.Reason ||
+	return before.Revision != after.Revision || before.State != after.State || before.Reason != after.Reason ||
 		before.Message != after.Message
 }
 

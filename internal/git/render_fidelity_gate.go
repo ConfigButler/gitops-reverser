@@ -19,11 +19,13 @@ const (
 	RenderFidelityFalse   RenderFidelityState = "False"
 )
 
-// RenderFidelityStatus is the target-level reduction of all scope results in one epoch.
-// Unknown means the current epoch has not observed every scope; callers must not write live
-// events while it is Unknown or False.
+// RenderFidelityStatus is the target-level reduction of all scope results.
+// Unknown means some scope has not reported under its current revision; callers must not write
+// live events while it is Unknown or False.
 type RenderFidelityStatus struct {
-	Epoch       uint64
+	// Revision is the highest scope revision this target has issued. It moves whenever any
+	// scope is restarted, so a status projection can tell one plan from the next.
+	Revision    uint64
 	State       RenderFidelityState
 	Reason      string
 	Message     string
@@ -33,105 +35,156 @@ type RenderFidelityStatus struct {
 }
 
 type renderFidelityScopeResult struct {
+	// revision is the incarnation of this scope's stream that may report into it. A result
+	// carrying any other revision is a tail from a stream that has been replaced, and is
+	// dropped.
+	revision   uint64
 	clean      bool
 	finished   bool
 	divergence *manifestanalyzer.RenderDivergence
 }
 
 type renderFidelityTargetState struct {
-	epoch  uint64
-	scopes map[string]renderFidelityScopeResult
+	// revision is the counter fresh scope revisions are drawn from. It is per target only
+	// because that is the cheapest place to keep a monotonic source; what a report is judged
+	// against is the SCOPE's revision.
+	revision uint64
+	scopes   map[types.CellKey]renderFidelityScopeResult
+	// writeDivergence is a divergence found by a live write rather than by a scope's replay,
+	// so it belongs to no scope and no scope's replay can clear it. Only a plan that restarts
+	// EVERY scope does — a forced recheck, or a target starting from nothing — which is the
+	// same "a complete fresh measurement is the only recovery route" rule it had when it was
+	// stored as a pseudo-scope that a fresh epoch wiped.
+	writeDivergence *manifestanalyzer.RenderDivergence
 }
 
 // RenderFidelityGate is the concurrency-safe ownership point for the RenderMatchesLive state
-// machine. A fresh epoch closes writes until every current scope reports clean. A single
-// divergence latches False for that epoch; a later success from another scope cannot reopen it.
+// machine. A restarted scope closes writes until it reports clean again. A single divergence
+// latches False for that scope's revision; a later success from another scope cannot reopen it.
+//
+// Revisions are PER SCOPE rather than per target, because the watch plan is applied per cell:
+// a cell whose stream is left running across a plan change keeps its result and its revision,
+// and only the cells that were started or restarted go back to pending. A target-wide epoch
+// would have marked every cell pending on every plan edit — closing writes on a target whose
+// streams never moved — and would have cleared a divergence that nothing re-measured
+// (docs/design/target-watch-plan.md, "Readiness").
 type RenderFidelityGate struct {
 	mu      sync.RWMutex
 	targets map[string]renderFidelityTargetState
 }
 
 // NewRenderFidelityGate creates an empty gate. Targets absent from it remain writable for
-// backwards-compatible callers until their watch manager begins an epoch.
+// backwards-compatible callers until their watch manager reconciles a plan.
 func NewRenderFidelityGate() *RenderFidelityGate {
 	return &RenderFidelityGate{targets: map[string]renderFidelityTargetState{}}
 }
 
-// Begin starts a new epoch for target and replaces the complete scope set. A scope is one
-// independently replayed target-watch cell, so the namespace is part of it: a GitTarget can
-// watch one type in more than one namespace, and each reports its own result. It returns Unknown
-// when scopes are pending, or True for the vacuous zero-scope case.
-func (g *RenderFidelityGate) Begin(
+// Reconcile installs target's current scope set and returns the revision every scope must
+// report under, alongside the resulting status.
+//
+// A scope is one independently replayed target-watch cell, so the namespace is part of it: a
+// GitTarget can watch one type in more than one namespace, and each reports its own result.
+//
+//   - a scope in restarted is given a FRESH revision and goes back to pending;
+//   - a scope in scopes but not in restarted keeps its revision and its result, so a stream
+//     that was left running is not asked to prove itself again;
+//   - a scope absent from scopes is dropped, and any result still in flight for it is stale by
+//     construction.
+//
+// Restarting every scope also clears a divergence a live write latched, since that is a
+// complete fresh measurement of the target.
+//
+// It returns Unknown while scopes are pending, or True for the vacuous zero-scope case.
+func (g *RenderFidelityGate) Reconcile(
 	target types.ResourceReference,
 	scopes []types.CellKey,
-) RenderFidelityStatus {
+	restarted []types.CellKey,
+) (RenderFidelityStatus, map[types.CellKey]uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.targets == nil {
 		g.targets = map[string]renderFidelityTargetState{}
 	}
+	restart := make(map[types.CellKey]struct{}, len(restarted))
+	for _, scope := range restarted {
+		restart[scope] = struct{}{}
+	}
 	state := g.targets[target.Key()]
-	state.epoch++
-	state.scopes = make(map[string]renderFidelityScopeResult, len(scopes))
+	next := make(map[types.CellKey]renderFidelityScopeResult, len(scopes))
+	revisions := make(map[types.CellKey]uint64, len(scopes))
+	fresh := 0
 	for _, scope := range scopes {
-		state.scopes[scope.String()] = renderFidelityScopeResult{}
+		result, carried := state.scopes[scope]
+		if _, restarting := restart[scope]; restarting || !carried {
+			state.revision++
+			result = renderFidelityScopeResult{revision: state.revision}
+			fresh++
+		}
+		next[scope] = result
+		revisions[scope] = result.revision
+	}
+	state.scopes = next
+	if fresh == len(scopes) {
+		state.writeDivergence = nil
 	}
 	g.targets[target.Key()] = state
-	return reduceRenderFidelity(state)
+	return reduceRenderFidelity(state), revisions
 }
 
-// RecordScopeClean records a completed clean result. It ignores stale epochs and results for a
-// scope the current watch set no longer contains, returning applied=false in either case.
+// RecordScopeClean records a completed clean result. It ignores a result carrying any revision
+// but the scope's current one, and a result for a scope the current plan no longer contains,
+// returning applied=false in either case.
 func (g *RenderFidelityGate) RecordScopeClean(
 	target types.ResourceReference,
-	epoch uint64,
+	revision uint64,
 	scope types.CellKey,
 ) (RenderFidelityStatus, bool) {
-	return g.recordScope(target, epoch, scope, nil)
+	return g.recordScope(target, revision, scope, nil)
 }
 
 // RecordScopeDivergence records a render-vs-live mismatch for one completed scope. It latches
-// the target False until Begin starts a newer epoch.
+// the target False until that scope is restarted with a fresh revision.
 func (g *RenderFidelityGate) RecordScopeDivergence(
 	target types.ResourceReference,
-	epoch uint64,
+	revision uint64,
 	scope types.CellKey,
 	divergence manifestanalyzer.RenderDivergence,
 ) (RenderFidelityStatus, bool) {
-	return g.recordScope(target, epoch, scope, &divergence)
+	return g.recordScope(target, revision, scope, &divergence)
 }
 
 func (g *RenderFidelityGate) recordScope(
 	target types.ResourceReference,
-	epoch uint64,
+	revision uint64,
 	scope types.CellKey,
 	divergence *manifestanalyzer.RenderDivergence,
 ) (RenderFidelityStatus, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, found := g.targets[target.Key()]
-	if !found || state.epoch != epoch {
-		return RenderFidelityStatus{}, false
-	}
-	result, found := state.scopes[scope.String()]
 	if !found {
 		return RenderFidelityStatus{}, false
 	}
-	// False is sticky within one epoch. A later clean replay from the same scope may be a retry
-	// of an older snapshot; only Begin is allowed to clear a divergence.
+	result, found := state.scopes[scope]
+	if !found || result.revision != revision {
+		return RenderFidelityStatus{}, false
+	}
+	// False is sticky within one revision. A later clean replay from the same scope may be a
+	// retry of an older snapshot; only a restart is allowed to clear a divergence.
 	if result.divergence != nil && divergence == nil {
 		return reduceRenderFidelity(state), true
 	}
 	result.finished = true
 	result.clean = divergence == nil
 	result.divergence = divergence
-	state.scopes[scope.String()] = result
+	state.scopes[scope] = result
 	g.targets[target.Key()] = state
 	return reduceRenderFidelity(state), true
 }
 
 // Fail closes a target immediately when a steady-state write discovers a divergence. It does not
-// invent a successful scope result, so recovery still requires a complete fresh epoch.
+// invent a successful scope result, so recovery still requires every scope to be re-measured
+// after the failure.
 func (g *RenderFidelityGate) Fail(
 	target types.ResourceReference,
 	divergence manifestanalyzer.RenderDivergence,
@@ -141,14 +194,8 @@ func (g *RenderFidelityGate) Fail(
 	if g.targets == nil {
 		g.targets = map[string]renderFidelityTargetState{}
 	}
-	state, found := g.targets[target.Key()]
-	if !found {
-		state = renderFidelityTargetState{epoch: 1, scopes: map[string]renderFidelityScopeResult{"write": {
-			finished: true, divergence: &divergence,
-		}}}
-	} else {
-		state.scopes["write"] = renderFidelityScopeResult{finished: true, divergence: &divergence}
-	}
+	state := g.targets[target.Key()]
+	state.writeDivergence = &divergence
 	g.targets[target.Key()] = state
 	return reduceRenderFidelity(state)
 }
@@ -169,7 +216,7 @@ func (g *RenderFidelityGate) Status(target types.ResourceReference) RenderFideli
 }
 
 // AllowsWrites reports whether a target may accept a normal live or atomic write. Resync work is
-// deliberately not gated here: it is how the current epoch measures and repairs the Git tree.
+// deliberately not gated here: it is how the current plan measures and repairs the Git tree.
 func (g *RenderFidelityGate) AllowsWrites(target types.ResourceReference) bool {
 	return g.Status(target).State == RenderFidelityTrue
 }
@@ -182,27 +229,22 @@ func (g *RenderFidelityGate) Forget(target types.ResourceReference) {
 }
 
 func reduceRenderFidelity(state renderFidelityTargetState) RenderFidelityStatus {
-	keys := make([]string, 0, len(state.scopes))
-	for key := range state.scopes {
-		keys = append(keys, key)
+	if state.writeDivergence != nil {
+		return renderFidelityDivergedStatus(state, *state.writeDivergence, countCleanScopes(state))
 	}
-	sort.Strings(keys)
+	scopes := make([]types.CellKey, 0, len(state.scopes))
+	for scope := range state.scopes {
+		scopes = append(scopes, scope)
+	}
+	sort.Slice(scopes, func(i, j int) bool { return scopes[i].String() < scopes[j].String() })
 	clean := 0
-	for _, key := range keys {
-		result := state.scopes[key]
+	for _, scope := range scopes {
+		result := state.scopes[scope]
 		if !result.finished {
 			continue
 		}
 		if result.divergence != nil {
-			sample := *result.divergence
-			return RenderFidelityStatus{
-				Epoch:      state.epoch,
-				State:      RenderFidelityFalse,
-				Reason:     "RenderDoesNotMatchLive",
-				Message:    "Rendered token " + sample.Token + " at " + sample.Field + " does not match live",
-				Divergence: &sample,
-				ScopeCount: len(state.scopes), CleanScopes: clean,
-			}
+			return renderFidelityDivergedStatus(state, *result.divergence, clean)
 		}
 		if result.clean {
 			clean++
@@ -210,17 +252,42 @@ func reduceRenderFidelity(state renderFidelityTargetState) RenderFidelityStatus 
 	}
 	if clean != len(state.scopes) {
 		return RenderFidelityStatus{
-			Epoch: state.epoch, State: RenderFidelityUnknown, Reason: "Rechecking",
-			Message: "Waiting for every render scope in the current epoch", ScopeCount: len(state.scopes),
-			CleanScopes: clean,
+			Revision: state.revision, State: RenderFidelityUnknown, Reason: "Rechecking",
+			Message:    "Waiting for every render scope to report under its current revision",
+			ScopeCount: len(state.scopes), CleanScopes: clean,
 		}
 	}
-	return renderFidelityReadyStatus(state.epoch, len(state.scopes), clean)
+	return renderFidelityReadyStatus(state.revision, len(state.scopes), clean)
 }
 
-func renderFidelityReadyStatus(epoch uint64, scopes, clean int) RenderFidelityStatus {
+func countCleanScopes(state renderFidelityTargetState) int {
+	clean := 0
+	for _, result := range state.scopes {
+		if result.finished && result.clean {
+			clean++
+		}
+	}
+	return clean
+}
+
+func renderFidelityDivergedStatus(
+	state renderFidelityTargetState,
+	sample manifestanalyzer.RenderDivergence,
+	clean int,
+) RenderFidelityStatus {
 	return RenderFidelityStatus{
-		Epoch: epoch, State: RenderFidelityTrue, Reason: "RenderMatchesLive",
+		Revision:   state.revision,
+		State:      RenderFidelityFalse,
+		Reason:     "RenderDoesNotMatchLive",
+		Message:    "Rendered token " + sample.Token + " at " + sample.Field + " does not match live",
+		Divergence: &sample,
+		ScopeCount: len(state.scopes), CleanScopes: clean,
+	}
+}
+
+func renderFidelityReadyStatus(revision uint64, scopes, clean int) RenderFidelityStatus {
+	return RenderFidelityStatus{
+		Revision: revision, State: RenderFidelityTrue, Reason: "RenderMatchesLive",
 		Message: "Every rendered token matches live", ScopeCount: scopes, CleanScopes: clean,
 	}
 }

@@ -18,12 +18,23 @@ var (
 	retentionSecretScope = types.CellKeyFor(schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, "")
 )
 
+// retentionPlan installs the cells a watch plan selects at the given stream revision, the step
+// every declaration performs before those cells' resyncs can report.
+func retentionPlan(m *Manager, gitDest types.ResourceReference, revision uint64, cells ...types.CellKey) {
+	revisions := make(map[types.CellKey]uint64, len(cells))
+	for _, cell := range cells {
+		revisions[cell] = revision
+	}
+	m.retainTargetRetentionScopes(gitDest, revisions)
+}
+
 // TestRetentionRollup_SumsEveryScope: a resync fires per type and per namespace within a type, so
 // the number an operator needs is the target-wide total, not whichever scope reported last.
 func TestRetentionRollup_SumsEveryScope(t *testing.T) {
 	m := &Manager{}
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
 
+	retentionPlan(m, gitDest, 1, retentionCMScope, retentionSecretScope)
 	m.MarkTargetRetention(gitDest, retentionCMScope, 1, v1alpha3.PruneOnEvent, 2)
 	m.MarkTargetRetention(gitDest, retentionSecretScope, 1, v1alpha3.PruneOnEvent, 3)
 
@@ -40,6 +51,7 @@ func TestRetentionRollup_SumsEveryScope(t *testing.T) {
 func TestRetentionRollup_ZeroIsRecordedAsActivelyAsAnyOtherCount(t *testing.T) {
 	m := &Manager{}
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	retentionPlan(m, gitDest, 1, retentionCMScope)
 	m.MarkTargetRetention(gitDest, retentionCMScope, 1, v1alpha3.PruneOnEvent, 4)
 	require.Equal(t, 4, m.RetentionForGitTarget(gitDest).RetainedDocuments)
 
@@ -62,35 +74,58 @@ func TestRetentionRollup_UnreportedIsNotZero(t *testing.T) {
 	assert.Zero(t, summary.RetainedDocuments)
 }
 
-// TestRetentionRollup_ANewEpochDropsScopesThatLeftThePlan is the eviction property, and the reason
-// this reuses the watch epoch instead of maintaining its own scope lifecycle: when a type stops
-// being watched, its count has to disappear, or the roll-up only ever grows and becomes a lie.
-func TestRetentionRollup_ANewEpochDropsScopesThatLeftThePlan(t *testing.T) {
+// TestRetentionRollup_ANewPlanDropsScopesThatLeftIt is the eviction property, and the reason the
+// plan installs the scope set instead of this roll-up maintaining its own lifecycle: when a type
+// stops being watched, its count has to disappear, or the roll-up only ever grows and becomes a
+// lie.
+func TestRetentionRollup_ANewPlanDropsScopesThatLeftIt(t *testing.T) {
 	m := &Manager{}
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	retentionPlan(m, gitDest, 1, retentionCMScope, retentionSecretScope)
 	m.MarkTargetRetention(gitDest, retentionCMScope, 1, v1alpha3.PruneOnEvent, 2)
 	m.MarkTargetRetention(gitDest, retentionSecretScope, 1, v1alpha3.PruneOnEvent, 3)
 	require.Equal(t, 5, m.RetentionForGitTarget(gitDest).RetainedDocuments)
 
-	// Secrets left the watch plan; the new declaration replays only ConfigMaps.
-	m.MarkTargetRetention(gitDest, retentionCMScope, 2, v1alpha3.PruneOnEvent, 2)
+	// Secrets left the watch plan. ConfigMaps was kept, so its stream — and its count — stay.
+	retentionPlan(m, gitDest, 1, retentionCMScope)
 
 	assert.Equal(t, 2, m.RetentionForGitTarget(gitDest).RetainedDocuments,
 		"a scope that left the plan must take its count with it")
 }
 
-// TestRetentionRollup_StaleEpochIsIgnored is the property inherited from RenderFidelityGate: a
-// cancelled watch's in-flight reply arrives after the new declaration and must not resurrect a
-// count for a scope this target no longer has.
-func TestRetentionRollup_StaleEpochIsIgnored(t *testing.T) {
+// A kept cell's stream is not restarted, so nothing re-reports for it. Its count has to survive
+// the plan change, or every unrelated rule edit would zero a target's retention until the next
+// resync of a cell that never moved.
+func TestRetentionRollup_AKeptScopeKeepsItsCount(t *testing.T) {
 	m := &Manager{}
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	retentionPlan(m, gitDest, 1, retentionCMScope)
+	m.MarkTargetRetention(gitDest, retentionCMScope, 1, v1alpha3.PruneOnEvent, 2)
+
+	// A rule is added: secrets start at a fresh revision, configmaps keep theirs.
+	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{
+		retentionCMScope: 1, retentionSecretScope: 2,
+	})
+
+	assert.Equal(t, 2, m.RetentionForGitTarget(gitDest).RetainedDocuments)
+	m.MarkTargetRetention(gitDest, retentionSecretScope, 2, v1alpha3.PruneOnEvent, 3)
+	assert.Equal(t, 5, m.RetentionForGitTarget(gitDest).RetainedDocuments)
+}
+
+// TestRetentionRollup_StaleRevisionIsIgnored is the property inherited from RenderFidelityGate: a
+// cancelled watch's in-flight reply arrives after the new plan and must not resurrect a count for
+// a scope this target no longer has, or overwrite the replacement stream's.
+func TestRetentionRollup_StaleRevisionIsIgnored(t *testing.T) {
+	m := &Manager{}
+	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	retentionPlan(m, gitDest, 2, retentionCMScope)
 	m.MarkTargetRetention(gitDest, retentionCMScope, 2, v1alpha3.PruneOnEvent, 1)
 
+	m.MarkTargetRetention(gitDest, retentionCMScope, 1, v1alpha3.PruneOnEvent, 99)
 	m.MarkTargetRetention(gitDest, retentionSecretScope, 1, v1alpha3.PruneOnEvent, 99)
 
 	assert.Equal(t, 1, m.RetentionForGitTarget(gitDest).RetainedDocuments,
-		"a record from a superseded epoch must not contribute")
+		"neither a superseded revision nor a deselected scope may contribute")
 }
 
 // TestRetentionRollup_ReportsTheModeTheCountWasProducedUnder keeps the pair self-consistent. The
@@ -101,6 +136,7 @@ func TestRetentionRollup_ReportsTheModeTheCountWasProducedUnder(t *testing.T) {
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
 
 	// A legacy GitTarget stores no mode at all; the roll-up must report the effective one.
+	retentionPlan(m, gitDest, 1, retentionCMScope)
 	m.MarkTargetRetention(gitDest, retentionCMScope, 1, "", 2)
 
 	assert.Equal(t, v1alpha3.PruneOnEvent, m.RetentionForGitTarget(gitDest).Mode)
@@ -112,6 +148,8 @@ func TestRetentionRollup_IsPerGitTarget(t *testing.T) {
 	acme := types.NewResourceReference("acme", "tenant-acme")
 	other := types.NewResourceReference("other", "tenant-other")
 
+	retentionPlan(m, acme, 1, retentionCMScope)
+	retentionPlan(m, other, 1, retentionCMScope)
 	m.MarkTargetRetention(acme, retentionCMScope, 1, v1alpha3.PruneOnEvent, 7)
 
 	assert.Equal(t, 7, m.RetentionForGitTarget(acme).RetainedDocuments)
@@ -124,6 +162,7 @@ func TestRetentionRollup_IsPerGitTarget(t *testing.T) {
 func TestRetentionRollup_ForgottenTargetReportsNothing(t *testing.T) {
 	m := &Manager{}
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	retentionPlan(m, gitDest, 1, retentionCMScope)
 	m.MarkTargetRetention(gitDest, retentionCMScope, 1, v1alpha3.PruneOnEvent, 3)
 
 	m.forgetTargetRetention(gitDest)
@@ -139,6 +178,7 @@ func TestRetentionRollup_EnqueuesOnChangeOnly(t *testing.T) {
 	m := &Manager{}
 	events := m.GitPathEvents()
 	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	retentionPlan(m, gitDest, 1, retentionCMScope)
 
 	m.MarkTargetRetention(gitDest, retentionCMScope, 1, v1alpha3.PruneOnEvent, 2)
 	require.Len(t, events, 1, "the first report is a change: nothing was known before")
@@ -152,7 +192,8 @@ func TestRetentionRollup_EnqueuesOnChangeOnly(t *testing.T) {
 	m.MarkTargetRetention(gitDest, retentionCMScope, 1, v1alpha3.PruneAlways, 0)
 	assert.Len(t, events, 3, "the mode changing is a change even when the count does not")
 
+	retentionPlan(m, gitDest, 2, retentionCMScope)
 	m.MarkTargetRetention(gitDest, retentionCMScope, 2, v1alpha3.PruneAlways, 0)
 	assert.Len(t, events, 3,
-		"a new epoch that re-reports the same roll-up is not a change an operator can see")
+		"a restarted stream that re-reports the same roll-up is not a change an operator can see")
 }

@@ -73,12 +73,13 @@ type targetWatchKey struct {
 type targetWatchStream struct {
 	key targetWatchKey
 	ops OperationSet
-	// epoch is the render-fidelity epoch this stream was started into. It is captured at
-	// start, not read when a replay result is ready: a cancelled stream that read the epoch
-	// on its way out would report its scope clean in an epoch it never replayed for. Since a
-	// fidelity scope is now a cell, a stream retired by a served-version change lands on the
-	// live cell's scope rather than missing it, so the capture is what keeps it out.
-	epoch uint64
+	// revision is the incarnation of this stream's CELL, issued by the render-fidelity gate
+	// when the stream was started. It is captured at start, not read when a replay result is
+	// ready: a cancelled stream that read the current revision on its way out would report its
+	// scope clean under a revision it never replayed for. Since a fidelity scope is a cell, a
+	// stream retired by a served-version change lands on the live cell's scope rather than
+	// missing it, so the capture is what keeps it out.
+	revision uint64
 }
 
 // sourceCell is what this stream stamps on the work it queues: the cell that produced it.
@@ -159,8 +160,10 @@ func (m *Manager) replaceGitTargetWatches(
 	}
 	m.targetWatches[key] = &targetWatchSet{cancel: cancel, specs: specs}
 	m.resetTargetStreamStatesLocked(table.GitDest, keys, force)
-	epoch, fidelityChanged := m.beginTargetRenderFidelityEpochLocked(table.GitDest, keys)
+	cells := cellsForWatchKeys(keys)
+	revisions, fidelityChanged := m.reconcileTargetRenderFidelityLocked(table.GitDest, cells, cells)
 	m.targetWatchesMu.Unlock()
+	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(cells, revisions))
 	if fidelityChanged {
 		m.enqueueGitPathChange(table.GitDest)
 	}
@@ -168,9 +171,9 @@ func (m *Manager) replaceGitTargetWatches(
 	reportTargetWatchPlanDiff(log, previousPlan, desiredPlan, planErr, force)
 	for _, watchKey := range keys {
 		stream := targetWatchStream{
-			key:   watchKey,
-			ops:   streams[watchKey],
-			epoch: epoch,
+			key:      watchKey,
+			ops:      streams[watchKey],
+			revision: revisions[watchKey.Cell()],
 		}
 		go m.runTargetWatch(childCtx, log, table.GitDest, stream)
 	}
@@ -413,10 +416,10 @@ func (m *Manager) runTargetWatch(
 	releaseFacts := m.followFactsForWatch(gitDest, stream.key)
 	defer releaseFacts()
 
-	// A target-watch declaration defines the fidelity epoch. Its first session must replay even
-	// when a durable cursor exists: a replacement can add a sibling scope, and resuming an unchanged
-	// scope would otherwise leave that scope pending in the new epoch forever. Later reconnects may
-	// resume from their cursors because they stay within the same declaration and epoch.
+	// Starting a stream issues its cell a fresh fidelity revision, so its first session must
+	// replay even when a durable cursor exists: resuming would leave that scope pending under
+	// the new revision forever. Later reconnects may resume from their cursors because they stay
+	// within the same stream, and so within the same revision.
 	resumeFromCursor := false
 	for ctx.Err() == nil {
 		err := m.targetWatchReplayAndStream(ctx, log, gitDest, stream, resumeFromCursor)
@@ -741,11 +744,11 @@ func (m *Manager) enqueueReplayResync(
 	if m.EventRouter == nil {
 		return nil
 	}
-	// The epoch is the one this stream was STARTED into, never the epoch current at enqueue.
-	// A cancelled stream can still be in flight with a replay result, and reading the epoch
-	// here would let it report a scope clean in an epoch it never replayed for — reopening
-	// writes on the strength of a snapshot the new declaration never gathered. The gate
-	// already ignores a stale epoch; capturing it at start is what makes it stale.
+	// The revision is the one this stream was STARTED with, never the cell's current revision.
+	// A cancelled stream can still be in flight with a replay result, and reading the revision
+	// here would let it report a scope clean under a revision it never replayed for — reopening
+	// writes on the strength of a snapshot the new plan never gathered. The gate already
+	// ignores a superseded revision; capturing it at start is what makes it stale.
 	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
 		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCell(), desired, revision, false)
 	if err != nil {
@@ -758,7 +761,7 @@ func (m *Manager) enqueueReplayResync(
 	// The stream.key (GVR + namespace) is threaded to the drain for diagnostics. A refused
 	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather
 	// than mutating this stream's watch readiness.
-	go m.EventRouter.drainScopedResync(gitDest, stream.key.Cell(), "reconcile", stream.epoch, resultCh)
+	go m.EventRouter.drainScopedResync(gitDest, stream.key.Cell(), "reconcile", stream.revision, resultCh)
 	log.V(1).Info("target replay resync enqueued",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "revision", revision, "count", len(desired))
 	return nil
@@ -1266,4 +1269,19 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// streamRevisions is the per-cell revision map every consumer of a stream's reports is keyed by.
+// It fills in zeros when no shared render-fidelity gate is wired — the legacy data path, where a
+// zero revision is what the mark functions already treat as "not gated" — so the retention
+// roll-up still tracks exactly the cells the plan selects.
+func streamRevisions(cells []types.CellKey, revisions map[types.CellKey]uint64) map[types.CellKey]uint64 {
+	if revisions != nil {
+		return revisions
+	}
+	out := make(map[types.CellKey]uint64, len(cells))
+	for _, cell := range cells {
+		out[cell] = 0
+	}
+	return out
 }

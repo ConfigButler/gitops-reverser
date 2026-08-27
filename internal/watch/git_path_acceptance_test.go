@@ -72,7 +72,7 @@ func TestReportGitPathRefusal_SatisfiesWorkerManagerReporter(t *testing.T) {
 	assert.NotNil(t, reporter)
 }
 
-func TestRenderFidelityStatus_ReducesCurrentEpochScopes(t *testing.T) {
+func TestRenderFidelityStatus_ReducesTheCurrentPlansScopes(t *testing.T) {
 	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 	manager := &Manager{Log: logr.Discard()}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
@@ -80,37 +80,46 @@ func TestRenderFidelityStatus_ReducesCurrentEpochScopes(t *testing.T) {
 	deployment := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
 	other := targetWatchKey{GVR: configmapsGVR, Namespace: "ops"}
 
-	manager.targetWatchesMu.Lock()
-	epoch, _ := manager.beginTargetRenderFidelityEpochLocked(target, []targetWatchKey{deployment, other})
-	manager.targetWatchesMu.Unlock()
+	revisions := manager.restartAllFidelityScopes(target, deployment, other)
 
-	manager.MarkTargetRenderFidelityScopeClean(target, epoch, deployment.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[deployment.Cell()], deployment.Cell())
 	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State)
-	manager.MarkTargetRenderFidelityScopeDiverged(target, epoch, other.Cell(),
+	manager.MarkTargetRenderFidelityScopeDiverged(target, revisions[other.Cell()], other.Cell(),
 		manifestanalyzer.RenderDivergence{Field: "data.region", Token: "${REGION}"})
 	assert.Equal(t, git.RenderFidelityFalse, manager.RenderFidelityForGitTarget(target).State)
 
-	manager.MarkTargetRenderFidelityScopeClean(target, epoch, other.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[other.Cell()], other.Cell())
 	assert.Equal(t, git.RenderFidelityFalse, manager.RenderFidelityForGitTarget(target).State,
-		"a later clean result cannot overwrite the failed scope in the same epoch")
+		"a later clean result cannot overwrite the failed scope under the same revision")
 
-	manager.targetWatchesMu.Lock()
-	freshEpoch, _ := manager.beginTargetRenderFidelityEpochLocked(target, []targetWatchKey{deployment, other})
-	manager.targetWatchesMu.Unlock()
-	manager.MarkTargetRenderFidelityScopeClean(target, epoch, deployment.Cell())
+	fresh := manager.restartAllFidelityScopes(target, deployment, other)
+	manager.MarkTargetRenderFidelityScopeClean(target, revisions[deployment.Cell()], deployment.Cell())
 	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State,
-		"a stale result from the previous epoch must be ignored")
-	manager.MarkTargetRenderFidelityScopeClean(target, freshEpoch, deployment.Cell())
-	manager.MarkTargetRenderFidelityScopeClean(target, freshEpoch, other.Cell())
+		"a stale result from the previous revision must be ignored")
+	manager.MarkTargetRenderFidelityScopeClean(target, fresh[deployment.Cell()], deployment.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, fresh[other.Cell()], other.Cell())
 	assert.Equal(t, git.RenderFidelityTrue, manager.RenderFidelityForGitTarget(target).State)
 }
 
-// A stream carries the epoch it was STARTED into, so a cancelled stream still in flight with a
-// replay result cannot report a scope clean in an epoch it never replayed for. Reading the
-// current epoch when the result was ready is what made that possible, and a fidelity scope is
+// restartAllFidelityScopes reconciles the gate with every scope restarted, the shape a forced
+// recheck produces.
+func (m *Manager) restartAllFidelityScopes(
+	target types.ResourceReference,
+	keys ...targetWatchKey,
+) map[types.CellKey]uint64 {
+	cells := cellsForWatchKeys(keys)
+	m.targetWatchesMu.Lock()
+	defer m.targetWatchesMu.Unlock()
+	revisions, _ := m.reconcileTargetRenderFidelityLocked(target, cells, cells)
+	return revisions
+}
+
+// A stream carries the revision it was STARTED with, so a cancelled stream still in flight with
+// a replay result cannot report a scope clean under a revision it never replayed for. Reading
+// the cell's current revision when the result was ready is what made that possible, and a scope is
 // now a cell — so a stream retired by a served-version change lands squarely on the live cell's
 // scope instead of missing it.
-func TestTargetWatchStream_CarriesTheEpochItWasStartedInto(t *testing.T) {
+func TestTargetWatchStream_CarriesTheRevisionItWasStartedWith(t *testing.T) {
 	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 	manager := &Manager{Log: logr.Discard()}
 	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
@@ -120,22 +129,18 @@ func TestTargetWatchStream_CarriesTheEpochItWasStartedInto(t *testing.T) {
 	v2 := targetWatchKey{
 		GVR: schema.GroupVersionResource{Group: "apps", Version: "v2", Resource: "deployments"}, Namespace: "apps"}
 
-	manager.targetWatchesMu.Lock()
-	retiredEpoch, _ := manager.beginTargetRenderFidelityEpochLocked(target, []targetWatchKey{v1})
-	manager.targetWatchesMu.Unlock()
-	require.NotZero(t, retiredEpoch, "the epoch a started stream captures")
+	retired := manager.restartAllFidelityScopes(target, v1)[v1.Cell()]
+	require.NotZero(t, retired, "the revision a started stream captures")
 
-	manager.targetWatchesMu.Lock()
-	liveEpoch, _ := manager.beginTargetRenderFidelityEpochLocked(target, []targetWatchKey{v2})
-	manager.targetWatchesMu.Unlock()
-	require.NotEqual(t, retiredEpoch, liveEpoch)
+	live := manager.restartAllFidelityScopes(target, v2)[v2.Cell()]
+	require.NotEqual(t, retired, live)
 
 	// The retired v1 stream reports its replay clean. Same cell as the live v2 stream, older
-	// epoch: it must not reopen writes for a snapshot the new declaration never gathered.
-	manager.MarkTargetRenderFidelityScopeClean(target, retiredEpoch, v1.Cell())
+	// revision: it must not reopen writes for a snapshot the new plan never gathered.
+	manager.MarkTargetRenderFidelityScopeClean(target, retired, v1.Cell())
 	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State)
 
-	manager.MarkTargetRenderFidelityScopeClean(target, liveEpoch, v2.Cell())
+	manager.MarkTargetRenderFidelityScopeClean(target, live, v2.Cell())
 	assert.Equal(t, git.RenderFidelityTrue, manager.RenderFidelityForGitTarget(target).State,
 		"the live stream's own result is what reopens writes")
 }
