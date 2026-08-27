@@ -161,16 +161,12 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 	// streams are keyed on the namespaces being WATCHED.
 	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
 	if m.RuleStore == nil {
-		summary := streamSummaryForTypes(nil, nil, nil)
-		m.explainNotRunning(gitDest, "WatchRule", rule.Namespace+"/"+rule.Name, nil, summary)
-		return summary
+		return streamSummaryForTypes(nil, nil, nil)
 	}
 	compiled, ok := m.RuleStore.GetWatchRule(
 		k8stypes.NamespacedName{Name: rule.Name, Namespace: rule.Namespace})
 	if !ok {
-		summary := streamSummaryForTypes(nil, nil, nil)
-		m.explainNotRunning(gitDest, "WatchRule", rule.Namespace+"/"+rule.Name, nil, summary)
-		return summary
+		return streamSummaryForTypes(nil, nil, nil)
 	}
 
 	reg := m.registryForGitTarget(gitDest)
@@ -188,103 +184,7 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 			names[rec.Identity.GVR.GroupResource()] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
-	expected := deduplicateCells(cells)
-	summary := m.streamSummaryForExpectedKeys(gitDest, expected, names)
-	m.explainNotRunning(gitDest, "WatchRule", rule.Namespace+"/"+rule.Name, expected, summary)
-	return summary
-}
-
-// explainNotRunning names the disagreement behind a rule that is not running, when the shape of
-// that disagreement is one the plan cannot resolve by waiting.
-//
-// A rule reports readiness by resolving what it EXPECTS from the compiled rule and the type
-// registry, then looking each cell up in the published readiness surface. Those two are produced
-// on different goroutines from different snapshots, and when they disagree the rule publishes
-// Ready=False on every reconcile forever -- twice observed for a full 90s while every stream was
-// live (docs/design/watch-plane-status-convergence-failures.md, Failure A). The failure is
-// invisible from outside: the condition says "0/1 streams running" and names a type, which reads
-// exactly like a stream that has not come up.
-//
-// It is deliberately quiet for the ordinary case. A cell the plan opened and which is merely still
-// replaying resolves on its own, and logging that would bury the line that matters. Only two
-// shapes are reported, and neither converges without a plan change:
-//
-//   - the expected set is EMPTY, so `Total == 0` reads as not-running (hypothesis A1); or
-//   - the expected set names a cell the plan never opened (hypothesis A2).
-//
-// TEMPORARY, at Info. Remove it, or lower it, once Failure A is named and fixed.
-func (m *Manager) explainNotRunning(
-	gitDest types.ResourceReference,
-	kind, name string,
-	expected []types.CellKey,
-	summary StreamSummary,
-) {
-	if summary.StreamsRunning() {
-		return
-	}
-	planned := map[types.CellKey]struct{}{}
-	for _, key := range sortedTargetWatchSpecKeys(targetWatchSpecs(m.residentWatchedTypeTable(gitDest))) {
-		planned[key.Cell()] = struct{}{}
-	}
-	reported := m.watchPlane().streams[gitDest.Key()]
-	reportedNames := make([]string, 0, len(reported))
-	for cell, status := range reported {
-		reportedNames = append(reportedNames, cell.String()+"="+string(status.state))
-	}
-	sort.Strings(reportedNames)
-	plannedNames := make([]string, 0, len(planned))
-	for cell := range planned {
-		plannedNames = append(plannedNames, cell.String())
-	}
-	sort.Strings(plannedNames)
-
-	var unplanned []string
-	for _, cell := range expected {
-		if _, ok := planned[cell]; !ok {
-			unplanned = append(unplanned, cell.String())
-		}
-	}
-	if len(expected) > 0 && len(unplanned) == 0 {
-		// Every expected cell is planned, so this is a stream that has not reported yet and the
-		// next report settles it. Nothing to say.
-		return
-	}
-	hypothesis := notRunningHypothesis(expected, unplanned, len(planned))
-	m.Log.WithName("stream-readiness").Info(
-		"a rule is not running for a reason waiting will not fix",
-		"kind", kind, "rule", name, "gitDest", gitDest.String(),
-		"hypothesis", hypothesis,
-		"expectedCells", cellNames(expected),
-		"expectedButNeverPlanned", unplanned,
-		// The reported cells are named, with their states, not counted. A count cannot say WHICH
-		// cell differs, and "expected and planned but reported under a different cell" is one of
-		// the three outcomes this line exists to tell apart.
-		"reportedCells", reportedNames,
-		"plannedCells", plannedNames,
-		"summary", summary.Summary(), "reason", summary.Reason)
-}
-
-// notRunningHypothesis labels the disagreement with the hypothesis it matches, so the log says
-// which of the two it is rather than leaving the reader to compare the sets.
-func notRunningHypothesis(expected []types.CellKey, unplanned []string, plannedCount int) string {
-	if len(expected) == 0 {
-		return "A1: the rule resolved no cells at all, and 0/0 reads as not-running"
-	}
-	if plannedCount == 0 {
-		return "plan not resident: the rule was read before the target had a watch plan"
-	}
-	if len(unplanned) > 0 {
-		return "A2: the rule expects a cell the plan never opened"
-	}
-	return "unclassified"
-}
-
-func cellNames(cells []types.CellKey) []string {
-	out := make([]string, 0, len(cells))
-	for _, cell := range cells {
-		out = append(out, cell.String())
-	}
-	return out
+	return m.streamSummaryForExpectedKeys(gitDest, deduplicateCells(cells), names)
 }
 
 // StreamSummaryForClusterWatchRule reports stream readiness for one ClusterWatchRule, resolved
@@ -305,10 +205,7 @@ func (m *Manager) StreamSummaryForClusterWatchRule(rule configv1alpha3.ClusterWa
 			names[rec.Identity.GVR.GroupResource()] = streamDisplayName(rec.Identity.GVR)
 		}
 	}
-	expected := deduplicateCells(cells)
-	summary := m.streamSummaryForExpectedKeys(gitDest, expected, names)
-	m.explainNotRunning(gitDest, "ClusterWatchRule", rule.Name, expected, summary)
-	return summary
+	return m.streamSummaryForExpectedKeys(gitDest, deduplicateCells(cells), names)
 }
 
 func (m *Manager) streamSummaryForExpectedKeys(

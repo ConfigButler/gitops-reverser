@@ -301,19 +301,16 @@ func (r *EventRouter) handleScopedResyncError(
 	}
 	if errors.Is(err, git.ErrResyncSuperseded) {
 		// A newer resync for the same scope replaced this one while it was queued and runs in its
-		// place, so no WRITE was missed. Its REPORTS are missed, though: this path returns without
-		// marking acceptance, render fidelity or retention, on the reasoning that the replacement
-		// will mark them instead. That holds only if the replacement's own report is accepted --
-		// and a report is dropped when it arrives under a revision the plan has moved past.
+		// place, so no WRITE was missed. Its REPORTS are skipped, on the reasoning that the
+		// replacement marks acceptance, render fidelity and retention instead. That holds only if
+		// the replacement's own report is then accepted, and a report is refused when it arrives
+		// under a revision the plan has moved past.
 		//
-		// TEMPORARY at Info. This is normally V(1) because coalescing is routine under exactly the
-		// load it protects against, so an Info line per superseded request is noise. It is raised
-		// while a reproducible CI failure is diagnosed: status.retention.retainedDocuments stays at
-		// its pre-sweep value after `prune.mode` is widened, on a target whose files were swept
-		// correctly, and the two candidate mechanisms are this path and the revision gate in
-		// MarkTargetRetention. They are distinguishable only if both are visible. Lower it back to
-		// V(1) once the cause is named.
-		r.Log.Info("per-type "+kind+" superseded by a newer resync; its roll-up reports were skipped",
+		// V(1) because coalescing is routine under exactly the load it protects against, so an
+		// Info line per superseded request is noise. What makes a lost report visible now is the
+		// GitTarget's own RenderMatchesLive condition, which names the scopes still owing a report
+		// and the revision each owes it under -- see reduceRenderFidelity.
+		r.Log.V(1).Info("per-type "+kind+" superseded by a newer resync; its roll-up reports were skipped",
 			"gitDest", gitDest.String(), "cell", cell.String())
 		return
 	}
