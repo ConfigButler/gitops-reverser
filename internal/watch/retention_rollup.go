@@ -87,10 +87,23 @@ func (m *Manager) MarkTargetRetention(
 	// would wait for the steady requeue (minutes), which is too long for a signal an operator
 	// consults before flipping a target to `always`; with it on every report, a steadily retaining
 	// target would enqueue on every resync of every scope forever.
+	// A dropped report is recorded, not swallowed. Dropping is correct -- it is how a tail from a
+	// replaced stream is kept out -- but the CONSEQUENCE is that the published count no longer
+	// describes the mirror, and nothing re-measures it until the plan next restarts this cell,
+	// which for a settled target is the steady requeue away. A roll-up that silently stops
+	// advancing is the same class of invisible failure the storm was: it reads exactly like a
+	// converged one.
+	var dropped string
+	var installed uint64
 	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		state := s.retention[gitDest.Key()]
 		scope, selected := state.scopes[cell]
-		if !selected || revision != scope.revision {
+		if !selected {
+			dropped = "the cell is not in the current watch plan"
+			return false
+		}
+		if revision != scope.revision {
+			dropped, installed = "the reporting stream has been replaced", scope.revision
 			return false
 		}
 		// Captured BEFORE the write below, so "changed" compares what an operator would see on
@@ -105,6 +118,13 @@ func (m *Manager) MarkTargetRetention(
 		s.retention[gitDest.Key()] = state
 		return !priorReported || state.total() != priorTotal || state.mode != priorMode
 	})
+	if dropped != "" {
+		m.Log.WithName("retention").Info(
+			"retention report dropped; the published count is now stale until this cell is replanned",
+			"gitDest", gitDest.String(), "cell", cell.String(), "reason", dropped,
+			"reportedRevision", revision, "installedRevision", installed, "retained", retained)
+		return
+	}
 	if changed {
 		m.enqueueGitTargetReconcile(gitDest)
 	}

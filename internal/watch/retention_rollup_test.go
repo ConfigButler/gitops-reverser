@@ -3,6 +3,7 @@
 package watch
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -196,4 +197,66 @@ func TestRetentionRollup_EnqueuesOnChangeOnly(t *testing.T) {
 	m.MarkTargetRetention(gitDest, retentionCMScope, 2, v1alpha3.PruneAlways, 0)
 	assert.Len(t, events, 3,
 		"a restarted stream that re-reports the same roll-up is not a change an operator can see")
+}
+
+// A dropped retention report leaves the published count describing a mirror that has moved on,
+// and nothing re-measures it until the cell is replanned — which for a settled target is the
+// steady requeue away. Dropping is correct; dropping SILENTLY is what made a reproducible CI
+// failure (retainedDocuments stuck at its pre-sweep value after prune.mode was widened,
+// on a target whose files had been swept) take log archaeology to narrow and still not name.
+func TestRetentionRollup_ADroppedReportSaysSoAndWhy(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		cell          types.CellKey
+		revision      uint64
+		wantReason    string
+		wantInstalled string
+	}{
+		{
+			name:          "a stream the plan has replaced",
+			cell:          retentionCMScope,
+			revision:      1,
+			wantReason:    "the reporting stream has been replaced",
+			wantInstalled: `"installedRevision"=2`,
+		},
+		{
+			name:          "a cell the plan no longer holds",
+			cell:          retentionSecretScope,
+			revision:      2,
+			wantReason:    "the cell is not in the current watch plan",
+			wantInstalled: `"installedRevision"=0`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log, lines := recordingLogger()
+			m := &Manager{Log: log}
+			gitDest := types.NewResourceReference("acme", "tenant-acme")
+			retentionPlan(m, gitDest, 2, retentionCMScope)
+			m.MarkTargetRetention(gitDest, retentionCMScope, 2, v1alpha3.PruneOnEvent, 1)
+
+			m.MarkTargetRetention(gitDest, tc.cell, tc.revision, v1alpha3.PruneOnEvent, 0)
+
+			assert.Equal(t, 1, m.RetentionForGitTarget(gitDest).RetainedDocuments,
+				"the drop itself still stands: a stale report must not move the count")
+			require.Equal(t, 1, countContaining(*lines, "retention report dropped"),
+				"exactly one drop is reported, and it is not silent")
+			joined := strings.Join(*lines, "\n")
+			assert.Contains(t, joined, tc.wantReason, "the line names WHY it was dropped")
+			assert.Contains(t, joined, tc.wantInstalled, "and carries both revisions to compare")
+		})
+	}
+}
+
+// The steady-state path must stay quiet: an accepted report is not a drop, and logging one per
+// resync of every scope would bury the line that matters.
+func TestRetentionRollup_AnAcceptedReportLogsNothing(t *testing.T) {
+	log, lines := recordingLogger()
+	m := &Manager{Log: log}
+	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	retentionPlan(m, gitDest, 2, retentionCMScope)
+
+	m.MarkTargetRetention(gitDest, retentionCMScope, 2, v1alpha3.PruneOnEvent, 1)
+	m.MarkTargetRetention(gitDest, retentionCMScope, 2, v1alpha3.PruneOnEvent, 0)
+
+	assert.Equal(t, 0, countContaining(*lines, "retention report dropped"))
 }
