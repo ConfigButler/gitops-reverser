@@ -490,8 +490,17 @@ func TestOwner_AFailedSharedRefreshAsksForAnother(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond,
 		"a failed refresh requeues itself instead of waiting out the periodic sweep")
 
+	// But not immediately. A cluster that refuses the connection outright fails in a millisecond,
+	// and a re-request with no floor under it would hammer discovery as fast as it can say no.
+	assert.Positive(t, m.triggers().sharedFailures)
+	assert.InDelta(t, retryDelay(1), m.sharedRefreshWait(), float64(time.Second),
+		"the next attempt waits out the first rung of the ladder")
+	m.refreshSharedSnapshotsIfDue(context.Background(), logr.Discard())
+	assert.False(t, m.triggers().sharedRefreshing, "and no attempt starts before then")
+
 	// And it stops asking once it succeeds, so a healthy install is not refreshing in a loop.
 	fail.Store(false)
+	m.triggers().sharedRetryAt = time.Time{}
 	m.refreshSharedSnapshotsIfDue(context.Background(), logr.Discard())
 
 	assert.Eventually(t, func() bool {
@@ -500,4 +509,5 @@ func TestOwner_AFailedSharedRefreshAsksForAnother(t *testing.T) {
 		defer t.mu.Unlock()
 		return !t.sharedDue && !t.sharedRefreshing
 	}, 2*time.Second, 10*time.Millisecond, "a successful refresh asks for nothing")
+	assert.Zero(t, m.triggers().sharedFailures, "and clears the backoff behind it")
 }

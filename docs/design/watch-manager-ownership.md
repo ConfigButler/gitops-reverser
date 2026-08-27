@@ -593,8 +593,11 @@ context going out of scope. The pass deadline bounds the pass.
 A target pass that fails carries its own retry, in its dirty entry. A shared refresh has none, so
 one that could not gather has to re-request itself; otherwise every target keeps planning against
 snapshots that may be stale until the 30s sweep, which is the wrong latency for a cluster that has
-just become unreachable. It cannot spin: the request is served at most once per loop turn, and the
-next attempt still carries the full timeout.
+just become unreachable.
+
+The re-request needs the same backoff ladder a target pass uses, for a reason that is easy to miss:
+an unreachable cluster is slow, but a cluster that REFUSES the connection fails in a millisecond,
+and a re-request with no floor under it would hammer discovery as fast as it can say no.
 
 ### Deletion names an incarnation, and resolves it when it is queued
 

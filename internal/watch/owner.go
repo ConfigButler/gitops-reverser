@@ -151,6 +151,12 @@ type watchPlaneTriggers struct {
 	// sharedRefreshing is true while a shared refresh is in flight on its own goroutine. It is
 	// what keeps the loop from starting a second one, and from waiting on the first.
 	sharedRefreshing bool
+	// sharedFailures counts consecutive failed refreshes and sharedRetryAt is the floor the
+	// backoff ladder puts under the next attempt. A failed refresh re-requests itself, and a
+	// cluster that refuses the connection outright fails in a millisecond — without a floor those
+	// two would spin, hammering discovery as fast as it can say no.
+	sharedFailures int
+	sharedRetryAt  time.Time
 }
 
 func (m *Manager) triggers() *watchPlaneTriggers {
@@ -404,10 +410,34 @@ func (m *Manager) ownerTurn(ctx context.Context, log logr.Logger) time.Duration 
 	// behind a queue of passes.
 	entry, wait := m.nextReadyTarget()
 	if entry == nil {
-		return wait
+		// Nothing to plan. Sleep no longer than a backed-off shared refresh is owed, or a failed
+		// one would not be reattempted until something else happened to wake the loop.
+		return minDuration(wait, m.sharedRefreshWait())
 	}
 	m.runTargetPass(ctx, log, entry)
 	return 0
+}
+
+// sharedRefreshWait is how long until a backed-off shared refresh may be reattempted, or a long
+// sleep when none is owed.
+func (m *Manager) sharedRefreshWait() time.Duration {
+	t := m.triggers()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.sharedDue && !t.sweepDue {
+		return time.Hour
+	}
+	if wait := time.Until(t.sharedRetryAt); wait > 0 {
+		return wait
+	}
+	return time.Hour
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // applyPendingTeardowns tears down every GitTarget whose deletion has been queued, and stops the
@@ -479,7 +509,7 @@ func (m *Manager) staleTeardown(action forgetAction) (string, bool) {
 func (m *Manager) refreshSharedSnapshotsIfDue(ctx context.Context, log logr.Logger) {
 	t := m.triggers()
 	t.mu.Lock()
-	if t.sharedRefreshing || (!t.sharedDue && !t.sweepDue) {
+	if t.sharedRefreshing || (!t.sharedDue && !t.sweepDue) || time.Now().Before(t.sharedRetryAt) {
 		t.mu.Unlock()
 		return
 	}
@@ -497,7 +527,8 @@ func (m *Manager) refreshSharedSnapshotsIfDue(ctx context.Context, log logr.Logg
 			// should start their settle window from now rather than from the next tick.
 			t.signal()
 		}()
-		if !m.refreshSharedSnapshots(ctx, log, sweep) {
+		gathered := m.refreshSharedSnapshots(ctx, log, sweep)
+		if !gathered {
 			// A refresh that could not gather leaves every target planning against snapshots that
 			// may be stale, and unlike a target pass it has no dirty entry of its own to carry the
 			// retry. Ask for another rather than waiting out the 30s sweep: a cluster that just
@@ -508,8 +539,14 @@ func (m *Manager) refreshSharedSnapshotsIfDue(ctx context.Context, log logr.Logg
 			t.mu.Lock()
 			t.sharedDue = true
 			t.sweepDue = t.sweepDue || sweep
+			t.sharedFailures++
+			t.sharedRetryAt = time.Now().Add(retryDelay(t.sharedFailures))
 			t.mu.Unlock()
+			return
 		}
+		t.mu.Lock()
+		t.sharedFailures, t.sharedRetryAt = 0, time.Time{}
+		t.mu.Unlock()
 	}()
 }
 
