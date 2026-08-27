@@ -107,6 +107,28 @@ This file is meant to track the smaller current backlog, not historical notes.
   too often — and note the observable consequence already shipped, that toggling a rule off and on
   *inside* the window is no longer a replay.
 
+- [ ] Settle whether a retention report can be dropped on a revision mismatch.
+  `MarkTargetRetention` discards any report whose revision does not match the scope's currently
+  installed one, and `retainTargetRetentionScopes` deliberately KEEPS the previous count when a
+  stream is restarted rather than zeroing a scope nobody re-measured — both in
+  [retention_rollup.go](../internal/watch/retention_rollup.go). Together those produce a stale
+  count with no notification involved: sweep succeeds, `status.retention.retainedDocuments` stays
+  at its old value, and on a converged GitTarget the next correction is ~5 minutes away.
+
+  That is exactly the signature of an intermittent `E2E (full-manager)` failure in the
+  `prune_mode` spec "converges an existing orphan when `prune.mode` is widened"
+  (`retainedDocuments` frozen at 1 for 30s while the files it counts had already been swept).
+  A shared-event-channel fix landed for that failure and is the more likely cause, but this path
+  is **independent of it** and would produce the same symptom, so a green run does not retire it.
+
+  **The question to answer:** widening `prune.mode` sets `force`, which classifies every cell as
+  `restart` and issues fresh revisions, while the 30s periodic sweep also re-runs
+  `retainTargetRetentionScopes` for every declared target. Can a pass landing *while a replay is
+  in flight* install a revision that differs from the one the in-flight replay captured at start?
+  If yes, that replay's report is dropped on arrival and the count stays stale until something
+  else re-measures it. CI is slower than a dev machine, which would widen that window and explain
+  why it has never reproduced locally.
+
 - [ ] Fix the encryption-secret recreation flake, and settle what its contract actually is.
   `internal/controller/gittarget_controller_test.go` "Should recreate encryption secret when it
   is deleted while GitTarget still exists" fails roughly **1 run in 11, on branches and on main**,
