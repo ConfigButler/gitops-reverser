@@ -854,14 +854,22 @@ func (m *Manager) enqueueReplayResync(
 	if err != nil {
 		return err
 	}
-	if !enqueued {
-		return fmt.Errorf("target replay resync for %s on %s dropped: %w",
-			stream.key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
-	}
+	// The drain starts whether or not the request entered the FIFO. A full queue is not a silent
+	// case: EnqueueResync has ALREADY delivered ErrFinalizeQueueFull on the reply channel for the
+	// drain to record, so returning here instead left that reply in a buffered channel nobody ever
+	// read -- and with it went the only calls that mark acceptance, render fidelity and retention
+	// for this cell. The render-fidelity scope then owed a report under a revision no running
+	// stream would ever report again, which pins the GitTarget at Ready=False and, through it,
+	// every WatchRule pointing at it (docs/design/watch-plane-status-convergence-failures.md).
+	//
 	// The stream.key (GVR + namespace) is threaded to the drain for diagnostics. A refused
 	// Git path acceptance is target-level state, so the drain records GitPathAccepted=False rather
 	// than mutating this stream's watch readiness.
 	go m.EventRouter.drainScopedResync(gitDest, stream.key.Cell(), "reconcile", stream.revision, resultCh)
+	if !enqueued {
+		return fmt.Errorf("target replay resync for %s on %s dropped: %w",
+			stream.key.GVR.String(), gitDest.String(), git.ErrFinalizeQueueFull)
+	}
 	log.V(1).Info("target replay resync enqueued",
 		"gitDest", gitDest.String(), "gvr", stream.key.GVR.String(), "revision", revision, "count", len(desired))
 	return nil
