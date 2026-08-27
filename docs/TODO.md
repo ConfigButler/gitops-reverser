@@ -107,6 +107,33 @@ This file is meant to track the smaller current backlog, not historical notes.
   too often — and note the observable consequence already shipped, that toggling a rule off and on
   *inside* the window is no longer a replay.
 
+- [ ] Fix the encryption-secret recreation flake, and settle what its contract actually is.
+  `internal/controller/gittarget_controller_test.go` "Should recreate encryption secret when it
+  is deleted while GitTarget still exists" fails roughly **1 run in 11, on branches and on main**,
+  with `secrets "recreated-sops-age-key" not found` after its 45s budget. It has been
+  misattributed to at least two innocent branches, so treat a red build on this spec as ambient
+  until proven otherwise.
+
+  **Do not fix it with a Secret watch.** Any watch needs `list`+`watch` on Secrets, which this
+  project deliberately does not grant: `cmd/main.go` excludes Secrets from the manager cache,
+  [gittarget_controller.go](../internal/controller/gittarget_controller.go) records that a
+  full-object Secret watch was tried and removed because it retained every Secret value in
+  memory, and [rbac.md](rbac.md) advertises "cannot enumerate Secrets" as a security guarantee.
+  Recovery must stay polled; only the cadence is in question. Nor is a third widening of the
+  budget the answer — it has already been raised twice, months apart, and is capped deliberately
+  as the spec's implicit SLO.
+
+  **Unconfirmed root cause, to verify first:** recreation rides the periodic requeue, and
+  `gitTargetRequeue` returns `RequeueStreamSettleInterval` (10s) only for a NON-converged target
+  — 45s is 4.5 ticks of that. Several early-return gate paths return `RequeueSteadyInterval`
+  (**5 minutes**) regardless of convergence: the `Validated` gate and both `EncryptionConfigured`
+  gates. A reconcile landing on one of those after the deletion puts the next one five minutes
+  out, which no 45s budget survives. Note the tension that exposes: the code comment beside the
+  no-Secret-watch decision says recovery is picked up by "the periodic reconcile
+  (`RequeueSteadyInterval`)" — so the documented contract may be five minutes while the spec
+  asserts forty-five seconds, in which case the spec is asserting something the design never
+  promised. Settle which is wrong before changing either.
+
 - [ ] Re-enable the `goconst` linter with a path-scoped exclusion instead of the current repo-wide
   disable in [.golangci.yml](../.golangci.yml). Exempting `test/` and `internal/git/commit.go`
   would silence the existing noise (~45 findings, mostly test fixtures) while still catching
