@@ -123,9 +123,13 @@ and refused **by name**, the way `patchesJson6902` refuses under its own name to
 
 1. The chart directory lies wholly inside the target's write jail, and every file the
    build reads (values files included) is local to the tree.
-2. **`values.schema.json` is required**, with `additionalProperties: false`. The schema is
-   the chart author *declaring* the input surface — a closed leaf set — which is the same
-   declared-over-inferred principle the layout model rests on
+2. **`values.schema.json` is required**, and its closure has to be **effective and
+   recursive**. A root-level `additionalProperties: false` closes only the root: every
+   nested object's effective schema must reject undeclared keys too, including through
+   `$ref` and through `allOf`/`anyOf`/`oneOf` composition, and the boundary has to say what
+   `patternProperties` and an unresolved reference mean for closure before any of this is
+   built. The schema is the chart author *declaring* the input surface, a closed leaf set,
+   which is the same declared-over-inferred principle the layout model rests on
    ([gittarget-layout-model.md](../gittarget-layout-model.md)). A values key the schema
    does not declare refuses the folder.
 3. No `dependencies:` in `Chart.yaml`, no `charts/` directory, no `Chart.lock`. The chart
@@ -138,6 +142,20 @@ and refused **by name**, the way `patchesJson6902` refuses under its own name to
    declaration, once #293 lands) names the chart and its values files. Whether helm-light
    surfaces as its own `layout.kind` or as a second renderer under the existing structural
    kind is an open question for the API wave, not for this boundary.
+7. **The render root identifies exactly one writable values file, exclusively.** Argo
+   applies value inputs by precedence: later `valueFiles` override earlier ones, and
+   `parameters`, `valuesObject` and inline `values` override the files. A render root that
+   uses any of those, or that shares a values file with another render root, has no unique
+   write destination, so an edit could land in the wrong file or move several environments
+   at once. Either refuse those inputs, or carry every input file, its source identity and
+   its precedence in the probe key, and prove the writable file is referenced by this render
+   root alone.
+8. **The render context is pinned, or the charts that read it are refused.** The local
+   oracle is only sound while its inputs match the ones Argo renders with. Argo supplies
+   `kubeVersion`, `apiVersions`, the release name, its own Helm version and build-environment
+   values, and any of them can change the output. The double-render gate does not catch
+   this: it repeats the same local context twice. The verifier must render under the target
+   Argo CD's context, or the boundary must refuse charts that read these inputs at all.
 
 ## The refusal taxonomy
 

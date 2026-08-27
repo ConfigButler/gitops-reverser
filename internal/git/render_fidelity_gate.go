@@ -92,7 +92,8 @@ func NewRenderFidelityGate() *RenderFidelityGate {
 //     construction.
 //
 // Restarting every scope also clears a divergence a live write latched, since that is a
-// complete fresh measurement of the target.
+// complete fresh measurement of the target. An empty scope set does not: it restarts every
+// scope only vacuously.
 //
 // It returns Unknown while scopes are pending, or True for the vacuous zero-scope case.
 func (g *RenderFidelityGate) Reconcile(
@@ -124,7 +125,12 @@ func (g *RenderFidelityGate) Reconcile(
 		revisions[scope] = result.revision
 	}
 	state.scopes = next
-	if fresh == len(scopes) {
+	// An EMPTY plan restarts every scope vacuously, and a vacuous full restart is the absence
+	// of a measurement rather than a fresh one. Without the length guard a target whose rules
+	// stopped selecting anything would clear a write divergence it never repaired, and the
+	// writes that do not come from a watch — an atomic request, a CommitRequest — would be
+	// admitted again on the strength of nothing.
+	if len(scopes) > 0 && fresh == len(scopes) {
 		state.writeDivergence = nil
 	}
 	g.targets[target.Key()] = state

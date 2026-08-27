@@ -77,10 +77,10 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Collapse wildcard source-namespace stream fan-out.
   `WatchRule.spec.rules[].sourceNamespace: "*"` expands to one selection per admitted namespace, and
-  `targetWatchSpecs` opens one stream per cell — one type in one namespace — while
-  `git.ResyncScope` names a single namespace, so a wildcard over N admitted namespaces and M
-  matched types costs N×M informers and
-  N×M resync scopes, where a cluster-wide ClusterWatchRule costs M. Expansion is deliberate — one
+  `targetWatchSpecs` opens one stream per cell (one type in one named namespace, or one type
+  cluster-wide) while `git.ResyncScope` names a single namespace, so a wildcard over N admitted
+  namespaces and M matched types costs N×M informers and N×M resync scopes, where a cluster-wide
+  ClusterWatchRule costs M. Expansion is deliberate — one
   stream per namespace is what keeps each mark-and-sweep bounded by exactly the slice it gathered —
   but the cost grows with tenant count. The direction is a cluster-wide stream whose resync scope
   carries a namespace **set** rather than one name, so the gather stays exactly as narrow while the

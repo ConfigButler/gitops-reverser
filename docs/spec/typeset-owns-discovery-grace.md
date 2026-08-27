@@ -23,7 +23,7 @@
   its own: where the plan still refers to that axis it says explicitly that the axis is
   deleted, so nothing here has to be mentally subtracted. `Registry.Subscribe` and
   `LifecycleEvent` survive with no production consumer, deliberately: see
-  [target-watch-plan.md](../design/target-watch-plan.md), "What a cell leaving means".
+  [target-watch-plan.md](../design/target-watch-plan.md#what-a-cell-leaving-means).
 - `Stats()`/`DegradedGroupVersions()` survive as per-scan facts (gauge/log surfaces
   unchanged); registry tests for the relocated semantics live in
   `internal/typeset/scan_test.go`.

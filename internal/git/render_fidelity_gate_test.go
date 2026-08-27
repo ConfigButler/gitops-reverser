@@ -251,3 +251,23 @@ func TestRenderFidelityGate_DroppedScopeStopsCounting(t *testing.T) {
 	_, applied = gate.RecordScopeClean(target, revisions[configMap], configMap)
 	assert.False(t, applied, "a dropped cell's tail reports into nothing")
 }
+
+// A plan that selects nothing restarts every scope only vacuously, which is the absence of a
+// measurement rather than a fresh one. Clearing on it would readmit the writes that do not come
+// from a watch — an atomic request, a CommitRequest — on the strength of nothing.
+func TestRenderFidelityGate_AnEmptyPlanDoesNotClearAWriteDivergence(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+	scope := fidelityScope("apps", "deployments")
+
+	_, revisions := restartAll(gate, target, scope)
+	_, applied := gate.RecordScopeClean(target, revisions[scope], scope)
+	require.True(t, applied)
+	gate.Fail(target, manifestanalyzer.RenderDivergence{Field: "data.region", Token: "${REGION}"})
+	require.False(t, gate.AllowsWrites(target))
+
+	status, _ := gate.Reconcile(target, nil, nil)
+
+	assert.Equal(t, RenderFidelityFalse, status.State)
+	assert.False(t, gate.AllowsWrites(target), "a plan that selects nothing measures nothing")
+}

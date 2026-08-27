@@ -88,7 +88,7 @@ flowchart TB
     API -->|"audit webhook"| AUD["audit ingest"]
     AUD --> FS["per-type audit fact stream<br/>(Redis)"]
 
-    API -->|"watch"| TW["target watch<br/>one goroutine per<br/>(GitTarget, GVR, scope)"]
+    API -->|"watch"| TW["target watch<br/>one goroutine per<br/>(GitTarget, cell)"]
 
     TW --> SAN["sanitize + followability<br/>+ no-op suppression"]
     SAN --> GR["attribution grace window<br/>(head-of-line, per event)"]
@@ -121,12 +121,14 @@ Three properties carry the rest of this page:
 ingestion and not losing deletes", "Watch event ordering", and "Mark and sweep
 resync".
 
-### 2.1 The stream set is declarative already; only the diff is missing
+### 2.1 The stream set was declarative already; only the diff was missing
 
-This is the finding that reframes everything else. `targetWatchSpecs(table)`
-already computes the desired stream set as a map from one cell to that stream's
-operation filter. What is missing is a **per-key** diff. Today the comparison is
-whole-set equality, so a declaration is either untouched or replaced wholesale:
+This is the finding that reframed everything else, and it is now built:
+[target-watch-plan.md](target-watch-plan.md) carries the design and the state.
+`targetWatchSpecs(table)` already computed the desired stream set as a map from
+one cell to that stream's operation filter, and what was missing was a
+**per-cell** diff. The comparison was whole-set equality, so a declaration was
+either untouched or replaced wholesale:
 
 ```mermaid
 flowchart TB
