@@ -511,3 +511,49 @@ func TestOwner_AFailedSharedRefreshAsksForAnother(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "a successful refresh asks for nothing")
 	assert.Zero(t, m.triggers().sharedFailures, "and clears the backoff behind it")
 }
+
+// targetPassTimeout used to be a value nobody read. A pass is in-memory work that never dials, so
+// no call inside it selects on a context and none of them return early on their own — the deadline
+// bounded nothing, the owner loop would have blocked forever on any step that stalled, and the
+// `timed_out` pass outcome the metrics doc tells operators to alert on could never be emitted.
+func TestOwner_APassThatIsOutOfTimeStopsAndSaysSo(t *testing.T) {
+	m := ownerTestManager()
+	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	m.EventRouter = NewEventRouter(workerManager, m, nil, logr.Discard())
+	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
+
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	err := m.applyTargetPlan(expired, declareIntent{ref: ref, clusterID: configPlaneClusterID})
+
+	require.Error(t, err, "a pass with no time left must fail rather than run on")
+	require.ErrorIs(t, err, context.DeadlineExceeded,
+		"and wrap the sentinel, which is what classifies the pass outcome")
+	assert.True(t, isDeadlineExceeded(err), "so the timed_out outcome is reachable")
+	assert.Contains(t, err.Error(), "refresh the watched type tables",
+		"a timed-out pass names the step it ran out before")
+}
+
+// The pass outcome an operator reads is the failure count and the message. An earlier cut also
+// carried LastAttempt and LastSuccess, which nothing read as a time — so every steady-state pass
+// republished the whole snapshot to advance a clock no status projects, once per target per 30s
+// sweep, forever.
+func TestRecordPassOutcome_ASteadyStatePassRepublishesNothing(t *testing.T) {
+	m := ownerTestManager()
+	ref := types.NewResourceReference("target", "team-a").WithUID("uid-1")
+
+	m.recordPassOutcome(ref, time.Now(), nil)
+	first := m.watchPlane()
+	require.True(t, first.passes[ref.Key()].Landed, "the first success is published")
+
+	m.recordPassOutcome(ref, time.Now(), nil)
+	assert.Same(t, first, m.watchPlane(), "a second identical success moves no published pointer")
+
+	m.recordPassOutcome(ref, time.Now(), errors.New("boom"))
+	failed := m.watchPlane()
+	require.NotSame(t, first, failed, "a failure is a change")
+	assert.Equal(t, 1, failed.passes[ref.Key()].Failures)
+	assert.Equal(t, "boom", failed.passes[ref.Key()].LastError)
+	assert.True(t, failed.passes[ref.Key()].Landed, "and it does not un-land an earlier success")
+}

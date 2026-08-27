@@ -4,6 +4,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -36,19 +37,22 @@ const (
 func (m *Manager) recordPassOutcome(ref types.ResourceReference, started time.Time, passErr error) {
 	elapsed := time.Since(started)
 
+	// Republish only when something an outside reader would notice moved. The periodic sweep runs a
+	// pass per target every 30s, and a steady-state pass changes nothing about this status, so an
+	// unconditional republish cloned the whole snapshot on every one of them forever.
 	m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		status := s.passes[ref.Key()]
-		status.LastAttempt = started
+		before := status
 		if passErr == nil {
 			status.Failures = 0
 			status.LastError = ""
-			status.LastSuccess = started
+			status.Landed = true
 		} else {
 			status.Failures++
 			status.LastError = passErr.Error()
 		}
 		s.passes[ref.Key()] = status
-		return true
+		return status != before
 	})
 
 	if telemetry.WatchPlanPassDurationSeconds != nil {
@@ -75,8 +79,12 @@ func (m *Manager) recordPassOutcome(ref types.ResourceReference, started time.Ti
 // isDeadlineExceeded reports whether a pass ended on its own deadline rather than on a real
 // failure. The two want separate alerts: "running and failing" and "not finishing" have
 // different causes.
+//
+// It matches on the wrapped sentinel rather than on the rendered message. passDeadline wraps
+// ctx.Err() with %w for exactly this, and a string match would have gone on quietly agreeing with
+// any error that happened to contain the words.
 func isDeadlineExceeded(err error) bool {
-	return err != nil && strings.Contains(err.Error(), context.DeadlineExceeded.Error())
+	return errors.Is(err, context.DeadlineExceeded)
 }
 
 // recordTriggerLocked counts one trigger by the reason that produced it, and counts the ones the

@@ -274,7 +274,7 @@ func (m *Manager) declareIntentFor(
 	// no-op, and the 30s periodic sweep remains the floor under it.
 	t.mu.Lock()
 	prior := t.declares[gitDest.Key()]
-	landed := !m.watchPlane().passes[gitDest.Key()].LastSuccess.IsZero()
+	landed := m.watchPlane().passes[gitDest.Key()].Landed
 	if prior != nil {
 		next.force = next.force || prior.force
 	}
@@ -346,7 +346,7 @@ func (m *Manager) DeclareStatusForGitTarget(gitDest types.ResourceReference) Dec
 	return DeclareStatus{
 		Declared:  declared,
 		ClusterID: clusterID,
-		Pending:   declared && pass.LastSuccess.IsZero(),
+		Pending:   declared && !pass.Landed,
 		Failures:  pass.Failures,
 		LastError: pass.LastError,
 	}

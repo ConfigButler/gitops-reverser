@@ -151,7 +151,19 @@ func (m *Manager) ensureGitTargetWatches(
 	if m.EventRouter == nil {
 		return nil
 	}
+	// The pass deadline is checked at every step boundary, because that is the only place it CAN
+	// be: a pass is in-memory work that never dials, so no call inside it selects on a context and
+	// none of them would return early on their own. Without these checks targetPassTimeout was a
+	// value nobody read — the owner loop would block indefinitely on any step that stalled, which
+	// is the availability failure docs/design/watch-manager-ownership.md exists to remove, and the
+	// `timed_out` pass outcome could never be emitted.
+	if err := passDeadline(ctx, gitDest, "refresh the watched type tables"); err != nil {
+		return err
+	}
 	m.refreshWatchedTypeTables()
+	if err := passDeadline(ctx, gitDest, "resolve the cluster API surface"); err != nil {
+		return err
+	}
 	if !m.registryForGitTarget(gitDest).Ready() {
 		return fmt.Errorf("aborting watch setup for %s: the cluster API surface has not been observed yet",
 			gitDest.String())
@@ -162,8 +174,22 @@ func (m *Manager) ensureGitTargetWatches(
 		return fmt.Errorf("aborting watch setup for %s: %s within the removal grace (currently unserved)",
 			gitDest.String(), gvkListSummary(retained))
 	}
+	if err := passDeadline(ctx, gitDest, "apply the watch plan"); err != nil {
+		return err
+	}
 	force := len(forceRecheck) > 0 && forceRecheck[0]
 	return m.replaceGitTargetWatches(ctx, table, force)
+}
+
+// passDeadline reports the pass's deadline as an error naming the step that was about to run, so
+// a timed-out pass says WHERE it ran out rather than only that it did. It wraps the context error,
+// which is what lets recordPassOutcome classify the outcome with errors.Is.
+func passDeadline(ctx context.Context, gitDest types.ResourceReference, step string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("watch plan pass for %s ran out before it could %s: %w",
+			gitDest.String(), step, err)
+	}
+	return nil
 }
 
 // replaceGitTargetWatches brings one GitTarget's running streams into line with its table.

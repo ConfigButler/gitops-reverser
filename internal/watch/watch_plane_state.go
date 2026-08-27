@@ -3,8 +3,6 @@
 package watch
 
 import (
-	"time"
-
 	v1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -51,14 +49,19 @@ type watchPlaneState struct {
 }
 
 // targetPassStatus is how one GitTarget's most recent plan pass ended.
+//
+// It carries no timestamps. An earlier cut held LastAttempt and LastSuccess, and nothing ever
+// read either as a time — only `LastSuccess.IsZero()`, which is this bool. Keeping them would
+// have meant republishing the whole snapshot once per target per periodic sweep, forever, to
+// advance a clock no status projects.
 type targetPassStatus struct {
 	// Failures counts consecutive failed passes. Zero after any success.
 	Failures int
 	// LastError is the most recent failure's message, empty after a success.
 	LastError string
-	// LastAttempt and LastSuccess are when a pass last ran and last succeeded.
-	LastAttempt time.Time
-	LastSuccess time.Time
+	// Landed reports whether a pass has ever succeeded for this target. It is what separates a
+	// target still waiting for its first plan from one that is merely dirty again.
+	Landed bool
 }
 
 // DeclareStatus is the observable state of a GitTarget's declaration: whether the owner still

@@ -101,8 +101,14 @@ func (m *Manager) markTargetStreamState(
 	// event. Without one the data plane converges in about two seconds and the status follows up
 	// to ten seconds later, on RequeueStreamSettleInterval, having learned nothing in between.
 	//
-	// On the TRANSITION only. The data plane reports readiness continuously, and an event per
-	// report would enqueue every rule of a target on every watch event it handles.
+	// On a CHANGE only. The data plane reports readiness continuously, and an event per report
+	// would enqueue every rule of a target on every watch event it handles.
+	//
+	// "Change" is the whole status, message included, not just the state: the message is published
+	// on the rule's condition, so a stream that stays Blocked for a new reason has moved something
+	// a reader sees. A stream flapping between distinct error messages therefore does emit per
+	// message — bounded by the non-blocking sends below, and the alternative is a condition that
+	// keeps describing the first failure.
 	if changed {
 		m.enqueueStreamStateChange(gitDest)
 	}
