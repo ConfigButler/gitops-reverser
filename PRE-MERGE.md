@@ -185,6 +185,62 @@ runs never showed it.
 
 ---
 
+## 2b. The CI unit-test failure — a DIFFERENT, pre-existing flake
+
+Run `33079663111` (head `26683846`) failed **Unit tests**. This is not the same problem
+as §2, and it is **not caused by anything on this branch**.
+
+```text
+[FAIL] GitTarget Controller Security ... [It] Should recreate encryption secret
+       when it is deleted while GitTarget still exists
+       gittarget_controller_test.go:1140
+       Timed out after 45.001s.
+       secrets "recreated-sops-age-key" not found
+```
+
+### Why it is not ours
+
+- `internal/controller/gittarget_controller_test.go` is **untouched by this branch** —
+  `git diff main...HEAD` on that path is empty.
+- This exact failure is a **known pre-existing flake**, previously measured at roughly
+  **1 in 11 on a branch AND on main**. Compare against main with a matching sample
+  before blaming a branch.
+- Locally: the controller suite passed **3/3** consecutive uncached runs, plus green in
+  two full `task test` runs on this head.
+- The branch changes neither `gitTargetRequeue` nor `RequeueSteadyInterval` (5m) nor
+  `RequeueStreamSettleInterval` (10s).
+
+### Root cause, for whoever fixes it properly
+
+Secret recreation rides the **periodic requeue** — `SetupWithManager` deliberately runs
+no control-plane Secret watch, so nothing enqueues the GitTarget when its age-key Secret
+disappears. The spec budgets `7*RequeueStreamSettleInterval/2 + timeout` = **45s**, i.e.
+4.5 ticks of the 10s fast loop.
+
+But several early-return gate paths in `gittarget_controller.go` return
+**`RequeueSteadyInterval` — five minutes** — regardless of convergence: the `Validated`
+gate (~:352) and the `EncryptionConfigured` gate (~:388, ~:396). If the reconcile that
+follows the Secret deletion takes one of those paths, the next one is five minutes away
+and a 45s budget **cannot** be met no matter how loaded or idle the runner is.
+
+That is why widening the budget has not fixed it. The comment at the spec says the
+budget was already raised twice ("twice, months apart"), and it is capped deliberately
+as the spec's implicit SLO. A third widening would have to go past five minutes, which
+would make the assertion meaningless.
+
+The real fix is a product change — recreation must not depend on landing a fast-loop
+reconcile — and it belongs in **its own PR**, not bolted onto a 36-commit branch that is
+trying to merge. Options: give the encryption Secret an owned-object watch (and revisit
+the reasoning in `SetupWithManager` that rejected one), or have the blocked-gate paths
+keep the fast cadence while an encryption Secret they own is missing.
+
+### What to do now
+
+Re-run the failed job. It is a flake, on a spec this branch does not touch, at a rate
+already documented on main.
+
+---
+
 ## 3. Review findings — status
 
 From the full-branch review. Everything below is **applied on the working tree**, lint
