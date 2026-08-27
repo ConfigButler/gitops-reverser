@@ -161,12 +161,16 @@ func (m *Manager) StreamSummaryForWatchRule(rule configv1alpha3.WatchRule) Strea
 	// streams are keyed on the namespaces being WATCHED.
 	gitDest := types.NewResourceReference(rule.Spec.TargetRef.Name, rule.Namespace)
 	if m.RuleStore == nil {
-		return streamSummaryForTypes(nil, nil, nil)
+		summary := streamSummaryForTypes(nil, nil, nil)
+		m.explainNotRunning(gitDest, "WatchRule", rule.Namespace+"/"+rule.Name, nil, summary)
+		return summary
 	}
 	compiled, ok := m.RuleStore.GetWatchRule(
 		k8stypes.NamespacedName{Name: rule.Name, Namespace: rule.Namespace})
 	if !ok {
-		return streamSummaryForTypes(nil, nil, nil)
+		summary := streamSummaryForTypes(nil, nil, nil)
+		m.explainNotRunning(gitDest, "WatchRule", rule.Namespace+"/"+rule.Name, nil, summary)
+		return summary
 	}
 
 	reg := m.registryForGitTarget(gitDest)
@@ -223,6 +227,16 @@ func (m *Manager) explainNotRunning(
 		planned[key.Cell()] = struct{}{}
 	}
 	reported := m.watchPlane().streams[gitDest.Key()]
+	reportedNames := make([]string, 0, len(reported))
+	for cell, status := range reported {
+		reportedNames = append(reportedNames, cell.String()+"="+string(status.state))
+	}
+	sort.Strings(reportedNames)
+	plannedNames := make([]string, 0, len(planned))
+	for cell := range planned {
+		plannedNames = append(plannedNames, cell.String())
+	}
+	sort.Strings(plannedNames)
 
 	var unplanned []string
 	for _, cell := range expected {
@@ -241,7 +255,11 @@ func (m *Manager) explainNotRunning(
 		"hypothesis", notRunningHypothesis(expected, unplanned),
 		"expectedCells", cellNames(expected),
 		"expectedButNeverPlanned", unplanned,
-		"plannedCells", len(planned), "reportedCells", len(reported),
+		// The reported cells are named, with their states, not counted. A count cannot say WHICH
+		// cell differs, and "expected and planned but reported under a different cell" is one of
+		// the three outcomes this line exists to tell apart.
+		"reportedCells", reportedNames,
+		"plannedCells", plannedNames,
 		"summary", summary.Summary(), "reason", summary.Reason)
 }
 

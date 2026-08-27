@@ -91,7 +91,7 @@ implementation is [`StreamsRunning`](../../internal/watch/stream_readiness.go), 
 maps its false result directly to `StreamsRunning=False` in
 [`streamConditionStatus`](../../internal/controller/stream_status.go).
 
-**A2 — expected and opened are computed from different snapshots. Confirmed as the failure class.**
+**A2 — expected and opened are computed from different snapshots. Identified as the likely failure class.**
 
 The rule's expected set is rebuilt from `reg.Followable()` at **read** time, on the controller
 worker, in [`StreamSummaryForWatchRule`](../../internal/watch/stream_readiness.go):
@@ -106,6 +106,10 @@ The plan's opened set came from the watched-type table at **plan** time, on the 
 [`replaceGitTargetWatches`](../../internal/watch/target_watch.go). A type that becomes followable
 between the two makes the rule expect a cell that by construction does not exist yet. The e2e
 suite installs CRDs concurrently across specs, which is exactly the condition that produces it.
+
+The mechanism is **structurally reachable** — §2.6 reproduces it in a unit test — but that is not
+the same as proving it caused either observed occurrence. The diagnostic in §2.4 is what settles
+that on the next reproduction; until then treat A2 as the leading candidate, not the verdict.
 
 This is not merely a missed notification. The WatchRule controller's own comment says the summary
 read describes state from **before** the owner pass ([`watchrule_controller.go`](../../internal/controller/watchrule_controller.go)).
@@ -156,10 +160,11 @@ has not reached or has left `Streaming`; expected but not planned identifies the
 Step 2 of §2.5 — narrow the status read to the cells the plan opened — was implemented and
 reverted. It works, and it is the wrong change to make on the evidence available.
 
-**What was built.** A reproduction test first: a wildcard rule whose compiled namespace set has
-expanded to two namespaces while the plan has opened one. It fails against the current
-implementation exactly as predicted, which confirms the A2 mechanism is reachable and is not
-merely a reading of the code.
+**What was built.** A temporary reproduction test first: a wildcard rule whose compiled namespace
+set had expanded to two namespaces while the plan had opened one. It failed against the then-current
+implementation exactly as predicted, confirming the A2 mechanism is reachable and is not merely a
+reading of the code. The permanent coverage now asserts the diagnostic and preserves the current
+not-ready semantics.
 
 Narrowing was then tried two ways — intersecting against the resident watched-type table, and
 against the published readiness surface (which `resetTargetStreamStates` maintains as exactly the

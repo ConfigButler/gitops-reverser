@@ -3,6 +3,7 @@
 package watch
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -59,6 +60,32 @@ func srcnsOverrideRule(sourceNamespace string) configv1alpha3.WatchRule {
 func compileForSummary(m *Manager, rule configv1alpha3.WatchRule, scope [][]string) {
 	m.RuleStore.AddOrUpdateWatchRule(
 		rule, scope, "acme", "tenant-acme", "git", "tenant-acme", "main", "tenants/acme")
+}
+
+// seedResidentTable publishes the owner's last planned cell set without refreshing it. The
+// status path must be able to diagnose a rule whose compiled expectations have moved ahead of it.
+func (m *Manager) seedResidentTable(gitDest types.ResourceReference, keys ...targetWatchKey) {
+	m.ensureWatchedTypeStore()
+	m.watchedTypes.mu.Lock()
+	defer m.watchedTypes.mu.Unlock()
+	if m.watchedTypes.tables == nil {
+		m.watchedTypes.tables = map[string]WatchedTypeTable{}
+	}
+	table := WatchedTypeTable{GitDest: gitDest}
+	byGVR := map[schema.GroupVersionResource]*WatchedType{}
+	for _, key := range keys {
+		wt, ok := byGVR[key.GVR]
+		if !ok {
+			table.Types = append(table.Types, WatchedType{
+				GVR: key.GVR, Namespaced: true, Preferred: true,
+				NamespaceOps: map[string]OperationSet{},
+			})
+			wt = &table.Types[len(table.Types)-1]
+			byGVR[key.GVR] = wt
+		}
+		wt.NamespaceOps[key.Namespace] = OperationSet{}
+	}
+	m.watchedTypes.tables[gitDest.Key()] = table
 }
 
 func srcnsGitDest() types.ResourceReference {
@@ -151,6 +178,31 @@ func TestStreamSummaryForWatchRule_WildcardWithOnePendingNamespaceIsNotReady(t *
 		"one namespace of a wildcard still converging must hold the type back")
 }
 
+// TestStreamSummaryForWatchRule_ExplainsAnExpectedCellOutsideThePlan permanently covers the
+// A2 diagnostic. The compiled rule expects two namespaces while the owner's resident plan still
+// contains one; the readiness result remains false, but the log names the missing planned cell.
+func TestStreamSummaryForWatchRule_ExplainsAnExpectedCellOutsideThePlan(t *testing.T) {
+	log, lines := recordingLogger()
+	m := srcnsSummaryManager(t)
+	m.Log = log
+	rule := srcnsOverrideRule(configv1alpha3.SourceNamespaceWildcard)
+	compileForSummary(m, rule, itemScope("repo-config", "team-payments"))
+
+	opened := targetWatchKey{GVR: srcnsConfigMaps(), Namespace: "repo-config"}
+	m.seedResidentTable(srcnsGitDest(), opened)
+	m.seedStreamState(srcnsGitDest(), opened, targetStreamStatus{state: StreamStateStreaming})
+
+	summary := m.StreamSummaryForWatchRule(rule)
+
+	assert.False(t, summary.StreamsRunning())
+	joined := strings.Join(*lines, "\n")
+	assert.Contains(t, joined, "A2: the rule expects a cell the plan never opened")
+	assert.Contains(t, joined, "expectedButNeverPlanned")
+	assert.Contains(t, joined, "team-payments")
+	assert.Contains(t, joined, "plannedCells")
+	assert.Contains(t, joined, "repo-config")
+}
+
 // TestStreamSummaryForWatchRule_UncompiledRuleExpectsNoStreams: a rule the gate refused (or one the
 // store has not seeded yet) expects nothing, rather than inventing keys from its spec.
 func TestStreamSummaryForWatchRule_UncompiledRuleExpectsNoStreams(t *testing.T) {
@@ -160,6 +212,22 @@ func TestStreamSummaryForWatchRule_UncompiledRuleExpectsNoStreams(t *testing.T) 
 
 	assert.Equal(t, 0, summary.Total)
 	assert.False(t, summary.StreamsRunning())
+}
+
+// TestStreamSummaryForWatchRule_ExplainsAnEmptyExpectation covers the early-return path, where
+// an uncompiled rule has no expected cells and must still identify the 0/0 A1 condition.
+func TestStreamSummaryForWatchRule_ExplainsAnEmptyExpectation(t *testing.T) {
+	log, lines := recordingLogger()
+	m := srcnsSummaryManager(t)
+	m.Log = log
+
+	summary := m.StreamSummaryForWatchRule(srcnsOverrideRule("repo-config"))
+
+	assert.False(t, summary.StreamsRunning())
+	joined := strings.Join(*lines, "\n")
+	assert.Contains(t, joined, "A1: the rule resolved no cells at all")
+	assert.Contains(t, joined, "expectedCells")
+	assert.Contains(t, joined, "plannedCells")
 }
 
 // TestStreamSummaryForWatchRule_LegacyRuleUnchanged: with no override the watched namespace IS the
