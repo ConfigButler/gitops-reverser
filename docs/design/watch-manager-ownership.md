@@ -400,7 +400,7 @@ no reason to walk every resident table because one rule changed.
 Its filter goes with it, and that is worth naming separately: it re-plans only targets
 already present in `m.targetWatches`, which means **a target whose first declare never
 completed is never picked up again**. That property is a trap. It is the reason a stuck
-GitTarget in [`E2E-DECLARE-INVESTIGATION.md`](../../E2E-DECLARE-INVESTIGATION.md) could
+GitTarget in [`e2e-declare-investigation.md`](../finished/e2e-declare-investigation.md) could
 never recover on its own. A dirty set marked on intent rather than on success does not
 have it.
 

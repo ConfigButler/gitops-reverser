@@ -5,10 +5,11 @@ context can continue without re-deriving anything. **Facts are separated from
 hypotheses.** Nothing below is a conclusion unless it says so.
 
 Status at the time of writing: **the branch is NOT mergeable.** A reproducible e2e
-failure is open and its cause is not established.
+failure is open and its cause is not established. That status is preserved as written;
+the investigation is closed, and the note below records how.
 
 > **Closed.** Two structural causes were found and removed by
-> [`docs/design/watch-manager-ownership.md`](docs/design/watch-manager-ownership.md), and the
+> [`docs/design/watch-manager-ownership.md`](../design/watch-manager-ownership.md), and the
 > temporary `declare-trace` phase logging this document asked for has been deleted with them:
 >
 > - `refreshRunningTargetWatches` re-planned only targets already present in `m.targetWatches`, so
@@ -43,7 +44,7 @@ Commits on top of `main` (`ff966f5d` is the merge-base):
 | `060bb739`, `e2685f51` | docs |
 | `eeb231ab` | write-divergence guard for an empty plan + doc fixes (**unpushed**) |
 
-Design: [`docs/design/target-watch-plan.md`](docs/design/target-watch-plan.md).
+Design: [`docs/design/target-watch-plan.md`](../design/target-watch-plan.md).
 
 ### The behavior change that matters here (`e591ebd1`)
 

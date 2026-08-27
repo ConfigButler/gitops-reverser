@@ -87,6 +87,26 @@ This file is meant to track the smaller current backlog, not historical notes.
   stream count drops to M. Also revisit `WatchRuleStreamsStatus.PendingSample`, whose five-entry cap
   stops being representative at N×M.
 
+- [ ] Subscribe the watch plane to `typeset.Registry` lifecycle events.
+  `Registry.Subscribe` has **no production observer**: the events are computed on every `Update`
+  and dispatched to nobody, because the Materializer that consumed them is gone. It is the producer
+  of the only signal that can separate a type genuinely withdrawn (a settled `TypeRemoved`, past
+  `RemovalGrace`) from a discovery wobble, and mistaking the second for the first deletes a user's
+  manifests. Its intended consumer is the `stop` classification in
+  [target-watch-plan.md](design/target-watch-plan.md), "What a cell leaving means": a settled
+  removal drops its cell from the plan and the Git-side sweep converges the mirror under the
+  target's existing `spec.prune.mode`. Nothing has to be decided first — only removal on *intent*
+  waits on an open question. Tracked here so an unconsumed producer with a good comment on it does
+  not quietly rot into dead code.
+
+- [ ] Decide whether the watch-plane settle window should be configurable.
+  `settleWindow` (2s) and `maxSettleWait` (10s) in [owner.go](../internal/watch/owner.go) are fixed,
+  on the same reasoning `DefaultCommitWindow` gives one layer down: what a user cares about is how
+  quickly their config takes effect, not how the controller batches its internal work. Revisit if a
+  real deployment reports either that config changes feel slow or that a busy config plane replans
+  too often — and note the observable consequence already shipped, that toggling a rule off and on
+  *inside* the window is no longer a replay.
+
 - [ ] Re-enable the `goconst` linter with a path-scoped exclusion instead of the current repo-wide
   disable in [.golangci.yml](../.golangci.yml). Exempting `test/` and `internal/git/commit.go`
   would silence the existing noise (~45 findings, mostly test fixtures) while still catching
