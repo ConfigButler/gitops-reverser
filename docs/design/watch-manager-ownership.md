@@ -142,6 +142,38 @@ starving.
 so a busy target cannot delay a quiet one. Deletes batch the same way: `kubectl delete -f`
 over the same folder is one settle window, not five passes.
 
+### The window is a heuristic, not a correctness boundary
+
+Kubernetes has no "apply complete" event. The objects in one `kubectl apply` are separate
+writes, and admission, cache propagation, controller scheduling and API load can spread
+their watch events well past two seconds. So the window is a good bet about human
+behavior, never a guarantee that a batch arrived whole.
+
+Nothing may depend on the batch being complete. A trigger that lands after the pass has
+run is not an error and not a lost update: it dirties the target again and the next pass
+converges. The design has to be correct if every event arrives in its own window, and the
+window only has to be *usually* right to be worth having.
+
+### The dirty sequence: a change during a pass is never lost
+
+The race that matters is a trigger arriving while its target's pass is running. Clearing
+the dirty mark at the end of a pass would drop it.
+
+So each target carries a **dirty sequence**. The owner captures it when the pass starts,
+and at the end clears the dirty state only if the sequence is unchanged. If it moved, the
+target stays dirty and is scheduled again immediately, with no settle window, because the
+change it carries has already waited one out.
+
+### The pass reads the rule store, not the trigger
+
+A trigger names a target. It does not carry the rule that caused it, and the owner must
+not build a plan from whichever rule controller happened to fire first. The pass reads a
+coherent snapshot of the rule store and the resident tables, so the plan it builds is the
+configuration as it stands at that moment, whole.
+
+This is what makes the batching meaningful rather than cosmetic: five triggers collapsing
+into one pass is only useful if that pass sees all five objects.
+
 ### This supersedes "never debounce the first declaration"
 
 An earlier revision of this page said a GitTarget the owner has never seen should be
@@ -164,6 +196,18 @@ that class of bug rather than avoiding it.
 The cost of the reversal is bounded and small: a new GitTarget's first watch opens up to
 2s later than it might have. The benefit is that the first plan it declares is the one
 the user wrote.
+
+## The contract
+
+> A trigger marks a target dirty. The owner waits for two seconds of silence, then
+> reconciles the latest coherent configuration once. New triggers during a pass are
+> retained and cause another pass. A failed pass stays dirty and retries with backoff.
+
+The word doing the work is **once**, and it means *one settled configuration adjustment*,
+not *one function invocation*. A pass can fail, time out, or find that the world moved
+under it, and every one of those produces another attempt. What the user is promised is
+that a burst of related edits converges to one plan, not that the operator called a
+function exactly once.
 
 ## The latency budget
 
@@ -194,6 +238,12 @@ So the isolation boundary is **per target**:
   trusting the owner loop tomorrow.
 - A target whose pass exceeds its deadline stays dirty and is retried, so a deadline is
   a yield rather than a drop.
+
+**A settle window bounds when work STARTS, never when it finishes.** The plan still
+depends on discovery and on source-namespace state, and both are I/O. Two seconds of
+silence says nothing about how long the pass then takes. That is why the deadline and the
+cached snapshots below are part of this design rather than an optimization: without them
+the debounce would be a promise the system cannot keep.
 
 Without those three, the honest description of this proposal would be "the same
 availability failure, in a different goroutine".
@@ -260,6 +310,83 @@ component:
 
 `targetWatchesMu` is currently held across three of those four. That is the lock this
 design is about, and it is a better target than the total count.
+
+## What this deletes
+
+The point of the design is that the system gets **smaller**, and that there is one way to
+ask the watch plane to do something instead of four. This is the inventory.
+
+### Four trigger mechanisms become one
+
+Today a change reaches the watch plane by one of four routes, each with its own
+semantics:
+
+| Today | After |
+| --- | --- |
+| `ReconcileForRuleChange` called inline from six controller call sites | a trigger post |
+| `DeclareForGitTarget` called synchronously from the GitTarget reconcile | a trigger post |
+| `catalogRefreshCh`, a single-slot channel drained by the manager loop | the same trigger queue |
+| the 30s periodic ticker | kept, as the floor |
+
+`signalCatalogRefresh` and `catalogRefreshCh` go: a coalescing trigger queue that already
+carries per-target and global invalidation has no use for a second, cruder one beside it.
+The exported `ReconcileForRuleChange` on the `WatchManager` interface
+(`internal/controller/constants.go`) narrows to a trigger call, and the six call sites
+stop doing work.
+
+### The global fan-out goes
+
+`refreshRunningTargetWatches` is deleted outright. The owner walks its dirty set; there is
+no reason to walk every resident table because one rule changed.
+
+Its filter goes with it, and that is worth naming separately: it re-plans only targets
+already present in `m.targetWatches`, which means **a target whose first declare never
+completed is never picked up again**. That property is a trap. It is the reason a stuck
+GitTarget in [`E2E-DECLARE-INVESTIGATION.md`](../../E2E-DECLARE-INVESTIGATION.md) could
+never recover on its own. A dirty set marked on intent rather than on success does not
+have it.
+
+### Roughly half the mutexes go
+
+Not because a count is a goal, but because each one disappears for a stated reason.
+
+**Deleted, replaced by the owner being the sole writer:**
+
+- `targetWatchesMu`, which today guards four maps at once: `targetWatches`,
+  `targetStreamStates`, `targetGitPathAcceptance` and `targetRenderFidelity`. Its five
+  outside writers all become reports: `markTargetStreamState` (stream goroutines),
+  `MarkTargetGitPathAccepted` / `MarkTargetGitPathRefused` and `recordRenderFidelityStatus`
+  (drain goroutines).
+- `targetRetentionMu`, whose only outside writer is `MarkTargetRetention` from the same
+  drain path.
+
+**Deleted, replaced by a published snapshot:** `gitTargetUIDsMu`, `gitTargetPruneModesMu`,
+`gitTargetClustersMu` and `declaredGVRsMu` guard state written only at declare time and
+read by the data plane. A value written by one goroutine and read by many is a snapshot,
+not a critical section.
+
+**Kept, and worth saying why:**
+
+- `gitPathEventsMu` and `sourceNamespaceEventsMu` guard channel handoffs to
+  controller-runtime event sources. That is a queue boundary, not shared state.
+- `triggersMu` guards the API-surface informer set, which has its own lifecycle.
+- `RenderFidelityGate.mu` stays because the gate is genuinely shared: branch workers call
+  `AllowsWrites` on their own goroutines, from another package, on the write path. It is
+  not watch-plane state that an owner loop can absorb.
+
+### Behavior that stops being accidental
+
+Not a deletion, but the same simplification. Today a failed declare is retried by whatever
+reconcile happens next, which works and is nobody's decision. After this it is a dirty
+target with a backoff, which is a decision, written down, and observable.
+
+### What must NOT collapse into this
+
+One way of doing things is the goal, so the exceptions have to be explicit. The branch
+worker's queue and its commit window are a different mechanism at a different layer, on
+the write path, with a different hazard (a stale snapshot overtaking a newer write). They
+are deliberately not merged into the trigger queue, and
+[target-watch-plan.md](target-watch-plan.md) carries their reasoning.
 
 ## What this does not change
 
