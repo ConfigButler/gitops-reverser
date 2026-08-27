@@ -183,7 +183,37 @@ mismatch, so the only way to reach the gate and leave no trace is **not to reach
 Those two are what §4.4's line separates, and it is **not** in this build (`32b75e02` postdates
 `cf08e467`). The next reproduction on a build that carries it closes A.
 
-### 2.6 The failure class
+### 2.6 The third reproduction — local, fully instrumented, and still silent
+
+`task test-e2e` on `f277f074` reproduced A locally, same spec and same shape:
+
+```text
+watchrule "srcns-wildcard-rule" condition Ready: status="False" reason="Rechecking"
+  message="Waiting for 1 of 4 render scopes to report under their current revision:
+           secrets in 1787867245-test-srcns-wildcard (owes revision 4)"
+```
+
+This build carried every diagnostic. What it says:
+
+| Signal | Count | Meaning |
+| --- | --- | --- |
+| `a render scope result was not applied` | **0** | the gate never refused a report, on any branch, and was never handed a zero revision |
+| `superseded by a newer resync` | **0** | restored to Info, so this zero is now meaningful |
+| `per-type reconcile failed/refused/timed out` | 23, **none for this target** | all belong to the intentional refusal specs |
+
+And upstream is again clean: the plan went `keep=2 start=2` at 21:53:33 issuing revisions 3 and 4,
+the secrets-wildcard replay completed, and its resync was handled.
+
+**The remaining ambiguity is a hole in the instrumentation itself.**
+`MarkTargetRenderFidelityScopeClean` logs its refusals and says nothing when it succeeds, so
+silence from it means EITHER "never called" OR "called and accepted". Those are opposite
+conclusions and the reproduction cannot distinguish them.
+
+That is the same asymmetry this page has now found three times — a component that reports what it
+rejects and stays silent about what it takes. §4.4's line closed it for the refusals; the accept
+path is closed in the commit that follows this one.
+
+### 2.7 The failure class
 
 Every scope in `state.scopes` must reach `finished && clean` for the target to be Ready. A scope
 reports exactly once per revision, from
@@ -368,7 +398,8 @@ Reading the next A reproduction:
 | `stream carries no revision` | the stream was started without one though the gate issued it one — the plan pass and the gate disagree about the cell |
 | a `render scope result was not applied` line with a non-zero `reportedRevision` | the gate holds the scope but would not take the report — one of `recordScope`'s `!found` guards |
 | owes revision N, a refusal clause naming a different revision | a stale tail; the live stream's own report is what to look for next |
-| owes revision N, no refusal clause, and NO `not applied` line at all | nothing reached the mark path — the search moves to the drain and to `enqueueReplayResync`, whose `ctx.Done()` guard returns nil as if it had succeeded |
+| a `render scope result accepted` line for the cell, yet the condition still names it | the gate took the report and the scope is STILL pending — the disagreement is inside the gate, or a later `Reconcile` reset it |
+| no `accepted` line and no `not applied` line | nothing reached the mark path — the search moves to the drain and to `enqueueReplayResync`, whose `ctx.Done()` guard returns nil as if it had succeeded |
 
 Reading the next B reproduction:
 

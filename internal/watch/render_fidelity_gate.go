@@ -76,6 +76,17 @@ func (m *Manager) MarkTargetRenderFidelityScopeClean(
 		m.logUnappliedFidelityReport(target, cell, revision, "clean")
 		return
 	}
+	// TEMPORARY at Info, while Failure A is open. The refusal paths above are logged and the
+	// accept path was not, so SILENCE from this function was ambiguous between "never called" and
+	// "called and accepted" -- and the reproduction that finally carried every other diagnostic
+	// produced exactly that silence, which decided nothing
+	// (docs/design/watch-plane-status-convergence-failures.md, §2.7).
+	//
+	// It is bounded: a scope accepts one report per revision, and a revision only moves when the
+	// plan restarts the cell. Lower it to V(1) once A is named.
+	m.Log.WithName("render-fidelity").Info("render scope result accepted",
+		"gitDest", target.String(), "cell", cell.String(), "revision", revision,
+		"state", string(status.State), "status", status.Message)
 	m.recordRenderFidelityStatus(target, status)
 }
 
