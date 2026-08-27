@@ -572,6 +572,30 @@ The per-target deadline stays, as the backstop it should have been: with no I/O 
 should ever reach it. The alternative — per-target workers — was rejected because it would give
 `targetWatches` more than one writer again, which is the thing this page is about.
 
+### A stream's lifetime is the manager's, not the pass that started it
+
+The most expensive mistake this change made, and the one only e2e caught. A pass runs under a
+deadline, so its context is cancelled the moment it returns — and streams were being started as
+children of it. Every stream therefore died the instant its plan finished being applied.
+
+The signature is worth recording, because it reads like health: the plan log says `start:1`, the
+stream set holds the cell, and every later pass reports it as `keep:1` and so never restarts it.
+Readiness never leaves `Replaying`, the render-fidelity gate never leaves `Rechecking`, and every
+WatchRule pointing at that target sits `Ready=False` forever. Nothing logs an error, because
+nothing failed.
+
+So the parent of a target watch is `Manager.watchLifetime`, set once by `Start`. Cancelling one
+stream is the owner's decision, made per cell through the plan diff — never a side effect of a
+context going out of scope. The pass deadline bounds the pass.
+
+### A failed shared refresh asks for another
+
+A target pass that fails carries its own retry, in its dirty entry. A shared refresh has none, so
+one that could not gather has to re-request itself; otherwise every target keeps planning against
+snapshots that may be stale until the 30s sweep, which is the wrong latency for a cluster that has
+just become unreachable. It cannot spin: the request is served at most once per loop turn, and the
+next attempt still carries the full timeout.
+
 ### Deletion names an incarnation, and resolves it when it is queued
 
 The page says a trigger carries the UID and the owner drops one whose UID no longer matches. Both

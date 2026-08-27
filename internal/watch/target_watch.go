@@ -261,7 +261,7 @@ func (m *Manager) startTargetWatchStreams(
 		if !ok {
 			continue
 		}
-		streamCtx, cancel := context.WithCancel(ctx)
+		streamCtx, cancel := context.WithCancel(m.streamParent(ctx))
 		set.streams[cell] = &runningTargetWatch{key: watchKey, spec: specs[watchKey], cancel: cancel}
 		out = append(out, startingTargetWatch{
 			ctx: streamCtx,
@@ -273,6 +273,15 @@ func (m *Manager) startTargetWatchStreams(
 		})
 	}
 	return out
+}
+
+// streamParent returns the context every target watch is started under: the manager's lifetime.
+// See Manager.watchLifetime for why it is emphatically not the caller's.
+func (m *Manager) streamParent(fallback context.Context) context.Context {
+	if held := m.watchLifetime.Load(); held != nil {
+		return *held
+	}
+	return fallback
 }
 
 // keysByCell indexes the declared keys by the cell each one covers. targetWatchStreams

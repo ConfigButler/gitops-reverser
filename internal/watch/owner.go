@@ -497,17 +497,32 @@ func (m *Manager) refreshSharedSnapshotsIfDue(ctx context.Context, log logr.Logg
 			// should start their settle window from now rather than from the next tick.
 			t.signal()
 		}()
-		m.refreshSharedSnapshots(ctx, log, sweep)
+		if !m.refreshSharedSnapshots(ctx, log, sweep) {
+			// A refresh that could not gather leaves every target planning against snapshots that
+			// may be stale, and unlike a target pass it has no dirty entry of its own to carry the
+			// retry. Ask for another rather than waiting out the 30s sweep: a cluster that just
+			// became unreachable is exactly when the plan is most likely to be wrong. A failed
+			// refresh that keeps failing therefore retries on the sweep cadence at worst and
+			// immediately at best, and it cannot spin, because the request is served at most once
+			// per loop turn and the next attempt still carries the full timeout.
+			t.mu.Lock()
+			t.sharedDue = true
+			t.sweepDue = t.sweepDue || sweep
+			t.mu.Unlock()
+		}
 	}()
 }
 
-// refreshSharedSnapshots is the refresh itself, under its own deadline.
-func (m *Manager) refreshSharedSnapshots(ctx context.Context, log logr.Logger, sweep bool) {
+// refreshSharedSnapshots is the refresh itself, under its own deadline. It reports whether the
+// shared state it publishes can be trusted.
+func (m *Manager) refreshSharedSnapshots(ctx context.Context, log logr.Logger, sweep bool) bool {
 	refreshCtx, cancel := context.WithTimeout(ctx, sharedRefreshTimeout)
 	defer cancel()
 
+	gathered := true
 	if err := m.RefreshAPIResourceCatalog(refreshCtx); err != nil {
-		log.Error(err, "API resource catalog refresh failed; the affected targets stay dirty")
+		log.Error(err, "API resource catalog refresh failed; it will be retried")
+		gathered = false
 	}
 	// Re-list the source-cluster Namespace labels any selector policy has asked about BEFORE the
 	// tables are re-resolved: this is where a source-namespace grant or revocation is observed.
@@ -520,6 +535,7 @@ func (m *Manager) refreshSharedSnapshots(ctx context.Context, log logr.Logger, s
 	before := m.watchPlanFingerprints()
 	m.refreshWatchedTypeTables()
 	m.markInvalidatedTargets(before, m.watchPlanFingerprints(), sweep)
+	return gathered
 }
 
 // markInvalidatedTargets marks the declared targets a shared refresh actually invalidated: the

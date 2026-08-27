@@ -177,6 +177,20 @@ type Manager struct {
 	// under a lock that the woken goroutine then has to contend for. See owner.go.
 	targetWatches map[string]*targetWatchSet
 
+	// watchLifetime is the parent of every target watch's context: the manager's own lifetime,
+	// set once by Start.
+	//
+	// It is deliberately NOT the context of the pass that starts a stream. A pass runs under a
+	// deadline and its context is cancelled the moment it returns, so parenting a stream to it
+	// would kill that stream the instant the plan finished being applied — the plan would read as
+	// applied while nothing was watching. A stream's lifetime is the manager's; the pass's
+	// deadline bounds the pass. Cancelling one stream is the owner's decision, made per cell
+	// through the plan diff, never a side effect of a context going out of scope.
+	//
+	// nil on a Manager that was never started, which is the shape tests drive; streamParent then
+	// falls back to the caller's context, which in that setting IS the manager's lifetime.
+	watchLifetime atomic.Pointer[context.Context]
+
 	// watchTriggers is the coalescing intake the owner drains: the dirty set, the declare records,
 	// and the pending deletions. triggerInit builds it lazily so a zero-value Manager works in
 	// tests.
@@ -233,6 +247,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	log := m.Log.WithName("watch")
 	log.Info("watch ingestion manager starting (watch-first ingestion)")
 	defer log.Info("watch ingestion manager stopping")
+
+	// Every target watch is parented here, not to the pass that starts it.
+	m.watchLifetime.Store(&ctx)
 
 	// Arm the trigger informers before the first refresh: each successful catalog refresh
 	// re-evaluates which triggers discovery actually serves, and starts the ones that

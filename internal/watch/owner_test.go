@@ -5,6 +5,7 @@ package watch
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -421,4 +422,82 @@ func TestOwner_APassNeverDialsForAnUnobservedCluster(t *testing.T) {
 	m.refreshSharedSnapshotsIfDue(context.Background(), logr.Discard())
 	assert.Eventually(t, func() bool { return len(dials) > 0 }, 2*time.Second, 10*time.Millisecond,
 		"the shared refresh dials on its own goroutine")
+}
+
+// A pass runs under a deadline, and its context is cancelled the moment it returns. A stream
+// parented to it therefore dies the instant the plan finishes being applied — the plan reads as
+// applied while nothing is watching, readiness never leaves Replaying, and the next pass sees the
+// cell as KEPT so it never restarts either. A stream's lifetime is the manager's.
+func TestOwner_AStreamOutlivesThePassThatStartedIt(t *testing.T) {
+	lifetime, stopManager := context.WithCancel(context.Background())
+	defer stopManager()
+
+	m := ownerTestManager()
+	m.watchLifetime.Store(&lifetime)
+	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	m.EventRouter = NewEventRouter(workerManager, m, nil, logr.Discard())
+	gitDest := types.NewResourceReference("target", "team-a")
+
+	var streamCtx context.Context
+	passCtx, endPass := context.WithCancel(context.Background())
+	started := m.startTargetWatchStreams(
+		passCtx,
+		m.targetWatchSet(gitDest),
+		keysByCell([]targetWatchKey{{GVR: configmapsGVR, Namespace: "apps"}}),
+		map[targetWatchKey]OperationSet{},
+		map[targetWatchKey]string{},
+		map[types.CellKey]uint64{},
+		[]types.CellKey{types.CellKeyFor(configmapsGVR, "apps")},
+	)
+	require.Len(t, started, 1)
+	streamCtx = started[0].ctx
+
+	// The pass returns, which is what its deferred cancel does.
+	endPass()
+
+	require.NoError(t, streamCtx.Err(), "the stream must survive the pass that started it")
+
+	// It is the MANAGER's lifetime that ends it — and, before that, the owner's own per-cell
+	// cancel through the plan diff.
+	stopManager()
+	assert.Eventually(t, func() bool { return streamCtx.Err() != nil }, time.Second, 5*time.Millisecond,
+		"and stop when the manager does")
+}
+
+// A target pass that fails carries its own retry, in its dirty entry. A shared refresh has no
+// dirty entry, so a failed one has to ask for itself again — otherwise every target keeps planning
+// against snapshots that may be stale until the 30s sweep, which is exactly the wrong latency for
+// a cluster that has just become unreachable.
+func TestOwner_AFailedSharedRefreshAsksForAnother(t *testing.T) {
+	m := ownerTestManager()
+	var fail atomic.Bool
+	fail.Store(true)
+	m.discoveryClient = func() (apiResourceDiscovery, error) {
+		if fail.Load() {
+			return nil, errors.New("the cluster is unreachable")
+		}
+		return newCommonTestDiscovery(), nil
+	}
+
+	m.signalSharedRefresh()
+	m.refreshSharedSnapshotsIfDue(context.Background(), logr.Discard())
+
+	assert.Eventually(t, func() bool {
+		t := m.triggers()
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		return t.sharedDue && !t.sharedRefreshing
+	}, 2*time.Second, 10*time.Millisecond,
+		"a failed refresh requeues itself instead of waiting out the periodic sweep")
+
+	// And it stops asking once it succeeds, so a healthy install is not refreshing in a loop.
+	fail.Store(false)
+	m.refreshSharedSnapshotsIfDue(context.Background(), logr.Discard())
+
+	assert.Eventually(t, func() bool {
+		t := m.triggers()
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		return !t.sharedDue && !t.sharedRefreshing
+	}, 2*time.Second, 10*time.Millisecond, "a successful refresh asks for nothing")
 }
