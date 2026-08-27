@@ -387,6 +387,19 @@ That accounts for every observation, including the two that resisted explanation
 focused low-load attempts passed) and why the staleness lasts **minutes rather than the 10s** a
 non-converged target would wait.
 
+**Confirmed independently**, same run, different spec and a different scale — `quickstart-install`
+on a 5-scope target:
+
+```text
+gate: ingresses.networking.k8s.io … rev 5 -> True
+12 publishes, the LAST:  True/RenderMatchesLive  converged=true  requeue=5m0s
+~100s later:             gittarget … RenderMatchesLive=Unknown(Rechecking: … owes revision 5)
+```
+
+Twelve reconciles rather than sixty-six, five scopes rather than sixty-one, and the same outcome:
+the reconcile that computed `True` lost the write and took the converged cadence with it. The
+mechanism does not need a large scope count, only two reconciles close enough together to conflict.
+
 **The fix** records the loss rather than returning it — a conflict is expected and must not become
 a reconcile error for every controller using this helper — and the GitTarget reconcile asks
 `writeLost()` before choosing its requeue, taking the 10s settle interval instead of the converged
