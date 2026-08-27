@@ -96,7 +96,7 @@ this GitTarget claim". Every source cluster gets its own instance of the whole s
 | `WatchedTypeTable` | [`internal/watch/watched_type_table.go`](../internal/watch/watched_type_table.go) | the per-GitTarget resident set of claimed and followable `(GVR, scope)` with its operation filter |
 | Source-namespace scope | [`internal/watch/source_namespace_scope.go`](../internal/watch/source_namespace_scope.go) | Namespace label snapshots for `allowedSourceNamespaces` selectors, refreshed on the manager's cadence rather than by an informer |
 | `clusterContext` | [`internal/watch/cluster_context.go`](../internal/watch/cluster_context.go) | one per distinct cluster: catalog, registry, dynamic client, discovery client, reachability |
-| Type lifecycle | [`internal/typeset/lifecycle.go`](../internal/typeset/lifecycle.go) | names each verdict transition (`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`) so a consumer reacts to an edge instead of diffing tables. `Registry.Subscribe` has no observer yet: it is the withdrawal signal [`design/target-watch-plan.md`](design/target-watch-plan.md) §3.3 is built to consume |
+| Type lifecycle | [`internal/typeset/lifecycle.go`](../internal/typeset/lifecycle.go) | names each verdict transition (`TypeActivated`, `TypeWobbling`, `TypeRecovered`, `TypeRemoved`, `TypeRefused`) so a consumer reacts to an edge instead of diffing tables. `Registry.Subscribe` has no observer yet; it is a future input to the watch plan |
 
 ### Data plane
 
@@ -214,9 +214,9 @@ watched-type table:
 
 They agree today only because each re-derives the same answer from the same inputs, and the runner
 then cancels and rebuilds every stream whenever any part of the set changes. That is the problem
-[`design/target-watch-plan.md`](design/target-watch-plan.md) sets out to fix, with one diffed plan,
-four outcomes (`keep`, `restart`, `start`, `stop`), and a per-cell lease instead of a target-wide
-generation.
+[`design/target-watch-plan.md`](design/target-watch-plan.md) sets out to fix: diff the plan by cell,
+and start, restart or cancel only the cells that changed. The branch worker's queue is untouched by
+that plan, so a canceled cell's already-queued work still runs.
 
 ## From a served type to an open stream
 
