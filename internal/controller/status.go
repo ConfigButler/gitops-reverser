@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -88,6 +89,20 @@ type reconcileStatus struct {
 // keeps the loser's answer until its periodic requeue
 // (docs/design/watch-plane-status-convergence-failures.md, §2.12).
 func (s *reconcileStatus) writeLost() bool { return s.writeLostToRace }
+
+// requeueAfter is the cadence a reconcile should come back on, shortened to the settle interval
+// when its status write was lost.
+//
+// Every controller in this package has the same exposure, because they share commit() AND the
+// GenerationChangedPredicate that filters status-only updates: a converged object whose write lost
+// a race keeps the winner's older answer for its full steady interval, with nothing to correct it.
+// Fixing that at one call site would have left the same bug in the other four.
+func (s *reconcileStatus) requeueAfter(cadence time.Duration) time.Duration {
+	if s.writeLostToRace {
+		return RequeueStreamSettleInterval
+	}
+	return cadence
+}
 
 // beginStatus opens the status session. Call it once, immediately after the object is read and
 // before any condition is written.

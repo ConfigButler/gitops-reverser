@@ -352,7 +352,7 @@ func (r *ClusterWatchRuleReconciler) commitRule(
 	if rd.converging() {
 		return ctrl.Result{RequeueAfter: RequeueStreamSettleInterval}, nil
 	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+	return ctrl.Result{RequeueAfter: st.requeueAfter(RequeueSteadyInterval)}, nil
 }
 
 func (r *ClusterWatchRuleReconciler) setGitTargetReadyCondition(

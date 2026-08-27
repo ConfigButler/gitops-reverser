@@ -183,7 +183,7 @@ func (r *ClusterProviderReconciler) reconcileClusterProvider(
 			log.Info("First ClusterProvider validation completed successfully", "name", provider.Name)
 		})
 	}
-	return ctrl.Result{RequeueAfter: RequeueSteadyInterval}, nil
+	return ctrl.Result{RequeueAfter: st.requeueAfter(RequeueSteadyInterval)}, nil
 }
 
 // validateProviderKubeConfig is the legibility gate for spec.kubeConfig (feeds Validated). It
