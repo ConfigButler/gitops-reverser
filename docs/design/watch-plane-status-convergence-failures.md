@@ -26,7 +26,7 @@ about themselves than they did.
 
 | # | Symptom | Seen | Verdict |
 | --- | --- | --- | --- |
-| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 4× (CI 3×, local once) | **Open.** Not a streams failure at all — the GitTarget's render-fidelity gate never converges. Narrowed to the gate's four refusal branches (§2.5) |
+| **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 5× (CI 4×, local once) | **Shape solved (§2.9).** Not a streams failure, and NOT a stuck gate: the gate converges and the GitTarget is not reconciled to publish it. Mechanism narrowed to three candidates (§2.10) |
 | **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 3× (CI twice, local once) | **Open**, and narrowed to the roll-up's accept path. One hypothesis tried and withdrawn — see §3.3 |
 | C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | Unclassified, and probably unrelated |
 | D | Encryption-secret recreation spec times out | 1× (CI) | **Ambient, pre-existing** — see §5 |
@@ -262,7 +262,61 @@ long-lived target accumulates different numbers per scope.
 condition must require the state to persist (60s+) before treating it as a reproduction, or it will
 fire on every ordinary replan.
 
-### 2.9 The failure class
+### 2.9 SOLVED SHAPE: the gate converges and the GitTarget's status does not follow
+
+Run `33120703394`, `E2E (full-manager)`, on `e3356796` — the first build carrying the accept-path
+log. The rule failed with the usual message, and the controller log answers it outright:
+
+```text
+22:16:18  accepted  secrets in …-srcns-source     rev 2 -> Unknown
+22:16:18  accepted  configmaps in …-srcns-source  rev 1 -> True
+22:16:43  accepted  configmaps in …-srcns-wildcard rev 3 -> Unknown
+22:16:43  accepted  secrets in …-srcns-wildcard   rev 4 -> True   "Every rendered token matches live"
+```
+
+**The gate accepted every report, including the one the condition said was owed, and reached
+`True` at 22:16:43.** The spec failed at 22:19:14 with the rule still reporting
+`secrets in … (owes revision 4)`.
+
+Zero `not applied` lines. Zero superseded lines. The gate was never stuck.
+
+**So Failure A is not a watch-plane defect at all. It is a status-publication defect.** Every
+earlier section of this page read the rule's message as a live view of the gate; it is a copy of
+the GitTarget's stored condition (§2.7), and the copy went stale.
+
+Which copy is proven, too:
+
+- the WatchRule reconciled **every 10s** from 22:16:43 to past 22:18:03 and stayed `False`, so the
+  rule's own requeue is not at fault;
+- `renderAxis` is fed from `RenderFidelityForGitTarget`, which returns `gate.Status(target)` —
+  a LIVE read — so **any** GitTarget reconcile after 22:16:43 would have published `True`.
+
+Therefore the GitTarget was **not reconciled at all** for ~2.5 minutes after its gate converged.
+
+### 2.10 What remains for A
+
+The remaining question is narrow and mechanical: why did the GitTarget not reconcile?
+
+1. **A dropped enqueue.** `enqueueGitTargetReconcile` is a non-blocking send into a single
+   256-slot channel and is silently dropped when full — the hazard `14eeef46` split stream
+   transitions out of, for exactly this reason. Under the load this leg runs (163 WatchRule
+   reconciles in the window) a load-bearing fidelity enqueue can be crowded out.
+2. **The 5-minute steady requeue.** `gitTargetRequeue` gives a CONVERGED target
+   `RequeueSteadyInterval` (5 min) and a non-converged one 10s. A target that converged, then had
+   cells added, then lost its enqueue, waits the full five minutes — which matches the observed
+   2.5-minute-and-counting staleness better than the 10s loop does.
+3. **A publish-ordering artefact.** The two accepts land in the same second and publish the status
+   each drain OBSERVED, not the gate's current one, so a stale `Unknown` can be written to
+   `watchPlaneState.fidelity` after a fresh `True`. That surface is only used for change detection,
+   so it cannot make the condition wrong — but it can suppress or misorder the enqueue that (1)
+   depends on.
+
+These are distinguishable by logging the GitTarget's reconcile and the render axis it publishes,
+which is the next instrumentation step. Note that (3) is worth fixing on its own merits regardless:
+publishing the status a drain observed rather than the gate's current status is a race with no
+upside.
+
+### 2.11 The failure class
 
 Every scope in `state.scopes` must reach `finished && clean` for the target to be Ready. A scope
 reports exactly once per revision, from
