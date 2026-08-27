@@ -15,13 +15,13 @@ related:
 **The short version.** A rule edit is applied by the controller worker that observed
 it, synchronously, and it re-plans every GitTarget in the process rather than the one
 the rule names. The watch manager has no owner, so eleven mutexes stand in for one.
-This proposes the opposite shape: controllers post a trigger and return, one loop owns
-the state and does the work, and repeated triggers for a GitTarget collapse into one
-pass over it.
+This proposes an actor: controllers submit intent, one loop mutates the watch plane,
+the data plane reports back through the same channel, and repeated requests for a
+GitTarget collapse into one pass.
 
-This is a follow-up to [target-watch-plan.md](target-watch-plan.md), not part of it.
-That plan made the WORK cheap, per cell. This one is about how often the work is asked
-for, and by whom.
+This is a follow-up to [target-watch-plan.md](target-watch-plan.md). That plan made the
+WORK cheap, per cell. This one is about how often the work is asked for, by whom, and
+what happens when one target's work will not finish.
 
 ## What happens today
 
@@ -76,76 +76,138 @@ Rule changes bypass it and call straight through. So the shape being proposed he
 not new to this codebase; it is already the design for one trigger and not for the
 others.
 
-## The proposal
+## The destination is an actor, not a lock refactor
 
-**One loop owns the watch plane. Everything else posts a trigger and returns.**
+> **Correction.** An earlier draft of this page said the loop owns `targetWatches`
+> while also describing stream and worker reports as concurrent writes to the same
+> state. Those are two different models and cannot both be the design. The message
+> model below is the destination; keeping small locks is a migration step toward it,
+> not the end state.
 
 ```text
-WatchRule / ClusterWatchRule reconcile ─┐
-GitTarget reconcile                     ├─→ trigger set ──→ owner loop ──→ declare
-API-surface informer                    │   (coalescing)     (debounced)
-periodic ticker                         ─┘
+controllers  ──Trigger{target, uid, reason}──┐
+streams      ──Report{target, cell, state, revision}──┤
+branch workers ──Report{target, fidelity|retention}──┤
+                                                     ▼
+                                              owner loop
+                                   (sole writer of watch-plane state)
+                                                     │
+                                    publishes immutable status snapshot
+                                                     ▼
+controllers  ──read latest snapshot──────────────────┘
 ```
 
-Three properties, in the order they matter:
+**The owner is the only writer** of `targetWatches`, stream readiness, the declared type
+sets and the per-target captures. Nothing else mutates them.
 
-**A trigger names a GitTarget where it can.** A rule edit knows its target, so it marks
-that target dirty rather than asking for a global pass. A catalog change and the
-periodic tick mark everything. The dirty set is the coalescing: ten edits to one
-GitTarget between two passes are one pass over it, and an edit to target A does not
-touch target B at all.
+**Cancellation is requested by the owner, and completion is reported back.** The owner
+decides that a cell stops; the stream goroutine observes its context, unwinds, and posts
+a report. It does not reach back for a manager lock on its way out. That inverts what
+change 2 does today, where `set.stop(cell)` runs `cancel()` while holding
+`targetWatchesMu` and the woken goroutine then contends for the same mutex.
 
-**A trigger is never work.** The controller does a non-blocking mark and returns. No
-discovery call, no namespace list, no plan replacement on a controller worker. A slow
-or hung API call can then only stall the owner loop, which is a bounded, observable
-place with one job, rather than a shared worker pool.
+**Reads are snapshot reads.** The owner publishes an immutable projection after each
+pass; controllers read the latest one. A snapshot swap needs a pointer store, not a
+critical section around a read-modify-write.
 
-**The loop paces itself.** A minimum interval between passes, on the order of seconds,
-plus the existing 30s periodic sweep as the floor. Under a storm the loop runs at its
-own cadence instead of once per observed event.
+## The latency budget
 
-### What the loop owns, and what stays shared
+"Eventually" is not a design. The bound this page commits to:
 
-The loop owns the mutable plan state: the resident tables, `targetWatches`,
-`targetStreamStates`, the declared type sets, the per-target captures. If only the loop
-writes them, most of the eleven mutexes collapse into "owned by the loop".
+| Event | Bound |
+| --- | --- |
+| First declaration for a GitTarget the owner has never seen | **immediate**, no debounce |
+| Any later trigger for a target | debounced, **at most 1–2s** before its pass starts |
+| A pass that fails | target stays dirty, retried with backoff |
+| Nothing triggering at all | the existing 30s periodic sweep is the floor |
+| Status freshness after a change | one debounce interval plus the controller's requeue |
 
-They do not all go. Two categories stay concurrent, and both are reads or
-reports from other goroutines:
+**A new GitTarget is never debounced.** Making a cold start wait out an interval before
+its first watch opens would be a regression for no benefit: there is nothing to coalesce
+with, because the target has no plan yet. An urgent trigger runs on the next loop
+iteration.
 
-- **Status projections** the controllers call to publish conditions:
-  `StreamSummaryForGitTarget`, `StreamSummaryForWatchRule`,
-  `RenderFidelityForGitTarget`, `RetentionForGitTarget`,
-  `GitPathAcceptanceForGitTarget`, `SourceClusterReachable`. These need a consistent
-  read of a snapshot, which is a much weaker requirement than mutual exclusion around a
-  read-modify-write.
-- **Reports from the data plane**: a stream marking its cell replaying or streaming, a
-  drain goroutine recording a fidelity or retention result. These are writes from
-  outside the loop. Either they keep a small lock of their own, or they become messages
-  the loop applies, which is the cleaner end state and the larger change.
+## Failure isolation is the point, not a detail
 
-## The decision this forces
+Centralizing ownership without a deadline does not fix the availability problem, it
+relocates it: instead of one blocked controller worker, there is one blocked owner loop,
+and now nothing else in the watch plane progresses either. That is strictly worse.
 
-**Status becomes eventually consistent, and the WatchRule reconcile can no longer read
-back what it just caused.**
+So the isolation boundary is **per target**:
 
-Today the sequence inside one reconcile is: apply the rule change, then read the stream
-summary, then write status. With an owner loop, the apply is asynchronous, so the read
-observes the state from before it. The rule's `StreamsRunning` would lag by up to one
-loop interval.
+- Every target's pass runs under **its own context with a deadline**. A discovery call
+  that hangs fails that target's pass and leaves it dirty; the loop moves on.
+- The loop processes a **bounded number of targets per pass**, round-robin over the
+  dirty set, so one target that is slow but not hung cannot starve the rest.
+- The unbounded discovery call named above is fixed regardless of this design. A
+  deadline on the local-cluster path is correct today, and it is a precondition for
+  trusting the owner loop tomorrow.
 
-That is already survivable, and the mechanism is already there:
-`RequeueStreamSettleInterval` is 10s and exists for exactly this reason, because
-streams do not reach Streaming inside the reconcile that started them either. The
-honest framing is that the reconcile has never observed its own effect; it currently
-observes an intermediate state that merely looks more immediate.
+Without those three, the honest description of this proposal would be "the same
+availability failure, in a different goroutine".
 
-**A new GitTarget's first declare is the case to check.** Waiting a debounce interval
-before the first watch opens is a real regression in cold-start latency. Two answers
-are available: let a trigger request an immediate pass when the target has no plan yet,
-or keep `DeclareForGitTarget` synchronous for a target the manager has never seen and
-route only subsequent changes through the loop. The first is simpler and keeps one
-path.
+## Invalidation is scoped to what changed
+
+A trigger says what changed, and the owner translates that into the smallest dirty set:
+
+| Trigger | Dirties |
+| --- | --- |
+| A WatchRule or ClusterWatchRule edit | the target that rule names |
+| A source-namespace scope change | the targets whose rules select that namespace |
+| A catalog or API-surface change | the targets on the affected cluster whose tables reference the changed types |
+| The periodic tick | everything, as the floor |
+
+The middle rows are what keep the fan-out honest. "A CRD appeared" is not
+a reason to re-plan a target on another cluster, or one whose watched types do not
+mention it. Today every one of these paths is the same global pass.
+
+## A trigger carries identity, not just a key
+
+A dirty key alone is unsafe. A GitTarget can be deleted and recreated under the same
+namespace and name, and a queued trigger for the old one would resurrect state under the
+new one, or re-open watches for a target that is gone.
+
+So a trigger carries the **UID**, and the owner drops a trigger whose UID no longer
+matches what it holds. There is precedent in the tree: `forgetGitTargetUID` already
+deletes only when the remembered UID matches the one it was handed.
+
+One wrinkle to respect. The rule-derived reference carries no UID at all: the watch
+table is built from rules, and `resolveGitTargetUID` exists precisely because
+"the data-plane gitDest comes from the rule-derived watch table and has none". So the
+UID has to be attached where it is known, by the GitTarget controller, and rule-side
+triggers name a target that the owner resolves against its own record.
+
+**Deletion invalidates before it forgets.** `ForgetGitTargetDeclaration` must drop any
+pending trigger for that target in the same step that drops the state, or the next pass
+re-creates what the delete just tore down.
+
+## Status is eventually consistent, and says so
+
+Today the sequence inside one reconcile is: apply the rule change, read the stream
+summary, write status. With an owner loop the apply is asynchronous, so that read
+observes the state from before it, and `StreamsRunning` lags by up to one interval.
+
+That is acceptable, and it should be stated in the status contract rather than left for
+someone to discover. The mechanism already exists: `RequeueStreamSettleInterval` is 10s
+and exists for exactly this reason, because streams do not reach Streaming inside the
+reconcile that started them either. The reconcile has never observed its own effect; it
+currently observes an intermediate state that merely looks more immediate.
+
+## Which locks stay, and which are the dangerous ones
+
+Removing every mutex is not the goal, and a count is not a design. A lock is fine when
+it guards a pointer swap of an immutable snapshot, or a small report queue. The
+dangerous locks are the ones **held across** work that can block or call into another
+component:
+
+- across a discovery call or any network I/O;
+- across a context cancellation, which wakes goroutines that then want the same lock;
+- across stream startup;
+- across a call into another subsystem's lock, which is what creates an order to get
+  wrong.
+
+`targetWatchesMu` is currently held across three of those four. That is the lock this
+design is about, and it is a better target than the total count.
 
 ## What this does not change
 
@@ -161,19 +223,18 @@ path.
 
 ## Open questions
 
-1. **Does a failed pass retry, and with what backoff?** Today a failed declare is
-   retried by whatever reconcile comes next, which is accidental but effective. An owner
-   loop needs to say what happens: keep the target dirty and retry on the next tick is
-   the obvious answer, and it needs a bound so a permanently unreachable source cluster
-   does not spin.
-2. **Does a delete race a pending trigger?** `ForgetGitTargetDeclaration` cancels and
-   drops state. If a trigger for that target is still in the dirty set, the loop must
-   not resurrect it. Dropping the dirty mark under the same lock as the forget is
-   probably enough, and it needs to be stated.
-3. **How is the dirty set observable?** A queue that silently grows is the thing that
-   made the resync storm hard to see. A depth gauge and a per-pass count of targets
-   re-planned would make this legible from metrics rather than from log volume.
-4. **Do data-plane reports become messages to the loop, or keep their own locks?** The
-   message form is cleaner and is the larger change; the lock form is a smaller diff
-   that leaves the manager partly shared. This can be sequenced: locks first, messages
-   later, if at all.
+1. **What bounds the retry of a permanently failing target?** Staying dirty and
+   retrying with backoff is right for a transient failure. A source cluster that is gone
+   for a day should not be re-attempted every interval forever, and whatever it does
+   instead has to be visible in status rather than only in logs.
+2. **What does a repeated per-target deadline mean for status?** A target whose pass
+   times out has no fresh plan, which is not the same as a target with an empty one.
+   That distinction is the same "unobservable is not empty" rule the sweep already
+   rests on, and it needs a condition rather than silence.
+3. **How is the dirty set observable?** A queue that silently grows is what made the
+   resync storm hard to see. A depth gauge and a per-pass count of targets re-planned
+   would make this legible from metrics rather than from log volume.
+4. **How far does the migration go?** Locks-first gets the fan-out and the isolation
+   with a small diff and leaves the manager partly shared. The full message model
+   removes the shared writers. The second is the destination; whether it is worth doing
+   in one step is open.
