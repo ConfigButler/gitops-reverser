@@ -387,6 +387,17 @@ That accounts for every observation, including the two that resisted explanation
 focused low-load attempts passed) and why the staleness lasts **minutes rather than the 10s** a
 non-converged target would wait.
 
+**The race is common, not exotic.** With the fix in place, one local e2e run logged
+`status write lost a race` **74 times**, and **55** of those were on a reconcile that had computed a
+CONVERGED status — every one of which would previously have taken the five-minute cadence holding a
+stale answer. A was therefore happening dozens of times per run and only being NOTICED when the
+stalled object was one a spec was waiting on inside its 90s budget. That is the whole of its
+apparent intermittency, and it is why an earlier draft of the fix comment calling the race "by
+definition, rare" was wrong.
+
+Post-fix the same publishes read `True/RenderMatchesLive converged=true requeue=10s` — the
+shortened cadence doing its job.
+
 **Confirmed independently**, same run, different spec and a different scale — `quickstart-install`
 on a 5-scope target:
 

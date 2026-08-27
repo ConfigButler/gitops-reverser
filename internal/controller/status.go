@@ -181,8 +181,13 @@ func (s *reconcileStatus) commit(ctx context.Context) error {
 	// requeue (docs/design/watch-plane-status-convergence-failures.md, §2.12).
 	//
 	// So the loss is RECORDED and the caller asks writeLost() before choosing its requeue: a
-	// reconcile whose status never landed must come back soon, whatever it computed. It costs one
-	// extra reconcile on a race that is, by definition, rare.
+	// reconcile whose status never landed must come back soon, whatever it computed.
+	//
+	// This race is NOT rare, which was the first thing measurement corrected: one e2e run logged
+	// it 74 times, 55 of them on a reconcile that had computed a CONVERGED status and would
+	// therefore have taken the five-minute cadence. That is Failure A happening dozens of times a
+	// run and only being NOTICED when the stale object is one a spec is waiting on — which is
+	// exactly why it read as intermittent.
 	patch := client.MergeFromWithOptions(s.before, client.MergeFromWithOptimisticLock{})
 	switch err := s.client.Status().Patch(ctx, s.object, patch); {
 	case err == nil:
