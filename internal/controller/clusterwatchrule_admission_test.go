@@ -88,6 +88,8 @@ func (m *cwaWatchManager) SourceScope() watch.SourceScopeService { return m.scop
 // SourceNamespaceEvents returns nil, so no source-cluster Namespace channel is wired.
 func (m *cwaWatchManager) SourceNamespaceEvents() <-chan event.GenericEvent { return nil }
 
+func (m *cwaWatchManager) StreamStateEvents() <-chan event.GenericEvent { return nil }
+
 func cwaRunningSummary() watch.StreamSummary {
 	return watch.StreamSummary{
 		Total: 1, Ready: 1, Reason: "Streaming", Message: "1/1 streams running",

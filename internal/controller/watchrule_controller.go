@@ -332,6 +332,15 @@ func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
 			))
 		}
+		// React to a stream of this rule's GitTarget reaching or leaving Streaming. Without it a
+		// rule whose streams came up two seconds ago keeps publishing StreamsRunning=False until
+		// its 10s settle requeue, because nothing tells it otherwise.
+		if events := r.WatchManager.StreamStateEvents(); events != nil {
+			b = b.WatchesRawSource(source.Channel(
+				events,
+				handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
+			))
+		}
 	}
 
 	return b.Complete(r)

@@ -19,6 +19,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -388,7 +389,7 @@ func (r *ClusterWatchRuleReconciler) setStreamsReadyCondition(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		// A For() predicate is not an optimisation here, it closes a self-triggering edge: a status
 		// write bumps resourceVersion and fires an Update watch event that EnqueueRequestForObject
 		// turns straight back into a queued request, un-rate-limited. reconcileStatus.commit()
@@ -428,8 +429,22 @@ func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToClusterWatchRules),
 			builder.WithPredicates(predicate.LabelChangedPredicate{}),
 		).
-		Named("clusterwatchrule").
-		Complete(r)
+		Named("clusterwatchrule")
+
+	// React to a stream of this rule's GitTarget reaching or leaving Streaming, for the reason the
+	// WatchRule controller wires the same channel: the data plane is the only thing that knows when
+	// a stream came up, and without the edge the rule publishes StreamsRunning=False until its 10s
+	// settle requeue.
+	if r.WatchManager != nil {
+		if events := r.WatchManager.StreamStateEvents(); events != nil {
+			b = b.WatchesRawSource(source.Channel(
+				events,
+				handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
+			))
+		}
+	}
+
+	return b.Complete(r)
 }
 
 // clusterProviderToClusterWatchRules maps a ClusterProvider policy change to every ClusterWatchRule

@@ -212,6 +212,9 @@ type Manager struct {
 	// created by GitPathEvents() and guarded by gitPathEventsMu.
 	gitPathEventsMu sync.Mutex
 	gitPathEventsCh chan event.GenericEvent
+	// streamStateSubscribers are the channels StreamStateEvents has handed out, one per consumer.
+	// Guarded by gitPathEventsMu, which already guards the sibling channel above.
+	streamStateSubscribers []chan event.GenericEvent
 
 	// sourceNamespaceScope is the source-scope service: the per-source-cluster Namespace label
 	// snapshot that GitTarget.allowedSourceNamespaces selectors are evaluated against, plus the

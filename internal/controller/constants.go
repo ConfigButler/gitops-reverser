@@ -48,6 +48,16 @@ type WatchManagerInterface interface {
 	// not wired), which degrades to exact-name policy evaluation — never to a denial.
 	SourceScope() watch.SourceScopeService
 
+	// StreamStateEvents is the channel a rule controller wires via source.Channel so a stream
+	// reaching (or leaving) Streaming re-reconciles the rules that project it, instead of leaving
+	// them to discover it on RequeueStreamSettleInterval. A stream coming up is the last thing
+	// that has to happen before a rule can honestly report StreamsRunning=True, and the data plane
+	// is the only thing that knows when it did.
+	//
+	// Every call registers a NEW subscriber: a Go channel has one consumer, and three controllers
+	// project this state. It may return nil when no data plane is wired.
+	StreamStateEvents() <-chan event.GenericEvent
+
 	// SourceNamespaceEvents is the channel the WatchRule controller wires via source.Channel so a
 	// SOURCE-cluster Namespace label change re-reconciles the rules it grants or revokes. Those
 	// labels live in a cluster the controller has no client for, so the watch manager observes

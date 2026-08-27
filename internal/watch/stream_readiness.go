@@ -89,13 +89,23 @@ func (m *Manager) markTargetStreamState(
 	reason string,
 	message string,
 ) {
-	m.mutateWatchPlane(func(s *watchPlaneState) bool {
+	changed := m.mutateWatchPlane(func(s *watchPlaneState) bool {
 		return setStreamState(s, gitDest.Key(), cell, targetStreamStatus{
 			state:   state,
 			reason:  reason,
 			message: message,
 		})
 	})
+	// A cell reaching Streaming is the last thing that has to happen before this target and every
+	// rule pointing at it can honestly say StreamsRunning=True, so the transition is worth an
+	// event. Without one the data plane converges in about two seconds and the status follows up
+	// to ten seconds later, on RequeueStreamSettleInterval, having learned nothing in between.
+	//
+	// On the TRANSITION only. The data plane reports readiness continuously, and an event per
+	// report would enqueue every rule of a target on every watch event it handles.
+	if changed {
+		m.enqueueStreamStateChange(gitDest)
+	}
 }
 
 // setStreamState records one cell's status and reports whether it moved.

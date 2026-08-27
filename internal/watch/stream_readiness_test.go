@@ -5,8 +5,10 @@ package watch
 import (
 	"testing"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -70,4 +72,46 @@ func TestStreamSummaryForTypes_TwoServedVersionsAreOneStream(t *testing.T) {
 	assert.Equal(t, 1, summary.Total, "one cell is one stream, whatever versions serve it")
 	assert.Equal(t, 1, summary.Ready)
 	assert.True(t, summary.StreamsRunning())
+}
+
+// A stream reaching Streaming is the last thing that has to happen before a target and its rules
+// can honestly report StreamsRunning=True, and it used to notify nobody: the data plane converged
+// in about two seconds and status followed up to ten seconds later, on the settle requeue.
+func TestMarkTargetStreamState_NotifiesOnTheTransitionOnly(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+	gitDest := types.NewResourceReference("target", "team-a")
+	cell := types.CellKeyFor(configmapsGVR, "apps")
+
+	// Two subscribers, because a Go channel has one consumer and three controllers project this.
+	ruleEvents := m.StreamStateEvents()
+	clusterRuleEvents := m.StreamStateEvents()
+	targetEvents := m.GitPathEvents()
+
+	m.markTargetStreamState(gitDest, cell, StreamStateReplaying, StreamReasonInitialReplay, "replaying")
+	for name, ch := range map[string]<-chan event.GenericEvent{
+		"watch rules": ruleEvents, "cluster watch rules": clusterRuleEvents, "the GitTarget": targetEvents,
+	} {
+		select {
+		case evt := <-ch:
+			assert.Equal(t, "target", evt.Object.GetName(), "%s are told which target moved", name)
+		default:
+			t.Fatalf("%s were not notified of a stream-state transition", name)
+		}
+	}
+
+	// The data plane reports readiness continuously. An event per REPORT rather than per CHANGE
+	// would enqueue every rule of a target on every watch event it handles.
+	m.markTargetStreamState(gitDest, cell, StreamStateReplaying, StreamReasonInitialReplay, "replaying")
+	select {
+	case <-ruleEvents:
+		t.Fatal("a re-report of an unchanged state must not enqueue anything")
+	default:
+	}
+
+	m.markTargetStreamState(gitDest, cell, StreamStateStreaming, StreamReasonAllStreamsReady, "streaming")
+	select {
+	case <-ruleEvents:
+	default:
+		t.Fatal("reaching Streaming is a transition and must be announced")
+	}
 }
