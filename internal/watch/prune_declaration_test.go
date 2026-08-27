@@ -153,15 +153,15 @@ func TestReplaceGitTargetWatches_ForceReplaysAnUnchangedSet(t *testing.T) {
 			NamespaceOps: map[string]OperationSet{"apps": {"CREATE": struct{}{}}},
 		}},
 	}
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, table, ""))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, table))
 	receiveOpenedWatch(t, opened)
 
 	// The negative control: re-declaring the same specs without the force flag changes nothing,
 	// which is exactly why a prune-mode edit needs one.
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, table, ""))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, table))
 	assertNoOpenedWatch(t, opened)
 
-	require.NoError(t, manager.replaceGitTargetWatches(ctx, table, "", true))
+	require.NoError(t, manager.replaceGitTargetWatches(ctx, table, true))
 
 	forced := receiveOpenedWatch(t, opened)
 	assert.True(t, *forced.opts.SendInitialEvents,

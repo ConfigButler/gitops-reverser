@@ -448,7 +448,6 @@ func TestOwner_AStreamOutlivesThePassThatStartedIt(t *testing.T) {
 		map[targetWatchKey]string{},
 		map[types.CellKey]uint64{},
 		[]types.CellKey{types.CellKeyFor(configmapsGVR, "apps")},
-		"",
 	)
 	require.Len(t, started, 1)
 	streamCtx = started[0].ctx

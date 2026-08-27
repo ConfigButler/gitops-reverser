@@ -177,14 +177,6 @@ func (w *BranchWorker) buildResyncPendingWrite(
 	if err != nil {
 		return nil, err
 	}
-	// The REQUESTER's policy wins. resolveTargetMetadata reads the GitTarget through the worker's
-	// cached client, and a resync forced BY a prune-mode change can reach here before that cache
-	// has observed the change -- planning the forced replay under the mode it was forced to
-	// replace. Everything else on the metadata (path, encryption, placement) is stable across that
-	// window and still comes from the read.
-	if req.PruneMode != "" {
-		targetMetadata.PruneMode = req.PruneMode
-	}
 
 	return &PendingWrite{
 		Kind:               PendingWriteResync,

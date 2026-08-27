@@ -1,6 +1,6 @@
 # Status convergence failures on the watch-plane rework
 
-**Root cause named; fix in progress.** Two reproducible failures on
+**Open, and much better instrumented.** Two reproducible failures on
 `feat/target-watch-cell-identity` (PR #315), both in status the branch's own rework produces, plus
 an inventory of what is ambient and must not be confused with them. Written so a fresh context can
 continue without re-deriving anything.
@@ -15,16 +15,19 @@ this page to `docs/finished/` when the fix has landed and held.
 The data plane is not implicated in either failure. Files land in Git correctly and on time in
 every case examined — what fails is the **status that describes them**.
 
-**A and B are one defect, not two.** Both are per-cell, revision-gated roll-ups in which a scope's
-result is never recorded, and in which nothing re-measures afterwards. B loses a retention count.
-A loses a render-fidelity scope result — which pins the GitTarget at not-Ready, which pins **every
-WatchRule pointing at it** at `Ready=False`. That is why A looked like a rule-level streams
-failure for three reproductions running. It never was one.
+**A and B share a shape, and probably a defect.** Both are per-cell, revision-gated roll-ups in
+which a scope's result is produced but never lands, and in which nothing re-measures afterwards. B
+loses a retention count. A loses a render-fidelity scope result — which pins the GitTarget at
+not-Ready, which pins **every WatchRule pointing at it** at `Ready=False`. That is why A looked
+like a rule-level streams failure for three reproductions running. It never was one.
+
+Neither root cause is closed. What IS closed is where to look, and both roll-ups now say far more
+about themselves than they did.
 
 | # | Symptom | Seen | Verdict |
 | --- | --- | --- | --- |
 | **A** | A `WatchRule` never reaches `Ready=True` within 90s while its streams are demonstrably running | 3× (CI twice, local once) | **Named.** Not a streams failure at all — the GitTarget's render-fidelity gate never converges. Same defect as B |
-| **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 2× (CI) | **Named.** Same defect as A, on the retention roll-up |
+| **B** | `status.retention.retainedDocuments` stays at its pre-sweep value after `prune.mode` is widened, on a target whose files were swept | 3× (CI twice, local once) | **Open**, and narrowed to the roll-up's accept path. One hypothesis tried and withdrawn — see §3.3 |
 | C | Argo CD `selfHeal` commit count moves 3 → 5 during a `Consistently` | 1× (CI, never re-run) | Unclassified, and probably unrelated |
 | D | Encryption-secret recreation spec times out | 1× (CI) | **Ambient, pre-existing** — see §5 |
 
@@ -219,47 +222,60 @@ arrived, or the report itself carried `OnEvent`.
 
 A report certainly arrived — the resync applied successfully, and `drainScopedResync` calls
 `MarkTargetRetention` unconditionally on a successful result. No `retention report dropped` line
-fired, so it was not refused. Therefore **the report carried `PruneMode: OnEvent`**, on a resync
-that ran *after* the widening, *because of* the widening.
+fired, so it was not refused.
 
-### 3.3 The cause: two sources of truth for one policy
+And the second branch is excluded too: the resync logged `deleted:1`, which only a plan built under
+`Always` can produce (§3.3), so the report cannot have carried `OnEvent`.
 
-The replay is forced by the watch-plane owner, which learned the new mode from the GitTarget
-controller's declare — a value read by a controller that had already observed the patch. The
-resync is then planned by the branch worker, which re-derives the mode independently in
-[`resolveTargetMetadata`](../../internal/git/pending_writes.go) via `target.EffectivePruneMode()`
-on `w.Client` — the **cached** client.
+**Both explanations are excluded, so one of the observations is not what it appears.** That is the
+honest state of B, and §3.4 says which link is unobserved. Do not close this by picking whichever
+branch is convenient — the last attempt to do that is recorded in §3.3 as a withdrawn fix.
 
-When the worker's cache has not yet caught the patch, the pass that was forced *because the mode
-changed* runs under the *old* mode. The planner then retains the orphan instead of sweeping it,
-and reports `Retained: 1, PruneMode: OnEvent` — `deleted:1` alongside it is not a contradiction,
-because `onEvent` does drop a document whose scope saw an event.
+### 3.3 What is NOT the cause — a hypothesis tried and withdrawn
 
-Two things then conspire to make it permanent:
+A first reading blamed a stale prune mode: the replay is forced by the owner (which learned the new
+mode from the declare) while the branch worker re-derives the mode independently through its
+**cached** client in [`resolveTargetMetadata`](../../internal/git/pending_writes.go), so a worker
+cache lagging the patch could plan the forced replay under the mode it was forced to replace.
 
-**B-1, the cause.** A resync is "make Git match this desired set, for this scope, under this
-policy". Three of those four travel on the request; the policy is re-read from a different
-snapshot at the far end, so it can disagree with the decision that scheduled the work.
+**The evidence refutes it.** `resyncPlanPolicy` maps `onEvent` and `never` alike to
+`SweepRetainOrphans`, so a resync planned under anything but `always` emits **no managed drop at
+all**. The widening resync logged `deleted:1`, and the spec's `waitForPruneFile(…, false)`
+assertions for **both** orphans passed before the failing one. So that resync planned under
+`Always`, swept correctly, and its `RetainedOrphans` should have been zero.
 
-**B-2, why it never recovers.** The report is accepted and is byte-identical to the previous one,
-so `changed` is false and `mutateWatchPlane` **discards the whole mutation** — no publish, no
-enqueue. An accepted report that equals its predecessor is indistinguishable from no report at
-all, so the roll-up cannot tell "re-measured, unchanged" from "never re-measured". The force is
-consumed, the plan settles at `keep:1`, and nothing re-measures.
+A fix that threaded the policy onto the `ResyncRequest` was written, passed the previously failing
+spec once locally, and was **reverted**. One green run is not evidence for a mechanism the logs
+contradict, and the change carried a real hazard in the safety-critical direction: narrowing the
+mode deliberately does NOT force a replay (see `pruneModeRequiresReplay`), so a stream carrying a
+snapshotted `always` would sweep under it on any later re-replay — after an operator had tightened
+to `never` to stop exactly that. Tightening must stay the cheap, quiet direction.
 
-B-2 is deliberate and stays: enqueueing on every identical report would make a steadily retaining
-target reconcile on every resync of every scope, for ever. It is what turns B-1 from a wrong number
-into a permanently wrong number, and with B-1 fixed the widened resync genuinely reports a
-different count, so the roll-up moves. The residual cost is that `observedTime` can lag on a scope
-whose count truly has not changed, which is the intended trade.
+### 3.4 Where B actually stands
 
-### 3.4 Why every earlier diagnostic missed it
+Established:
+
+- the force replay fires (`restart:1`);
+- the resync applies, commits, and sweeps under `Always` (`deleted:1`, both files gone);
+- `drainScopedResync` therefore reached its success branch, which calls `MarkTargetRetention`
+  unconditionally;
+- no `retention report dropped` line fired, so nothing was refused;
+- and the published roll-up did not move — still `retained=1`, `mode="OnEvent"`.
+
+Those cannot all be true at once, which means one of them is not what it appears. The roll-up is
+the only unobserved link: `MarkTargetRetention` logs its refusals but says nothing when it accepts,
+and `mutateWatchPlane` **discards the entire mutation** when `changed` is false, so an accepted
+report and an absent one look identical from outside.
+
+That is the next thing to instrument, and it is the same asymmetry that left A blind: the roll-up
+reports what it rejects and stays silent about what it takes.
+
+### 3.5 Why every earlier diagnostic missed it
 
 The `resync retained managed documents` Info line is throttled to once per ten minutes per
-`gitTarget@base` by `shouldLogRetention`. It fired at 21:11:03, so the one that would have named
-the stale mode at 21:11:25 was suppressed; its unthrottled twin is `V(1)`, which CI does not run.
-The drop diagnostic could not fire because nothing was dropped. B1 and B2 as originally posed —
-the revision gate and the superseded path — are both retired.
+`gitTarget@base` by `shouldLogRetention`, and its unthrottled twin is `V(1)`, which CI does not run.
+The drop diagnostic could not fire because nothing was dropped. B1 and B2 as originally posed — the
+revision gate and the superseded path — are both retired.
 
 ## 4. The fix, and why it removes code
 
@@ -294,11 +310,10 @@ converges by waiting, the second never does. The scope now remembers the last re
 and the pending message says so. This is the asymmetry that gave B evidence and left A with none;
 the retention roll-up already logged its drops.
 
-**4.6 Give the resync its policy.** The prune mode now travels on the `ResyncRequest`, beside the
-desired set, the scope and the revision it already carried, and the target-watch stream carries the
-mode its plan pass was applied under exactly as it already carries the revision it must report
-under. The worker's independent cached read stays only as the fallback for a request that names no
-policy. This removes a source of truth rather than adding one.
+**4.6 Instrument what the retention roll-up ACCEPTS.** It logs every refusal and says nothing when
+it takes a report, and `mutateWatchPlane` discards the whole mutation when nothing an operator
+would see moved — so "accepted and unchanged" and "never reported" are the same silence. Closing
+that is what §3.4 needs, and it is the same repair §4.4 made on the fidelity side.
 
 **4.7 Do not weaken the revision gate.** A stale report from a replaced stream must still be
 refused. The repair is that a scope which cannot be reported under its current revision must be

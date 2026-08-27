@@ -260,3 +260,26 @@ func TestRetentionRollup_AnAcceptedReportLogsNothing(t *testing.T) {
 
 	assert.Equal(t, 0, countContaining(*lines, "retention report dropped"))
 }
+
+// TestMarkTargetRetention_SaysWhenAnAcceptedReportPublishesNothing closes the roll-up's remaining
+// silence. mutateWatchPlane discards the WHOLE mutation when nothing an operator would see moved,
+// so an accepted-and-unchanged report and a report that never arrived are the same silence from
+// outside — which is exactly how far Failure B could be narrowed and no further
+// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
+func TestMarkTargetRetention_SaysWhenAnAcceptedReportPublishesNothing(t *testing.T) {
+	log, lines := recordingLogger()
+	m := &Manager{Log: log}
+	gitDest := types.NewResourceReference("acme", "tenant-acme")
+	cell := types.CellKeyFor(configmapsGVR, "apps")
+	m.retainTargetRetentionScopes(gitDest, map[types.CellKey]uint64{cell: 7})
+
+	// First report publishes: it moves Reported from false to true.
+	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
+	require.Equal(t, 2, m.RetentionForGitTarget(gitDest).RetainedDocuments)
+
+	// Identical re-report: accepted, but nothing an operator sees moves, so it is discarded.
+	m.MarkTargetRetention(gitDest, cell, 7, v1alpha3.PruneOnEvent, 2)
+
+	assert.Contains(t, strings.Join(*lines, "\n"),
+		"retention report accepted but published nothing")
+}

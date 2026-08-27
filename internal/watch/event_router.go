@@ -201,7 +201,6 @@ func (r *EventRouter) enqueueScopedResync(
 	desired []manifestanalyzer.DesiredResource,
 	revision string,
 	heal bool,
-	pruneMode configv1alpha3.PruneMode,
 ) (chan git.ResyncResult, bool, error) {
 	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
 	if err != nil {
@@ -216,7 +215,6 @@ func (r *EventRouter) enqueueScopedResync(
 		Scope:              &scope,
 		SourceCell:         sourceCell,
 		Heal:               heal,
-		PruneMode:          pruneMode,
 		Result:             resultCh,
 	})
 	return resultCh, enqueued, nil

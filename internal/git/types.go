@@ -418,17 +418,6 @@ type ResyncRequest struct {
 	// whole-GitTarget resync, which speaks for no single cell. Diagnostic only: nothing
 	// filters the queue on it. See source_cell.go.
 	SourceCell types.CellKey
-	// PruneMode is the effective spec.prune.mode the REQUESTER decided under, and it is
-	// authoritative for this resync. Empty means "the requester did not say", and the worker falls
-	// back to resolving it from the GitTarget.
-	//
-	// A resync is "make Git match this desired set, for this scope, under this policy". The first
-	// three travel on the request; the policy used to be re-read at the far end from the worker's
-	// cached client, so it could disagree with the decision that scheduled the work. Widening the
-	// mode forces a replay, and a worker cache lagging that widening planned the forced replay
-	// under the OLD mode -- retaining the orphan it was sent to sweep
-	// (docs/design/watch-plane-status-convergence-failures.md, Failure B).
-	PruneMode v1alpha3.PruneMode
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult

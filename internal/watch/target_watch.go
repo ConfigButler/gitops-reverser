@@ -118,17 +118,6 @@ type targetWatchStream struct {
 	// stream retired by a served-version change lands on the live cell's scope rather than
 	// missing it, so the capture is what keeps it out.
 	revision uint64
-	// pruneMode is the effective spec.prune.mode this stream's plan pass was applied for, and it
-	// travels with the stream for exactly the reason revision does: it is the policy the DECISION
-	// to replay was made under.
-	//
-	// The branch worker used to re-derive it from its own cached GitTarget read, which is a second
-	// source of truth for one policy and can disagree with the first. Widening the mode forces a
-	// fresh replay; when the worker's cache had not yet caught the widening, that replay planned
-	// under the OLD mode, retained the orphan it was sent to sweep, and reported a count identical
-	// to the previous one -- which the roll-up cannot distinguish from no report at all
-	// (docs/design/watch-plane-status-convergence-failures.md, Failure B).
-	pruneMode configv1alpha3.PruneMode
 }
 
 // sourceCell is what this stream stamps on the work it queues: the cell that produced it.
@@ -157,7 +146,6 @@ func (k targetWatchKey) Cell() types.CellKey {
 func (m *Manager) ensureGitTargetWatches(
 	ctx context.Context,
 	gitDest types.ResourceReference,
-	pruneMode configv1alpha3.PruneMode,
 	forceRecheck ...bool,
 ) error {
 	if m.EventRouter == nil {
@@ -190,7 +178,7 @@ func (m *Manager) ensureGitTargetWatches(
 		return err
 	}
 	force := len(forceRecheck) > 0 && forceRecheck[0]
-	return m.replaceGitTargetWatches(ctx, table, pruneMode, force)
+	return m.replaceGitTargetWatches(ctx, table, force)
 }
 
 // passDeadline reports the pass's deadline as an error naming the step that was about to run, so
@@ -214,7 +202,6 @@ func passDeadline(ctx context.Context, gitDest types.ResourceReference, step str
 func (m *Manager) replaceGitTargetWatches(
 	ctx context.Context,
 	table WatchedTypeTable,
-	pruneMode configv1alpha3.PruneMode,
 	forceRecheck ...bool,
 ) error {
 	streams := targetWatchStreams(table)
@@ -244,8 +231,7 @@ func (m *Manager) replaceGitTargetWatches(
 	cells := cellsForWatchKeys(keys)
 	m.resetTargetStreamStates(table.GitDest, cells, starting)
 	revisions, fidelityChanged := m.reconcileTargetRenderFidelity(table.GitDest, cells, starting)
-	started := m.startTargetWatchStreams(
-		ctx, set, keysByCell(keys), streams, specs, revisions, starting, pruneMode)
+	started := m.startTargetWatchStreams(ctx, set, keysByCell(keys), streams, specs, revisions, starting)
 
 	m.retainTargetRetentionScopes(table.GitDest, streamRevisions(cells, revisions))
 	if fidelityChanged {
@@ -294,7 +280,6 @@ func (m *Manager) startTargetWatchStreams(
 	specs map[targetWatchKey]string,
 	revisions map[types.CellKey]uint64,
 	starting []types.CellKey,
-	pruneMode configv1alpha3.PruneMode,
 ) []startingTargetWatch {
 	out := make([]startingTargetWatch, 0, len(starting))
 	for _, cell := range starting {
@@ -307,10 +292,9 @@ func (m *Manager) startTargetWatchStreams(
 		out = append(out, startingTargetWatch{
 			ctx: streamCtx,
 			stream: targetWatchStream{
-				key:       watchKey,
-				ops:       streams[watchKey],
-				revision:  revisions[cell],
-				pruneMode: pruneMode,
+				key:      watchKey,
+				ops:      streams[watchKey],
+				revision: revisions[cell],
 			},
 		})
 	}
@@ -866,8 +850,7 @@ func (m *Manager) enqueueReplayResync(
 	// writes on the strength of a snapshot the new plan never gathered. The gate already
 	// ignores a superseded revision; capturing it at start is what makes it stale.
 	resultCh, enqueued, err := m.EventRouter.enqueueScopedResync(
-		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCell(), desired, revision,
-		false, stream.pruneMode)
+		ctx, gitDest, resyncScopeForWatchKey(stream.key), stream.sourceCell(), desired, revision, false)
 	if err != nil {
 		return err
 	}

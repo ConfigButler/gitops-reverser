@@ -125,9 +125,25 @@ func (m *Manager) MarkTargetRetention(
 			"reportedRevision", revision, "installedRevision", installed, "retained", retained)
 		return
 	}
-	if changed {
-		m.enqueueGitTargetReconcile(gitDest)
+	// Accepted. Say so, because the alternative is the silence that hid Failure B: a report that
+	// lands and changes nothing an operator would see is DISCARDED whole by mutateWatchPlane, so
+	// "accepted and unchanged" and "never reported at all" look identical from outside. The
+	// refusals above have been logged since c24844a1; the acceptances were not, and that asymmetry
+	// is why B could be narrowed to this function and no further
+	// (docs/design/watch-plane-status-convergence-failures.md, §3.4).
+	//
+	// V(1) for the ordinary case, because a healthy target reports once per scope per resync.
+	// Info only when the report moved nothing: that is rare, it is the ambiguous case, and it is
+	// the one a stale published count is hiding behind.
+	log := m.Log.WithName("retention").WithValues(
+		"gitDest", gitDest.String(), "cell", cell.String(),
+		"revision", revision, "mode", string(mode.OrDefault()), "retained", retained)
+	if !changed {
+		log.Info("retention report accepted but published nothing; the count and mode were already these values")
+		return
 	}
+	log.V(1).Info("retention report accepted")
+	m.enqueueGitTargetReconcile(gitDest)
 }
 
 // retainTargetRetentionScopes installs the cells the current watch plan selects, and the stream
