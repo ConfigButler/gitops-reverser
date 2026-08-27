@@ -16,8 +16,8 @@ related:
 it, synchronously, and it re-plans every GitTarget in the process rather than the one
 the rule names. The watch manager has no owner, so eleven mutexes stand in for one.
 This proposes an actor: controllers submit intent, one loop mutates the watch plane,
-the data plane reports back through the same channel, and repeated requests for a
-GitTarget collapse into one pass.
+the data plane reports back through the same channel, and every change to one GitTarget's
+configuration inside a 2s silence window becomes a single pass over it.
 
 This is a follow-up to [target-watch-plan.md](target-watch-plan.md). That plan made the
 WORK cheap, per cell. This one is about how often the work is asked for, by whom, and
@@ -110,22 +110,72 @@ change 2 does today, where `set.stop(cell)` runs `cancel()` while holding
 pass; controllers read the latest one. A snapshot swap needs a pointer store, not a
 critical section around a read-modify-write.
 
+## The unit of change is the config, not the object
+
+A GitTarget and the WatchRules that point at it are **one piece of configuration**. They
+are edited together, reviewed together, and applied together. `kubectl apply -f config/`
+with a GitTarget and four rules is one intent, and the API server delivers it as five
+watch events within a few hundred milliseconds.
+
+Today that is five reconciles, each doing a full global pass. With a per-target settle
+window it is one pass, after the edit stops arriving.
+
+**So the debounce is a rolling silence window, not a rate limit.** Each trigger for a
+target resets its timer; the pass runs once the target has been quiet for the window.
+That is the same mechanism the write path already uses one layer down: `DefaultCommitWindow`
+is documented as "the rolling silence window used to coalesce events into one commit",
+defaults to 5s, and is user-facing on `GitProvider.spec.push.commitWindow`. This is that
+idea applied to configuration rather than to events.
+
+**Two seconds.** Long enough to absorb a multi-object apply, short enough that an
+operator watching `kubectl get watchrule` does not think it hung. It is fixed rather
+than configurable, for the reason `PushCooldown` gives for being fixed beside the
+configurable commit window: the cadence a user cares about is how quickly their config
+takes effect, not how the controller batches its internal work.
+
+**A maximum wait bounds it.** A rolling window that is reset forever never fires, so the
+pass also runs once a target has been dirty for a hard cap (on the order of 10s) no
+matter how much is still arriving. Continuous churn then converges at the cap instead of
+starving.
+
+**The window is per target.** Two GitTargets touched by one apply settle independently,
+so a busy target cannot delay a quiet one. Deletes batch the same way: `kubectl delete -f`
+over the same folder is one settle window, not five passes.
+
+### This supersedes "never debounce the first declaration"
+
+An earlier revision of this page said a GitTarget the owner has never seen should be
+declared immediately, on the grounds that making a cold start wait is a needless
+regression. That is now **reversed**, and the reason is the case above.
+
+Applying a GitTarget together with its rules is the normal way this configuration
+arrives, and object order within an apply is not guaranteed. If the GitTarget is
+declared the instant it lands, it is declared with **no rules yet**: a plan with zero
+cells, immediately superseded as each rule arrives. The "responsive" version therefore
+manufactures a transient empty plan on every cold start, and then does the real work four
+times over.
+
+Transient empty plans are not benign. The empty-plan case is exactly what vacuously
+cleared a live-write render divergence in `RenderFidelityGate.Reconcile`, because
+restarting every scope holds trivially when there are no scopes; it needed an explicit
+non-empty guard. A design that produces an empty plan on every cold start is inviting
+that class of bug rather than avoiding it.
+
+The cost of the reversal is bounded and small: a new GitTarget's first watch opens up to
+2s later than it might have. The benefit is that the first plan it declares is the one
+the user wrote.
+
 ## The latency budget
 
 "Eventually" is not a design. The bound this page commits to:
 
 | Event | Bound |
 | --- | --- |
-| First declaration for a GitTarget the owner has never seen | **immediate**, no debounce |
-| Any later trigger for a target | debounced, **at most 1–2s** before its pass starts |
+| A target goes quiet after any change, including its first | its pass starts **2s** later |
+| A target under continuous change | its pass starts at the **max wait**, about 10s |
 | A pass that fails | target stays dirty, retried with backoff |
 | Nothing triggering at all | the existing 30s periodic sweep is the floor |
-| Status freshness after a change | one debounce interval plus the controller's requeue |
-
-**A new GitTarget is never debounced.** Making a cold start wait out an interval before
-its first watch opens would be a regression for no benefit: there is nothing to coalesce
-with, because the target has no plan yet. An urgent trigger runs on the next loop
-iteration.
+| Status freshness after a change | the settle window plus the controller's requeue |
 
 ## Failure isolation is the point, not a detail
 
@@ -142,6 +192,8 @@ So the isolation boundary is **per target**:
 - The unbounded discovery call named above is fixed regardless of this design. A
   deadline on the local-cluster path is correct today, and it is a precondition for
   trusting the owner loop tomorrow.
+- A target whose pass exceeds its deadline stays dirty and is retried, so a deadline is
+  a yield rather than a drop.
 
 Without those three, the honest description of this proposal would be "the same
 availability failure, in a different goroutine".
