@@ -3,6 +3,7 @@
 package git
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -270,4 +271,54 @@ func TestRenderFidelityGate_AnEmptyPlanDoesNotClearAWriteDivergence(t *testing.T
 
 	assert.Equal(t, RenderFidelityFalse, status.State)
 	assert.False(t, gate.AllowsWrites(target), "a plan that selects nothing measures nothing")
+}
+
+// TestRenderFidelityGate_PendingMessageNamesTheScope is the regression guard for the diagnostic
+// gap that made Failure A cost three rounds of controller-log archaeology: the gate knew which
+// scope it was waiting on and published a constant string that named nothing
+// (docs/design/watch-plane-status-convergence-failures.md, §2.3).
+//
+// The GitTarget condition carries this message verbatim, and a WatchRule's Ready inherits it, so
+// this string is the whole diagnosis surface for a target that will not converge. It must name
+// the scope AND the revision: the failure being diagnosed is a scope holding a revision no
+// running stream will ever report under, and the revision is what separates that from an
+// ordinary in-flight replay.
+func TestRenderFidelityGate_PendingMessageNamesTheScope(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+	deployment := fidelityScope("apps", "deployments")
+	configMap := fidelityScope("", "configmaps")
+
+	status, revisions := restartAll(gate, target, deployment, configMap)
+	require.Equal(t, RenderFidelityUnknown, status.State)
+	assert.Contains(t, status.Message, "2 of 2")
+	assert.Contains(t, status.Message, deployment.String())
+	assert.Contains(t, status.Message, configMap.String())
+
+	status, applied := gate.RecordScopeClean(target, revisions[deployment], deployment)
+	require.True(t, applied)
+	require.Equal(t, RenderFidelityUnknown, status.State)
+	// The one that reported must drop out of the message; the one still pending must stay,
+	// carrying the revision it owes a report under.
+	assert.Contains(t, status.Message, "1 of 2")
+	assert.NotContains(t, status.Message, deployment.String())
+	assert.Contains(t, status.Message, configMap.String())
+	assert.Contains(t, status.Message, fmt.Sprintf("revision %d", revisions[configMap]))
+}
+
+// TestRenderFidelityGate_PendingMessageIsBounded keeps an unbounded cell set from producing an
+// unbounded condition message, while keeping the COUNT exact — a truncated list that also
+// truncated the count would understate how far from converged the target is.
+func TestRenderFidelityGate_PendingMessageIsBounded(t *testing.T) {
+	gate := NewRenderFidelityGate()
+	target := types.NewResourceReference("apps", "default")
+	scopes := make([]types.CellKey, 0, pendingScopeSampleLimit+3)
+	for i := range pendingScopeSampleLimit + 3 {
+		scopes = append(scopes, fidelityScope("apps", fmt.Sprintf("kind%02d", i)))
+	}
+
+	status, _ := restartAll(gate, target, scopes...)
+	require.Equal(t, RenderFidelityUnknown, status.State)
+	assert.Contains(t, status.Message, fmt.Sprintf("%d of %d", len(scopes), len(scopes)))
+	assert.Contains(t, status.Message, "and 3 more")
 }

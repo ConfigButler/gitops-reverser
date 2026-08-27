@@ -3,7 +3,9 @@
 package git
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -33,6 +35,11 @@ type RenderFidelityStatus struct {
 	ScopeCount  int
 	CleanScopes int
 }
+
+// pendingScopeSampleLimit bounds how many pending scopes the condition message names. A target
+// can watch many cells, and a condition message is read by humans and matched by tests; the count
+// in front of the list stays exact whatever the list is truncated to.
+const pendingScopeSampleLimit = 5
 
 type renderFidelityScopeResult struct {
 	// revision is the incarnation of this scope's stream that may report into it. A result
@@ -259,11 +266,45 @@ func reduceRenderFidelity(state renderFidelityTargetState) RenderFidelityStatus 
 	if clean != len(state.scopes) {
 		return RenderFidelityStatus{
 			Revision: state.revision, State: RenderFidelityUnknown, Reason: "Rechecking",
-			Message:    "Waiting for every render scope to report under its current revision",
+			Message:    pendingScopesMessage(state, scopes, clean),
 			ScopeCount: len(state.scopes), CleanScopes: clean,
 		}
 	}
 	return renderFidelityReadyStatus(state.revision, len(state.scopes), clean)
+}
+
+// pendingScopesMessage names the scopes the target is still waiting on, with the revision each
+// one must report under.
+//
+// The gate has always KNOWN this and used to publish a constant string, which is the single
+// reason Failure A cost three rounds of controller-log archaeology: the GitTarget condition —
+// the one surface an operator, a WatchRule and an e2e assertion can all read — said that
+// something was pending but never what, how many, or under which revision. A roll-up that
+// cannot name what it is waiting for is not observable, and an unobservable roll-up that latches
+// is indistinguishable from a hang (docs/design/watch-plane-status-convergence-failures.md).
+//
+// The revision is part of the answer, not decoration. The failure mode this diagnoses is a scope
+// holding a revision that no running stream will ever report under, so "which revision" is
+// exactly what separates "still replaying" from "stuck for ever".
+func pendingScopesMessage(state renderFidelityTargetState, scopes []types.CellKey, clean int) string {
+	names := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		result := state.scopes[scope]
+		if result.finished && result.clean {
+			continue
+		}
+		names = append(names, fmt.Sprintf("%s (revision %d)", scope.String(), result.revision))
+	}
+	msg := fmt.Sprintf("Waiting for %d of %d render scopes to report under their current revision",
+		len(state.scopes)-clean, len(state.scopes))
+	if len(names) == 0 {
+		return msg
+	}
+	if len(names) > pendingScopeSampleLimit {
+		names = append(names[:pendingScopeSampleLimit],
+			fmt.Sprintf("and %d more", len(names)-pendingScopeSampleLimit))
+	}
+	return msg + ": " + strings.Join(names, ", ")
 }
 
 func countCleanScopes(state renderFidelityTargetState) int {
