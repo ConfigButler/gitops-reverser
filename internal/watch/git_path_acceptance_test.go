@@ -3,6 +3,7 @@
 package watch
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -159,4 +160,47 @@ func TestReportGitPathRefusal_RenderFidelityKeepsGitPathAccepted(t *testing.T) {
 	fidelity := manager.RenderFidelityForGitTarget(target)
 	assert.Equal(t, git.RenderFidelityFalse, fidelity.State)
 	assert.Equal(t, "RenderDoesNotMatchLive", fidelity.Reason)
+}
+
+// TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake covers the branch that made
+// Failure A undiagnosable: the gate answers applied=false for a stale revision, an unknown scope
+// or an unknown target, and the caller used to discard that answer without a word — so a scope
+// could owe a report for ever with nothing anywhere saying why
+// (docs/design/watch-plane-status-convergence-failures.md, §2.5).
+func TestMarkRenderFidelityScopeClean_NamesAResultTheGateWouldNotTake(t *testing.T) {
+	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	log, lines := recordingLogger()
+	manager := &Manager{Log: log}
+	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
+	target := types.NewResourceReference("podinfo-test", "team-a")
+	cell := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
+
+	first := manager.restartAllFidelityScopes(target, cell)
+	// Restart it so the earlier revision is genuinely superseded rather than merely absent.
+	manager.restartAllFidelityScopes(target, cell)
+
+	manager.MarkTargetRenderFidelityScopeClean(target, first[cell.Cell()], cell.Cell())
+
+	joined := strings.Join(*lines, "\n")
+	assert.Contains(t, joined, "a render scope result was not applied")
+	assert.Contains(t, joined, cell.Cell().String())
+	assert.Equal(t, git.RenderFidelityUnknown, manager.RenderFidelityForGitTarget(target).State,
+		"a refused report must not converge the target")
+}
+
+// TestMarkRenderFidelityScopeClean_NamesAReportWithNoRevision covers the earlier return. A wired
+// gate always issues a non-zero revision, so a stream reporting under zero was started without
+// one; its result is unusable and its scope keeps owing a report.
+func TestMarkRenderFidelityScopeClean_NamesAReportWithNoRevision(t *testing.T) {
+	workerManager := git.NewWorkerManager(nil, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+	log, lines := recordingLogger()
+	manager := &Manager{Log: log}
+	manager.EventRouter = NewEventRouter(workerManager, manager, nil, logr.Discard())
+	target := types.NewResourceReference("podinfo-test", "team-a")
+	cell := targetWatchKey{GVR: configmapsGVR, Namespace: "apps"}
+	manager.restartAllFidelityScopes(target, cell)
+
+	manager.MarkTargetRenderFidelityScopeClean(target, 0, cell.Cell())
+
+	assert.Contains(t, strings.Join(*lines, "\n"), "stream carries no revision")
 }
